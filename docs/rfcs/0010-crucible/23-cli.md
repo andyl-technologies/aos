@@ -1172,7 +1172,11 @@ branch on the verdict without parsing output:
   packaged-QEMU/plugin boot before the child workflow begins; the
   backend-agnostic prefix, independently materialized child session, and
   standalone child artifact prove the child does not depend on the parent
-  process.
+  process. For the production QEMU backend, `--seed` now re-seeds the live
+  scheduler, World-network, block, 9p, and plugin-served app-random streams at
+  the exact saved configuration; the app-random plugin carries exact branch and
+  relaunch cursors, and the patched-QEMU white-box gate proves the first
+  post-branch guest request comes from cursor zero under the branch seed.
 - [x] **T-CLI-12** Implement `replay` (resolve components, verify pinned
   engine/ABI/QEMU identities and fail loudly on mismatch, reduce to a bit-identical
   log, `--check` byte-identity with on-mismatch bisection, machine-independent). —

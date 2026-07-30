@@ -1,6 +1,17 @@
 //! Process entrypoint, CLI dispatch, selftest, and savepoint export.
 
 use super::*;
+
+#[cfg(any(test, feature = "test-double"))]
+pub(super) const BUILT_IN_CORPUS_SELFTEST_GATES: &[&str] = &[
+    "gate:layer0-determinism",
+    "gate:content-address",
+    "gate:layer1-injection",
+    "gate:replay-oracle",
+    "gate:scheduler-liveness",
+    "gate:control-responsive",
+];
+
 // crucible-lint: allow rust-allow -- the test harness builds the binary root without invoking its imported entrypoint.
 #[cfg_attr(test, allow(dead_code))]
 pub(super) fn main() {
@@ -258,6 +269,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             save_plan.as_ref(),
             &mut NullBackendCommandRunner,
         )?;
+        #[cfg(any(test, feature = "test-double"))]
         if matches!(
             &cli.command,
             Commands::Run(RunArgs {
@@ -513,6 +525,7 @@ pub(super) fn selftest_gate_uses_real_backend(gate: &str) -> bool {
     REAL_QEMU_SELFTEST_GATES.contains(&gate)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn verify_selftest_corpus(
     args: &SelftestArgs,
 ) -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
@@ -522,6 +535,7 @@ pub(super) fn verify_selftest_corpus(
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn verify_selftest_builtin_corpus()
 -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
     let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
@@ -535,6 +549,7 @@ pub(super) fn verify_selftest_builtin_corpus()
     Ok(verified)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn verify_selftest_corpus_manifest(
     path: &Path,
 ) -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
@@ -573,6 +588,7 @@ pub(super) fn verify_selftest_corpus_manifest(
     Ok(verified)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn verify_selftest_fixture_by_name(
     raw_name: &str,
 ) -> Result<crucible::ExampleScenarioVerifyReport, String> {
@@ -604,6 +620,7 @@ pub(super) fn write_completions<W: Write>(shell: Shell, writer: &mut W) {
     clap_complete::generate(shell, &mut command, name, writer);
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn mark_mock_failure_outcome(
     _cli: &Cli,
     backend_plan: &BackendSelectionPlan,

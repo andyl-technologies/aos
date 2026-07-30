@@ -14,7 +14,9 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
+  sessionEventLogStream = builtins.readFile ../../crates/crucible-session/tests/event_log_stream.rs;
   qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
+  qemuNodeTests = builtins.readFile ../../crates/crucible-qemu/src/node/tests/shutdown_and_preemption.rs;
   qemuGdbstubProxy = builtins.readFile ../../crates/crucible-qemu/src/gdbstub_proxy.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -199,10 +201,6 @@
         needle = "unread active stream should receive the replacement marker";
       }
       {
-        label = "event-log partial truncation subscriber regression test";
-        needle = "event_log_generation_reset_preserves_retained_prefix_for_lagging_stream";
-      }
-      {
         label = "debug branch flag";
         needle = "debug_branch_required";
       }
@@ -240,6 +238,14 @@
         label = "QEMU open_gdbstub binds proxy server";
         needle = "spawn_one()";
       }
+    ]
+    ++ failuresFor "crates/crucible-session/tests/event_log_stream.rs" sessionEventLogStream [
+      {
+        label = "event-log partial truncation subscriber regression test";
+        needle = "event_log_generation_reset_preserves_retained_prefix_for_lagging_stream";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/node/tests/shutdown_and_preemption.rs" qemuNodeTests [
       {
         label = "QEMU gdbstub source test";
         needle = "qemu_node_open_gdbstub_reports_configured_channel";

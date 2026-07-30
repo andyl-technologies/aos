@@ -12,13 +12,19 @@
   };
 
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  asyncDriver = builtins.readFile ../../crates/crucible-qemu/src/async_driver.rs;
+  asyncDriver = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/async_driver.rs;
+  };
   crashDetection = builtins.readFile ../../crates/crucible-qemu/src/crash_detection.rs;
   nodeLib = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/node.rs;
   };
-  quantumLib = builtins.readFile ../../crates/crucible-qemu/src/quantum.rs;
+  quantumLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/quantum.rs;
+  };
   qmpLib = builtins.readFile ../../crates/crucible-qemu/src/qmp.rs;
   qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -258,8 +264,8 @@
         needle = "QemuQuantumShmemHotPath::start_quantum";
       }
       {
-        label = "quantum channel finish adapter";
-        needle = "QemuQuantumShmemHotPath::finish_quantum";
+        label = "quantum channel non-consuming completion adapter";
+        needle = "QemuQuantumShmemHotPath::poll_quantum";
       }
       {
         label = "quantum pending token adapter";

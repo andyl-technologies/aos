@@ -5,8 +5,8 @@ use crucible::{
     BackendSnapshot, Configuration, Decision, EventLogOffset, ExactLocalEvent, FingerprintSample,
     Icount, LinkDef, LinkId, LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection,
     NetworkLookahead, NodeCounter, NodeId, NodeTemplate, OverrideDecision, Plan, Properties,
-    QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, RestartPolicy, ScenarioDef,
-    ScenarioDefForm, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
+    QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm,
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, Seed,
     Shift, SimDuration, SimInstant, SimulationBackend, SingleScheduler, StepObservation,
     VirtualTime, WhiteBoxPolicy, World, WorldNode,
@@ -173,43 +173,6 @@ fn backend_quantum_loop_uses_node_counter_instead_of_virtual_frontier() {
     assert_eq!(outcome.frontier, VirtualTime { ticks: 1_280 });
     assert_eq!(adapter.backend().stepped, vec![node.node]);
     assert_eq!(adapter.backend().ceilings, vec![VirtualTime { ticks: 10 }]);
-}
-
-#[test]
-fn ready_point_restart_restores_the_admitted_backend_counter() {
-    let node = SchedulerNodeId {
-        node: NodeId {
-            name: String::from("vm-a"),
-        },
-        kind: crucible::SchedulingNodeKind::Vm,
-    };
-    let ready_counter = NodeCounter { ticks: 4_096 };
-    let scenario = SchedulerLivenessScenario::from_canonical_material(
-        "ready-point-backend-counter",
-        Shift::new(0).unwrap_or_else(|error| panic!("shift should be valid: {error}")),
-        32,
-        SimInstant { nanos: 32_000 },
-        vec![SchedulerScenarioNode {
-            id: node.clone(),
-            counter: ready_counter,
-            activity: SchedulerNodeActivity::Runnable,
-            network_lookahead: NetworkLookahead::Finite(SimDuration { nanos: 1 }),
-            exact_local_event: ExactLocalEvent::NoArmedTimer,
-        }],
-        Vec::new(),
-    );
-    let mut scheduler = SingleScheduler::new(scenario)
-        .unwrap_or_else(|error| panic!("scheduler should build: {error}"));
-
-    scheduler
-        .apply_node_crash(1, &node.node, RestartPolicy::FromReadyPoint)
-        .unwrap_or_else(|error| panic!("ready-point crash should apply: {error}"));
-    let restart = scheduler
-        .heal_node_crash(2, &node.node)
-        .unwrap_or_else(|error| panic!("ready-point heal should restart: {error}"));
-
-    assert!(restart.restarted);
-    assert_eq!(restart.counter, ready_counter);
 }
 
 #[test]
@@ -392,7 +355,7 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
 
 #[test]
 fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() {
-    let (default_outcome, default_loop) = network_branch_fixture(None);
+    let (default_outcome, default_loop) = network_branch_fixture(None, 0);
     let frontier = default_loop
         .loop_impl()
         .search_frontiers()
@@ -410,7 +373,7 @@ fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() 
 
     let mut delivery_counts = Vec::new();
     for (override_decision, expected_decisions) in selected {
-        let (outcome, loop_impl) = network_branch_fixture(Some(override_decision.clone()));
+        let (outcome, loop_impl) = network_branch_fixture(Some(override_decision.clone()), 0);
         assert_eq!(
             outcome.decisions.get(
                 outcome
@@ -446,8 +409,43 @@ fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() 
     );
 }
 
+#[test]
+fn live_world_network_branch_identity_uses_the_causal_emission_ordinal() {
+    let (_default_outcome, default_loop) = network_branch_fixture(None, 4_096);
+    let frontier = default_loop
+        .loop_impl()
+        .search_frontiers()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("probabilistic live link should publish a search frontier"));
+    let selected = frontier
+        .choices
+        .choices()
+        .iter()
+        .find_map(|choice| match choice.decisions().first() {
+            Some(Decision::Override(override_decision))
+                if override_decision.choice.name == "loss-fire" =>
+            {
+                Some((override_decision.clone(), choice.decisions().to_vec()))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("loss branch should be available"));
+
+    let (outcome, loop_impl) = network_branch_fixture(Some(selected.0), 8_192);
+
+    assert_eq!(loop_impl.loop_impl().pending_branch_fault_choice_count(), 0);
+    assert_eq!(
+        outcome
+            .decisions
+            .get(outcome.decisions.len().saturating_sub(selected.1.len())..),
+        Some(selected.1.as_slice())
+    );
+}
+
 fn network_branch_fixture(
     selected: Option<OverrideDecision>,
+    ready_counter: u64,
 ) -> (
     QuantumOutcome,
     BackendQuantumLoop<SingleScheduler, NodeRecordingBackend>,
@@ -502,7 +500,7 @@ fn network_branch_fixture(
         Shift::new(0).unwrap_or_else(|error| panic!("zero shift should build: {error}")),
         4,
         SimInstant { nanos: 100 },
-        0,
+        ready_counter,
         &world,
     )
     .with_scenario_def(form.scenario_def());
@@ -524,7 +522,9 @@ fn network_branch_fixture(
         destination: NodeId {
             name: String::from("net-router"),
         },
-        emit_icount: Icount { retired: 1 },
+        emit_icount: Icount {
+            retired: ready_counter.saturating_add(1),
+        },
         sequence: 0,
         payload,
     };

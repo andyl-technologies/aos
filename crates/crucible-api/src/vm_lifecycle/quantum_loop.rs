@@ -17,22 +17,18 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             });
         }
         if !request.control.is_empty() {
-            let node_counters = self
-                .source
-                .world()
-                .vm_nodes()
-                .iter()
-                .filter_map(|node| {
-                    self.inner
-                        .backend()
-                        .node_now(&node.id)
-                        .ok()
-                        .map(|at| (node.id.clone(), at.ticks))
-                })
-                .collect();
+            let mut node_times = BTreeMap::new();
+            for node in self.source.world().vm_nodes() {
+                let Ok(_counter) = self.inner.backend().node_now(&node.id).map(|at| at.ticks)
+                else {
+                    continue;
+                };
+                let at = self.inner.loop_impl().scheduler_time_for_node(&node.id)?;
+                node_times.insert(node.id.clone(), at);
+            }
             self.recorded_controls.push(ProductionVmRecordedControl {
                 configuration: request.configuration.clone(),
-                node_counters,
+                node_times,
                 control: request.control.clone(),
             });
         }
@@ -44,12 +40,14 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             let mut counters = Vec::new();
             for node in self.source.world().vm_nodes() {
                 let counter = self.inner.backend().node_now(&node.id)?.ticks;
+                let scheduler_time = self.inner.loop_impl().scheduler_time_for_node(&node.id)?;
                 counters.push((node.id.clone(), counter));
                 self.checkpoint_targets.insert(
                     node.id.clone(),
                     ProductionVmCheckpointReplayTarget {
                         configuration: request.configuration.clone(),
                         counter,
+                        scheduler_time,
                         control_count: self.recorded_controls.len(),
                     },
                 );
@@ -94,7 +92,26 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             prelaunched_this_quantum.push(node);
         }
         if let Some(branch) = self.branch.as_ref() {
-            if request.configuration == branch.base {
+            let frontier = self.inner.loop_impl().frontier();
+            if frontier > branch.frontier {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "production branch frontier {} was passed at {}",
+                        branch.frontier.ticks, frontier.ticks
+                    ),
+                });
+            }
+            if frontier == branch.frontier && request.configuration != branch.base {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "production branch reached frontier {} with configuration {}, expected {}",
+                        frontier.ticks,
+                        request.configuration.id().to_hex(),
+                        branch.base.id().to_hex(),
+                    ),
+                });
+            }
+            if frontier == branch.frontier && request.configuration == branch.base {
                 if !request.control.is_empty() {
                     return Err(SchedulerError::BoundaryViolation {
                         message: String::from(
@@ -107,6 +124,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     .inner
                     .loop_impl_mut()
                     .append_branch_prefix_overrides(decisions.clone())?;
+                if let Some(seed) = branch.seed {
+                    self.inner.loop_impl_mut().reseed_future_decisions(seed)?;
+                }
+                self.inner.loop_impl_mut().clear_branch_frontier_cap();
                 let frontier = self.inner.loop_impl().frontier();
                 let scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
                 self.branch = None;
@@ -126,7 +147,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 prepend_event_log_appends(&mut outcome, pre_quantum_trigger_appends);
                 return Ok(outcome);
             }
-            if request.configuration.schedule.len() >= branch.base.schedule.len() {
+            if request.configuration.schedule.len() > branch.base.schedule.len()
+                || (request.configuration.schedule.len() == branch.base.schedule.len()
+                    && request.configuration != branch.base)
+            {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
                         "branch-prefix replay bypassed base configuration {}",
@@ -135,7 +159,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 });
             }
         }
-        let mut outcome = match self.inner.drive_quantum(request) {
+        let mut outcome = match crucible_session::drive_engine_quantum(&mut self.inner, request) {
             Ok(outcome) => outcome,
             Err(error) => {
                 return Err(self.rollback_prelaunch_after_error(&prelaunched_this_quantum, error));

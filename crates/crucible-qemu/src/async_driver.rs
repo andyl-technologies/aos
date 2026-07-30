@@ -164,6 +164,23 @@ pub trait QemuHostIoRuntime: Send {
         wait: QemuAsyncWait,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError>;
+
+    /// Polls an already-signaled child event again under the original budget.
+    ///
+    /// The runtime must retain the deadline established by
+    /// [`Self::await_child`] and return [`QemuAsyncWaitOutcome::TimedOut`] when
+    /// that original `timeout` budget expires. A repeated poll must not repeat
+    /// one-shot side effects such as waking the plugin.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime cannot execute
+    /// the repeated poll operation.
+    fn repoll_child(
+        &mut self,
+        wait: QemuAsyncWait,
+        timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError>;
 }
 
 /// Error returned by a host-I/O runtime adapter.
@@ -222,7 +239,7 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
     /// cannot be read.
     fn finish_quantum(
         &mut self,
-        pending: Self::PendingQuantum,
+        pending: &mut Self::PendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError>;
 }
 
@@ -327,135 +344,6 @@ pub struct QemuAsyncLifecycleAwaitReport {
     pub async_operations: Vec<QemuAsyncDriverOperation>,
 }
 
-/// Runs one scheduler quantum through a bounded host-I/O bridge.
-///
-/// # Errors
-///
-/// Returns [`QemuAsyncDriverError`] when timeout policy validation fails, the
-/// runtime cannot yield or await, the shared-memory hot path fails, shutdown
-/// escalation cannot run after a timeout, or forbidden QMP/plugin-IPC operations
-/// appear in the quantum hot path.
-pub fn run_bounded_qemu_node_step<T, R>(
-    target: &mut T,
-    runtime: &mut R,
-    policy: QemuAsyncDriverPolicy,
-    crash_detector: &QemuCrashDetector,
-    horizon: ExecutionHorizon,
-) -> Result<QemuAsyncNodeStepReport, QemuAsyncDriverError>
-where
-    T: QemuAsyncNodeStepTarget,
-    R: QemuHostIoRuntime + ?Sized,
-{
-    policy.validate()?;
-
-    let mut async_operations = Vec::new();
-    runtime
-        .yield_to_control_plane()
-        .map_err(QemuAsyncDriverError::Runtime)?;
-    async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
-
-    let pending = target
-        .start_quantum(horizon)
-        .map_err(QemuAsyncDriverError::Channel)?;
-    let wait_timeout = policy.timeout_for(QemuAsyncWait::AdvanceCompletion);
-    let wait_outcome = runtime
-        .await_child(QemuAsyncWait::AdvanceCompletion, wait_timeout)
-        .map_err(QemuAsyncDriverError::Runtime)?;
-    async_operations.push(QemuAsyncDriverOperation::AwaitChild {
-        wait: QemuAsyncWait::AdvanceCompletion,
-        timeout: wait_timeout,
-        outcome: wait_outcome,
-    });
-
-    if wait_outcome == QemuAsyncWaitOutcome::TimedOut {
-        async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
-        let status = crash_detector
-            .bounded_await_timeout(QemuAsyncWait::AdvanceCompletion.operation(), wait_timeout);
-        let shutdown = target
-            .shutdown_after_crash()
-            .map_err(QemuAsyncDriverError::Target)?;
-        return Ok(QemuAsyncNodeStepReport {
-            outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
-            emitted_frames: Vec::new(),
-            yielded_before_quantum: true,
-            yielded_after_quantum: false,
-            hot_path_operations: Vec::new(),
-            async_operations,
-        });
-    }
-
-    let completion = target
-        .finish_quantum(pending)
-        .map_err(QemuAsyncDriverError::Channel)?;
-    assert_async_driver_quantum_hot_path_is_shmem_only(&completion.operations)?;
-
-    runtime
-        .yield_to_control_plane()
-        .map_err(QemuAsyncDriverError::Runtime)?;
-    async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
-
-    Ok(QemuAsyncNodeStepReport {
-        outcome: QemuAsyncNodeStepOutcome::Completed {
-            advance: completion.outcome,
-        },
-        emitted_frames: completion.emitted_frames,
-        yielded_before_quantum: true,
-        yielded_after_quantum: true,
-        hot_path_operations: completion.operations,
-        async_operations,
-    })
-}
-
-/// Awaits a lifecycle child event with the policy timeout for that wait class.
-///
-/// # Errors
-///
-/// Returns [`QemuAsyncDriverError`] when the policy is invalid, `wait` names the
-/// per-quantum advance-completion wait, the runtime await fails, or shutdown
-/// escalation fails after a timeout.
-pub fn await_bounded_lifecycle_event<T, R>(
-    target: &mut T,
-    runtime: &mut R,
-    policy: QemuAsyncDriverPolicy,
-    crash_detector: &QemuCrashDetector,
-    wait: QemuAsyncWait,
-) -> Result<QemuAsyncLifecycleAwaitReport, QemuAsyncDriverError>
-where
-    T: QemuAsyncCrashEscalationTarget,
-    R: QemuHostIoRuntime + ?Sized,
-{
-    policy.validate()?;
-    if wait == QemuAsyncWait::AdvanceCompletion {
-        return Err(QemuAsyncDriverError::LifecycleAdvanceWait);
-    }
-    let timeout = policy.timeout_for(wait);
-    let outcome = runtime
-        .await_child(wait, timeout)
-        .map_err(QemuAsyncDriverError::Runtime)?;
-    let mut async_operations = vec![QemuAsyncDriverOperation::AwaitChild {
-        wait,
-        timeout,
-        outcome,
-    }];
-    if outcome == QemuAsyncWaitOutcome::TimedOut {
-        async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
-        let status = crash_detector.bounded_await_timeout(wait.operation(), timeout);
-        let shutdown = target
-            .shutdown_after_crash()
-            .map_err(QemuAsyncDriverError::Target)?;
-        return Ok(QemuAsyncLifecycleAwaitReport {
-            wait,
-            outcome: QemuAsyncLifecycleAwaitOutcome::Crashed { status, shutdown },
-            async_operations,
-        });
-    }
-    Ok(QemuAsyncLifecycleAwaitReport {
-        wait,
-        outcome: QemuAsyncLifecycleAwaitOutcome::Completed,
-        async_operations,
-    })
-}
-
 /// Error returned by the bounded async driver.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuAsyncDriverError {
@@ -484,6 +372,9 @@ pub enum QemuAsyncDriverError {
         plane: QemuQuantumOperationPlane,
     },
 }
+
+mod driver;
+pub use driver::{await_bounded_lifecycle_event, run_bounded_qemu_node_step};
 
 #[cfg(test)]
 mod tests {
@@ -544,6 +435,52 @@ mod tests {
         assert_eq!(target.finished, 1);
         assert_eq!(target.shutdowns, 0);
         assert_eq!(runtime.yields, 2);
+    }
+
+    #[test]
+    fn async_driver_repolls_a_transient_shared_memory_report() {
+        let policy = QemuAsyncDriverPolicy::fast_test();
+        let mut target = ScriptedTarget::pending_once();
+        let mut runtime = ScriptedRuntime::new([
+            QemuAsyncWaitOutcome::Completed,
+            QemuAsyncWaitOutcome::Completed,
+        ]);
+        let crash_detector = QemuCrashDetector::new("vm-a");
+
+        let report = run_bounded_qemu_node_step(
+            &mut target,
+            &mut runtime,
+            policy,
+            &crash_detector,
+            horizon(12),
+        )
+        .unwrap_or_else(|error| panic!("transient report should be repolled: {error}"));
+
+        assert_eq!(
+            report.outcome,
+            QemuAsyncNodeStepOutcome::Completed {
+                advance: AdvanceOutcome::ReachedHorizon,
+            }
+        );
+        assert_eq!(target.finished, 2);
+        assert_eq!(
+            report
+                .async_operations
+                .iter()
+                .filter(|operation| matches!(
+                    operation,
+                    QemuAsyncDriverOperation::AwaitChild {
+                        wait: QemuAsyncWait::AdvanceCompletion,
+                        outcome: QemuAsyncWaitOutcome::Completed,
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+        assert_eq!(target.shutdowns, 0);
+        assert_eq!(runtime.awaits, 1);
+        assert_eq!(runtime.repolls, 1);
     }
 
     #[test]
@@ -772,6 +709,8 @@ mod tests {
     struct ScriptedRuntime {
         outcomes: VecDeque<QemuAsyncWaitOutcome>,
         yields: usize,
+        awaits: usize,
+        repolls: usize,
     }
 
     impl ScriptedRuntime {
@@ -779,6 +718,8 @@ mod tests {
             Self {
                 outcomes: outcomes.into_iter().collect(),
                 yields: 0,
+                awaits: 0,
+                repolls: 0,
             }
         }
     }
@@ -794,15 +735,28 @@ mod tests {
             _wait: QemuAsyncWait,
             _timeout: Duration,
         ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+            self.awaits += 1;
             self.outcomes
                 .pop_front()
                 .ok_or_else(|| QemuAsyncDriverRuntimeError::new("await child", "no outcome"))
+        }
+
+        fn repoll_child(
+            &mut self,
+            _wait: QemuAsyncWait,
+            _timeout: Duration,
+        ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+            self.repolls += 1;
+            self.outcomes
+                .pop_front()
+                .ok_or_else(|| QemuAsyncDriverRuntimeError::new("repoll child", "no outcome"))
         }
     }
 
     #[derive(Debug)]
     struct ScriptedTarget {
         completion: QemuAsyncQuantumCompletion,
+        pending_finishes: usize,
         started: Vec<u64>,
         finished: usize,
         shutdowns: usize,
@@ -820,9 +774,17 @@ mod tests {
                         QemuQuantumOperation::ObservePluginReport,
                     ],
                 },
+                pending_finishes: 0,
                 started: Vec::new(),
                 finished: 0,
                 shutdowns: 0,
+            }
+        }
+
+        fn pending_once() -> Self {
+            Self {
+                pending_finishes: 1,
+                ..Self::completed()
             }
         }
     }
@@ -858,9 +820,16 @@ mod tests {
 
         fn finish_quantum(
             &mut self,
-            _pending: Self::PendingQuantum,
+            _pending: &mut Self::PendingQuantum,
         ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
             self.finished += 1;
+            if self.pending_finishes > 0 {
+                self.pending_finishes -= 1;
+                return Err(QemuNodeChannelError::retryable(
+                    "finish quantum",
+                    "plugin report is still in flight",
+                ));
+            }
             Ok(self.completion.clone())
         }
     }

@@ -363,6 +363,38 @@ in
           grep -Fxq 'whitebox_marker_count=1' "$app_random_report"
           grep -Fxq 'whitebox_marker_point=random-reply' "$app_random_report"
 
+          app_random_branch_dir="$TMPDIR/live-whitebox-app-random-branch"
+          app_random_branch_report="$TMPDIR/live-whitebox-app-random-branch.result"
+          app_random_branch_log="$TMPDIR/live-whitebox-app-random-branch.qemu.log"
+          mkdir -p "$app_random_branch_dir"
+          cp ${rootImage}/overlay.qcow2 "$app_random_branch_dir/crucible-root-overlay.qcow2"
+          chmod u+w "$app_random_branch_dir/crucible-root-overlay.qcow2"
+          if ! CRUCIBLE_LIVE_PLUGIN_WHITEBOX=on \
+            CRUCIBLE_LIVE_PLUGIN_FINGERPRINT=on \
+            CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_SEED=11 \
+            CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_CAP=1 \
+            CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_NODE=plugin-install-gate-vm \
+            CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_SEED=1048598 \
+            CRUCIBLE_LIVE_PLUGIN_APP_RANDOM_BRANCH_AFTER=0 \
+            timeout -k 15 180 \
+            "$TMPDIR/live-whitebox-target/debug/examples/crucible-qemu-live-plugin-install" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            ${guest}/app-random-guest.elf \
+            ${rootImage}/root.qcow2 \
+            "$app_random_branch_dir" \
+            > "$app_random_branch_report" 2> "$app_random_branch_log"; then
+            cat "$app_random_branch_report" >&2
+            cat "$app_random_branch_log" >&2
+            exit 1
+          fi
+          grep -Fxq PASS "$app_random_branch_report"
+          grep -Fxq 'app_random_decision_count=1' "$app_random_branch_report"
+          original_app_random_value=$(sed -n 's/^app_random_value=//p' "$app_random_report")
+          branch_app_random_value=$(sed -n 's/^app_random_value=//p' "$app_random_branch_report")
+          test -n "$original_app_random_value"
+          test "$branch_app_random_value" = "$original_app_random_value"
+
           collision_map="$TMPDIR/live-whitebox-collision.mtree"
           collision_result="$TMPDIR/live-whitebox-collision.result"
           collision_error="$TMPDIR/live-whitebox-collision.error"
@@ -411,6 +443,8 @@ in
           cp "$aarch64_log" "$out/qemu-aarch64.log"
           cp "$app_random_report" "$out/app-random-result"
           cp "$app_random_log" "$out/qemu-app-random.log"
+          cp "$app_random_branch_report" "$out/app-random-branch-result"
+          cp "$app_random_branch_log" "$out/qemu-app-random-branch.log"
           cp "$collision_map" "$out/collision.mtree"
           cp "$collision_error" "$out/collision.error"
           {
@@ -453,6 +487,8 @@ in
             printf 'app_random_live_decisions=1\n'
             printf 'app_random_guest_reply_observed=true\n'
             printf 'app_random_host_seed_reconstruction=true\n'
+            printf 'app_random_branch_seed_live_qemu=true\n'
+            printf 'app_random_branch_cursor_zero_value=%s\n' "$branch_app_random_value"
             printf 'app_random_reply_api=qemu_plugin_crucible_write_memory_vaddr\n'
           } > "$out/result"
         '';

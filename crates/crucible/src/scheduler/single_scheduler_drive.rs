@@ -92,6 +92,22 @@ impl SingleScheduler {
         self.node_time_for_counter(&self.nodes[index], NodeCounter::from_icount(icount))
     }
 
+    pub(super) fn network_time_for_icount(
+        &self,
+        icount: u64,
+    ) -> Result<SimInstant, SchedulerError> {
+        NodeCounter { ticks: icount }
+            .to_virtual(self.timeline.shift())
+            .map_err(SchedulerError::from)
+    }
+
+    pub(super) fn network_icount_for_time_ceil(
+        &self,
+        time: SimInstant,
+    ) -> Result<u64, SchedulerError> {
+        Ok(self.timeline.max_advance_icount_for_horizon(time)?.retired)
+    }
+
     pub(super) fn project_device_decisions_for_vm_time(
         &self,
         node: &NodeId,
@@ -727,6 +743,28 @@ impl SingleScheduler {
             nanos: self.frontier.ticks,
         };
         let target_time = candidates.first().map(|candidate| candidate.target_time);
+        // A parked peer can hold the global frontier behind the canonical
+        // global-minimum candidate. Batching frontier peers in that state would
+        // reorder PICK relative to the authoritative serial path. Advance only
+        // that canonical first candidate; normal independent batches resume
+        // once the common frontier is restored.
+        if let Some(candidate) = candidates.first() {
+            let draft = self.advance_plan_draft(candidate)?;
+            let current_time =
+                self.node_time_for_counter(&self.nodes[draft.index], draft.before)?;
+            if current_time != frontier {
+                selected.push(SchedulerConcurrentRunCandidate {
+                    node: draft.node,
+                    current_time,
+                    target_time: candidate.target_time,
+                    max_advance_icount: draft.target_counter,
+                });
+                return Ok(SchedulerConcurrentRunSet {
+                    max_host_workers,
+                    candidates: selected,
+                });
+            }
+        }
 
         for candidate in candidates.iter() {
             if selected.len() >= max_host_workers {
@@ -1397,13 +1435,10 @@ impl SingleScheduler {
             self.rendezvous,
         )?;
         let topology_cap = self.pending_topology_activation_cap()?;
-
-        Ok(match (fixed_cap, topology_cap) {
-            (Some(fixed_cap), Some(topology_cap)) => Some(min_instant(fixed_cap, topology_cap)),
-            (Some(fixed_cap), None) => Some(fixed_cap),
-            (None, Some(topology_cap)) => Some(topology_cap),
-            (None, None) => None,
-        })
+        Ok([fixed_cap, topology_cap, self.branch_frontier_cap]
+            .into_iter()
+            .flatten()
+            .min())
     }
 
     pub(super) fn drive_concurrent_authoritative_quantum(
@@ -1452,8 +1487,7 @@ impl SingleScheduler {
             let at = SimInstant {
                 nanos: self.frontier.ticks,
             };
-            let decisions =
-                self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at, false)?;
+            let decisions = self.emit_quantum_decisions(&boundary_resolved_events, &[], &[], at)?;
             let emit_boundary = !decisions.is_empty() || topology_recomputed;
             let event_log = self.emit_quantum_event_log(
                 &boundary_resolved_events,
@@ -1565,7 +1599,6 @@ impl SingleScheduler {
                 &preemptions,
                 &device_decisions,
                 after_time,
-                true,
             )?;
             let event_log = self.emit_quantum_event_log(
                 &resolved_events,
@@ -1652,7 +1685,6 @@ impl SingleScheduler {
                     SimInstant {
                         nanos: self.frontier.ticks,
                     },
-                    false,
                 )?;
                 let emit_boundary = !decisions.is_empty() || topology_recomputed;
                 let event_log = self.emit_quantum_event_log(
@@ -1727,7 +1759,6 @@ impl SingleScheduler {
             &preemptions,
             &device_decisions,
             after_time,
-            true,
         )?;
         let event_log = self.emit_quantum_event_log(
             &resolved_events,
@@ -1975,11 +2006,6 @@ impl SingleScheduler {
         self.apply_trigger_taxonomy_faults(fault_sequence, &previous_faults, &next_faults)?;
         self.trigger_actions = trigger_actions;
         Ok(())
-    }
-
-    pub(super) fn advance_decision_rng_cursor(&mut self) {
-        let stream = RngStreamId::new(SCHEDULER_ACTOR_RNG_DOMAIN, SCHEDULER_QUANTUM_STREAM);
-        self.advance_decision_rng_cursor_for(stream);
     }
 
     pub(super) fn advance_decision_rng_cursor_for(&mut self, stream: RngStreamId) {

@@ -2,6 +2,33 @@
 
 use super::*;
 
+pub(super) fn production_app_random_launch_config(
+    scenario: &ScenarioDef,
+    branch: Option<&ProductionVmBranchConfig>,
+    node: &NodeId,
+) -> ProductionAppRandomConfig {
+    let mut config = ProductionAppRandomConfig::from_seed(
+        scenario.seed(),
+        scenario.app_random_draw_cap(),
+        node.name.clone(),
+    );
+    if let Some(branch) = branch
+        && let Some(seed) = branch.seed
+    {
+        let prefix_draws = branch
+            .base
+            .schedule
+            .decisions()
+            .iter()
+            .filter(
+                |decision| matches!(decision, Decision::AppRandom(random) if random.node == *node),
+            )
+            .count() as u64;
+        config = config.with_branch_seed(seed, prefix_draws);
+    }
+    config
+}
+
 pub(super) fn reserve_backend_gdbstub_endpoint() -> Result<String, LifecycleApiError> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|error| loop_factory_error(format!("reserve QEMU gdbstub endpoint: {error}")))?;

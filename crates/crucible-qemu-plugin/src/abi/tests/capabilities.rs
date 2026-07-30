@@ -4,6 +4,7 @@ use super::*;
 
 #[test]
 fn abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols() {
+    let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
     let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
 
     assert!(resolve_qemu_advance_time_ns_symbol().is_none());
@@ -29,6 +30,7 @@ fn abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_
 
 #[test]
 fn abi_install_entrypoint_requires_queued_advance_after_deadline_resolution() {
+    let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
     let valid_info = qemu_info_fixture(1, 1, QEMU_PLUGIN_API_VERSION);
     let _deadline_guard = TestClockDeadlineSymbolGuard::install(abi_test_deadline);
     let Some(deadline) = resolve_qemu_clock_deadline_symbol() else {

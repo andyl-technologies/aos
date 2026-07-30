@@ -32,18 +32,21 @@ pub(super) fn run_local_qemu_fork_workflow(
         .resolved_backend
         .as_ref()
         .ok_or_else(|| backend_error("local QEMU fork requires a resolved backend"))?;
-    if fork_plan.fork_seed.is_some() {
-        return Err(backend_error(
-            "local QEMU fork reseeding requires branch-RNG admission in the live scheduler; no \
-             modeled fallback was executed",
-        ));
-    }
     let evidence = fork_handle_evidence(fork_plan)?;
     let mut config = production_qemu_lifecycle_config(backend)?;
     let override_decisions = fork_override_decisions(fork_plan);
-    if !override_decisions.is_empty() {
-        config =
-            config.with_branch_prefix_overrides(evidence.configuration.clone(), override_decisions);
+    if let Some(seed) = fork_plan.fork_seed {
+        config = config.with_branch_reseed(
+            evidence.configuration.clone(),
+            evidence.checkpoint.virtual_time,
+            crucible::Seed::from_u64(seed),
+        );
+    } else if !override_decisions.is_empty() {
+        config = config.with_branch_prefix_overrides(
+            evidence.configuration.clone(),
+            evidence.checkpoint.virtual_time,
+            override_decisions,
+        );
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -83,6 +86,7 @@ pub(super) fn run_local_qemu_fork_workflow(
     Ok(outcome)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn default_fork_interactive_driver(
     fork_plan: &ForkInvocationPlan,
 ) -> ResumeInteractiveCommandDriver<'static> {
@@ -313,6 +317,7 @@ pub(super) fn checkpoint_for_resume_configuration(
         .map_err(|error| CliError::Identity(format!("resume checkpoint setup failed: {error}")))
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn resume_recording_loop_for_plan(
     plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
@@ -329,6 +334,7 @@ pub(super) fn resume_recording_loop_for_plan(
     ))
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn fork_recording_loop_for_plan(
     plan: &ForkInvocationPlan,
     evidence: &ResumeHandleEvidence,
@@ -362,10 +368,12 @@ pub(super) fn fork_override_decisions(plan: &ForkInvocationPlan) -> Vec<crucible
         .collect()
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn fork_branch_frontier(evidence: &ResumeHandleEvidence) -> VirtualTime {
     evidence.checkpoint.virtual_time
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn resume_property_fixture_assertion(
     scenario: &crucible::ScenarioDefForm,
 ) -> Result<crucible::AssertionId, CliError> {
@@ -411,9 +419,11 @@ pub(super) enum ResumeInteractiveCommandDriver<'a> {
     Stdin,
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) type ResumeCommandReply<T> =
     oneshot::Receiver<Result<T, crucible_session::SessionError>>;
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
     plan: &ResumeInvocationPlan,
     evidence: ResumeHandleEvidence,
@@ -614,6 +624,7 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
     })
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn run_forked_savepoint_actor_with_driver_async(
     plan: &ForkInvocationPlan,
     evidence: ResumeHandleEvidence,
@@ -838,6 +849,7 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
     })
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn drive_resumed_actor_interactive_commands(
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
@@ -875,6 +887,7 @@ pub(super) async fn drive_resumed_actor_interactive_commands(
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn drive_resumed_actor_interactive_stdin_commands(
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
@@ -896,6 +909,7 @@ pub(super) async fn drive_resumed_actor_interactive_stdin_commands(
     .await
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn drive_resumed_actor_interactive_command_reader<R, W>(
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
@@ -930,6 +944,7 @@ where
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn acknowledge_resumed_actor_command_kind(
     sender: &mpsc::Sender<SessionCommand>,
     live: &Arc<LiveSnapshot>,
@@ -948,6 +963,7 @@ pub(super) async fn acknowledge_resumed_actor_command_kind(
     observe_resumed_actor_interactive_boundary(live, command, before).await
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn resume_actor_interactive_command(
     command: SessionCommand,
 ) -> (SessionCommand, ResumeCommandReply<()>) {
@@ -958,6 +974,7 @@ pub(super) fn resume_actor_interactive_command(
     )
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn observe_resumed_actor_interactive_acceptance(
     command: SessionCommandKind,
     acknowledgement: ResumeCommandReply<()>,
@@ -966,6 +983,7 @@ pub(super) async fn observe_resumed_actor_interactive_acceptance(
     receive_resumed_actor_reply(acknowledgement, &context).await
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn observe_resumed_actor_interactive_boundary(
     live: &Arc<LiveSnapshot>,
     command: SessionCommandKind,
@@ -998,6 +1016,7 @@ pub(super) async fn observe_resumed_actor_interactive_boundary(
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn send_resumed_actor_command(
     sender: &mpsc::Sender<SessionCommand>,
     command: SessionCommand,
@@ -1012,6 +1031,7 @@ pub(super) async fn send_resumed_actor_command(
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn set_resumed_actor_breakpoint(
     sender: &mpsc::Sender<SessionCommand>,
     spec: BreakpointSpec,
@@ -1027,6 +1047,7 @@ pub(super) async fn set_resumed_actor_breakpoint(
     Ok(id)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn query_resumed_actor_breakpoint_firings(
     sender: &mpsc::Sender<SessionCommand>,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
@@ -1049,6 +1070,7 @@ pub(super) async fn query_resumed_actor_breakpoint_firings(
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn receive_resumed_actor_reply<T>(
     receiver: tokio::sync::oneshot::Receiver<Result<T, crucible_session::SessionError>>,
     context: &str,
@@ -1059,6 +1081,7 @@ pub(super) async fn receive_resumed_actor_reply<T>(
         .map_err(|error| backend_error(format!("resume actor {context} failed: {error}")))
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn validate_resume_property_firing(
     breakpoint_id: BreakpointId,
     expected: &crucible::Predicate,
@@ -1255,6 +1278,7 @@ where
     )))
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) async fn wait_resumed_actor_boundary(
     live: &Arc<LiveSnapshot>,
     max_actor_yields: u64,
@@ -1282,6 +1306,7 @@ pub(super) fn resume_actor_boundary_yield_budget(start_ticks: u64, target_ticks:
     RUN_INTERACTIVE_ACK_QUANTA_BOUND.saturating_add(target_ticks.saturating_sub(start_ticks))
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn resume_watch_status(view: LiveSnapshotView) -> String {
     format!(
         "state={}\tfrontier_ticks={}\tquanta={}\toutcome={}\tsavepoint={}",

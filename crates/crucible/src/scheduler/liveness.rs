@@ -207,10 +207,9 @@ pub(super) struct RuntimeNodeStoppedState {
 
 impl From<SchedulerScenarioNode> for RuntimeSchedulerNode {
     fn from(node: SchedulerScenarioNode) -> Self {
-        let ready_counter = node.counter;
         Self {
             id: node.id,
-            ready_counter,
+            ready_counter: NodeCounter { ticks: 0 },
             counter: node.counter,
             timing_faults: NodeTimingFaults::default(),
             last_checkpoint: None,

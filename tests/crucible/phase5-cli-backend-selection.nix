@@ -50,7 +50,7 @@
       }
       {
         label = "explicit test-double feature";
-        needle = ''test-double = ["crucible/test-double"]'';
+        needle = ''test-double = ["crucible-session/test-double"]'';
       }
       {
         label = "process double tests require feature";
@@ -64,7 +64,7 @@
       }
       {
         label = "production auto backend fails closed";
-        needle = "this production build does not include the in-process test double";
+        needle = "no hermetic QEMU backend was discovered; this production build does not";
       }
       {
         label = "backend-selection plan type";

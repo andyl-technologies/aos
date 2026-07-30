@@ -16,6 +16,13 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliFork = builtins.readFile ../../crates/crucible-cli/src/cli/resume_fork.rs;
+  apiLifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
+  apiRuntime = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/runtime.rs;
+  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch/plugin_config.rs;
+  qemuNodeLaunch = builtins.readFile ../../crates/crucible-qemu/src/supervision/node_step_gate/support.rs;
+  pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox/app_random.rs;
+  liveWhiteboxGate = builtins.readFile ./phase2-qemu-live-whitebox-doorbell.nix;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -51,6 +58,10 @@
         label = "T-CLI-11 process qemu fork progress";
         needle = "process-tests real-binary `fork --backend qemu` JSONL";
       }
+      {
+        label = "T-CLI-11 production qemu reseed completion";
+        needle = "For the production QEMU backend, `--seed` now re-seeds the live";
+      }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
@@ -76,6 +87,10 @@
       {
         label = "phase5 CLI process qemu fork progress";
         needle = "process-level\n  `fork --backend qemu` JSONL output plus child artifact creation";
+      }
+      {
+        label = "phase5 production qemu reseed completion";
+        needle = "Production-QEMU\n  `--seed` forks now re-seed scheduler";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -206,6 +221,60 @@
       {
         label = "fork tampered frontier test";
         needle = "cli_fork_workflow_rejects_tampered_handle_frontier";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/resume_fork.rs" cliFork [
+      {
+        label = "fork local-QEMU production reseed";
+        needle = "config.with_branch_reseed(";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" apiLifecycle [
+      {
+        label = "production lifecycle enables whitebox";
+        needle = ".with_whitebox(ProductionPluginSwitch::On)";
+      }
+      {
+        label = "production lifecycle wires app-random";
+        needle = ".with_app_random(production_app_random_launch_config(";
+      }
+    ]
+    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/runtime.rs" apiRuntime [
+      {
+        label = "production relaunch carries app-random cursors";
+        needle = ".with_app_random(self.app_random_continuation_config(node)?)";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/launch/plugin_config.rs" qemuLaunch [
+      {
+        label = "QEMU launch carries complete branch seed";
+        needle = "pub fn with_branch_seed";
+      }
+      {
+        label = "QEMU launch carries app-random continuation";
+        needle = "pub fn with_continuation";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/src/supervision/node_step_gate/support.rs" qemuNodeLaunch [
+      {
+        label = "production node launcher installs app-random";
+        needle = "plugin = plugin.with_app_random(app_random.clone())";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_whitebox/app_random.rs" pluginRuntime [
+      {
+        label = "live plugin switches branch seed";
+        needle = "fn apply_branch_reseed_if_due";
+      }
+      {
+        label = "live plugin restores stream positions";
+        needle = "stream.advance_by(*draws);";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase2-qemu-live-whitebox-doorbell.nix" liveWhiteboxGate [
+      {
+        label = "patched-QEMU branch seed proof";
+        needle = "app_random_branch_seed_live_qemu=true";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [

@@ -11,7 +11,10 @@
   apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
   apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
   rpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
-  apiGateTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  apiGateTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -143,7 +146,7 @@
         needle = "RpcDecode";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" apiGateTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" apiGateTest [
       {
         label = "trait transport-agnostic test";
         needle = "control_client_trait_is_transport_agnostic_over_in_process_and_rpc";

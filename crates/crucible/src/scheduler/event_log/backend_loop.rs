@@ -93,10 +93,13 @@ where
             let ScheduledEventPayload::BackendInput(input) = &event.payload else {
                 continue;
             };
+            let backend_time = self
+                .loop_impl
+                .backend_effect_time(&input.node, event.key.virtual_time())?;
             self.backend.apply_to_node(
                 &input.node,
                 &BackendEffect::DeliverInput(input.clone()),
-                event.key.virtual_time(),
+                backend_time,
             )?;
         }
         let network_outputs = self.backend.drain_network_outputs()?;

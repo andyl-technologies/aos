@@ -476,6 +476,14 @@ impl QemuHostIoRuntime for ImmediateRuntime {
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
         Ok(QemuAsyncWaitOutcome::Completed)
     }
+
+    fn repoll_child(
+        &mut self,
+        _wait: QemuAsyncWait,
+        _timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Ok(QemuAsyncWaitOutcome::Completed)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

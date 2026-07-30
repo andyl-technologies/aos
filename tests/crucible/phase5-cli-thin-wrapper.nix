@@ -271,8 +271,20 @@
         needle = "SessionActor";
       }
       {
-        label = "CLI-owned temporal graph";
-        needle = "TemporalGraph";
+        label = "CLI-owned temporal graph constructor";
+        needle = "TemporalGraph::";
+      }
+      {
+        label = "CLI-owned temporal graph grouped import";
+        needle = "TemporalGraph,";
+      }
+      {
+        label = "CLI-owned temporal graph terminal import";
+        needle = "TemporalGraph;";
+      }
+      {
+        label = "CLI-owned temporal graph braced import";
+        needle = "TemporalGraph}";
       }
       {
         label = "CLI direct scheduler command application";

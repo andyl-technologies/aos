@@ -43,6 +43,7 @@ pub(super) struct ResumeWorkflowReport {
 }
 
 pub(super) type CliModelConfiguration = crucible::Configuration;
+#[cfg(any(test, feature = "test-double"))]
 pub(super) type CliModelScenarioDef = crucible::ScenarioDef;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,6 +184,7 @@ pub(super) fn run_local_double_save_workflow(
     run_local_save_recording_workflow(thin_plan, backend_plan, ergonomics_plan, save_plan)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 #[derive(Clone, Debug)]
 pub(super) struct SaveRecordingSources {
     pub(super) assertion_evaluator: crucible::HostAssertionEvaluator,
@@ -192,12 +194,14 @@ pub(super) struct SaveRecordingSources {
     pub(super) emitted_guest_markers: Vec<SaveGuestMarkerSource>,
 }
 
+#[cfg(any(test, feature = "test-double"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct SaveGuestMarkerSource {
     pub(super) node: crucible::NodeId,
     pub(super) marker: crucible::MarkerId,
 }
 
+#[cfg(any(test, feature = "test-double"))]
 impl SaveRecordingSources {
     pub(super) fn from_scenario_form(scenario_form: &crucible::ScenarioDefForm) -> Self {
         Self {
@@ -211,6 +215,7 @@ impl SaveRecordingSources {
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn save_guest_marker_sources(
     scenario_form: &crucible::ScenarioDefForm,
 ) -> Vec<SaveGuestMarkerSource> {
@@ -233,6 +238,7 @@ pub(super) fn save_guest_marker_sources(
         .collect()
 }
 
+#[cfg(any(test, feature = "test-double"))]
 #[derive(Clone, Debug)]
 pub(super) struct SaveRecordingLifecycleLoop {
     pub(super) sources: SaveRecordingSources,
@@ -241,6 +247,7 @@ pub(super) struct SaveRecordingLifecycleLoop {
     pub(super) retained_event_log: Vec<crucible::SchedulerEventLogEntry>,
 }
 
+#[cfg(any(test, feature = "test-double"))]
 impl SaveRecordingLifecycleLoop {
     pub(super) fn new(sources: SaveRecordingSources) -> Self {
         Self {
@@ -344,6 +351,7 @@ impl SaveRecordingLifecycleLoop {
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
     impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
         let previous = request.configuration.clone();
@@ -408,6 +416,7 @@ impl crucible::QuantumLoop for SaveRecordingLifecycleLoop {
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ResumeRecordingLifecycleLoop {
     pub(super) frontier: u64,
@@ -418,6 +427,7 @@ pub(super) struct ResumeRecordingLifecycleLoop {
     pub(super) post_fork_draws: u64,
 }
 
+#[cfg(any(test, feature = "test-double"))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) enum ResumeRecordingFixture {
     #[default]
@@ -427,6 +437,7 @@ pub(super) enum ResumeRecordingFixture {
     },
 }
 
+#[cfg(any(test, feature = "test-double"))]
 impl ResumeRecordingLifecycleLoop {
     pub(super) fn new(frontier: VirtualTime) -> Self {
         Self {
@@ -472,6 +483,7 @@ impl ResumeRecordingLifecycleLoop {
     }
 }
 
+#[cfg(any(test, feature = "test-double"))]
 impl crucible::QuantumLoop for ResumeRecordingLifecycleLoop {
     impl_quantum_drive_method!(drive_quantum, QReq, QOut, QErr, |loop_state, request| {
         loop_state.frontier = loop_state.frontier.saturating_add(1);
@@ -603,6 +615,7 @@ pub(super) fn run_local_qemu_save_workflow(
     Ok(outcome)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_save_recording_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -687,6 +700,7 @@ pub(super) fn run_local_qemu_resume_workflow(
     Ok(outcome)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_resume_workflow_report_with_driver(
     resume_plan: &ResumeInvocationPlan,
     interactive_driver: ResumeInteractiveCommandDriver<'_>,

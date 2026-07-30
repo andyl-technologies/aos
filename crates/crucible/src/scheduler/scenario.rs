@@ -54,6 +54,11 @@ pub struct SchedulerLivenessScenario {
     /// reaches the horizon selected from its exact local event and network
     /// lookahead.
     pub nodes: Vec<SchedulerScenarioNode>,
+    /// Baked ready-point counters that differ from the default zero boundary.
+    ///
+    /// Production backends use this runtime-only projection when boot-barrier
+    /// priming retires instructions before the scheduler admits a VM.
+    pub(super) ready_point_counters: BTreeMap<SchedulerNodeId, NodeCounter>,
     /// Boundary-applied topology changes waiting for the scheduler.
     pub topology_changes: Vec<SchedulerTopologyChange>,
     /// Optional deterministic RR subdivision policies keyed by scheduler node.
@@ -104,6 +109,7 @@ impl SchedulerLivenessScenario {
             pending_events,
             event_sequences: EventSequenceState::empty(),
             trigger_static_topology: None,
+            ready_point_counters: BTreeMap::new(),
             bound_scenario_def: None,
         };
         scenario.refresh_configuration();
@@ -150,6 +156,17 @@ impl SchedulerLivenessScenario {
             SchedulerLookaheadGraph::from_world_edges(&topology.lookahead_graph);
         recompute_scenario_node_lookahead(&mut self.nodes, &self.effective_topology);
         self.trigger_static_topology = Some(topology);
+        self.refresh_configuration();
+        self
+    }
+
+    /// Records the baked counter restored by ready-point node restarts.
+    ///
+    /// Scenarios default to counter zero. Live backends call this after
+    /// admitting a VM at a nonzero boot-barrier boundary.
+    #[must_use]
+    pub fn with_ready_point_counter(mut self, node: SchedulerNodeId, counter: NodeCounter) -> Self {
+        self.ready_point_counters.insert(node, counter);
         self.refresh_configuration();
         self
     }
@@ -266,6 +283,17 @@ pub(super) fn scheduler_liveness_scenario_material(scenario: &SchedulerLivenessS
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
     lines.push(format!("nodes={}", nodes.len()));
     lines.extend(nodes.iter().map(scheduler_scenario_node_material));
+    lines.push(format!(
+        "ready_point_counters={}",
+        scenario.ready_point_counters.len()
+    ));
+    for (node, counter) in &scenario.ready_point_counters {
+        lines.push(format!(
+            "ready_point_node:\n{}\nready_point_counter_ticks={}",
+            scheduler_node_material(node),
+            counter.ticks,
+        ));
+    }
 
     let mut topology_changes = scenario.topology_changes.clone();
     topology_changes.sort_by(topology_change_order);

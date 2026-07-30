@@ -233,7 +233,34 @@ pub(super) fn vm_launch_config(
 
 pub(super) fn live_node_plugin_config(
     config: &QemuLiveNodeStepGateConfig,
-) -> QemuLaunchPluginConfig {
+    profile: &crate::DeterministicLaunchProfile,
+    vm: &QemuVmLaunchConfig,
+    run_directory: &Path,
+) -> Result<QemuLaunchPluginConfig, QemuLiveNodeStepGateError> {
+    let plugin_base = live_node_plugin_base(config);
+    let mut plugin = if config.whitebox == QemuLaunchPluginSwitch::On {
+        let probe_command = profile
+            .qemu_launch_command(
+                vm.clone(),
+                path_text(&config.qemu_executable),
+                plugin_base.clone(),
+            )
+            .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
+        let validation = crate::probe_x86_whitebox_setup(&probe_command, run_directory)
+            .map_err(|source| QemuLiveNodeStepGateError::WhiteboxSetup { source })?;
+        plugin_base
+            .with_whitebox(config.whitebox)
+            .with_whitebox_setup(validation)
+    } else {
+        plugin_base.with_whitebox(config.whitebox)
+    };
+    if let Some(app_random) = &config.app_random {
+        plugin = plugin.with_app_random(app_random.clone());
+    }
+    Ok(plugin)
+}
+
+fn live_node_plugin_base(config: &QemuLiveNodeStepGateConfig) -> QemuLaunchPluginConfig {
     QemuLaunchPluginConfig::new(path_text(&config.plugin), GATE_SLOT).with_coverage(config.coverage)
 }
 
@@ -399,7 +426,7 @@ mod tests {
         .with_coverage(QemuLaunchPluginSwitch::On);
 
         assert_eq!(
-            live_node_plugin_config(&config).coverage(),
+            live_node_plugin_base(&config).coverage(),
             QemuLaunchPluginSwitch::On
         );
         assert_eq!(

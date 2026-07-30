@@ -2,6 +2,7 @@
 
 use super::*;
 
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn run_local_double_search_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -21,6 +22,7 @@ pub(crate) fn run_local_double_search_workflow(
     )
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn run_local_double_search_workflow_with_graph(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -34,6 +36,7 @@ pub(crate) fn run_local_double_search_workflow_with_graph(
         .map(|(outcome, _)| outcome)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn run_search_workflow_with_graph(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -129,6 +132,7 @@ pub(crate) fn run_search_workflow_with_graph(
     )
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn merge_search_failure_oracles<I>(
     reached: I,
     schedule_oracle: &SearchFailureOracle,
@@ -149,8 +153,8 @@ where
     merged
 }
 
-// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[cfg(test)]
+// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_local_double_search_workflow_with_graph_and_failure_oracle(
     thin_plan: &CliThinWrapperPlan,
@@ -175,6 +179,7 @@ pub(crate) fn run_local_double_search_workflow_with_graph_and_failure_oracle(
     .map(|(outcome, _)| outcome)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 // crucible-lint: allow rust-allow -- local exception is documented at the allow site.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_search_workflow_with_graph_and_failure_oracle(
@@ -259,6 +264,7 @@ pub(crate) fn run_search_workflow_with_graph_and_failure_oracle(
     Ok((outcome, run))
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(crate) fn search_materialization_budget(max_states: u64) -> usize {
     match usize::try_from(max_states) {
         Ok(max_states) => max_states,

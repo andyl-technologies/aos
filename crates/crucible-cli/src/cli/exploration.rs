@@ -58,6 +58,7 @@ pub(super) fn fuzz_dispatch_route(
     None
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_fuzz_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -74,6 +75,7 @@ pub(super) fn run_local_double_fuzz_workflow(
     )
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn run_local_double_fuzz_workflow_with_family(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,

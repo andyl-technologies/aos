@@ -5,6 +5,8 @@
 //! by drawing from [`DecisionRng`] forks and appending the resulting
 //! [`Decision`] values in scheduler order.
 
+mod reseed;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -36,7 +38,7 @@ impl DecisionRecorder {
     pub fn new(configuration: Configuration) -> Self {
         let rng = configuration.def.seed().decision_rng();
         let streams = hydrate_streams(&rng, configuration.schedule.decisions());
-        let app_random_draws = count_app_random_draws(configuration.schedule.decisions());
+        let app_random_draws = reseed::count_app_random_draws(configuration.schedule.decisions());
         Self {
             configuration,
             rng,
@@ -370,13 +372,6 @@ fn validate_app_random_width(width: u8) -> Result<(), DecisionRecordError> {
 
 fn value_fits_width(value: u64, width: u8) -> bool {
     width == 64 || value < (1_u64 << width)
-}
-
-fn count_app_random_draws(decisions: &[Decision]) -> u64 {
-    decisions
-        .iter()
-        .filter(|decision| matches!(decision, Decision::AppRandom(_)))
-        .count() as u64
 }
 
 fn hydrate_streams(

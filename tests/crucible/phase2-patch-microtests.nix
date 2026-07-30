@@ -307,6 +307,7 @@
     }
     {
       patch = "0046-crucible-translation-prefetch-helper.patch";
+      gateField = "patch_microtest_gate";
       check = import ./phase7-translation-prefetch-neutrality.nix {
         inherit pkgs lib;
       };
@@ -362,7 +363,7 @@
       result="${test.check}/result"
       cp "$result" "$out/per-patch/${test.patch}.result"
       grep -q '^PASS$' "$result"
-      grep -q '^gate=gate:patch-microtests$' "$result"
+      grep -q '^${test.gateField or "gate"}=gate:patch-microtests$' "$result"
       grep -q '^patch=${test.patch}$' "$result"
       grep -q '^patched_fixture_exercised=true$' "$result"
       grep -q '^stock_negative_control=true$' "$result"

@@ -34,15 +34,26 @@ impl SchedulerLivenessScenario {
                 exact_local_event: ExactLocalEvent::NoArmedTimer,
             })
             .collect();
-        Self::from_canonical_material(
+        let mut scenario = Self::from_canonical_material(
             material,
             shift,
             quantum_budget,
             time_limit,
             nodes,
             Vec::new(),
-        )
-        .with_world(world)
+        );
+        for node in world.vm_nodes() {
+            scenario = scenario.with_ready_point_counter(
+                SchedulerNodeId {
+                    node: node.id.clone(),
+                    kind: SchedulingNodeKind::Vm,
+                },
+                NodeCounter {
+                    ticks: initial_ticks,
+                },
+            );
+        }
+        scenario.with_world(world)
     }
 
     /// Binds this runtime scheduler scenario to an existing scenario identity.

@@ -20,7 +20,10 @@
   client = builtins.readFile ../../crates/crucible-api/src/client.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
   reproductionTest = builtins.readFile ../../crates/crucible-api/tests/gate_reproduction_context.rs;
-  controlClientTest = builtins.readFile ../../crates/crucible-api/tests/gate_control_client.rs;
+  controlClientTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -168,7 +171,7 @@
         needle = "record.observational_order";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client.rs" controlClientTest [
+    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC GetReproduction coverage";
         needle = "RPC GetReproduction should decode";

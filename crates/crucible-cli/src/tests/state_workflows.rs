@@ -2494,6 +2494,8 @@ pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration(
         qemu.clone(),
         String::from("--plugin"),
         plugin.clone(),
+        String::from("--seed"),
+        String::from("7"),
         String::from("fork"),
         handle_path.display().to_string(),
         String::from("--until"),
@@ -2506,7 +2508,7 @@ pub(super) fn cli_fork_workflow_routes_local_qemu_into_live_guest_configuration(
     let Commands::Fork(args) = &cli.command else {
         panic!("expected fork command");
     };
-    let fork_plan = plan_fork_invocation(args, None, &cli.artifact_dir, &store_root)?;
+    let fork_plan = plan_fork_invocation(args, Some(7), &cli.artifact_dir, &store_root)?;
     let backend_plan = plan_backend_selection(&cli)?.expect("fork should route to backend");
     assert!(matches!(
         backend_plan.resolved_backend,

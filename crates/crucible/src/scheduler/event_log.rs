@@ -47,6 +47,25 @@ pub trait QuantumLoop {
         Ok(outcome.frontier)
     }
 
+    /// Converts a scheduler event time into one node's backend counter.
+    ///
+    /// Pure and legacy loops use the shared virtual time directly. Schedulers
+    /// that admit a VM at a nonzero ready-point counter override this conversion
+    /// so backend effects retain the node's physical counter coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when `at` cannot be represented in the target
+    /// node's backend counter coordinate.
+    fn backend_effect_time(
+        &self,
+        node: &NodeId,
+        at: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let _ = node;
+        Ok(at)
+    }
+
     /// Samples a deterministic execution fingerprint for `node`.
     ///
     /// Backends that do not own concrete VM state use the default unsupported

@@ -79,6 +79,7 @@
         relative:
           relative
           != "crates/crucible/src/decision.rs"
+          && !(lib.hasPrefix "crates/crucible/src/decision/" relative)
           && relative != "crates/crucible/src/model.rs"
           && !(lib.hasPrefix "crates/crucible/src/model/" relative)
       )
@@ -304,7 +305,7 @@
         needle = "HashMap";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src outside decision.rs" engineCodeOutsideDecision [
+    ++ forbiddenFor "crates/crucible/src outside decision module" engineCodeOutsideDecision [
       {
         label = "direct decision RNG import outside recorder";
         needle = "use crucible_sim::DecisionRng";

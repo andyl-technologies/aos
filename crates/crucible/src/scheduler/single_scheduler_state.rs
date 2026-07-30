@@ -230,11 +230,26 @@ impl SingleScheduler {
     ) -> Result<Self, SchedulerError> {
         let timeline = SharedTimeline::new(scenario.shift)?;
         let configuration = scenario.canonical_configuration();
+        let ready_point_counters = scenario.ready_point_counters;
         let mut nodes = scenario
             .nodes
             .into_iter()
             .map(RuntimeSchedulerNode::from)
             .collect::<Vec<_>>();
+        for (node, counter) in ready_point_counters {
+            let runtime = nodes
+                .iter_mut()
+                .find(|runtime| runtime.id == node)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "ready-point counter references unknown scheduler node {}:{:?}",
+                        node.node.name, node.kind
+                    ),
+                })?;
+            runtime.ready_counter = counter;
+            runtime.timing_faults.anchor_counter = counter;
+            runtime.timing_faults.anchor_time = SimInstant::EPOCH;
+        }
         nodes.sort_by(|left, right| left.id.cmp(&right.id));
         let mut run_subdivision_policies = scenario.run_subdivision_policies;
         run_subdivision_policies.sort();
@@ -256,11 +271,13 @@ impl SingleScheduler {
             .as_ref()
             .map(|topology| topology.scheduling_nodes.iter().cloned().collect())
             .unwrap_or_default();
+        let decision_seed = configuration.def.seed();
         let mut scheduler = Self {
             configuration,
             timeline,
             quantum_budget: scenario.quantum_budget,
             time_limit: scenario.time_limit,
+            branch_frontier_cap: None,
             rendezvous: scenario.rendezvous,
             effective_topology: scenario.effective_topology,
             nodes,
@@ -281,6 +298,7 @@ impl SingleScheduler {
             #[cfg(test)]
             broken_device_delivery_stamp: false,
             control_inbox: Vec::new(),
+            decision_seed,
             decision_rng_cursor: DecisionRngState::empty(),
             branch_fault_choices: Vec::new(),
             branch_network_choices: Vec::new(),
@@ -421,12 +439,7 @@ impl SingleScheduler {
             .filter(|runtime| runtime.target() == &node.node)
         {
             if let Some(delivery_icount) = runtime.link.next_exact_local_event() {
-                let due = self.vm_delivery_time_for_icount(
-                    &node.node,
-                    Icount {
-                        retired: delivery_icount,
-                    },
-                )?;
+                let due = self.network_time_for_icount(delivery_icount)?;
                 if due > instant {
                     earliest = Some(earliest.map_or(due, |current| current.min(due)));
                 }
@@ -498,12 +511,7 @@ impl SingleScheduler {
             let Some(delivery_icount) = runtime.link.next_exact_local_event() else {
                 continue;
             };
-            let instant = self.vm_delivery_time_for_icount(
-                target,
-                Icount {
-                    retired: delivery_icount,
-                },
-            )?;
+            let instant = self.network_time_for_icount(delivery_icount)?;
             if let Some((_, current)) = earliest_by_target
                 .iter_mut()
                 .find(|(candidate, _)| candidate == target)
@@ -629,16 +637,21 @@ impl SingleScheduler {
             });
         }
 
+        let consumer_time = self.node_current_time(&self.nodes[self.vm_node_index(&node.node)?])?;
+        let network_consumer_icount = self.network_icount_for_time_ceil(consumer_time)?;
         let mut network_due = Vec::new();
         for runtime in self
             .world_network_links
             .values_mut()
             .filter(|runtime| runtime.target() == &node.node)
         {
-            let deliveries = runtime.link.advance_to(consumer_icount).map_err(|source| {
+            let deliveries = runtime
+                .link
+                .advance_to(network_consumer_icount)
+                .map_err(|source| {
                 SchedulerError::BoundaryViolation {
                     message: format!(
-                        "World network link {:?} ({:?}) could not advance to consumer icount {consumer_icount}: {source}",
+                        "World network link {:?} ({:?}) could not advance to logical consumer icount {network_consumer_icount}: {source}",
                         runtime.canonical_id.name, runtime.direction
                     ),
                 }
@@ -671,12 +684,7 @@ impl SingleScheduler {
                 consumer.clone(),
                 sequence.saturating_add(1),
             );
-            let instant = self.vm_delivery_time_for_icount(
-                &target,
-                Icount {
-                    retired: delivery.delivery_icount(),
-                },
-            )?;
+            let instant = self.network_time_for_icount(delivery.delivery_icount())?;
             let key = ScheduledEventKey::from_parts(
                 VirtualTime {
                     ticks: instant.nanos,
@@ -721,14 +729,7 @@ impl SingleScheduler {
                     .values()
                     .filter(|runtime| runtime.target() == &node.node)
                     .filter_map(|runtime| runtime.link.next_exact_local_event())
-                    .map(|delivery_icount| {
-                        self.vm_delivery_time_for_icount(
-                            &node.node,
-                            Icount {
-                                retired: delivery_icount,
-                            },
-                        )
-                    })
+                    .map(|delivery_icount| self.network_time_for_icount(delivery_icount))
                     .collect::<Result<Vec<_>, _>>()?,
             )
             .min();

@@ -76,9 +76,14 @@ impl ProductionVmLifecycleLoop {
             let observed = self.inner.backend().node_now(&restart.node)?.ticks;
             if self.prelaunched_restarts.get(&restart.node)
                 == Some(&(RestartPolicy::FromReadyPoint, restart.counter.ticks))
-                && observed >= restart.counter.ticks
             {
                 self.prelaunched_restarts.remove(&restart.node);
+                self.inner
+                    .loop_impl_mut()
+                    .rebase_restarted_backend_counter(
+                        &restart.node,
+                        crucible::NodeCounter { ticks: observed },
+                    )?;
                 return Ok(());
             }
             if observed == restart.counter.ticks {
@@ -91,7 +96,11 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
-        self.launch_ready_point(&restart.node, restart.counter.ticks)
+        let observed = self.launch_ready_point(&restart.node, restart.counter.ticks)?;
+        self.inner.loop_impl_mut().rebase_restarted_backend_counter(
+            &restart.node,
+            crucible::NodeCounter { ticks: observed },
+        )
     }
 
     pub(super) fn relaunch_last_checkpoint(
@@ -102,9 +111,14 @@ impl ProductionVmLifecycleLoop {
             let observed = self.inner.backend().node_now(&restart.node)?.ticks;
             if self.prelaunched_restarts.get(&restart.node)
                 == Some(&(RestartPolicy::FromLastCheckpoint, restart.counter.ticks))
-                && observed >= restart.counter.ticks
             {
                 self.prelaunched_restarts.remove(&restart.node);
+                self.inner
+                    .loop_impl_mut()
+                    .rebase_restarted_backend_counter(
+                        &restart.node,
+                        crucible::NodeCounter { ticks: observed },
+                    )?;
                 return Ok(());
             }
             if observed == restart.counter.ticks {
@@ -117,14 +131,18 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
-        self.relaunch_last_checkpoint_node(&restart.node, restart.counter.ticks)
+        let observed = self.relaunch_last_checkpoint_node(&restart.node, restart.counter.ticks)?;
+        self.inner.loop_impl_mut().rebase_restarted_backend_counter(
+            &restart.node,
+            crucible::NodeCounter { ticks: observed },
+        )
     }
 
     pub(super) fn relaunch_last_checkpoint_node(
         &mut self,
         node: &NodeId,
         expected_counter: u64,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<u64, SchedulerError> {
         let target = self.checkpoint_targets.get(node).cloned().ok_or_else(|| {
             SchedulerError::BoundaryViolation {
                 message: format!(
@@ -150,14 +168,18 @@ impl ProductionVmLifecycleLoop {
                         node.name
                     ),
                 })?;
+        replay
+            .inner
+            .loop_impl_mut()
+            .set_replay_time_limit(target.scheduler_time)?;
         let mut configuration = Configuration::genesis(self.scenario.clone());
         let controls = self.recorded_controls[..target.control_count].to_vec();
         let mut control_index = 0_usize;
         let max_quanta =
             replay_config.maximum_scheduler_quanta(self.source.world().vm_nodes().len());
         for _ in 0..=max_quanta {
-            let observed = replay.inner.backend().node_now(node)?.ticks;
-            if configuration == target.configuration && observed == target.counter {
+            let observed_time = replay.inner.loop_impl().scheduler_time_for_node(node)?;
+            if configuration == target.configuration && observed_time == target.scheduler_time {
                 break;
             }
             if configuration.schedule.len() > target.configuration.schedule.len() {
@@ -202,12 +224,14 @@ impl ProductionVmLifecycleLoop {
                 .get(control_index)
                 .filter(|recorded| {
                     recorded.configuration == configuration
-                        && recorded.node_counters.iter().all(|(node, expected)| {
-                            replay
-                                .inner
-                                .backend()
-                                .node_now(node)
-                                .is_ok_and(|at| at.ticks == *expected)
+                        && recorded.node_times.iter().all(|(node, expected)| {
+                            replay.inner.backend().node_now(node).is_ok_and(|_counter| {
+                                replay
+                                    .inner
+                                    .loop_impl()
+                                    .scheduler_time_for_node(node)
+                                    .is_ok_and(|at| at == *expected)
+                            })
                         })
                 })
                 .map(|recorded| recorded.control.clone())
@@ -215,35 +239,30 @@ impl ProductionVmLifecycleLoop {
             if !control.is_empty() {
                 control_index = control_index.saturating_add(1);
             }
-            configuration = replay
-                .drive_quantum(QuantumRequest {
+            configuration = crucible_session::drive_engine_quantum(
+                &mut replay,
+                QuantumRequest {
                     configuration,
                     control,
-                })?
-                .configuration;
+                },
+            )?
+            .configuration;
         }
-        let observed = replay.inner.backend().node_now(node)?.ticks;
-        if configuration != target.configuration || observed != target.counter {
+        let replay_time = replay.inner.loop_impl().scheduler_time_for_node(node)?;
+        if configuration != target.configuration || replay_time != target.scheduler_time {
             let _ = replay.shutdown();
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
-                    "QEMU thin replay did not reach checkpoint configuration {} at counter {} within {max_quanta} quanta",
+                    "QEMU thin replay did not reach checkpoint configuration {} at scheduler time {} within {max_quanta} quanta: reached configuration {} at scheduler time {}",
                     target.configuration.id().to_hex(),
-                    target.counter
+                    target.scheduler_time.ticks,
+                    configuration.id().to_hex(),
+                    replay_time.ticks,
                 ),
             });
         }
         let (mut backend, run_directory) = replay.take_replayed_node(node)?;
         let observed = SimulationBackend::now(&backend).ticks;
-        if observed != expected_counter {
-            let _ = SimulationBackend::shutdown(&mut backend);
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "QEMU thin-replayed node `{}` reached {observed}, expected checkpoint counter {}",
-                    node.name, expected_counter
-                ),
-            });
-        }
         if self.inner.backend().contains(node) {
             let _ = SimulationBackend::shutdown(&mut backend);
             return Err(SchedulerError::BoundaryViolation {
@@ -266,7 +285,7 @@ impl ProductionVmLifecycleLoop {
             });
         }
         self.retained_replay_directories.push(run_directory);
-        Ok(())
+        Ok(observed)
     }
 
     pub(super) fn take_replayed_node(
@@ -288,8 +307,8 @@ impl ProductionVmLifecycleLoop {
     pub(super) fn launch_ready_point(
         &mut self,
         node: &NodeId,
-        expected_counter: u64,
-    ) -> Result<(), SchedulerError> {
+        _expected_counter: u64,
+    ) -> Result<u64, SchedulerError> {
         if self.inner.backend().contains(node) {
             return Err(SchedulerError::BoundaryViolation {
                 message: format!(
@@ -306,7 +325,7 @@ impl ProductionVmLifecycleLoop {
                 ),
             }
         })?;
-        let generation = self
+        let generation = *self
             .restart_generations
             .entry(node.clone())
             .and_modify(|generation| *generation = generation.saturating_add(1))
@@ -336,8 +355,9 @@ impl ProductionVmLifecycleLoop {
                     node.name
                 ),
             })?
+            .with_app_random(self.app_random_continuation_config(node)?)
             .with_run_directory(&node_directory);
-        let mut backend = launch_production_live_node(
+        let backend = launch_production_live_node(
             &launch,
             &node_directory,
             &node.name,
@@ -348,15 +368,6 @@ impl ProductionVmLifecycleLoop {
             message: format!("relaunch QEMU node `{}`: {error}", node.name),
         })?;
         let observed = SimulationBackend::now(&backend).ticks;
-        if observed != expected_counter {
-            let _ = SimulationBackend::shutdown(&mut backend);
-            return Err(SchedulerError::BoundaryViolation {
-                message: format!(
-                    "restarted QEMU node `{}` primed at {observed}, expected ready-point counter {}",
-                    node.name, expected_counter
-                ),
-            });
-        }
         if let Some(previous) = self.inner.backend_mut().insert(node.clone(), backend) {
             if let Some(mut installed) = self.inner.backend_mut().take(node) {
                 let _ = SimulationBackend::shutdown(&mut installed);
@@ -369,7 +380,61 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
-        Ok(())
+        Ok(observed)
+    }
+
+    fn app_random_continuation_config(
+        &self,
+        node: &NodeId,
+    ) -> Result<ProductionAppRandomConfig, SchedulerError> {
+        let scheduler = self.inner.loop_impl();
+        let streams = scheduler
+            .configuration()
+            .schedule
+            .decisions()
+            .iter()
+            .filter_map(|decision| match decision {
+                Decision::AppRandom(random) if random.node == *node => Some(random.stream.clone()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let positions = scheduler
+            .future_decision_rng_state()
+            .positions
+            .iter()
+            .filter(|(stream, _position)| streams.contains(*stream))
+            .map(|(stream, position)| (stream.name.clone(), position.draws))
+            .collect::<BTreeMap<_, _>>();
+        let draw_offset = positions.values().try_fold(0_u64, |sum, draws| {
+            sum.checked_add(*draws)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "app-random continuation cursor overflow for `{}`",
+                        node.name
+                    ),
+                })
+        })?;
+        let mut config = ProductionAppRandomConfig::from_seed(
+            scheduler.future_decision_seed(),
+            self.scenario.app_random_draw_cap(),
+            node.name.clone(),
+        )
+        .with_continuation(draw_offset, positions);
+        if let Some(branch) = &self.branch
+            && let Some(seed) = branch.seed
+        {
+            let prefix_draws = branch
+                .base
+                .schedule
+                .decisions()
+                .iter()
+                .filter(|decision| {
+                    matches!(decision, Decision::AppRandom(random) if random.node == *node)
+                })
+                .count() as u64;
+            config = config.with_branch_seed(seed, prefix_draws);
+        }
+        Ok(config)
     }
 
     pub(super) fn settle_trigger_graph(

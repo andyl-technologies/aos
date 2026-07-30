@@ -648,6 +648,7 @@ pub(super) fn mock_failure_reproduction_artifact_bytes(
     mock_failure_reproduction_artifact_bytes_for_backend(seed, resolved_backend)
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn mock_failure_reproduction_artifact_bytes_for_backend(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,

@@ -38,6 +38,9 @@ use super::block_io_servicer::{BlockIoDiagnostics, QemuLiveBlockIoServicer};
 use crate::quantum::idle_state_from_snapshot;
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{QemuAsyncDriverRuntimeError, QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime};
+use deadline::AdvanceWaitDeadline;
+
+mod deadline;
 
 /// Default host poll interval while awaiting a plugin-published quantum boundary.
 ///
@@ -59,7 +62,7 @@ pub struct QemuLiveHostIoRuntime {
     wake: File,
     vm_slot: u32,
     poll_interval: Duration,
-    last_completed_publish_gen: Option<u32>,
+    advance_wait_deadline: AdvanceWaitDeadline,
     block: Option<BlockIoServicing>,
 }
 
@@ -129,7 +132,7 @@ impl QemuLiveHostIoRuntime {
             wake,
             vm_slot,
             poll_interval,
-            last_completed_publish_gen: None,
+            advance_wait_deadline: AdvanceWaitDeadline::default(),
             block: None,
         })
     }
@@ -170,8 +173,31 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        if !self.advance_wait_deadline.start(timeout) {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "start advance completion deadline",
+                "timeout deadline overflow",
+            ));
+        }
         self.signal_wake()?;
-        let attempts = bounded_poll_attempts(timeout, self.poll_interval);
+        self.repoll_advance_completion(timeout)
+    }
+
+    /// Polls for a quantum boundary after the one-shot plugin wake was sent.
+    fn repoll_advance_completion(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::new(
+                "repoll advance completion",
+                "initial await did not establish a deadline",
+            )
+        })?;
+        if remaining.is_zero() {
+            return Ok(QemuAsyncWaitOutcome::TimedOut);
+        }
+        let attempts = bounded_poll_attempts(remaining, self.poll_interval);
         for attempt in 0..attempts {
             let snapshot = self
                 .region
@@ -184,21 +210,12 @@ impl QemuLiveHostIoRuntime {
             // lets the advance make progress.
             self.service_block_io(&snapshot)?;
             let idle = idle_state_from_snapshot(snapshot);
-            let report_is_new = self
-                .last_completed_publish_gen
-                .is_none_or(|generation| generation != snapshot.publish_gen);
             match classify_quantum_boundary(&idle, snapshot.max_advance_icount) {
-                QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. }
-                    if report_is_new =>
-                {
-                    self.last_completed_publish_gen = Some(snapshot.publish_gen);
+                QuantumBoundary::Reached { .. } | QuantumBoundary::Paused { .. } => {
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
-                QuantumBoundary::Reached { .. }
-                | QuantumBoundary::Paused { .. }
-                | QuantumBoundary::Pending => {
-                    if snapshot.status == STATUS_DONE && report_is_new {
-                        self.last_completed_publish_gen = Some(snapshot.publish_gen);
+                QuantumBoundary::Pending => {
+                    if snapshot.status == STATUS_DONE {
                         return Ok(QemuAsyncWaitOutcome::Completed);
                     }
                 }
@@ -252,6 +269,19 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             QemuAsyncWait::AdvanceCompletion => self.poll_advance_completion(timeout),
             QemuAsyncWait::Handshake | QemuAsyncWait::QmpCommand | QemuAsyncWait::ProcessEvent => {
                 Ok(QemuAsyncWaitOutcome::Completed)
+            }
+        }
+    }
+
+    fn repoll_child(
+        &mut self,
+        wait: QemuAsyncWait,
+        timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        match wait {
+            QemuAsyncWait::AdvanceCompletion => self.repoll_advance_completion(timeout),
+            QemuAsyncWait::Handshake | QemuAsyncWait::QmpCommand | QemuAsyncWait::ProcessEvent => {
+                self.await_child(wait, timeout)
             }
         }
     }

@@ -142,21 +142,47 @@ struct LiveAppRandomDecisionSource {
     node_name: String,
     draw_cap: u64,
     draws: u64,
+    branch_seed: Option<u64>,
+    branch_after_draws: Option<u64>,
+    branch_applied: bool,
 }
 
 impl LiveAppRandomDecisionSource {
     fn new(config: &PluginAppRandomConfig) -> Self {
+        let streams = config
+            .stream_positions()
+            .iter()
+            .map(|(name, draws)| {
+                let mut stream = PluginDecisionStream::new(config.root_seed(), name);
+                stream.advance_by(*draws);
+                (name.clone(), stream)
+            })
+            .collect();
         Self {
             root_seed: config.root_seed(),
-            streams: BTreeMap::new(),
+            streams,
             node_name: config.node_name().to_owned(),
             draw_cap: config.draw_cap(),
-            draws: 0,
+            draws: config.draw_offset(),
+            branch_seed: config.branch_seed(),
+            branch_after_draws: config.branch_after_draws(),
+            branch_applied: false,
         }
     }
 
     fn node_name(&self) -> &str {
         &self.node_name
+    }
+
+    fn apply_branch_reseed_if_due(&mut self) {
+        if self.branch_applied || self.branch_after_draws != Some(self.draws) {
+            return;
+        }
+        if let Some(seed) = self.branch_seed {
+            self.root_seed = seed;
+            self.streams.clear();
+            self.branch_applied = true;
+        }
     }
 }
 
@@ -165,6 +191,7 @@ impl AppRandomDecisionSource for LiveAppRandomDecisionSource {
         &mut self,
         request: &crate::AppRandomDoorbellRequest,
     ) -> Result<AppRandomDecisionRecord, AppRandomDecisionError> {
+        self.apply_branch_reseed_if_due();
         if self.draws >= self.draw_cap {
             return Err(AppRandomDecisionError::new(format!(
                 "scenario app-random draw cap {} exceeded by draw {}",
@@ -215,6 +242,10 @@ impl PluginDecisionStream {
         word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
         word = (word ^ (word >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
         word ^ (word >> 31)
+    }
+
+    fn advance_by(&mut self, draws: u64) {
+        self.state = self.state.wrapping_add(Self::GAMMA.wrapping_mul(draws));
     }
 
     fn stable_stream_hash(stream_name: &str) -> u64 {
@@ -281,5 +312,60 @@ impl PluginStableHasher {
         word ^= word >> 27;
         word = word.wrapping_mul(0x94d0_49bb_1331_11eb);
         word ^ (word >> 31)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PluginArgs;
+
+    #[test]
+    fn plugin_stream_matches_the_authoritative_engine_stream() {
+        let scenario_seed = crucible::Seed::from_u64(1_048_598);
+        let root_seed = scenario_seed.decision_rng_root_seed();
+        let stream_name = app_random_stream_name("node-a", "live-rng");
+        let mut plugin = PluginDecisionStream::new(root_seed, &stream_name);
+        let stream = crucible::RngStreamId::from_name(stream_name);
+        let mut engine = scenario_seed
+            .decision_rng()
+            .fork_in_domain(&stream.domain, &stream.name);
+
+        assert_eq!(plugin.next_u64(), engine.next_u64());
+        plugin.advance_by(17);
+        engine.advance_by(17);
+        assert_eq!(plugin.next_u64(), engine.next_u64());
+    }
+
+    #[test]
+    fn branch_reseed_restarts_every_plugin_stream_at_cursor_zero() {
+        let args = PluginArgs::parse(
+            "simfd=4,slot=1,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_branch_seed=29,app_random_branch_after=1",
+        )
+        .unwrap_or_else(|error| panic!("branch configuration should parse: {error}"));
+        let config = args
+            .app_random()
+            .unwrap_or_else(|| panic!("branch configuration should include app-random"));
+        let mut source = LiveAppRandomDecisionSource::new(config);
+        let stream_name = String::from("node-a/workload");
+        let prefix_stream = source
+            .streams
+            .entry(stream_name.clone())
+            .or_insert_with(|| PluginDecisionStream::new(source.root_seed, &stream_name));
+        let _ = prefix_stream.next_u64();
+        source.draws = 1;
+
+        let mut expected = PluginDecisionStream::new(29, &stream_name);
+        let expected_first_branch_draw = expected.next_u64();
+        source.apply_branch_reseed_if_due();
+        let actual_first_branch_draw = source
+            .streams
+            .entry(stream_name.clone())
+            .or_insert_with(|| PluginDecisionStream::new(source.root_seed, &stream_name))
+            .next_u64();
+
+        assert!(source.branch_applied);
+        assert_eq!(source.root_seed, 29);
+        assert_eq!(actual_first_branch_draw, expected_first_branch_draw);
     }
 }

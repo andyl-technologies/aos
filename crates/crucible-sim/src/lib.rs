@@ -157,6 +157,17 @@ impl DecisionStream {
         self.draws
     }
 
+    /// Advances the stream by `draws` values without materializing them.
+    ///
+    /// This is equivalent to calling [`Self::next_u64`] `draws` times and is
+    /// constant-time, including for checkpoint-supplied cursor positions.
+    pub fn advance_by(&mut self, draws: u64) {
+        self.state = self
+            .state
+            .wrapping_add(SPLITMIX64_GAMMA.wrapping_mul(draws));
+        self.draws = self.draws.wrapping_add(draws);
+    }
+
     /// Draws the next deterministic `u64`.
     pub fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(SPLITMIX64_GAMMA);
@@ -362,5 +373,19 @@ mod tests {
         assert_eq!(first.next_u64(), second.next_u64());
         assert_eq!(first.draws(), 2);
         assert_eq!(second.draws(), 2);
+    }
+
+    #[test]
+    fn decision_stream_constant_time_advance_matches_materialized_draws() {
+        let mut advanced = DecisionRng::new(0x0010_c001).fork("fault/node-a");
+        let mut materialized = advanced.clone();
+
+        advanced.advance_by(10_000);
+        for _ in 0..10_000 {
+            let _ = materialized.next_u64();
+        }
+
+        assert_eq!(advanced, materialized);
+        assert_eq!(advanced.next_u64(), materialized.next_u64());
     }
 }

@@ -229,9 +229,11 @@ fn execute_qemu_fuzz_iterations(
         let run_plan = qemu_fuzz_iteration_plan(iteration.sequence, form);
         // crucible-lint: allow host-nondeterminism-state -- genesis is reconstructed from canonical scenario material, not host observations.
         let branch_base = crucible::Configuration::genesis(iteration.scenario.scenario_def());
-        let iteration_config = config
-            .clone()
-            .with_branch_prefix_overrides(branch_base, iteration.schedule().decisions().to_vec());
+        let iteration_config = config.clone().with_branch_prefix_overrides(
+            branch_base,
+            VirtualTime { ticks: 0 },
+            iteration.schedule().decisions().to_vec(),
+        );
         let control_plane =
             production_qemu_control_plane(iteration_config, run_plan.scenario.scenario_form());
         let client = InProcessLifecycleClient::new(control_plane);

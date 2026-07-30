@@ -240,6 +240,111 @@ impl SingleScheduler {
         Ok(checkpoint)
     }
 
+    /// Returns the scheduler-owned logical time for one VM node.
+    ///
+    /// Production lifecycle replay compares this authoritative clock rather than
+    /// a QEMU process's current physical counter. A VM may pause below an
+    /// authorized ceiling while the scheduler safely advances its logical clock
+    /// to that ceiling, so those values are intentionally not interchangeable.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` is not a VM
+    /// scheduler node, or [`SchedulerError::TimeConversion`] when its current
+    /// counter cannot be projected.
+    pub fn scheduler_time_for_node(&self, node: &NodeId) -> Result<VirtualTime, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        let instant = self.node_current_time(&self.nodes[index])?;
+        Ok(VirtualTime {
+            ticks: instant.nanos,
+        })
+    }
+
+    /// Sets the scheduler-time boundary used to terminate replay.
+    ///
+    /// Production thin replay uses the recorded logical checkpoint time rather
+    /// than reusing a raw launch ceiling whose physical counter origin can vary
+    /// across boots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `time_limit` precedes
+    /// the scheduler's committed frontier.
+    pub fn set_replay_time_limit(&mut self, time_limit: VirtualTime) -> Result<(), SchedulerError> {
+        if time_limit < self.frontier {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "replay time limit {} precedes committed frontier {}",
+                    time_limit.ticks, self.frontier.ticks
+                ),
+            });
+        }
+        self.time_limit = SimInstant {
+            nanos: time_limit.ticks,
+        };
+        Ok(())
+    }
+
+    /// Caps advancement at an exact runtime-only branch frontier.
+    ///
+    /// Unlike the scenario time limit, this cap is not terminal and does not
+    /// participate in configuration identity. It lets production replay stop at
+    /// a saved frontier even when no causal decision occurs there.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `frontier` precedes
+    /// the scheduler's committed frontier.
+    pub fn set_branch_frontier_cap(&mut self, frontier: VirtualTime) -> Result<(), SchedulerError> {
+        if frontier < self.frontier {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "branch frontier {} precedes committed frontier {}",
+                    frontier.ticks, self.frontier.ticks
+                ),
+            });
+        }
+        self.branch_frontier_cap = Some(SimInstant {
+            nanos: frontier.ticks,
+        });
+        Ok(())
+    }
+
+    /// Clears the runtime-only production branch frontier cap.
+    pub fn clear_branch_frontier_cap(&mut self) {
+        self.branch_frontier_cap = None;
+    }
+
+    /// Re-anchors a restarted VM to its replacement backend's physical counter.
+    ///
+    /// The scheduler time at the restart boundary is preserved. Only the
+    /// physical counter origin changes, allowing a freshly booted or thin-
+    /// replayed QEMU process to continue the same logical execution even when
+    /// its boot-ready counter differs from the process it replaces.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when `node` is not a live
+    /// VM scheduler node, or [`SchedulerError::TimeConversion`] when its current
+    /// scheduler time cannot be projected.
+    pub fn rebase_restarted_backend_counter(
+        &mut self,
+        node: &NodeId,
+        counter: NodeCounter,
+    ) -> Result<(), SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        if self.node_execution_stopped(&self.nodes[index]) {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!("cannot rebase stopped node {}", node.name),
+            });
+        }
+        let anchor_time = self.node_current_time(&self.nodes[index])?;
+        self.nodes[index].counter = counter;
+        self.nodes[index].timing_faults.anchor_counter = counter;
+        self.nodes[index].timing_faults.anchor_time = anchor_time;
+        Ok(())
+    }
+
     /// Heals an active crash fault and applies the node's restart policy.
     ///
     /// [`RestartPolicy::FromReadyPoint`] reboots the node from the baked counter

@@ -38,6 +38,7 @@ pub trait Backend {
     /// This is a backend delivery surface for already-scheduled model events and
     /// guest-host channel replies. It is not a host-side workload generator and
     /// MUST NOT be used to originate application traffic for a scenario.
+    /// Application workload traffic must originate inside modeled guest VMs.
     ///
     /// # Errors
     ///

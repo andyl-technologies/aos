@@ -25,11 +25,18 @@ in
         || pathString == "${repoRootString}/pkgs"
         || pathString == "${repoRootString}/pkgs/default.nix"
         || pathString == "${repoRootString}/pkgs/emulation"
+        || pathString == "${repoRootString}/pkgs/emulation/crucible-qemu-plugin.nix"
         || pathString == "${repoRootString}/pkgs/emulation/qemu.nix"
         || pathString == "${repoRootString}/pkgs/emulation/qemu-patches"
         || lib.hasPrefix "${repoRootString}/pkgs/emulation/qemu-patches" pathString
+        || pathString == "${repoRootString}/pkgs/kernel"
+        || pathString == "${repoRootString}/pkgs/kernel/linux-crucible.nix"
+        || pathString == "${repoRootString}/pkgs/kernel/linux.nix"
         || pathString == "${repoRootString}/pkgs/tools"
         || lib.hasPrefix "${repoRootString}/pkgs/tools/crucible" pathString
+        || pathString == "${repoRootString}/modules"
+        || pathString == "${repoRootString}/modules/base"
+        || pathString == "${repoRootString}/modules/base/build.nix"
         || pathString == "${repoRootString}/tests"
         || lib.hasPrefix "${repoRootString}/tests/crucible" pathString
       );

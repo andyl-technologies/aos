@@ -449,15 +449,15 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         })
     }
 
-    fn finish_quantum(
+    fn poll_quantum(
         &mut self,
-        pending: QemuNodePendingQuantum,
+        pending: &mut QemuNodePendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
-        let pending = pending.downcast::<QemuMappedPendingQuantum>("finish_quantum")?;
+        let pending = pending.downcast_mut::<QemuMappedPendingQuantum>("finish_quantum")?;
         self.with_hot_path("finish_quantum", |hot_path| {
-            let mut report = QemuQuantumShmemHotPath::finish_quantum(hot_path, pending.pending)
+            let mut report = QemuQuantumShmemHotPath::poll_quantum(hot_path, &pending.pending)
                 .map_err(QemuNodeChannelError::from)?;
-            let mut operations = pending.start_operations;
+            let mut operations = pending.start_operations.clone();
             operations.extend(report.operations);
             report.operations = operations;
             assert_qemu_quantum_hot_path_is_shmem_only(&report.operations)

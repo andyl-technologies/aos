@@ -31,26 +31,99 @@ pub enum QemuLaunchPluginSwitch {
 /// Seed and bound passed to the production plugin's app-random doorbell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLaunchAppRandomConfig {
-    /// Small scenario seed used to reconstruct the authoritative host scenario.
+    /// Low 64-bit compatibility projection of the complete scenario seed.
     pub scenario_seed: u64,
+    authoritative_seed: Seed,
     /// Derived L0 decision-RNG root consumed by the synchronous plugin adapter.
     pub decision_rng_root_seed: u64,
     /// Scenario-hashed maximum number of app-random draws.
     pub draw_cap: u64,
     /// Canonical scheduler node name used in the name-hashed stream identity.
     pub node_name: String,
+    /// Optional derived decision-RNG root for a forked future.
+    pub branch_decision_rng_root_seed: Option<u64>,
+    branch_seed: Option<Seed>,
+    /// Number of this node's prefix draws served before the branch seed applies.
+    pub branch_after_draws: Option<u64>,
+    /// Node-local draws already consumed before this process launches.
+    pub draw_offset: u64,
+    /// Per-stream positions already consumed before this process launches.
+    pub stream_positions: BTreeMap<String, u64>,
 }
 
 impl QemuLaunchAppRandomConfig {
     /// Builds a complete live app-random launch configuration.
     #[must_use]
     pub fn new(root_seed: u64, draw_cap: u64, node_name: impl Into<String>) -> Self {
+        Self::from_seed(Seed::from_u64(root_seed), draw_cap, node_name)
+    }
+
+    /// Builds a live app-random launch configuration from the complete scenario seed.
+    #[must_use]
+    pub fn from_seed(seed: Seed, draw_cap: u64, node_name: impl Into<String>) -> Self {
+        let seed_bytes = seed.bytes();
+        let mut scenario_seed = [0_u8; 8];
+        scenario_seed.copy_from_slice(&seed_bytes[..8]);
         Self {
-            scenario_seed: root_seed,
-            decision_rng_root_seed: Seed::from_u64(root_seed).decision_rng_root_seed(),
+            scenario_seed: u64::from_le_bytes(scenario_seed),
+            authoritative_seed: seed,
+            decision_rng_root_seed: seed.decision_rng_root_seed(),
             draw_cap,
             node_name: node_name.into(),
+            branch_decision_rng_root_seed: None,
+            branch_seed: None,
+            branch_after_draws: None,
+            draw_offset: 0,
+            stream_positions: BTreeMap::new(),
         }
+    }
+
+    /// Returns this configuration with an exact app-random branch boundary.
+    ///
+    /// The plugin serves `prefix_draws` requests from the scenario seed, then
+    /// clears every node-local stream and serves all later requests from
+    /// `branch_seed` at cursor zero.
+    #[must_use]
+    pub fn with_branch_reseed(mut self, branch_seed: u64, prefix_draws: u64) -> Self {
+        self = self.with_branch_seed(Seed::from_u64(branch_seed), prefix_draws);
+        self
+    }
+
+    /// Returns this configuration with a complete branch seed at an exact boundary.
+    #[must_use]
+    pub fn with_branch_seed(mut self, branch_seed: Seed, prefix_draws: u64) -> Self {
+        self.branch_decision_rng_root_seed = Some(branch_seed.decision_rng_root_seed());
+        self.branch_seed = Some(branch_seed);
+        self.branch_after_draws = Some(prefix_draws);
+        self
+    }
+
+    /// Returns the complete scenario seed retained for host-side validation.
+    #[must_use]
+    pub(crate) const fn authoritative_seed(&self) -> Seed {
+        self.authoritative_seed
+    }
+
+    /// Returns the complete optional branch seed retained for host-side validation.
+    #[must_use]
+    pub(crate) const fn branch_seed(&self) -> Option<Seed> {
+        self.branch_seed
+    }
+
+    /// Returns this configuration with authoritative continuation cursors.
+    ///
+    /// This is used when a crashed VM process is relaunched: the replacement
+    /// plugin resumes the active decision seed without replaying already-served
+    /// application draws.
+    #[must_use]
+    pub fn with_continuation(
+        mut self,
+        draw_offset: u64,
+        stream_positions: BTreeMap<String, u64>,
+    ) -> Self {
+        self.draw_offset = draw_offset;
+        self.stream_positions = stream_positions;
+        self
     }
 }
 
@@ -237,6 +310,27 @@ impl QemuLaunchPluginConfig {
                 "{PLUGIN_ARG_APP_RANDOM_NODE}={}",
                 app_random.node_name
             ));
+            if let (Some(branch_seed), Some(branch_after)) = (
+                app_random.branch_decision_rng_root_seed,
+                app_random.branch_after_draws,
+            ) {
+                args.push(format!("{PLUGIN_ARG_APP_RANDOM_BRANCH_SEED}={branch_seed}"));
+                args.push(format!(
+                    "{PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER}={branch_after}"
+                ));
+            }
+            if app_random.draw_offset != 0 {
+                args.push(format!(
+                    "{PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET}={}",
+                    app_random.draw_offset
+                ));
+            }
+            if !app_random.stream_positions.is_empty() {
+                args.push(format!(
+                    "{PLUGIN_ARG_APP_RANDOM_POSITIONS}={}",
+                    encode_stream_positions(&app_random.stream_positions)
+                ));
+            }
         }
         // Emit fingerprint only when enabled so the disabled default keeps a
         // byte-identical argv to the pre-fingerprint ABI (the plugin parser
@@ -289,6 +383,26 @@ impl QemuLaunchPluginConfig {
             if app_random.node_name.contains(',') || app_random.node_name.contains('=') {
                 return Err(QemuLaunchCommandError::InvalidAppRandomNodeName);
             }
+            if app_random.branch_decision_rng_root_seed.is_some()
+                != app_random.branch_after_draws.is_some()
+                || app_random
+                    .branch_after_draws
+                    .is_some_and(|after| after > app_random.draw_cap)
+            {
+                return Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration);
+            }
+            let position_draws = app_random
+                .stream_positions
+                .values()
+                .try_fold(0_u64, |sum, draws| sum.checked_add(*draws));
+            if app_random.draw_offset > app_random.draw_cap
+                || position_draws != Some(app_random.draw_offset)
+                || app_random
+                    .branch_after_draws
+                    .is_some_and(|after| after < app_random.draw_offset)
+            {
+                return Err(QemuLaunchCommandError::InvalidAppRandomContinuationConfiguration);
+            }
         }
         if let Some((target_icount, output_path)) = &self.state_dump {
             if self.fingerprint != QemuLaunchPluginSwitch::On || *target_icount == 0 {
@@ -303,5 +417,75 @@ impl QemuLaunchPluginConfig {
             }
         }
         Ok(())
+    }
+}
+
+fn encode_stream_positions(positions: &BTreeMap<String, u64>) -> String {
+    positions
+        .iter()
+        .map(|(name, draws)| format!("{}:{draws}", hex_encode(name.as_bytes())))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        encoded.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn complete_scenario_seed_controls_the_plugin_decision_root() {
+        let mut first = [0_u8; 32];
+        first[..8].copy_from_slice(&11_u64.to_le_bytes());
+        let mut second = first;
+        second[31] = 1;
+
+        let first = QemuLaunchAppRandomConfig::from_seed(Seed::from_bytes(first), 8, "a");
+        let second = QemuLaunchAppRandomConfig::from_seed(Seed::from_bytes(second), 8, "a");
+
+        assert_eq!(first.scenario_seed, second.scenario_seed);
+        assert_ne!(first.authoritative_seed(), second.authoritative_seed());
+        assert_ne!(first.decision_rng_root_seed, second.decision_rng_root_seed);
+    }
+
+    #[test]
+    fn app_random_branch_and_continuation_arguments_are_canonical() {
+        let positions = BTreeMap::from([
+            (String::from("app-random/node:1:a/stream:4:beta"), 1),
+            (String::from("app-random/node:1:a/stream:5:alpha"), 2),
+        ]);
+        let app_random = QemuLaunchAppRandomConfig::new(11, 8, "a")
+            .with_branch_reseed(29, 3)
+            .with_continuation(3, positions.clone());
+        assert_eq!(app_random.branch_seed(), Some(Seed::from_u64(29)));
+        let arguments = QemuLaunchPluginConfig::new("/nix/store/plugin.so", 0)
+            .with_whitebox(QemuLaunchPluginSwitch::On)
+            .with_app_random(app_random)
+            .plugin_args_raw();
+
+        assert!(arguments.contains(&format!(
+            "app_random_branch_seed={}",
+            Seed::from_u64(29).decision_rng_root_seed()
+        )));
+        assert!(arguments.contains("app_random_branch_after=3"));
+        assert!(arguments.contains("app_random_draw_offset=3"));
+        assert!(arguments.contains(&format!(
+            "app_random_positions={}",
+            encode_stream_positions(&positions)
+        )));
+        assert_eq!(
+            encode_stream_positions(&positions),
+            "6170702d72616e646f6d2f6e6f64653a313a612f73747265616d3a343a62657461:1;\
+             6170702d72616e646f6d2f6e6f64653a313a612f73747265616d3a353a616c706861:2"
+        );
     }
 }

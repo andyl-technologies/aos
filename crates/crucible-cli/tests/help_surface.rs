@@ -82,6 +82,21 @@ fn cli_production_build_rejects_the_test_double_backend() -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[cfg(not(feature = "test-double"))]
+#[test]
+fn cli_production_build_rejects_the_mock_failure_gate_flag() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["run", "scenario.toml", "--emit-mock-failure-artifact"])
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(64));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("unexpected argument '--emit-mock-failure-artifact'"));
+
+    Ok(())
+}
+
 #[test]
 fn cli_help_process_version_exits_zero() -> Result<(), Box<dyn Error>> {
     for flag in ["--version", "-V"] {

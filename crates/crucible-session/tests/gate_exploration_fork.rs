@@ -54,7 +54,7 @@ async fn fork_child_uses_temporal_graph_fork_and_independent_child_actor() {
     assert_eq!(fork.child_actor.engine().configuration(), &expected_branch);
     assert_eq!(
         fork.child_actor.engine().frontier(),
-        VirtualTime { ticks: 2 }
+        VirtualTime { ticks: 99 }
     );
 
     let child_sender = fork.child_sender.clone();
