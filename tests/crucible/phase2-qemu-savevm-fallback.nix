@@ -343,8 +343,10 @@ in
             fi
             if grep -R -n 'authorize_loadvm_probe' crates/*/src crates/*/tests \
               | grep -v '^crates/crucible-qemu/src/node_factory/tests.rs:' \
+              | grep -v '^crates/crucible-qemu/src/node_factory/tests/' \
               | grep -v '^crates/crucible-qemu/src/savevm_policy.rs:' \
               | grep -v '^crates/crucible-qemu/src/realization.rs:' \
+              | grep -v '^crates/crucible-qemu/src/realization/node_executor/tests.rs:' \
               | grep -v '^crates/crucible-qemu/tests/qmp.rs:' \
               | grep -v '^crates/crucible-qemu/tests/qmp_vmstate_control.rs:' \
               | grep -v '^crates/crucible-qemu/tests/savevm_fallback.rs:' \
