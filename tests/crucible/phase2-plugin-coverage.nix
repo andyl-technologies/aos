@@ -15,14 +15,23 @@
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
   pluginCoverage = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs;
-  pluginCoverageTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
+  pluginCoverageTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
+  };
   liveCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
   coverageAbiModel = builtins.readFile ./phase2-plugin-coverage-abi.c;
   qemuCoveragePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/0014-crucible-plugin-tcg-exec-cb.patch;
   pluginRegistration = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration.rs;
-  pluginRegistrationTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/registration/tests.rs;
+  pluginRegistrationTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/registration/tests.rs;
+  };
   pluginRuntime = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime.rs;
-  pluginRuntimeTests = builtins.readFile ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
+  pluginRuntimeTests = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/tests.rs;
+  };
   shmemLib = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
     (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)

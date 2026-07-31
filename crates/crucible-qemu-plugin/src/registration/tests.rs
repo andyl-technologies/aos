@@ -7,6 +7,8 @@ use std::io::{Cursor, Read, Write};
 use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 use crucible_shmem::{ABI_VERSION, KIND_VM, NodeSlot, authorize_advance_ceiling};
 
+mod coverage_cases;
+
 #[test]
 fn registration_order_accepts_fixed_happy_path() {
     let mut sequence = PluginRegistrationSequence::new();
@@ -433,33 +435,6 @@ fn registration_order_fails_loud_when_queued_idle_advance_missing() {
             blocked_step: PluginRegistrationStep::SendSetupAck,
         })
     );
-}
-
-#[test]
-fn registration_coverage_off_installs_no_callback_without_capability() {
-    let mut sequence = PluginRegistrationSequence::new();
-    record_steps_through_wake_fd(&mut sequence);
-    let args = registration_args("simfd=3,slot=0,coverage=off");
-
-    let capabilities = sequence
-        .register_callbacks_for_test(
-            &args,
-            Some(registration_test_deadline),
-            Some(registration_test_direct_advance),
-            CoverageCapabilities::none(),
-        )
-        .unwrap_or_else(|error| panic!("coverage off should not need TCG exec: {error}"));
-
-    assert_eq!(
-        capabilities.coverage_registration_plan(),
-        CoverageRegistrationPlan::Disabled
-    );
-    assert!(
-        !capabilities
-            .coverage_registration_plan()
-            .installs_callback()
-    );
-    assert_eq!(capabilities.coverage_callback(), None);
 }
 
 #[test]

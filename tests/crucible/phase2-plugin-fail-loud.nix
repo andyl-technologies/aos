@@ -43,7 +43,10 @@
   ];
   pluginCoverage = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage/tests.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
+    })
   ];
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
