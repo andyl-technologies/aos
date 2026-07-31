@@ -1,5 +1,6 @@
 #include <inttypes.h>
 #include <qemu-plugin.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +17,13 @@ enum plugin_mode {
 struct tb_info {
   uint64_t id;
   uint64_t insns;
+  qemu_plugin_u64 seen;
   struct tb_info *next;
+};
+
+struct coverage_stats {
+  uint64_t retired_instructions;
+  uint64_t tb_execs;
 };
 
 static enum plugin_mode mode = MODE_COUNT;
@@ -35,6 +42,9 @@ static uint64_t last_entry_icount;
 static uint64_t flushes;
 static int have_entry_icount;
 static struct tb_info *tb_infos;
+static struct qemu_plugin_scoreboard *stats_scoreboard;
+static qemu_plugin_u64 retired_instructions_entry;
+static qemu_plugin_u64 tb_execs_entry;
 
 static void
 free_tb_infos(void)
@@ -42,6 +52,9 @@ free_tb_infos(void)
   while (tb_infos != NULL) {
     struct tb_info *info = tb_infos;
     tb_infos = info->next;
+    if (info->seen.score != NULL) {
+      qemu_plugin_scoreboard_free(info->seen.score);
+    }
     free(info);
   }
 }
@@ -49,10 +62,10 @@ free_tb_infos(void)
 static void
 on_tb_exec(unsigned int vcpu_index, void *userdata)
 {
-  (void)vcpu_index;
-
   const struct tb_info *info = userdata;
   uint64_t entry_icount = 0;
+
+  qemu_plugin_u64_set(info->seen, vcpu_index, 1);
 
   if (qemu_plugin_icount_at_tb_entry(info->insns, &entry_icount) != 0) {
     exact_icount_failures++;
@@ -65,9 +78,6 @@ on_tb_exec(unsigned int vcpu_index, void *userdata)
     }
     last_entry_icount = entry_icount;
   }
-  tb_execs++;
-  retired_instructions += info->insns;
-
   if (mode == MODE_COVERAGE) {
     if (info->id == 0 || info->id > coverage_capacity) {
       coverage_overflow = 1;
@@ -98,7 +108,34 @@ on_tb_translate(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
   info->insns = qemu_plugin_tb_n_insns(tb);
   info->next = tb_infos;
   tb_infos = info;
-  qemu_plugin_register_vcpu_tb_exec_cb(tb, on_tb_exec, QEMU_PLUGIN_CB_NO_REGS, info);
+
+  qemu_plugin_register_vcpu_tb_exec_inline_per_vcpu(
+    tb,
+    QEMU_PLUGIN_INLINE_ADD_U64,
+    retired_instructions_entry,
+    info->insns);
+  qemu_plugin_register_vcpu_tb_exec_inline_per_vcpu(
+    tb,
+    QEMU_PLUGIN_INLINE_ADD_U64,
+    tb_execs_entry,
+    1);
+
+  if (mode == MODE_COVERAGE) {
+    info->seen.score = qemu_plugin_scoreboard_new(sizeof(uint64_t));
+    if (info->seen.score == NULL) {
+      qemu_plugin_outs("phase0-coverage-plugin: failed to allocate seen scoreboard\n");
+      return;
+    }
+    info->seen.offset = 0;
+    qemu_plugin_register_vcpu_tb_exec_cond_cb(
+      tb,
+      on_tb_exec,
+      QEMU_PLUGIN_CB_NO_REGS,
+      QEMU_PLUGIN_COND_EQ,
+      info->seen,
+      0,
+      info);
+  }
 }
 
 static void
@@ -133,6 +170,11 @@ on_plugin_exit(qemu_plugin_id_t id, void *userdata)
     return;
   }
 
+  if (stats_scoreboard != NULL) {
+    retired_instructions = qemu_plugin_u64_sum(retired_instructions_entry);
+    tb_execs = qemu_plugin_u64_sum(tb_execs_entry);
+  }
+
   fprintf(out_file, "mode=%s\n", mode_name());
   fprintf(out_file, "retired_instructions=%" PRIu64 "\n", retired_instructions);
   fprintf(out_file, "tb_execs=%" PRIu64 "\n", tb_execs);
@@ -146,6 +188,10 @@ on_plugin_exit(qemu_plugin_id_t id, void *userdata)
   fprintf(out_file, "last_entry_icount=%" PRIu64 "\n", last_entry_icount);
   fprintf(out_file, "flushes=%" PRIu64 "\n", flushes);
   free_tb_infos();
+  if (stats_scoreboard != NULL) {
+    qemu_plugin_scoreboard_free(stats_scoreboard);
+    stats_scoreboard = NULL;
+  }
   free(coverage_seen);
   coverage_seen = NULL;
   fclose(out_file);
@@ -181,6 +227,22 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
       qemu_plugin_outs("phase0-coverage-plugin: failed to allocate coverage set\n");
       return -1;
     }
+  }
+
+  if (mode != MODE_DISABLED) {
+    stats_scoreboard = qemu_plugin_scoreboard_new(sizeof(struct coverage_stats));
+    if (stats_scoreboard == NULL) {
+      qemu_plugin_outs("phase0-coverage-plugin: failed to allocate stats scoreboard\n");
+      return -1;
+    }
+    retired_instructions_entry = (qemu_plugin_u64) {
+      stats_scoreboard,
+      offsetof(struct coverage_stats, retired_instructions),
+    };
+    tb_execs_entry = (qemu_plugin_u64) {
+      stats_scoreboard,
+      offsetof(struct coverage_stats, tb_execs),
+    };
   }
 
   out_file = fopen(out_path, "w");
