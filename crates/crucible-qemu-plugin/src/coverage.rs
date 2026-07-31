@@ -26,9 +26,15 @@ pub const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL: &str = "qemu_plugin_register_
 /// QEMU capability label for registering the translation callback.
 pub const QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL: &str =
     "qemu_plugin_register_vcpu_tb_trans_cb";
-/// QEMU capability label for registering a translated-block execution callback.
-pub const QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL: &str =
-    "qemu_plugin_register_vcpu_tb_exec_cb";
+/// QEMU capability label for registering a conditional translated-block callback.
+pub const QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL: &str =
+    "qemu_plugin_register_vcpu_tb_exec_cond_cb";
+/// QEMU capability label for allocating a per-vCPU scoreboard.
+pub const QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL: &str = "qemu_plugin_scoreboard_new";
+/// QEMU capability label for releasing a per-vCPU scoreboard.
+pub const QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL: &str = "qemu_plugin_scoreboard_free";
+/// QEMU capability label for updating a per-vCPU scoreboard entry.
+pub const QEMU_PLUGIN_U64_SET_SYMBOL: &str = "qemu_plugin_u64_set";
 /// QEMU capability label for observing the exact icount at TB entry.
 pub const QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL: &str = "qemu_plugin_icount_at_tb_entry";
 /// QEMU capability label for observing translation-cache flushes.
@@ -56,6 +62,20 @@ pub struct QemuPluginInsn {
     _private: [u8; 0],
 }
 
+/// Opaque QEMU per-vCPU scoreboard handle.
+#[repr(C)]
+pub struct QemuPluginScoreboard {
+    _private: [u8; 0],
+}
+
+/// QEMU scoreboard entry passed to conditional callback registration.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct QemuPluginU64 {
+    score: *mut QemuPluginScoreboard,
+    offset: usize,
+}
+
 /// QEMU callback invoked when one translation block is created.
 pub type QemuVcpuTbTransCbFn = extern "C" fn(plugin_id: QemuPluginId, tb: *mut QemuPluginTb);
 /// QEMU callback invoked when one translated block executes.
@@ -65,11 +85,14 @@ pub type QemuPluginSimpleCbFn = extern "C" fn(plugin_id: QemuPluginId);
 /// QEMU function that registers the plugin-wide translation callback.
 pub type QemuRegisterVcpuTbTransCbFn =
     extern "C" fn(plugin_id: QemuPluginId, callback: Option<QemuVcpuTbTransCbFn>);
-/// QEMU function that registers an execution callback on one translated block.
-pub type QemuRegisterVcpuTbExecCbFn = extern "C" fn(
+/// QEMU function that registers a conditionally executed block callback.
+pub type QemuRegisterVcpuTbExecCondCbFn = extern "C" fn(
     tb: *mut QemuPluginTb,
     callback: Option<QemuVcpuTbExecCbFn>,
     flags: c_int,
+    condition: c_int,
+    entry: QemuPluginU64,
+    immediate: u64,
     userdata: *mut c_void,
 );
 /// QEMU function that registers a plugin-wide translation-cache flush callback.
@@ -86,8 +109,16 @@ pub type QemuTbGetInsnFn =
 pub type QemuInsnSizeFn = extern "C" fn(insn: *const QemuPluginInsn) -> usize;
 /// QEMU function that observes the exact pre-execution icount for one TB.
 pub type QemuIcountAtTbEntryFn = extern "C" fn(tb_insns: u64, entry_icount: *mut u64) -> c_int;
+/// QEMU function that allocates one scoreboard element per vCPU.
+pub type QemuPluginScoreboardNewFn =
+    extern "C" fn(element_size: usize) -> *mut QemuPluginScoreboard;
+/// QEMU function that releases a scoreboard after generated callbacks are gone.
+pub type QemuPluginScoreboardFreeFn = extern "C" fn(score: *mut QemuPluginScoreboard);
+/// QEMU function that writes one scoreboard entry for a selected vCPU.
+pub type QemuPluginU64SetFn = extern "C" fn(entry: QemuPluginU64, vcpu_index: c_uint, value: u64);
 
 const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
+const QEMU_PLUGIN_COND_EQ: c_int = 2;
 
 /// Registration-time-fixed coverage callback state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,42 +206,51 @@ where
 #[derive(Clone, Copy, Debug)]
 pub struct QemuBasicBlockCoverageApis {
     register_tb_trans_cb: QemuRegisterVcpuTbTransCbFn,
-    register_tb_exec_cb: QemuRegisterVcpuTbExecCbFn,
+    register_tb_exec_cond_cb: QemuRegisterVcpuTbExecCondCbFn,
     tb_vaddr: QemuTbVaddrFn,
     tb_n_insns: QemuTbNInsnsFn,
     tb_get_insn: QemuTbGetInsnFn,
     insn_size: QemuInsnSizeFn,
     icount_at_tb_entry: QemuIcountAtTbEntryFn,
     register_flush_cb: QemuRegisterFlushCbFn,
+    scoreboard_new: QemuPluginScoreboardNewFn,
+    scoreboard_free: QemuPluginScoreboardFreeFn,
+    u64_set: QemuPluginU64SetFn,
 }
 
 impl QemuBasicBlockCoverageApis {
     /// Builds a complete QEMU basic-block callback API table.
     #[must_use]
-    // crucible-lint: allow rust-allow -- the constructor mirrors eight independent QEMU callback ABI exports.
+    // crucible-lint: allow rust-allow -- the constructor mirrors eleven independent QEMU callback ABI exports.
     #[allow(
         clippy::too_many_arguments,
-        reason = "the constructor mirrors the eight independent QEMU callback ABI exports"
+        reason = "the constructor mirrors eleven independent QEMU callback ABI exports"
     )]
     pub const fn new(
         register_tb_trans_cb: QemuRegisterVcpuTbTransCbFn,
-        register_tb_exec_cb: QemuRegisterVcpuTbExecCbFn,
+        register_tb_exec_cond_cb: QemuRegisterVcpuTbExecCondCbFn,
         tb_vaddr: QemuTbVaddrFn,
         tb_n_insns: QemuTbNInsnsFn,
         tb_get_insn: QemuTbGetInsnFn,
         insn_size: QemuInsnSizeFn,
         icount_at_tb_entry: QemuIcountAtTbEntryFn,
         register_flush_cb: QemuRegisterFlushCbFn,
+        scoreboard_new: QemuPluginScoreboardNewFn,
+        scoreboard_free: QemuPluginScoreboardFreeFn,
+        u64_set: QemuPluginU64SetFn,
     ) -> Self {
         Self {
             register_tb_trans_cb,
-            register_tb_exec_cb,
+            register_tb_exec_cond_cb,
             tb_vaddr,
             tb_n_insns,
             tb_get_insn,
             insn_size,
             icount_at_tb_entry,
             register_flush_cb,
+            scoreboard_new,
+            scoreboard_free,
+            u64_set,
         }
     }
 }
@@ -410,6 +450,7 @@ struct LiveCoverageBlock {
     instruction_count: u64,
     guest_pc: u64,
     block_len: u32,
+    seen_entry: QemuPluginU64,
 }
 
 /// Pinned raw view of one ABI-validated plugin-to-host coverage ring.
@@ -520,6 +561,7 @@ struct LiveCoverageInner {
     apis: QemuBasicBlockCoverageApis,
     callback: CoverageCallback,
     map: CoverageMap,
+    novelty_scoreboard: *mut QemuPluginScoreboard,
     sink: LiveCoverageShmemProducer,
     // crucible-lint: allow rust-allow -- boxed entries keep QEMU userdata stable when the outer vector grows.
     #[allow(
@@ -564,12 +606,21 @@ impl LiveBasicBlockCoverage {
                 queue_capacity: sink.capacity(),
             });
         }
+        let map = CoverageMap::new(map_entries)?;
+        let scoreboard_size = map_entries
+            .checked_mul(std::mem::size_of::<u64>())
+            .ok_or(CoverageError::NoveltyScoreboardSizeOverflow { map_entries })?;
+        let novelty_scoreboard = (apis.scoreboard_new)(scoreboard_size);
+        if novelty_scoreboard.is_null() {
+            return Err(CoverageError::NoveltyScoreboardAllocation { scoreboard_size });
+        }
         let mut state = Box::pin(LiveCoverageInner {
             quiescence,
             plugin_id,
             apis,
             callback,
-            map: CoverageMap::new(map_entries)?,
+            map,
+            novelty_scoreboard,
             sink,
             translated_blocks: Vec::new(),
             _pin: PhantomPinned,
@@ -587,6 +638,7 @@ impl LiveBasicBlockCoverage {
             )
             .is_err()
         {
+            (apis.scoreboard_free)(novelty_scoreboard);
             return Err(CoverageError::LiveRegistrationAlreadyExists { plugin_id });
         }
         (apis.register_flush_cb)(plugin_id, live_coverage_flush);
@@ -629,6 +681,9 @@ impl Drop for LiveBasicBlockCoverage {
         {
             abort_live_coverage_callback(CoverageError::LiveRegistrationOwnershipLost);
         }
+        (self.state.as_ref().get_ref().apis.scoreboard_free)(
+            self.state.as_ref().get_ref().novelty_scoreboard,
+        );
     }
 }
 
@@ -664,6 +719,7 @@ extern "C" fn live_coverage_tb_translate(plugin_id: QemuPluginId, tb: *mut QemuP
         }
     };
     let guest_pc = (state.apis.tb_vaddr)(tb.cast_const());
+    let map_index = fold_basic_block_pc(guest_pc, state.callback.map_entries());
     let block_len = (0..instruction_count).try_fold(0_usize, |length, index| {
         let insn = (state.apis.tb_get_insn)(tb.cast_const(), index);
         if insn.is_null() {
@@ -683,18 +739,26 @@ extern "C" fn live_coverage_tb_translate(plugin_id: QemuPluginId, tb: *mut QemuP
         Err(error) => abort_live_coverage_callback(error),
     };
 
+    let seen_entry = QemuPluginU64 {
+        score: state.novelty_scoreboard,
+        offset: map_index * std::mem::size_of::<u64>(),
+    };
     let mut metadata = Box::new(LiveCoverageBlock {
         state: std::ptr::from_mut(state),
         instruction_count: instruction_count_u64,
         guest_pc,
         block_len,
+        seen_entry,
     });
     let userdata = std::ptr::from_mut(metadata.as_mut()).cast::<c_void>();
     state.translated_blocks.push(metadata);
-    (state.apis.register_tb_exec_cb)(
+    (state.apis.register_tb_exec_cond_cb)(
         tb,
         Some(live_coverage_tb_exec),
         QEMU_PLUGIN_CB_NO_REGS,
+        QEMU_PLUGIN_COND_EQ,
+        seen_entry,
+        0,
         userdata,
     );
 }
@@ -717,6 +781,7 @@ extern "C" fn live_coverage_tb_exec(vcpu_index: c_uint, userdata: *mut c_void) {
     let Some(_in_flight) = state.quiescence.enter() else {
         return;
     };
+    (state.apis.u64_set)(block.seen_entry, vcpu_index, 1);
     // QEMU 10 emits the standard TB execution callback after `gen_tb_start`
     // subtracts the full TB reservation. The helper observes
     // `committed + budget - remaining` without committing it, then subtracts
@@ -960,6 +1025,18 @@ pub enum CoverageError {
         map_entries: usize,
         /// Mapped plugin-to-host queue capacity.
         queue_capacity: usize,
+    },
+    /// The configured coverage map cannot fit in QEMU's scoreboard element size.
+    #[error("coverage novelty scoreboard size overflowed for {map_entries} entries")]
+    NoveltyScoreboardSizeOverflow {
+        /// Registration-time coverage-map cardinality.
+        map_entries: usize,
+    },
+    /// QEMU could not allocate the fixed per-vCPU novelty scoreboard.
+    #[error("QEMU could not allocate a {scoreboard_size}-byte coverage novelty scoreboard")]
+    NoveltyScoreboardAllocation {
+        /// Requested bytes per vCPU.
+        scoreboard_size: usize,
     },
     /// The setup mapping could not expose the assigned VM's coverage queue.
     #[error("mapped plugin-to-host coverage queue is invalid")]

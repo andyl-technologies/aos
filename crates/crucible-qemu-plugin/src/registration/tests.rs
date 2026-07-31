@@ -584,13 +584,16 @@ extern "C" fn registration_test_direct_advance(_target_virtual_ns: i64) -> std::
 fn registration_test_coverage_capabilities() -> CoverageCapabilities {
     CoverageCapabilities::basic_blocks(crate::QemuBasicBlockCoverageApis::new(
         registration_test_register_tb_trans_cb,
-        registration_test_register_tb_exec_cb,
+        registration_test_register_tb_exec_cond_cb,
         registration_test_tb_vaddr,
         registration_test_tb_n_insns,
         registration_test_tb_get_insn,
         registration_test_insn_size,
         registration_test_icount_at_tb_entry,
         registration_test_register_flush_cb,
+        registration_test_scoreboard_new,
+        registration_test_scoreboard_free,
+        registration_test_u64_set,
     ))
 }
 
@@ -600,11 +603,29 @@ extern "C" fn registration_test_register_tb_trans_cb(
 ) {
 }
 
-extern "C" fn registration_test_register_tb_exec_cb(
+extern "C" fn registration_test_register_tb_exec_cond_cb(
     _tb: *mut crate::QemuPluginTb,
     _callback: Option<crate::QemuVcpuTbExecCbFn>,
     _flags: std::os::raw::c_int,
+    _condition: std::os::raw::c_int,
+    _entry: crate::QemuPluginU64,
+    _immediate: u64,
     _userdata: *mut std::os::raw::c_void,
+) {
+}
+
+extern "C" fn registration_test_scoreboard_new(
+    _element_size: usize,
+) -> *mut crate::QemuPluginScoreboard {
+    std::ptr::NonNull::dangling().as_ptr()
+}
+
+extern "C" fn registration_test_scoreboard_free(_score: *mut crate::QemuPluginScoreboard) {}
+
+extern "C" fn registration_test_u64_set(
+    _entry: crate::QemuPluginU64,
+    _vcpu_index: std::os::raw::c_uint,
+    _value: u64,
 ) {
 }
 

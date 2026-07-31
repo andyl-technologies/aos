@@ -689,6 +689,12 @@ off.
   fingerprint. *Gate:* `gate:single-vm-fingerprint`. *Spec:* §12.8, forward-ref
   [`22-advanced-features.md`](22-advanced-features.md); routes [DET-1], [G-6].
 
+  The production implementation folds each translated block into a fixed map
+  slot at translation time and uses QEMU's per-vCPU scoreboard condition to
+  invoke the exact-icount callback only while that slot is unseen. The callback
+  marks the slot before publishing the novelty, so repeated execution remains
+  entirely on QEMU's conditional hot path.
+
 - **[PLUG-36]** When coverage is **disabled** (the default), the plugin MUST NOT
   register the TCG-exec coverage callback at all, so the hot translation/execution
   path carries no per-block overhead. Coverage MUST be a registration-time opt-in,

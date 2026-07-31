@@ -565,7 +565,9 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
 
     let coverage = fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/coverage.rs"))?;
     assert_contains(&coverage, "register_tb_trans_cb");
-    assert_contains(&coverage, "register_tb_exec_cb");
+    assert_contains(&coverage, "register_tb_exec_cond_cb");
+    assert_contains(&coverage, "novelty_scoreboard");
+    assert_contains(&coverage, "u64_set");
     assert_contains(&coverage, "icount_at_tb_entry");
     assert_contains(&coverage, "register_flush_cb");
 

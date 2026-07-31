@@ -1891,29 +1891,32 @@ register.
   - **Check:** `checks.crucible.phase0.coverageOverhead`.
   - **Result:** `workload_iterations=20000000`,
     `repetitions=3`, `baseline_retired_reference=hook_off_retired_instructions`,
-    `coverage_representation=translated_tb_id_set`,
-    `hook_off_retired_instructions_avg=2927901535`,
-    `coverage_on_retired_instructions_avg=2927880209`,
-    `hook_off_tb_execs_avg=620774308`,
-    `coverage_on_tb_execs_avg=620768268`,
-    `coverage_unique_entries_min=113515`,
-    `baseline_ips_avg=376719868.42`, `disabled_ips_avg=378668857.82`,
-    `hook_off_ips_avg=383461997.27`, `coverage_on_ips_avg=387955620.92`,
-    `disabled_on_vs_baseline_min=0.9920`,
-    `coverage_on_vs_baseline_min=1.0211`,
-    `coverage_on_vs_hook_off_min=0.9136`,
-    `max_retired_instruction_delta=0.000044`,
-    `max_tb_exec_delta=0.000023`, `coverage_budget_min=0.7000`.
+    `coverage_representation=translated_tb_id_set_first_execution`,
+    `hook_off_retired_instructions_avg=3474456831`,
+    `coverage_on_retired_instructions_avg=3474321179`,
+    `hook_off_tb_execs_avg=664134961`,
+    `coverage_on_tb_execs_avg=664105929`,
+    `coverage_unique_entries_min=115648`,
+    `baseline_ips_avg=580642852.85`, `disabled_ips_avg=581148643.78`,
+    `hook_off_ips_avg=552899087.04`, `coverage_on_ips_avg=536209832.77`,
+    `disabled_on_vs_baseline_min=0.9957`,
+    `coverage_on_vs_baseline_min=0.9223`,
+    `coverage_on_vs_hook_off_min=0.9665`,
+    `max_retired_instruction_delta=0.000042`,
+    `max_tb_exec_delta=0.000055`, `coverage_budget_min=0.7000`.
   - **Scope:** validates one AOS-built QEMU boot-and-workload scenario under the
     S1 deterministic launch controls with no plugin, plugin-loaded/no-callback
     disabled mode, hook-registered count mode, and coverage-on translated-TB-id
-    set mode. The no-plugin baseline has no direct instruction counter, so its
+    set-first-execution mode. Inline scoreboard counters retain total retired
+    instruction and TB-execution accounting while a conditional callback emits
+    only newly reached translated blocks. The no-plugin baseline has no direct instruction counter, so its
     IPS is a fixed-work normalized IPS using the paired hook-count retired
     instruction count after identical workload output and tight hook-vs-coverage
     equal-work assertions. The spike records a Phase-0 overhead result; [PERF-14]
     and the production perf-bench gate still own long-term baselines and
     regression thresholds.
-  - **Fallback:** none adopted.
+  - **Fallback:** adopted once-per-map-entry conditional callback publication;
+    repeated block executions update no Rust/C callback path.
 
 - **RISK-18 / T-RISK-11 — shmem ABI drift fails closed**
   - **Status:** PASS; risk retired for the Phase-0 ABI-drift defense proof in

@@ -175,8 +175,20 @@
         needle = "QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL";
       }
       {
-        label = "stock TB execution symbol exported";
-        needle = "QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL";
+        label = "conditional TB execution symbol exported";
+        needle = "QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL";
+      }
+      {
+        label = "coverage novelty scoreboard allocation exported";
+        needle = "QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL";
+      }
+      {
+        label = "coverage novelty scoreboard release exported";
+        needle = "QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL";
+      }
+      {
+        label = "coverage novelty scoreboard update exported";
+        needle = "QEMU_PLUGIN_U64_SET_SYMBOL";
       }
       {
         label = "exact TB-entry icount symbol exported";
