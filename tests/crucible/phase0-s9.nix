@@ -304,7 +304,7 @@ in
           require_fixed "$PATCH_0014_NAME" '*entry_icount = (uint64_t)observed_icount - tb_insns'
           require_fixed "$PATCH_0015_NAME" 'block/crucible-shmem.c'
           require_fixed "$PATCH_0015_NAME" '.format_name            = "crucible-shmem"'
-          require_fixed "$PATCH_0015_NAME" "'crucible-shmem.c',"
+          require_fixed "$PATCH_0015_NAME" "system_ss.add(files('crucible-shmem.c'))"
           require_fixed "$PATCH_0015_NAME" 'qemu_plugin_register_blk_cb'
           require_fixed "$PATCH_0015_NAME" 'qemu_plugin_blk_submit_cb_t'
           require_fixed "$PATCH_0015_NAME" 'qemu_plugin_blk_poll_cb_t'

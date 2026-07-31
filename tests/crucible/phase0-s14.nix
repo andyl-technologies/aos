@@ -103,7 +103,7 @@ in
 
           require_absent_regex pkgs "$gdb_package_regex" "hermetic gdb client package"
           require_present_regex crates "$session_impl_regex" "session/backend gdbstub implementation"
-          require_absent_regex pkgs/emulation "$raw_step_regex" "AOS QEMU integration gdbstub single-step mediation or continuation hook"
+          require_absent_regex pkgs/emulation/qemu-patches "^\\+.*($raw_step_regex)" "AOS QEMU patch addition implementing gdbstub single-step mediation or a continuation hook"
 
           mkdir -p "$out"
           cp -r pkgs/emulation "$out/emulation-scan"
