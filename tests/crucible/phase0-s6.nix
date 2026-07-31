@@ -492,13 +492,34 @@ in
             mode="$1"
             left="$TMPDIR/trace-$mode-a.jsonl"
             right="$TMPDIR/trace-$mode-b.jsonl"
+            comparable_left="$TMPDIR/trace-$mode-a-comparable.jsonl"
+            comparable_right="$TMPDIR/trace-$mode-b-comparable.jsonl"
+
+            sed "s/$mode-a/$mode-run/g" "$TMPDIR/qemu-args-$mode-a.txt" \
+              > "$TMPDIR/qemu-args-$mode-a-canonical.txt"
+            sed "s/$mode-b/$mode-run/g" "$TMPDIR/qemu-args-$mode-b.txt" \
+              > "$TMPDIR/qemu-args-$mode-b-canonical.txt"
+            if ! diff -u \
+              "$TMPDIR/qemu-args-$mode-a-canonical.txt" \
+              "$TMPDIR/qemu-args-$mode-b-canonical.txt" \
+              > "$out/qemu-args-$mode.diff"; then
+              fail "$mode S6 launches differ beyond run-local output paths"
+            fi
+
+            # QEMU attests the exact process argv, including the serial, QMP,
+            # and trace output paths. Those paths contain the run label and
+            # therefore differ by construction. The canonical argv comparison
+            # above proves that this is the only launch difference before the
+            # path-sensitive digest is removed from the execution comparison.
+            jq -c 'del(.process_argv_digest)' "$left" > "$comparable_left"
+            jq -c 'del(.process_argv_digest)' "$right" > "$comparable_right"
 
             samples_a=$(wc -l < "$left")
             samples_b=$(wc -l < "$right")
             echo "$samples_a" > "$TMPDIR/samples-$mode-a"
             echo "$samples_b" > "$TMPDIR/samples-$mode-b"
 
-            if diff -u "$left" "$right" > "$out/trace-$mode.diff"; then
+            if diff -u "$comparable_left" "$comparable_right" > "$out/trace-$mode.diff"; then
               echo true > "$TMPDIR/trace-$mode-match"
               echo none > "$TMPDIR/first-differing-line-$mode"
               echo none > "$TMPDIR/first-differing-component-$mode"
@@ -512,7 +533,7 @@ in
                 print FNR "\t" left[FNR] "\t" $0
                 exit 0
               }
-            ' "$left" "$right" > "$TMPDIR/first-difference-$mode.tsv"
+            ' "$comparable_left" "$comparable_right" > "$TMPDIR/first-difference-$mode.tsv"
             first_differing_line=$(cut -f1 "$TMPDIR/first-difference-$mode.tsv")
             left_json=$(cut -f2 "$TMPDIR/first-difference-$mode.tsv")
             right_json=$(cut -f3 "$TMPDIR/first-difference-$mode.tsv")
@@ -526,6 +547,11 @@ in
                   def component:
                     if $left[0].retired != $right[0].retired then "retired"
                     elif $left[0].vcpu != $right[0].vcpu then "vcpu"
+                    elif $left[0].process_argv_attestation_version != $right[0].process_argv_attestation_version then "process_argv_attestation_version"
+                    elif $left[0].process_argv_encoding != $right[0].process_argv_encoding then "process_argv_encoding"
+                    elif $left[0].process_argv_argc != $right[0].process_argv_argc then "process_argv_argc"
+                    elif $left[0].process_argv_raw_bytes != $right[0].process_argv_raw_bytes then "process_argv_raw_bytes"
+                    elif $left[0].process_argv_status != $right[0].process_argv_status then "process_argv_status"
                     elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
                     elif $left[0].register_counts != $right[0].register_counts then "register_counts[0]"
                     elif $left[0].register_digests != $right[0].register_digests then "register_digests[0]"
@@ -552,6 +578,12 @@ in
                 stop_at,
                 sample_register_failures,
                 register_read_failures,
+                process_argv_attestation_version,
+                process_argv_encoding,
+                process_argv_argc,
+                process_argv_raw_bytes,
+                process_argv_digest,
+                process_argv_status,
                 ram_bytes,
                 ram_digest,
                 memory_events_enabled,
@@ -579,6 +611,13 @@ in
                 and .stop_at == $horizon
                 and .sample_register_failures == 0
                 and .register_read_failures == 0
+                and .process_argv_attestation_version == 2
+                and .process_argv_encoding == "raw-unix-argv-v2"
+                and .process_argv_argc > 0
+                and .process_argv_raw_bytes > 0
+                and (.process_argv_digest | test("^[0-9a-f]{64}$"))
+                and .process_argv_digest != "0000000000000000000000000000000000000000000000000000000000000000"
+                and .process_argv_status == 0
                 and .ram_bytes > 0
                 and (.ram_digest | test("^[0-9a-f]{64}$"))
                 and .ram_digest != "0000000000000000000000000000000000000000000000000000000000000000"
@@ -600,6 +639,7 @@ in
                 and (.register_schema_digests[0] | test("^[0-9a-f]{64}$"))
                 and .register_schema_digests[0] != "0000000000000000000000000000000000000000000000000000000000000000"
               ))
+              and ([.[].process_argv_digest] | unique | length) == 1
               and any(.[]; .final == true)
             ' "$TMPDIR/trace-$label.jsonl" >/dev/null; then
               diagnose_trace_structure "$label"
@@ -713,6 +753,10 @@ in
           final_memory_events=$(printf '%s\n' "$final_line" | jq -r '.memory_events')
           final_io_events=$(printf '%s\n' "$final_line" | jq -r '.io_events')
           final_register_read_failures=$(printf '%s\n' "$final_line" | jq -r '.register_read_failures')
+          control_process_argv_digest_a=$(jq -r -s '.[0].process_argv_digest' "$TMPDIR/trace-control-a.jsonl")
+          control_process_argv_digest_b=$(jq -r -s '.[0].process_argv_digest' "$TMPDIR/trace-control-b.jsonl")
+          kaslr_process_argv_digest_a=$(jq -r -s '.[0].process_argv_digest' "$TMPDIR/trace-kaslr-a.jsonl")
+          kaslr_process_argv_digest_b=$(jq -r -s '.[0].process_argv_digest' "$TMPDIR/trace-kaslr-b.jsonl")
 
           cp "$TMPDIR"/trace-control-a.jsonl "$out/trace-control-a.jsonl"
           cp "$TMPDIR"/trace-control-b.jsonl "$out/trace-control-b.jsonl"
@@ -726,6 +770,10 @@ in
           cp "$TMPDIR"/qemu-args-control-b.txt "$out/qemu-args-control-b.txt"
           cp "$TMPDIR"/qemu-args-kaslr-a.txt "$out/qemu-args-kaslr-a.txt"
           cp "$TMPDIR"/qemu-args-kaslr-b.txt "$out/qemu-args-kaslr-b.txt"
+          cp "$TMPDIR"/qemu-args-control-a-canonical.txt "$out/qemu-args-control-a-canonical.txt"
+          cp "$TMPDIR"/qemu-args-control-b-canonical.txt "$out/qemu-args-control-b-canonical.txt"
+          cp "$TMPDIR"/qemu-args-kaslr-a-canonical.txt "$out/qemu-args-kaslr-a-canonical.txt"
+          cp "$TMPDIR"/qemu-args-kaslr-b-canonical.txt "$out/qemu-args-kaslr-b-canonical.txt"
           cp "$TMPDIR"/bases-control-a.kv "$out/bases-control-a.kv"
           cp "$TMPDIR"/bases-control-b.kv "$out/bases-control-b.kv"
           cp "$TMPDIR"/bases-kaslr-a.kv "$out/bases-kaslr-a.kv"
@@ -744,6 +792,12 @@ in
             echo host_adversary=jitter-load
             echo qemu_internal_seed=0x0010c006
             echo guest_entropy_seed=fw_cfg_and_deterministic_virtio_rng
+            echo process_argv_comparison=canonical_launch_with_run_local_output_paths_normalized
+            echo trace_comparison=process_argv_digest_excluded_after_canonical_argv_match
+            echo control_process_argv_digest_a="$control_process_argv_digest_a"
+            echo control_process_argv_digest_b="$control_process_argv_digest_b"
+            echo randomized_process_argv_digest_a="$kaslr_process_argv_digest_a"
+            echo randomized_process_argv_digest_b="$kaslr_process_argv_digest_b"
             echo control_cmdline_has_nokaslr_norandmaps=true
             echo randomized_cmdline_has_nokaslr_norandmaps=false
             echo control_fingerprint_match="$control_trace_match"
