@@ -355,34 +355,34 @@
             "EngineError::MissingBakedGenesis" \
             "instantiate missing baked genesis branch"
           require_line_marker_after \
-            "crucible/src/backend.rs" \
-            "crucible/src/backend.rs" \
+            "crucible/src/backend/error.rs" \
+            "crucible/src/backend/error.rs" \
             1 \
             "impl fmt::Display for BackendError" \
             "Self::NotImplemented { operation } => {" \
             "backend not-implemented display variant"
           require_line_marker \
-            "crucible/src/backend.rs" \
-            "crucible/src/backend.rs" \
+            "crucible/src/backend/error.rs" \
+            "crucible/src/backend/error.rs" \
             1 \
             "Self::Rejected { message } => f.write_str(message)," \
             "backend rejected display variant"
           require_line_marker_after \
-            "crucible/src/scheduler.rs" \
-            "crucible/src/scheduler.rs" \
+            "crucible/src/scheduler/liveness.rs" \
+            "crucible/src/scheduler/liveness.rs" \
             1 \
             "impl fmt::Display for SchedulerError" \
             "Self::NotImplemented { operation } => {" \
             "scheduler not-implemented display variant"
           require_line_marker \
-            "crucible/src/scheduler.rs" \
-            "crucible/src/scheduler.rs" \
+            "crucible/src/scheduler/liveness.rs" \
+            "crucible/src/scheduler/liveness.rs" \
             1 \
             "backend failed under scheduler control: {error}" \
             "scheduler backend display variant"
           require_line_marker \
-            "crucible/src/scheduler.rs" \
-            "crucible/src/scheduler.rs" \
+            "crucible/src/scheduler/liveness.rs" \
+            "crucible/src/scheduler/liveness.rs" \
             1 \
             "Self::BoundaryViolation { message } => f.write_str(message)," \
             "scheduler boundary display variant"
