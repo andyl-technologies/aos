@@ -332,6 +332,7 @@ in
             if grep -R -n -E 'QmpClient::loadvm[[:space:]]*\(|QMP_SNAPSHOT_LOAD_COMMAND|snapshot-load' \
               crates/*/src \
               | grep -v '^crates/crucible-qemu/src/node_factory/tests.rs:' \
+              | grep -v '^crates/crucible-qemu/src/node_factory/tests/' \
               | grep -v '^crates/crucible-qemu/src/qmp.rs:' \
               | grep -v '^crates/crucible-qemu/src/lib.rs:' \
               | grep -vE '^crates/crucible-api/src/vm_resume.rs:[0-9]+:.*"exact-snapshot-loadvm"' \

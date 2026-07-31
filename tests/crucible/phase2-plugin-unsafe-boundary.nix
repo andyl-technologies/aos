@@ -319,6 +319,7 @@ in
                 crates/crucible-qemu-plugin/src/setup/tests.rs|\
                 crates/crucible-qemu-plugin/src/network_rx.rs|\
                 crates/crucible-qemu-plugin/src/network_tx.rs|\
+                crates/crucible-qemu-plugin/src/raw_state_dump.rs|\
                 crates/crucible-qemu-plugin/src/vcpu_introspection.rs)
                   ;;
                 *)

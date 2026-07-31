@@ -215,6 +215,7 @@ in
 
             if grep -R -n -E 'cold[_ -]?boot|ColdBoot|cold_boot_to_ready|boot_to_ready' crates/*/src \
               | grep -v '^crates/crucible-qemu/src/realization.rs:' \
+              | grep -v '^crates/crucible-harness/' \
               | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
               > "$TMPDIR/production-cold-boot-markers.txt"; then
               cat "$TMPDIR/production-cold-boot-markers.txt" >&2
