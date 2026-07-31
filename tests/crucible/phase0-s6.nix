@@ -528,10 +528,10 @@ in
                     elif $left[0].vcpu != $right[0].vcpu then "vcpu"
                     elif $left[0].stream_hash != $right[0].stream_hash then "stream_hash"
                     elif $left[0].register_counts != $right[0].register_counts then "register_counts[0]"
-                    elif $left[0].register_hash != $right[0].register_hash then "register_hashes[0]"
-                    elif $left[0].ram_hash != $right[0].ram_hash then "ram_hash"
+                    elif $left[0].register_digests != $right[0].register_digests then "register_digests[0]"
+                    elif $left[0].ram_digest != $right[0].ram_digest then "ram_digest"
                     elif $left[0].device_event_hash != $right[0].device_event_hash then "device_event_hash"
-                    elif $left[0].extended_hash != $right[0].extended_hash then "extended_hash"
+                    elif $left[0].diagnostic_extended_fnv != $right[0].diagnostic_extended_fnv then "diagnostic_extended_fnv"
                     else "unknown"
                     end;
                   component
@@ -542,32 +542,69 @@ in
             return 1
           }
 
+          diagnose_trace_structure() {
+            label="$1"
+            jq -c -s '
+              map({
+                schema,
+                final,
+                tracked_vcpus,
+                stop_at,
+                sample_register_failures,
+                register_read_failures,
+                ram_bytes,
+                ram_digest,
+                memory_events_enabled,
+                device_event_capture,
+                device_event_hash,
+                register_digests,
+                register_counts,
+                register_file_bytes,
+                register_schema_digests
+              })
+            ' "$TMPDIR/trace-$label.jsonl" >&2 || true
+          }
+
           mkdir -p "$out"
 
           run_pair control
           run_pair kaslr
 
           for label in control-a control-b kaslr-a kaslr-b; do
-            jq -e -s --argjson horizon "$HORIZON" '
+            if ! jq -e -s --argjson horizon "$HORIZON" '
               length >= 2
               and all(.[]; (
-                .tracked_vcpus == 1
+                .schema == "crucible.qemu.trace-fingerprint.v6"
+                and .tracked_vcpus == 1
                 and .stop_at == $horizon
                 and .sample_register_failures == 0
                 and .register_read_failures == 0
                 and .ram_bytes > 0
+                and (.ram_digest | test("^[0-9a-f]{64}$"))
+                and .ram_digest != "0000000000000000000000000000000000000000000000000000000000000000"
                 and .memory_events_enabled == false
                 and .device_event_capture == false
                 and .device_event_hash == null
-                and (.register_hashes | type == "array")
-                and (.register_hashes | length) == 1
+                and (.register_digests | type == "array")
+                and (.register_digests | length) == 1
+                and (.register_digests[0] | test("^[0-9a-f]{64}$"))
+                and .register_digests[0] != "0000000000000000000000000000000000000000000000000000000000000000"
                 and (.register_counts | type == "array")
                 and (.register_counts | length) == 1
                 and .register_counts[0] > 0
+                and (.register_file_bytes | type == "array")
+                and (.register_file_bytes | length) == 1
+                and .register_file_bytes[0] > 0
+                and (.register_schema_digests | type == "array")
+                and (.register_schema_digests | length) == 1
+                and (.register_schema_digests[0] | test("^[0-9a-f]{64}$"))
+                and .register_schema_digests[0] != "0000000000000000000000000000000000000000000000000000000000000000"
               ))
               and any(.[]; .final == true)
-            ' "$TMPDIR/trace-$label.jsonl" >/dev/null \
-              || fail "trace $label failed structural S6 assertions"
+            ' "$TMPDIR/trace-$label.jsonl" >/dev/null; then
+              diagnose_trace_structure "$label"
+              fail "trace $label failed structural S6 assertions"
+            fi
           done
 
           for label in control-a control-b; do
@@ -668,9 +705,9 @@ in
           fi
 
           final_line=$(grep '"final":true' "$TMPDIR/trace-kaslr-a.jsonl" | tail -1)
-          final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.extended_hash')
-          final_register_hash=$(printf '%s\n' "$final_line" | jq -r '.register_hash')
-          final_ram_hash=$(printf '%s\n' "$final_line" | jq -r '.ram_hash')
+          final_extended_hash=$(printf '%s\n' "$final_line" | jq -r '.diagnostic_extended_fnv')
+          final_register_hash=$(printf '%s\n' "$final_line" | jq -r '.register_digests[0]')
+          final_ram_hash=$(printf '%s\n' "$final_line" | jq -r '.ram_digest')
           final_ram_bytes=$(printf '%s\n' "$final_line" | jq -r '.ram_bytes')
           final_device_event_hash=$(printf '%s\n' "$final_line" | jq -r '.device_event_hash')
           final_memory_events=$(printf '%s\n' "$final_line" | jq -r '.memory_events')
