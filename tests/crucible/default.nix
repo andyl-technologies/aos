@@ -1228,19 +1228,32 @@ in rec {
         };
         dependencies = [phase3.gates.adversarialDeterminism];
       };
-      e2eDeterminism = redBeforeAdvance {
+      e2eDeterminism = greenBeforeAdvance {
         attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
         # lint needle: e2eDeterminism = import ./phase4-e2e-determinism.nix
         gate = import ./phase4-e2e-determinism.nix {
           inherit pkgs lib;
           attrPath = "checks.crucible.phase4.gates.e2eDeterminism";
           taskIds = ["T-DET-26" "T-ASRT-16"];
-          dependencies = [replayOracle.rawGate phase1.simDouble];
+          dependencies = [
+            replayOracle.rawGate
+            phase1.simDouble
+            phase2.gates.anyGuest.rawGate
+            phase4.guestHostDoorbellCollisionInertness
+            phase4.guestHostChannelDeterminism
+            phase4.guestHostChannelGateWiring
+            phase4.guestHostAppRandomDoorbell
+          ];
         };
-        dependencies = [replayOracle phase1.simDouble];
-        phase = "phase4";
-        reason = "the remaining white-box channel work requires crash-control, network, and multi-node production evidence";
-        taskIds = ["T-GHC-6" "T-GHC-12" "T-GHC-15" "T-GHC-16"];
+        dependencies = [
+          replayOracle
+          phase1.simDouble
+          phase2.gates.anyGuest
+          phase4.guestHostDoorbellCollisionInertness
+          phase4.guestHostChannelDeterminism
+          phase4.guestHostChannelGateWiring
+          phase4.guestHostAppRandomDoorbell
+        ];
       };
     };
   };
