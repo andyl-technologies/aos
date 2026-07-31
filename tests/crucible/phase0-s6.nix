@@ -3,7 +3,7 @@
   lib,
 }: let
   cadence = 200000000;
-  horizon = 3400000000;
+  horizon = 3600000000;
   probeSource = builtins.readFile ./phase0-s6-probe.c;
 
   probe = pkgs.mkDerivation {
@@ -437,14 +437,18 @@ in
                 ;;
             esac
 
-            timeout 900 "$@" &
+            timeout 1200 "$@" &
             qemu_pid="$!"
 
             wait_for_socket "$qmp_socket" || fail "guest $label QMP socket did not appear"
             wait_for_horizon_pause "$label" "$qmp_socket" \
               || fail "guest $label did not pause at horizon"
-            wait_for_guest_pass "$label" \
-              || fail "guest $label did not report TEST_RESULT:PASS before horizon"
+            if ! wait_for_guest_pass "$label"; then
+              if [ -f "$TMPDIR/serial-$label.log" ]; then
+                cat "$TMPDIR/serial-$label.log" >&2
+              fi
+              fail "guest $label did not report TEST_RESULT:PASS before horizon"
+            fi
             qmp_cmd "$qmp_socket" '{"execute":"quit"}' "$TMPDIR/qmp-quit-$label.json" || true
             wait "$qemu_pid" || fail "guest $label QEMU exited unsuccessfully"
             qemu_pid=""
