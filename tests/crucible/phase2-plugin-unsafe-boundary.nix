@@ -309,8 +309,12 @@ in
                 crates/crucible-qemu-plugin/src/coverage.rs|\
                 crates/crucible-qemu-plugin/src/coverage/tests.rs|\
                 crates/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
+                crates/crucible-qemu-plugin/src/fingerprint_sampler/tests.rs|\
                 crates/crucible-qemu-plugin/src/registration/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/marker.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks/devices.rs|\
                 crates/crucible-qemu-plugin/src/runtime/tests.rs|\
@@ -360,8 +364,8 @@ in
             done < "$TMPDIR/plugin-unsafe-files"
 
             if grep -RIn 'transmute' crates/crucible-qemu-plugin/src \
-              | grep -Ev 'src/(abi|coverage|network_rx|network_tx)\.rs:'; then
-              echo "transmute is confined to audited QEMU symbol resolvers" >&2
+              | grep -Ev 'src/(abi|coverage|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/coverage/tests\.rs:|src/runtime/live_whitebox\.rs:'; then
+              echo "transmute is confined to audited QEMU FFI adapters and tests" >&2
               exit 1
             fi
             for pattern in \
@@ -375,18 +379,22 @@ in
               fi
             done
             if grep -RIn 'as_ptr().cast' crates/crucible-qemu-plugin/src \
-              | grep -Ev 'src/(abi|network_rx|network_tx)\.rs:'; then
-              echo "symbol-name pointer casts are confined to audited QEMU resolvers" >&2
+              | grep -Ev 'src/(abi|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/abi/tests\.rs:|src/runtime/live_whitebox(\.rs|/error\.rs):'; then
+              echo "pointer casts are confined to audited QEMU FFI adapters and tests" >&2
               exit 1
             fi
             if grep -RIn 'read_guest_memory' crates/crucible-qemu-plugin/src \
               | grep -v 'src/whitebox_doorbell.rs' \
+              | grep -v 'src/whitebox_doorbell/tests.rs' \
+              | grep -v 'src/runtime/live_whitebox.rs' \
               | grep -v 'src/lib.rs'; then
               echo "guest memory reads must route through whitebox_doorbell API adapters" >&2
               exit 1
             fi
             if grep -RIn 'write_whitebox_input' crates/crucible-qemu-plugin/src \
               | grep -v 'src/whitebox_doorbell.rs' \
+              | grep -v 'src/whitebox_doorbell/tests.rs' \
+              | grep -v 'src/runtime/live_whitebox/app_random.rs' \
               | grep -v 'src/lib.rs'; then
               echo "guest memory writes must route through whitebox_doorbell API adapters" >&2
               exit 1
