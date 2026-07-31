@@ -362,6 +362,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-exit-machine-readable-target" \
+              --features test-double \
               -p crucible-cli \
               --test machine_readable \
               -- --test-threads=1
