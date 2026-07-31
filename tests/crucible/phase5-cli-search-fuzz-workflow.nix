@@ -1143,12 +1143,12 @@ in
             )"
             test -n "$(
               sed -n \
-                '/"kind":"live_backend_execution".*"operation=search-live-branches"/p' \
+                '/"kind":"live_backend_execution".*"operation=search-live-branches/p' \
                 "$TMPDIR/production-search.jsonl"
             )"
             test -n "$(
               sed -n \
-                '/"kind":"final_outcome".*"subcommand=search status=passed exit_code=0"/p' \
+                '/"kind":"final_outcome".*"subcommand=search status=passed exit_code=0/p' \
                 "$TMPDIR/production-search.jsonl"
             )"
             test -n "$(
@@ -1158,12 +1158,12 @@ in
             )"
             test -n "$(
               sed -n \
-                '/"kind":"live_backend_execution".*"operation=fuzz-live-campaign"/p' \
+                '/"kind":"live_backend_execution".*"operation=fuzz-live-campaign/p' \
                 "$TMPDIR/production-fuzz.jsonl"
             )"
             test -n "$(
               sed -n \
-                '/"kind":"final_outcome".*"subcommand=fuzz status=passed exit_code=0"/p' \
+                '/"kind":"final_outcome".*"subcommand=fuzz status=passed exit_code=0/p' \
                 "$TMPDIR/production-fuzz.jsonl"
             )"
           '';
