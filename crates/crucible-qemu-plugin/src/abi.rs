@@ -120,8 +120,11 @@ const QEMU_PLUGIN_REQUEST_SHUTDOWN_SYMBOL_C: &[u8] = b"qemu_plugin_request_shutd
 const QEMU_PLUGIN_REGISTER_TCG_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_tcg_exec_cb\0";
 const QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL_C: &[u8] =
     b"qemu_plugin_register_vcpu_tb_trans_cb\0";
-const QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL_C: &[u8] =
-    b"qemu_plugin_register_vcpu_tb_exec_cb\0";
+const QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL_C: &[u8] =
+    b"qemu_plugin_register_vcpu_tb_exec_cond_cb\0";
+const QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL_C: &[u8] = b"qemu_plugin_scoreboard_new\0";
+const QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL_C: &[u8] = b"qemu_plugin_scoreboard_free\0";
+const QEMU_PLUGIN_U64_SET_SYMBOL_C: &[u8] = b"qemu_plugin_u64_set\0";
 const QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL_C: &[u8] = b"qemu_plugin_icount_at_tb_entry\0";
 const QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_flush_cb\0";
 const QEMU_PLUGIN_TB_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_tb_vaddr\0";
@@ -1515,13 +1518,17 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
 -> Result<crate::QemuBasicBlockCoverageApis, QemuPluginAbiError> {
     let register_tb_trans_cb =
         resolve_process_symbol(QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL_C);
-    let register_tb_exec_cb = resolve_process_symbol(QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL_C);
+    let register_tb_exec_cond_cb =
+        resolve_process_symbol(QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL_C);
     let tb_vaddr = resolve_process_symbol(QEMU_PLUGIN_TB_VADDR_SYMBOL_C);
     let tb_n_insns = resolve_process_symbol(QEMU_PLUGIN_TB_N_INSNS_SYMBOL_C);
     let tb_get_insn = resolve_process_symbol(QEMU_PLUGIN_TB_GET_INSN_SYMBOL_C);
     let insn_size = resolve_process_symbol(QEMU_PLUGIN_INSN_SIZE_SYMBOL_C);
     let icount_at_tb_entry = resolve_process_symbol(QEMU_PLUGIN_ICOUNT_AT_TB_ENTRY_SYMBOL_C);
     let register_flush_cb = resolve_process_symbol(QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL_C);
+    let scoreboard_new = resolve_process_symbol(QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL_C);
+    let scoreboard_free = resolve_process_symbol(QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL_C);
+    let u64_set = resolve_process_symbol(QEMU_PLUGIN_U64_SET_SYMBOL_C);
     let require = |symbol: *mut c_void, name| {
         if symbol.is_null() {
             Err(QemuPluginAbiError::RuntimeApiCapability { symbol: name })
@@ -1533,9 +1540,9 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
         register_tb_trans_cb,
         crate::QEMU_PLUGIN_REGISTER_VCPU_TB_TRANS_CB_SYMBOL,
     )?;
-    let register_tb_exec_cb = require(
-        register_tb_exec_cb,
-        crate::QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_CB_SYMBOL,
+    let register_tb_exec_cond_cb = require(
+        register_tb_exec_cond_cb,
+        crate::QEMU_PLUGIN_REGISTER_VCPU_TB_EXEC_COND_CB_SYMBOL,
     )?;
     let tb_vaddr = require(tb_vaddr, crate::QEMU_PLUGIN_TB_VADDR_SYMBOL)?;
     let tb_n_insns = require(tb_n_insns, crate::QEMU_PLUGIN_TB_N_INSNS_SYMBOL)?;
@@ -1549,6 +1556,9 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
         register_flush_cb,
         crate::QEMU_PLUGIN_REGISTER_FLUSH_CB_SYMBOL,
     )?;
+    let scoreboard_new = require(scoreboard_new, crate::QEMU_PLUGIN_SCOREBOARD_NEW_SYMBOL)?;
+    let scoreboard_free = require(scoreboard_free, crate::QEMU_PLUGIN_SCOREBOARD_FREE_SYMBOL)?;
+    let u64_set = require(u64_set, crate::QEMU_PLUGIN_U64_SET_SYMBOL)?;
 
     // SAFETY: all non-null addresses were resolved by their exact QEMU 10
     // public-plugin symbol names and are converted to matching `extern "C"`
@@ -1558,8 +1568,8 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
             std::mem::transmute::<*mut c_void, crate::QemuRegisterVcpuTbTransCbFn>(
                 register_tb_trans_cb,
             ),
-            std::mem::transmute::<*mut c_void, crate::QemuRegisterVcpuTbExecCbFn>(
-                register_tb_exec_cb,
+            std::mem::transmute::<*mut c_void, crate::QemuRegisterVcpuTbExecCondCbFn>(
+                register_tb_exec_cond_cb,
             ),
             std::mem::transmute::<*mut c_void, crate::QemuTbVaddrFn>(tb_vaddr),
             std::mem::transmute::<*mut c_void, crate::QemuTbNInsnsFn>(tb_n_insns),
@@ -1567,6 +1577,9 @@ pub(crate) fn resolve_qemu_basic_block_coverage_apis()
             std::mem::transmute::<*mut c_void, crate::QemuInsnSizeFn>(insn_size),
             std::mem::transmute::<*mut c_void, crate::QemuIcountAtTbEntryFn>(icount_at_tb_entry),
             std::mem::transmute::<*mut c_void, crate::QemuRegisterFlushCbFn>(register_flush_cb),
+            std::mem::transmute::<*mut c_void, crate::QemuPluginScoreboardNewFn>(scoreboard_new),
+            std::mem::transmute::<*mut c_void, crate::QemuPluginScoreboardFreeFn>(scoreboard_free),
+            std::mem::transmute::<*mut c_void, crate::QemuPluginU64SetFn>(u64_set),
         )
     })
 }

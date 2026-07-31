@@ -1230,16 +1230,18 @@ Recorded retirements: **RISK-15** is retired by `T-RISK-8`:
 `checks.crucible.phase0.coverageOverhead` ran the same deterministic
 boot-and-workload scenario in three interleaved repetitions across no-plugin
 baseline, plugin-loaded/no-callback disabled mode, hook-registered count mode,
-and coverage-on translated-TB-id set mode. Because the no-plugin run deliberately
+and coverage-on translated-TB-id set-first-execution mode. Because the no-plugin run deliberately
 has no instruction counter, its IPS is normalized with the paired hook-count
 retired-instruction count after identical workload output and tight
 hook-vs-coverage equal-work assertions. The run reported
-`coverage_unique_entries_min=113515`, `coverage_on_vs_baseline_min=1.0211`,
-`coverage_on_vs_hook_off_min=0.9136`,
-`max_retired_instruction_delta=0.000044`, and `max_tb_exec_delta=0.000023`,
-clearing the `0.7000` budget floor. No cheaper coverage representation is
-adopted for Phase 0; the row remains listed as a regression risk for future
-production coverage work and the full `gate:perf-bench` baseline.
+`coverage_unique_entries_min=115648`, `coverage_on_vs_baseline_min=0.9223`,
+`coverage_on_vs_hook_off_min=0.9665`,
+`max_retired_instruction_delta=0.000042`, and `max_tb_exec_delta=0.000055`,
+clearing the `0.7000` budget floor. The measured per-execution callback missed
+the floor, so the specified fallback was adopted: inline scoreboard accounting
+plus a conditional callback only for the first execution of each coverage-map
+entry. The production plugin uses the same bounded callback strategy; the row
+remains listed as a regression risk for the full `gate:perf-bench` baseline.
 
 **RISK-18** is retired by `T-RISK-11`: `checks.crucible.phase0.abiDrift`
 generated a C header from Rust `#[repr(C)]` layout facts, compiled the matching

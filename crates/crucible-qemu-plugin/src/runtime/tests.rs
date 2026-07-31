@@ -428,13 +428,16 @@ impl OwnedCallbackRegistrar for SuccessfulCallbackRegistrar {
 fn coverage_callback_model_apis() -> crate::QemuBasicBlockCoverageApis {
     crate::QemuBasicBlockCoverageApis::new(
         coverage_callback_model_register_tb_trans_cb,
-        coverage_callback_model_register_tb_exec_cb,
+        coverage_callback_model_register_tb_exec_cond_cb,
         coverage_callback_model_tb_vaddr,
         coverage_callback_model_tb_n_insns,
         coverage_callback_model_tb_get_insn,
         coverage_callback_model_insn_size,
         coverage_callback_model_icount_at_tb_entry,
         coverage_callback_model_register_flush_cb,
+        coverage_callback_model_scoreboard_new,
+        coverage_callback_model_scoreboard_free,
+        coverage_callback_model_u64_set,
     )
 }
 
@@ -446,11 +449,29 @@ extern "C" fn coverage_callback_model_register_tb_trans_cb(
     CALLBACK_MODEL_REGISTERED_PLUGIN_ID.store(plugin_id, Ordering::SeqCst);
 }
 
-extern "C" fn coverage_callback_model_register_tb_exec_cb(
+extern "C" fn coverage_callback_model_register_tb_exec_cond_cb(
     _tb: *mut crate::QemuPluginTb,
     _callback: Option<crate::QemuVcpuTbExecCbFn>,
     _flags: std::os::raw::c_int,
+    _condition: std::os::raw::c_int,
+    _entry: crate::QemuPluginU64,
+    _immediate: u64,
     _userdata: *mut std::os::raw::c_void,
+) {
+}
+
+extern "C" fn coverage_callback_model_scoreboard_new(
+    _element_size: usize,
+) -> *mut crate::QemuPluginScoreboard {
+    std::ptr::NonNull::dangling().as_ptr()
+}
+
+extern "C" fn coverage_callback_model_scoreboard_free(_score: *mut crate::QemuPluginScoreboard) {}
+
+extern "C" fn coverage_callback_model_u64_set(
+    _entry: crate::QemuPluginU64,
+    _vcpu_index: std::os::raw::c_uint,
+    _value: u64,
 ) {
 }
 
