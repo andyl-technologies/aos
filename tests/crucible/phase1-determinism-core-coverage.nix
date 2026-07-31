@@ -297,59 +297,59 @@
           }
 
           require_line_marker \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/configuration.rs" \
+            "crucible/src/model/configuration.rs" \
             1 \
             "return Err(ScheduleError::PrefixTooLong {" \
             "schedule prefix error branch"
           require_line_marker_after \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/configuration.rs" \
+            "crucible/src/model/configuration.rs" \
             1 \
             "impl fmt::Display for ScheduleError" \
             "requested," \
             "schedule error display variant"
           require_line_marker_after \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/engine.rs" \
+            "crucible/src/model/engine.rs" \
             1 \
             "impl fmt::Display for EngineError" \
             "Self::NotImplemented { operation } => {" \
             "engine error display variant"
           require_line_marker \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/runtime.rs" \
+            "crucible/src/model/runtime.rs" \
             1 \
             "return load_snapshot(config, snapshot);" \
             "instantiate exact snapshot branch"
           require_line_marker \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/runtime.rs" \
+            "crucible/src/model/runtime.rs" \
             1 \
             "let ancestor_runtime = instantiate(graph, &ancestor)?;" \
             "instantiate ancestor replay branch"
           require_line_marker \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/runtime.rs" \
+            "crucible/src/model/runtime.rs" \
             1 \
             "let genesis_runtime = instantiate(graph, &genesis)?;" \
             "instantiate genesis replay branch"
           require_line_marker \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/engine.rs" \
+            "crucible/src/model/engine.rs" \
             1 \
             "for decision in suffix.decisions() {" \
             "instantiate suffix replay loop"
           require_line_marker_after \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/temporal_graph/core.rs" \
+            "crucible/src/model/temporal_graph/core.rs" \
             1 \
             "pub fn cache_snapshot" \
             "return Err(EngineError::GenesisSnapshotMustBeBaked {" \
             "plain cached genesis rejection branch"
           require_line_marker_after \
-            "crucible/src/model.rs" \
-            "crucible/src/model.rs" \
+            "crucible/src/model/runtime.rs" \
+            "crucible/src/model/runtime.rs" \
             1 \
             "if config.is_genesis() {" \
             "EngineError::MissingBakedGenesis" \
