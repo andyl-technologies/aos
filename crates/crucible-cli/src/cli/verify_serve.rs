@@ -1188,6 +1188,7 @@ where
             final_state,
             outcome: Some(OutcomeKind::Passed),
             terminal_savepoint: Some(oracle.fat_checkpoint),
+            terminal_configuration: Some(snapshot.configuration.clone()),
             final_frontier_ticks: stopped
                 .as_ref()
                 .map(|summary| summary.frontier.ticks)

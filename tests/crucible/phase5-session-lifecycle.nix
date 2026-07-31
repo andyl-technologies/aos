@@ -13,7 +13,7 @@
   };
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  cliControl = builtins.readFile ../../crates/crucible-cli/src/cli/control.rs;
+  cliTerminalObservation = builtins.readFile ../../crates/crucible-cli/src/cli/control/streaming_events.rs;
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -173,7 +173,7 @@
         needle = "ExhaustBudget";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/cli/control.rs" cliControl [
+    ++ failuresFor "crates/crucible-cli/src/cli/control/streaming_events.rs" cliTerminalObservation [
       {
         label = "CLI projects the engine outcome";
         needle = "status_from_outcome(observation.outcome)";
@@ -182,6 +182,13 @@
         label = "CLI rejects absent engine outcome";
         needle = "session reached a terminal observation without an engine outcome";
       }
+      {
+        label = "CLI rejects budget/outcome disagreement";
+        needle = "budget observation did not match the session engine terminal outcome";
+      }
+    ]
+    ++ lib.optionals (hasInfix "&& matches!(observation.outcome, Some(OutcomeKind::Passed) | None)" cliTerminalObservation) [
+      "crates/crucible-cli/src/cli/control/streaming_events.rs: CLI still synthesizes a failed status from a passing engine outcome"
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

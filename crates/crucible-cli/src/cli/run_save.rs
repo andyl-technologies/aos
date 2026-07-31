@@ -14,6 +14,7 @@ pub(super) struct RunWorkflowReport {
     pub(super) final_state: String,
     pub(super) outcome: Option<OutcomeKind>,
     pub(super) terminal_savepoint: Option<crucible::ContentHash>,
+    pub(super) terminal_configuration: Option<crucible::Configuration>,
     pub(super) final_frontier_ticks: u64,
     pub(super) final_quanta: u64,
     pub(super) budget_timed_out: bool,
@@ -45,7 +46,6 @@ pub(super) struct ResumeWorkflowReport {
 pub(super) type CliModelConfiguration = crucible::Configuration;
 #[cfg(any(test, feature = "test-double"))]
 pub(super) type CliModelScenarioDef = crucible::ScenarioDef;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ForkWorkflowReport {
     pub(super) run: RunWorkflowReport,
@@ -143,6 +143,7 @@ pub(super) struct RunObservation {
     pub(super) final_state: String,
     pub(super) outcome: Option<OutcomeKind>,
     pub(super) terminal_savepoint: Option<crucible::ContentHash>,
+    pub(super) terminal_configuration: crucible::Configuration,
     pub(super) frontier_ticks: u64,
     pub(super) quanta: u64,
     pub(super) budget_timed_out: bool,
@@ -1078,6 +1079,7 @@ where
             final_state,
             outcome: observed_outcome,
             terminal_savepoint: Some(terminal_oracle.fat_checkpoint),
+            terminal_configuration: Some(snapshot.configuration.clone()),
             final_frontier_ticks: snapshot.frontier.ticks.max(boundary.frontier.ticks),
             final_quanta: snapshot.quanta.max(boundary.quanta_stepped),
             budget_timed_out: false,

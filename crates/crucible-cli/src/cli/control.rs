@@ -226,6 +226,7 @@ where
             final_state,
             outcome: Some(OutcomeKind::Passed),
             terminal_savepoint: Some(oracle.fat_checkpoint),
+            terminal_configuration: Some(snapshot.configuration.clone()),
             final_frontier_ticks: stopped
                 .as_ref()
                 .map(|summary| summary.frontier.ticks)
@@ -958,6 +959,7 @@ where
         final_state: observation.final_state,
         outcome: observation.outcome,
         terminal_savepoint: observation.terminal_savepoint,
+        terminal_configuration: Some(observation.terminal_configuration),
         final_frontier_ticks: observation.frontier_ticks,
         final_quanta: observation.quanta,
         budget_timed_out: observation.budget_timed_out,
@@ -1203,10 +1205,14 @@ where
                 streamed_event_cursor,
             )
             .await?;
+            let terminal_configuration =
+                query_run_terminal_configuration(control, command_id, acknowledged_commands)
+                    .await?;
             return Ok(RunObservation {
                 final_state: terminal_final_state(run_plan, session.outcome),
                 outcome: session.outcome,
                 terminal_savepoint: session.terminal_savepoint,
+                terminal_configuration,
                 frontier_ticks: session.frontier.ticks,
                 quanta: session.quanta_stepped,
                 budget_timed_out: false,
@@ -1365,6 +1371,12 @@ where
         final_state,
         outcome: stopped.outcome,
         terminal_savepoint: stopped.terminal_savepoint,
+        terminal_configuration: query_run_terminal_configuration(
+            control,
+            command_id,
+            acknowledged_commands,
+        )
+        .await?,
         frontier_ticks: stopped.frontier.ticks,
         quanta: stopped.quanta_stepped,
         budget_timed_out: stopped.outcome == Some(OutcomeKind::Timeout),
@@ -1420,35 +1432,6 @@ pub(super) fn terminal_outcome_label(outcome: Option<OutcomeKind>) -> &'static s
         Some(OutcomeKind::Crashed) => "crashed",
         Some(OutcomeKind::Stopped) => "stopped",
         None => "unknown",
-    }
-}
-
-pub(super) fn run_status_from_observation(
-    run_plan: &RunInvocationPlan,
-    observation: &RunObservation,
-) -> Result<BackendCommandStatus, CliError> {
-    if observation.budget_timed_out {
-        return Ok(BackendCommandStatus::Timeout);
-    }
-    if run_plan.terminal_condition == RunTerminalCondition::Property
-        && matches!(observation.outcome, Some(OutcomeKind::Passed) | None)
-    {
-        return Ok(BackendCommandStatus::Failed);
-    }
-    status_from_outcome(observation.outcome)
-}
-
-pub(super) fn status_from_outcome(
-    outcome: Option<OutcomeKind>,
-) -> Result<BackendCommandStatus, CliError> {
-    match outcome {
-        Some(OutcomeKind::Passed | OutcomeKind::Stopped) => Ok(BackendCommandStatus::Passed),
-        Some(OutcomeKind::Failed) => Ok(BackendCommandStatus::Failed),
-        Some(OutcomeKind::Timeout) => Ok(BackendCommandStatus::Timeout),
-        Some(OutcomeKind::Crashed) => Ok(BackendCommandStatus::Crashed),
-        None => Err(backend_error(
-            "session reached a terminal observation without an engine outcome",
-        )),
     }
 }
 

@@ -982,114 +982,15 @@ pub(super) fn validate_digest(field: &'static str, digest: &str) -> Result<(), C
     Ok(())
 }
 
-pub(super) fn artifact_line_error(line_index: usize, tag: &str, reason: &str) -> CliError {
-    artifact_error(format!("line {} `{tag}`: {reason}", line_index + 1))
-}
+#[path = "artifact/errors.rs"]
+mod errors;
 
-pub(super) fn missing_line(tag: &str) -> CliError {
-    artifact_error(format!("missing `{tag}` line"))
-}
+pub(super) use errors::*;
 
-pub(super) fn artifact_error(reason: impl Into<String>) -> CliError {
-    CliError::Artifact(reason.into())
-}
+#[path = "artifact/reports.rs"]
+mod reports;
 
-pub(super) fn invalid_scenario(reason: impl Into<String>) -> CliError {
-    CliError::InvalidScenario(reason.into())
-}
+pub(super) use reports::*;
 
-#[derive(Debug)]
-pub(super) struct ReplayArtifactReport {
-    pub(super) path: PathBuf,
-    pub(super) digest: String,
-    pub(super) seed: u64,
-    pub(super) scenario_digest: String,
-    pub(super) reduction: Option<ReplayReductionProof>,
-    pub(super) to_savepoint: Option<ReplayToSavepointReport>,
-    pub(super) check: Option<ReplayCheckReport>,
-    pub(super) bisect: Option<ReplayBisectionReport>,
-}
-
-#[derive(Debug)]
-pub(super) struct ReplayReductionProof {
-    pub(super) artifact: crucible::ContentHash,
-    pub(super) scenario: crucible::ContentHash,
-    pub(super) schedule: crucible::ContentHash,
-    pub(super) state: crucible::ContentHash,
-    pub(super) reconstructed_decisions: usize,
-}
-
-#[derive(Debug)]
-pub(super) struct ReplayToSavepointReport {
-    pub(super) target_label: String,
-    pub(super) checkpoint: crucible::ContentHash,
-    pub(super) frontier_ticks: u64,
-    pub(super) schedule_prefix: ReplaySchedulePrefixProof,
-    pub(super) oracle: SavepointOracleProof,
-    pub(super) materialization: ReplayToSavepointMaterializationProof,
-}
-
-#[derive(Debug)]
-pub(super) struct ReplaySchedulePrefixProof {
-    pub(super) target_decisions: usize,
-    pub(super) artifact_decisions: usize,
-    pub(super) matched_decisions: usize,
-    pub(super) typed_prefix_digest: String,
-    pub(super) artifact_prefix_digest: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ReplaySchedulePrefixDecisionProof {
-    pub(super) sequence: u64,
-    pub(super) virtual_time_ticks: u64,
-    pub(super) kind: String,
-    pub(super) payload_summary: String,
-    pub(super) payload_digest: String,
-}
-
-#[derive(Debug)]
-pub(super) struct ReplayToSavepointMaterializationProof {
-    pub(super) materialization: &'static str,
-    pub(super) operation: &'static str,
-    pub(super) graph: crucible::ContentHash,
-    pub(super) configuration: crucible::ContentHash,
-    pub(super) schedule: crucible::ContentHash,
-    pub(super) checkpoint: crucible::ContentHash,
-    pub(super) reduced_state: crucible::ContentHash,
-    pub(super) runtime_state: crucible::ContentHash,
-    pub(super) single_vm_fingerprint: crucible::ContentHash,
-    pub(super) replay_fat_checkpoint: crucible::ContentHash,
-    pub(super) replay_thin_checkpoint: crucible::ContentHash,
-}
-
-#[derive(Debug)]
-pub(super) struct ReplayCheckReport {
-    pub(super) path: PathBuf,
-    pub(super) digest: String,
-    pub(super) mismatch: Option<ReplayCheckMismatchReport>,
-}
-
-#[derive(Debug)]
-pub(super) struct ReplayCheckMismatchReport {
-    pub(super) original_digest: String,
-    pub(super) replayed_digest: String,
-    pub(super) first_diff_byte: usize,
-    pub(super) original_len: usize,
-    pub(super) replayed_len: usize,
-}
-
-#[derive(Debug)]
-pub(super) struct ReplayBisectionReport {
-    pub(super) other_path: PathBuf,
-    pub(super) other_digest: String,
-    pub(super) divergence: Option<VerifyDivergenceReport>,
-}
-
-#[derive(Debug)]
-pub(super) struct FailureArtifactReport {
-    pub(super) path: PathBuf,
-    pub(super) digest: String,
-    pub(super) footer: FailureReproductionFooter,
-}
 #[path = "artifact/materialization_proof.rs"]
 mod materialization_proof;

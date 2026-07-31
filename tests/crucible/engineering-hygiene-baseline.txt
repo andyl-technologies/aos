@@ -18,7 +18,6 @@ shape-line|crates/crucible-cas/src/lib.rs|1383
 shape-line|crates/crucible-cli/src/cli/artifact.rs|1092
 shape-line|crates/crucible-cli/src/cli/backend.rs|1308
 shape-line|crates/crucible-cli/src/cli/control.rs|1699
-shape-line|crates/crucible-cli/src/cli/dispatch.rs|856
 shape-line|crates/crucible-cli/src/cli/planning/invocations.rs|2566
 shape-line|crates/crucible-cli/src/cli/planning/verify_seed_render.rs|905
 shape-line|crates/crucible-cli/src/cli/resume_fork.rs|2068
@@ -209,9 +208,10 @@ qemu-token|crucible-cli|crates/crucible-cli/src/cli/backend.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/backend.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/backend/evidence.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/backend/evidence.rs|qemu
-qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|QEMU
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch.rs|qemu
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch/support.rs|QEMU
+qemu-token|crucible-cli|crates/crucible-cli/src/cli/dispatch/support.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/report.rs|Qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/resume_fork.rs|qemu
 qemu-token|crucible-cli|crates/crucible-cli/src/cli/run_save.rs|qemu

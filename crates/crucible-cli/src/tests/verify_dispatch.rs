@@ -1603,8 +1603,7 @@ pub(super) fn cli_replay_validates_reproduction_artifact() -> Result<(), Box<dyn
 }
 
 #[test]
-pub(super) fn cli_replay_reexecutes_embedded_model_reproduction()
--> Result<(), Box<dyn Error>> {
+pub(super) fn cli_replay_reexecutes_embedded_model_reproduction() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let path = temp.path().join("model-case.crucible");
     let fixture = crucible::happy_path_scenario()?;
