@@ -1,8 +1,6 @@
 //! Loaded-QEMU proof for live scheduler-commanded preemptions.
 
 use std::fs;
-use std::thread;
-use std::time::{Duration, Instant};
 
 use crucible::{ExecutionFingerprint, SimDoubleHostScheduleEvent};
 use crucible_protocol::deterministic_ipi_delivery_icount;
@@ -13,8 +11,8 @@ use crucible_shmem::{
 
 use crate::{
     LaunchProfileCandidate, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
-    QemuMappedQuantumShmemHotPath, QemuNodeChild, QemuPluginIpcControlChannel,
-    QemuQuantumShmemConfig, QemuShmemHotPathChannel, complete_qemu_host_plugin_setup,
+    QemuMappedQuantumShmemHotPath, QemuPluginIpcControlChannel, QemuQuantumShmemConfig,
+    QemuShmemHotPathChannel, complete_qemu_host_plugin_setup,
     spawn_qemu_child_with_fds_in_directory,
 };
 
@@ -25,8 +23,6 @@ use super::{
     assert_sim_double_schedule_matches, channel_error, node_id, path_text, scheduler,
     vm_launch_config,
 };
-
-const FINGERPRINT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 /// Successful evidence from the live patched-QEMU preemption gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -321,54 +317,19 @@ fn run_preemption_scenario(
     })
 }
 
-// crucible-lint: allow clippy-disallowed-method -- host timeout bounds digest-worker liveness only.
-#[allow(clippy::disallowed_methods)]
 fn required_sample(
     hot_path: &QemuMappedQuantumShmemHotPath,
-    child: &mut QemuNodeChild,
+    child: &mut crate::QemuNodeChild,
     config: &LivePluginQuantumGateConfig,
     expected_icount: u64,
 ) -> Result<FingerprintSample, LivePluginQuantumGateError> {
-    let started = Instant::now();
-    loop {
-        if let Some(sample) = hot_path
-            .fingerprint_sample()
-            .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?
-        {
-            if sample.sample_icount == expected_icount {
-                if sample.vcpu_count != 2
-                    || sample.component_failures != 0
-                    || sample.rr_current_vcpu >= 2
-                {
-                    return Err(probe_error(format!(
-                        "invalid preemption boundary sample at {expected_icount}: {sample:?}"
-                    )));
-                }
-                return Ok(sample);
-            }
-            if sample.sample_icount > expected_icount {
-                return Err(probe_error(format!(
-                    "preemption fingerprint sample advanced past {expected_icount}: {sample:?}"
-                )));
-            }
-        }
-        if let Some(status) = child
-            .try_wait_natural_exit()
-            .map_err(|source| LivePluginQuantumGateError::ChildWait { source })?
-        {
-            return Err(LivePluginQuantumGateError::ChildExitBeforeBoundary {
-                ceiling_icount: expected_icount,
-                status: status.to_string(),
-            });
-        }
-        if started.elapsed() >= config.completion_timeout() {
-            return Err(probe_error(format!(
-                "live preemption gate observed no fingerprint sample at {expected_icount} within {:?}",
-                config.completion_timeout()
-            )));
-        }
-        thread::sleep(FINGERPRINT_POLL_INTERVAL);
+    let sample = scheduler::wait_for_fingerprint_sample(hot_path, child, expected_icount, config)?;
+    if sample.vcpu_count != 2 || sample.component_failures != 0 || sample.rr_current_vcpu >= 2 {
+        return Err(probe_error(format!(
+            "invalid preemption boundary sample at {expected_icount}: {sample:?}"
+        )));
     }
+    Ok(sample)
 }
 
 fn require_reached_ceiling(

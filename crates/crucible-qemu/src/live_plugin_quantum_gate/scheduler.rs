@@ -11,6 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crucible::{AdvanceOutcome, ExecutionHorizon, Icount, SimDoubleHostScheduleEvent};
+use crucible_shmem::FingerprintSample;
 
 use crate::quantum_boundary::{QuantumBoundary, classify_quantum_boundary};
 use crate::{
@@ -240,6 +241,50 @@ fn wait_for_quantum_boundary(
             return Err(LivePluginQuantumGateError::QuantumTimeout {
                 ceiling_icount: ceiling,
                 last_icount: current,
+                timeout: config.completion_timeout(),
+            });
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+// crucible-lint: allow clippy-disallowed-method -- host timeout bounds digest-worker liveness only.
+#[allow(clippy::disallowed_methods)]
+pub(super) fn wait_for_fingerprint_sample(
+    hot_path: &QemuMappedQuantumShmemHotPath,
+    child: &mut crate::QemuNodeChild,
+    expected_icount: u64,
+    config: &LivePluginQuantumGateConfig,
+) -> Result<FingerprintSample, LivePluginQuantumGateError> {
+    // crucible-lint: allow host-monotonic-time -- supervised liveness bound never enters guest or canonical state.
+    let started = Instant::now();
+    loop {
+        if let Some(sample) = hot_path
+            .fingerprint_sample()
+            .map_err(|source| LivePluginQuantumGateError::MappedHotPath { source })?
+        {
+            if sample.sample_icount == expected_icount {
+                return Ok(sample);
+            }
+            if sample.sample_icount > expected_icount {
+                return Err(LivePluginQuantumGateError::FingerprintSampleAdvanced {
+                    expected_icount,
+                    sample_icount: sample.sample_icount,
+                });
+            }
+        }
+        if let Some(status) = child
+            .try_wait_natural_exit()
+            .map_err(|source| LivePluginQuantumGateError::ChildWait { source })?
+        {
+            return Err(LivePluginQuantumGateError::ChildExitBeforeBoundary {
+                ceiling_icount: expected_icount,
+                status: status.to_string(),
+            });
+        }
+        if started.elapsed() >= config.completion_timeout() {
+            return Err(LivePluginQuantumGateError::FingerprintSampleTimeout {
+                expected_icount,
                 timeout: config.completion_timeout(),
             });
         }

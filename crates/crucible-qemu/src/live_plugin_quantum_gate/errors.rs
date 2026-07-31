@@ -108,6 +108,24 @@ pub enum LivePluginQuantumGateError {
         /// Host-side diagnostic timeout.
         timeout: Duration,
     },
+    /// The asynchronous fingerprint worker did not publish the requested boundary sample in time.
+    #[error(
+        "quantum fingerprint sample at icount {expected_icount} was not published within {timeout:?}"
+    )]
+    FingerprintSampleTimeout {
+        /// Exact boundary whose fingerprint was requested.
+        expected_icount: u64,
+        /// Host-side diagnostic timeout.
+        timeout: Duration,
+    },
+    /// The asynchronous fingerprint worker skipped past the requested boundary sample.
+    #[error("quantum fingerprint sample advanced past icount {expected_icount} to {sample_icount}")]
+    FingerprintSampleAdvanced {
+        /// Exact boundary whose fingerprint was requested.
+        expected_icount: u64,
+        /// Later boundary published by the worker.
+        sample_icount: u64,
+    },
     /// QEMU exited before a quantum published its boundary.
     #[error("quantum QEMU exited before reaching a boundary at ceiling {ceiling_icount}: {status}")]
     ChildExitBeforeBoundary {
