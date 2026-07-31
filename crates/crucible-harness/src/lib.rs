@@ -225,7 +225,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         name: "gate:basic-block-coverage",
         phase: GatePhase::Phase6,
         owner: "crucible-qemu-plugin",
-        status: GateStatus::RedPlaceholder,
+        status: GateStatus::Implemented,
     },
     GateSpec {
         name: "gate:perf-bench",

@@ -26,7 +26,7 @@ fn canonical_gate_catalog_matches_rfc_table_and_references() -> Result<(), Box<d
 }
 
 #[test]
-fn architecture_red_placeholder_gates_are_wired() {
+fn canonical_gate_statuses_are_current() {
     let placeholders: BTreeSet<&str> = canonical_gates()
         .iter()
         .filter_map(|gate| {
@@ -37,9 +37,7 @@ fn architecture_red_placeholder_gates_are_wired() {
             }
         })
         .collect();
-    // Coverage has deterministic model and bridge targets, but the canonical
-    // gate stays red until a loaded-QEMU callback run proves the live boundary.
-    let expected = BTreeSet::from(["gate:basic-block-coverage"]);
+    let expected = BTreeSet::new();
 
     assert_eq!(placeholders, expected);
 
@@ -117,7 +115,7 @@ fn architecture_red_placeholder_gates_are_wired() {
     ));
     assert!(matches!(
         find_gate("gate:basic-block-coverage").map(|spec| spec.status),
-        Some(GateStatus::RedPlaceholder)
+        Some(GateStatus::Implemented)
     ));
 
     let expected_phases = BTreeMap::from([
