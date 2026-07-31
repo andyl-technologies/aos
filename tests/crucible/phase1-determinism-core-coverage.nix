@@ -440,20 +440,20 @@
             "pub fn default_rr_preemption" \
             "decision recorder default preemption derivation"
           require_line_marker \
-            "crucible/src/sim_backend.rs" \
-            "crucible/src/sim_backend.rs" \
+            "crucible/src/local_backend.rs" \
+            "crucible/src/local_backend.rs" \
             2 \
             "sim backend is shut down; cannot {operation}" \
             "sim backend shutdown rejection branches"
           require_line_marker \
-            "crucible/src/sim_backend.rs" \
-            "crucible/src/sim_backend.rs" \
+            "crucible/src/local_backend.rs" \
+            "crucible/src/local_backend.rs" \
             1 \
             "sim backend cannot advance backwards from {} to {} retired instructions" \
             "sim backend backward advance branch"
           require_line_marker \
-            "crucible/src/sim_backend.rs" \
-            "crucible/src/sim_backend.rs" \
+            "crucible/src/local_backend.rs" \
+            "crucible/src/local_backend.rs" \
             1 \
             "sim backend cannot restore unknown checkpoint" \
             "sim backend restore error branch"
