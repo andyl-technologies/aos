@@ -684,7 +684,7 @@ pub(super) fn build_live_node(
         GATE_SLOT,
     )
     .map_err(|source| QemuLiveNodeStepGateError::HostIoRuntime { source })?;
-    prime_guest_off_boot_barrier(
+    let priming_network_outputs = prime_guest_off_boot_barrier(
         &setup,
         config.completion_timeout,
         identity.node,
@@ -705,6 +705,7 @@ pub(super) fn build_live_node(
         QemuCrashDetector::new(identity.crash_detector),
         runtime,
     );
+    let restoring_checkpoint = restore.is_some();
     let mut node = match restore {
         Some(restore) => {
             build_qemu_node_from_restored_checkpoint(child, setup, qmp, restore, factory_runtime)
@@ -714,6 +715,9 @@ pub(super) fn build_live_node(
     .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
     if let Some(gdbstub) = &config.gdbstub {
         node = node.with_gdbstub(gdbstub.clone());
+    }
+    if !restoring_checkpoint {
+        node.retain_priming_network_outputs(priming_network_outputs);
     }
     node.synchronize_observed_time().map_err(|source| {
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)

@@ -97,6 +97,24 @@ fn cli_production_build_rejects_the_mock_failure_gate_flag() -> Result<(), Box<d
     Ok(())
 }
 
+#[cfg(not(feature = "test-double"))]
+#[test]
+fn cli_production_selftest_help_excludes_test_double_options() -> Result<(), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
+        .args(["selftest", "--help"])
+        .output()?;
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(stdout.contains("Run the packaged determinism gates"));
+    assert!(stdout.contains("--with-qemu"));
+    assert!(!stdout.contains("double"));
+    assert!(!stdout.contains("--corpus"));
+
+    Ok(())
+}
+
 #[test]
 fn cli_help_process_version_exits_zero() -> Result<(), Box<dyn Error>> {
     for flag in ["--version", "-V"] {

@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11  DCE 10
 PAT 9  TIME 9  DBG 8  TRI 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:45bd0152395fae77`
+Checklist sync digest: `rfc0010-checklist-v1:5f1a5e7348a2a31f`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -388,9 +388,9 @@ long-held locks.
   records a backend-selection route for each backend-routed subcommand, sends
   `--daemon` invocations over a fakeable API command runner without local
   backend selection, resolves local `auto` through hermetic QEMU/plugin
-  discovery when a valid pair is available and otherwise to the in-process
-  double with an announcement, fails explicit QEMU discovery/configuration
-  errors with exit 4, proves explicit double never resolves to QEMU, and compares recorded
+  discovery when a valid pair is available and fails closed otherwise, omits
+  the double parser variant and implementation from production builds, fails
+  explicit QEMU discovery/configuration errors with exit 4, and compares recorded
   local/remote stdout/stderr, exit-code, canonical-log, and artifact projections.
   The selected local QEMU route boots the closure-owned emulator, stock AOS
   kernel/root fixture, and production plugin through the API boundary and
@@ -450,12 +450,14 @@ long-held locks.
   binary, hidden gate-only flag exclusion from help, and rejection of future
   flags whose command behavior is not implemented yet.
   `T-CLI-8` is completed through `checks.crucible.phase5.cliSelftest`, which covers
-  the RFC §8 fast double-backed default gate set, canonical `--gates <list>`
-  validation for supported selftest runners, malformed/unsupported selection
-  rejection, hermetic `--with-qemu` discovery before QEMU-backed readiness rows,
-  file-backed `--corpus <path>` manifests of built-in fixture names, built-in
-  example corpus execution, and per-gate PASS rows with runner/QEMU identity
-  metadata.
+  a process invocation of the packaged production
+  `crucible selftest --with-qemu` process, with three independent live
+  QEMU/plugin boots against the unmodified stock Linux kernel and per-gate PASS
+  rows carrying QEMU identity, terminal icount, and execution fingerprint.
+  Supplemental feature-gated tests cover the fast test corpus, canonical
+  `--gates <list>` validation, malformed/unsupported selection rejection, and
+  file-backed `--corpus <path>` manifests; those test-double runners are absent
+  from the packaged binary.
   `T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`, which
   covers executable `save <SCENARIO> --at quiescence` and `--at virtual-time
   --max-virtual-time <dur>` saves, parser/planner coverage for
@@ -624,12 +626,22 @@ long-held locks.
   `LocalDagStore` corpus persistence, stored family-hash loading as strict
   scenario-family TOML from the configured DAG store, deterministic `fuzz-run`
   output with generated-mutant/admission/retained-entry/store-put/
-  replay-validation counts, process-level local-double `search` and `fuzz`
-  JSONL output with command-specific canonical events plus `final_outcome`, and
-  explicit backend errors for missing/corrupt stored family objects and
-  unsupported fuzz targets. The selected QEMU search/fuzz routes independently
-  boot the packaged backend and append its live icount/fingerprint proof before
-  retaining the backend-independent exploration evidence.
+  replay-validation counts, and explicit backend errors for missing/corrupt
+  stored family objects and unsupported fuzz targets. The gate process-executes
+  packaged production `search` and `fuzz` commands against the unmodified stock
+  Linux kernel. Search queries the engine-owned live frontier and realizes child
+  schedule prefixes in fresh QEMU sessions before replay-oracle admission; fuzz
+  executes warm-up and guided iterations in fresh QEMU sessions and feeds
+  non-empty plugin basic-block coverage into the engine policy. The gate requires
+  branch-realization, coverage-feedback, pinned backend proof, and successful
+  JSONL `final_outcome` records. The search and fuzz fixtures reuse the phase-2
+  guest-only raw-Ethernet initramfs. Search uses shift 0, the certified
+  3.999-billion-nanosecond conservative link window, and a
+  12-billion-icount horizon; its single root expansion discovers the live loss
+  frontier and replay-validates both children in fresh two-node QEMU sessions.
+  The fuzz family excludes pre-boot faults so a real guest quantum commits
+  plugin coverage before feedback is evaluated. Neither fixture modifies
+  Linux.
   `T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`: the
   thin `triage <FINDINGS>` parser/planner loads empty and signed engine-owned
   property findings ledgers through the local DagStore, drives triage-engine

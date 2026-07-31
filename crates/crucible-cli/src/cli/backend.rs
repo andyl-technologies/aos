@@ -268,10 +268,7 @@ pub(super) fn plan_backend_selection_with_discovery(
             ),
             #[cfg(not(any(test, feature = "test-double")))]
             None => {
-                return Err(backend_error(
-                    "no hermetic QEMU backend was discovered; this production build does not \
-                     include the in-process test double",
-                ));
+                return Err(backend_error("no hermetic QEMU backend was discovered"));
             }
         },
     };
@@ -851,9 +848,17 @@ pub(super) fn current_rpc_abi_build() -> String {
     RPC_PROTOCOL_BUILD.to_string()
 }
 
+#[cfg(any(test, feature = "test-double"))]
 pub(super) fn qemu_discovery_order_help() -> String {
     format!(
         "discovery order is --qemu/--plugin, {CRUCIBLE_QEMU_ENV}/{CRUCIBLE_PLUGIN_ENV}, then AOS package-set hints {CRUCIBLE_AOS_QEMU_ENV}/{CRUCIBLE_AOS_PLUGIN_ENV}; host $PATH QEMU is never used; supply a matched qemu-crucible/crucible-qemu-plugin pair or use --backend double"
+    )
+}
+
+#[cfg(not(any(test, feature = "test-double")))]
+pub(super) fn qemu_discovery_order_help() -> String {
+    format!(
+        "discovery order is --qemu/--plugin, {CRUCIBLE_QEMU_ENV}/{CRUCIBLE_PLUGIN_ENV}, then AOS package-set hints {CRUCIBLE_AOS_QEMU_ENV}/{CRUCIBLE_AOS_PLUGIN_ENV}; host $PATH QEMU is never used; supply a matched qemu-crucible/crucible-qemu-plugin pair"
     )
 }
 
@@ -1279,6 +1284,4 @@ pub(super) fn execute_backend_routed_command(
 }
 #[path = "backend/evidence.rs"]
 mod evidence;
-pub(super) use evidence::{
-    observe_local_backend_execution, validate_backend_execution_evidence,
-};
+pub(super) use evidence::{observe_local_backend_execution, validate_backend_execution_evidence};

@@ -1,0 +1,52 @@
+[scenario]
+id = "blake3:bb02c93649624a9b00e4002d8b5146348ec3659be967646291b5d872f667c41e"
+seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
+app_random_draw_cap = "18446744073709551615"
+
+[world]
+id = "blake3:0d6a656e6d80743cab1964d5b767f1a742aab7e15a452d4a03a9b89a96a0db02"
+
+[[world.node]]
+id = "client"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 quiet net.ifnames=0"
+smp_vcpus = 1
+icount_shift = 0
+kernel = "blake3:e3ae4de41db931f5e16c84e505f67a63d629b397504fbf36366cf9d831d73fdf"
+root_image = "blake3:278b7c46b574d2ad3ac69d3acabef35f4f8e99ac29fb9576eed49602b06a9ccb"
+initrd = "blake3:1eefd0f5950009bf5451bb5192b0aeadee8db98f1a5f4ebd46aa572d15819eec"
+white_box = "disabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[[world.node]]
+id = "server"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 quiet net.ifnames=0"
+smp_vcpus = 1
+icount_shift = 0
+kernel = "blake3:e3ae4de41db931f5e16c84e505f67a63d629b397504fbf36366cf9d831d73fdf"
+root_image = "blake3:278b7c46b574d2ad3ac69d3acabef35f4f8e99ac29fb9576eed49602b06a9ccb"
+initrd = "blake3:1eefd0f5950009bf5451bb5192b0aeadee8db98f1a5f4ebd46aa572d15819eec"
+white_box = "disabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[[world.link]]
+endpoint_a = "client"
+endpoint_b = "server"
+latency_nanos = 3999000000
+jitter_nanos = 0
+loss_millionths = 250000
+
+[plan]
+id = "blake3:dbd29820db993f95a7dab66887f893307f1d1aebe7bf1808bd10f7903f77ee1d"
+
+[properties]
+id = "blake3:d102dd1556b312ec5f79938e44126ab4af45eb35876073c3662e7236da4d705f"

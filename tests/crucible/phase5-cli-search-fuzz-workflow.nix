@@ -12,6 +12,7 @@
     sourceRoot = "source/crates";
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
+  networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -84,8 +85,16 @@
         needle = "loads stored family hashes as strict\n  scenario-family TOML from the configured DAG store";
       }
       {
-        label = "T-CLI-13 process search/fuzz progress";
-        needle = "process-tests real-binary\n  local-double `search` and `fuzz` JSONL output";
+        label = "T-CLI-13 production process search/fuzz completion";
+        needle = "process-executes the packaged production `search` and `fuzz` commands";
+      }
+      {
+        label = "T-CLI-13 live frontier realization completion";
+        needle = "every child prefix in a fresh packaged-QEMU session before replay-oracle";
+      }
+      {
+        label = "T-CLI-13 live coverage feedback completion";
+        needle = "non-empty basic-block coverage back into the engine policy";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -170,8 +179,16 @@
         needle = "stored family-hash loading as strict\n  scenario-family TOML from the configured DAG store";
       }
       {
-        label = "phase5 CLI process search/fuzz progress";
-        needle = "process-level local-double `search` and `fuzz`\n  JSONL output";
+        label = "phase5 CLI production process search/fuzz completion";
+        needle = "gate process-executes\n  packaged production `search` and `fuzz` commands";
+      }
+      {
+        label = "phase5 CLI production state-space completion";
+        needle = "realizes child\n  schedule prefixes in fresh QEMU sessions before replay-oracle admission";
+      }
+      {
+        label = "phase5 CLI production fuzz feedback completion";
+        needle = "feeds\n  non-empty plugin basic-block coverage into the engine policy";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -1023,6 +1040,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.crucible
         pkgs.rust
         pkgs.sed
       ];
@@ -1083,6 +1101,71 @@ in
               -p crucible-cli \
               cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \
               -- --test-threads=1
+
+            mkdir -p \
+              "$TMPDIR/crucible-cli-search-artifacts" \
+              "$TMPDIR/crucible-cli-search-store" \
+              "$TMPDIR/crucible-cli-fuzz-artifacts" \
+              "$TMPDIR/crucible-cli-fuzz-store"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --seed 42 \
+              --format jsonl \
+              --artifact-dir "$TMPDIR/crucible-cli-search-artifacts" \
+              --store "$TMPDIR/crucible-cli-search-store" \
+              search \
+              ../tests/crucible/fixtures/live-qemu-search.scenario.toml \
+              --max-states 1 \
+              --on-violation collect \
+              > "$TMPDIR/production-search.jsonl"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+                --backend qemu \
+                --seed 42 \
+                --format jsonl \
+                --artifact-dir "$TMPDIR/crucible-cli-fuzz-artifacts" \
+                --store "$TMPDIR/crucible-cli-fuzz-store" \
+                fuzz \
+                ../tests/crucible/fixtures/live-qemu-fuzz.family.toml \
+                --runs 1 \
+                > "$TMPDIR/production-fuzz.jsonl"
+
+            test -n "$(
+              sed -n \
+                '/"kind":"search_live_realizations".*"runtime_frontiers=[1-9][0-9]* branch_replay_validations=[1-9][0-9]* backend=live"/p' \
+                "$TMPDIR/production-search.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"search_branch_execution".*"choices=[1-9][0-9]* backend=live"/p' \
+                "$TMPDIR/production-search.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"live_backend_execution".*"operation=search-live-branches"/p' \
+                "$TMPDIR/production-search.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"final_outcome".*"subcommand=search status=passed exit_code=0"/p' \
+                "$TMPDIR/production-search.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"fuzz_coverage_feedback".*"blocks=[1-9][0-9]*"/p' \
+                "$TMPDIR/production-fuzz.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"live_backend_execution".*"operation=fuzz-live-campaign"/p' \
+                "$TMPDIR/production-fuzz.jsonl"
+            )"
+            test -n "$(
+              sed -n \
+                '/"kind":"final_outcome".*"subcommand=fuzz status=passed exit_code=0"/p' \
+                "$TMPDIR/production-fuzz.jsonl"
+            )"
           '';
         }
         {
@@ -1096,10 +1179,12 @@ in
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
             status=complete
-            evidence_scope=search-fuzz-model-and-local-double
+            evidence_scope=packaged-production-cli-live-qemu-search-fuzz
             component=crucible-cli
-            contract=search-fuzz-workflow-progress
-            process_search_fuzz=local-double-jsonl-final-outcome
+            contract=search-fuzz-workflow-complete
+            process_search_fuzz=production-qemu-jsonl-final-outcome
+            state_space=live-qemu-frontier-branch-realization
+            fuzz_feedback=live-qemu-basic-block-coverage
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';
