@@ -268,7 +268,9 @@ pub(super) fn plan_backend_selection_with_discovery(
             ),
             #[cfg(not(any(test, feature = "test-double")))]
             None => {
-                return Err(backend_error("no hermetic QEMU backend was discovered"));
+                return Err(backend_error(
+                    "no hermetic QEMU backend was discovered; this production build does not include the test double",
+                ));
             }
         },
     };
