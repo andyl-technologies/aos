@@ -1153,7 +1153,7 @@ in
             )"
             test -n "$(
               sed -n \
-                '/"kind":"fuzz_coverage_feedback".*blocks=[1-9][0-9]*"/p' \
+                '/"kind":"fuzz_coverage_feedback".*blocks=[1-9][0-9]*/p' \
                 "$TMPDIR/production-fuzz.jsonl"
             )"
             test -n "$(
