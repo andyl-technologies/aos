@@ -327,6 +327,7 @@ in
     CRUCIBLE_TASK_IDS = taskList;
     CRUCIBLE_ATTR_PATH = attrPath;
     CRUCIBLE_CARGO_DEPS = cargoDeps;
+    inherit failureText;
     passAsFile = ["failureText"];
   } ''
     if [ -s "$failureTextPath" ]; then
