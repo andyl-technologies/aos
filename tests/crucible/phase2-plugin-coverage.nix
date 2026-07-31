@@ -345,8 +345,8 @@
         needle = "\"qemu_plugin_register_vcpu_tb_trans_cb\"";
       }
       {
-        label = "stock TB execution symbol spelling";
-        needle = "\"qemu_plugin_register_vcpu_tb_exec_cb\"";
+        label = "stock conditional TB execution symbol spelling";
+        needle = "\"qemu_plugin_register_vcpu_tb_exec_cond_cb\"";
       }
       {
         label = "live coverage owner";
