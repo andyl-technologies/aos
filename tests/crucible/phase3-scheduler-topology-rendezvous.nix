@@ -64,8 +64,8 @@
         needle = "let topology_cap = self.pending_topology_activation_cap()?;";
       }
       {
-        label = "fixed and activation caps use minimum";
-        needle = "min_instant(fixed_cap, topology_cap)";
+        label = "fixed, activation, and branch caps share the minimum set";
+        needle = "Ok([fixed_cap, topology_cap, self.branch_frontier_cap]";
       }
       {
         label = "not ready changes are deferred";

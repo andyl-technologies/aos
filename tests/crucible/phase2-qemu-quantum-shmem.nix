@@ -175,7 +175,7 @@
       }
       {
         label = "stale report test";
-        needle = "qemu_quantum_rejects_finish_before_shared_plugin_report_changes";
+        needle = "qemu_quantum_rejects_finish_before_reaching_a_boundary";
       }
       {
         label = "idle report test";
