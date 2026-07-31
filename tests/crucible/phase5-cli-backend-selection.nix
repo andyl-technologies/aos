@@ -80,7 +80,15 @@
       }
       {
         label = "post-execution identity validation";
-        needle = "execution.evidence.proves_t_cli_3(backend_plan)";
+        needle = "validate_backend_execution_evidence(backend_plan, &execution.evidence)?";
+      }
+      {
+        label = "post-execution artifact identity observation";
+        needle = "fn observe_local_backend_execution";
+      }
+      {
+        label = "post-execution artifact identity negative control";
+        needle = "cli_backend_execution_observation_reloads_invoked_artifact_identity";
       }
       {
         label = "injected live-QEMU probe runner";

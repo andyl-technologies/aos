@@ -249,21 +249,17 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    /// Returns a conservative bound for stepping all configured VM nodes.
+    /// Returns a conservative bound for driving through the configured budget.
     ///
-    /// The bound covers one full per-node pass for every quantum-sized slice,
-    /// plus one pass for scheduler-only boundaries and terminal settling.
+    /// The scheduler budget is already a count of authoritative quanta. The
+    /// additional per-node pass covers scheduler-only boundaries and terminal
+    /// settling after the final admitted quantum.
     #[must_use]
     pub fn maximum_scheduler_quanta(&self, node_count: usize) -> u64 {
         let node_count = u64::try_from(node_count).unwrap_or(u64::MAX).max(1);
-        let slices = self
-            .run_ceiling_icount
-            .saturating_add(self.quantum_budget.saturating_sub(1))
-            / self.quantum_budget.max(1);
-        slices
-            .saturating_mul(node_count)
-            .saturating_mul(2)
+        self.quantum_budget
             .saturating_add(node_count)
+            .saturating_add(1)
     }
 }
 

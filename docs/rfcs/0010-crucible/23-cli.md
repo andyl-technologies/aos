@@ -104,7 +104,7 @@ subcommand that runs or talks to a session.
 
   GLOBAL FLAGS (apply to run/verify/save/resume/fork/replay/search/fuzz/serve)
     --seed <u64|hex>        Root entropy (06 §5.3). Overrides CRUCIBLE_SEED.
-    --backend <auto|qemu|double>   Local backend (20 §10). Default: auto.
+    --backend <auto|qemu>          Local production backend (20 §10). Default: auto.
     --daemon <addr>         Talk to a daemon (21) instead of running in-process.
     --qemu <path>           Patched QEMU system binary (26). Else discovered.
     --plugin <path>         crucible-qemu-plugin cdylib (12, 26). Else discovered.
@@ -175,22 +175,20 @@ The resolution rule is uniform:
        ▼
   --backend resolves a local SimulationBackend (20 §10):
     qemu    real patched QEMU (10, 26)   — full fidelity; needs QEMU + plugin (§5)
-    double  in-process SimDouble (24 §3) — fast, no guest boot; host-orchestration fidelity
-    auto    qemu if QEMU + plugin discover (§5), else double, with a one-line note
+    auto    qemu if QEMU + plugin discover (§5), otherwise fail clearly
 ```
 
-The `auto` default is a determinism-ergonomics choice: a developer iterating on
-host orchestration gets the fast `double` automatically when QEMU is absent, and
-gets full fidelity when it is present — but the choice is always *announced* so a
-run's fidelity is never silently degraded.
+The `SimDouble` remains available to test targets compiled with the explicit
+`test-double` Cargo feature. It is not part of a production binary's CLI surface
+and production `auto` never degrades to it.
 
 - **[CLI-7]** `--backend auto` (the default) MUST select the real QEMU backend
-  when a patched QEMU and the plugin are discoverable (§5), and the in-process
-  `SimDouble` (24 §3) otherwise, and MUST print a single line stating which
-  backend was chosen and why (unless `-q`). `--backend qemu` MUST fail clearly
-  (§5, exit 4) if QEMU/plugin are absent rather than silently falling back.
-  `--backend double` MUST never launch QEMU. *Gate:* `gate:control-responsive`.
-  *Spec:* §3, §5; cross-ref 20 §10, 24 §3.
+  when a patched QEMU and the plugin are discoverable (§5), announce that
+  choice unless `-q`, and fail clearly (§5, exit 4) otherwise.
+  `--backend qemu` has the same fail-closed discovery behavior. Production
+  builds MUST NOT expose `--backend double`; test targets MAY expose it only
+  through the explicit `test-double` Cargo feature. *Gate:*
+  `gate:control-responsive`. *Spec:* §3, §5; cross-ref 20 §10, 24 §3.
 
 - **[CLI-8]** A local run and a `--daemon` run of the same subcommand with the
   same flags MUST produce the same canonical event log (19) and the same outcome
@@ -438,23 +436,25 @@ QEMU/plugin) is healthy without authoring a scenario. This is the operator's
   crucible selftest [FLAGS]
 
   FLAGS
-    --gates <list>   Gate subset to run (default: the double-backed gates).
-    --with-qemu      Also validate the QEMU-backed gate readiness rows.
-    --corpus <path>  Manifest of built-in fixture names to use instead of the full corpus.
+    --gates <list>   Gate subset to run.
+    --with-qemu      Execute the QEMU-backed gates (required in production).
+    --corpus <path>  Test-double-only manifest of built-in fixture names.
 ```
 
 `selftest` runs the named gates from the canonical catalog (24 §1.1) against the
-built-in corpus. By default it runs the fast, double-backed gates
+packaged backend. The production binary defaults to the real-QEMU gates
+(`gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert`) and requires
+`--with-qemu` as an explicit acknowledgement that it will boot guests. A build
+with the non-production `test-double` Cargo feature instead defaults to the
+fast, double-backed corpus gates
 (`gate:layer0-determinism`, `gate:content-address`, `gate:layer1-injection`,
-`gate:replay-oracle`, `gate:scheduler-liveness`, `gate:control-responsive`); with
-`--with-qemu` it additionally validates the hermetic patched-QEMU/plugin pair
-and reports readiness rows for the QEMU-backed gates
-(`gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert`) with the
-resolved QEMU identity. `--corpus <path>` is a line-oriented manifest of built-in
-fixture names (`happy-path.scn`, `partition-recovery.scn`, `crash-restart.scn`),
-allowing operators to select a file-backed subset of the shipped corpus without
-authoring a new scenario. It reports a per-gate pass/fail table and exits
-non-zero on any failure.
+`gate:replay-oracle`, `gate:scheduler-liveness`, `gate:control-responsive`) and
+may add the real-QEMU gates with `--with-qemu`. In that feature build,
+`--corpus <path>` is a line-oriented manifest of built-in fixture names
+(`happy-path.scn`, `partition-recovery.scn`, `crash-restart.scn`). Every
+real-QEMU row boots the hermetic patched-QEMU/plugin pair and reports the
+resolved identity, terminal icount, and execution fingerprint. It reports a
+per-gate pass/fail table and exits non-zero on any failure.
 
 **Exit codes.** `0` = all selected gates green; `1` = one or more gates failed
 (the table names which); `4` = discovery/config error (e.g. `--with-qemu` with no
@@ -462,11 +462,12 @@ QEMU); `64` = usage error.
 
 - **[CLI-18]** `crucible selftest` MUST run a selected subset of the canonical
   gate catalog (24 §1.1) against a built-in scenario corpus and report a per-gate
-  pass/fail table, defaulting to the fast double-backed gates and adding the
-  QEMU-backed readiness rows only under `--with-qemu`. It MUST exit `0` iff every
-  selected gate is green and `1` otherwise, naming each failing gate. *Gate:*
-  `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §8; cross-ref 24 §1.1,
-  §3.3.
+  pass/fail table. The production binary MUST contain only real-QEMU runners,
+  default to the QEMU-backed subset, and execute them only under `--with-qemu`.
+  A `test-double` feature build MAY expose the fast corpus runners. It MUST exit
+  `0` iff every selected gate is green and `1` otherwise, naming each failing
+  gate. *Gate:* `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §8;
+  cross-ref 24 §1.1, §3.3.
 
 ---
 
@@ -957,18 +958,20 @@ branch on the verdict without parsing output:
   modules and rejects direct checkpoint materialization in addition to checking
   the plan model.
 - [x] **T-CLI-3** Implement backend selection and the local/remote split
-  (`--backend auto|qemu|double`, `--daemon`), with the announced `auto` choice and
+  (`--backend auto|qemu` in production, test-feature-only `double`, `--daemon`),
+  with the announced `auto` choice and
   local/remote output+exit-code equivalence. — satisfies [CLI-5], [CLI-7],
   [CLI-8]; spec §3.
   Completed by `checks.crucible.phase5.cliBackendSelection`: the CLI builds
   and executes a `BackendSelectionPlan` for every backend-routed subcommand,
   routes `--daemon` invocations to a fakeable remote API command runner without
   selecting a local backend, resolves local `--backend auto` through the
-  hermetic discovery contract completed by T-CLI-5 and otherwise to the
-  in-process double, and announces the auto-selected backend unless `--quiet` is
-  set. Explicit `--backend qemu` fails with exit code 4 when hermetic discovery
-  cannot produce a valid patched-QEMU/plugin pair, while `--backend double`
-  never resolves to QEMU. The focused tests record local and remote
+  hermetic discovery contract and fails closed when no production backend is
+  available. The in-process double is compiled only for tests or an explicit
+  `test-double` feature build and is absent from the packaged binary's parser
+  and help. Explicit `--backend qemu` fails with exit code 4 when hermetic
+  discovery cannot produce a valid patched-QEMU/plugin pair. The focused tests
+  record local and remote
   command-runner invocations and compare stdout/stderr, exit code,
   canonical-log digest, and artifact digest projections. The selected QEMU path
   now boots the closure-owned patched QEMU, stock AOS kernel, raw fixture root,
@@ -1051,19 +1054,18 @@ branch on the verdict without parsing output:
   if any observed plugin-install report differs; the fleet gate supplies the
   AOS kernel/root closure and exercises this path under TCG.
 - [x] **T-CLI-8** Implement `selftest` (run a selected gate subset of the canonical
-  catalog against a built-in corpus, double-backed by default, real-QEMU under
-  `--with-qemu`, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.
-  Completed under `checks.crucible.phase5.cliSelftest`: the CLI runs the RFC §8
-  default fast double-backed gate set over the built-in example corpus, accepts
-  `--gates <list>` for supported canonical selftest runners, validates names
-  against the canonical gate catalog, requires `--with-qemu` for real-QEMU gates,
-  discovers the hermetic QEMU/plugin pair before reporting the three QEMU-backed
-  rows, supports a file-backed `--corpus <path>` manifest of built-in fixture
-  names, and emits per-gate PASS rows with runner and QEMU identity metadata.
-  With `--with-qemu`, every selected real-QEMU row independently boots the
-  closure-owned patched QEMU and production plugin under TCG and records the
-  observed terminal icount and execution fingerprint; discovery or live
-  execution failure prevents a PASS row.
+  catalog, production real-QEMU under `--with-qemu`, optional feature-gated test
+  corpus, per-gate pass/fail table). — satisfies [CLI-18]; spec §8.
+  Completed under `checks.crucible.phase5.cliSelftest`: the gate invokes the
+  packaged production CLI against the unmodified stock Linux kernel with
+  `crucible selftest --with-qemu`. The production binary selects the three
+  real-QEMU gates by default, discovers the hermetic QEMU/plugin pair, and emits
+  a PASS row with QEMU identity, terminal icount, and execution fingerprint for
+  each independently booted guest. Discovery, live execution, or cross-run
+  evidence divergence prevents a PASS. Supplemental `test-double`-feature tests
+  cover the fast built-in corpus runners, `--gates <list>` validation, and
+  file-backed corpus manifests; none of those runners are compiled into the
+  packaged binary.
 - [x] **T-CLI-9** Implement `save` (run to `--at`, create_savepoint, oracle-validate
   fat==thin, export a content-addressed handle; fail on oracle violation). —
   satisfies [CLI-19]; spec §9.
@@ -1213,7 +1215,10 @@ branch on the verdict without parsing output:
   `reduce(ScenarioDef, Schedule)` materialization, verifies all pinned
   identities before store access, and compares the reconstructed canonical
   bytes and fingerprint evidence through the bisection-capable check path used
-  by production failure artifacts.
+  by production failure artifacts. Every newly captured failed-run artifact
+  carries the session-observed terminal `Configuration` as that typed
+  scenario/schedule model reproduction; a process-independent regression
+  replays an actual failed-run artifact through the same reduction path.
 - [x] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
@@ -1285,14 +1290,26 @@ branch on the verdict without parsing output:
   artifacts through `LocalDagStore`, loads stored family hashes as strict
   scenario-family TOML from the configured DAG store, and reports deterministic
   `fuzz-run` output with generated-mutant, admission, retained-entry, store-put,
-  and replay-oracle validation counts, and process-tests real-binary
-  local-double `search` and `fuzz` JSONL output with command-specific canonical
-  events plus `final_outcome`. Missing/corrupt stored family objects and
-  unsupported backend targets fail explicitly. Local-QEMU search and fuzz now
-  independently boot the packaged QEMU/plugin backend before running the
-  deterministic policy driver, append the live icount/fingerprint proof to the
-  canonical outcome, and retain the same self-contained counterexample and
-  corpus evidence as the backend-independent exploration engine.
+  and replay-oracle validation counts. Missing/corrupt stored family objects and
+  unsupported backend targets fail explicitly. Production-QEMU search queries
+  the engine-owned live `SearchFrontier`, expands its decisions, and realizes
+  every child prefix in a fresh packaged-QEMU session before replay-oracle
+  admission to the graph. Production-QEMU fuzz executes both warm-up and guided
+  campaign iterations in fresh packaged-QEMU sessions and feeds the plugin's
+  non-empty basic-block coverage back into the engine policy. The gate
+  process-executes the packaged production `search` and `fuzz` commands against
+  the unmodified stock Linux kernel, requires live branch-realization and
+  coverage-feedback records, and checks their JSONL `final_outcome` records.
+  Its search and fuzz workloads reuse the already-certified guest-only
+  raw-Ethernet initramfs from the live network gate. With shift 0, a
+  3.999-billion-nanosecond conservative link window, and a
+  12-billion-icount terminal horizon, one search root expansion observes a
+  live loss frontier and replay-validates both child choices in fresh two-node
+  QEMU sessions. The fuzz family excludes pre-boot faults so a real guest
+  quantum commits plugin coverage before feedback is evaluated; none of these
+  bounds or traffic sources modify the Linux kernel.
+  Both routes append pinned QEMU/plugin execution proof and preserve the
+  backend-independent self-contained counterexample and corpus evidence.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
   lock-free watch/query for many clients, bounded-quantum control ack, same
   sessions as in-process, `--read-only`). — satisfies [CLI-24]; spec §14.

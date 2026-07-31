@@ -170,6 +170,15 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_step_bound_counts_quanta_instead_of_instruction_slices() {
+        let config = ProductionVmLifecycleConfig::new("qemu", "plugin", "kernel", "root")
+            .with_run_ceiling_icount(12_000_000_000)
+            .with_quantum_budget(16);
+
+        assert_eq!(config.maximum_scheduler_quanta(2), 19);
+    }
+
+    #[test]
     fn grouped_terminal_actions_collect_failures_before_pass() {
         let action = Action::Group(vec![
             Action::Pass,

@@ -1,0 +1,23 @@
+schema = "crucible.scenario-family.v1"
+topology_shapes = ["ring"]
+
+[seed_space]
+kind = "generated"
+meta_seed = "0x42"
+count = 1
+
+[fault_density]
+min_millionths = 0
+max_millionths = 0
+
+[topology_size]
+min = 1
+max = 1
+
+[node_template]
+fixed_icount = 0
+cmdline = "console=ttyS0 quiet net.ifnames=0"
+icount_shift = 0
+kernel = "blake3:e3ae4de41db931f5e16c84e505f67a63d629b397504fbf36366cf9d831d73fdf"
+root_image = "blake3:278b7c46b574d2ad3ac69d3acabef35f4f8e99ac29fb9576eed49602b06a9ccb"
+initrd = "blake3:1eefd0f5950009bf5451bb5192b0aeadee8db98f1a5f4ebd46aa572d15819eec"

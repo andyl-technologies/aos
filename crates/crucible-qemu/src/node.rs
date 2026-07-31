@@ -562,6 +562,17 @@ impl QemuNode {
         Ok(self.last_observed_time)
     }
 
+    /// Retains frames emitted while a fresh guest crossed the boot barrier.
+    ///
+    /// The launch-time hot path owns and drains the outbound ring before the
+    /// scheduler node maps it. Fresh-boot factories transfer that drained batch
+    /// here so the authoritative scheduler observes it at the first boundary.
+    /// Restore factories intentionally omit the transfer because the restored
+    /// checkpoint supersedes the primed machine state.
+    pub(crate) fn retain_priming_network_outputs(&mut self, outputs: Vec<QemuNodeEmittedFrame>) {
+        self.pending_network_outputs.extend(outputs);
+    }
+
     /// Advances the child to an instruction-count ceiling through shared memory.
     ///
     /// This drives a single bounded quantum (one publish/await/finish). It is

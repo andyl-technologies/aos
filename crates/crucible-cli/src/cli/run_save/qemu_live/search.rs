@@ -23,7 +23,8 @@ pub(crate) fn run_local_qemu_search_workflow(
         production_api::ProductionPluginSwitch::Off
     };
     let config = production_qemu_lifecycle_config(backend)?
-        .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_BUDGET)
+        .with_run_ceiling_icount(LIVE_EXPLORATION_RUN_CEILING_ICOUNT)
+        .with_quantum_budget(LIVE_EXPLORATION_QUANTUM_LIMIT)
         .with_coverage(coverage);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

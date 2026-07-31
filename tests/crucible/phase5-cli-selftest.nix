@@ -15,6 +15,7 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  helpSurface = builtins.readFile ../../crates/crucible-cli/tests/help_surface.rs;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
@@ -24,14 +25,28 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
       {
-        label = "T-CLI-8 partial-evidence note";
+        label = "T-CLI-8 packaged production selftest evidence";
         needle = "Completed under `checks.crucible.phase5.cliSelftest`";
+      }
+      {
+        label = "T-CLI-8 unmodified stock-kernel evidence";
+        needle = "packaged production CLI against the unmodified stock Linux kernel";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
       {
-        label = "phase5 CLI selftest partial note";
+        label = "phase5 CLI selftest completion note";
         needle = "`T-CLI-8` is completed through `checks.crucible.phase5.cliSelftest`";
+      }
+      {
+        label = "phase5 packaged production selftest execution";
+        needle = "process invocation of the packaged production\n  `crucible selftest --with-qemu` process";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/tests/help_surface.rs" helpSurface [
+      {
+        label = "production selftest excludes test-double options";
+        needle = "cli_production_selftest_help_excludes_test_double_options";
       }
     ]
     ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
@@ -181,6 +196,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.crucible
         pkgs.rust
         pkgs.sed
       ];
@@ -232,6 +248,25 @@ in
               -p crucible-cli \
               cli_selftest \
               -- --test-threads=1
+
+            "${pkgs.crucible}/bin/crucible" \
+              --artifact-dir "$TMPDIR/crucible-cli-selftest-artifacts" \
+              selftest \
+              --with-qemu \
+              > "$TMPDIR/production-selftest.out"
+
+            for gate in \
+              gate:single-vm-fingerprint \
+              gate:any-guest \
+              gate:qemu-inert
+            do
+              row="$(
+                sed -n \
+                  "\\|gate=$gate status=PASS runner=qemu .* qemu=.* live-icount=[0-9][0-9]* live-fingerprint=blake3:[0-9a-f][0-9a-f]*|p" \
+                  "$TMPDIR/production-selftest.out"
+              )"
+              test -n "$row"
+            done
           '';
         }
         {
@@ -245,9 +280,10 @@ in
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
             status=complete
-            evidence_scope=double-backed-selftest-and-qemu-readiness
+            evidence_scope=packaged-production-cli-live-qemu
             component=crucible-cli
-            selftest=fast-double-backed-plus-real-qemu
+            selftest=production-process-three-live-qemu-gates
+            guest_kernel=unmodified-stock-linux
             corpus_manifest=true
             dependencies=$DEPENDENCY_COUNT
             RESULT

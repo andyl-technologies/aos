@@ -1492,7 +1492,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         (
             "selftest",
             &["gates", "with_qemu", "corpus"][..],
-            "about=Run the determinism gates against a built-in scenario corpus\nusage=Usage: crucible selftest [OPTIONS]\ngates=Gate subset to run (default: the double-backed gates)\nwith_qemu=Also validate the QEMU-backed gate readiness rows\ncorpus=Manifest of built-in fixture names to use instead of the full corpus\n",
+            "about=Run the packaged determinism gates\nusage=Usage: crucible selftest [OPTIONS]\ngates=Gate subset to run\nwith_qemu=Execute the QEMU-backed gates\ncorpus=Test-only manifest of built-in fixture names\n",
         ),
         (
             "save",

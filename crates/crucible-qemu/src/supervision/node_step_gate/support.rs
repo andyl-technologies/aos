@@ -116,7 +116,7 @@ pub(super) fn prime_guest_off_boot_barrier(
     node_name: &str,
     router_name: &str,
     coverage: QemuLaunchPluginSwitch,
-) -> Result<(), QemuLiveNodeStepGateError> {
+) -> Result<Vec<crate::QemuNodeEmittedFrame>, QemuLiveNodeStepGateError> {
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuLiveNodeStepGateError::PrimeRegionMap { source })?;
     let shmem_config = QemuQuantumShmemConfig::new(node_id(node_name), GATE_SLOT)
@@ -151,13 +151,13 @@ pub(super) fn prime_guest_off_boot_barrier(
             ceiling_icount: PRIME_CEILING_ICOUNT,
         });
     }
-    QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)
+    let completion = QemuShmemHotPathChannel::finish_quantum(&mut hot_path, pending)
         .map_err(|source| QemuLiveNodeStepGateError::prime("finish priming quantum", source))?;
     QemuShmemHotPathChannel::drain_observable_events(&mut hot_path)
         .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming observations", source))?;
     QemuShmemHotPathChannel::drain_causal_decisions(&mut hot_path)
         .map_err(|source| QemuLiveNodeStepGateError::prime("drain priming decisions", source))?;
-    Ok(())
+    Ok(completion.emitted_frames)
 }
 
 /// Returns the number of priming polls that fit within `timeout`, at least one.

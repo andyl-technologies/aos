@@ -231,7 +231,7 @@ enum Commands {
     Run(RunArgs),
     /// Prove determinism: run N times, diff fingerprints + causal logs.
     Verify(VerifyArgs),
-    /// Run the determinism gates against a built-in scenario corpus.
+    /// Run the packaged determinism gates.
     Selftest(SelftestArgs),
     /// Run to a savepoint and export it as a resumable checkpoint.
     Save(SaveArgs),
@@ -345,13 +345,14 @@ struct VerifyArgs {
 
 #[derive(Args, Debug, Default, PartialEq, Eq)]
 struct SelftestArgs {
-    /// Gate subset to run (default: the double-backed gates).
+    /// Gate subset to run.
     #[arg(long, value_name = "list")]
     gates: Option<String>,
-    /// Also validate the QEMU-backed gate readiness rows.
+    /// Execute the QEMU-backed gates.
     #[arg(long, action = ArgAction::SetTrue)]
     with_qemu: bool,
-    /// Manifest of built-in fixture names to use instead of the full corpus.
+    /// Test-only manifest of built-in fixture names.
+    #[cfg(any(test, feature = "test-double"))]
     #[arg(long, value_name = "path")]
     corpus: Option<PathBuf>,
 }

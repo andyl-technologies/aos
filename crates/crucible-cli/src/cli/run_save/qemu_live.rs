@@ -2,11 +2,17 @@
 
 use super::*;
 
-/// Upper instruction budget for one live exploration quantum.
+/// Maximum scheduler quanta for one live exploration realization.
 ///
-/// Exact local events and conservative link horizons still clamp this value;
-/// the larger cap avoids thousands of host round trips while booting a branch.
-const LIVE_EXPLORATION_QUANTUM_BUDGET: u64 = 1_000_000;
+/// Exact local events and conservative link horizons may split a realization;
+/// the bound leaves room for both VM nodes and terminal scheduler settling.
+const LIVE_EXPLORATION_QUANTUM_LIMIT: u64 = 16;
+
+/// Terminal instruction-count ceiling for one live exploration realization.
+///
+/// The certified stock-kernel network workload emits near 3.3 billion
+/// instructions and resolves its link delivery below this three-window bound.
+const LIVE_EXPLORATION_RUN_CEILING_ICOUNT: u64 = 12_000_000_000;
 
 #[derive(Debug)]
 pub(crate) struct SelftestGateReport {
