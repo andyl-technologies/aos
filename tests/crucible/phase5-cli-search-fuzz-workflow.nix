@@ -1138,7 +1138,7 @@ in
             )"
             test -n "$(
               sed -n \
-                '/"kind":"search_branch_execution".*"choices=[1-9][0-9]* backend=live"/p' \
+                '/"kind":"search_branch_execution".*choices=[1-9][0-9]* backend=live"/p' \
                 "$TMPDIR/production-search.jsonl"
             )"
             test -n "$(
