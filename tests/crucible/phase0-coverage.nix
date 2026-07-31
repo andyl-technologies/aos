@@ -236,8 +236,9 @@ in
             [ "$coverage_icount_failures" = 0 ]
             [ "$hook_icount_regressions" = 0 ]
             [ "$coverage_icount_regressions" = 0 ]
-            [ "$hook_first_entry" = "$coverage_first_entry" ]
-            [ "$hook_last_entry" = "$coverage_last_entry" ]
+            [ "$hook_first_entry" = 0 ]
+            [ "$hook_last_entry" = 0 ]
+            [ "$coverage_last_entry" -gt "$coverage_first_entry" ]
 
             awk \
               -v rep="$rep" \
@@ -337,7 +338,7 @@ in
                print "workload_iterations=" iterations;
                print "repetitions=" reps;
                print "baseline_retired_reference=hook_off_retired_instructions";
-               print "coverage_representation=translated_tb_id_set";
+               print "coverage_representation=translated_tb_id_set_first_execution";
                print "guest_output_across_coverage_modes=identical";
                print "exact_tb_entry_icount=nonmutating-helper-no-failures-or-regressions";
                print "coverage_plugin_scope=c-abi-probe-not-production-rust-plugin";
