@@ -308,6 +308,7 @@ in
                 crates/crucible-qemu-plugin/src/abi/tests.rs|\
                 crates/crucible-qemu-plugin/src/coverage.rs|\
                 crates/crucible-qemu-plugin/src/coverage/tests.rs|\
+                crates/crucible-qemu-plugin/src/coverage/tests/live_callback_cases.rs|\
                 crates/crucible-qemu-plugin/src/fingerprint_sampler.rs|\
                 crates/crucible-qemu-plugin/src/fingerprint_sampler/tests.rs|\
                 crates/crucible-qemu-plugin/src/registration/tests.rs|\
@@ -364,7 +365,7 @@ in
             done < "$TMPDIR/plugin-unsafe-files"
 
             if grep -RIn 'transmute' crates/crucible-qemu-plugin/src \
-              | grep -Ev 'src/(abi|coverage|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/coverage/tests\.rs:|src/runtime/live_whitebox\.rs:'; then
+              | grep -Ev 'src/(abi|coverage|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/coverage/tests(\.rs|/live_callback_cases\.rs):|src/runtime/live_whitebox\.rs:'; then
               echo "transmute is confined to audited QEMU FFI adapters and tests" >&2
               exit 1
             fi
