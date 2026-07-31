@@ -60,6 +60,7 @@ in
           vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
           cp "$ROOTFS" "$TMPDIR/lifecycle-crash-rootfs.img"
           chmod u+w "$TMPDIR/lifecycle-crash-rootfs.img"
+          set +e
           timeout 120 ./phase0-lifecycle \
             "$QEMU" \
             "$vmlinuz" \
@@ -67,6 +68,12 @@ in
             "$PWD/phase0-lifecycle-hang-plugin.so" \
             "$TMPDIR" \
             > "$out/result"
+          lifecycle_status=$?
+          set -e
+          cat "$out/result"
+          if [ "$lifecycle_status" -ne 0 ]; then
+            exit "$lifecycle_status"
+          fi
           if [ -f "$TMPDIR/lifecycle-guest-crash.serial" ]; then
             cp "$TMPDIR/lifecycle-guest-crash.serial" "$out/guest-crash.serial"
           fi
