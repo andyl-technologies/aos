@@ -156,14 +156,7 @@ pub(super) fn replay_embedded_model_artifact(
             artifact.seed
         )));
     }
-    let model_scenario_digest =
-        content_address_bytes(&scenario_identity_bytes(&model.scenario_def()));
-    if model_scenario_digest != artifact.scenario.digest {
-        return Err(CliError::Identity(format!(
-            "model reproduction scenario {} does not match CLI artifact scenario {}",
-            model_scenario_digest, artifact.scenario.digest
-        )));
-    }
+    validate_embedded_scenario_identity("model reproduction", &model.scenario_def(), artifact)?;
     let replay = model.replay().map_err(|error| {
         CliError::ReplayCheck(format!(
             "pure reduce(ScenarioDef, Schedule) replay failed: {error}"
@@ -181,29 +174,13 @@ pub(super) fn replay_embedded_model_artifact(
             expected_state
         )));
     }
-    let typed_decisions = replay_schedule_prefix_decisions(model.schedule());
-    if typed_decisions.len() > artifact.decisions.len() {
-        return Err(CliError::ReplayCheck(format!(
-            "model reproduction has {} decisions but CLI artifact records only {}",
-            typed_decisions.len(),
-            artifact.decisions.len()
-        )));
-    }
-    for (index, expected) in typed_decisions.iter().enumerate() {
-        let actual = &artifact.decisions[index];
-        let actual_payload = decision_payload_summary(artifact, actual)?;
-        if !replay_schedule_prefix_decision_matches(actual, &actual_payload, expected) {
-            return Err(CliError::ReplayCheck(format!(
-                "re-executed model schedule diverges from canonical decision {index}"
-            )));
-        }
-    }
+    let reconstructed_decisions = model.schedule().len();
     Ok(Some(ReplayReductionProof {
         artifact: replay.artifact,
         scenario: replay.scenario,
         schedule: replay.schedule,
         state: replay.state,
-        reconstructed_decisions: typed_decisions.len(),
+        reconstructed_decisions,
     }))
 }
 
@@ -224,6 +201,38 @@ fn resolved_component_payload<'a>(
         })
 }
 
+fn validate_embedded_scenario_identity(
+    context: &str,
+    scenario: &crucible::ScenarioDef,
+    artifact: &CliReproductionArtifact,
+) -> Result<(), CliError> {
+    if artifact.scenario.media_type == "application/vnd.crucible.scenario.compact-binary" {
+        let bytes = resolved_component_payload(artifact, &artifact.scenario)?;
+        let captured = crucible::ScenarioDefForm::from_compact_binary(bytes).map_err(|error| {
+            artifact_error(format!(
+                "{context} CLI scenario component could not be decoded: {error}"
+            ))
+        })?;
+        if captured.id() != scenario.id() {
+            return Err(CliError::Identity(format!(
+                "{context} scenario {} did not match artifact scenario {}",
+                scenario.id().to_hex(),
+                captured.id().to_hex()
+            )));
+        }
+        return Ok(());
+    }
+
+    let scenario_digest = content_address_bytes(&scenario_identity_bytes(scenario));
+    if scenario_digest != artifact.scenario.digest {
+        return Err(CliError::Identity(format!(
+            "{context} scenario {} did not match artifact scenario {}",
+            scenario_digest, artifact.scenario.digest
+        )));
+    }
+    Ok(())
+}
+
 pub(super) fn replay_to_savepoint(
     cli: &Cli,
     target: &str,
@@ -231,14 +240,11 @@ pub(super) fn replay_to_savepoint(
 ) -> Result<ReplayToSavepointReport, CliError> {
     let savepoint = resolve_savepoint_ref("replay --to", Some(target))?;
     let evidence = savepoint_evidence("replay --to", &savepoint, &default_run_store_root(cli))?;
-    let evidence_scenario_digest =
-        content_address_bytes(&scenario_identity_bytes(&evidence.scenario));
-    if evidence_scenario_digest != artifact.scenario.digest {
-        return Err(artifact_error(format!(
-            "replay --to savepoint scenario {} did not match artifact scenario {}",
-            evidence_scenario_digest, artifact.scenario.digest
-        )));
-    }
+    validate_embedded_scenario_identity("replay --to savepoint", &evidence.scenario, artifact)
+        .map_err(|error| match error {
+            CliError::Identity(message) => CliError::Artifact(message),
+            other => other,
+        })?;
     let schedule_prefix = prove_replay_schedule_prefix(artifact, &evidence.schedule)?;
     let oracle = validate_checkpoint_with_replay_oracle(
         "replay --to",

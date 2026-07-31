@@ -149,3 +149,60 @@ pub(crate) fn coverage_feedback_from_streamed_events(
         &append.entries,
     ))
 }
+
+pub(crate) async fn query_run_terminal_configuration(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<crucible::Configuration, CliError> {
+    let response = control
+        .send_command(*command_id, SessionCommand::query_snapshot())
+        .await
+        .map_err(control_client_error)?;
+    *command_id = command_id.saturating_add(1);
+    match response.result.status {
+        CommandResultStatus::Accepted => {
+            acknowledged_commands.push(SessionCommandKind::Query);
+        }
+        CommandResultStatus::Rejected { reason } => {
+            return Err(backend_error(format!(
+                "terminal configuration snapshot was rejected: {reason:?}"
+            )));
+        }
+    }
+    match response.query_result {
+        Some(QueryResult::Snapshot(snapshot)) => Ok(snapshot.configuration),
+        Some(other) => Err(backend_error(format!(
+            "terminal configuration snapshot returned unexpected payload: {other:?}"
+        ))),
+        None => Err(backend_error(
+            "terminal configuration snapshot returned no payload",
+        )),
+    }
+}
+
+pub(crate) fn run_status_from_observation(
+    _run_plan: &RunInvocationPlan,
+    observation: &RunObservation,
+) -> Result<BackendCommandStatus, CliError> {
+    if observation.budget_timed_out != (observation.outcome == Some(OutcomeKind::Timeout)) {
+        return Err(backend_error(
+            "budget observation did not match the session engine terminal outcome",
+        ));
+    }
+    status_from_outcome(observation.outcome)
+}
+
+pub(crate) fn status_from_outcome(
+    outcome: Option<OutcomeKind>,
+) -> Result<BackendCommandStatus, CliError> {
+    match outcome {
+        Some(OutcomeKind::Passed | OutcomeKind::Stopped) => Ok(BackendCommandStatus::Passed),
+        Some(OutcomeKind::Failed) => Ok(BackendCommandStatus::Failed),
+        Some(OutcomeKind::Timeout) => Ok(BackendCommandStatus::Timeout),
+        Some(OutcomeKind::Crashed) => Ok(BackendCommandStatus::Crashed),
+        None => Err(backend_error(
+            "session reached a terminal observation without an engine outcome",
+        )),
+    }
+}

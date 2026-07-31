@@ -18,24 +18,37 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
     let Commands::Run(args) = &cli.command else {
         panic!("expected run command");
     };
-    let run_plan = plan_run_invocation(args, temp.path())?;
+    let mut run_plan = plan_run_invocation(args, temp.path())?;
     let seed_plan = plan_determinism_ergonomics(
         &cli,
         &FakeSeedEnvironment::default(),
         &mut FakeSeedEntropySource::new(0),
     )?
     .expect("run should resolve a seed");
+    pin_run_invocation_seed(
+        &mut run_plan,
+        crucible::Seed::from_u64(seed_plan.seed.value),
+    )?;
     let backend = plan_backend_selection(&cli)?.expect("run should select a backend");
     let fingerprint = crucible::ContentHash::from_canonical_material(
         "crucible.cli.test.actual-failure-fingerprint.v1",
         "actual failed run",
     );
+    let terminal_configuration =
+        crucible::Configuration::genesis(run_plan.scenario.scenario_def().clone());
+    let expected_model = crucible::ReproductionArtifact::capture(
+        run_plan.scenario.scenario_form(),
+        &terminal_configuration.schedule,
+    )?
+    .replay()?;
+    let expected_decisions = terminal_configuration.schedule.len();
     let report = RunWorkflowReport {
         status: BackendCommandStatus::Failed,
         created_state: String::from("paused"),
         final_state: String::from("stopped"),
         outcome: Some(OutcomeKind::Failed),
         terminal_savepoint: None,
+        terminal_configuration: Some(terminal_configuration),
         final_frontier_ticks: 17,
         final_quanta: 2,
         budget_timed_out: false,
@@ -88,5 +101,25 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
         artifact.fingerprints[0].digest,
         format!("{}{}", CONTENT_ADDRESS_PREFIX, fingerprint.to_hex())
     );
+    let path = temp.path().join("actual-failure.crucible");
+    fs::write(&path, bytes)?;
+    let replay_cli = Cli::parse_from([
+        "crucible",
+        "--backend",
+        "double",
+        "replay",
+        &path.display().to_string(),
+    ]);
+    let Commands::Replay(replay_args) = &replay_cli.command else {
+        panic!("expected replay command");
+    };
+    let replay = replay_reproduction_artifact(&replay_cli, replay_args)?;
+    let reduction = replay
+        .reduction
+        .expect("a failed-run artifact must reexecute its embedded model reproduction");
+    assert_eq!(reduction.scenario, run_plan.scenario.scenario_def().id());
+    assert_eq!(reduction.schedule, expected_model.schedule);
+    assert_eq!(reduction.state, expected_model.state);
+    assert_eq!(reduction.reconstructed_decisions, expected_decisions);
     Ok(())
 }

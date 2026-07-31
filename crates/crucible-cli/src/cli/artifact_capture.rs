@@ -76,9 +76,30 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
     scenario: &crucible::ScenarioDefForm,
+    terminal_configuration: &crucible::Configuration,
     canonical_log: &[CanonicalLogEntry],
     fingerprint_samples: &[VerifyFingerprintSample],
 ) -> Result<Vec<u8>, CliError> {
+    if terminal_configuration.def.id() != scenario.id() {
+        return Err(CliError::Identity(format!(
+            "failed-run terminal scenario {} did not match captured scenario {}",
+            terminal_configuration.def.id().to_hex(),
+            scenario.id().to_hex()
+        )));
+    }
+    let model_artifact =
+        crucible::ReproductionArtifact::capture(scenario, &terminal_configuration.schedule)
+            .map_err(|error| {
+                artifact_error(format!(
+                    "failed-run model reproduction capture failed: {error}"
+                ))
+            })?;
+    let replay = model_artifact.replay().map_err(|error| {
+        artifact_error(format!(
+            "failed-run model reproduction replay failed: {error}"
+        ))
+    })?;
+    let model_payloads = model_reproduction_artifact_payloads(&model_artifact, replay.state);
     reproduction_artifact_bytes_with_scenario_payload(
         seed,
         backend,
@@ -89,6 +110,6 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
         },
         canonical_log,
         fingerprint_samples,
-        &[],
+        &model_payloads,
     )
 }

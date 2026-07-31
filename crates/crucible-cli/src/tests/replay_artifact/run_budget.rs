@@ -188,14 +188,14 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
         &mut NullBackendCommandRunner,
     )?;
 
-    assert_eq!(property_outcome.status, BackendCommandStatus::Failed);
-    assert_eq!(property_outcome.exit_code, 1);
-    assert!(property_outcome.reproduction_artifact.is_some());
+    assert_eq!(property_outcome.status, BackendCommandStatus::Passed);
+    assert_eq!(property_outcome.exit_code, 0);
+    assert!(property_outcome.reproduction_artifact.is_none());
     assert!(property_outcome.stdout.iter().any(|line| {
         line.starts_with("run-session\t") && line.contains("final=property-missing")
     }));
     assert!(
-        property_outcome
+        !property_outcome
             .stdout
             .iter()
             .any(|line| line.starts_with("run-savepoint\tpolicy=fail\tcheckpoint=blake3:"))
@@ -216,21 +216,8 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
         String::from("--until"),
         String::from("property"),
     ]);
-    let error = match dispatch(&dispatch_cli) {
-        Ok(_) => panic!("failing dispatch must propagate outcome exit code"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        CliError::Outcome(BackendCommandStatus::Failed)
-    ));
-    assert_eq!(error.exit_code(), 1);
-    assert_eq!(
-        fs::read_dir(&dispatch_artifacts)?
-            .collect::<Result<Vec<_>, _>>()?
-            .len(),
-        1
-    );
+    dispatch(&dispatch_cli)?;
+    assert!(!dispatch_artifacts.exists());
 
     Ok(())
 }

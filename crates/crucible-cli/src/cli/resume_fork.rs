@@ -605,6 +605,7 @@ pub(super) async fn run_resumed_savepoint_actor_with_driver_async(
                 .terminal_savepoint
                 .as_ref()
                 .map(|checkpoint| checkpoint.id),
+            terminal_configuration: Some(actor_report.final_snapshot.configuration.clone()),
             final_frontier_ticks: actor_report.final_snapshot.frontier.ticks,
             final_quanta: actor_report.quanta,
             budget_timed_out: false,
@@ -827,6 +828,7 @@ pub(super) async fn run_forked_savepoint_actor_with_driver_async(
                 .terminal_savepoint
                 .as_ref()
                 .map(|checkpoint| checkpoint.id),
+            terminal_configuration: Some(actor_report.final_snapshot.configuration.clone()),
             final_frontier_ticks: actor_report.final_snapshot.frontier.ticks,
             final_quanta: actor_report.quanta,
             budget_timed_out: false,
@@ -1818,10 +1820,14 @@ pub(super) fn finish_run_workflow_outcome(
                         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed()),
                 )
             });
+        let terminal_configuration = report.terminal_configuration.as_ref().ok_or_else(|| {
+            artifact_error("non-passing run completed without its terminal configuration")
+        })?;
         let artifact = run_failure_reproduction_artifact_bytes(
             artifact_seed,
             backend_plan.resolved_backend.as_ref(),
             run_plan.scenario.scenario_form(),
+            terminal_configuration,
             &outcome.canonical_log,
             &run_fingerprint_samples(&report),
         )?;

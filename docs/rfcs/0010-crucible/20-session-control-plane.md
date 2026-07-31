@@ -1285,6 +1285,9 @@ pub enum SessionError {
     quiescent pass, or operator stop. The actor converts unrecovered backend
     failures into `Crashed`, the CLI sends an explicit budget-exhaustion command,
     and every CLI status is now a fallible projection of the engine outcome.
+    The run client rejects disagreement between its budget observation and the
+    engine's typed timeout outcome; it never rewrites a passing property wait
+    into a synthetic failure.
     Focused negative controls exercise `Failed`, `Timeout`, and `Crashed`; the
     reference-integrity lint rejects terminal constructions outside the engine's
     stop path.

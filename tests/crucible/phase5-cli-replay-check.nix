@@ -85,6 +85,22 @@
         needle = "let canonical_log_bytes = canonical_log_entry_bytes(&canonical_log);";
       }
       {
+        label = "ordinary replay pure reduction execution";
+        needle = "fn replay_embedded_model_artifact";
+      }
+      {
+        label = "ordinary replay invokes the model reproduction oracle";
+        needle = "let replay = model.replay()";
+      }
+      {
+        label = "ordinary replay reduction test";
+        needle = "cli_replay_reexecutes_embedded_model_reproduction";
+      }
+      {
+        label = "failed-run artifact reduction test";
+        needle = "a failed-run artifact must reexecute its embedded model reproduction";
+      }
+      {
         label = "replay component hydration";
         needle = "fn hydrate_replay_artifact_components";
       }

@@ -1,0 +1,127 @@
+[scenario]
+id = "blake3:5ad816afc401bcf6258fbb82fe2e5f892e943cf58e69d28ecb7f9d3ec68fe42e"
+seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
+app_random_draw_cap = 10
+
+[world]
+id = "blake3:b36b7b896f36bd4452ea49d12f796afd6c5ba9d0fe0390fb47e7a5a873230472"
+
+[[world.node]]
+id = "client"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 quiet crucible.workload=httpget target=server:8080 count=100"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:fe37bad9b18652cadbc50fae4c118fa5e741731c4cf55176d48826ecad85d104"
+root_image = "blake3:1a0a45c8a824f9e4358d5430617567384ae4c499ad5ce81e42508aa945a9236d"
+white_box = "disabled"
+
+[world.node.ready_point]
+kind = "console_marker"
+marker = "client ready"
+
+[[world.node]]
+id = "server"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 quiet port=8080 crucible.workload=httpd"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:fe37bad9b18652cadbc50fae4c118fa5e741731c4cf55176d48826ecad85d104"
+root_image = "blake3:a79a50550e049da4dd17be2420f33b296e15a9ba83947f4293568e9561e082f0"
+white_box = "disabled"
+
+[world.node.ready_point]
+kind = "console_marker"
+marker = "listening on 0.0.0.0:8080"
+
+[[world.link]]
+endpoint_a = "client"
+endpoint_b = "server"
+latency_nanos = 5000000
+jitter_nanos = 1000000
+loss_millionths = 0
+
+[plan]
+id = "blake3:3dfdafb02043ae87e4270427485a92f4d09a3d2b81675ff954f2210385523790"
+kind = "event_graph"
+
+[[plan.event]]
+id = "pass-on-quiescence"
+policy = "once"
+
+[plan.event.trigger]
+kind = "all_of"
+
+[[plan.event.trigger.predicates]]
+kind = "node_state"
+node = "client"
+state = "exited"
+
+[[plan.event.trigger.predicates]]
+kind = "quiescent"
+
+[plan.event.action]
+kind = "pass"
+
+[properties]
+id = "blake3:52bb1fc1d7e9dc1189a94b6542bdf08c7769ec422aff0804cca0e1dae05ff006"
+
+[[properties.assertion]]
+id = "all-requests-succeed"
+message = "client observes 100 successful HTTP responses"
+
+[properties.assertion.property]
+kind = "eventually"
+deadline_ticks = 60000000000
+
+[properties.assertion.property.trigger]
+kind = "once"
+
+[properties.assertion.property.trigger.predicate]
+kind = "network_match"
+link = "client--server"
+
+[properties.assertion.property.trigger.predicate.predicate]
+kind = "contains"
+needle_hex = "474554202f"
+
+[properties.assertion.property.property]
+kind = "all_of"
+
+[[properties.assertion.property.property.predicates]]
+kind = "network_match"
+link = "client--server"
+
+[properties.assertion.property.property.predicates.predicate]
+kind = "contains"
+needle_hex = "687474705f3230305f636f756e743d313030"
+
+[[properties.assertion.property.property.predicates]]
+kind = "node_state"
+node = "client"
+state = "exited"
+
+[[properties.assertion]]
+id = "no-crashes"
+message = "client and server must not crash"
+
+[properties.assertion.property]
+kind = "always"
+
+[properties.assertion.property.predicate]
+kind = "not"
+
+[properties.assertion.property.predicate.predicate]
+kind = "any_of"
+
+[[properties.assertion.property.predicate.predicate.predicates]]
+kind = "node_state"
+node = "client"
+state = "crashed"
+
+[[properties.assertion.property.predicate.predicate.predicates]]
+kind = "node_state"
+node = "server"
+state = "crashed"
