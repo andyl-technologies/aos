@@ -83,6 +83,7 @@ in
             --target-dir "$TMPDIR/live-plugin-preemption-target" \
             --manifest-path crates/Cargo.toml \
             -p crucible-qemu \
+            --features test-support \
             --example crucible-qemu-live-plugin-preemption
 
           run_root="$TMPDIR/live-plugin-preemption-run"
