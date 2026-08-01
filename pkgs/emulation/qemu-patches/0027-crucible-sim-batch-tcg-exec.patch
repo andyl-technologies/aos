@@ -1,0 +1,170 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -33,6 +33,7 @@
+ #include "qemu/guest-random.h"
+ #include "qemu/accel.h"
+ #include "qemu/plugin.h"
++#include "qemu/timer.h"
+ #include "exec/cpu-common.h"
+ #include "tcg/startup.h"
+ #include "tcg-accel-ops.h"
+@@ -65,6 +66,10 @@ void rr_kick_vcpu_thread(CPUState *unused)
+ static QEMUTimer *rr_kick_vcpu_timer;
+ static CPUState *rr_current_cpu;
+ 
++#define RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT 4
++
++static int rr_cpu_count(void);
++
+ static bool rr_crucible_sim_mode(void)
+ {
+     return strcmp(current_accel_name(), "sim") == 0 &&
+@@ -152,6 +157,115 @@ static void rr_crucible_sim_drain_vcpu_work(void)
+     }
+ }
+ 
++static unsigned int rr_crucible_sim_tcg_batch_limit(void)
++{
++    if (!rr_crucible_sim_mode() || rr_cpu_count() > 1) {
++        return 1;
++    }
++    return RR_CRUCIBLE_SIM_TCG_BATCH_LIMIT;
++}
++
++static bool rr_crucible_sim_tcg_batch_continue(CPUState *cpu,
++                                               unsigned int runs,
++                                               int last_exit)
++{
++    if (!rr_crucible_sim_mode() ||
++        runs >= rr_crucible_sim_tcg_batch_limit()) {
++        return false;
++    }
++
++    if (last_exit == EXCP_HALTED ||
++        last_exit == EXCP_DEBUG ||
++        last_exit == EXCP_ATOMIC) {
++        return false;
++    }
++
++    return cpu &&
++           cpu_can_run(cpu) &&
++           cpu_work_list_empty(cpu) &&
++           !cpu->exit_request &&
++           !cpu->stop &&
++           !cpu->unplug;
++}
++
++static void rr_crucible_sim_refresh_batch_budget(int64_t *cpu_budget)
++{
++    int cpu_count;
++
++    if (!icount_enabled()) {
++        return;
++    }
++
++    bql_unlock();
++    replay_mutex_lock();
++    bql_lock();
++
++    icount_account_warp_timer();
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    icount_handle_deadline();
++    cpu_count = rr_cpu_count();
++    *cpu_budget = icount_percpu_budget(cpu_count);
++
++    replay_mutex_unlock();
++}
++
++static bool rr_crucible_sim_run_tcg_batch(CPUState *cpu, int64_t *cpu_budget)
++{
++    unsigned int runs = 0;
++
++    while (true) {
++        int r;
++
++        if (rr_crucible_sim_mode() &&
++            crucible_sim_shmem_dispatch_registered()) {
++            uint64_t current_icount = qemu_plugin_icount_raw();
++
++            *cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
++                                                              *cpu_budget);
++            if (*cpu_budget == 0) {
++                crucible_sim_shmem_publish_current_icount(current_icount);
++                qemu_cond_wait_bql(first_cpu->halt_cond);
++                return true;
++            }
++        }
++
++        bql_unlock();
++        if (icount_enabled()) {
++            icount_prepare_for_run(cpu, *cpu_budget);
++        }
++        r = tcg_cpu_exec(cpu);
++        if (icount_enabled()) {
++            icount_process_data(cpu);
++        }
++        if (rr_crucible_sim_mode() &&
++            crucible_sim_shmem_dispatch_registered()) {
++            crucible_sim_shmem_publish_current_icount(qemu_plugin_icount_raw());
++        }
++        qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
++        bql_lock();
++
++        runs++;
++
++        if (r == EXCP_DEBUG) {
++            cpu_handle_guest_debug(cpu);
++            return true;
++        } else if (r == EXCP_ATOMIC) {
++            bql_unlock();
++            cpu_exec_step_atomic(cpu);
++            bql_lock();
++            return true;
++        } else if (r == EXCP_HALTED) {
++            return false;
++        }
++
++        if (!rr_crucible_sim_tcg_batch_continue(cpu, runs, r)) {
++            return false;
++        }
++
++        rr_crucible_sim_refresh_batch_budget(cpu_budget);
++    }
++}
++
+ static inline int64_t rr_next_kick_time(void)
+ {
+     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
+@@ -410,30 +524,7 @@ static void *rr_cpu_thread_fn(void *arg)
+             }
+ 
+             if (cpu_can_run(cpu)) {
+-                int r;
+-
+-                bql_unlock();
+-                if (icount_enabled()) {
+-                    icount_prepare_for_run(cpu, cpu_budget);
+-                }
+-                r = tcg_cpu_exec(cpu);
+-                if (icount_enabled()) {
+-                    icount_process_data(cpu);
+-                }
+-                if (rr_crucible_sim_mode() &&
+-                    crucible_sim_shmem_dispatch_registered()) {
+-                    crucible_sim_shmem_publish_current_icount(qemu_plugin_icount_raw());
+-                }
+-                qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
+-                bql_lock();
+-
+-                if (r == EXCP_DEBUG) {
+-                    cpu_handle_guest_debug(cpu);
+-                    break;
+-                } else if (r == EXCP_ATOMIC) {
+-                    bql_unlock();
+-                    cpu_exec_step_atomic(cpu);
+-                    bql_lock();
++                if (rr_crucible_sim_run_tcg_batch(cpu, &cpu_budget)) {
+                     break;
+                 }
+             } else if (cpu->stop) {

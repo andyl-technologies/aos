@@ -1,0 +1,52 @@
+# Existing rustdoc-bar findings exposed by the workspace-scoped T-PKG-8 package
+# test path.
+#
+# Format:
+# repo-relative crate source<TAB>finding detail<TAB>count
+crucible-cli/src/main.rs	contains non-ASCII comment/doc text	21
+crucible-device/src/backpressure.rs	contains non-ASCII comment/doc text	6
+crucible-device/src/block.rs	contains non-ASCII comment/doc text	5
+crucible-device/src/block/codec.rs	contains non-ASCII comment/doc text	2
+crucible-device/src/block/device.rs	contains non-ASCII comment/doc text	6
+crucible-device/src/block/overlay.rs	contains non-ASCII comment/doc text	3
+crucible-device/src/clock.rs	contains non-ASCII comment/doc text	1
+crucible-device/src/error.rs	contains non-ASCII comment/doc text	4
+crucible-device/src/fault.rs	contains non-ASCII comment/doc text	8
+crucible-device/src/harness.rs	contains non-ASCII comment/doc text	25
+crucible-device/src/harness/adapters.rs	contains non-ASCII comment/doc text	4
+crucible-device/src/inflight.rs	contains non-ASCII comment/doc text	1
+crucible-device/src/lib.rs	contains non-ASCII comment/doc text	7
+crucible-device/src/lib.rs	missing crate-root `Module map:` in `//!` overview	1
+crucible-device/src/netlink.rs	contains non-ASCII comment/doc text	7
+crucible-device/src/netlink/link.rs	contains non-ASCII comment/doc text	7
+crucible-device/src/ninep.rs	contains non-ASCII comment/doc text	10
+crucible-device/src/ninep/codec.rs	contains non-ASCII comment/doc text	4
+crucible-device/src/ninep/device.rs	contains non-ASCII comment/doc text	5
+crucible-device/src/ninep/golden.rs	public panicking function `reply_vectors` is missing `# Panics`	1
+crucible-device/src/ninep/server.rs	contains non-ASCII comment/doc text	8
+crucible-device/src/ninep/tree.rs	contains non-ASCII comment/doc text	6
+crucible-device/src/request.rs	contains non-ASCII comment/doc text	1
+crucible-device/src/subnode.rs	contains non-ASCII comment/doc text	7
+crucible-qemu-plugin/src/ninep_io.rs	public Result-returning function `request` is missing `# Errors`	1
+crucible-session/src/session/commands.rs	contains non-ASCII comment/doc text	2
+crucible-session/src/session/commands.rs	public Result-returning function `channel` is missing `# Errors`	1
+crucible-session/src/session/core.rs	contains non-ASCII comment/doc text	1
+crucible-session/src/session/exploration.rs	public Result-returning function `query` is missing `# Errors`	1
+crucible/src/backend.rs	contains non-ASCII comment/doc text	1
+crucible/src/device.rs	contains non-ASCII comment/doc text	6
+crucible/src/device_subnode.rs	contains non-ASCII comment/doc text	13
+crucible/src/model/failure/model.rs	public Result-returning function `compare_to` is missing `# Errors`	1
+crucible/src/scheduler/runtime_state.rs	contains non-ASCII comment/doc text	1
+crucible/src/scheduler/single_scheduler_drive.rs	contains non-ASCII comment/doc text	4
+crucible/src/scheduler/single_scheduler_state.rs	contains non-ASCII comment/doc text	5
+crucible/src/scheduler/tests.rs	contains non-ASCII comment/doc text	3
+crucible/src/scheduler/topology.rs	contains non-ASCII comment/doc text	1
+crucible/src/trigger/observability.rs	contains non-ASCII comment/doc text	1
+crucible-qemu-plugin/src/runtime/live_callbacks.rs	contains non-ASCII comment/doc text	4
+crucible-qemu/src/live_plugin_quantum_gate.rs	contains non-ASCII comment/doc text	2
+crucible-qemu/src/mapped_quantum.rs	contains non-ASCII comment/doc text	1
+crucible-qemu/src/node.rs	contains non-ASCII comment/doc text	1
+crucible-qemu/src/single_vm_fingerprint/plugin_live_runner.rs	contains non-ASCII comment/doc text	1
+crucible-qemu/src/single_vm_fingerprint/plugin_live_runner/probe.rs	contains non-ASCII comment/doc text	1
+crucible-qemu/src/single_vm_fingerprint/terminal_trace.rs	contains non-ASCII comment/doc text	1
+crucible-shmem/src/shmem/fingerprint_sample.rs	contains non-ASCII comment/doc text	1

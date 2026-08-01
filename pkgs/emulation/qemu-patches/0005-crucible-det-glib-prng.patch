@@ -1,0 +1,29 @@
+diff --git a/util/guest-random.c b/util/guest-random.c
+--- a/util/guest-random.c
++++ b/util/guest-random.c
+@@ -19,7 +19,10 @@
+ 
+ static __thread GRand *thread_rand;
+ static bool deterministic;
+-
++static guint32 deterministic_glib_seed(uint64_t seed)
++{
++    return (guint32)(seed ^ (seed >> 32));
++}
+ 
+ static int glib_random_bytes(void *buf, size_t len)
+ {
+@@ -95,6 +98,13 @@ int qemu_guest_random_seed_main(const char *seedstr, Error **errp)
+         return -1;
+     } else {
+         deterministic = true;
++        /*
++         * QEMU uses GLib's process-global PRNG for generated IDs, UUIDs, and
++         * device metadata. When -seed requests deterministic guest random,
++         * seed that global stream from the same run seed so internal device
++         * state is reproducible too.
++         */
++        g_random_set_seed(deterministic_glib_seed(seed));
+         qemu_guest_random_seed_thread_part2(seed);
+         return 0;
+     }

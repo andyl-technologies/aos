@@ -29,5 +29,8 @@ result-*
 # docs/boot/qemu-uefi.md §0 — explicitly "not checked in").
 /tests/ignition-test.json
 
+# crucible CLI default runtime store (main.rs --store default_value)
+.crucible/
+
 # Dev hub state (aos-hub `serve --dev`): local db + seeded bucket.
 /crates/.aos-hub/

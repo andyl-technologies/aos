@@ -137,7 +137,10 @@ in
           # sorttable (host tool) uses pthreads; glibc's pthread_exit needs
           # libgcc_s.so.1 for stack unwinding at runtime.
           export LD_LIBRARY_PATH="${gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} ${kernelArch.target} modules
+          make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} ${kernelArch.target}
+          if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
+            make -j$NIX_BUILD_CORES ARCH=${kernelArch.karch} modules
+          fi
         '';
       }
       {
@@ -165,14 +168,15 @@ in
           mkdir -p $vmlinux/boot
           cp vmlinux $vmlinux/boot/vmlinux-${linuxSource.version}
 
-          # Install modules, stripped of DWARF (INSTALL_MOD_STRIP). BTF stays
-          # in the kernel image, so eBPF CO-RE still works; this only drops
-          # per-module debug info, which also shrinks the initrd and rootfs.
-          make modules_install \
-            INSTALL_MOD_PATH=$out \
-            INSTALL_MOD_STRIP=1 \
-            DEPMOD=${kmod}/sbin/depmod \
-            ARCH=${kernelArch.karch}
+          # Install modules only when the final config supports loadable
+          # modules. Strip their DWARF; BTF stays in the kernel image.
+          if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then
+            make modules_install \
+              INSTALL_MOD_PATH=$out \
+              INSTALL_MOD_STRIP=1 \
+              DEPMOD=${kmod}/sbin/depmod \
+              ARCH=${kernelArch.karch}
+          fi
 
           # Remove build/source symlinks (they point to the build dir)
           rm -f $out/lib/modules/*/build $out/lib/modules/*/source

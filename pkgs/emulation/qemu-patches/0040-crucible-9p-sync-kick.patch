@@ -1,0 +1,36 @@
+diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
+--- a/hw/virtio/virtio.c
++++ b/hw/virtio/virtio.c
+@@ -12,6 +12,8 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/accel.h"
++#include "system/cpu-timers.h"
+ #include "qapi/error.h"
+ #include "qapi/qapi-commands-virtio.h"
+ #include "trace.h"
+@@ -2498,7 +2500,22 @@ void virtio_queue_notify(VirtIODevice *vdev, int n)
+     }
+ 
+     trace_virtio_queue_notify(vdev, vq - vdev->vq, vq);
+-    if (vq->host_notifier_enabled) {
++    /*
++     * virtio-9p enables a host notifier even when the accelerator cannot use
++     * ioeventfd.  Under Crucible sim that notifier defers the initial request
++     * kick to the main loop, which cannot run while the vCPU owns the
++     * deterministic quantum.  The guest then blocks forever before the raw 9p
++     * request reaches SLOT_9P_IO.
++     *
++     * Dispatch only the sim+icount 9p kick through the ordinary inline device
++     * handler.  The shmem 9p path still defers completion to its deterministic
++     * delivery icount.  Block I/O and every non-sim launch retain their existing
++     * notifier behavior.
++     */
++    if (vq->host_notifier_enabled &&
++        !(icount_enabled() &&
++          strcmp(current_accel_name(), "sim") == 0 &&
++          vdev->device_id == VIRTIO_ID_9P)) {
+         event_notifier_set(&vq->host_notifier);
+     } else if (vq->handle_output) {
+         vq->handle_output(vdev, vq);

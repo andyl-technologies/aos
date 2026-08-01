@@ -1,0 +1,17 @@
+[package]
+name = "crucible-guest"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-protocol = { path = "../crucible-protocol" }
+libc = { workspace = true }
+thiserror = { workspace = true }
+
+[[bin]]
+name = "crucible-guest"
+path = "src/main.rs"

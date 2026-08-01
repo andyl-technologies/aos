@@ -1,0 +1,484 @@
+# Authoritative QEMU patch-series manifest. The underscore keeps package
+# discovery from treating this data file as a package derivation.
+let
+  qemuVersion = "10.0.0";
+  qemuSourceHash = "sha256-IsB1YB/c+MeyZxqDnr3O8dTylz62c1JU/S4b0PMLOJY=";
+  qemuSourceUrl = "https://download.qemu.org/qemu-${qemuVersion}.tar.xz";
+  patchBranchRef = "crucible/qemu-${qemuVersion}";
+  patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
+  patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
+  patchBranchBundleSha256 = "ddb6d023eb7b79354531b3e1693c58db7844fe54df654a46024ae2bc32fdfe6f";
+  patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
+  patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
+  patchBranchHeadCommit = "01d7580cb70a4a2389cb6414d8aae3d1834d3c06";
+  deterministicAuthorName = "Crucible Patch Regenerator";
+  deterministicAuthorEmail = "crucible@aos.invalid";
+  deterministicBaseDate = "2001-01-01T00:00:00Z";
+  deterministicPatchDate = "2001-01-01T00:00:01Z";
+  patches = [
+    {
+      file = "0001-crucible-sim-accel.patch";
+      branchCommit = "e67d0f596d644216dfaffe0d1f6d8f7723859a01";
+      branchTree = "978943ce1f6fb680f624b358c65972c0e4df261c";
+      catalogName = "crucible-sim-accel";
+      class = "D";
+      enforces = "DET-1,TIME-23,E14";
+      capability = "-accel sim deterministic TCG accelerator";
+    }
+    {
+      file = "0002-crucible-rr-fingerprint-helpers.patch";
+      branchCommit = "9cf7d1a24b3df475322d274f942b37d10d54494a";
+      branchTree = "3065414d8124fc9e69c6b200538927203fa1f79d";
+      catalogName = "crucible-rr-fingerprint-helpers";
+      class = "F";
+      enforces = "DET-29,QEMU-43";
+      capability = "phase1 RR quantum and fingerprint helper ABI";
+    }
+    {
+      file = "0003-crucible-icount-no-realtime.patch";
+      branchCommit = "8520c261f5c8111cd4e75f4e01d9a4c677d2ef62";
+      branchTree = "17f5360caabeef8f63ebe60cdc9b7e75d99b38d5";
+      catalogName = "crucible-icount-no-realtime";
+      class = "D";
+      enforces = "DET-9,TIME-22,E3";
+      capability = "sim precise icount budget excludes realtime deadlines";
+    }
+    {
+      file = "0004-crucible-no-warp-with-plugin.patch";
+      branchCommit = "23b07dd00947d91193734b11491fe945211017bc";
+      branchTree = "40f1be334e1a0b23d7ad2d65441c7cd76abc3cd1";
+      catalogName = "crucible-no-warp-with-plugin";
+      class = "D";
+      enforces = "DET-10,TIME-21,E2";
+      capability = "sim time-control plugin suppresses idle wall-clock warp";
+    }
+    {
+      file = "0005-crucible-det-glib-prng.patch";
+      branchCommit = "71f276375f46baf6513e4b7a434db13c28987e80";
+      branchTree = "d190dd020a834eb83777f1d416123f321d484eab";
+      catalogName = "crucible-det-glib-prng";
+      class = "D";
+      enforces = "DET-21,E9";
+      capability = "run seed initializes QEMU global GLib PRNG";
+    }
+    {
+      file = "0006-crucible-clock-deadline.patch";
+      branchCommit = "747228e14bafac7ea1f98852c5b5f8434b110071";
+      branchTree = "e7f942870b00e7d252dd80b45381bbcb0876d71a";
+      catalogName = "crucible-clock-deadline";
+      class = "D";
+      enforces = "TIME-24,TIME-25";
+      capability = "plugin-visible exact next virtual timer deadline";
+    }
+    {
+      file = "0007-crucible-block-rtc-read.patch";
+      branchCommit = "02bf1f33bd39f88a131348a28561f3dc9c2de4de";
+      branchTree = "6d7fc76b6214782a42700c1bbf227b9d2dfd685d";
+      catalogName = "crucible-block-rtc-read";
+      class = "D";
+      enforces = "DET-8,TIME-20,E5";
+      capability = "sim RTC and realtime reads use fixed epoch plus virtual time";
+    }
+    {
+      file = "0008-crucible-det-getrandom.patch";
+      branchCommit = "29549a206bf1c384df719e615b0b52ee0987efa5";
+      branchTree = "68805651fb610b41dbaf26bd4aa26e02d9fb8900";
+      catalogName = "crucible-det-getrandom";
+      class = "D";
+      enforces = "DET-21,DET-19,E9";
+      capability = "sim unseeded guest-random fails closed before host crypto";
+    }
+    {
+      file = "0009-crucible-net-deterministic.patch";
+      branchCommit = "f6d3452a9bc6e56e7ade9e2b6b864cfd92a03be7";
+      branchTree = "35da42fa79b4a523807521be27ab928c165d4698";
+      catalogName = "crucible-net-deterministic";
+      class = "D";
+      enforces = "DET-11,DET-13,E18";
+      capability = "plugin-chosen icount network RX injection and flush";
+    }
+    {
+      file = "0010-crucible-plugin-time-advance.patch";
+      branchCommit = "48f4f5406af39f35405183119f885b27b102c1ca";
+      branchTree = "6891998cf7a4ca8ab09dab23e9f99c2a553fe150";
+      catalogName = "crucible-plugin-time-advance";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "callback-safe queued virtual-time advance with ordered main-loop completion";
+    }
+    {
+      file = "0011-crucible-plugin-icount-raw.patch";
+      branchCommit = "0f3e5e62687408d1277993c1a51fdd0fa01afd5f";
+      branchTree = "767c8c68639e18db6cfe1a9d381cfa0b7bada1e2";
+      catalogName = "crucible-plugin-icount-raw";
+      class = "F";
+      enforces = "DET-29,INV-10";
+      capability = "plugin-visible raw bias-excluded icount read";
+    }
+    {
+      file = "0012-crucible-plugin-vcpu-exit.patch";
+      branchCommit = "801c19219053ea68de469490a701b5f474e4c574";
+      branchTree = "489e027085a6c34e60cabca11738a4af34bac2d3";
+      catalogName = "crucible-plugin-vcpu-exit";
+      class = "D";
+      enforces = "DET-1,INV-10";
+      capability = "plugin force vCPU exit for first-exit phase normalization";
+    }
+    {
+      file = "0013-crucible-plugin-wake-fd.patch";
+      branchCommit = "0e1eaae1b9615a33e42df604e4dd436b2ff27474";
+      branchTree = "96c564c98ee78b0ced481ec9b9091ea81c9ad60d";
+      catalogName = "crucible-plugin-wake-fd";
+      class = "F";
+      enforces = "SHM-26,INV-8";
+      capability = "live single-threaded RR proof, plugin wake fd drain, and clean or fail-loud shutdown request";
+    }
+    {
+      file = "0014-crucible-plugin-tcg-exec-cb.patch";
+      branchCommit = "8ea3bf5d3ec82b5f5c479fe789336d977893d1ea";
+      branchTree = "5f34c76ffd05daf1ff44ed837630fd47127f5704";
+      catalogName = "crucible-plugin-tcg-exec-cb";
+      class = "F";
+      enforces = "coverage,INV-7";
+      capability = "post-tcg_cpu_exec coverage callback with disabled NULL-check";
+    }
+    {
+      file = "0015-crucible-blk-shmem.patch";
+      branchCommit = "0f872bf8fab4a733d5c178b806b3e412ffef2d68";
+      branchTree = "de8c339c6f9c3fc1186d8613fe62c58787456cbf";
+      catalogName = "crucible-blk-shmem";
+      class = "F";
+      enforces = "PATCH-26,DET-16,E19,SHM-13";
+      capability = "crucible-shmem block driver and plugin submit/poll callback ABI";
+    }
+    {
+      file = "0016-crucible-blk-shmem-io-fixes.patch";
+      branchCommit = "bb57baeed5fe5ae95b77aede0fc16599be11d2f4";
+      branchTree = "69b589d7aca32fa59b6447d7f1da3d8d9f22a7d9";
+      catalogName = "crucible-blk-shmem-io-fixes";
+      class = "D";
+      enforces = "PATCH-27,DET-16,E19";
+      capability = "bounded coroutine reschedule cadence for deterministic block completions";
+    }
+    {
+      file = "0017-crucible-blk-write-sentinel.patch";
+      branchCommit = "265d387d26066fad5ffe8ac5a589f8d577505c94";
+      branchTree = "55d43ed9e551d903bbf9abeed7cf9fc4bfb944ad";
+      catalogName = "crucible-blk-write-sentinel";
+      class = "D";
+      enforces = "PATCH-28,DET-16,E19";
+      capability = "pending sentinel distinct from zero-length success";
+    }
+    {
+      file = "0018-crucible-dev-cb-api.patch";
+      branchCommit = "cf7021ec48cdc1f18c9408f312a53a7e488e7f38";
+      branchTree = "cd5284028ef5783084b3b7210df3c0d69d0db232";
+      catalogName = "crucible-dev-cb-api";
+      class = "F";
+      enforces = "PATCH-30,PLUG,SHM-17";
+      capability = "plugin 9p burst/submit/poll callback registration ABI";
+    }
+    {
+      file = "0019-crucible-9p-shmem.patch";
+      branchCommit = "596f2f47e76d25f79933d9d8eaecf8752088bfa4";
+      branchTree = "fedd02548f7a297e3d08fabc5a68fc42a315b1e3";
+      catalogName = "crucible-9p-shmem";
+      class = "F";
+      enforces = "PATCH-29,DET-16,E19";
+      capability = "virtio-9p raw-message shmem forwarding path with upstream fallback";
+    }
+    {
+      file = "0020-crucible-net-tx-callback.patch";
+      branchCommit = "33423acd5de7eeb77978b839e8b7c5da209d9289";
+      branchTree = "c2fc2544cf20ca3741a084cf22cefdde305432da";
+      catalogName = "crucible-net-tx-callback";
+      class = "F";
+      enforces = "PATCH-31,DET-18,E18,SHM-17";
+      capability = "guest network TX callback interception with upstream fallback";
+    }
+    {
+      file = "0021-crucible-sim-loop-fix.patch";
+      branchCommit = "f0fe2dbbfcec8bed393df5a72dadece9af401844";
+      branchTree = "444f6f0953cc91e3b368f468e116bffcb0da765a";
+      catalogName = "crucible-sim-loop-fix";
+      class = "D";
+      enforces = "PATCH-34,DET-1,NG-1";
+      capability = "sim-mode single-vCPU loop and exit-request bookkeeping";
+    }
+    {
+      file = "0022-crucible-sim-first-exit.patch";
+      branchCommit = "38c846e3e4c96d53a21da0f371f5282a357c8bad";
+      branchTree = "4447454f1dce7e6f69209c657c3f3823a7924e35";
+      catalogName = "crucible-sim-first-exit";
+      class = "D";
+      enforces = "PATCH-34,DET-1,INV-10";
+      capability = "sim-mode first-exit phase normalization";
+    }
+    {
+      file = "0023-crucible-sim-skip-second-events.patch";
+      branchCommit = "9389f151615c7247f08cfe0c9ed1079af8e613fa";
+      branchTree = "74565de60f377a44c5f0ed1a821d114758682944";
+      catalogName = "crucible-sim-skip-second-events";
+      class = "D";
+      enforces = "PATCH-34,DET-1";
+      capability = "sim-mode redundant post-wait events pass suppression";
+    }
+    {
+      file = "0024-crucible-sim-poll-immediate.patch";
+      branchCommit = "0693e25150e2b1a1464d16d914bb384da60772e8";
+      branchTree = "852062205443d822cbbc3747b330c911061c5883";
+      catalogName = "crucible-sim-poll-immediate";
+      class = "D";
+      enforces = "PATCH-34,DET-13,E19";
+      capability = "wake-generation-safe event-driven shmem completion through a coroutine queue";
+    }
+    {
+      file = "0025-crucible-sim-idle-callbacks.patch";
+      branchCommit = "5ad5bad236067711c1dcadea485867d79e20e9ea";
+      branchTree = "475b74dba45f8283f5f72821e1442433edeb83b8";
+      catalogName = "crucible-sim-idle-callbacks";
+      class = "D";
+      enforces = "PATCH-34,TIME-24,INV-8";
+      capability = "sim-mode vCPU idle and resume callback boundaries";
+    }
+    {
+      file = "0026-crucible-sim-shmem-dispatch.patch";
+      branchCommit = "a1ae663a5d924cb09a429ac8cf74451401f4517d";
+      branchTree = "c960fd5cf4c4c7fe2ca844009d144f8e94754226";
+      catalogName = "crucible-sim-shmem-dispatch";
+      class = "F";
+      enforces = "PATCH-34,SHM-1";
+      capability = "sim-mode shmem callback bridge for current-icount publish, max-advance reads, and TCG budget clamp";
+    }
+    {
+      file = "0027-crucible-sim-batch-tcg-exec.patch";
+      branchCommit = "077de8bc21e2e1bc286d53f1289a9e113cc13265";
+      branchTree = "49ed1447fe20c3af94266b2f12aac515e4e8a326";
+      catalogName = "crucible-sim-batch-tcg-exec";
+      class = "F";
+      enforces = "PATCH-35,DET-1,INV-10,PERF";
+      capability = "sim-mode fixed-count TCG exec batching with timer refresh and shmem ceiling discipline";
+    }
+    {
+      file = "0028-crucible-det-ipi.patch";
+      branchCommit = "ed9187b011e4cf8d430e51958032babc33648a10";
+      branchTree = "e6d53f4c1cfe93d941b3155312b99efb91ec7c26";
+      catalogName = "crucible-det-ipi";
+      class = "D";
+      enforces = "PATCH-45,DET-1,INV-7";
+      capability = "sim-mode inter-vCPU IPI/SIPI/INIT delivery queued to deterministic RR handoff";
+    }
+    {
+      file = "0029-crucible-vcpu-introspect.patch";
+      branchCommit = "0854801b510cdbe24c96c69450a2205b99fe1a38";
+      branchTree = "8fc4ac95baf2674b246b2bfb131c565b80c99a02";
+      catalogName = "crucible-vcpu-introspect";
+      class = "F";
+      enforces = "PATCH-46,DET-29,INV-10";
+      capability = "formal per-vCPU register-file and RR cursor plugin exports";
+    }
+    {
+      file = "0030-crucible-preemption-inject.patch";
+      branchCommit = "985078096fce013471de4d9167a2f90df8b70a3e";
+      branchTree = "3780037fd088d710425d76e15b1211352d0485c6";
+      catalogName = "crucible-preemption-inject";
+      class = "D";
+      enforces = "PATCH-47,DET-1,PLUG-50";
+      capability = "sim-mode commanded vCPU-switch and interrupt preemption injection";
+    }
+    {
+      file = "0031-crucible-det-rng-delivery.patch";
+      branchCommit = "583f44a52694a4233e9750be0910974101c312ae";
+      branchTree = "49abe2d68b870fe36318124b4255967253f469ba";
+      catalogName = "crucible-det-rng-delivery";
+      class = "D";
+      enforces = "DET-1,E7,E9";
+      capability = "sim-mode deterministic synchronous virtio-rng entropy completion at request icount";
+    }
+    {
+      file = "0032-crucible-det-virtio-ioeventfd.patch";
+      branchCommit = "5220fa9bfd2f14ab8bbf9b32d218a178c1eda7fb";
+      branchTree = "5475022643b490291d2249413a4e6b5d323ccf14";
+      catalogName = "crucible-det-virtio-ioeventfd";
+      class = "D";
+      enforces = "DET-1,E7";
+      capability = "sim-mode synchronous virtio-rng vq-kick dispatch under icount (ioeventfd disabled for rng)";
+    }
+    {
+      file = "0033-crucible-sim-observer.patch";
+      branchCommit = "a1044c901ad1221cf266db99d8f6da055bbe2351";
+      branchTree = "3310b6f8d8cfe316dcf19ec8ce29f00362fed410";
+      catalogName = "crucible-sim-observer";
+      class = "F";
+      enforces = "DET-29,PLUG-35";
+      capability = "observation-only post-execution sim-boundary callback alongside the scheduler-owned dispatch";
+    }
+    {
+      file = "0034-crucible-safe-fingerprint-boundary.patch";
+      branchCommit = "0c68a477d7ce77c993674deba3cb52de7337f5a9";
+      branchTree = "e07b4d11ebdc3eb19240285e3560840e8cac5a57";
+      catalogName = "crucible-safe-fingerprint-boundary";
+      class = "F";
+      enforces = "DET-29,PLUG-35";
+      capability = "exact observer budget clamp and BQL-held fingerprint capture boundary";
+    }
+    {
+      file = "0035-crucible-process-argv-attestation.patch";
+      branchCommit = "c1e53a39132a9f158ee706326b2736391b4b1bd2";
+      branchTree = "e5ed6d95308c6b53596bb74efdd497ffc1bcf674";
+      catalogName = "crucible-process-argv-attestation";
+      class = "F";
+      enforces = "DET-31,QEMU-34";
+      capability = "process-entry raw Unix argc/argv v2 SHA-256 self-attestation exposed to observation plugins";
+    }
+    {
+      file = "0036-crucible-raw-state-export.patch";
+      branchCommit = "b096fc2af4ea2b0b7845221a620fe9dbd179e748";
+      branchTree = "f8ef00d5c48dc1f56146dffb94a57c25b6777ceb";
+      catalogName = "crucible-raw-state-export";
+      class = "F";
+      enforces = "DET-29,PLUG-47";
+      capability = "GPA-sorted exact guest-RAM export and terminal one-shot serialized non-RAM VMState snapshot";
+    }
+    {
+      file = "0037-crucible-sim-freeze-warp-at-observation-boundary.patch";
+      branchCommit = "a4cf142c61cdae943f94c742e2d0b815bd0a29d6";
+      branchTree = "b2af905ca02344cfbb56221fba14edc248ac0018";
+      catalogName = "crucible-sim-freeze-warp-at-observation-boundary";
+      class = "D";
+      enforces = "DET-8,DET-29";
+      capability = "sim freezes the virtual clock at the observation boundary so terminal fingerprint capture is deterministic";
+    }
+    {
+      file = "0038-crucible-sim-gate-rr-kick.patch";
+      branchCommit = "6bd97577aa2c1f8e5d0fb9ce30ee046994ac86ac";
+      branchTree = "cdac2de7eb0f4a60e9cc4583bc795456ca143370";
+      catalogName = "crucible-sim-gate-rr-kick";
+      class = "D";
+      enforces = "DET-30";
+      capability = "sim omits the redundant stock round-robin vCPU-kick timer for deterministic quantum switching";
+    }
+    {
+      file = "0039-crucible-blk-device-completion-advance.patch";
+      branchCommit = "37072cd33efdc593933fe77e9161324ccdec18d0";
+      branchTree = "f4aa43e12b726a0abb6f7a5fb3a2ad2f3eb6ed7b";
+      catalogName = "crucible-blk-device-completion-advance";
+      class = "D";
+      enforces = "DET-16,PATCH-27,PLUG-21,IO-31";
+      capability = "device-wait callback advances an I/O-blocked guest to its deterministic completion and resumes polling after commit";
+    }
+    {
+      file = "0040-crucible-9p-sync-kick.patch";
+      branchCommit = "bfecb2c7f6e56c2d1a94596bd1fdb9120e057a76";
+      branchTree = "0d656cd34b00be7e797cee2252ba060e369491dd";
+      catalogName = "crucible-9p-sync-kick";
+      class = "D";
+      enforces = "DET-16,PATCH-29,PLUG-22,IO-32";
+      capability = "sim-mode virtio-9p kicks enter deterministic raw-message forwarding synchronously";
+    }
+    {
+      file = "0041-crucible-whitebox-guest-write.patch";
+      branchCommit = "3ef9723935c028942b7466b3a17b7f402bc313c0";
+      branchTree = "0b6b02578567f5bbc36a002f229e0d300ce508b8";
+      catalogName = "crucible-whitebox-guest-write";
+      class = "F";
+      enforces = "PLUG-34,PLUG-51,GHC-32,GHC-37";
+      capability = "callback-scoped guest virtual-memory writes for synchronous white-box doorbell replies";
+    }
+    {
+      file = "0042-crucible-aarch64-det-ipi-adapter.patch";
+      branchCommit = "1a454c31207b7404936954069c54fa67ca952349";
+      branchTree = "cfc6008b8e70cbfde24e8b84a44cd1d4823e8c62";
+      catalogName = "crucible-aarch64-det-ipi-adapter";
+      class = "D";
+      enforces = "DET-4,PLUG-14,GHC-4";
+      capability = "AArch64 deterministic IPI adapter for the shared RR and commanded-preemption paths";
+    }
+    {
+      file = "0043-crucible-time-advance-commit-barrier.patch";
+      branchCommit = "1d1c87ff4d5effb957b2ad3fd508ec5e0b970a90";
+      branchTree = "19ea5fb7a7f935316b76c8fc09999ff15623d3a4";
+      catalogName = "crucible-time-advance-commit-barrier";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "RR and plugin logical-time commits remain fenced until both owners release";
+    }
+    {
+      file = "0044-crucible-time-advance-enqueue-kick.patch";
+      branchCommit = "20933054f3f1ae273a98e3d400581da51af6a5c7";
+      branchTree = "87e33ee1daf9c3c1559a7ed8cc565e89debb61c2";
+      catalogName = "crucible-time-advance-enqueue-kick";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "queued time advance kicks the active sim vCPU into the pending barrier";
+    }
+    {
+      file = "0045-crucible-time-advance-arm-at-vcpu-boundary.patch";
+      branchCommit = "ed6f2d23e89999e0c659ee9efae213e17a0f1642";
+      branchTree = "3deb2a6367891687e07b0e79b29592c47536e8f0";
+      catalogName = "crucible-time-advance-arm-at-vcpu-boundary";
+      class = "D";
+      enforces = "TIME-23,TIME-27,DET-1,INV-10";
+      capability = "pending time advance arms synchronously at a stopped-vCPU work boundary";
+    }
+    {
+      file = "0046-crucible-translation-prefetch-helper.patch";
+      branchCommit = "01d7580cb70a4a2389cb6414d8aae3d1834d3c06";
+      branchTree = "b1a14928f7c3fc43169e309643315bef9e9b4280";
+      catalogName = "crucible-translation-prefetch-helper";
+      class = "F";
+      enforces = "PERF-32";
+      capability = "off-by-default sim translation generation on a dedicated registered TCG helper";
+    }
+  ];
+  catalogOnlyCapabilities = [
+    {
+      catalogName = "crucible-rr-quantum-icount";
+      carriedBy = "0002-crucible-rr-fingerprint-helpers.patch";
+      class = "D";
+      enforces = "PATCH-44,DET-1,QEMU-43";
+      capability = "round-robin vCPU switch boundary pinned to node-icount";
+    }
+    {
+      catalogName = "crucible-plugin-advance-barrier";
+      carriedBy = "0010-crucible-plugin-time-advance.patch";
+      class = "D";
+      enforces = "PATCH-19,DET-1,INV-10";
+      capability = "normal-mainloop barrier orders timer bottom halves before queued advance completion";
+    }
+    {
+      catalogName = "crucible-plugin-device-wake";
+      carriedBy = "0013-crucible-plugin-wake-fd.patch";
+      class = "D";
+      enforces = "PATCH-20,DET-1,INV-10";
+      capability = "event-driven device completion through the registered wake fd and normal main loop";
+    }
+    {
+      catalogName = "crucible-net-flush-api";
+      carriedBy = "0009-crucible-net-deterministic.patch";
+      class = "F";
+      enforces = "PATCH-32,DET-18,E18";
+      capability = "lossless RX queue flush API over deterministic network delivery";
+    }
+  ];
+in {
+  inherit
+    qemuVersion
+    qemuSourceHash
+    qemuSourceUrl
+    patchBranchRef
+    patchBranchModel
+    patchBranchBundle
+    patchBranchBundleSha256
+    patchBranchBaseCommit
+    patchBranchBaseTree
+    patchBranchHeadCommit
+    deterministicAuthorName
+    deterministicAuthorEmail
+    deterministicBaseDate
+    deterministicPatchDate
+    patches
+    catalogOnlyCapabilities
+    ;
+  patchFiles = builtins.map (patch: patch.file) patches;
+}

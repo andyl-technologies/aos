@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use anyhow::{Result, bail};
 
 use super::*;
-use crate::types::{ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution};
+use crate::types::{
+    ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
+};
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -39,9 +41,7 @@ impl ScriptedEvaluator {
 
 impl NixEvaluator for ScriptedEvaluator {
     fn evaluate(&self, attempt: &EvalAttempt<'_>) -> Result<EvalClass> {
-        self.seen_sizes
-            .borrow_mut()
-            .push(attempt.working_set.len());
+        self.seen_sizes.borrow_mut().push(attempt.working_set.len());
         match self.script.borrow_mut().pop_front() {
             Some(class) => Ok(class),
             None => bail!("scripted evaluator exhausted"),
@@ -293,14 +293,19 @@ fn shared_root_owner_resolves_via_system_roots() {
     // A seeded package `fw-pkg` owns the shared root `firewall`; a Case-B read of
     // that root resolves to it through SystemRoots (not the structural
     // fallback), and its bare seed's config output is fetched.
-    let resolver = MockResolver::new()
-        .with("fw-pkg", owner_module("firewall", &["allowedTCPPorts"], compat(1, 2)));
+    let resolver = MockResolver::new().with(
+        "fw-pkg",
+        owner_module("firewall", &["allowedTCPPorts"], compat(1, 2)),
+    );
     let eval = ScriptedEvaluator::new(vec![
         EvalClass::Missing(vec![read_miss("firewall")]),
         EvalClass::Manifest("{\"m\":1}".into()),
     ]);
     let fetcher = RecordingFetcher::new();
-    let seed = vec![WorkingSetMember::seed("web"), WorkingSetMember::seed("fw-pkg")];
+    let seed = vec![
+        WorkingSetMember::seed("web"),
+        WorkingSetMember::seed("fw-pkg"),
+    ];
 
     let outcome = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
         .expect("converges via SystemRoots owner");
@@ -361,11 +366,13 @@ fn abi_mismatch_when_named_package_excludes_image_abi() {
 #[test]
 fn abi_mismatch_when_owned_root_excludes_image_abi() {
     // The SystemRoots owner path also distinguishes AbiMismatch from NoProvider.
-    let resolver =
-        MockResolver::new().with("fw-pkg", owner_module("firewall", &[], compat(2, 4)));
+    let resolver = MockResolver::new().with("fw-pkg", owner_module("firewall", &[], compat(2, 4)));
     let eval = ScriptedEvaluator::new(vec![EvalClass::Missing(vec![read_miss("firewall")])]);
     let fetcher = RecordingFetcher::new();
-    let seed = vec![WorkingSetMember::seed("web"), WorkingSetMember::seed("fw-pkg")];
+    let seed = vec![
+        WorkingSetMember::seed("web"),
+        WorkingSetMember::seed("fw-pkg"),
+    ];
 
     let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
         .expect_err("owned-root abi mismatch");
@@ -439,7 +446,10 @@ fn bare_seed_provider_is_fetched() {
     let out = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
         .expect("converges after fetching the bare provider's config module");
     assert_eq!(out.iterations, 1);
-    assert_eq!(fetcher.fetched.borrow().as_slice(), &["firewall".to_string()]);
+    assert_eq!(
+        fetcher.fetched.borrow().as_slice(),
+        &["firewall".to_string()]
+    );
 }
 
 #[test]
@@ -456,8 +466,8 @@ fn two_owners_of_one_root_is_exclusivity_violation() {
         WorkingSetMember::seed("firewall-b"),
     ];
 
-    let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
-        .expect_err("exclusivity");
+    let err =
+        run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher).expect_err("exclusivity");
     assert!(
         matches!(err, FixpointError::AmbiguousProvider { ref root, .. } if root == "firewall"),
         "{err:?}"
@@ -465,7 +475,10 @@ fn two_owners_of_one_root_is_exclusivity_violation() {
     let msg = err.to_string();
     assert!(msg.contains("firewall-a@1.0.0"), "{msg}");
     assert!(msg.contains("firewall-b@1.0.0"), "{msg}");
-    assert!(msg.contains("owned roots are exclusive per system"), "{msg}");
+    assert!(
+        msg.contains("owned roots are exclusive per system"),
+        "{msg}"
+    );
     // The evaluator was never driven.
     assert!(eval.seen_sizes.borrow().is_empty());
 }
@@ -484,8 +497,8 @@ fn owned_root_shadowing_a_package_name_is_terminal() {
         WorkingSetMember::seed("nginx"),
     ];
 
-    let err = run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher)
-        .expect_err("shadowing");
+    let err =
+        run_fixpoint(&inputs(seed, 1, None), &resolver, &eval, &fetcher).expect_err("shadowing");
     assert!(
         matches!(err, FixpointError::ShadowedRoot { ref root, .. } if root == "nginx"),
         "{err:?}"
@@ -503,7 +516,10 @@ fn out_of_scope_contribution_is_terminal_at_resolve_time() {
         paths: vec!["upstreams".to_string()],
     }];
     let resolver = MockResolver::new()
-        .with("nginx", owner_module("nginx", &["virtualHosts"], compat(1, 2)))
+        .with(
+            "nginx",
+            owner_module("nginx", &["virtualHosts"], compat(1, 2)),
+        )
         .with("web", contributor);
     let eval = ScriptedEvaluator::new(vec![]);
     let fetcher = RecordingFetcher::new();
@@ -561,10 +577,9 @@ fn eval_classes_map_to_terminal_errors() {
             },
             |e| matches!(e, FixpointError::UndefinedOption { .. }),
         ),
-        (
-            EvalClass::Conflict { defs: vec![] },
-            |e| matches!(e, FixpointError::Conflict { .. }),
-        ),
+        (EvalClass::Conflict { defs: vec![] }, |e| {
+            matches!(e, FixpointError::Conflict { .. })
+        }),
         (
             EvalClass::Assertion {
                 msg: "boom".into(),
@@ -572,10 +587,9 @@ fn eval_classes_map_to_terminal_errors() {
             },
             |e| matches!(e, FixpointError::AssertionFailed { .. }),
         ),
-        (
-            EvalClass::Killed(KillReason::Oom),
-            |e| matches!(e, FixpointError::EvalKilled { .. }),
-        ),
+        (EvalClass::Killed(KillReason::Oom), |e| {
+            matches!(e, FixpointError::EvalKilled { .. })
+        }),
         (
             EvalClass::Other {
                 stderr: "syntax error".into(),
@@ -660,7 +674,10 @@ fn signed_host_nix_policy_fails_closed_with_no_anchors() {
     let err = run_eval_command(&cmd).expect_err("gate must fail closed with no anchors");
     let msg = format!("{err:#}");
     assert!(msg.contains("signature verification"), "wrong error: {msg}");
-    assert!(!out.exists(), "no manifest may be written on a gate failure");
+    assert!(
+        !out.exists(),
+        "no manifest may be written on a gate failure"
+    );
 }
 
 #[test]

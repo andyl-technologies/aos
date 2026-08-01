@@ -1,0 +1,447 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -40,6 +40,7 @@
+ #include "tcg-accel-ops-rr.h"
+ #include "tcg-accel-ops-icount.h"
+ #include "tcg-accel-ops-sim-shmem.h"
++#include "system/crucible-sim-ipi.h"
+ 
+ /* Kick all RR vCPUs */
+ void rr_kick_vcpu_thread(CPUState *unused)
+@@ -203,6 +204,7 @@ static void rr_crucible_sim_refresh_batch_budget(int64_t *cpu_budget)
+     icount_account_warp_timer();
+     qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+     icount_handle_deadline();
++    crucible_sim_det_ipi_drain_pending();
+     cpu_count = rr_cpu_count();
+     *cpu_budget = icount_percpu_budget(cpu_count);
+ 
+@@ -534,12 +536,16 @@ static void *rr_cpu_thread_fn(void *arg)
+                 break;
+             }
+ 
++            qatomic_set(&rr_current_cpu, NULL);
++            crucible_sim_det_ipi_drain_pending();
+             cpu = CPU_NEXT(cpu);
+         } /* while (cpu && !cpu->exit_request).. */
+ 
+         /* Does not need a memory barrier because a spurious wakeup is okay.  */
+         qatomic_set(&rr_current_cpu, NULL);
+ 
++        crucible_sim_det_ipi_drain_pending();
++
+         if (cpu && cpu->exit_request) {
+             rr_crucible_sim_reset_exit_request(cpu);
+         }
+diff --git a/hw/intc/apic.c b/hw/intc/apic.c
+--- a/hw/intc/apic.c
++++ b/hw/intc/apic.c
+@@ -26,7 +26,11 @@
+ #include "hw/intc/kvm_irqcount.h"
+ #include "hw/pci/msi.h"
+ #include "qemu/host-utils.h"
++#include "qemu/accel.h"
++#include "qemu/plugin.h"
+ #include "system/kvm.h"
++#include "system/cpu-timers.h"
++#include "system/crucible-sim-ipi.h"
+ #include "trace.h"
+ #include "hw/i386/apic-msidef.h"
+ #include "qapi/error.h"
+@@ -40,6 +44,19 @@ static APICCommonState **local_apics;
+ static uint32_t max_apics;
+ static uint32_t max_apic_words;
+ 
++typedef struct CrucibleSimDetIpiEvent {
++    APICCommonState *target_apic;
++    unsigned int src_vcpu;
++    uint8_t delivery_mode;
++    uint8_t vector_num;
++    uint8_t trigger_mode;
++    uint64_t event_id;
++} CrucibleSimDetIpiEvent;
++
++static GQueue crucible_sim_det_ipi_queue = G_QUEUE_INIT;
++static uint64_t crucible_sim_det_ipi_next_event_id;
++static bool crucible_sim_det_ipi_draining;
++
+ #define TYPE_APIC "apic"
+ /*This is reusing the APICCommonState typedef from APIC_COMMON */
+ DECLARE_INSTANCE_CHECKER(APICCommonState, APIC,
+@@ -47,6 +64,7 @@ DECLARE_INSTANCE_CHECKER(APICCommonState, APIC,
+ 
+ static void apic_set_irq(APICCommonState *s, int vector_num, int trigger_mode);
+ static void apic_update_irq(APICCommonState *s);
++static void apic_startup(APICCommonState *s, int vector_num);
+ static void apic_get_delivery_bitmask(uint32_t *deliver_bitmask,
+                                       uint32_t dest, uint8_t dest_mode);
+ 
+@@ -225,7 +243,119 @@ static void apic_external_nmi(APICCommonState *s)
+     }\
+ }
+ 
+-static void apic_bus_deliver(const uint32_t *deliver_bitmask,
++
++static bool crucible_sim_det_ipi_mode(void)
++{
++    return !crucible_sim_det_ipi_draining &&
++           strcmp(current_accel_name(), "sim") == 0 &&
++           icount_enabled() == ICOUNT_PRECISE &&
++           icount_crucible_rr_switch_quantum() != 0;
++}
++
++static bool crucible_sim_det_ipi_should_defer(CPUState *src_cpu,
++                                              APICCommonState *target_apic)
++{
++    CPUState *dst_cpu;
++
++    if (!crucible_sim_det_ipi_mode() || src_cpu == NULL ||
++        target_apic == NULL || target_apic->cpu == NULL) {
++        return false;
++    }
++
++    dst_cpu = CPU(target_apic->cpu);
++    return dst_cpu != NULL && dst_cpu != src_cpu;
++}
++
++static bool crucible_sim_det_ipi_enqueue(CPUState *src_cpu,
++                                         APICCommonState *target_apic,
++                                         uint8_t delivery_mode,
++                                         uint8_t vector_num,
++                                         uint8_t trigger_mode)
++{
++    CrucibleSimDetIpiEvent *event;
++
++    if (!crucible_sim_det_ipi_should_defer(src_cpu, target_apic)) {
++        return false;
++    }
++
++    event = g_new0(CrucibleSimDetIpiEvent, 1);
++    event->target_apic = target_apic;
++    event->src_vcpu = src_cpu->cpu_index;
++    event->delivery_mode = delivery_mode;
++    event->vector_num = vector_num;
++    event->trigger_mode = trigger_mode;
++    event->event_id = ++crucible_sim_det_ipi_next_event_id;
++    g_queue_push_tail(&crucible_sim_det_ipi_queue, event);
++    return true;
++}
++
++static unsigned int crucible_sim_det_ipi_trace_vector(
++    const CrucibleSimDetIpiEvent *event)
++{
++    switch (event->delivery_mode) {
++    case APIC_DM_LOWPRI:
++    case APIC_DM_FIXED:
++    case APIC_DM_SIPI:
++        return event->vector_num;
++    default:
++        return UINT_MAX;
++    }
++}
++
++static void crucible_sim_det_ipi_deliver_event(
++    const CrucibleSimDetIpiEvent *event)
++{
++    APICCommonState *target_apic = event->target_apic;
++    CPUState *dst_cpu;
++    uint64_t delivery_icount;
++
++    if (target_apic == NULL || target_apic->cpu == NULL) {
++        return;
++    }
++
++    dst_cpu = CPU(target_apic->cpu);
++    switch (event->delivery_mode) {
++    case APIC_DM_LOWPRI:
++    case APIC_DM_FIXED:
++        apic_set_irq(target_apic, event->vector_num, event->trigger_mode);
++        break;
++    case APIC_DM_SMI:
++        cpu_interrupt(dst_cpu, CPU_INTERRUPT_SMI);
++        break;
++    case APIC_DM_NMI:
++        cpu_interrupt(dst_cpu, CPU_INTERRUPT_NMI);
++        break;
++    case APIC_DM_INIT:
++        cpu_interrupt(dst_cpu, CPU_INTERRUPT_INIT);
++        break;
++    case APIC_DM_SIPI:
++        apic_startup(target_apic, event->vector_num);
++        break;
++    default:
++        return;
++    }
++
++    delivery_icount = qemu_plugin_icount_raw();
++    qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
++        event->event_id, delivery_icount, event->src_vcpu, dst_cpu->cpu_index,
++        event->delivery_mode, crucible_sim_det_ipi_trace_vector(event));
++}
++
++void crucible_sim_det_ipi_drain_pending(void)
++{
++    crucible_sim_det_ipi_draining = true;
++    while (!g_queue_is_empty(&crucible_sim_det_ipi_queue)) {
++        CrucibleSimDetIpiEvent *event =
++            g_queue_pop_head(&crucible_sim_det_ipi_queue);
++
++        crucible_sim_det_ipi_deliver_event(event);
++        g_free(event);
++    }
++    crucible_sim_det_ipi_draining = false;
++}
++
++static void apic_bus_deliver(CPUState *src_cpu,
++                             const uint32_t *deliver_bitmask,
+                              uint8_t delivery_mode, uint8_t vector_num,
+                              uint8_t trigger_mode)
+ {
+@@ -245,7 +375,11 @@ static void apic_bus_deliver(const uint32_t *deliver_bitmask,
+                 }
+                 if (d >= 0) {
+                     apic_iter = local_apics[d];
+-                    if (apic_iter) {
++                    if (apic_iter &&
++                        !crucible_sim_det_ipi_enqueue(src_cpu, apic_iter,
++                                                       delivery_mode,
++                                                       vector_num,
++                                                       trigger_mode)) {
+                         apic_set_irq(apic_iter, vector_num, trigger_mode);
+                     }
+                 }
+@@ -257,21 +391,32 @@ static void apic_bus_deliver(const uint32_t *deliver_bitmask,
+ 
+         case APIC_DM_SMI:
+             foreach_apic(apic_iter, deliver_bitmask,
+-                cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_SMI)
++                if (!crucible_sim_det_ipi_enqueue(src_cpu, apic_iter,
++                                                  delivery_mode, vector_num,
++                                                  trigger_mode)) {
++                    cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_SMI);
++                }
+             );
+             return;
+ 
+         case APIC_DM_NMI:
+             foreach_apic(apic_iter, deliver_bitmask,
+-                cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_NMI)
++                if (!crucible_sim_det_ipi_enqueue(src_cpu, apic_iter,
++                                                  delivery_mode, vector_num,
++                                                  trigger_mode)) {
++                    cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_NMI);
++                }
+             );
+             return;
+ 
+         case APIC_DM_INIT:
+             /* normal INIT IPI sent to processors */
+             foreach_apic(apic_iter, deliver_bitmask,
+-                         cpu_interrupt(CPU(apic_iter->cpu),
+-                                       CPU_INTERRUPT_INIT)
++                if (!crucible_sim_det_ipi_enqueue(src_cpu, apic_iter,
++                                                  delivery_mode, vector_num,
++                                                  trigger_mode)) {
++                    cpu_interrupt(CPU(apic_iter->cpu), CPU_INTERRUPT_INIT);
++                }
+             );
+             return;
+ 
+@@ -284,7 +429,11 @@ static void apic_bus_deliver(const uint32_t *deliver_bitmask,
+     }
+ 
+     foreach_apic(apic_iter, deliver_bitmask,
+-                 apic_set_irq(apic_iter, vector_num, trigger_mode) );
++        if (!crucible_sim_det_ipi_enqueue(src_cpu, apic_iter, delivery_mode,
++                                          vector_num, trigger_mode)) {
++            apic_set_irq(apic_iter, vector_num, trigger_mode);
++        }
++    );
+ }
+ 
+ static void apic_deliver_irq(uint32_t dest, uint8_t dest_mode,
+@@ -297,7 +446,8 @@ static void apic_deliver_irq(uint32_t dest, uint8_t dest_mode,
+                            trigger_mode);
+ 
+     apic_get_delivery_bitmask(deliver_bitmask, dest, dest_mode);
+-    apic_bus_deliver(deliver_bitmask, delivery_mode, vector_num, trigger_mode);
++    apic_bus_deliver(NULL, deliver_bitmask, delivery_mode, vector_num,
++                     trigger_mode);
+ }
+ 
+ bool is_x2apic_mode(DeviceState *dev)
+@@ -701,11 +851,17 @@ static void apic_deliver(DeviceState *dev, uint32_t dest, uint8_t dest_mode,
+ 
+         case APIC_DM_SIPI:
+             foreach_apic(apic_iter, deliver_bitmask,
+-                         apic_startup(apic_iter, vector_num) );
++                if (!crucible_sim_det_ipi_enqueue(CPU(s->cpu), apic_iter,
++                                                  delivery_mode, vector_num,
++                                                  trigger_mode)) {
++                    apic_startup(apic_iter, vector_num);
++                }
++            );
+             return;
+     }
+ 
+-    apic_bus_deliver(deliver_bitmask, delivery_mode, vector_num, trigger_mode);
++    apic_bus_deliver(CPU(s->cpu), deliver_bitmask, delivery_mode,
++                     vector_num, trigger_mode);
+ }
+ 
+ static bool apic_check_pic(APICCommonState *s)
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -187,6 +187,16 @@ extern void *qemu_plugin_vcpu_idle_resume_userdata;
+ void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu);
+ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu);
+ 
++extern qemu_plugin_crucible_ipi_delivery_cb_t
++    qemu_plugin_crucible_ipi_delivery_cb;
++extern void *qemu_plugin_crucible_ipi_delivery_userdata;
++void qemu_plugin_crucible_fire_ipi_delivery_cb(uint64_t event_id,
++                                               uint64_t delivery_icount,
++                                               unsigned int src_vcpu,
++                                               unsigned int dst_vcpu,
++                                               unsigned int delivery_mode,
++                                               unsigned int vector);
++
+ static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
+ {
+     if (qemu_plugin_tcg_exec_cb) {
+@@ -208,6 +218,17 @@ static inline void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
+     }
+ }
+ 
++static inline void qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
++    uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
++    unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
++{
++    if (qemu_plugin_crucible_ipi_delivery_cb) {
++        qemu_plugin_crucible_fire_ipi_delivery_cb(event_id, delivery_icount,
++                                                  src_vcpu, dst_vcpu,
++                                                  delivery_mode, vector);
++    }
++}
++
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+ 
+ static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
+@@ -317,6 +338,11 @@ static inline void qemu_plugin_maybe_fire_vcpu_idle_cb(CPUState *cpu)
+ static inline void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
+ { }
+ 
++static inline void qemu_plugin_crucible_maybe_fire_ipi_delivery_cb(
++    uint64_t event_id, uint64_t delivery_icount, unsigned int src_vcpu,
++    unsigned int dst_vcpu, unsigned int delivery_mode, unsigned int vector)
++{ }
++
+ static inline
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr)
+ { }
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -173,6 +173,24 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
+ typedef void (*qemu_plugin_vcpu_idle_resume_cb_t)(unsigned int vcpu_index,
+                                                   uint64_t icount,
+                                                   void *userdata);
++
++/**
++ * typedef qemu_plugin_crucible_ipi_delivery_cb_t - sim IPI delivery callback
++ * @event_id: monotonically increasing delivery event id
++ * @delivery_icount: raw node-icount where the interrupt becomes visible
++ * @src_vcpu: sender vCPU index
++ * @dst_vcpu: receiver vCPU index
++ * @delivery_mode: xAPIC delivery mode
++ * @vector: interrupt vector, or UINT_MAX when the mode has no vector
++ * @userdata: a pointer supplied when the callback was registered
++ */
++typedef void (*qemu_plugin_crucible_ipi_delivery_cb_t)(uint64_t event_id,
++                                                       uint64_t delivery_icount,
++                                                       unsigned int src_vcpu,
++                                                       unsigned int dst_vcpu,
++                                                       unsigned int delivery_mode,
++                                                       unsigned int vector,
++                                                       void *userdata);
+ /**
+  * typedef qemu_plugin_sim_shmem_publish_icount_cb_t - publish sim icount
+  * @current_icount: the raw bias-excluded icount reached by the sim vCPU loop
+@@ -1439,6 +1457,21 @@ uint64_t qemu_plugin_crucible_rr_cursor_position(void);
+ QEMU_PLUGIN_API
+ uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
+ 
++/**
++ * qemu_plugin_crucible_register_ipi_delivery_cb() - register sim IPI trace hook
++ * @cb: callback invoked when a queued inter-vCPU IPI becomes visible
++ * @userdata: opaque pointer passed to @cb
++ *
++ * The callback fires from the deterministic RR handoff path after sim-mode
++ * APIC IPI/SIPI/INIT delivery is applied. Passing NULL disables the hook.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_crucible_register_ipi_delivery_cb(
++    qemu_plugin_crucible_ipi_delivery_cb_t cb,
++    void *userdata);
++
+ /**
+  * qemu_plugin_crucible_ram_hash() - hash every RAM block
+  * @bytes_out: optional output for the total RAM bytes included in the hash
+diff --git a/include/system/crucible-sim-ipi.h b/include/system/crucible-sim-ipi.h
+new file mode 100644
+--- /dev/null
++++ b/include/system/crucible-sim-ipi.h
+@@ -0,0 +1,6 @@
++#ifndef SYSTEM_CRUCIBLE_SIM_IPI_H
++#define SYSTEM_CRUCIBLE_SIM_IPI_H
++
++void crucible_sim_det_ipi_drain_pending(void);
++
++#endif /* SYSTEM_CRUCIBLE_SIM_IPI_H */
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -121,6 +121,8 @@ void *qemu_plugin_tcg_exec_userdata;
+ qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_idle_cb;
+ qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_resume_cb;
+ void *qemu_plugin_vcpu_idle_resume_userdata;
++qemu_plugin_crucible_ipi_delivery_cb_t qemu_plugin_crucible_ipi_delivery_cb;
++void *qemu_plugin_crucible_ipi_delivery_userdata;
+ 
+ static void qemu_plugin_time_advance_barrier_bh(void *opaque);
+ static void qemu_plugin_time_advance_complete_bh(void *opaque);
+@@ -426,6 +428,30 @@ void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
+     }
+ }
+ 
++void qemu_plugin_crucible_register_ipi_delivery_cb(
++    qemu_plugin_crucible_ipi_delivery_cb_t cb,
++    void *userdata)
++{
++    qemu_plugin_crucible_ipi_delivery_userdata = userdata;
++    qemu_plugin_crucible_ipi_delivery_cb = cb;
++}
++
++void qemu_plugin_crucible_fire_ipi_delivery_cb(uint64_t event_id,
++                                               uint64_t delivery_icount,
++                                               unsigned int src_vcpu,
++                                               unsigned int dst_vcpu,
++                                               unsigned int delivery_mode,
++                                               unsigned int vector)
++{
++    qemu_plugin_crucible_ipi_delivery_cb_t cb =
++        qemu_plugin_crucible_ipi_delivery_cb;
++
++    if (cb) {
++        cb(event_id, delivery_icount, src_vcpu, dst_vcpu, delivery_mode,
++           vector, qemu_plugin_crucible_ipi_delivery_userdata);
++    }
++}
++
+ 
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {

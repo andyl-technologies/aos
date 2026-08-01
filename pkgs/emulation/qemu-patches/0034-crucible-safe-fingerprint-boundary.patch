@@ -1,0 +1,284 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -222,20 +222,44 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+         int r;
+ 
+         if (rr_crucible_sim_mode() &&
+-            crucible_sim_shmem_dispatch_registered()) {
++            (crucible_sim_shmem_dispatch_registered() ||
++             crucible_sim_observer_registered())) {
+             uint64_t current_icount = qemu_plugin_icount_raw();
+-
+-            *cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
+-                                                              *cpu_budget);
+-            *cpu_budget = crucible_sim_preemption_clamp_cpu_budget(current_icount,
+-                                                                   *cpu_budget);
++            bool observer_due = false;
++            bool dispatch_due = false;
++
++            if (crucible_sim_shmem_dispatch_registered()) {
++                dispatch_due = current_icount >=
++                    crucible_sim_shmem_max_advance_icount();
++                *cpu_budget = crucible_sim_shmem_clamp_cpu_budget(
++                    current_icount, *cpu_budget);
++                *cpu_budget = crucible_sim_preemption_clamp_cpu_budget(
++                    current_icount, *cpu_budget);
++            }
++            if (crucible_sim_observer_registered()) {
++                observer_due = current_icount >=
++                    crucible_sim_observer_max_advance_icount();
++                *cpu_budget = crucible_sim_observer_clamp_cpu_budget(
++                    current_icount, *cpu_budget);
++            }
+             if (*cpu_budget == 0) {
+-                crucible_sim_shmem_publish_current_icount(current_icount);
+-                if (crucible_sim_preemption_apply_due(cpu_ptr)) {
++                if (observer_due) {
++                    crucible_sim_observer_notify_current_icount(current_icount);
++                }
++                if (crucible_sim_shmem_dispatch_registered() &&
++                    (dispatch_due || !observer_due)) {
++                    crucible_sim_shmem_publish_current_icount(current_icount);
++                }
++                if (crucible_sim_shmem_dispatch_registered() &&
++                    crucible_sim_preemption_apply_due(cpu_ptr)) {
+                     return true;
+                 }
+-                qemu_cond_wait_bql(first_cpu->halt_cond);
+-                return true;
++                if (crucible_sim_shmem_dispatch_registered() &&
++                    (dispatch_due || !observer_due)) {
++                    qemu_cond_wait_bql(first_cpu->halt_cond);
++                    return true;
++                }
++                return false;
+             }
+         }
+ 
+@@ -254,6 +278,12 @@ static bool rr_crucible_sim_run_tcg_batch(CPUState **cpu_ptr,
+         qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
+         bql_lock();
+ 
++        if (rr_crucible_sim_mode() &&
++            crucible_sim_observer_registered()) {
++            crucible_sim_observer_notify_current_icount(
++                qemu_plugin_icount_raw());
++        }
++
+         if (rr_crucible_sim_mode() &&
+             crucible_sim_shmem_dispatch_registered() &&
+             crucible_sim_preemption_apply_due(cpu_ptr)) {
+@@ -527,19 +557,44 @@ static void *rr_cpu_thread_fn(void *arg)
+                               (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
+ 
+             if (rr_crucible_sim_mode() &&
+-                crucible_sim_shmem_dispatch_registered()) {
++                (crucible_sim_shmem_dispatch_registered() ||
++                 crucible_sim_observer_registered())) {
+                 uint64_t current_icount = qemu_plugin_icount_raw();
+-
+-                cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
+-                                                                 cpu_budget);
+-                cpu_budget = crucible_sim_preemption_clamp_cpu_budget(current_icount,
+-                                                                      cpu_budget);
++                bool observer_due = false;
++                bool dispatch_due = false;
++
++                if (crucible_sim_shmem_dispatch_registered()) {
++                    dispatch_due = current_icount >=
++                        crucible_sim_shmem_max_advance_icount();
++                    cpu_budget = crucible_sim_shmem_clamp_cpu_budget(
++                        current_icount, cpu_budget);
++                    cpu_budget = crucible_sim_preemption_clamp_cpu_budget(
++                        current_icount, cpu_budget);
++                }
++                if (crucible_sim_observer_registered()) {
++                    observer_due = current_icount >=
++                        crucible_sim_observer_max_advance_icount();
++                    cpu_budget = crucible_sim_observer_clamp_cpu_budget(
++                        current_icount, cpu_budget);
++                }
+                 if (cpu_budget == 0) {
+-                    crucible_sim_shmem_publish_current_icount(current_icount);
+-                    if (crucible_sim_preemption_apply_due(&cpu)) {
++                    if (observer_due) {
++                        crucible_sim_observer_notify_current_icount(
++                            current_icount);
++                    }
++                    if (crucible_sim_shmem_dispatch_registered() &&
++                        (dispatch_due || !observer_due)) {
++                        crucible_sim_shmem_publish_current_icount(
++                            current_icount);
++                    }
++                    if (crucible_sim_shmem_dispatch_registered() &&
++                        crucible_sim_preemption_apply_due(&cpu)) {
+                         break;
+                     }
+-                    qemu_cond_wait_bql(first_cpu->halt_cond);
++                    if (crucible_sim_shmem_dispatch_registered() &&
++                        (dispatch_due || !observer_due)) {
++                        qemu_cond_wait_bql(first_cpu->halt_cond);
++                    }
+                     break;
+                 }
+             }
+diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
+--- a/accel/tcg/tcg-accel-ops-sim-shmem.c
++++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
+@@ -11,6 +11,8 @@ static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_publish_icount_cb;
+ static qemu_plugin_sim_shmem_max_advance_icount_cb_t crucible_max_advance_icount_cb;
+ static void *crucible_sim_shmem_userdata;
+ static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_observe_icount_cb;
++static qemu_plugin_sim_shmem_max_advance_icount_cb_t
++    crucible_observer_max_advance_icount_cb;
+ static void *crucible_sim_observer_userdata;
+ 
+ void qemu_plugin_register_sim_shmem_dispatch_cb(
+@@ -25,9 +27,11 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
+ 
+ void qemu_plugin_register_sim_shmem_observer_cb(
+     qemu_plugin_sim_shmem_publish_icount_cb_t observe_icount_cb,
++    qemu_plugin_sim_shmem_max_advance_icount_cb_t max_advance_icount_cb,
+     void *userdata)
+ {
+     crucible_sim_observer_userdata = userdata;
++    crucible_observer_max_advance_icount_cb = max_advance_icount_cb;
+     crucible_observe_icount_cb = observe_icount_cb;
+ }
+ 
+@@ -36,17 +40,28 @@ bool crucible_sim_shmem_dispatch_registered(void)
+     return crucible_max_advance_icount_cb != NULL;
+ }
+ 
++bool crucible_sim_observer_registered(void)
++{
++    return crucible_observe_icount_cb != NULL &&
++           crucible_observer_max_advance_icount_cb != NULL;
++}
++
+ void crucible_sim_shmem_publish_current_icount(uint64_t current_icount)
+ {
+     crucible_current_icount = current_icount;
+-    if (crucible_observe_icount_cb) {
+-        crucible_observe_icount_cb(current_icount, crucible_sim_observer_userdata);
+-    }
+     if (crucible_publish_icount_cb) {
+         crucible_publish_icount_cb(current_icount, crucible_sim_shmem_userdata);
+     }
+ }
+ 
++void crucible_sim_observer_notify_current_icount(uint64_t current_icount)
++{
++    crucible_current_icount = current_icount;
++    if (crucible_observe_icount_cb) {
++        crucible_observe_icount_cb(current_icount, crucible_sim_observer_userdata);
++    }
++}
++
+ uint64_t crucible_sim_shmem_current_icount(void)
+ {
+     return crucible_current_icount;
+@@ -61,17 +76,25 @@ uint64_t crucible_sim_shmem_max_advance_icount(void)
+     return UINT64_MAX;
+ }
+ 
+-int64_t crucible_sim_shmem_clamp_cpu_budget(uint64_t current_icount,
+-                                            int64_t cpu_budget)
++uint64_t crucible_sim_observer_max_advance_icount(void)
++{
++    if (crucible_observer_max_advance_icount_cb) {
++        return crucible_observer_max_advance_icount_cb(
++            crucible_sim_observer_userdata);
++    }
++
++    return UINT64_MAX;
++}
++
++static int64_t crucible_sim_clamp_cpu_budget(uint64_t current_icount,
++                                             int64_t cpu_budget,
++                                             uint64_t max_advance_icount)
+ {
+-    uint64_t max_advance_icount;
+     uint64_t remaining;
+ 
+     if (cpu_budget <= 0) {
+         return cpu_budget;
+     }
+-
+-    max_advance_icount = crucible_sim_shmem_max_advance_icount();
+     if (current_icount >= max_advance_icount) {
+         return 0;
+     }
+@@ -83,6 +106,22 @@ int64_t crucible_sim_shmem_clamp_cpu_budget(uint64_t current_icount,
+     return (int64_t)remaining;
+ }
+ 
++int64_t crucible_sim_shmem_clamp_cpu_budget(uint64_t current_icount,
++                                            int64_t cpu_budget)
++{
++    return crucible_sim_clamp_cpu_budget(
++        current_icount, cpu_budget,
++        crucible_sim_shmem_max_advance_icount());
++}
++
++int64_t crucible_sim_observer_clamp_cpu_budget(uint64_t current_icount,
++                                               int64_t cpu_budget)
++{
++    return crucible_sim_clamp_cpu_budget(
++        current_icount, cpu_budget,
++        crucible_sim_observer_max_advance_icount());
++}
++
+ bool crucible_sim_shmem_may_advance_to(uint64_t candidate_icount)
+ {
+     return candidate_icount <= crucible_sim_shmem_max_advance_icount();
+diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-shmem.h
+--- a/accel/tcg/tcg-accel-ops-sim-shmem.h
++++ b/accel/tcg/tcg-accel-ops-sim-shmem.h
+@@ -2,11 +2,16 @@
+ #define TCG_ACCEL_OPS_SIM_SHMEM_H
+ 
+ void crucible_sim_shmem_publish_current_icount(uint64_t current_icount);
++void crucible_sim_observer_notify_current_icount(uint64_t current_icount);
+ uint64_t crucible_sim_shmem_current_icount(void);
+ uint64_t crucible_sim_shmem_max_advance_icount(void);
++uint64_t crucible_sim_observer_max_advance_icount(void);
+ bool crucible_sim_shmem_dispatch_registered(void);
++bool crucible_sim_observer_registered(void);
+ int64_t crucible_sim_shmem_clamp_cpu_budget(uint64_t current_icount,
+                                             int64_t cpu_budget);
++int64_t crucible_sim_observer_clamp_cpu_budget(uint64_t current_icount,
++                                               int64_t cpu_budget);
+ bool crucible_sim_shmem_may_advance_to(uint64_t candidate_icount);
+ 
+ #endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1064,17 +1064,20 @@ void qemu_plugin_register_sim_shmem_dispatch_cb(
+ 
+ /**
+  * qemu_plugin_register_sim_shmem_observer_cb() - observe exact sim boundaries
+- * @observe_icount_cb: callback invoked after a sim vCPU execution window
+- * @userdata: opaque pointer passed to @observe_icount_cb
++ * @observe_icount_cb: callback invoked at the admitted exact boundary
++ * @max_advance_icount_cb: callback returning the next absolute raw-icount boundary
++ * @userdata: opaque pointer passed to both callbacks
+  *
+  * This observation-only callback is independent of the single scheduler-owned
+- * shmem dispatch registration. It runs after icount processing and before the
+- * RR loop resumes, so an auxiliary plugin can sample post-execution CPU, RAM,
+- * and device-I/O state without replacing or perturbing the control plugin.
++ * shmem dispatch registration. QEMU clamps the TCG budget to the observer's
++ * ceiling, then invokes the observer after icount processing while the BQL is
++ * held. An auxiliary plugin can therefore sample CPU, RAM, and VMState at an
++ * exact boundary without replacing or perturbing the control plugin.
+  */
+ QEMU_PLUGIN_API
+ void qemu_plugin_register_sim_shmem_observer_cb(
+     qemu_plugin_sim_shmem_publish_icount_cb_t observe_icount_cb,
++    qemu_plugin_sim_shmem_max_advance_icount_cb_t max_advance_icount_cb,
+     void *userdata);
+ 
+ /**

@@ -1,0 +1,21 @@
+[package]
+name = "crucible-qemu-plugin"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-protocol = { path = "../crucible-protocol" }
+crucible-shmem = { path = "../crucible-shmem" }
+libc = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Test-only HARN-16 cross-check: production plugin dependencies stay L1-only.
+crucible = { path = "../crucible", features = ["test-double", "test-support"] }

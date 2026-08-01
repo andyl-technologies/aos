@@ -1,0 +1,1121 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -24,6 +24,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/cutils.h"
++#include "qemu/accel.h"
+ #include "migration/vmstate.h"
+ #include "qapi/error.h"
+ #include "qemu/error-report.h"
+@@ -47,6 +48,7 @@
+ static bool icount_sleep = true;
+ /* Arbitrarily pick 1MIPS as the minimum allowable speed.  */
+ #define MAX_ICOUNT_SHIFT 10
++static uint64_t crucible_rr_switch_quantum;
+ 
+ bool icount_align_option;
+ 
+@@ -76,6 +78,30 @@ static int64_t icount_get_executed(CPUState *cpu)
+             (cpu->neg.icount_decr.u16.low + cpu->icount_extra));
+ }
+ 
++uint64_t icount_crucible_rr_switch_quantum(void)
++{
++    if (strcmp(current_accel_name(), "sim") != 0) {
++        return 0;
++    }
++    return crucible_rr_switch_quantum;
++}
++
++uint64_t icount_crucible_rr_cursor_position(CPUState *cpu)
++{
++    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
++    int64_t executed;
++
++    if (!cpu || rr_switch_quantum == 0) {
++        return 0;
++    }
++
++    executed = icount_get_executed(cpu);
++    if (executed < 0) {
++        return 0;
++    }
++    return MIN((uint64_t)executed, rr_switch_quantum);
++}
++
+ /*
+  * Update the global shared timer_state.qemu_icount to take into
+  * account executed instructions. This is done by the TCG vCPU
+@@ -422,15 +448,27 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+     bool sleep = qemu_opt_get_bool(opts, "sleep", true);
+     bool align = qemu_opt_get_bool(opts, "align", false);
+     long time_shift = -1;
++    uint64_t rr_switch_quantum =
++        qemu_opt_get_number(opts, "rr_switch_quantum", 0);
+ 
+     if (!option) {
+         if (qemu_opt_get(opts, "align") != NULL) {
+             error_setg(errp, "Please specify shift option when using align");
+             return false;
+         }
++        if (rr_switch_quantum != 0) {
++            error_setg(errp,
++                       "Please specify shift option when using rr_switch_quantum");
++            return false;
++        }
+         return true;
+     }
+ 
++    if (rr_switch_quantum > INT32_MAX) {
++        error_setg(errp, "icount: rr_switch_quantum is too large");
++        return false;
++    }
++
+     if (align && !sleep) {
+         error_setg(errp, "align=on and sleep=off are incompatible");
+         return false;
+@@ -451,6 +489,7 @@ bool icount_configure(QemuOpts *opts, Error **errp)
+     }
+ 
+     icount_sleep = sleep;
++    crucible_rr_switch_quantum = rr_switch_quantum;
+     if (icount_sleep) {
+         timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
+                                          icount_timer_cb, NULL);
+diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
+--- a/accel/tcg/tcg-accel-ops-icount.c
++++ b/accel/tcg/tcg-accel-ops-icount.c
+@@ -93,7 +93,21 @@ void icount_handle_deadline(void)
+ int64_t icount_percpu_budget(int cpu_count)
+ {
+     int64_t limit = icount_get_limit();
+-    int64_t timeslice = limit / cpu_count;
++    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
++    int64_t timeslice;
++
++    if (rr_switch_quantum != 0) {
++        if (limit <= 0) {
++            icount_handle_deadline();
++            limit = icount_get_limit();
++        }
++        if (limit <= 0) {
++            return (int64_t)rr_switch_quantum;
++        }
++        return MIN(limit, (int64_t)rr_switch_quantum);
++    }
++
++    timeslice = limit / cpu_count;
+ 
+     if (timeslice == 0) {
+         timeslice = limit;
+@@ -105,6 +119,8 @@ int64_t icount_percpu_budget(int cpu_count)
+ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
+ {
+     int insns_left;
++    int64_t limit = icount_get_limit();
++    uint64_t rr_switch_quantum = icount_crucible_rr_switch_quantum();
+ 
+     /*
+      * These should always be cleared by icount_process_data after
+@@ -116,7 +132,11 @@ void icount_prepare_for_run(CPUState *cpu, int64_t cpu_budget)
+ 
+     replay_mutex_lock();
+ 
+-    cpu->icount_budget = MIN(icount_get_limit(), cpu_budget);
++    if (rr_switch_quantum != 0 && limit <= 0) {
++        cpu->icount_budget = cpu_budget;
++    } else {
++        cpu->icount_budget = MIN(limit, cpu_budget);
++    }
+     insns_left = MIN(0xffff, cpu->icount_budget);
+     cpu->neg.icount_decr.u16.low = insns_left;
+     cpu->icount_extra = cpu->icount_budget - insns_left;
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -111,6 +111,16 @@ static void rr_wait_io_event(void)
+ 
+     while (all_cpu_threads_idle()) {
+         rr_stop_kick_timer();
++        if (icount_enabled()) {
++            /*
++             * Advancing the virtual clock from the host main-loop poll can make
++             * idle warps depend on host scheduling. Account the warp at the
++             * deterministic RR idle boundary instead, then run any virtual
++             * timers that became due before waiting.
++             */
++            icount_start_warp_timer();
++            icount_handle_deadline();
++        }
+         qemu_cond_wait_bql(first_cpu->halt_cond);
+     }
+ 
+diff --git a/hw/i386/multiboot.c b/hw/i386/multiboot.c
+--- a/hw/i386/multiboot.c
++++ b/hw/i386/multiboot.c
+@@ -288,6 +288,13 @@ int load_multiboot(X86MachineState *x86ms,
+     mbs.mb_buf_phys = mh_load_addr;
+ 
+     mbs.mb_buf_size = TARGET_PAGE_ALIGN(mb_kernel_size);
++    /*
++     * FW_CFG_KERNEL_DATA exposes the full aligned buffer to the guest. Do not
++     * leak allocator contents through the padding after the final ELF segment.
++     */
++    mbs.mb_buf = g_realloc(mbs.mb_buf, mbs.mb_buf_size);
++    memset((char *)mbs.mb_buf + mb_kernel_size, 0,
++           mbs.mb_buf_size - mb_kernel_size);
+     mbs.offset_mbinfo = mbs.mb_buf_size;
+ 
+     /* Calculate space for cmdlines, bootloader name, and mb_mods */
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -931,6 +931,146 @@ QEMU_PLUGIN_API
+ int qemu_plugin_read_register(struct qemu_plugin_register *handle,
+                               GByteArray *buf);
+ 
++/** Legacy FNV digest of writable guest RAM for non-canonical diagnostics. */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_guest_ram_hash(uint64_t *bytes_out);
++
++/** Legacy FNV digest of serialized VMState for non-canonical diagnostics. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
++                                            uint64_t *bytes_out);
++
++/** Digest length-framed writable guest RAM with SHA-256. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
++                                          uint64_t *bytes_out);
++
++/** Digest length-framed serialized non-RAM VMState with SHA-256. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
++                                             uint64_t *bytes_out);
++
++/** Digest registered non-RAM VMState schema descriptions recursively. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_device_state_schema_sha256(
++    uint8_t digest_out[32], uint64_t *sections_out);
++
++/**
++ * Capture length-framed RAM and device-state fingerprint material.
++ *
++ * The caller must release each non-NULL output with
++ * qemu_plugin_crucible_fingerprint_capture_free().
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_capture(
++    uint8_t **ram_material_out, uint64_t *ram_material_length_out,
++    uint64_t *ram_bytes_out, uint8_t **device_material_out,
++    uint64_t *device_material_length_out, uint64_t *device_bytes_out);
++
++/** Digest one immutable capture buffer with SHA-256. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
++                                      uint64_t material_length,
++                                      uint8_t digest_out[32]);
++
++/** Release one buffer returned by the fingerprint capture export. */
++QEMU_PLUGIN_API
++void qemu_plugin_crucible_fingerprint_capture_free(void *material);
++
++/** Return the observed aggregate instruction count, or zero if unavailable. */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_icount(void);
++
++/** Return whether QEMU currently observes a non-running VM runstate. */
++QEMU_PLUGIN_API
++bool qemu_plugin_crucible_vm_non_running(void);
++
++/**
++ * qemu_plugin_crucible_get_vcpu_registers() - return register list for a vCPU
++ * @vcpu_index: the vCPU index whose register descriptors should be returned
++ *
++ * Returns a potentially empty GArray of qemu_plugin_reg_descriptor.
++ * Caller frees the array, but not the const strings.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index);
++
++/**
++ * qemu_plugin_crucible_read_vcpu_register() - read one register from a vCPU
++ * @vcpu_index: the vCPU index to inspect
++ * @handle: a qemu_plugin_register handle from the matching vCPU's descriptor list
++ * @buf: a GByteArray for the plugin-owned data
++ *
++ * Returns the size of the read register. The content of @buf is in target byte
++ * order. On failure returns -1.
++ *
++ * This AOS Crucible extension is side-effect-free and available only in system
++ * emulation.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
++                                            struct qemu_plugin_register *handle,
++                                            GByteArray *buf);
++
++/**
++ * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
++ *
++ * Returns UINT64_MAX when no vCPU is current.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_rr_current_vcpu(void);
++
++/**
++ * qemu_plugin_crucible_rr_cursor_position() - return position in RR quantum
++ *
++ * Returns the retired-instruction offset within the current pinned
++ * rr_switch_quantum budget, or 0 when the quantum is not pinned.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_rr_cursor_position(void);
++
++/**
++ * qemu_plugin_crucible_rr_switch_quantum() - return pinned RR switch quantum
++ *
++ * Returns the active rr_switch_quantum in node-icount units, or 0 when the
++ * launch did not pin the quantum.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_rr_switch_quantum(void);
++
++/**
++ * qemu_plugin_crucible_ram_hash() - hash every RAM block
++ * @bytes_out: optional output for the total RAM bytes included in the hash
++ *
++ * Returns an FNV-1a hash over every RAM block's stable identifier, length, and
++ * host-backed bytes. This helper intentionally covers RAM only; device-model
++ * state must be covered by separate Crucible fingerprint inputs.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
++
++/**
++ * qemu_plugin_crucible_pause_vm() - request a VM stop at the current icount
++ *
++ * This lets a fingerprint plugin request a stop after recording a fixed-horizon
++ * sample, so QMP can inspect or migrate the stable VM state where the stop
++ * takes effect.
++ *
++ * This AOS Crucible extension is available only in system emulation.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_crucible_pause_vm(void);
++
+ /**
+  * qemu_plugin_scoreboard_new() - alloc a new scoreboard
+  *
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -68,6 +68,9 @@ bool icount_configure(QemuOpts *opts, Error **errp);
+ /* used by tcg vcpu thread to calc icount budget */
+ int64_t icount_round(int64_t count);
+ 
++uint64_t icount_crucible_rr_switch_quantum(void);
++uint64_t icount_crucible_rr_cursor_position(CPUState *cpu);
++
+ /* if the CPUs are idle, start accounting real time to virtual clock. */
+ void icount_start_warp_timer(void);
+ void icount_account_warp_timer(void);
+diff --git a/migration/savevm.c b/migration/savevm.c
+--- a/migration/savevm.c
++++ b/migration/savevm.c
+@@ -1832,6 +1832,127 @@ int qemu_save_device_state(QEMUFile *f)
+     return qemu_file_get_error(f);
+ }
+ 
++static void crucible_checksum_u64(GChecksum *checksum, uint64_t value)
++{
++    uint8_t encoded[8];
++
++    for (size_t i = 0; i < sizeof(encoded); i++) {
++        encoded[sizeof(encoded) - i - 1] = value & 0xff;
++        value >>= 8;
++    }
++    g_checksum_update(checksum, encoded, sizeof(encoded));
++}
++
++static void crucible_checksum_bytes(GChecksum *checksum, const void *data,
++                                    size_t length)
++{
++    crucible_checksum_u64(checksum, length);
++    if (length != 0) {
++        g_checksum_update(checksum, data, length);
++    }
++}
++
++static void crucible_checksum_string(GChecksum *checksum, const char *value)
++{
++    if (value) {
++        crucible_checksum_bytes(checksum, value, strlen(value));
++    } else {
++        crucible_checksum_u64(checksum, UINT64_MAX);
++    }
++}
++
++static void crucible_checksum_vmsd(GChecksum *checksum,
++                                   const VMStateDescription *vmsd)
++{
++    const VMStateField *field;
++    const VMStateDescription * const *subsection;
++
++    crucible_checksum_string(checksum, vmsd->name);
++    crucible_checksum_u64(checksum, vmsd->version_id);
++    crucible_checksum_u64(checksum, vmsd->minimum_version_id);
++    crucible_checksum_u64(checksum, vmsd->priority);
++    crucible_checksum_u64(checksum, vmsd->early_setup);
++    crucible_checksum_u64(checksum, vmsd->unmigratable);
++    crucible_checksum_u64(checksum, vmsd->pre_load != NULL);
++    crucible_checksum_u64(checksum, vmsd->post_load != NULL);
++    crucible_checksum_u64(checksum, vmsd->pre_save != NULL);
++    crucible_checksum_u64(checksum, vmsd->post_save != NULL);
++    crucible_checksum_u64(checksum, vmsd->needed != NULL);
++    crucible_checksum_u64(checksum, vmsd->dev_unplug_pending != NULL);
++
++    for (field = vmsd->fields; field && field->name; field++) {
++        crucible_checksum_string(checksum, "field");
++        crucible_checksum_string(checksum, field->name);
++        crucible_checksum_u64(checksum, field->offset);
++        crucible_checksum_u64(checksum, field->size);
++        crucible_checksum_u64(checksum, field->start);
++        crucible_checksum_u64(checksum, field->num);
++        crucible_checksum_u64(checksum, field->num_offset);
++        crucible_checksum_u64(checksum, field->size_offset);
++        crucible_checksum_u64(checksum, field->flags);
++        crucible_checksum_u64(checksum, field->version_id);
++        crucible_checksum_u64(checksum, field->struct_version_id);
++        crucible_checksum_u64(checksum, field->field_exists != NULL);
++        crucible_checksum_string(checksum,
++                                 field->info ? field->info->name : NULL);
++        if (field->vmsd) {
++            crucible_checksum_vmsd(checksum, field->vmsd);
++        }
++    }
++    crucible_checksum_string(checksum, "fields-end");
++
++    for (subsection = vmsd->subsections;
++         subsection && *subsection; subsection++) {
++        crucible_checksum_string(checksum, "subsection");
++        crucible_checksum_vmsd(checksum, *subsection);
++    }
++    crucible_checksum_string(checksum, "subsections-end");
++}
++
++int qemu_savevm_crucible_schema_sha256(uint8_t digest[32],
++                                       uint64_t *sections_out)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    SaveStateEntry *se;
++    gsize digest_length = 32;
++    uint64_t sections = 0;
++
++    if (!digest || !sections_out) {
++        return -EINVAL;
++    }
++    memset(digest, 0, 32);
++    *sections_out = 0;
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    if (!checksum) {
++        return -ENOMEM;
++    }
++    crucible_checksum_string(checksum,
++                             "crucible.qemu.device-vmstate-schema.v1");
++    QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
++        if (se->is_ram) {
++            continue;
++        }
++        sections++;
++        crucible_checksum_string(checksum, "section");
++        crucible_checksum_string(checksum, se->idstr);
++        crucible_checksum_u64(checksum, se->instance_id);
++        crucible_checksum_u64(checksum, se->version_id);
++        if (se->vmsd) {
++            crucible_checksum_vmsd(checksum, se->vmsd);
++        } else {
++            crucible_checksum_string(checksum, "legacy-savevm-handlers");
++        }
++    }
++    crucible_checksum_string(checksum, "sections-end");
++    g_checksum_get_digest(checksum, digest, &digest_length);
++    if (digest_length != 32) {
++        memset(digest, 0, 32);
++        return -EIO;
++    }
++    *sections_out = sections;
++    return 0;
++}
++
+ static SaveStateEntry *find_se(const char *idstr, uint32_t instance_id)
+ {
+     SaveStateEntry *se;
+diff --git a/migration/savevm.h b/migration/savevm.h
+--- a/migration/savevm.h
++++ b/migration/savevm.h
+@@ -62,6 +62,8 @@ void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
+ void qemu_savevm_send_colo_enable(QEMUFile *f);
+ void qemu_savevm_live_state(QEMUFile *f);
+ int qemu_save_device_state(QEMUFile *f);
++int qemu_savevm_crucible_schema_sha256(uint8_t digest[32],
++                                       uint64_t *sections_out);
+ 
+ int qemu_loadvm_state(QEMUFile *f);
+ void qemu_loadvm_state_cleanup(MigrationIncomingState *mis);
+diff --git a/plugins/api.c b/plugins/api.c
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -39,8 +39,18 @@
+ #include "qemu/main-loop.h"
+ #include "qemu/plugin.h"
+ #include "qemu/log.h"
++#include "qapi/error.h"
++#include "io/channel-buffer.h"
++#include "migration/qemu-file.h"
++#include "migration/savevm.h"
++#include "system/cpu-timers.h"
++#include "system/runstate.h"
+ #include "tcg/tcg.h"
++#include "exec/cpu-common.h"
+ #include "exec/gdbstub.h"
++#include "exec/memory.h"
++#include "exec/ramblock.h"
++#include "exec/ramlist.h"
+ #include "exec/target_page.h"
+ #include "exec/translation-block.h"
+ #include "exec/translator.h"
+@@ -462,6 +472,509 @@ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+     return gdb_read_register(current_cpu, buf, GPOINTER_TO_INT(reg) - 1);
+ }
+ 
++#ifndef CONFIG_USER_ONLY
++GArray *qemu_plugin_crucible_get_vcpu_registers(unsigned int vcpu_index)
++{
++    CPUState *cpu = qemu_get_cpu(vcpu_index);
++
++    if (!cpu) {
++        return NULL;
++    }
++
++    g_autoptr(GArray) regs = gdb_get_register_list(cpu);
++    return create_register_handles(regs);
++}
++
++int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
++                                            struct qemu_plugin_register *reg,
++                                            GByteArray *buf)
++{
++    CPUState *cpu = qemu_get_cpu(vcpu_index);
++
++    if (!cpu || !reg) {
++        return -1;
++    }
++
++    return gdb_read_register(cpu, buf, GPOINTER_TO_INT(reg) - 1);
++}
++
++uint64_t qemu_plugin_crucible_rr_current_vcpu(void)
++{
++    if (!current_cpu) {
++        return UINT64_MAX;
++    }
++
++    return (uint64_t)current_cpu->cpu_index;
++}
++
++uint64_t qemu_plugin_crucible_rr_cursor_position(void)
++{
++    return icount_crucible_rr_cursor_position(current_cpu);
++}
++
++uint64_t qemu_plugin_crucible_rr_switch_quantum(void)
++{
++    return icount_crucible_rr_switch_quantum();
++}
++
++struct CrucibleRamHash {
++    uint64_t hash;
++    uint64_t bytes;
++};
++
++static uint64_t crucible_fnv1a_u64(uint64_t hash, uint64_t value)
++{
++    for (int i = 0; i < 8; i++) {
++        hash ^= (value >> (i * 8)) & 0xffU;
++        hash *= 1099511628211ULL;
++    }
++    return hash;
++}
++
++static uint64_t crucible_fnv1a_bytes(uint64_t hash,
++                                     const uint8_t *bytes,
++                                     size_t len)
++{
++    for (size_t i = 0; i < len; i++) {
++        hash ^= bytes[i];
++        hash *= 1099511628211ULL;
++    }
++    return hash;
++}
++
++static int crucible_hash_ram_block(RAMBlock *block, void *opaque)
++{
++    struct CrucibleRamHash *state = opaque;
++
++    if (!block->host) {
++        return 0;
++    }
++
++    state->hash = crucible_fnv1a_bytes(state->hash,
++                                       (const uint8_t *)block->idstr,
++                                       strlen(block->idstr));
++    state->hash = crucible_fnv1a_u64(state->hash, block->used_length);
++    state->hash = crucible_fnv1a_bytes(state->hash, block->host,
++                                       block->used_length);
++    state->bytes += block->used_length;
++    return 0;
++}
++
++uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out)
++{
++    struct CrucibleRamHash state = {
++        .hash = 1469598103934665603ULL,
++        .bytes = 0,
++    };
++
++    qemu_ram_foreach_block(crucible_hash_ram_block, &state);
++    if (bytes_out) {
++        *bytes_out = state.bytes;
++    }
++    return state.hash;
++}
++
++static int crucible_hash_guest_ram_block(RAMBlock *block, void *opaque)
++{
++    if (!block->mr || !memory_region_is_ram(block->mr) ||
++        memory_region_is_rom(block->mr) ||
++        memory_region_is_ram_device(block->mr)) {
++        return 0;
++    }
++
++    return crucible_hash_ram_block(block, opaque);
++}
++
++uint64_t qemu_plugin_crucible_guest_ram_hash(uint64_t *bytes_out)
++{
++    struct CrucibleRamHash state = {
++        .hash = 1469598103934665603ULL,
++        .bytes = 0,
++    };
++
++    qemu_ram_foreach_block(crucible_hash_guest_ram_block, &state);
++    if (bytes_out) {
++        *bytes_out = state.bytes;
++    }
++    return state.hash;
++}
++
++int qemu_plugin_crucible_device_state_hash(uint64_t *hash_out,
++                                            uint64_t *bytes_out)
++{
++    QIOChannelBuffer *buffer;
++    QEMUFile *file;
++    int status;
++    int close_status;
++
++    if (!hash_out || !bytes_out) {
++        return -EINVAL;
++    }
++    *hash_out = 0;
++    *bytes_out = 0;
++
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state(file);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    if (status == 0) {
++        *hash_out = crucible_fnv1a_bytes(14695981039346656037ULL,
++                                          buffer->data, buffer->usage);
++        *bytes_out = buffer->usage;
++    }
++
++    close_status = qemu_fclose(file);
++    object_unref(OBJECT(buffer));
++    if (status == 0 && close_status != 0) {
++        *hash_out = 0;
++        *bytes_out = 0;
++        status = close_status;
++    }
++    return status;
++}
++
++void qemu_plugin_crucible_pause_vm(void)
++{
++    (void)vm_stop(RUN_STATE_PAUSED);
++}
++
++struct CrucibleSha256Ram {
++    GChecksum *checksum;
++    uint64_t bytes;
++};
++
++struct CrucibleCapturedRam {
++    GByteArray *material;
++    uint64_t bytes;
++};
++
++static void crucible_checksum_u64(GChecksum *checksum, uint64_t value)
++{
++    uint8_t encoded[8];
++
++    for (size_t i = 0; i < sizeof(encoded); i++) {
++        encoded[sizeof(encoded) - i - 1] = value & 0xff;
++        value >>= 8;
++    }
++    g_checksum_update(checksum, encoded, sizeof(encoded));
++}
++
++static void crucible_checksum_bytes(GChecksum *checksum,
++                                    const void *bytes, size_t length)
++{
++    crucible_checksum_u64(checksum, length);
++    if (length != 0) {
++        g_checksum_update(checksum, bytes, length);
++    }
++}
++
++static void crucible_byte_array_u64(GByteArray *material, uint64_t value)
++{
++    uint8_t encoded[8];
++
++    for (size_t i = 0; i < sizeof(encoded); i++) {
++        encoded[sizeof(encoded) - i - 1] = value & 0xff;
++        value >>= 8;
++    }
++    g_byte_array_append(material, encoded, sizeof(encoded));
++}
++
++static void crucible_byte_array_bytes(GByteArray *material,
++                                      const void *bytes, size_t length)
++{
++    crucible_byte_array_u64(material, length);
++    if (length != 0) {
++        g_byte_array_append(material, bytes, length);
++    }
++}
++
++static int crucible_capture_guest_ram_block(RAMBlock *block, void *opaque)
++{
++    struct CrucibleCapturedRam *state = opaque;
++
++    if (!block->host || !block->mr || !memory_region_is_ram(block->mr) ||
++        memory_region_is_rom(block->mr) ||
++        memory_region_is_ram_device(block->mr)) {
++        return 0;
++    }
++    crucible_byte_array_bytes(state->material, block->idstr,
++                              strlen(block->idstr));
++    crucible_byte_array_u64(state->material, block->used_length);
++    crucible_byte_array_bytes(state->material, block->host,
++                              block->used_length);
++    state->bytes += block->used_length;
++    return 0;
++}
++
++static int crucible_sha256_guest_ram_block(RAMBlock *block, void *opaque)
++{
++    struct CrucibleSha256Ram *state = opaque;
++
++    if (!block->host || !block->mr || !memory_region_is_ram(block->mr) ||
++        memory_region_is_rom(block->mr) ||
++        memory_region_is_ram_device(block->mr)) {
++        return 0;
++    }
++    crucible_checksum_bytes(state->checksum, block->idstr,
++                            strlen(block->idstr));
++    crucible_checksum_u64(state->checksum, block->used_length);
++    crucible_checksum_bytes(state->checksum, block->host,
++                            block->used_length);
++    state->bytes += block->used_length;
++    return 0;
++}
++
++int qemu_plugin_crucible_guest_ram_sha256(uint8_t digest_out[32],
++                                          uint64_t *bytes_out)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    struct CrucibleSha256Ram state;
++    gsize digest_length = 32;
++
++    if (!digest_out || !bytes_out) {
++        return -EINVAL;
++    }
++    memset(digest_out, 0, 32);
++    *bytes_out = 0;
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    if (!checksum) {
++        return -ENOMEM;
++    }
++    state.checksum = checksum;
++    state.bytes = 0;
++    crucible_checksum_bytes(checksum, "crucible.qemu.guest-ram.v1",
++                            strlen("crucible.qemu.guest-ram.v1"));
++    qemu_ram_foreach_block(crucible_sha256_guest_ram_block, &state);
++    g_checksum_get_digest(checksum, digest_out, &digest_length);
++    if (digest_length != 32) {
++        memset(digest_out, 0, 32);
++        return -EIO;
++    }
++    *bytes_out = state.bytes;
++    return 0;
++}
++
++int qemu_plugin_crucible_device_state_sha256(uint8_t digest_out[32],
++                                             uint64_t *bytes_out)
++{
++    QIOChannelBuffer *buffer;
++    QEMUFile *file;
++    GChecksum *checksum;
++    gsize digest_length = 32;
++    int status;
++    int close_status;
++
++    if (!digest_out || !bytes_out) {
++        return -EINVAL;
++    }
++    memset(digest_out, 0, 32);
++    *bytes_out = 0;
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state(file);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    checksum = status == 0 ? g_checksum_new(G_CHECKSUM_SHA256) : NULL;
++    if (status == 0 && !checksum) {
++        status = -ENOMEM;
++    }
++    if (status == 0) {
++        crucible_checksum_bytes(checksum,
++                                "crucible.qemu.device-vmstate.v1",
++                                strlen("crucible.qemu.device-vmstate.v1"));
++        crucible_checksum_bytes(checksum, buffer->data, buffer->usage);
++        g_checksum_get_digest(checksum, digest_out, &digest_length);
++        if (digest_length != 32) {
++            memset(digest_out, 0, 32);
++            status = -EIO;
++        } else {
++            *bytes_out = buffer->usage;
++        }
++    }
++    if (checksum) {
++        g_checksum_free(checksum);
++    }
++    close_status = qemu_fclose(file);
++    object_unref(OBJECT(buffer));
++    if (status == 0 && close_status != 0) {
++        memset(digest_out, 0, 32);
++        *bytes_out = 0;
++        status = close_status;
++    }
++    return status;
++}
++
++int qemu_plugin_crucible_device_state_schema_sha256(
++    uint8_t digest_out[32], uint64_t *sections_out)
++{
++    return qemu_savevm_crucible_schema_sha256(digest_out, sections_out);
++}
++
++int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
++                                      uint64_t material_length,
++                                      uint8_t digest_out[32])
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    gsize digest_length = 32;
++
++    if (!digest_out || (material_length != 0 && !material) ||
++        material_length > G_MAXSIZE) {
++        return -EINVAL;
++    }
++    memset(digest_out, 0, 32);
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    if (!checksum) {
++        return -ENOMEM;
++    }
++    if (material_length != 0) {
++        g_checksum_update(checksum, material, material_length);
++    }
++    g_checksum_get_digest(checksum, digest_out, &digest_length);
++    if (digest_length != 32) {
++        memset(digest_out, 0, 32);
++        return -EIO;
++    }
++    return 0;
++}
++
++int qemu_plugin_crucible_fingerprint_capture(
++    uint8_t **ram_material_out, uint64_t *ram_material_length_out,
++    uint64_t *ram_bytes_out, uint8_t **device_material_out,
++    uint64_t *device_material_length_out, uint64_t *device_bytes_out)
++{
++    g_autoptr(GByteArray) ram_material = NULL;
++    g_autoptr(GByteArray) device_material = NULL;
++    QIOChannelBuffer *buffer = NULL;
++    QEMUFile *file = NULL;
++    Error *local_err = NULL;
++    struct CrucibleCapturedRam ram;
++    bool acquired_bql = false;
++    bool started_dirty_tracking = false;
++    int close_status;
++    int status = 0;
++
++    if (!ram_material_out || !ram_material_length_out || !ram_bytes_out ||
++        !device_material_out || !device_material_length_out ||
++        !device_bytes_out) {
++        return -EINVAL;
++    }
++    *ram_material_out = NULL;
++    *ram_material_length_out = 0;
++    *ram_bytes_out = 0;
++    *device_material_out = NULL;
++    *device_material_length_out = 0;
++    *device_bytes_out = 0;
++
++    /*
++     * The safe fingerprint observer invokes this export at the exact scheduler
++     * ceiling on the single-threaded RR vCPU owner. Acquire the BQL explicitly
++     * before changing dirty-log state or serializing VMState. Dirty tracking
++     * supplies the write-protected capture epoch; the immutable copies remain
++     * valid after tracking ends, the BQL is released, and the guest resumes.
++     */
++    if (!bql_locked()) {
++        bql_lock();
++        acquired_bql = true;
++    }
++    if (!(global_dirty_tracking & GLOBAL_DIRTY_MIGRATION)) {
++        if (!memory_global_dirty_log_start(GLOBAL_DIRTY_MIGRATION,
++                                           &local_err)) {
++            error_free(local_err);
++            status = -EIO;
++            goto out;
++        }
++        started_dirty_tracking = true;
++    }
++
++    ram_material = g_byte_array_new();
++    device_material = g_byte_array_new();
++    if (!ram_material || !device_material) {
++        status = -ENOMEM;
++        goto out;
++    }
++    ram.material = ram_material;
++    ram.bytes = 0;
++    crucible_byte_array_bytes(ram_material, "crucible.qemu.guest-ram.v1",
++                              strlen("crucible.qemu.guest-ram.v1"));
++    qemu_ram_foreach_block(crucible_capture_guest_ram_block, &ram);
++
++    buffer = qio_channel_buffer_new(4096);
++    file = qemu_file_new_output(QIO_CHANNEL(buffer));
++    status = qemu_save_device_state(file);
++    if (status == 0) {
++        status = qemu_fflush(file);
++    }
++    if (status == 0) {
++        status = qemu_file_get_error(file);
++    }
++    if (status == 0) {
++        crucible_byte_array_bytes(device_material,
++                                  "crucible.qemu.device-vmstate.v1",
++                                  strlen("crucible.qemu.device-vmstate.v1"));
++        crucible_byte_array_bytes(device_material, buffer->data,
++                                  buffer->usage);
++        *ram_material_length_out = ram_material->len;
++        *ram_bytes_out = ram.bytes;
++        *device_material_length_out = device_material->len;
++        *device_bytes_out = buffer->usage;
++        *ram_material_out = g_byte_array_free(g_steal_pointer(&ram_material),
++                                              false);
++        *device_material_out =
++            g_byte_array_free(g_steal_pointer(&device_material), false);
++    }
++
++out:
++    if (file) {
++        close_status = qemu_fclose(file);
++        if (status == 0 && close_status != 0) {
++            status = close_status;
++        }
++    }
++    if (buffer) {
++        object_unref(OBJECT(buffer));
++    }
++    if (started_dirty_tracking) {
++        memory_global_dirty_log_stop(GLOBAL_DIRTY_MIGRATION);
++    }
++    if (acquired_bql) {
++        bql_unlock();
++    }
++    if (status != 0) {
++        g_clear_pointer(ram_material_out, g_free);
++        g_clear_pointer(device_material_out, g_free);
++        *ram_material_length_out = 0;
++        *ram_bytes_out = 0;
++        *device_material_length_out = 0;
++        *device_bytes_out = 0;
++    }
++    return status;
++}
++
++void qemu_plugin_crucible_fingerprint_capture_free(void *material)
++{
++    g_free(material);
++}
++
++uint64_t qemu_plugin_crucible_icount(void)
++{
++    return qemu_plugin_icount_raw();
++}
++
++bool qemu_plugin_crucible_vm_non_running(void)
++{
++    return !runstate_is_running();
++}
++#endif
++
+ struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
+ {
+     return plugin_scoreboard_new(element_size);
+diff --git a/qemu-options.hx b/qemu-options.hx
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -4917,13 +4917,13 @@ SRST
+ ERST
+ 
+ DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
+-    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
++    "-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr_switch_quantum=N][,rr=record|replay,rrfile=<filename>[,rrsnapshot=<snapshot>]]\n" \
+     "                enable virtual instruction counter with 2^N clock ticks per\n" \
+     "                instruction, enable aligning the host and virtual clocks\n" \
+     "                or disable real time cpu sleeping, and optionally enable\n" \
+     "                record-and-replay mode\n", QEMU_ARCH_ALL)
+ SRST
+-``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
++``-icount [shift=N|auto][,align=on|off][,sleep=on|off][,rr_switch_quantum=N][,rr=record|replay,rrfile=filename[,rrsnapshot=snapshot]]``
+     Enable virtual instruction counter. The virtual cpu will execute one
+     instruction every 2^N ns of virtual time. If ``auto`` is specified
+     then the virtual cpu speed will be automatically adjusted to keep
+@@ -4951,7 +4951,14 @@ SRST
+     option. Whenever the guest clock is behind the host clock and if
+     ``align=on`` is specified then we print a message to the user to
+     inform about the delay. Currently this option does not work when
+-    ``shift`` is ``auto``. Note: The sync algorithm will work for those
++    ``shift`` is ``auto``.
++
++    ``rr_switch_quantum=N`` pins the ``-accel sim`` round-robin vCPU budget to
++    exactly ``N`` retired instructions when instruction counting is enabled and
++    the timer deadline permits it. Outside ``-accel sim`` this AOS Crucible
++    extension reports zero and preserves upstream adaptive budgeting.
++
++    Note: The sync algorithm will work for those
+     shift values for which the guest clock runs ahead of the host clock.
+     Typically this happens when the shift value is high (how high
+     depends on the host machine). The default if icount is enabled
+diff --git a/system/cpu-timers.c b/system/cpu-timers.c
+--- a/system/cpu-timers.c
++++ b/system/cpu-timers.c
+@@ -25,6 +25,7 @@
+ #include "qemu/osdep.h"
+ #include "qemu/cutils.h"
+ #include "migration/vmstate.h"
++#include "migration/qemu-file-types.h"
+ #include "qapi/error.h"
+ #include "qemu/error-report.h"
+ #include "system/cpus.h"
+@@ -216,14 +217,50 @@ static const VMStateDescription icount_vmstate_timers = {
+     }
+ };
+ 
++static int get_crucible_icount_host_timer_int64(QEMUFile *f, void *pv,
++                                                size_t size,
++                                                const VMStateField *field)
++{
++    int64_t *v = pv;
++
++    qemu_get_sbe64s(f, v);
++    return 0;
++}
++
++static int put_crucible_icount_host_timer_int64(QEMUFile *f, void *pv,
++                                                size_t size,
++                                                const VMStateField *field,
++                                                JSONWriter *vmdesc)
++{
++    int64_t zero = 0;
++    int64_t *v = pv;
++
++    if (icount_enabled()) {
++        qemu_put_sbe64s(f, &zero);
++    } else {
++        qemu_put_sbe64s(f, v);
++    }
++    return 0;
++}
++
++static const VMStateInfo vmstate_info_crucible_icount_host_timer_int64 = {
++    .name = "int64",
++    .get = get_crucible_icount_host_timer_int64,
++    .put = put_crucible_icount_host_timer_int64,
++};
++
+ static const VMStateDescription vmstate_timers = {
+     .name = "timer",
+     .version_id = 2,
+     .minimum_version_id = 1,
+     .fields = (const VMStateField[]) {
+-        VMSTATE_INT64(cpu_ticks_offset, TimersState),
++        VMSTATE_SINGLE(cpu_ticks_offset, TimersState, 0,
++                       vmstate_info_crucible_icount_host_timer_int64,
++                       int64_t),
+         VMSTATE_UNUSED(8),
+-        VMSTATE_INT64_V(cpu_clock_offset, TimersState, 2),
++        VMSTATE_SINGLE(cpu_clock_offset, TimersState, 2,
++                       vmstate_info_crucible_icount_host_timer_int64,
++                       int64_t),
+         VMSTATE_END_OF_LIST()
+     },
+     .subsections = (const VMStateDescription * const []) {
+diff --git a/system/vl.c b/system/vl.c
+--- a/system/vl.c
++++ b/system/vl.c
+@@ -446,6 +446,9 @@ static QemuOptsList qemu_icount_opts = {
+         }, {
+             .name = "sleep",
+             .type = QEMU_OPT_BOOL,
++        }, {
++            .name = "rr_switch_quantum",
++            .type = QEMU_OPT_NUMBER,
+         }, {
+             .name = "rr",
+             .type = QEMU_OPT_STRING,

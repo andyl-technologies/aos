@@ -1,0 +1,88 @@
+//! Authorized VMState restore plans for warm QEMU node realization.
+
+use crucible::{Checkpoint, ContentHash};
+
+use crate::{
+    QemuBakedGenesisRestoreAdmission, QemuLoadvmCommandAuthorization,
+    QemuLoadvmRealizationAdmission,
+};
+
+/// Authorized VMState restore inputs for warm QEMU node realization.
+pub struct QemuNodeRestorePlan<'a> {
+    pub(super) checkpoint: &'a Checkpoint,
+    pub(super) authorization: QemuLoadvmCommandAuthorization,
+    pub(super) admission: QemuNodeRestoreAdmission,
+}
+
+/// Admission proof for the VMState snapshot restored before node assembly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QemuNodeRestoreAdmission {
+    /// The trusted baked ready-point snapshot produced by QEMU genesis baking.
+    BakedGenesis {
+        /// World identity whose baked genesis was validated.
+        world_id: ContentHash,
+    },
+    /// A replay-oracle-validated exact fat checkpoint runtime.
+    ReplayOracle(QemuLoadvmRealizationAdmission),
+    /// A probe-only exact snapshot that cannot be admitted as a runtime.
+    SnapshotCompletenessProbe,
+}
+
+impl<'a> QemuNodeRestorePlan<'a> {
+    /// Creates a warm-restore plan for an exact fat checkpoint.
+    #[must_use]
+    pub const fn new(
+        checkpoint: &'a Checkpoint,
+        authorization: QemuLoadvmCommandAuthorization,
+        admission: QemuLoadvmRealizationAdmission,
+    ) -> Self {
+        Self {
+            checkpoint,
+            authorization,
+            admission: QemuNodeRestoreAdmission::ReplayOracle(admission),
+        }
+    }
+
+    /// Creates a probe-only warm-restore plan for snapshot-completeness comparison.
+    #[must_use]
+    pub const fn snapshot_completeness_probe(
+        checkpoint: &'a Checkpoint,
+        authorization: QemuLoadvmCommandAuthorization,
+    ) -> Self {
+        Self {
+            checkpoint,
+            authorization,
+            admission: QemuNodeRestoreAdmission::SnapshotCompletenessProbe,
+        }
+    }
+
+    /// Creates a warm-restore plan for a baked genesis ready-point checkpoint.
+    #[must_use]
+    pub fn baked_genesis(admission: QemuBakedGenesisRestoreAdmission<'a>) -> Self {
+        Self {
+            checkpoint: admission.checkpoint(),
+            authorization: admission.authorization(),
+            admission: QemuNodeRestoreAdmission::BakedGenesis {
+                world_id: admission.world_id(),
+            },
+        }
+    }
+
+    /// Returns the checkpoint whose VMState will be restored.
+    #[must_use]
+    pub const fn checkpoint(&self) -> &'a Checkpoint {
+        self.checkpoint
+    }
+
+    /// Returns the low-level QMP `loadvm` authorization token.
+    #[must_use]
+    pub const fn authorization(&self) -> QemuLoadvmCommandAuthorization {
+        self.authorization
+    }
+
+    /// Returns the admission proof paired with the restore authorization.
+    #[must_use]
+    pub const fn admission(&self) -> QemuNodeRestoreAdmission {
+        self.admission
+    }
+}

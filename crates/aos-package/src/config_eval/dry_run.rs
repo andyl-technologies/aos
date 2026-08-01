@@ -110,7 +110,10 @@ impl ManifestDiff {
         } else {
             for change in &self.units {
                 let sigil = if change.added { '+' } else { '~' };
-                out.push_str(&format!("    {} {:<24} {}\n", sigil, change.unit, change.action));
+                out.push_str(&format!(
+                    "    {} {:<24} {}\n",
+                    sigil, change.unit, change.action
+                ));
             }
         }
         out.push_str("\n  packages to fetch (closure delta)\n");
@@ -433,7 +436,10 @@ mod tests {
             diff.etc.iter().map(|c| (c.path.as_str(), c.kind)).collect();
         assert_eq!(by_path["aos/packages/web/config.env"], ChangeKind::Changed);
         assert_eq!(by_path["nftables/forward.conf"], ChangeKind::Added);
-        assert_eq!(by_path["aos/packages/legacy/config.toml"], ChangeKind::Removed);
+        assert_eq!(
+            by_path["aos/packages/legacy/config.toml"],
+            ChangeKind::Removed
+        );
     }
 
     #[test]
@@ -452,7 +458,10 @@ mod tests {
     #[test]
     fn fetch_plan_is_the_closure_delta() {
         let diff = diff_manifests(&base(), &candidate());
-        assert_eq!(diff.fetch_plan, vec!["/nix/store/ccc-otel-collector-0.9".to_string()]);
+        assert_eq!(
+            diff.fetch_plan,
+            vec!["/nix/store/ccc-otel-collector-0.9".to_string()]
+        );
     }
 
     #[test]

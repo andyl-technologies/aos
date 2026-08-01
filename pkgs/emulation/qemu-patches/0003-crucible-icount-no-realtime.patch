@@ -1,0 +1,35 @@
+diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
+--- a/accel/tcg/tcg-accel-ops-icount.c
++++ b/accel/tcg/tcg-accel-ops-icount.c
+@@ -27,6 +27,7 @@
+ #include "system/replay.h"
+ #include "system/cpu-timers.h"
+ #include "qemu/main-loop.h"
++#include "qemu/accel.h"
+ #include "qemu/guest-random.h"
+ #include "hw/core/cpu.h"
+ 
+@@ -45,10 +46,19 @@ static int64_t icount_get_limit(void)
+          */
+         deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                               QEMU_TIMER_ATTR_ALL);
+-        /* Check realtime timers, because they help with input processing */
+-        deadline = qemu_soonest_timeout(deadline,
+-                qemu_clock_deadline_ns_all(QEMU_CLOCK_REALTIME,
+-                                           QEMU_TIMER_ATTR_ALL));
++        if (strcmp(current_accel_name(), "sim") != 0 ||
++            icount_enabled() != ICOUNT_PRECISE) {
++            /*
++             * Adaptive icount and non-sim accelerators keep upstream's
++             * realtime input-processing deadline. Sim fixed-shift icount must
++             * derive its instruction budget from the virtual clock only, or
++             * host speed/load changes the number of guest instructions retired
++             * before a TB exit.
++             */
++            deadline = qemu_soonest_timeout(deadline,
++                    qemu_clock_deadline_ns_all(QEMU_CLOCK_REALTIME,
++                                               QEMU_TIMER_ATTR_ALL));
++        }
+ 
+         /*
+          * Maintain prior (possibly buggy) behaviour where if no deadline

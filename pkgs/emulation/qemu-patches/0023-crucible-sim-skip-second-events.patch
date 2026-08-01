@@ -1,0 +1,37 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -100,6 +100,14 @@ static void rr_crucible_sim_normalize_first_exit(CPUState *cpu)
+     qatomic_set_mb(&cpu->exit_request, 1);
+ }
+ 
++static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
++{
++    return rr_crucible_sim_mode() &&
++           cpu_work_list_empty(cpu) &&
++           !cpu->stop &&
++           !cpu->unplug;
++}
++
+ static inline int64_t rr_next_kick_time(void)
+ {
+     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
+@@ -164,8 +172,17 @@ static void rr_wait_io_event(void)
+ 
+     rr_start_kick_timer();
+ 
++    /*
++     * Sim time-control advances already run virtual timers inline. Avoid adding
++     * a second post-wait events pass whose only effect would be an extra
++     * host-scheduler-sensitive polling point, but still service pending CPU work
++     * and lifecycle stop/unplug requests so QMP quit and process termination can
++     * complete.
++     */
+     CPU_FOREACH(cpu) {
+-        qemu_wait_io_event_common(cpu);
++        if (!rr_crucible_sim_skip_second_events_pass(cpu)) {
++            qemu_wait_io_event_common(cpu);
++        }
+     }
+ }
+ 

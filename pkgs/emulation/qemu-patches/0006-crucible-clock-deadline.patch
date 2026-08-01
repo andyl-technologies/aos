@@ -1,0 +1,48 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1071,6 +1071,18 @@ uint64_t qemu_plugin_crucible_ram_hash(uint64_t *bytes_out);
+ QEMU_PLUGIN_API
+ void qemu_plugin_crucible_pause_vm(void);
+ 
++/**
++ * qemu_plugin_clock_deadline_ns() - return next virtual-clock timer expiry time
++ *
++ * Returns the exact virtual-clock timestamp for the next QEMU_CLOCK_VIRTUAL
++ * timer deadline, or a negative value when no virtual-clock timer is armed.
++ *
++ * This AOS Crucible extension is required for exact idle fast-forward and never
++ * consults QEMU_CLOCK_REALTIME or QEMU_CLOCK_HOST.
++ */
++QEMU_PLUGIN_API
++int64_t qemu_plugin_clock_deadline_ns(void);
++
+ /**
+  * qemu_plugin_scoreboard_new() - alloc a new scoreboard
+  *
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -15,6 +15,7 @@
+ #include "qapi/error.h"
+ #include "migration/blocker.h"
+ #include "hw/boards.h"
++#include "qemu/timer.h"
+ #include "qemu/plugin-memory.h"
+ #include "qemu/plugin.h"
+ 
+@@ -130,3 +131,14 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+                          RUN_ON_CPU_HOST_ULONG(new_time));
+     }
+ }
++
++int64_t qemu_plugin_clock_deadline_ns(void)
++{
++    int64_t delta = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
++                                              QEMU_TIMER_ATTR_ALL);
++
++    if (delta < 0) {
++        return -1;
++    }
++    return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delta;
++}

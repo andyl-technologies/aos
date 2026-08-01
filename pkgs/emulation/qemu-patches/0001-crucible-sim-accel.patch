@@ -1,0 +1,172 @@
+diff --git a/accel/accel-target.c b/accel/accel-target.c
+--- a/accel/accel-target.c
++++ b/accel/accel-target.c
+@@ -94,6 +94,12 @@ static void accel_init_cpu_interfaces(AccelClass *ac)
+ 
+     acc_name = g_strdup_printf("%s-%s", ac_name, CPU_RESOLVING_TYPE);
+     acc = object_class_by_name(acc_name);
++    if (!acc && ac->name && g_str_equal(ac->name, "sim")) {
++        g_free(acc_name);
++        acc_name = g_strdup_printf("%s-%s", ACCEL_CLASS_NAME("tcg"),
++                                   CPU_RESOLVING_TYPE);
++        acc = object_class_by_name(acc_name);
++    }
+     g_free(acc_name);
+ 
+     if (acc) {
+diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
+--- a/accel/tcg/meson.build
++++ b/accel/tcg/meson.build
+@@ -29,5 +29,6 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
+   'tcg-accel-ops-icount.c',
+   'tcg-accel-ops-mttcg.c',
+   'tcg-accel-ops-rr.c',
++  'tcg-accel-ops-sim.c',
+   'watchpoint.c',
+ ))
+diff --git a/accel/tcg/tcg-accel-ops-sim.c b/accel/tcg/tcg-accel-ops-sim.c
+new file mode 100644
+--- /dev/null
++++ b/accel/tcg/tcg-accel-ops-sim.c
+@@ -0,0 +1,38 @@
++/*
++ * QEMU TCG Crucible deterministic simulation accelerator ops
++ *
++ * This accelerator is selected only by -accel sim.  It intentionally reuses
++ * QEMU's single-threaded TCG icount machinery while giving Crucible a distinct
++ * accelerator name to gate later deterministic event-loop refinements.
++ */
++
++#include "qemu/osdep.h"
++#include "system/accel-ops.h"
++#include "system/tcg.h"
++#include "tcg-accel-ops.h"
++
++static void sim_accel_ops_class_init(ObjectClass *oc, void *data)
++{
++    /*
++     * The inherited TCG ops initializer selects the single-threaded RR loop
++     * whenever icount is active.  sim_init_machine rejects non-icount launches
++     * and disables MTTCG before machine initialization, so the vCPU thread owns
++     * icount accounting and CPU execution while the main thread retains QMP and
++     * iohandler service.
++     */
++    tcg_accel_ops_class_init(oc, data);
++}
++
++static const TypeInfo sim_accel_ops_type = {
++    .name = ACCEL_OPS_NAME("sim"),
++    .parent = TYPE_ACCEL_OPS,
++    .class_init = sim_accel_ops_class_init,
++    .abstract = true,
++};
++module_obj(ACCEL_OPS_NAME("sim"));
++
++static void sim_accel_ops_register_types(void)
++{
++    type_register_static(&sim_accel_ops_type);
++}
++type_init(sim_accel_ops_register_types);
+diff --git a/accel/tcg/tcg-accel-ops.c b/accel/tcg/tcg-accel-ops.c
+--- a/accel/tcg/tcg-accel-ops.c
++++ b/accel/tcg/tcg-accel-ops.c
+@@ -223,7 +223,7 @@ static void tcg_accel_ops_init(AccelOpsClass *ops)
+     ops->remove_all_breakpoints = tcg_remove_all_breakpoints;
+ }
+ 
+-static void tcg_accel_ops_class_init(ObjectClass *oc, void *data)
++void tcg_accel_ops_class_init(ObjectClass *oc, void *data)
+ {
+     AccelOpsClass *ops = ACCEL_OPS_CLASS(oc);
+ 
+diff --git a/accel/tcg/tcg-accel-ops.h b/accel/tcg/tcg-accel-ops.h
+--- a/accel/tcg/tcg-accel-ops.h
++++ b/accel/tcg/tcg-accel-ops.h
+@@ -18,5 +18,6 @@ void tcg_cpu_destroy(CPUState *cpu);
+ int tcg_cpu_exec(CPUState *cpu);
+ void tcg_handle_interrupt(CPUState *cpu, int mask);
+ void tcg_cpu_init_cflags(CPUState *cpu, bool parallel);
++void tcg_accel_ops_class_init(ObjectClass *oc, void *data);
+ 
+ #endif /* TCG_ACCEL_OPS_H */
+diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
+--- a/accel/tcg/tcg-all.c
++++ b/accel/tcg/tcg-all.c
+@@ -54,6 +54,7 @@ struct TCGState {
+ typedef struct TCGState TCGState;
+ 
+ #define TYPE_TCG_ACCEL ACCEL_CLASS_NAME("tcg")
++#define TYPE_SIM_ACCEL ACCEL_CLASS_NAME("sim")
+ 
+ DECLARE_INSTANCE_CHECKER(TCGState, TCG_STATE,
+                          TYPE_TCG_ACCEL)
+@@ -134,6 +135,20 @@ static int tcg_init_machine(MachineState *ms)
+     return 0;
+ }
+ 
++static int sim_init_machine(MachineState *ms)
++{
++    TCGState *s = TCG_STATE(current_accel());
++
++    if (!icount_enabled()) {
++        error_report("-accel sim requires -icount shift=N");
++        return -EINVAL;
++    }
++
++    /* The sim accelerator is deliberately single-threaded. */
++    s->mttcg_enabled = false;
++    return tcg_init_machine(ms);
++}
++
+ static char *tcg_get_thread(Object *obj, Error **errp)
+ {
+     TCGState *s = TCG_STATE(obj);
+@@ -259,6 +274,16 @@ static void tcg_accel_class_init(ObjectClass *oc, void *data)
+         "Only put one guest insn in each translation block");
+ }
+ 
++static void sim_accel_class_init(ObjectClass *oc, void *data)
++{
++    AccelClass *ac;
++
++    /* TCG class fields and properties are inherited from TYPE_TCG_ACCEL. */
++    ac = ACCEL_CLASS(oc);
++    ac->name = "sim";
++    ac->init_machine = sim_init_machine;
++}
++
+ static const TypeInfo tcg_accel_type = {
+     .name = TYPE_TCG_ACCEL,
+     .parent = TYPE_ACCEL,
+@@ -268,9 +293,19 @@ static const TypeInfo tcg_accel_type = {
+ };
+ module_obj(TYPE_TCG_ACCEL);
+ 
++static const TypeInfo sim_accel_type = {
++    .name = TYPE_SIM_ACCEL,
++    .parent = TYPE_TCG_ACCEL,
++    .instance_init = tcg_accel_instance_init,
++    .class_init = sim_accel_class_init,
++    .instance_size = sizeof(TCGState),
++};
++module_obj(TYPE_SIM_ACCEL);
++
+ static void register_accel_types(void)
+ {
+     type_register_static(&tcg_accel_type);
++    type_register_static(&sim_accel_type);
+ }
+ 
+ type_init(register_accel_types);
+diff --git a/qemu-options.hx b/qemu-options.hx
+--- a/qemu-options.hx
++++ b/qemu-options.hx
+@@ -220,7 +220,7 @@ SRST
+ ERST
+ 
+ DEF("accel", HAS_ARG, QEMU_OPTION_accel,
+-    "-accel [accel=]accelerator[,prop[=value][,...]]\n"
++    "-accel [accel=]accelerator[,prop[=value][,...]] (use sim for Crucible deterministic TCG)\n"
+     "                select accelerator (kvm, xen, hvf, nvmm, whpx or tcg; use 'help' for a list)\n"
+     "                igd-passthru=on|off (enable Xen integrated Intel graphics passthrough, default=off)\n"
+     "                kernel-irqchip=on|off|split controls accelerated irqchip support (default=on)\n"

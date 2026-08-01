@@ -16,7 +16,10 @@ pkgs.mkDerivation {
   version = "0";
   src = null;
 
-  __structuredAttrs = true;
+  # `exportReferencesGraph` is consumed through Nix's structured-attribute
+  # files. Use mkDerivation's supported trigger so it does not also emit the
+  # inert legacy reference-check attributes that Nix warns about.
+  outputChecks = {};
   exportReferencesGraph.closure = rootPaths;
 
   buildDeps = [

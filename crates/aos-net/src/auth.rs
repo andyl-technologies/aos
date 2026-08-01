@@ -3,7 +3,7 @@
 //! Supports multiple credential types (bearer tokens, basic auth, AWS SigV4,
 //! SSH keys, FTP login) with domain pattern matching (exact and wildcard).
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -71,7 +71,7 @@ pub struct RefreshConfig {
 /// - Wildcard: `"*.aos.dev"` matches `cache.aos.dev`, `api.aos.dev`, etc.
 /// - Exact matches take priority over wildcard matches.
 pub struct AuthStore {
-    credentials: RwLock<HashMap<String, Credential>>,
+    credentials: RwLock<BTreeMap<String, Credential>>,
 }
 
 impl std::fmt::Debug for AuthStore {
@@ -87,7 +87,7 @@ impl AuthStore {
     /// Create an empty auth store.
     pub fn new() -> Self {
         Self {
-            credentials: RwLock::new(HashMap::new()),
+            credentials: RwLock::new(BTreeMap::new()),
         }
     }
 

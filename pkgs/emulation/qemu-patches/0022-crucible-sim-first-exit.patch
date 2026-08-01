@@ -1,0 +1,28 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -91,6 +91,15 @@ static void rr_crucible_sim_reset_exit_request(CPUState *cpu)
+     qatomic_set_mb(&cpu->exit_request, 0);
+ }
+ 
++static void rr_crucible_sim_normalize_first_exit(CPUState *cpu)
++{
++    if (!cpu) {
++        return;
++    }
++
++    qatomic_set_mb(&cpu->exit_request, 1);
++}
++
+ static inline int64_t rr_next_kick_time(void)
+ {
+     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
+@@ -251,7 +260,7 @@ static void *rr_cpu_thread_fn(void *arg)
+     cpu = first_cpu;
+ 
+     /* process any pending work */
+-    cpu->exit_request = 1;
++    rr_crucible_sim_normalize_first_exit(cpu);
+ 
+     while (1) {
+         /* Only used for icount_enabled() */

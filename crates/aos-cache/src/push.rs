@@ -11,7 +11,7 @@
 //! (references before referrers) so the server can import each entry as
 //! it arrives.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -58,6 +58,7 @@ use crate::resolve::resolve_installables;
 /// Returns an error if installable resolution, closure enumeration,
 /// metadata gathering, threshold or bandwidth parsing, compression, or
 /// any backend upload or query fails.
+#[allow(clippy::too_many_arguments, clippy::disallowed_methods)]
 pub async fn run_push(
     printer: &Printer,
     backend: &dyn CacheBackend,
@@ -423,7 +424,7 @@ async fn upload_pack_entries(
 /// ordering (which should not happen for a valid closure), the leftover
 /// paths are appended in their original order rather than dropped.
 fn order_path_infos_for_import(infos: &mut Vec<PathInfo>) {
-    let index_by_path: HashMap<&str, usize> = infos
+    let index_by_path: BTreeMap<&str, usize> = infos
         .iter()
         .enumerate()
         .map(|(idx, info)| (info.path.as_str(), idx))

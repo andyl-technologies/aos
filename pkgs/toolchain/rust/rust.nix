@@ -84,6 +84,7 @@ in
           extended = true
           tools = ["cargo", "rustdoc", "clippy", "rustfmt", "rust-analyzer", "src"]
           vendor = true
+          profiler = true
           cargo = "${rust-1_92}/bin/cargo"
           rustc = "${rust-1_92}/bin/rustc"
           # Build std for the native host plus the bare wasm32 target. The

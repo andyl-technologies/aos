@@ -1,0 +1,159 @@
+//! Fixed-capacity shared-memory frame entry and its wire-layout constants.
+
+use super::*;
+
+/// A shared-memory frame whose delivery time is carried in band.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct FrameEntry {
+    /// The consumer icount at which the frame becomes visible.
+    pub delivery_icount: u64,
+    /// The producer node id.
+    pub src_node: u32,
+    /// The per-producer sequence number.
+    pub seq: u32,
+    /// The number of valid bytes in [`FrameEntry::data`].
+    pub len: u16,
+    pub(crate) _pad: [u8; 6],
+    /// The fixed-capacity frame payload buffer.
+    pub data: [u8; MAX_FRAME_DATA],
+}
+
+/// Byte offset of [`FrameEntry`]'s delivery-icount field.
+pub const FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET: usize =
+    core::mem::offset_of!(FrameEntry, delivery_icount);
+/// Byte offset of [`FrameEntry`]'s source-node field.
+pub const FRAME_ENTRY_SRC_NODE_OFFSET: usize = core::mem::offset_of!(FrameEntry, src_node);
+/// Byte offset of [`FrameEntry`]'s producer-sequence field.
+pub const FRAME_ENTRY_SEQ_OFFSET: usize = core::mem::offset_of!(FrameEntry, seq);
+/// Byte offset of [`FrameEntry`]'s payload-length field.
+pub const FRAME_ENTRY_LEN_OFFSET: usize = core::mem::offset_of!(FrameEntry, len);
+/// Byte offset of [`FrameEntry`]'s reserved padding bytes.
+pub const FRAME_ENTRY_PAD_OFFSET: usize = core::mem::offset_of!(FrameEntry, _pad);
+/// Byte offset of [`FrameEntry`]'s payload data.
+pub const FRAME_ENTRY_DATA_OFFSET: usize = core::mem::offset_of!(FrameEntry, data);
+/// Wire size of one [`FrameEntry`].
+pub const FRAME_ENTRY_SIZE: usize = core::mem::size_of::<FrameEntry>();
+/// Wire alignment of one [`FrameEntry`].
+pub const FRAME_ENTRY_ALIGN: usize = core::mem::align_of::<FrameEntry>();
+
+pub(super) const _: () = assert!(FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET == 0);
+pub(super) const _: () = assert!(FRAME_ENTRY_SRC_NODE_OFFSET == 8);
+pub(super) const _: () = assert!(FRAME_ENTRY_SEQ_OFFSET == 12);
+pub(super) const _: () = assert!(FRAME_ENTRY_LEN_OFFSET == 16);
+pub(super) const _: () = assert!(FRAME_ENTRY_PAD_OFFSET == 18);
+pub(super) const _: () = assert!(FRAME_ENTRY_DATA_OFFSET == 24);
+pub(super) const _: () = assert!(FRAME_ENTRY_SIZE == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
+pub(super) const _: () = assert!(FRAME_ENTRY_ALIGN == 8);
+pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, delivery_icount) == 0);
+pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, src_node) == 8);
+pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, seq) == 12);
+pub(super) const _: () = assert!(core::mem::offset_of!(FrameEntry, len) == 16);
+pub(super) const _: () =
+    assert!(core::mem::offset_of!(FrameEntry, data) == FRAME_ENTRY_DATA_OFFSET);
+#[rustfmt::skip]
+pub(super) const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_DATA_OFFSET + MAX_FRAME_DATA);
+pub(super) const _: () = assert!(core::mem::align_of::<FrameEntry>() == 8);
+
+impl FrameEntry {
+    /// Builds a frame entry with an in-band delivery icount.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameEntryError::PayloadLengthExceedsCapacity`] when `payload`
+    /// is too large for [`MAX_FRAME_DATA`].
+    pub fn new(
+        delivery_icount: u64,
+        src_node: u32,
+        seq: u32,
+        payload: &[u8],
+    ) -> Result<Self, FrameEntryError> {
+        if payload.len() > MAX_FRAME_DATA {
+            return Err(FrameEntryError::PayloadLengthExceedsCapacity {
+                len: payload.len(),
+                capacity: MAX_FRAME_DATA,
+            });
+        }
+
+        let mut data = [0; MAX_FRAME_DATA];
+        data[..payload.len()].copy_from_slice(payload);
+
+        Ok(Self {
+            delivery_icount,
+            src_node,
+            seq,
+            len: payload.len() as u16,
+            _pad: [0; 6],
+            data,
+        })
+    }
+
+    /// Returns `true` when this frame is visible at `consumer_current_icount`.
+    #[must_use]
+    pub fn is_deliverable_at(&self, consumer_current_icount: u64) -> bool {
+        self.delivery_icount <= consumer_current_icount
+    }
+
+    /// Returns the deterministic per-consumer delivery-order key.
+    #[must_use]
+    pub fn delivery_key(&self) -> FrameDeliveryKey {
+        FrameDeliveryKey {
+            delivery_icount: self.delivery_icount,
+            src_node: self.src_node,
+            seq: self.seq,
+        }
+    }
+
+    /// Returns the valid payload bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameEntryError::PayloadLengthExceedsCapacity`] when a frame
+    /// read from shared memory advertises a length greater than
+    /// [`MAX_FRAME_DATA`].
+    pub fn payload(&self) -> Result<&[u8], FrameEntryError> {
+        let len = usize::from(self.len);
+        if len > MAX_FRAME_DATA {
+            Err(FrameEntryError::PayloadLengthExceedsCapacity {
+                len,
+                capacity: MAX_FRAME_DATA,
+            })
+        } else {
+            Ok(&self.data[..len])
+        }
+    }
+
+    /// Returns `true` when the frame-entry padding bytes are zero.
+    #[must_use]
+    pub fn padding_bytes_are_zero(&self) -> bool {
+        self._pad.iter().all(|byte| *byte == 0)
+    }
+
+    pub(crate) fn canonicalized_for_snapshot(&self) -> Result<Self, SpscRingError> {
+        let len = usize::from(self.len);
+        if len > MAX_FRAME_DATA {
+            return Err(SpscRingError::InvalidFrameLength {
+                len,
+                capacity: MAX_FRAME_DATA,
+            });
+        }
+
+        let mut canonical = self.clone();
+        canonical._pad = [0; 6];
+        canonical.data[len..].fill(0);
+        Ok(canonical)
+    }
+}
+
+impl Default for FrameEntry {
+    fn default() -> Self {
+        Self {
+            delivery_icount: 0,
+            src_node: 0,
+            seq: 0,
+            len: 0,
+            _pad: [0; 6],
+            data: [0; MAX_FRAME_DATA],
+        }
+    }
+}

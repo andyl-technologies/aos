@@ -1,0 +1,52 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1398,6 +1398,24 @@ QEMU_PLUGIN_API
+ bool qemu_plugin_read_memory_vaddr(uint64_t addr,
+                                    GByteArray *data, size_t len);
+ 
++/**
++ * qemu_plugin_crucible_write_memory_vaddr() - write guest virtual memory
++ * @addr: virtual address at which to begin the write
++ * @data: bytes to write
++ * @len: number of bytes to write
++ *
++ * This Crucible-only helper writes through the current vCPU's debug memory
++ * access path. It is intended for synchronous white-box doorbell replies from
++ * an instruction callback and must not be used as an asynchronous input path.
++ *
++ * Returns true on success and false when @len is zero or the complete write
++ * cannot be performed.
++ */
++QEMU_PLUGIN_API
++bool qemu_plugin_crucible_write_memory_vaddr(uint64_t addr,
++                                             const uint8_t *data,
++                                             size_t len);
++
+ /**
+  * qemu_plugin_read_register() - read register for current vCPU
+  *
+diff --git a/plugins/api.c b/plugins/api.c
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -468,6 +468,20 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
+     return true;
+ }
+ 
++bool qemu_plugin_crucible_write_memory_vaddr(uint64_t addr,
++                                             const uint8_t *data,
++                                             size_t len)
++{
++    g_assert(current_cpu);
++
++    if (len == 0) {
++        return false;
++    }
++
++    return cpu_memory_rw_debug(current_cpu, addr, (uint8_t *)data,
++                               len, true) == 0;
++}
++
+ int qemu_plugin_read_register(struct qemu_plugin_register *reg, GByteArray *buf)
+ {
+     g_assert(current_cpu);

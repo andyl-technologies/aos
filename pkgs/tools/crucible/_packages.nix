@@ -1,0 +1,17 @@
+[
+  "crucible-cas"
+  "crucible-sim"
+  "crucible-assert"
+  "crucible-shmem"
+  "crucible-protocol"
+  "crucible-device"
+  "crucible-qemu"
+  "crucible-qemu-plugin"
+  "crucible-guest"
+  "crucible"
+  "crucible-session"
+  "crucible-api"
+  "crucible-daemon"
+  "crucible-cli"
+  "crucible-harness"
+]

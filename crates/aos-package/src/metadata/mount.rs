@@ -69,11 +69,7 @@ pub trait ConfigDriveProbe {
     /// # Errors
     ///
     /// Returns `Err` when a label is found but its device cannot be mounted.
-    fn probe_and_mount(
-        &self,
-        labels: &[&str],
-        mountpoint: &Path,
-    ) -> Result<Option<ConfigDrive>>;
+    fn probe_and_mount(&self, labels: &[&str], mountpoint: &Path) -> Result<Option<ConfigDrive>>;
 }
 
 /// Production probe: `blkid -L <label>` then `mount -o ro`.
@@ -130,11 +126,7 @@ impl BlkidProbe {
 }
 
 impl ConfigDriveProbe for BlkidProbe {
-    fn probe_and_mount(
-        &self,
-        labels: &[&str],
-        mountpoint: &Path,
-    ) -> Result<Option<ConfigDrive>> {
+    fn probe_and_mount(&self, labels: &[&str], mountpoint: &Path) -> Result<Option<ConfigDrive>> {
         for label in labels {
             let Some(dev) = self.device_for_label(label)? else {
                 continue;
@@ -184,11 +176,7 @@ impl FakeProbe {
 }
 
 impl ConfigDriveProbe for FakeProbe {
-    fn probe_and_mount(
-        &self,
-        labels: &[&str],
-        _mountpoint: &Path,
-    ) -> Result<Option<ConfigDrive>> {
+    fn probe_and_mount(&self, labels: &[&str], _mountpoint: &Path) -> Result<Option<ConfigDrive>> {
         for label in labels {
             if let Some(dir) = self.drives.get(*label) {
                 return Ok(Some(ConfigDrive {

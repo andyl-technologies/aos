@@ -1,0 +1,78 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -30,6 +30,8 @@
+ #include "qemu/error-report.h"
+ #include "system/cpus.h"
+ #include "system/qtest.h"
++#include "qemu/accel.h"
++#include "qemu/plugin.h"
+ #include "qemu/main-loop.h"
+ #include "qemu/option.h"
+ #include "qemu/seqlock.h"
+@@ -358,6 +360,17 @@ void icount_start_warp_timer(void)
+         }
+     }
+ 
++    if (strcmp(current_accel_name(), "sim") == 0 &&
++        qemu_plugin_has_time_control()) {
++        /*
++         * In sim mode, a time-control plugin owns idle advancement. Keep the
++         * virtual-clock notification that wakes the main loop, but do not
++         * advance qemu_icount_bias or arm the realtime warp timer.
++         */
++        qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
++        return;
++    }
++
+     /* We want to use the earliest deadline from ALL vm_clocks */
+     clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
+     deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -175,6 +175,8 @@ void qemu_plugin_flush_cb(void);
+ 
+ void qemu_plugin_atexit_cb(void);
+ 
++bool qemu_plugin_has_time_control(void);
++
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+ 
+ static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
+@@ -214,6 +216,11 @@ void qemu_plugin_user_postfork(bool is_child);
+ static inline void qemu_plugin_add_opts(void)
+ { }
+ 
++static inline bool qemu_plugin_has_time_control(void)
++{
++    return false;
++}
++
+ static inline void qemu_plugin_opt_parse(const char *optstr,
+                                          QemuPluginList *head)
+ {
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -100,15 +100,16 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+  * Time control
+  */
+ static bool has_control;
+-static Error *migration_blocker;
++
++bool qemu_plugin_has_time_control(void)
++{
++    return has_control;
++}
+ 
+ const void *qemu_plugin_request_time_control(void)
+ {
+     if (!has_control) {
+         has_control = true;
+-        error_setg(&migration_blocker,
+-                   "TCG plugin time control does not support migration");
+-        migrate_add_blocker(&migration_blocker, NULL);
+         return &has_control;
+     }
+     return NULL;

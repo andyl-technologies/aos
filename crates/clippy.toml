@@ -1,0 +1,16 @@
+disallowed-methods = [
+  { path = "std::time::Instant::now", reason = "host monotonic time must not enter Crucible state paths" },
+  { path = "std::time::Instant::elapsed", reason = "elapsed host time must not enter Crucible state paths" },
+  { path = "std::time::SystemTime::now", reason = "host wall-clock time must not enter Crucible state paths" },
+  { path = "rand::thread_rng", reason = "randomness must come from Crucible's seeded decision streams" },
+  { path = "rand::rng", reason = "randomness must come from Crucible's seeded decision streams" },
+  { path = "rand::random", reason = "randomness must come from Crucible's seeded decision streams" },
+  { path = "getrandom::getrandom", reason = "host entropy must not enter Crucible state paths", allow-invalid = true },
+]
+
+disallowed-types = [
+  { path = "std::collections::HashMap", reason = "use ordered containers or an explicitly fixed-seed deterministic hasher" },
+  { path = "std::collections::HashSet", reason = "use ordered containers or an explicitly fixed-seed deterministic hasher" },
+  { path = "std::collections::hash_map::DefaultHasher", reason = "default hash seeding is not a stable identity hash" },
+  { path = "std::collections::hash_map::RandomState", reason = "default hash seeding is per-process random" },
+]

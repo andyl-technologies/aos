@@ -399,7 +399,13 @@ pub fn baselib_retention_set(
             .copied()
             .filter(|&abi| abi < running)
             .max()
-            .or_else(|| candidates.iter().copied().filter(|&abi| abi != running).max());
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .filter(|&abi| abi != running)
+                    .max()
+            });
         if let Some(abi) = prior {
             keep.insert(abi);
         }
@@ -1059,8 +1065,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let image_gen_dir = tmp.path().join("image-gen-3");
 
-        create_baselib_gc_root(&image_gen_dir, 2, "/var/lib/store/baselib0000000-aos-base-lib")
-            .unwrap();
+        create_baselib_gc_root(
+            &image_gen_dir,
+            2,
+            "/var/lib/store/baselib0000000-aos-base-lib",
+        )
+        .unwrap();
 
         let link = image_gen_dir.join("baselib").join("2");
         assert_eq!(

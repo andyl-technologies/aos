@@ -1,0 +1,232 @@
+diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -182,6 +182,31 @@ int64_t icount_get(void)
+     return icount;
+ }
+ 
++/*
++ * Crucible: advance the icount-derived QEMU_CLOCK_VIRTUAL to an exact target,
++ * in nanoseconds, while all vCPUs are idle. The upstream plugin time-control
++ * setter and qtest use qemu_clock_advance_virtual_time(), which only moves the
++ * virtual clock when cpus_set_virtual_clock() is wired -- i.e. in non-icount
++ * mode. Under the sim accelerator the clock is icount-derived, so advancement
++ * must add to the icount bias instead. @dest must not precede the current
++ * virtual time; earlier targets leave the clock unchanged.
++ */
++void icount_advance_virtual_time_to_ns(int64_t dest)
++{
++    int64_t now = icount_get();
++
++    if (dest > now) {
++        seqlock_write_lock(&timers_state.vm_clock_seqlock,
++                           &timers_state.vm_clock_lock);
++        qatomic_set_i64(&timers_state.qemu_icount_bias,
++                        timers_state.qemu_icount_bias + (dest - now));
++        seqlock_write_unlock(&timers_state.vm_clock_seqlock,
++                             &timers_state.vm_clock_lock);
++    }
++    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++    qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
++}
++
+ int64_t icount_to_ns(int64_t icount)
+ {
+     return icount << qatomic_read(&timers_state.icount_time_shift);
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -175,7 +175,7 @@ void qemu_plugin_flush_cb(void);
+ 
+ void qemu_plugin_atexit_cb(void);
+ 
+-bool qemu_plugin_has_time_control(void);
++bool qemu_plugin_time_advance_is_pending(void);
+ 
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+ 
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -728,6 +728,56 @@ const void *qemu_plugin_request_time_control(void);
+ QEMU_PLUGIN_API
+ void qemu_plugin_update_ns(const void *handle, int64_t time);
+ 
++/**
++ * qemu_plugin_has_time_control() - report whether a plugin owns virtual time
++ *
++ * Returns true after qemu_plugin_request_time_control() grants ownership to a
++ * plugin. Crucible uses this predicate to suppress realtime icount warp while
++ * the deterministic scheduler owns idle virtual-time advancement.
++ */
++QEMU_PLUGIN_API
++bool qemu_plugin_has_time_control(void);
++
++/**
++ * typedef qemu_plugin_time_advance_cb_t - queued time-advance completion
++ * @status: zero on success or a negative errno-style failure
++ * @time: requested absolute QEMU_CLOCK_VIRTUAL time in nanoseconds
++ * @userdata: opaque pointer supplied at registration
++ *
++ * The callback runs from QEMU's normal main-loop bottom-half context after a
++ * preceding main-loop bottom half has advanced virtual time and dispatched due
++ * virtual timers. It never runs nested inside a vCPU/plugin callback.
++ */
++typedef void (*qemu_plugin_time_advance_cb_t)(int status, int64_t time,
++                                              void *userdata);
++
++/**
++ * qemu_plugin_register_time_advance_cb() - register advance completion
++ * @cb: completion callback, or NULL to clear it
++ * @userdata: opaque pointer passed to @cb
++ *
++ * Returns: zero on success or -EBUSY while an advance is outstanding.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
++                                         void *userdata);
++
++/**
++ * qemu_plugin_advance_time_ns() - enqueue an absolute virtual-time advance
++ * @time: absolute QEMU_CLOCK_VIRTUAL time in nanoseconds
++ *
++ * This callback-safe entry point queues work on the normal main-loop
++ * AioContext. The queued bottom half advances the clock and dispatches due
++ * virtual timers while holding BQL, then hands completion to a later main-loop
++ * pass. It never calls main_loop_wait(), aio_poll(), or aio_bh_poll(), and does
++ * not depend on a vCPU being runnable (an I/O-blocked vCPU may request it).
++ *
++ * Returns: zero when queued, -EINVAL for negative time, -ENODEV without time
++ * control or a completion callback, and -EBUSY for overlap.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_advance_time_ns(int64_t time);
++
+ /**
+  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * @data: Ethernet frame bytes
+diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+--- a/include/system/cpu-timers.h
++++ b/include/system/cpu-timers.h
+@@ -76,6 +76,13 @@ void icount_start_warp_timer(void);
+ void icount_account_warp_timer(void);
+ void icount_notify_exit(void);
+ 
++/*
++ * Crucible: advance the icount-derived QEMU_CLOCK_VIRTUAL to an exact ns
++ * target while the vCPUs are idle, by adding to the icount bias. Used by the
++ * plugin time-control advance path under the sim accelerator.
++ */
++void icount_advance_virtual_time_to_ns(int64_t dest);
++
+ /*
+  * CPU Ticks and Clock
+  */
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -102,6 +102,14 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+  * Time control
+  */
+ static bool has_control;
++static qemu_plugin_time_advance_cb_t qemu_plugin_time_advance_cb;
++static void *qemu_plugin_time_advance_userdata;
++static int qemu_plugin_time_advance_pending;
++static int qemu_plugin_time_advance_status;
++static int64_t qemu_plugin_time_advance_target;
++
++static void qemu_plugin_time_advance_barrier_bh(void *opaque);
++static void qemu_plugin_time_advance_complete_bh(void *opaque);
+ 
+ bool qemu_plugin_has_time_control(void)
+ {
+@@ -133,6 +141,89 @@ void qemu_plugin_update_ns(const void *handle, int64_t new_time)
+     }
+ }
+ 
++int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
++                                         void *userdata)
++{
++    if (qatomic_read(&qemu_plugin_time_advance_pending)) {
++        return -EBUSY;
++    }
++
++    qemu_plugin_time_advance_userdata = userdata;
++    qemu_plugin_time_advance_cb = cb;
++    return 0;
++}
++
++bool qemu_plugin_time_advance_is_pending(void)
++{
++    return qatomic_load_acquire(&qemu_plugin_time_advance_pending) != 0;
++}
++
++static void qemu_plugin_advance_time_bh(void *opaque)
++{
++    int64_t new_time = qatomic_read(&qemu_plugin_time_advance_target);
++    int status = 0;
++
++    (void)opaque;
++    if (!has_control) {
++        status = -ENODEV;
++    } else if (new_time < qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
++        status = -ERANGE;
++    } else {
++        icount_advance_virtual_time_to_ns(new_time);
++    }
++
++    qatomic_set(&qemu_plugin_time_advance_status, status);
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            qemu_plugin_time_advance_barrier_bh, NULL);
++}
++
++static void qemu_plugin_time_advance_barrier_bh(void *opaque)
++{
++    (void)opaque;
++    /*
++     * AioContext BHs are inserted at the head. Rescheduling completion from
++     * this first main-loop pass makes every timer-produced BH that was already
++     * captured in the current slice run before completion on the next pass.
++     */
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            qemu_plugin_time_advance_complete_bh, NULL);
++}
++
++static void qemu_plugin_time_advance_complete_bh(void *opaque)
++{
++    qemu_plugin_time_advance_cb_t cb = qemu_plugin_time_advance_cb;
++    void *userdata = qemu_plugin_time_advance_userdata;
++    int status = qatomic_read(&qemu_plugin_time_advance_status);
++    int64_t target = qatomic_read(&qemu_plugin_time_advance_target);
++
++    (void)opaque;
++    qatomic_store_release(&qemu_plugin_time_advance_pending, 0);
++    if (cb) {
++        cb(status, target, userdata);
++    }
++    if (first_cpu) {
++        qemu_cpu_kick(first_cpu);
++    }
++}
++
++int qemu_plugin_advance_time_ns(int64_t new_time)
++{
++    if (new_time < 0) {
++        return -EINVAL;
++    }
++    if (!has_control || !qemu_plugin_time_advance_cb) {
++        return -ENODEV;
++    }
++    if (qatomic_cmpxchg(&qemu_plugin_time_advance_pending, 0, 1) != 0) {
++        return -EBUSY;
++    }
++
++    qatomic_set(&qemu_plugin_time_advance_target, new_time);
++    aio_bh_schedule_oneshot(qemu_get_aio_context(),
++                            qemu_plugin_advance_time_bh, NULL);
++    return 0;
++}
++
+ 
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {

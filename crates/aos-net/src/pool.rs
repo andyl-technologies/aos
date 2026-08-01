@@ -4,7 +4,7 @@
 //! Tokio semaphores. Each acquired permit is a RAII guard that
 //! releases the semaphore slot on drop.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,7 +40,7 @@ impl Default for PoolConfig {
 #[derive(Debug, Clone)]
 pub struct PoolStats {
     /// Number of active connections per host.
-    pub per_host: HashMap<String, usize>,
+    pub per_host: BTreeMap<String, usize>,
     /// Total number of active connections.
     pub total_active: usize,
     /// Maximum connections configured per host.
@@ -57,7 +57,7 @@ pub struct PoolPermit {
     _host_permit: OwnedSemaphorePermit,
     _global_permit: OwnedSemaphorePermit,
     host: String,
-    active_counts: Arc<Mutex<HashMap<String, usize>>>,
+    active_counts: Arc<Mutex<BTreeMap<String, usize>>>,
 }
 
 impl Drop for PoolPermit {
@@ -80,8 +80,8 @@ impl Drop for PoolPermit {
 pub struct ConnectionPool {
     config: PoolConfig,
     global_semaphore: Arc<Semaphore>,
-    host_semaphores: Mutex<HashMap<String, Arc<Semaphore>>>,
-    active_counts: Arc<Mutex<HashMap<String, usize>>>,
+    host_semaphores: Mutex<BTreeMap<String, Arc<Semaphore>>>,
+    active_counts: Arc<Mutex<BTreeMap<String, usize>>>,
 }
 
 impl ConnectionPool {
@@ -89,8 +89,8 @@ impl ConnectionPool {
     pub fn new(config: PoolConfig) -> Self {
         Self {
             global_semaphore: Arc::new(Semaphore::new(config.max_total_connections)),
-            host_semaphores: Mutex::new(HashMap::new()),
-            active_counts: Arc::new(Mutex::new(HashMap::new())),
+            host_semaphores: Mutex::new(BTreeMap::new()),
+            active_counts: Arc::new(Mutex::new(BTreeMap::new())),
             config,
         }
     }

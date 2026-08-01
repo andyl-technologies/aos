@@ -129,6 +129,7 @@ impl TransferEngine {
     /// - the average speed stays below the configured minimum after
     ///   the grace period, or
     /// - writing to the output destination fails.
+    #[allow(clippy::disallowed_methods)]
     pub async fn execute(&self, request: TransferRequest) -> Result<TransferResult> {
         let url = request.url.clone();
         let hash_spec = request.hash.clone();

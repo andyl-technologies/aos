@@ -1,0 +1,93 @@
+diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
+--- a/accel/tcg/tcg-all.c
++++ b/accel/tcg/tcg-all.c
+@@ -33,6 +33,7 @@
+ #include "qemu/accel.h"
+ #include "qemu/atomic.h"
+ #include "qapi/qapi-builtin-visit.h"
++#include "system/rtc.h"
+ #include "qemu/units.h"
+ #if defined(CONFIG_USER_ONLY)
+ #include "hw/qdev-core.h"
+@@ -146,6 +147,7 @@ static int sim_init_machine(MachineState *ms)
+ 
+     /* The sim accelerator is deliberately single-threaded. */
+     s->mttcg_enabled = false;
++    qemu_rtc_enable_sim_virtual_clock();
+     return tcg_init_machine(ms);
+ }
+ 
+diff --git a/include/system/rtc.h b/include/system/rtc.h
+--- a/include/system/rtc.h
++++ b/include/system/rtc.h
+@@ -55,4 +55,14 @@ void qemu_get_timedate(struct tm *tm, time_t offset);
+  */
+ time_t qemu_timedate_diff(struct tm *tm);
+ 
++/**
++ * qemu_rtc_enable_sim_virtual_clock: Force guest RTC reads onto virtual time.
++ *
++ * Sim mode exposes guest-visible realtime as the configured fixed epoch plus
++ * icount-derived virtual time. This is called only from the sim accelerator
++ * initialization path, after launch parsing records the fixed RTC epoch and
++ * before RTC devices realize and arm timers from rtc_clock.
++ */
++void qemu_rtc_enable_sim_virtual_clock(void);
++
+ #endif
+diff --git a/system/rtc.c b/system/rtc.c
+--- a/system/rtc.c
++++ b/system/rtc.c
+@@ -44,8 +44,34 @@ static int rtc_realtime_clock_offset; /* used only with QEMU_CLOCK_REALTIME */
+ static int rtc_host_datetime_offset = -1; /* valid & used only with
+                                              RTC_BASE_DATETIME */
+ QEMUClockType rtc_clock;
++static bool crucible_sim_rtc_virtual_clock;
+ /***********************************************************/
+ /* RTC reference time/date access */
++
++void qemu_rtc_enable_sim_virtual_clock(void)
++{
++    /*
++     * Force all RTC-device uses of the global rtc_clock onto virtual time.
++     * This covers direct guest-read paths such as mc146818rtc in addition to
++     * the qemu_get_timedate/qemu_timedate_diff helpers below.
++     */
++    crucible_sim_rtc_virtual_clock = true;
++    rtc_clock = QEMU_CLOCK_VIRTUAL;
++}
++
++static QEMUClockType crucible_guest_rtc_clock(void)
++{
++    if (crucible_sim_rtc_virtual_clock) {
++        /*
++         * Sim mode exposes wall-clock and RTC reads as fixed epoch plus
++         * icount-derived virtual time, never host wall-clock.
++         */
++        return QEMU_CLOCK_VIRTUAL;
++    }
++
++    return rtc_clock;
++}
++
+ static time_t qemu_ref_timedate(QEMUClockType clock)
+ {
+     time_t value = qemu_clock_get_ms(clock) / 1000;
+@@ -69,7 +95,7 @@ static time_t qemu_ref_timedate(QEMUClockType clock)
+ 
+ void qemu_get_timedate(struct tm *tm, time_t offset)
+ {
+-    time_t ti = qemu_ref_timedate(rtc_clock);
++    time_t ti = qemu_ref_timedate(crucible_guest_rtc_clock());
+ 
+     ti += offset;
+ 
+@@ -104,7 +130,7 @@ time_t qemu_timedate_diff(struct tm *tm)
+         abort();
+     }
+ 
+-    return seconds - qemu_ref_timedate(QEMU_CLOCK_HOST);
++    return seconds - qemu_ref_timedate(crucible_guest_rtc_clock());
+ }
+ 
+ static void configure_rtc_base_datetime(const char *startdate)

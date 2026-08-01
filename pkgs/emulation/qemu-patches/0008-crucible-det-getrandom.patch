@@ -1,0 +1,35 @@
+diff --git a/util/guest-random.c b/util/guest-random.c
+--- a/util/guest-random.c
++++ b/util/guest-random.c
+@@ -11,6 +11,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/cutils.h"
++#include "qemu/accel.h"
+ #include "qapi/error.h"
+ #include "qemu/guest-random.h"
+ #include "crypto/random.h"
+@@ -24,6 +25,11 @@ static guint32 deterministic_glib_seed(uint64_t seed)
+     return (guint32)(seed ^ (seed >> 32));
+ }
+ 
++static bool crucible_guest_random_sim_requires_seed(void)
++{
++    return strcmp(current_accel_name(), "sim") == 0;
++}
++
+ static int glib_random_bytes(void *buf, size_t len)
+ {
+     GRand *rand = thread_rand;
+@@ -55,6 +61,11 @@ int qemu_guest_getrandom(void *buf, size_t len, Error **errp)
+     if (unlikely(deterministic)) {
+         /* Deterministic implementation using Glib's Mersenne Twister.  */
+         ret = glib_random_bytes(buf, len);
++    } else if (crucible_guest_random_sim_requires_seed()) {
++        error_setg(
++            errp,
++            "-accel sim requires -seed for deterministic guest random");
++        return -1;
+     } else {
+         /* Non-deterministic implementation using crypto routines.  */
+         ret = qcrypto_random_bytes(buf, len, errp);

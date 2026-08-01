@@ -523,6 +523,17 @@
         callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
 
+      qemu-crucible = callPackage ./emulation/qemu.nix {
+        pname = "qemu-crucible";
+        enablePlugins = true;
+        applyCruciblePatches = true;
+      };
+      qemu-crucible-reference = callPackage ./emulation/qemu.nix {
+        pname = "qemu-crucible-reference";
+        enablePlugins = true;
+        applyCruciblePatches = false;
+      };
+
       # Interpreter-free git for the system image (shares git.nix's source and
       # version). Used by apm/apr's runtimeTools and the server profile so the
       # image carries no Perl on git's behalf. `pkgs.git` remains the full build.

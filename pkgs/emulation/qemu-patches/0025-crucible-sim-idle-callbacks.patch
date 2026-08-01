@@ -1,0 +1,257 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -108,6 +108,49 @@ static bool rr_crucible_sim_skip_second_events_pass(CPUState *cpu)
+            !cpu->unplug;
+ }
+ 
++static bool rr_crucible_sim_vcpu_is_halted(CPUState *cpu)
++{
++    return cpu->halted && !cpu_has_work(cpu);
++}
++
++static bool rr_crucible_sim_all_vcpus_halted(void)
++{
++    CPUState *cpu;
++
++    CPU_FOREACH(cpu) {
++        if (!rr_crucible_sim_vcpu_is_halted(cpu)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static void rr_crucible_sim_sync_vcpu_halt_callbacks(void)
++{
++    CPUState *cpu;
++
++    if (!rr_crucible_sim_mode()) {
++        return;
++    }
++
++    CPU_FOREACH(cpu) {
++        if (rr_crucible_sim_vcpu_is_halted(cpu)) {
++            qemu_plugin_maybe_fire_vcpu_idle_cb(cpu);
++        } else if (!qemu_plugin_time_advance_is_pending()) {
++            qemu_plugin_maybe_fire_vcpu_resume_cb(cpu);
++        }
++    }
++}
++
++static void rr_crucible_sim_drain_vcpu_work(void)
++{
++    CPUState *cpu;
++
++    CPU_FOREACH(cpu) {
++        qemu_wait_io_event_common(cpu);
++    }
++}
++
+ static inline int64_t rr_next_kick_time(void)
+ {
+     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
+@@ -155,8 +198,35 @@ static void rr_wait_io_event(void)
+ {
+     CPUState *cpu;
+ 
+-    while (all_cpu_threads_idle()) {
++    /*
++     * Drain host work before classifying guest halt state. A queued host work
++     * item is not a runnable guest vCPU, and callbacks can themselves enqueue
++     * work that must be drained before QEMU's stricter idle predicate is
++     * evaluated.
++     */
++    rr_crucible_sim_drain_vcpu_work();
++    rr_crucible_sim_sync_vcpu_halt_callbacks();
++
++    while (all_cpu_threads_idle() ||
++           (rr_crucible_sim_mode() &&
++            (rr_crucible_sim_all_vcpus_halted() ||
++             qemu_plugin_time_advance_is_pending()))) {
++
+         rr_stop_kick_timer();
++        if (qemu_plugin_time_advance_is_pending()) {
++            /*
++             * Parked vCPUs must stay responsive to queued work. The
++             * advance completion is dispatched from the main loop; a main-thread
++             * run_on_cpu (e.g. a machine reset's device callback) that arrives
++             * while we wait blocks the main loop until this vCPU drains it. Re-
++             * parking without draining deadlocks. The single RR thread drains
++             * every vCPU's FIFO work queue in ascending CPU-list order.
++             */
++            rr_crucible_sim_drain_vcpu_work();
++            rr_crucible_sim_sync_vcpu_halt_callbacks();
++            qemu_cond_wait_bql(first_cpu->halt_cond);
++            continue;
++        }
+         if (icount_enabled()) {
+             /*
+              * Advancing the virtual clock from the host main-loop poll can make
+@@ -166,10 +236,18 @@ static void rr_wait_io_event(void)
+              */
+             icount_start_warp_timer();
+             icount_handle_deadline();
++            qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
++            rr_crucible_sim_drain_vcpu_work();
++            rr_crucible_sim_sync_vcpu_halt_callbacks();
++            if (!rr_crucible_sim_all_vcpus_halted()) {
++                break;
++            }
+         }
+         qemu_cond_wait_bql(first_cpu->halt_cond);
+     }
+ 
++    rr_crucible_sim_drain_vcpu_work();
++    rr_crucible_sim_sync_vcpu_halt_callbacks();
+     rr_start_kick_timer();
+ 
+     /*
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -181,6 +181,12 @@ extern qemu_plugin_tcg_exec_cb_t qemu_plugin_tcg_exec_cb;
+ extern void *qemu_plugin_tcg_exec_userdata;
+ void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu);
+ 
++extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_idle_cb;
++extern qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_resume_cb;
++extern void *qemu_plugin_vcpu_idle_resume_userdata;
++void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu);
++void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu);
++
+ static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
+ {
+     if (qemu_plugin_tcg_exec_cb) {
+@@ -188,6 +194,20 @@ static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
+     }
+ }
+ 
++static inline void qemu_plugin_maybe_fire_vcpu_idle_cb(CPUState *cpu)
++{
++    if (qemu_plugin_vcpu_idle_resume_idle_cb) {
++        qemu_plugin_fire_vcpu_idle_cb(cpu);
++    }
++}
++
++static inline void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
++{
++    if (qemu_plugin_vcpu_idle_resume_resume_cb) {
++        qemu_plugin_fire_vcpu_resume_cb(cpu);
++    }
++}
++
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr);
+ 
+ static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
+@@ -283,9 +303,20 @@ static inline void qemu_plugin_flush_cb(void)
+ static inline void qemu_plugin_atexit_cb(void)
+ { }
+ 
++static inline bool qemu_plugin_time_advance_is_pending(void)
++{
++    return false;
++}
++
+ static inline void qemu_plugin_maybe_fire_tcg_exec_cb(CPUState *cpu)
+ { }
+ 
++static inline void qemu_plugin_maybe_fire_vcpu_idle_cb(CPUState *cpu)
++{ }
++
++static inline void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *cpu)
++{ }
++
+ static inline
+ void qemu_plugin_add_dyn_cb_arr(GArray *arr)
+ { }
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -164,6 +164,15 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
+                                           uint64_t icount,
+                                           void *userdata);
+ 
++/**
++ * typedef qemu_plugin_vcpu_idle_resume_cb_t - sim idle/resume callback
++ * @vcpu_index: the vCPU index entering or leaving the all-idle boundary
++ * @icount: raw bias-excluded icount at the boundary
++ * @userdata: a pointer supplied when the callback was registered
++ */
++typedef void (*qemu_plugin_vcpu_idle_resume_cb_t)(unsigned int vcpu_index,
++                                                  uint64_t icount,
++                                                  void *userdata);
+ /**
+  * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
+  * @request_id: driver-assigned request id
+@@ -957,6 +966,21 @@ QEMU_PLUGIN_API
+ void qemu_plugin_register_tcg_exec_cb(qemu_plugin_tcg_exec_cb_t cb,
+                                        void *userdata);
+ 
++/**
++ * qemu_plugin_register_vcpu_idle_resume_cb() - register sim idle/resume hooks
++ * @idle_cb: callback fired once when the sim RR loop reaches all-vCPU idle
++ * @resume_cb: callback fired once when the sim RR loop leaves all-vCPU idle
++ * @userdata: opaque pointer passed to both callbacks
++ *
++ * The hooks are inert until registered. They fire only from the sim
++ * single-threaded RR loop, at the same raw-icount boundary used by Crucible's
++ * idle fast-forward logic.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t idle_cb,
++                                              qemu_plugin_vcpu_idle_resume_cb_t resume_cb,
++                                              void *userdata);
++
+ /**
+  * qemu_plugin_register_blk_cb() - register shmem block callbacks
+  * @submit_cb: request submit callback, or NULL to disable shmem forwarding
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -118,6 +118,9 @@ static NotifierList qemu_plugin_wake_notifiers =
+     NOTIFIER_LIST_INITIALIZER(qemu_plugin_wake_notifiers);
+ qemu_plugin_tcg_exec_cb_t qemu_plugin_tcg_exec_cb;
+ void *qemu_plugin_tcg_exec_userdata;
++qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_idle_cb;
++qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_resume_cb;
++void *qemu_plugin_vcpu_idle_resume_userdata;
+ 
+ static void qemu_plugin_time_advance_barrier_bh(void *opaque);
+ static void qemu_plugin_time_advance_complete_bh(void *opaque);
+@@ -394,6 +397,35 @@ void qemu_plugin_fire_tcg_exec_cb(CPUState *cpu)
+     }
+ }
+ 
++void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t idle_cb,
++                                              qemu_plugin_vcpu_idle_resume_cb_t resume_cb,
++                                              void *userdata)
++{
++    qemu_plugin_vcpu_idle_resume_userdata = userdata;
++    qemu_plugin_vcpu_idle_resume_resume_cb = resume_cb;
++    qemu_plugin_vcpu_idle_resume_idle_cb = idle_cb;
++}
++
++void qemu_plugin_fire_vcpu_idle_cb(CPUState *cpu)
++{
++    qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_vcpu_idle_resume_idle_cb;
++
++    if (cb && cpu) {
++        cb(cpu->cpu_index, qemu_plugin_icount_raw(),
++           qemu_plugin_vcpu_idle_resume_userdata);
++    }
++}
++
++void qemu_plugin_fire_vcpu_resume_cb(CPUState *cpu)
++{
++    qemu_plugin_vcpu_idle_resume_cb_t cb = qemu_plugin_vcpu_idle_resume_resume_cb;
++
++    if (cb && cpu) {
++        cb(cpu->cpu_index, qemu_plugin_icount_raw(),
++           qemu_plugin_vcpu_idle_resume_userdata);
++    }
++}
++
+ 
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {

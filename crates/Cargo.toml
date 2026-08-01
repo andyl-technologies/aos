@@ -18,6 +18,21 @@ members = [
     "aos-hub-worker",
     "aos-profile",
     "aos-systemd",
+    "crucible-cas",
+    "crucible-sim",
+    "crucible-assert",
+    "crucible-shmem",
+    "crucible-protocol",
+    "crucible-device",
+    "crucible-qemu",
+    "crucible-qemu-plugin",
+    "crucible-guest",
+    "crucible",
+    "crucible-session",
+    "crucible-api",
+    "crucible-daemon",
+    "crucible-cli",
+    "crucible-harness",
 ]
 
 [workspace.dependencies]
@@ -32,6 +47,7 @@ serde_json = "1"
 serde_urlencoded = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "fs", "time"] }
 sha2 = "0.10"
+blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
 hmac = "0.12"
 base64 = "0.22"
 aes-gcm = "0.10"
@@ -39,6 +55,7 @@ regex = "1"
 glob = "0.3"
 ignore = "0.4"
 hex = "0.4"
+rustix = { version = "1.1.4", features = ["fs"] }
 indicatif = "0.17"
 console = "0.15"
 humantime = "2"
@@ -47,6 +64,7 @@ tracing = "0.1"
 alejandra = "3.1.0"
 
 # HTTP / networking
+bytes = "1"
 http = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 url = "2"
@@ -159,6 +177,7 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
+crucible-cas = { path = "crucible-cas" }
 aos-core = { path = "aos-core" }
 aos-net = { path = "aos-net" }
 aos-proto = { path = "aos-proto" }
@@ -173,3 +192,11 @@ aos-hub = { path = "aos-hub" }
 aos-registry-surface = { path = "aos-registry-surface" }
 aos-profile = { path = "aos-profile" }
 aos-systemd = { path = "aos-systemd" }
+
+[workspace.lints.clippy]
+all = "deny"
+disallowed_methods = "deny"
+disallowed_types = "deny"
+expect_used = "deny"
+float_arithmetic = "deny"
+unwrap_used = "deny"

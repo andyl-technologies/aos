@@ -1,0 +1,359 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+new file mode 100644
+--- /dev/null
++++ b/block/crucible-shmem.c
+@@ -0,0 +1,274 @@
++/*
++ * Crucible shmem block driver
++ *
++ * Copyright (C) 2026 ANDYL Technologies
++ *
++ * This work is licensed under the terms of the GNU GPL, version 2 or later.
++ * See the COPYING file in the top-level directory.
++ */
++
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qobject/qdict.h"
++#include "qemu/coroutine.h"
++#include "qemu/cutils.h"
++#include "qemu/iov.h"
++#include "qemu/module.h"
++#include "qemu/option.h"
++#include "block/aio.h"
++#include "block/block-io.h"
++#include "block/block_int.h"
++#include "qemu/qemu-plugin.h"
++
++#define CRUCIBLE_SHMEM_OPT_SIZE BLOCK_OPT_SIZE
++#define CRUCIBLE_SHMEM_DEFAULT_SIZE (1ULL << 30)
++
++typedef struct BDRVCrucibleShmemState {
++    int64_t length;
++    uint32_t next_request_id;
++} BDRVCrucibleShmemState;
++
++static qemu_plugin_blk_submit_cb_t crucible_blk_submit_cb;
++static qemu_plugin_blk_poll_cb_t crucible_blk_poll_cb;
++static void *crucible_blk_userdata;
++
++static QemuOptsList crucible_shmem_runtime_opts = {
++    .name = "crucible-shmem",
++    .head = QTAILQ_HEAD_INITIALIZER(crucible_shmem_runtime_opts.head),
++    .desc = {
++        {
++            .name = CRUCIBLE_SHMEM_OPT_SIZE,
++            .type = QEMU_OPT_SIZE,
++            .help = "virtual disk size",
++        },
++        { /* end of list */ }
++    },
++};
++
++void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
++                                 qemu_plugin_blk_poll_cb_t poll_cb,
++                                 void *userdata)
++{
++    crucible_blk_userdata = userdata;
++    crucible_blk_poll_cb = poll_cb;
++    crucible_blk_submit_cb = submit_cb;
++}
++
++static bool crucible_blk_callbacks_ready(void)
++{
++    return crucible_blk_submit_cb != NULL && crucible_blk_poll_cb != NULL;
++}
++
++static int crucible_shmem_open(BlockDriverState *bs, QDict *options,
++                               int flags, Error **errp)
++{
++    BDRVCrucibleShmemState *s = bs->opaque;
++    QemuOpts *opts;
++    uint64_t length;
++
++    opts = qemu_opts_create(&crucible_shmem_runtime_opts, NULL, 0,
++                            &error_abort);
++    qemu_opts_absorb_qdict(opts, options, &error_abort);
++    length = qemu_opt_get_size(opts, CRUCIBLE_SHMEM_OPT_SIZE,
++                               CRUCIBLE_SHMEM_DEFAULT_SIZE);
++    qemu_opts_del(opts);
++
++    if (length == 0 || length > INT64_MAX) {
++        error_setg(errp, "crucible-shmem size is invalid");
++        return -EINVAL;
++    }
++
++    s->length = length;
++    s->next_request_id = 0;
++    bs->bl.request_alignment = 1;
++    return 0;
++}
++
++static int64_t coroutine_fn
++crucible_shmem_co_getlength(BlockDriverState *bs)
++{
++    BDRVCrucibleShmemState *s = bs->opaque;
++
++    return s->length;
++}
++
++static int crucible_shmem_check_range(BlockDriverState *bs, int64_t offset,
++                                      int64_t bytes, bool is_write)
++{
++    BDRVCrucibleShmemState *s = bs->opaque;
++
++    if (offset < 0 || bytes < 0) {
++        return -EINVAL;
++    }
++    if (offset > s->length || bytes > s->length - offset) {
++        return is_write ? -ENOSPC : -EINVAL;
++    }
++    if ((uint64_t)bytes > SIZE_MAX) {
++        return -EOVERFLOW;
++    }
++    return 0;
++}
++
++static int crucible_shmem_next_request_id(BDRVCrucibleShmemState *s,
++                                          uint32_t *request_id)
++{
++    if (s->next_request_id == UINT32_MAX) {
++        return -EOVERFLOW;
++    }
++
++    *request_id = s->next_request_id++;
++    return 0;
++}
++
++static void coroutine_fn crucible_shmem_wait_one_poll(BlockDriverState *bs)
++{
++    qemu_coroutine_yield();
++}
++
++static int64_t coroutine_fn
++crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
++                                uint8_t *data, size_t capacity)
++{
++    int64_t ret;
++
++    while (true) {
++        ret = crucible_blk_poll_cb(request_id, data, capacity,
++                                   crucible_blk_userdata);
++        if (ret != QEMU_PLUGIN_BLK_POLL_PENDING) {
++            return ret;
++        }
++        crucible_shmem_wait_one_poll(bs);
++    }
++}
++
++static int coroutine_fn
++crucible_shmem_submit_and_wait(BlockDriverState *bs, uint32_t op,
++                               uint64_t offset, const uint8_t *out_data,
++                               size_t out_len, uint8_t *in_data,
++                               size_t in_capacity)
++{
++    BDRVCrucibleShmemState *s = bs->opaque;
++    uint32_t request_id;
++    int ret;
++    int64_t poll_ret;
++
++    if (!crucible_blk_callbacks_ready()) {
++        return -ENOMEDIUM;
++    }
++
++    ret = crucible_shmem_next_request_id(s, &request_id);
++    if (ret < 0) {
++        return ret;
++    }
++
++    ret = crucible_blk_submit_cb(request_id, op, offset, out_data, out_len,
++                                 crucible_blk_userdata);
++    if (ret != 0) {
++        return -EIO;
++    }
++
++    poll_ret = crucible_shmem_poll_until_ready(bs, request_id, in_data,
++                                               in_capacity);
++    if (poll_ret == -1) {
++        return -EIO;
++    }
++    if (poll_ret < -1 || (uint64_t)poll_ret > in_capacity) {
++        return -EOVERFLOW;
++    }
++
++    return (int)poll_ret;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++crucible_shmem_co_preadv(BlockDriverState *bs, int64_t offset,
++                         int64_t bytes, QEMUIOVector *qiov,
++                         BdrvRequestFlags flags)
++{
++    g_autofree uint8_t *buf = NULL;
++    int ret;
++
++    ret = crucible_shmem_check_range(bs, offset, bytes, false);
++    if (ret < 0) {
++        return ret;
++    }
++
++    buf = g_malloc(bytes);
++    ret = crucible_shmem_submit_and_wait(bs, QEMU_PLUGIN_BLK_OP_READ,
++                                         offset, NULL, (size_t)bytes, buf,
++                                         (size_t)bytes);
++    if (ret < 0) {
++        return ret;
++    }
++    if (ret != bytes) {
++        return -EIO;
++    }
++
++    qemu_iovec_from_buf(qiov, 0, buf, bytes);
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++crucible_shmem_co_pwritev(BlockDriverState *bs, int64_t offset,
++                          int64_t bytes, QEMUIOVector *qiov,
++                          BdrvRequestFlags flags)
++{
++    g_autofree uint8_t *buf = NULL;
++    int ret;
++
++    ret = crucible_shmem_check_range(bs, offset, bytes, true);
++    if (ret < 0) {
++        return ret;
++    }
++
++    buf = g_malloc(bytes);
++    qemu_iovec_to_buf(qiov, 0, buf, bytes);
++    ret = crucible_shmem_submit_and_wait(bs, QEMU_PLUGIN_BLK_OP_WRITE,
++                                         offset, buf, (size_t)bytes, NULL, 0);
++    if (ret < 0) {
++        return ret;
++    }
++    if (ret != 0) {
++        return -EIO;
++    }
++
++    return 0;
++}
++
++static int coroutine_fn GRAPH_RDLOCK
++crucible_shmem_co_flush(BlockDriverState *bs)
++{
++    int ret;
++
++    ret = crucible_shmem_submit_and_wait(bs, QEMU_PLUGIN_BLK_OP_FLUSH,
++                                         0, NULL, 0, NULL, 0);
++    if (ret < 0) {
++        return ret;
++    }
++    return ret == 0 ? 0 : -EIO;
++}
++
++static void crucible_shmem_refresh_filename(BlockDriverState *bs)
++{
++    pstrcpy(bs->exact_filename, sizeof(bs->exact_filename),
++            "crucible-shmem://");
++}
++
++static BlockDriver bdrv_crucible_shmem = {
++    .format_name            = "crucible-shmem",
++    .protocol_name          = "crucible-shmem",
++    .instance_size          = sizeof(BDRVCrucibleShmemState),
++
++    .bdrv_open              = crucible_shmem_open,
++    .bdrv_co_getlength      = crucible_shmem_co_getlength,
++    .bdrv_co_preadv         = crucible_shmem_co_preadv,
++    .bdrv_co_pwritev        = crucible_shmem_co_pwritev,
++    .bdrv_co_flush_to_disk  = crucible_shmem_co_flush,
++    .bdrv_refresh_filename  = crucible_shmem_refresh_filename,
++};
++
++static void bdrv_crucible_shmem_init(void)
++{
++    bdrv_register(&bdrv_crucible_shmem);
++}
++block_init(bdrv_crucible_shmem_init);
++
+diff --git a/block/meson.build b/block/meson.build
+--- a/block/meson.build
++++ b/block/meson.build
+@@ -164,6 +164,7 @@ block_ss.add(block_gen_c)
+ block_ss.add(files('stream.c'))
+ 
+ system_ss.add(files('qapi-system.c'))
++system_ss.add(files('crucible-shmem.c'))
+ 
+ subdir('export')
+ subdir('monitor')
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -164,6 +164,44 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
+                                           uint64_t icount,
+                                           void *userdata);
+ 
++/**
++ * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
++ * @request_id: driver-assigned request id
++ * @op: one of QEMU_PLUGIN_BLK_OP_*
++ * @offset: byte offset for read/write requests
++ * @data: write payload, or NULL for read/flush
++ * @len: requested byte count or write payload length
++ * @userdata: a pointer supplied when callbacks were registered
++ *
++ * Returns: 0 when the request was accepted, nonzero on fail-loud rejection.
++ */
++typedef int (*qemu_plugin_blk_submit_cb_t)(uint32_t request_id,
++                                           uint32_t op,
++                                           uint64_t offset,
++                                           const uint8_t *data,
++                                           size_t len,
++                                           void *userdata);
++
++/**
++ * typedef qemu_plugin_blk_poll_cb_t - shmem block completion poll callback
++ * @request_id: request id being polled
++ * @data: read response output buffer, or NULL for zero-payload completions
++ * @capacity: byte capacity of @data
++ * @userdata: a pointer supplied when callbacks were registered
++ *
++ * Returns: nonnegative response payload length on success, -1 on device error,
++ * and QEMU_PLUGIN_BLK_POLL_PENDING when no response is ready yet.
++ */
++typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
++                                             uint8_t *data,
++                                             size_t capacity,
++                                             void *userdata);
++
++#define QEMU_PLUGIN_BLK_OP_READ 0u
++#define QEMU_PLUGIN_BLK_OP_WRITE 1u
++#define QEMU_PLUGIN_BLK_OP_FLUSH 2u
++#define QEMU_PLUGIN_BLK_POLL_PENDING 0
++
+ /**
+  * qemu_plugin_uninstall() - Uninstall a plugin
+  * @id: this plugin's opaque ID
+@@ -876,6 +914,20 @@ QEMU_PLUGIN_API
+ void qemu_plugin_register_tcg_exec_cb(qemu_plugin_tcg_exec_cb_t cb,
+                                        void *userdata);
+ 
++/**
++ * qemu_plugin_register_blk_cb() - register shmem block callbacks
++ * @submit_cb: request submit callback, or NULL to disable shmem forwarding
++ * @poll_cb: completion poll callback, or NULL to disable shmem forwarding
++ * @userdata: opaque pointer passed to both callbacks
++ *
++ * The crucible-shmem block driver is inert unless both callbacks are
++ * registered and the driver is selected explicitly.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_blk_cb(qemu_plugin_blk_submit_cb_t submit_cb,
++                                 qemu_plugin_blk_poll_cb_t poll_cb,
++                                 void *userdata);
++
+ /**
+  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * @data: Ethernet frame bytes

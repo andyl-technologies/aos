@@ -1,0 +1,193 @@
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -24,6 +24,11 @@
+ struct qemu_plugin_desc;
+ typedef QTAILQ_HEAD(, qemu_plugin_desc) QemuPluginList;
+ 
++int qemu_crucible_process_argv_attestation(uint32_t *version_out,
++                                           uint64_t *argc_out,
++                                           uint64_t *raw_bytes_out,
++                                           uint8_t digest_out[32]);
++
+ /*
+  * Construct a qemu_plugin_meminfo_t.
+  */
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1435,6 +1435,19 @@ int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
+ QEMU_PLUGIN_API
+ void qemu_plugin_crucible_fingerprint_capture_free(void *material);
+ 
++/** Original raw Unix process argc/argv identity captured at process entry. */
++struct qemu_plugin_crucible_process_argv_attestation {
++    uint32_t version;
++    uint64_t argc;
++    uint64_t raw_bytes;
++    uint8_t sha256[32];
++};
++
++/** Return the original raw Unix process argc/argv attestation. */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_process_argv_attestation(
++    struct qemu_plugin_crucible_process_argv_attestation *out);
++
+ /** Return the observed aggregate instruction count, or zero if unavailable. */
+ QEMU_PLUGIN_API
+ uint64_t qemu_plugin_crucible_icount(void);
+diff --git a/plugins/api.c b/plugins/api.c
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -1121,6 +1121,17 @@ void qemu_plugin_crucible_fingerprint_capture_free(void *material)
+     g_free(material);
+ }
+ 
++int qemu_plugin_crucible_process_argv_attestation(
++    struct qemu_plugin_crucible_process_argv_attestation *out)
++{
++    if (!out) {
++        return -EINVAL;
++    }
++    memset(out, 0, sizeof(*out));
++    return qemu_crucible_process_argv_attestation(
++        &out->version, &out->argc, &out->raw_bytes, out->sha256);
++}
++
+ uint64_t qemu_plugin_crucible_icount(void)
+ {
+     return qemu_plugin_icount_raw();
+diff --git a/system/main.c b/system/main.c
+--- a/system/main.c
++++ b/system/main.c
+@@ -41,6 +41,122 @@
+ #include <CoreFoundation/CoreFoundation.h>
+ #endif
+ 
++static uint8_t crucible_process_argv_digest[32];
++static bool crucible_process_argv_digest_valid;
++static uint64_t crucible_process_argc;
++static uint64_t crucible_process_argv_raw_bytes;
++
++static void crucible_argv_hash_u64(GChecksum *checksum, uint64_t value)
++{
++    uint8_t encoded[8];
++
++    for (size_t i = 0; i < sizeof(encoded); i++) {
++        encoded[sizeof(encoded) - i - 1] = value & 0xff;
++        value >>= 8;
++    }
++    g_checksum_update(checksum, encoded, sizeof(encoded));
++}
++
++static void crucible_argv_hash_framed(GChecksum *checksum,
++                                      const void *bytes, size_t length)
++{
++    crucible_argv_hash_u64(checksum, length);
++    if (length != 0) {
++        g_checksum_update(checksum, bytes, length);
++    }
++}
++
++static void crucible_argv_hash_segment(GChecksum *checksum,
++                                       const char *label,
++                                       const void *bytes, size_t length)
++{
++    crucible_argv_hash_framed(checksum, label, strlen(label));
++    crucible_argv_hash_framed(checksum, bytes, length);
++}
++
++static void crucible_capture_process_argv(int argc, char **argv)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    gsize digest_length = sizeof(crucible_process_argv_digest);
++    uint64_t argc_u64;
++    uint8_t encoded[8];
++
++    memset(crucible_process_argv_digest, 0,
++           sizeof(crucible_process_argv_digest));
++    crucible_process_argv_digest_valid = false;
++    crucible_process_argc = 0;
++    crucible_process_argv_raw_bytes = 0;
++    if (argc <= 0 || !argv || !argv[0]) {
++        return;
++    }
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    if (!checksum) {
++        return;
++    }
++    crucible_argv_hash_framed(checksum,
++                              "crucible.qemu.raw-unix-argv.v2",
++                              strlen("crucible.qemu.raw-unix-argv.v2"));
++    crucible_process_argc = argc;
++    for (int index = 0; index < argc; index++) {
++        size_t length;
++
++        if (!argv[index]) {
++            return;
++        }
++        length = strlen(argv[index]);
++        if (UINT64_MAX - crucible_process_argv_raw_bytes < length) {
++            return;
++        }
++        crucible_process_argv_raw_bytes += length;
++    }
++    argc_u64 = argc;
++    for (size_t i = 0; i < sizeof(encoded); i++) {
++        encoded[sizeof(encoded) - i - 1] = argc_u64 & 0xff;
++        argc_u64 >>= 8;
++    }
++    crucible_argv_hash_segment(checksum, "argc", encoded, sizeof(encoded));
++    for (int index = 0; index < argc; index++) {
++        uint64_t index_u64 = index;
++        for (size_t i = 0; i < sizeof(encoded); i++) {
++            encoded[sizeof(encoded) - i - 1] = index_u64 & 0xff;
++            index_u64 >>= 8;
++        }
++        crucible_argv_hash_segment(checksum, "argv-index",
++                                   encoded, sizeof(encoded));
++        crucible_argv_hash_segment(checksum, "argv-value",
++                                   argv[index], strlen(argv[index]));
++    }
++    g_checksum_get_digest(checksum, crucible_process_argv_digest,
++                          &digest_length);
++    crucible_process_argv_digest_valid = digest_length == 32;
++    if (!crucible_process_argv_digest_valid) {
++        memset(crucible_process_argv_digest, 0,
++               sizeof(crucible_process_argv_digest));
++    }
++}
++
++int qemu_crucible_process_argv_attestation(uint32_t *version_out,
++                                           uint64_t *argc_out,
++                                           uint64_t *raw_bytes_out,
++                                           uint8_t digest_out[32])
++{
++    if (!version_out || !argc_out || !raw_bytes_out || !digest_out) {
++        return -EINVAL;
++    }
++    *version_out = 0;
++    *argc_out = 0;
++    *raw_bytes_out = 0;
++    memset(digest_out, 0, 32);
++    if (!crucible_process_argv_digest_valid) {
++        return -ENODATA;
++    }
++    *version_out = 2;
++    *argc_out = crucible_process_argc;
++    *raw_bytes_out = crucible_process_argv_raw_bytes;
++    memcpy(digest_out, crucible_process_argv_digest, 32);
++    return 0;
++}
++
+ static void *qemu_default_main(void *opaque)
+ {
+     int status;
+@@ -68,6 +184,7 @@ int (*qemu_main)(void) = os_darwin_cfrunloop_main;
+ 
+ int main(int argc, char **argv)
+ {
++    crucible_capture_process_argv(argc, argv);
+     qemu_init(argc, argv);
+     bql_unlock();
+     replay_mutex_unlock();

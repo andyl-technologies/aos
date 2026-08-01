@@ -1,0 +1,716 @@
+//! The block device sub-node: base + CoW overlay, wire ABI, completion model.
+//!
+//! This module assembles the block I/O sub-node of RFC-0010 §15.2 from three
+//! focused submodules and re-exports their public surface:
+//!
+//! - [`codec`]: the versioned, little-endian, bounds-checked block wire ABI
+//!   ([`BlockRequest`] / [`BlockResponse`], [IO-8], [IO-9]).
+//! - [`overlay`]: the read-only [`BaseImage`] and its in-memory 4 KiB
+//!   copy-on-write [`CowOverlay`] with dirty-page tracking and materialize
+//!   ([IO-5], [IO-6], [IO-7], [IO-12]).
+//! - [`device`]: the [`BlockDevice`] [`IoSubNode`](crate::subnode::IoSubNode)
+//!   implementation, its [`BlockLatency`] completion model, and its
+//!   [`BlockSnapshot`] device-half `MaterializedState` ([IO-10], [IO-11],
+//!   [IO-22], [IO-23]).
+//!
+//! The block device composes the uniform [`IoCore`](crate::subnode::IoCore) of
+//! the CS-IO-1 foundation for the clock, rings, in-flight queue, and
+//! COMPUTE-then-DELIVER lifecycle; this module supplies only the block-specific
+//! COMPUTE (serve a request against the overlay/base) and state (overlay, RNG
+//! placeholder, base image).
+
+pub mod codec;
+pub mod device;
+pub mod overlay;
+
+pub use codec::{
+    BLOCK_ABI_VERSION, BlockCodecError, BlockOp, BlockRequest, BlockResponse, BlockStatus,
+    REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
+};
+pub use device::{BlockDevice, BlockLatency, BlockSnapshot};
+pub use overlay::{BaseImage, CowOverlay, OverlayDelta, PAGE_SIZE};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::subnode::IoCore;
+
+    /// Unwraps a result in tests, panicking with the error on failure.
+    fn ok<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
+        result.unwrap_or_else(|error| panic!("expected Ok, got {error:?}"))
+    }
+
+    /// Builds a base image of `len` bytes filled with a deterministic ramp.
+    fn ramp_base(len: usize) -> BaseImage {
+        let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        BaseImage::new(bytes)
+    }
+
+    /// Builds a block device over a ramp base with default latency.
+    ///
+    /// The source-node id is the reserved `SLOT_BLK_IO` slot index so the
+    /// delivery keys match the shmem transport's tie-break order.
+    fn device(base_len: usize) -> BlockDevice {
+        device_with_latency(base_len, BlockLatency::default())
+    }
+
+    /// Builds a block device over a ramp base with an explicit latency model.
+    fn device_with_latency(base_len: usize, latency: BlockLatency) -> BlockDevice {
+        let src = crucible_shmem::SLOT_BLK_IO as u32;
+        let core = ok(IoCore::new(8, src, 16, 16));
+        BlockDevice::new(core, ramp_base(base_len), latency)
+    }
+
+    // ---- CoW: read / write / copy-up / base-never-mutated (IO-5,6) ----
+
+    #[test]
+    fn read_falls_through_to_base_when_overlay_empty() {
+        let base = ramp_base(PAGE_SIZE * 3);
+        let overlay = CowOverlay::new();
+        let got = ok(overlay.read(&base, 100, 50));
+        assert_eq!(got, &base.bytes()[100..150]);
+        assert_eq!(overlay.page_count(), 0, "a read must not copy up");
+    }
+
+    #[test]
+    fn write_copies_up_and_read_sees_overlay_over_base() {
+        let base = ramp_base(PAGE_SIZE * 3);
+        let mut overlay = CowOverlay::new();
+        ok(overlay.write(&base, 4090, &[0xAB; 12]));
+        // Spans the boundary between page 0 and page 1, so two pages copy up.
+        assert_eq!(overlay.page_count(), 2);
+        let got = ok(overlay.read(&base, 4088, 16));
+        let mut want = base.bytes()[4088..4104].to_vec();
+        want[2..14].fill(0xAB);
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn base_bytes_never_change_under_writes() {
+        let base = ramp_base(PAGE_SIZE * 2);
+        let original = base.bytes().to_vec();
+        let original_hash = base.hash();
+        let mut overlay = CowOverlay::new();
+        ok(overlay.write(&base, 0, &[0xFF; PAGE_SIZE]));
+        ok(overlay.write(&base, PAGE_SIZE as u64, &[0x01; 10]));
+        assert_eq!(base.bytes(), &original[..], "base bytes mutated");
+        assert_eq!(base.hash(), original_hash, "base identity changed");
+    }
+
+    #[test]
+    fn out_of_range_read_and_write_error_not_truncate() {
+        let base = ramp_base(PAGE_SIZE);
+        let mut overlay = CowOverlay::new();
+        assert!(overlay.read(&base, PAGE_SIZE as u64, 1).is_err());
+        assert!(overlay.read(&base, PAGE_SIZE as u64 - 1, 2).is_err());
+        assert!(overlay.write(&base, PAGE_SIZE as u64 - 1, &[0; 2]).is_err());
+        // Exactly at the end with zero length is in range.
+        assert!(overlay.read(&base, PAGE_SIZE as u64, 0).is_ok());
+    }
+
+    // ---- dirty tracking (IO-7) ----
+
+    #[test]
+    fn dirty_set_tracks_written_pages_and_clears_at_boundary() {
+        let base = ramp_base(PAGE_SIZE * 4);
+        let mut overlay = CowOverlay::new();
+        ok(overlay.write(&base, 0, &[1; 10]));
+        ok(overlay.write(&base, (PAGE_SIZE * 2) as u64, &[2; 10]));
+        let dirty: Vec<u64> = overlay.dirty_pages().iter().copied().collect();
+        assert_eq!(dirty, vec![0, (PAGE_SIZE * 2) as u64]);
+        assert_eq!(overlay.dirty_delta().pages.len(), 2);
+
+        overlay.clear_dirty();
+        assert!(overlay.dirty_pages().is_empty());
+        // Pages still present; only dirty bookkeeping reset.
+        assert_eq!(overlay.page_count(), 2);
+
+        // Subsequent write produces a disjoint delta.
+        ok(overlay.write(&base, (PAGE_SIZE * 3) as u64, &[3; 10]));
+        let delta: Vec<u64> = overlay.dirty_delta().pages.keys().copied().collect();
+        assert_eq!(delta, vec![(PAGE_SIZE * 3) as u64]);
+    }
+
+    // ---- materialize (IO-12) ----
+
+    #[test]
+    fn materialize_applies_overlay_over_base_without_mutating_base() {
+        let base = ramp_base(PAGE_SIZE * 2 + 100);
+        let original = base.bytes().to_vec();
+        let mut overlay = CowOverlay::new();
+        ok(overlay.write(&base, 5, &[0x55; 20]));
+        let image = overlay.materialize(&base);
+        assert_eq!(image.len(), base.len() as usize);
+        let mut want = original.clone();
+        want[5..25].fill(0x55);
+        assert_eq!(image, want);
+        assert_eq!(base.bytes(), &original[..], "materialize mutated base");
+    }
+
+    // ---- wire ABI round-trip + fuzz (IO-8) ----
+
+    #[test]
+    fn request_round_trips_for_every_op() {
+        let cases = [
+            BlockRequest::read(7, 4096, 512),
+            BlockRequest::write(8, 100, vec![0xDE; 64]),
+            BlockRequest::flush(9),
+            BlockRequest::get_length(10),
+        ];
+        for req in cases {
+            let decoded = ok(BlockRequest::decode(&ok(req.encode())));
+            assert_eq!(decoded, req);
+        }
+    }
+
+    #[test]
+    fn response_round_trips() {
+        let resp = BlockResponse::ok(11, vec![1, 2, 3, 4]);
+        assert_eq!(ok(BlockResponse::decode(&ok(resp.encode()))), resp);
+        let err = BlockResponse::error(12);
+        assert_eq!(ok(BlockResponse::decode(&ok(err.encode()))), err);
+    }
+
+    #[test]
+    fn decode_rejects_bad_version_and_unknown_op() {
+        let mut wire = ok(BlockRequest::read(1, 0, 0).encode());
+        wire[1] = 99; // corrupt version byte
+        assert!(matches!(
+            BlockRequest::decode(&wire),
+            Err(BlockCodecError::VersionMismatch { .. })
+        ));
+
+        let mut wire = ok(BlockRequest::read(1, 0, 0).encode());
+        wire[0] = 200; // unknown op
+        assert!(matches!(
+            BlockRequest::decode(&wire),
+            Err(BlockCodecError::UnknownOp { .. })
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_write_count_exceeding_payload() {
+        // Encode a valid write, then corrupt the on-wire count field (LE u32 at
+        // offset 16) to exceed the payload, simulating a hostile frame.
+        let mut wire = ok(BlockRequest::write(1, 0, vec![0xAA; 8]).encode());
+        wire[16..20].copy_from_slice(&9999u32.to_le_bytes());
+        assert!(matches!(
+            BlockRequest::decode(&wire),
+            Err(BlockCodecError::CountExceedsPayload { .. })
+        ));
+    }
+
+    #[test]
+    fn decode_never_panics_on_arbitrary_bytes() {
+        // A deterministic LCG fuzz: feed varied byte strings of varied length and
+        // assert decode always returns (Ok or Err), never panics or OOB-reads.
+        let mut state: u64 = 0x1234_5678_9abc_def0;
+        for _ in 0..20_000 {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let len = (state >> 56) as usize % 40;
+            let mut bytes = Vec::with_capacity(len);
+            let mut s = state;
+            for _ in 0..len {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                bytes.push((s >> 33) as u8);
+            }
+            // Neither call may panic; the result is ignored.
+            let _ = BlockRequest::decode(&bytes);
+            let _ = BlockResponse::decode(&bytes);
+        }
+    }
+
+    // ---- end-to-end device serve (IO-5,6 over the lifecycle) ----
+
+    #[test]
+    fn device_read_then_write_then_read_through_lifecycle() {
+        let mut dev = device(PAGE_SIZE * 2);
+        let want0 = ok(dev.overlay().read(&ramp_base(PAGE_SIZE * 2), 0, 8));
+
+        // Read at icount 0.
+        ok(dev.submit(0, &BlockRequest::read(1, 0, 8)));
+        let next = dev.core().next_exact_local_event();
+        assert!(next.is_some());
+        let limit = next.unwrap_or(0);
+        assert_eq!(ok(dev.advance_to(limit)), 1);
+        let r = ok(dev.next_response()).unwrap_or_else(|| panic!("expected response"));
+        assert_eq!(r.status, BlockStatus::Ok);
+        assert_eq!(r.data, want0);
+
+        // Write, then a later read sees the overlay.
+        ok(dev.submit(limit, &BlockRequest::write(2, 0, vec![0x77; 8])));
+        let lim2 = dev.core().next_exact_local_event().unwrap_or(limit);
+        ok(dev.advance_to(lim2));
+        let _ = ok(dev.next_response());
+
+        ok(dev.submit(lim2, &BlockRequest::read(3, 0, 8)));
+        let lim3 = dev.core().next_exact_local_event().unwrap_or(lim2);
+        ok(dev.advance_to(lim3));
+        let r = ok(dev.next_response()).unwrap_or_else(|| panic!("expected response"));
+        assert_eq!(r.data, vec![0x77; 8]);
+    }
+
+    #[test]
+    fn device_get_length_returns_base_size() {
+        let mut dev = device(12345);
+        ok(dev.submit(0, &BlockRequest::get_length(1)));
+        let lim = dev.core().next_exact_local_event().unwrap_or(0);
+        ok(dev.advance_to(lim));
+        let r = ok(dev.next_response()).unwrap_or_else(|| panic!("expected response"));
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&r.data[..8]);
+        assert_eq!(u64::from_le_bytes(bytes), 12345);
+    }
+
+    #[test]
+    fn device_out_of_range_read_returns_error_status() {
+        let mut dev = device(PAGE_SIZE);
+        ok(dev.submit(0, &BlockRequest::read(1, PAGE_SIZE as u64, 1)));
+        let lim = dev.core().next_exact_local_event().unwrap_or(0);
+        ok(dev.advance_to(lim));
+        let r = ok(dev.next_response()).unwrap_or_else(|| panic!("expected response"));
+        assert_eq!(r.status, BlockStatus::Error);
+    }
+
+    // ---- completion model: host-timing independence (IO-10,22) ----
+
+    #[test]
+    fn latency_depends_only_on_op_and_count() {
+        let lat = BlockLatency::new(1000, 1500, 500, 100, 2);
+        assert_eq!(lat.latency_for(BlockOp::Read, 0), 1000);
+        assert_eq!(lat.latency_for(BlockOp::Read, 10), 1020);
+        assert_eq!(lat.latency_for(BlockOp::Write, 10), 1520);
+        assert_eq!(lat.latency_for(BlockOp::Flush, 999), 500);
+        assert_eq!(lat.latency_for(BlockOp::GetLength, 999), 100);
+        // Ordinary large count stays exact (no overflow at these magnitudes).
+        assert_eq!(
+            lat.latency_for(BlockOp::Read, u32::MAX),
+            1000 + 2 * u64::from(u32::MAX)
+        );
+        // Saturating: a hostile per-byte parameter cannot overflow.
+        let huge = BlockLatency::new(1000, 1500, 500, 100, u64::MAX);
+        assert_eq!(huge.latency_for(BlockOp::Read, u32::MAX), u64::MAX);
+    }
+
+    /// Drives a fixed request sequence and returns the (delivery_icount, payload)
+    /// of every response. `skew` is artificial host work that must NOT affect the
+    /// result ([IO-22]).
+    fn run_sequence(skew: usize) -> Vec<(u64, Vec<u8>)> {
+        let mut dev = device(PAGE_SIZE * 4);
+        let reqs = [
+            BlockRequest::read(1, 0, 16),
+            BlockRequest::write(2, 100, vec![0x33; 32]),
+            BlockRequest::read(3, 100, 32),
+            BlockRequest::flush(4),
+            BlockRequest::get_length(5),
+        ];
+        let mut out = Vec::new();
+        let mut t = 0u64;
+        for req in &reqs {
+            // Artificial COMPUTE-time host skew: pure busy work, no clock read.
+            let mut sink = 0u64;
+            for i in 0..skew {
+                sink = sink.wrapping_add(i as u64);
+            }
+            std::hint::black_box(sink);
+
+            ok(dev.submit(t, req));
+            let lim = dev.core().next_exact_local_event().unwrap_or(t);
+            ok(dev.advance_to(lim));
+            while let Some(pending) = dev.core_mut().pop_response() {
+                out.push((pending.delivery_icount(), pending.response.payload));
+            }
+            t = lim;
+        }
+        out
+    }
+
+    #[test]
+    fn completion_is_host_timing_independent() {
+        let a = run_sequence(0);
+        let b = run_sequence(500_000);
+        assert_eq!(a, b, "host COMPUTE skew leaked into delivery/payload");
+    }
+
+    // ---- coincident completion ordering (IO-10) ----
+
+    #[test]
+    fn coincident_completions_deliver_in_total_order() {
+        // Two reads submitted at the same icount with identical latency land on
+        // the same delivery_icount; they must deliver in (icount, src, seq) order.
+        let mut dev = device(PAGE_SIZE);
+        ok(dev.submit(0, &BlockRequest::read(10, 0, 8)));
+        ok(dev.submit(0, &BlockRequest::read(11, 8, 8)));
+        let lim = dev.core().next_exact_local_event().unwrap_or(0);
+        ok(dev.advance_to(lim));
+        let first = ok(dev.next_response()).unwrap_or_else(|| panic!("resp"));
+        let second = ok(dev.next_response()).unwrap_or_else(|| panic!("resp"));
+        // seq increases with submit order, so request_id 10 delivers before 11.
+        assert_eq!(first.request_id, 10);
+        assert_eq!(second.request_id, 11);
+    }
+
+    // ---- snapshot / restore round-trip (IO-11,23) ----
+
+    #[test]
+    fn snapshot_excludes_base_and_restore_round_trips() {
+        let mut dev = device(PAGE_SIZE * 3);
+        ok(dev.submit(0, &BlockRequest::write(1, 50, vec![0x42; 20])));
+        let lim = dev.core().next_exact_local_event().unwrap_or(0);
+        ok(dev.advance_to(lim));
+        let _ = ok(dev.next_response());
+
+        let snap = dev.snapshot();
+        assert_eq!(snap.delta_page_count(), 1);
+        assert_eq!(snap.base_hash, dev.base_hash());
+
+        // Restore from the self-contained snapshot (no parent chain).
+        let base = ramp_base(PAGE_SIZE * 3);
+        let restored = ok(BlockDevice::restore(&snap, base, None));
+        // Identical subsequent behavior: read the written range back.
+        let got = ok(restored.overlay().read(restored.base(), 50, 20));
+        assert_eq!(got, vec![0x42; 20]);
+        assert_eq!(restored.rng_position(), dev.rng_position());
+    }
+
+    #[test]
+    fn snapshot_mutate_restore_yields_identical_behavior() {
+        let base_len = PAGE_SIZE * 3;
+        let mut dev = device(base_len);
+        ok(dev.submit(0, &BlockRequest::write(1, 50, vec![0x42; 20])));
+        let lim = dev.core().next_exact_local_event().unwrap_or(0);
+        ok(dev.advance_to(lim));
+        let _ = ok(dev.next_response());
+
+        let snap = dev.snapshot();
+        let baseline_image = dev.materialize();
+
+        // Mutate after snapshot.
+        ok(dev.submit(lim, &BlockRequest::write(2, 50, vec![0x99; 20])));
+        let lim2 = dev.core().next_exact_local_event().unwrap_or(lim);
+        ok(dev.advance_to(lim2));
+        let _ = ok(dev.next_response());
+        assert_ne!(
+            dev.materialize(),
+            baseline_image,
+            "mutation must take effect"
+        );
+
+        // Restore: behavior returns to the snapshot point.
+        let restored = ok(BlockDevice::restore(&snap, ramp_base(base_len), None));
+        assert_eq!(restored.materialize(), baseline_image);
+    }
+
+    #[test]
+    fn restore_rejects_mismatched_base() {
+        let mut dev = device(PAGE_SIZE);
+        ok(dev.submit(0, &BlockRequest::write(1, 0, vec![1; 4])));
+        let lim = dev.core().next_exact_local_event().unwrap_or(0);
+        ok(dev.advance_to(lim));
+        let _ = ok(dev.next_response());
+        let snap = dev.snapshot();
+        // A different base has a different hash.
+        let wrong = BaseImage::new(vec![0xFF; PAGE_SIZE]);
+        assert!(matches!(
+            BlockDevice::restore(&snap, wrong, None),
+            Err(crate::error::DeviceError::BaseMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn snapshot_restore_preserves_inflight_responses() {
+        let mut dev = device(PAGE_SIZE);
+        // Submit but do not advance: the response stays in flight.
+        ok(dev.submit(0, &BlockRequest::read(1, 0, 16)));
+        assert_eq!(dev.core().inflight_len(), 1);
+        let snap = dev.snapshot();
+        assert_eq!(snap.inflight().len(), 1);
+
+        let restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE), None));
+        assert_eq!(restored.core().inflight_len(), 1);
+        assert_eq!(
+            restored.core().next_exact_local_event(),
+            dev.core().next_exact_local_event()
+        );
+    }
+
+    // ---- run-twice determinism (IO-22) ----
+
+    #[test]
+    fn run_twice_is_byte_identical() {
+        let first = run_sequence(0);
+        let second = run_sequence(0);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn delta_pages_are_blake3_keyed() {
+        let base = ramp_base(PAGE_SIZE * 2);
+        let mut overlay = CowOverlay::new();
+        ok(overlay.write(&base, 0, &[0xAB; 16]));
+        let delta = overlay.dirty_delta();
+        let hashes = delta.page_hashes();
+        assert_eq!(hashes.len(), 1);
+        // Hash is content-derived: same page bytes => same hash.
+        let again = delta.page_hashes();
+        assert_eq!(hashes, again);
+    }
+
+    // ---- regression: MAJOR #1 — snapshot/restore preserves dirty set ----
+
+    #[test]
+    fn regression_restore_preserves_mid_epoch_dirty_set() {
+        // Write a page WITHOUT crossing a checkpoint boundary: it stays dirty,
+        // so a mid-epoch snapshot must capture and a restore must reinstate the
+        // dirty bookkeeping ([IO-7], [IO-11]). Before the fix, restore reset the
+        // dirty set empty and the next snapshot's delta was incomplete.
+        let mut dev = device(PAGE_SIZE * 2);
+        ok(dev.submit(0, &BlockRequest::write(1, 0, vec![0xCD; 16])));
+        let lim = dev.core().next_exact_local_event().unwrap_or(0);
+        ok(dev.advance_to(lim));
+        let _ = ok(dev.next_response());
+
+        let snap = dev.snapshot();
+        assert_eq!(snap.delta_page_count(), 1, "page dirtied since boundary");
+
+        // Restore (self-contained), then snapshot again: the delta must STILL be
+        // 1 — the dirty page survived the round-trip.
+        let restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE * 2), None));
+        let resnap = restored.snapshot();
+        assert_eq!(
+            resnap.delta_page_count(),
+            1,
+            "restore must preserve the mid-epoch dirty set"
+        );
+        assert_eq!(resnap.dirty, snap.dirty);
+
+        // And the parent-chain restore path preserves it too.
+        let parent = CowOverlay::new();
+        let restored_p = ok(BlockDevice::restore(
+            &snap,
+            ramp_base(PAGE_SIZE * 2),
+            Some(&parent),
+        ));
+        assert_eq!(restored_p.snapshot().delta_page_count(), 1);
+    }
+
+    // ---- regression: MAJOR #2 — restore preserves the latency model ----
+
+    #[test]
+    fn regression_restore_preserves_latency_so_delivery_icount_matches() {
+        // A device with a non-default latency base must, after plain restore,
+        // schedule the next completion at the SAME delivery_icount as the
+        // original. Before the fix, restore substituted BlockLatency::default(),
+        // changing every post-restore completion icount.
+        let latency = BlockLatency::new(9000, 9000, 9000, 9000, 0);
+        let mut dev = device_with_latency(PAGE_SIZE, latency);
+        // Take a clean snapshot before any request.
+        let snap = dev.snapshot();
+
+        // Original: submit a read, observe the next exact local event.
+        ok(dev.submit(0, &BlockRequest::read(1, 0, 16)));
+        let original_event = dev.core().next_exact_local_event();
+
+        // Restored: same request, must yield the same delivery_icount.
+        let mut restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE), None));
+        ok(restored.submit(0, &BlockRequest::read(1, 0, 16)));
+        let restored_event = restored.core().next_exact_local_event();
+
+        assert_eq!(
+            original_event, restored_event,
+            "restore must not change the completion model"
+        );
+        // Sanity: with base 9000 at shift 8 the event is ceil(9000/256) = 36, not
+        // the default model's value.
+        assert_eq!(restored_event, Some(36));
+    }
+
+    // ---- regression: MAJOR #3 — oversized read rejected, not un-transportable ----
+
+    #[test]
+    fn regression_read_over_frame_cap_returns_error_status() {
+        use crate::block::device::MAX_READ_BYTES;
+        // A base large enough to satisfy the in-range check at the cap.
+        let big = MAX_READ_BYTES + PAGE_SIZE;
+        let mut dev = device(big);
+
+        // Exactly at the cap: served OK (payload + header fits one frame).
+        ok(dev.submit(0, &BlockRequest::read(1, 0, MAX_READ_BYTES as u32)));
+        let lim = dev.core().next_exact_local_event().unwrap_or(0);
+        ok(dev.advance_to(lim));
+        let r = ok(dev.next_response()).unwrap_or_else(|| panic!("resp"));
+        assert_eq!(r.status, BlockStatus::Ok);
+        assert_eq!(r.data.len(), MAX_READ_BYTES);
+        // The encoded response fits one frame.
+        assert!(ok(r.encode()).len() <= crucible_shmem::MAX_FRAME_DATA);
+
+        // One byte over the cap: rejected with an error status, never emitting an
+        // un-transportable frame ([IO-8]).
+        ok(dev.submit(lim, &BlockRequest::read(2, 0, MAX_READ_BYTES as u32 + 1)));
+        let lim2 = dev.core().next_exact_local_event().unwrap_or(lim);
+        ok(dev.advance_to(lim2));
+        let r2 = ok(dev.next_response()).unwrap_or_else(|| panic!("resp"));
+        assert_eq!(r2.status, BlockStatus::Error);
+    }
+
+    // ---- uniform I/O fault injection on block (IO-25, IO-26, T-IO-12) ----
+
+    use crate::fault::{IoFaultOutcome, IoFaults, Probability};
+    use crate::request::ResponseStatus;
+
+    /// A fixed engine decision-RNG root + device stream id for the block tests
+    /// (a stand-in for the engine's name-hash fork of the scenario seed).
+    const BLOCK_ROOT: u64 = 0x10c0_5eed_b10c;
+    const BLOCK_DOMAIN: &str = "crucible.test.device-stream";
+    const BLOCK_NAME: &str = "disk";
+
+    /// Forks the block device's RNG at its captured cursor.
+    fn block_rng(dev: &BlockDevice) -> crate::fault::DeviceRng {
+        dev.rng(BLOCK_ROOT, BLOCK_DOMAIN, BLOCK_NAME)
+    }
+
+    /// Resolves a modeled read completion through the device's active fault table.
+    fn resolve_read(
+        dev: &mut BlockDevice,
+        primary_icount: u64,
+        payload: Vec<u8>,
+    ) -> IoFaultOutcome {
+        let mut rng = block_rng(dev);
+        dev.resolve_response(primary_icount, ResponseStatus::Ok, payload, &mut rng)
+    }
+
+    #[test]
+    fn block_latency_fault_shifts_delivery_icount_later() {
+        let mut dev = device(PAGE_SIZE);
+        dev.set_faults(IoFaults {
+            added_latency_ns: 4096, // 16 icounts at shift 8
+            ..IoFaults::none()
+        });
+        let outcome = resolve_read(&mut dev, 100, vec![0; 4]);
+        assert_eq!(outcome.primary.delivery_icount, 116);
+        assert!(dev.rng_position() > 0, "fault resolution consumed draws");
+    }
+
+    #[test]
+    fn block_bandwidth_fault_adds_transfer_delay_proportional_to_count() {
+        let mut dev = device(PAGE_SIZE);
+        dev.set_faults(IoFaults {
+            bandwidth_bytes_per_sec: 1_000_000_000, // 1 ns/byte
+            ..IoFaults::none()
+        });
+        // 256 bytes -> 256 ns -> ceil(256/256) = 1 icount at shift 8.
+        let outcome = resolve_read(&mut dev, 0, vec![0; 256]);
+        assert_eq!(outcome.primary.delivery_icount, 1);
+    }
+
+    #[test]
+    fn block_jitter_fault_shifts_within_window() {
+        let mut dev = device(PAGE_SIZE);
+        dev.set_faults(IoFaults {
+            jitter_window_ns: 4096,
+            ..IoFaults::none()
+        });
+        let outcome = resolve_read(&mut dev, 0, vec![0; 4]);
+        // Jitter never moves a block completion earlier; bounded by ceil(window).
+        assert!(outcome.primary.delivery_icount <= 16);
+    }
+
+    #[test]
+    fn block_reorder_fault_can_shift_one_completion_past_another() {
+        let mut dev = device(PAGE_SIZE);
+        dev.set_faults(IoFaults {
+            reorder_window_ns: 65_536,
+            ..IoFaults::none()
+        });
+        // Two completions modeled at the same primary icount can land at distinct
+        // delivery icounts once reorder shifts them by independent draws.
+        let mut rng = block_rng(&dev);
+        let a = dev.resolve_response(10, ResponseStatus::Ok, vec![0; 4], &mut rng);
+        let b = dev.resolve_response(10, ResponseStatus::Ok, vec![0; 4], &mut rng);
+        assert_ne!(
+            a.primary.delivery_icount, b.primary.delivery_icount,
+            "independent reorder draws move one completion past the other"
+        );
+    }
+
+    #[test]
+    fn block_loss_fault_returns_error_status() {
+        let mut dev = device(PAGE_SIZE);
+        dev.set_faults(IoFaults {
+            loss: Probability::ALWAYS,
+            ..IoFaults::none()
+        });
+        let outcome = resolve_read(&mut dev, 0, vec![1, 2, 3, 4]);
+        assert!(outcome.loss_fired);
+        assert_eq!(outcome.primary.status, ResponseStatus::Error);
+    }
+
+    #[test]
+    fn block_duplicate_fault_emits_a_second_completion_later() {
+        let mut dev = device(PAGE_SIZE);
+        dev.set_faults(IoFaults {
+            duplicate: Probability::ALWAYS,
+            duplicate_gap_ns: 4096,
+            ..IoFaults::none()
+        });
+        let outcome = resolve_read(&mut dev, 0, vec![9; 8]);
+        assert!(outcome.duplicate_fired);
+        let dup = outcome
+            .duplicate
+            .unwrap_or_else(|| panic!("duplicate fault must emit a second completion"));
+        assert!(dup.delivery_icount > outcome.primary.delivery_icount);
+        assert_eq!(dup.payload, outcome.primary.payload);
+    }
+
+    #[test]
+    fn block_corrupt_fault_flips_seeded_bits_in_read_payload() {
+        let mut dev = device(PAGE_SIZE);
+        dev.set_faults(IoFaults {
+            corrupt: Probability::ALWAYS,
+            corrupt_bit_flips: 3,
+            ..IoFaults::none()
+        });
+        let outcome = resolve_read(&mut dev, 0, vec![0u8; 16]);
+        assert!(outcome.corrupt_fired);
+        assert_ne!(outcome.primary.payload, vec![0u8; 16]);
+    }
+
+    #[test]
+    fn block_fault_resolution_is_reproducible_and_snapshots_rng_and_faults() {
+        let faults = IoFaults {
+            jitter_window_ns: 1024,
+            loss: Probability::new(1, 3),
+            duplicate: Probability::new(1, 2),
+            duplicate_gap_ns: 512,
+            corrupt: Probability::new(1, 2),
+            corrupt_bit_flips: 2,
+            ..IoFaults::none()
+        };
+        let mut a = device(PAGE_SIZE);
+        a.set_faults(faults.clone());
+        let mut b = device(PAGE_SIZE);
+        b.set_faults(faults.clone());
+        let oa = resolve_read(&mut a, 5, vec![7; 8]);
+        let ob = resolve_read(&mut b, 5, vec![7; 8]);
+        assert_eq!(oa, ob, "same seed + same inputs => identical outcome");
+        assert_eq!(a.rng_position(), b.rng_position());
+
+        // The active faults AND the RNG cursor round-trip through snapshot/restore.
+        let snap = a.snapshot();
+        assert_eq!(snap.faults, faults);
+        assert_eq!(snap.rng_position, a.rng_position());
+        let restored = ok(BlockDevice::restore(&snap, ramp_base(PAGE_SIZE), None));
+        assert_eq!(restored.faults(), &faults);
+        assert_eq!(restored.rng_position(), a.rng_position());
+
+        // A restored device resumes the draw stream byte-identically: its next
+        // fault resolution matches the uninterrupted run's continuation.
+        let mut restored = restored;
+        let mut continue_a = a;
+        let resumed = resolve_read(&mut restored, 9, vec![3; 8]);
+        let uninterrupted = resolve_read(&mut continue_a, 9, vec![3; 8]);
+        assert_eq!(resumed, uninterrupted);
+    }
+}
