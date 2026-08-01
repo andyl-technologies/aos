@@ -6,7 +6,7 @@
 //! - HeadObject, DeleteObject
 //! - Custom endpoints (MinIO, B2, Wasabi)
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
@@ -77,8 +77,7 @@ where
             message = err.message().unwrap_or("none"),
         )
     } else {
-        anyhow::Error::new(err)
-            .context(format!("S3 {operation} for {location} against {target}"))
+        anyhow::Error::new(err).context(format!("S3 {operation} for {location} against {target}"))
     }
 }
 
@@ -88,7 +87,7 @@ where
 /// Used as `Option<S3ClientConfig>`: `None` is the SDK default credential
 /// chain, `Some(_)` an explicit SigV4 configuration. Two requests with an
 /// equal key share one [`aws_sdk_s3::Client`].
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct S3ClientConfig {
     /// AWS region used for signing.
     region: String,
@@ -113,7 +112,7 @@ pub struct S3Protocol {
     /// Part size for multi-part uploads, in bytes.
     part_size: u64,
     /// Clients cached by their resolved configuration.
-    clients: Mutex<HashMap<Option<S3ClientConfig>, aws_sdk_s3::Client>>,
+    clients: Mutex<BTreeMap<Option<S3ClientConfig>, aws_sdk_s3::Client>>,
 }
 
 impl S3Protocol {
@@ -121,7 +120,7 @@ impl S3Protocol {
     pub fn new() -> Self {
         Self {
             part_size: MULTIPART_PART_SIZE,
-            clients: Mutex::new(HashMap::new()),
+            clients: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -130,7 +129,7 @@ impl S3Protocol {
     pub fn with_part_size(part_size: u64) -> Self {
         Self {
             part_size,
-            clients: Mutex::new(HashMap::new()),
+            clients: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -560,7 +559,9 @@ impl S3Protocol {
                 // returns a modeled `NotFound`; an S3-compatible store that
                 // answers a HEAD with an empty body leaves the SDK only the
                 // raw `404` status to go on, so accept either signal.
-                let is_404 = e.as_service_error().is_some_and(HeadObjectError::is_not_found)
+                let is_404 = e
+                    .as_service_error()
+                    .is_some_and(HeadObjectError::is_not_found)
                     || e.raw_response().map(|r| r.status().as_u16()) == Some(404);
                 if is_404 {
                     Ok(TransferResult {
@@ -600,7 +601,9 @@ impl S3Protocol {
             .key(&key)
             .send()
             .await
-            .map_err(|e| s3_operation_error("DeleteObject", &format!("{bucket}/{key}"), &target, e))?;
+            .map_err(|e| {
+                s3_operation_error("DeleteObject", &format!("{bucket}/{key}"), &target, e)
+            })?;
 
         Ok(TransferResult {
             status: 204,

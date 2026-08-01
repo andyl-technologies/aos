@@ -1,0 +1,359 @@
+diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
+--- a/hw/9pfs/virtio-9p-device.c
++++ b/hw/9pfs/virtio-9p-device.c
+@@ -27,6 +27,8 @@
+ #include "qemu/iov.h"
+ #include "qemu/module.h"
+ #include "qemu/qemu-plugin.h"
++#include "system/crucible-plugin-wake.h"
++#include "system/runstate.h"
+ #include "system/qtest.h"
+ 
+ static qemu_plugin_9p_burst_cb_t crucible_9p_burst_start_cb;
+@@ -69,6 +71,223 @@ static void virtio_9p_push_and_notify(V9fsPDU *pdu)
+     virtio_notify(VIRTIO_DEVICE(v), v->vq);
+ }
+ 
++#define CRUCIBLE_9P_FORWARD_PENDING 1
++
++static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq);
++
++static void crucible_9p_finish_burst(V9fsVirtioState *v)
++{
++    if (v->crucible_9p_burst_active && !v->crucible_9p_pending_pdu) {
++        crucible_9p_burst_done_cb(crucible_9p_userdata);
++        v->crucible_9p_burst_active = false;
++    }
++}
++
++static bool crucible_9p_shutdown_underway(void)
++{
++    return runstate_check(RUN_STATE_SHUTDOWN) ||
++           qemu_shutdown_requested_get() != SHUTDOWN_CAUSE_NONE;
++}
++
++static void virtio_9p_abandon_crucible_pending(V9fsVirtioState *v,
++                                               const char *error_message,
++                                               bool finish_burst,
++                                               bool request_shutdown)
++{
++    V9fsPDU *pdu = v->crucible_9p_pending_pdu;
++    VirtQueueElement *elem;
++
++    if (!pdu) {
++        return;
++    }
++
++    v->crucible_9p_pending_pdu = NULL;
++    elem = v->elems[pdu->idx];
++    v->elems[pdu->idx] = NULL;
++    if (finish_burst && crucible_9p_callbacks_ready()) {
++        crucible_9p_finish_burst(v);
++    } else {
++        v->crucible_9p_burst_active = false;
++    }
++    if (error_message) {
++        virtio_error(VIRTIO_DEVICE(v), "%s", error_message);
++        if (request_shutdown) {
++            qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR);
++        }
++    }
++    if (!elem) {
++        pdu_free(pdu);
++        return;
++    }
++    virtqueue_detach_element(v->vq, elem, 0);
++    g_free(elem);
++    pdu_free(pdu);
++}
++
++static int virtio_9p_next_crucible_request_id(V9fsVirtioState *v,
++                                              uint32_t *request_id)
++{
++    if (v->next_crucible_9p_request_id == UINT32_MAX) {
++        return -EOVERFLOW;
++    }
++
++    *request_id = v->next_crucible_9p_request_id++;
++    return 0;
++}
++
++static int virtio_9p_poll_crucible(V9fsVirtioState *v,
++                                   V9fsPDU *pdu,
++                                   uint32_t request_id,
++                                   size_t response_capacity)
++{
++    VirtQueueElement *elem = v->elems[pdu->idx];
++    g_autofree uint8_t *response = g_malloc(response_capacity);
++    int64_t poll_ret;
++    P9MsgHeader response_header;
++    size_t copied;
++
++    if (!elem) {
++        return -EIO;
++    }
++
++    poll_ret = crucible_9p_poll_cb(request_id, response, response_capacity,
++                                   crucible_9p_userdata);
++    if (poll_ret == QEMU_PLUGIN_9P_POLL_PENDING) {
++        return CRUCIBLE_9P_FORWARD_PENDING;
++    }
++    if (poll_ret == -1) {
++        return -EIO;
++    }
++    if (poll_ret < -1 || (uint64_t)poll_ret > response_capacity ||
++        (uint64_t)poll_ret > UINT32_MAX ||
++        (uint64_t)poll_ret < sizeof(P9MsgHeader)) {
++        return -EOVERFLOW;
++    }
++    memcpy(&response_header, response, sizeof(response_header));
++    if (le32_to_cpu(response_header.size_le) != (uint32_t)poll_ret ||
++        le16_to_cpu(response_header.tag_le) != pdu->tag) {
++        return -EPROTO;
++    }
++
++    copied = iov_from_buf(elem->in_sg, elem->in_num, 0, response,
++                          (size_t)poll_ret);
++    if (copied != (size_t)poll_ret) {
++        return -EIO;
++    }
++
++    pdu->size = (uint32_t)poll_ret;
++    return 0;
++}
++
++static void virtio_9p_complete_crucible(V9fsPDU *pdu)
++{
++    virtio_9p_push_and_notify(pdu);
++    pdu_free(pdu);
++}
++
++static int virtio_9p_forward_crucible(V9fsVirtioState *v,
++                                      V9fsPDU *pdu,
++                                      const P9MsgHeader *hdr)
++{
++    VirtQueueElement *elem = v->elems[pdu->idx];
++    size_t request_len = le32_to_cpu(hdr->size_le);
++    size_t request_capacity = iov_size(elem->out_sg, elem->out_num);
++    size_t response_capacity = iov_size(elem->in_sg, elem->in_num);
++    g_autofree uint8_t *request = NULL;
++    uint32_t request_id;
++    int ret;
++    size_t copied;
++
++    if (v->crucible_9p_pending_pdu) {
++        return -EBUSY;
++    }
++
++    pdu->size = request_len;
++    pdu->id = hdr->id;
++    pdu->tag = le16_to_cpu(hdr->tag_le);
++
++    if (request_len < sizeof(*hdr) || request_len > request_capacity ||
++        response_capacity < sizeof(*hdr)) {
++        return -EINVAL;
++    }
++
++    ret = virtio_9p_next_crucible_request_id(v, &request_id);
++    if (ret < 0) {
++        return ret;
++    }
++
++    request = g_malloc(request_len);
++    copied = iov_to_buf(elem->out_sg, elem->out_num, 0, request, request_len);
++    if (copied != request_len) {
++        return -EINVAL;
++    }
++
++    ret = crucible_9p_submit_cb(request_id, request, request_len,
++                                response_capacity, crucible_9p_userdata);
++    if (ret != 0) {
++        return -EIO;
++    }
++
++    ret = virtio_9p_poll_crucible(v, pdu, request_id, response_capacity);
++    if (ret == CRUCIBLE_9P_FORWARD_PENDING) {
++        v->crucible_9p_pending_pdu = pdu;
++        v->crucible_9p_pending_request_id = request_id;
++        v->crucible_9p_pending_response_capacity = response_capacity;
++    } else if (ret == 0) {
++        virtio_9p_complete_crucible(pdu);
++    }
++    return ret;
++}
++
++static void virtio_9p_crucible_wake(Notifier *notifier, void *data)
++{
++    V9fsVirtioState *v = container_of(notifier, V9fsVirtioState,
++                                      crucible_9p_wake_notifier);
++    V9fsPDU *pdu = v->crucible_9p_pending_pdu;
++    int ret;
++
++    if ((QemuPluginWakeEvent)(intptr_t)data == QEMU_PLUGIN_WAKE_EVENT_FAILED) {
++        virtio_9p_abandon_crucible_pending(
++            v, "crucible scheduler wake descriptor failed", true, false);
++        return;
++    }
++    if ((QemuPluginWakeEvent)(intptr_t)data != QEMU_PLUGIN_WAKE_EVENT_DRAINED) {
++        return;
++    }
++
++    if (!pdu) {
++        return;
++    }
++    if (!crucible_9p_callbacks_ready()) {
++        virtio_9p_abandon_crucible_pending(
++            v, "crucible 9p callbacks disappeared with a request pending",
++            false, true);
++        return;
++    }
++
++    ret = virtio_9p_poll_crucible(v, pdu,
++                                  v->crucible_9p_pending_request_id,
++                                  v->crucible_9p_pending_response_capacity);
++    if (ret == CRUCIBLE_9P_FORWARD_PENDING) {
++        return;
++    }
++
++    v->crucible_9p_pending_pdu = NULL;
++    if (ret < 0) {
++        g_autofree char *message = g_strdup_printf(
++            "crucible 9p shmem completion failed: %s", g_strerror(-ret));
++
++        v->crucible_9p_pending_pdu = pdu;
++        virtio_9p_abandon_crucible_pending(
++            v, message, true, true);
++        return;
++    }
++
++    virtio_9p_complete_crucible(pdu);
++
++    handle_9p_output(VIRTIO_DEVICE(v), v->vq);
++}
++
+ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+ {
+     V9fsVirtioState *v = (V9fsVirtioState *)vdev;
+@@ -76,6 +295,11 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+     V9fsPDU *pdu;
+     ssize_t len;
+     VirtQueueElement *elem;
++    int crucible_ret;
++
++    if (v->crucible_9p_pending_pdu) {
++        return;
++    }
+ 
+     while ((pdu = pdu_alloc(s))) {
+         P9MsgHeader out;
+@@ -101,15 +325,35 @@ static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)
+ 
+         v->elems[pdu->idx] = elem;
+ 
++        if (crucible_9p_callbacks_ready()) {
++            if (!v->crucible_9p_burst_active) {
++                crucible_9p_burst_start_cb(crucible_9p_userdata);
++                v->crucible_9p_burst_active = true;
++            }
++            crucible_ret = virtio_9p_forward_crucible(v, pdu, &out);
++            if (crucible_ret == CRUCIBLE_9P_FORWARD_PENDING) {
++                return;
++            }
++            if (crucible_ret < 0) {
++                v->elems[pdu->idx] = NULL;
++                virtio_error(vdev, "crucible 9p shmem forwarding failed");
++                goto out_free_req;
++            }
++            continue;
++        }
++
+         pdu_submit(pdu, &out);
+     }
+ 
++    crucible_9p_finish_burst(v);
+     return;
+ 
+ out_free_req:
++    crucible_9p_finish_burst(v);
+     virtqueue_detach_element(vq, elem, 0);
+     g_free(elem);
+ out_free_pdu:
++    crucible_9p_finish_burst(v);
+     pdu_free(pdu);
+ }
+ 
+@@ -140,6 +384,12 @@ static void virtio_9p_reset(VirtIODevice *vdev)
+ {
+     V9fsVirtioState *v = (V9fsVirtioState *)vdev;
+ 
++    if (crucible_9p_shutdown_underway()) {
++        virtio_9p_abandon_crucible_pending(v, NULL, true, false);
++    } else {
++        virtio_9p_abandon_crucible_pending(
++            v, "virtio-9p reset with a Crucible request pending", true, true);
++    }
+     v9fs_reset(&v->state);
+ }
+ 
+@@ -241,9 +491,18 @@ static void virtio_9p_device_realize(DeviceState *dev, Error **errp)
+         return;
+     }
+ 
++    v->next_crucible_9p_request_id = 0;
++    v->crucible_9p_pending_pdu = NULL;
++    v->crucible_9p_burst_active = false;
++    v->crucible_9p_wake_registered = false;
++    v->crucible_9p_wake_notifier.notify = virtio_9p_crucible_wake;
+     v->config_size = sizeof(struct virtio_9p_config) + strlen(s->fsconf.tag);
+     virtio_init(vdev, VIRTIO_ID_9P, v->config_size);
+     v->vq = virtio_add_queue(vdev, MAX_REQ, handle_9p_output);
++    if (crucible_9p_callbacks_ready()) {
++        qemu_plugin_wake_notifier_add(&v->crucible_9p_wake_notifier);
++        v->crucible_9p_wake_registered = true;
++    }
+ }
+ 
+ static void virtio_9p_device_unrealize(DeviceState *dev)
+@@ -252,6 +511,17 @@ static void virtio_9p_device_unrealize(DeviceState *dev)
+     V9fsVirtioState *v = VIRTIO_9P(dev);
+     V9fsState *s = &v->state;
+ 
++    if (v->crucible_9p_wake_registered) {
++        qemu_plugin_wake_notifier_remove(&v->crucible_9p_wake_notifier);
++        v->crucible_9p_wake_registered = false;
++    }
++    if (!crucible_9p_shutdown_underway()) {
++        virtio_9p_abandon_crucible_pending(
++            v, "virtio-9p unrealized with a Crucible request pending",
++            true, true);
++    } else {
++        virtio_9p_abandon_crucible_pending(v, NULL, true, false);
++    }
+     virtio_delete_queue(v->vq);
+     virtio_cleanup(vdev);
+     v9fs_device_unrealize_common(s);
+diff --git a/hw/9pfs/virtio-9p.h b/hw/9pfs/virtio-9p.h
+--- a/hw/9pfs/virtio-9p.h
++++ b/hw/9pfs/virtio-9p.h
+@@ -3,6 +3,7 @@
+ 
+ #include "standard-headers/linux/virtio_9p.h"
+ #include "hw/virtio/virtio.h"
++#include "qemu/notify.h"
+ #include "9p.h"
+ #include "qom/object.h"
+ 
+@@ -10,6 +11,13 @@ struct V9fsVirtioState {
+     VirtIODevice parent_obj;
+     VirtQueue *vq;
+     size_t config_size;
++    uint32_t next_crucible_9p_request_id;
++    bool crucible_9p_burst_active;
++    bool crucible_9p_wake_registered;
++    V9fsPDU *crucible_9p_pending_pdu;
++    uint32_t crucible_9p_pending_request_id;
++    size_t crucible_9p_pending_response_capacity;
++    Notifier crucible_9p_wake_notifier;
+     VirtQueueElement *elems[MAX_REQ];
+     V9fsState state;
+ };

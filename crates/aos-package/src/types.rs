@@ -2738,14 +2738,16 @@ impl SystemGeneration {
             Some(pinned) if pinned == running_abi => Ok(ReactivationPlan::DirectReactivate),
             Some(pinned) => {
                 let inputs = CrossAbiReEvalInputs {
-                    config_module_closure: self.config_module_closure.clone().with_context(|| {
-                        format!(
-                            "config-gen {} pins module_abi {pinned} but the running image is \
+                    config_module_closure: self.config_module_closure.clone().with_context(
+                        || {
+                            format!(
+                                "config-gen {} pins module_abi {pinned} but the running image is \
                              {running_abi}; cross-ABI re-eval needs config_module_closure, \
                              which is not recorded for this generation",
-                            self.number
-                        )
-                    })?,
+                                self.number
+                            )
+                        },
+                    )?,
                     host_nix_ref: self.host_nix_ref.clone().with_context(|| {
                         format!(
                             "config-gen {} requires cross-ABI re-eval but records no \
@@ -5429,7 +5431,10 @@ provenance = "provenance/firewall.jsonl"
         assert!(json.contains("module_abi_pinned"));
         let parsed: SystemGeneration = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.module_abi_pinned, Some(2));
-        assert_eq!(parsed.host_nix_ref.as_deref(), Some("/nix/store/hn-host.nix"));
+        assert_eq!(
+            parsed.host_nix_ref.as_deref(),
+            Some("/nix/store/hn-host.nix")
+        );
 
         // Project into the canonical config-gen view.
         let cfg = ConfigGeneration::from_system_generation(&parsed);

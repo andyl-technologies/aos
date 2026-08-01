@@ -6,7 +6,9 @@
 //! synthetic `JobRemoved` / `Reloading` signals so the tests can drive each
 //! `JobResult` branch deterministically without a real systemd.
 
-use std::collections::HashMap;
+#![allow(clippy::disallowed_types)]
+
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -22,7 +24,7 @@ pub struct FakeState {
     /// Result label emitted for jobs with no per-unit override.
     pub next_result: Arc<Mutex<String>>,
     /// Per-unit result overrides (unit name → result label).
-    pub unit_results: Arc<Mutex<HashMap<String, String>>>,
+    pub unit_results: Arc<Mutex<BTreeMap<String, String>>>,
     /// Whether the client has called Subscribe(). The fake only emits
     /// JobRemoved while subscribed — faithfully simulating systemd's API-bus
     /// behaviour, so a client that forgot to Subscribe would hang.
@@ -42,7 +44,7 @@ impl FakeState {
         Self {
             calls: Arc::new(Mutex::new(Vec::new())),
             next_result: Arc::new(Mutex::new("done".to_string())),
-            unit_results: Arc::new(Mutex::new(HashMap::new())),
+            unit_results: Arc::new(Mutex::new(BTreeMap::new())),
             subscribed: Arc::new(AtomicBool::new(false)),
             suppress_emit: Arc::new(AtomicBool::new(false)),
             job_counter: Arc::new(AtomicU32::new(0)),

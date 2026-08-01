@@ -71,7 +71,7 @@ in
 
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-ib53sob9o+8ZuU6bbWlhX2bhdmhB8doLWG5chMmgnRg=";
+      hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
@@ -112,7 +112,12 @@ in
     '';
 
     doCheck = true;
-    cargoTestFlags = "--workspace";
+    # This package owns the AOS CLI/server workspace surface. Crucible has its
+    # own full-repository package and gate suite (`pkgs.crucible`), whose source
+    # includes RFC and Nix wiring files required by its harness lints. Selecting
+    # the AOS package family here keeps those repository-aware tests in their
+    # correct derivation now that both projects share one Cargo workspace.
+    cargoTestFlags = "-p 'aos*'";
     # Run the workspace test suite in the debug profile while the binary itself
     # ships release (installed from target/release). The registry-hub's
     # integration tests stand up loopback HTTP servers and register

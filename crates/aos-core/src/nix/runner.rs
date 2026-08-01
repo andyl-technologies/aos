@@ -405,18 +405,18 @@ impl NixRunner {
         }
 
         // 3. Relative to the binary itself.
-        if let Ok(exe) = env::current_exe() {
-            if let Some(bin_dir) = exe.parent() {
-                // Try alongside the binary.
-                if bin_dir.join("default.nix").is_file() {
-                    return Ok(bin_dir.to_path_buf());
-                }
-                // Try one level up (e.g. bin/ -> project root).
-                if let Some(parent) = bin_dir.parent() {
-                    if parent.join("default.nix").is_file() {
-                        return Ok(parent.to_path_buf());
-                    }
-                }
+        if let Ok(exe) = env::current_exe()
+            && let Some(bin_dir) = exe.parent()
+        {
+            // Try alongside the binary.
+            if bin_dir.join("default.nix").is_file() {
+                return Ok(bin_dir.to_path_buf());
+            }
+            // Try one level up (e.g. bin/ -> project root).
+            if let Some(parent) = bin_dir.parent()
+                && parent.join("default.nix").is_file()
+            {
+                return Ok(parent.to_path_buf());
             }
         }
 
@@ -497,7 +497,7 @@ impl NixRunner {
         let stderr_handle = child.stderr.take().map(|stderr| {
             std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
-                for line in reader.lines().flatten() {
+                for line in reader.lines().map_while(std::result::Result::ok) {
                     eprintln!("{line}");
                 }
             })
@@ -506,7 +506,7 @@ impl NixRunner {
         // Drain stdout on the main thread.
         if let Some(stdout) = child.stdout.take() {
             let reader = BufReader::new(stdout);
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(std::result::Result::ok) {
                 println!("{line}");
             }
         }

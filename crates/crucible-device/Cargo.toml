@@ -1,0 +1,17 @@
+[package]
+name = "crucible-device"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = []
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+crucible-sim = { path = "../crucible-sim" }
+crucible-shmem = { path = "../crucible-shmem" }

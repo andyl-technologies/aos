@@ -25,5 +25,6 @@ topic files.
 | [0005](0005-ca-trust-map.md) | 2026-06-12 | The `store/` realisation graph: content-addressed closure validation | Proposed |
 | [0006](0006-secure-boot/README.md) | 2026-06-13 | Full Secure Boot integration — sign, measure, attest | Implemented (all phases CI-green) |
 | [0009](0009-toolchain-ladder-stdenv.md) | 2026-06-15 | Coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap` | Proposed |
+| [0010](0010-crucible/README.md) | 2026-06-18 | Crucible — a hermetically deterministic multi-VM simulation harness | Proposed (design-only) |
 
 Numbering is chronological by the date the design entered the tree.

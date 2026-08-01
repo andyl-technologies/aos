@@ -1,0 +1,157 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -14,6 +14,8 @@
+ #include "qemu/cutils.h"
+ #include "qemu/iov.h"
+ #include "qemu/module.h"
++#include "qemu/thread.h"
++#include "system/crucible-plugin-wake.h"
+ #include "qemu/option.h"
+ #include "block/aio.h"
+ #include "block/block-io.h"
+@@ -26,6 +28,12 @@
+ typedef struct BDRVCrucibleShmemState {
+     int64_t length;
+     uint32_t next_request_id;
++    QemuMutex pending_lock;
++    CoQueue pending_requests;
++    uint64_t wake_generation;
++    Notifier wake_notifier;
++    bool wake_registered;
++    bool wake_failed;
+ } BDRVCrucibleShmemState;
+ 
+ static qemu_plugin_blk_submit_cb_t crucible_blk_submit_cb;
+@@ -59,6 +67,34 @@ static bool crucible_blk_callbacks_ready(void)
+     return crucible_blk_submit_cb != NULL && crucible_blk_poll_cb != NULL;
+ }
+ 
++static void crucible_shmem_wake(Notifier *notifier, void *data)
++{
++    BDRVCrucibleShmemState *s = container_of(notifier,
++                                              BDRVCrucibleShmemState,
++                                              wake_notifier);
++    CoQueue waiters;
++    QemuPluginWakeEvent event = (QemuPluginWakeEvent)(intptr_t)data;
++
++    qemu_mutex_lock(&s->pending_lock);
++    if (event == QEMU_PLUGIN_WAKE_EVENT_FAILED) {
++        s->wake_failed = true;
++    } else if (event != QEMU_PLUGIN_WAKE_EVENT_DRAINED) {
++        qemu_mutex_unlock(&s->pending_lock);
++        return;
++    }
++    s->wake_generation++;
++
++    /*
++     * The wake-fd handler already runs in QEMU's normal main-loop context.
++     * Resume every request coroutine there; never nest the main loop from a
++     * device, plugin, or vCPU callback.
++     */
++    waiters = s->pending_requests;
++    qemu_co_queue_init(&s->pending_requests);
++    qemu_mutex_unlock(&s->pending_lock);
++    qemu_co_enter_all(&waiters, NULL);
++}
++
+ static int crucible_shmem_open(BlockDriverState *bs, QDict *options,
+                                int flags, Error **errp)
+ {
+@@ -80,10 +116,32 @@ static int crucible_shmem_open(BlockDriverState *bs, QDict *options,
+ 
+     s->length = length;
+     s->next_request_id = 0;
++    qemu_mutex_init(&s->pending_lock);
++    qemu_co_queue_init(&s->pending_requests);
++    s->wake_generation = 0;
++    s->wake_notifier.notify = crucible_shmem_wake;
++    s->wake_failed = false;
++    s->wake_registered = true;
++    qemu_plugin_wake_notifier_add(&s->wake_notifier);
+     bs->bl.request_alignment = 1;
+     return 0;
+ }
+ 
++static void crucible_shmem_close(BlockDriverState *bs)
++{
++    BDRVCrucibleShmemState *s = bs->opaque;
++
++    if (s->wake_registered) {
++        qemu_plugin_wake_notifier_remove(&s->wake_notifier);
++        s->wake_registered = false;
++    }
++    /* Block graph draining must finish every request before close. */
++    qemu_mutex_lock(&s->pending_lock);
++    g_assert(qemu_co_queue_empty(&s->pending_requests));
++    qemu_mutex_unlock(&s->pending_lock);
++    qemu_mutex_destroy(&s->pending_lock);
++}
++
+ static int64_t coroutine_fn
+ crucible_shmem_co_getlength(BlockDriverState *bs)
+ {
+@@ -120,25 +178,46 @@ static int crucible_shmem_next_request_id(BDRVCrucibleShmemState *s,
+     return 0;
+ }
+ 
+-static void coroutine_fn crucible_shmem_wait_one_poll(BlockDriverState *bs)
++static void coroutine_fn
++crucible_shmem_wait_one_poll(BlockDriverState *bs,
++                             uint64_t observed_generation)
+ {
+-    aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self());
+-    qemu_coroutine_yield();
++    BDRVCrucibleShmemState *s = bs->opaque;
++
++    qemu_mutex_lock(&s->pending_lock);
++    if (s->wake_failed || s->wake_generation != observed_generation) {
++        qemu_mutex_unlock(&s->pending_lock);
++        return;
++    }
++    qemu_co_queue_wait(&s->pending_requests, &s->pending_lock);
++    qemu_mutex_unlock(&s->pending_lock);
+ }
+ 
+ static int64_t coroutine_fn
+ crucible_shmem_poll_until_ready(BlockDriverState *bs, uint32_t request_id,
+                                 uint8_t *data, size_t capacity)
+ {
++    BDRVCrucibleShmemState *s = bs->opaque;
+     int64_t ret;
++    uint64_t observed_generation;
+ 
+     while (true) {
++        qemu_mutex_lock(&s->pending_lock);
++        if (s->wake_failed) {
++            qemu_mutex_unlock(&s->pending_lock);
++            return -EIO;
++        }
++        observed_generation = s->wake_generation;
++        qemu_mutex_unlock(&s->pending_lock);
++        if (!crucible_blk_callbacks_ready()) {
++            return -ENODEV;
++        }
+         ret = crucible_blk_poll_cb(request_id, data, capacity,
+                                    crucible_blk_userdata);
+         if (ret != QEMU_PLUGIN_BLK_POLL_PENDING) {
+             return ret;
+         }
+-        crucible_shmem_wait_one_poll(bs);
++        crucible_shmem_wait_one_poll(bs, observed_generation);
+     }
+ }
+ 
+@@ -260,6 +339,7 @@ static BlockDriver bdrv_crucible_shmem = {
+     .instance_size          = sizeof(BDRVCrucibleShmemState),
+ 
+     .bdrv_open              = crucible_shmem_open,
++    .bdrv_close             = crucible_shmem_close,
+     .bdrv_co_getlength      = crucible_shmem_co_getlength,
+     .bdrv_co_preadv         = crucible_shmem_co_preadv,
+     .bdrv_co_pwritev        = crucible_shmem_co_pwritev,
+@@ -272,4 +352,3 @@ static void bdrv_crucible_shmem_init(void)
+     bdrv_register(&bdrv_crucible_shmem);
+ }
+ block_init(bdrv_crucible_shmem_init);
+-

@@ -204,11 +204,7 @@ fn reconcile_delta_removes_dropped_package() {
     let report = compiler.reconcile_filesystem(&p2).unwrap();
     assert_eq!(report.removed, pkgset(&["nginx"]));
 
-    assert!(
-        !dir.path()
-            .join("aos-pkg-install@nginx.service.d")
-            .exists()
-    );
+    assert!(!dir.path().join("aos-pkg-install@nginx.service.d").exists());
     assert!(
         !dir.path()
             .join("aos-fetch.target.wants/aos-pkg-fetch@nginx.service")
@@ -280,7 +276,11 @@ fn read_tree(root: &std::path::Path) -> Vec<(String, String)> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            let rel = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
             let meta = std::fs::symlink_metadata(&path).unwrap();
             if meta.file_type().is_symlink() {
                 let target = std::fs::read_link(&path).unwrap();
@@ -288,7 +288,10 @@ fn read_tree(root: &std::path::Path) -> Vec<(String, String)> {
             } else if meta.is_dir() {
                 stack.push(path);
             } else {
-                out.push((rel, format!("file:{}", std::fs::read_to_string(&path).unwrap())));
+                out.push((
+                    rel,
+                    format!("file:{}", std::fs::read_to_string(&path).unwrap()),
+                ));
             }
         }
     }
@@ -353,9 +356,15 @@ fn reproject_drops_failed_fetch_and_cascades_dependents() {
     // then nginx (direct fetch failure).
     let record = r.drop_record();
     assert_eq!(record["projected"], json!(true));
-    assert_eq!(record["source_manifest_hash"], json!(r.source_manifest_hash));
+    assert_eq!(
+        record["source_manifest_hash"],
+        json!(r.source_manifest_hash)
+    );
     assert_eq!(record["dropped"][0]["package"], json!("frontend"));
-    assert_eq!(record["dropped"][0]["reason"], json!("dependency_dropped:nginx"));
+    assert_eq!(
+        record["dropped"][0]["reason"],
+        json!("dependency_dropped:nginx")
+    );
     assert_eq!(record["dropped"][1]["package"], json!("nginx"));
     assert_eq!(record["dropped"][1]["reason"], json!("fetch_failed"));
 }

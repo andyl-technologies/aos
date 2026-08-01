@@ -1,0 +1,11 @@
+diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+--- a/block/crucible-shmem.c
++++ b/block/crucible-shmem.c
+@@ -122,6 +122,7 @@ static int crucible_shmem_next_request_id(BDRVCrucibleShmemState *s,
+ 
+ static void coroutine_fn crucible_shmem_wait_one_poll(BlockDriverState *bs)
+ {
++    aio_co_schedule(bdrv_get_aio_context(bs), qemu_coroutine_self());
+     qemu_coroutine_yield();
+ }
+ 

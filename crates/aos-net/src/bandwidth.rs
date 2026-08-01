@@ -32,6 +32,7 @@ impl BandwidthLimiter {
     ///
     /// * `bytes_per_second` - The rate limit in bytes per second.
     ///   Use 0 for unlimited bandwidth.
+    #[allow(clippy::disallowed_methods)]
     pub fn new(bytes_per_second: u64) -> Self {
         Self {
             rate: AtomicU64::new(bytes_per_second),
@@ -115,6 +116,7 @@ impl BandwidthLimiter {
     }
 
     /// Refill tokens based on elapsed time since last refill.
+    #[allow(clippy::disallowed_methods)]
     fn refill(&self) {
         let rate = self.rate.load(Ordering::Relaxed);
         if rate == 0 {
@@ -146,6 +148,7 @@ impl std::fmt::Debug for BandwidthLimiter {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

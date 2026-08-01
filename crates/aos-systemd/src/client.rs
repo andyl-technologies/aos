@@ -6,7 +6,7 @@
 //! Method callers `await` on a per-job oneshot; the stream task owns the
 //! signal stream continuously, dodging the "stream not polled" hang.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -157,8 +157,8 @@ pub enum SettleOutcome {
 /// lock before inserting a waiter.
 #[derive(Default)]
 struct JobRegistry {
-    waiters: HashMap<OwnedObjectPath, oneshot::Sender<JobResult>>,
-    completed: HashMap<OwnedObjectPath, JobResult>,
+    waiters: BTreeMap<String, oneshot::Sender<JobResult>>,
+    completed: BTreeMap<String, JobResult>,
     /// Set once the `JobRemoved` signal stream closes — i.e. the bus connection
     /// died. No further `JobRemoved` will ever arrive, so any pending or future
     /// waiter can never be satisfied. Read under the same lock as `waiters` so
@@ -249,15 +249,16 @@ impl SystemdClient {
             while let Some(signal) = job_removed.next().await {
                 let Ok(args) = signal.args() else { continue };
                 let path = args.job;
+                let path_key = path.as_str().to_owned();
                 let result = JobResult::from_systemd(&args.result);
                 {
                     let mut reg = jobs_for_task.lock().unwrap();
-                    if let Some(tx) = reg.waiters.remove(&path) {
+                    if let Some(tx) = reg.waiters.remove(&path_key) {
                         // Fire-and-forget; if the awaiter dropped (caller timed
                         // out at a higher level), there's nothing to do.
                         let _ = tx.send(result);
                     } else {
-                        reg.completed.insert(path, result);
+                        reg.completed.insert(path_key, result);
                     }
                 }
                 let _ = event_tx.send(());
@@ -373,9 +374,10 @@ impl SystemdClient {
     /// "this job is in flight; we wait for systemd's answer." Callers wanting
     /// an upper bound wrap this in `tokio::time::timeout` themselves.
     async fn await_job(&self, path: OwnedObjectPath) -> Result<JobOutcome> {
+        let path_key = path.as_str().to_owned();
         let rx = {
             let mut reg = self.jobs.lock().unwrap();
-            if let Some(result) = reg.completed.remove(&path) {
+            if let Some(result) = reg.completed.remove(&path_key) {
                 return Ok(JobOutcome {
                     job_path: path,
                     result,
@@ -387,7 +389,7 @@ impl SystemdClient {
                 return Err(Error::JobSenderDropped(path.as_str().to_string()));
             }
             let (tx, rx) = oneshot::channel();
-            reg.waiters.insert(path.clone(), tx);
+            reg.waiters.insert(path_key, tx);
             rx
         };
         let result = rx

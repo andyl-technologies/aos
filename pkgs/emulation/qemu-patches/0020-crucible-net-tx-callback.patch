@@ -1,0 +1,123 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1036,6 +1036,33 @@ int qemu_plugin_net_flush(void);
+ QEMU_PLUGIN_API
+ int qemu_plugin_net_can_receive(void);
+ 
++/**
++ * typedef qemu_plugin_net_tx_cb_t - shmem network TX callback
++ * @data: Ethernet frame bytes emitted by the guest
++ * @len: byte length of @data
++ * @userdata: a pointer supplied when the callback was registered
++ *
++ * Called synchronously from QEMU's network transmit path before the frame is
++ * handed to the upstream backend. Returns 0 when the plugin accepted the frame
++ * for deterministic routing and nonzero on fail-loud rejection.
++ */
++typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *data,
++                                       size_t len,
++                                       void *userdata);
++
++/**
++ * qemu_plugin_register_net_tx_cb() - register shmem network TX interception
++ * @tx_cb: transmit callback, or NULL to use the upstream backend
++ * @userdata: opaque pointer passed to @tx_cb
++ *
++ * With no callback registered, QEMU uses its upstream network backend. Once a
++ * callback is registered, guest-emitted Ethernet frames are delivered to the
++ * callback instead of the backend.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_net_tx_cb(qemu_plugin_net_tx_cb_t tx_cb,
++                                    void *userdata);
++
+ typedef void
+ (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
+                                  int64_t num, uint64_t a1, uint64_t a2,
+diff --git a/net/net.c b/net/net.c
+--- a/net/net.c
++++ b/net/net.c
+@@ -47,6 +47,7 @@
+ #include "qemu/iov.h"
+ #include "qemu/qemu-print.h"
+ #include "qemu/main-loop.h"
++#include "qemu/qemu-plugin.h"
+ #include "qemu/option.h"
+ #include "qemu/keyval.h"
+ #include "qapi/error.h"
+@@ -77,6 +78,35 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
+ static NetdevQueue nd_queue = QSIMPLEQ_HEAD_INITIALIZER(nd_queue);
+ 
+ static GHashTable *nic_model_help;
++static qemu_plugin_net_tx_cb_t crucible_net_tx_cb;
++static void *crucible_net_tx_userdata;
++
++void qemu_plugin_register_net_tx_cb(qemu_plugin_net_tx_cb_t tx_cb,
++                                    void *userdata)
++{
++    crucible_net_tx_userdata = userdata;
++    crucible_net_tx_cb = tx_cb;
++}
++
++static bool crucible_net_tx_callback_ready(NetClientState *sender)
++{
++    return crucible_net_tx_cb != NULL &&
++           sender != NULL &&
++           sender->info != NULL &&
++           sender->info->type == NET_CLIENT_DRIVER_NIC;
++}
++
++static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)
++{
++    if (data == NULL || len == 0 || len > SSIZE_MAX) {
++        return -1;
++    }
++    if (crucible_net_tx_cb(data, len, crucible_net_tx_userdata) != 0) {
++        return -1;
++    }
++
++    return (ssize_t)len;
++}
+ 
+ static int nb_nics;
+ static NICInfo nd_table[MAX_NICS];
+@@ -723,6 +753,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
+     if (sender->link_down || !sender->peer) {
+         return size;
+     }
++    if (crucible_net_tx_callback_ready(sender)) {
++        return crucible_net_tx_submit(buf, (size_t)size);
++    }
+ 
+     /* Let filters handle the packet first */
+     ret = filter_receive(sender, NET_FILTER_DIRECTION_TX,
+@@ -860,11 +893,26 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
+     size_t size = iov_size(iov, iovcnt);
+     int ret;
+ 
+-    if (size > NET_BUFSIZE) {
++    if (sender->link_down || !sender->peer) {
+         return size;
+     }
++    if (crucible_net_tx_callback_ready(sender)) {
++        if (size == 0 || size > NET_BUFSIZE) {
++            return -1;
++        }
++        if (iovcnt == 1) {
++            return crucible_net_tx_submit(iov[0].iov_base, iov[0].iov_len);
++        } else {
++            g_autofree uint8_t *buf = g_malloc(size);
+ 
+-    if (sender->link_down || !sender->peer) {
++            if (iov_to_buf(iov, iovcnt, 0, buf, size) != size) {
++                return -1;
++            }
++            return crucible_net_tx_submit(buf, size);
++        }
++    }
++
++    if (size > NET_BUFSIZE) {
+         return size;
+     }
+ 

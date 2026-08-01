@@ -1,0 +1,37 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -788,6 +788,16 @@ int qemu_plugin_advance_time_ns(int64_t time);
+ QEMU_PLUGIN_API
+ uint64_t qemu_plugin_icount_raw(void);
+ 
++/**
++ * qemu_plugin_force_vcpu_exit() - force the current vCPU out of cpu_exec
++ *
++ * Sets the current vCPU's exit request so Crucible can normalize the first
++ * tcg_cpu_exec exit/run phase from a vCPU-init callback. Calls made before a
++ * current vCPU exists are ignored.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_force_vcpu_exit(void);
++
+ /**
+  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * @data: Ethernet frame bytes
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -240,6 +240,13 @@ uint64_t qemu_plugin_icount_raw(void)
+     return (uint64_t)raw_icount;
+ }
+ 
++void qemu_plugin_force_vcpu_exit(void)
++{
++    if (current_cpu) {
++        qatomic_set_mb(&current_cpu->exit_request, 1);
++    }
++}
++
+ 
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {

@@ -228,6 +228,7 @@ pub fn compute_retry_delay(config: &RetryConfig, attempt: u32) -> Duration {
 
 /// Exponential backoff: `initial_delay * backoff_factor^attempt`,
 /// clamped to `max_delay`, optionally jittered over `0..=delay`.
+#[allow(clippy::disallowed_methods)]
 fn compute_delay(config: &RetryConfig, attempt: u32) -> Duration {
     let base = config.initial_delay.as_secs_f64() * config.backoff_factor.powi(attempt as i32);
     let clamped = base.min(config.max_delay.as_secs_f64());

@@ -1,0 +1,12 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -200,7 +200,7 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,
+ #define QEMU_PLUGIN_BLK_OP_READ 0u
+ #define QEMU_PLUGIN_BLK_OP_WRITE 1u
+ #define QEMU_PLUGIN_BLK_OP_FLUSH 2u
+-#define QEMU_PLUGIN_BLK_POLL_PENDING 0
++#define QEMU_PLUGIN_BLK_POLL_PENDING (-2)
+ 
+ /**
+  * qemu_plugin_uninstall() - Uninstall a plugin

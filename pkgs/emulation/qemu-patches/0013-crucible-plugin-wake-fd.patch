@@ -1,0 +1,203 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -798,6 +798,43 @@ uint64_t qemu_plugin_icount_raw(void);
+ QEMU_PLUGIN_API
+ void qemu_plugin_force_vcpu_exit(void);
+ 
++/**
++ * qemu_plugin_crucible_single_threaded_rr() - report the live sim execution mode
++ *
++ * Returns one only while the Crucible sim accelerator is active with MTTCG
++ * disabled, proving that QEMU serializes the round-robin vCPU execution path.
++ * Returns zero for every other accelerator or threading mode.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_single_threaded_rr(void);
++
++/**
++ * qemu_plugin_register_wake_fd() - register a scheduler wake fd
++ * @fd: nonblocking eventfd or pipe descriptor owned by the plugin
++ *
++ * Registers @fd on QEMU's main AioContext. Read readiness is therefore serviced
++ * by both the outer main loop and nested aio_poll() waits used by synchronous
++ * block I/O. The handler drains the descriptor, resumes device waiters, and
++ * kicks the first RR vCPU. The scheduler remains the single authority for
++ * publishing wake decisions.
++ *
++ * Returns: 0 on successful registration, nonzero on invalid input.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_register_wake_fd(int fd);
++
++/**
++ * qemu_plugin_request_shutdown() - request plugin-owned QEMU teardown
++ * @failure: nonzero selects a fail-loud host-error exit
++ *
++ * Schedules shutdown through QEMU's normal runstate path. A zero value uses
++ * the same clean exit cause as QMP quit; a nonzero value preserves a protocol
++ * fault as a failed child exit. The request also kicks the RR vCPU so an idle
++ * simulation cannot delay the main-loop transition.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_request_shutdown(int failure);
++
+ /**
+  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * @data: Ethernet frame bytes
+diff --git a/include/system/crucible-plugin-wake.h b/include/system/crucible-plugin-wake.h
+new file mode 100644
+--- /dev/null
++++ b/include/system/crucible-plugin-wake.h
+@@ -0,0 +1,19 @@
++/*
++ * Crucible plugin wake notification shared by QEMU device backends.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef SYSTEM_CRUCIBLE_PLUGIN_WAKE_H
++#define SYSTEM_CRUCIBLE_PLUGIN_WAKE_H
++
++#include "qemu/notify.h"
++
++typedef enum QemuPluginWakeEvent {
++    QEMU_PLUGIN_WAKE_EVENT_DRAINED = 0,
++    QEMU_PLUGIN_WAKE_EVENT_FAILED = 1,
++} QemuPluginWakeEvent;
++
++void qemu_plugin_wake_notifier_add(Notifier *notifier);
++void qemu_plugin_wake_notifier_remove(Notifier *notifier);
++
++#endif
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -12,6 +12,11 @@
+ 
+ #include "qemu/osdep.h"
+ #include "qemu/main-loop.h"
++#include "qemu/error-report.h"
++#include "qemu/accel.h"
++#include "hw/core/cpu.h"
++#include "system/runstate.h"
++#include "system/crucible-plugin-wake.h"
+ #include "net/net.h"
+ #include "qapi/error.h"
+ #include "migration/blocker.h"
+@@ -108,6 +113,9 @@ static void *qemu_plugin_time_advance_userdata;
+ static int qemu_plugin_time_advance_pending;
+ static int qemu_plugin_time_advance_status;
+ static int64_t qemu_plugin_time_advance_target;
++static int qemu_plugin_wake_fd = -1;
++static NotifierList qemu_plugin_wake_notifiers =
++    NOTIFIER_LIST_INITIALIZER(qemu_plugin_wake_notifiers);
+ 
+ static void qemu_plugin_time_advance_barrier_bh(void *opaque);
+ static void qemu_plugin_time_advance_complete_bh(void *opaque);
+@@ -247,6 +255,106 @@ void qemu_plugin_force_vcpu_exit(void)
+     }
+ }
+ 
++int qemu_plugin_crucible_single_threaded_rr(void)
++{
++    return strcmp(current_accel_name(), "sim") == 0 &&
++           !qemu_tcg_mttcg_enabled();
++}
++
++static void qemu_plugin_unregister_wake_fd(int fd)
++{
++    aio_set_fd_handler(qemu_get_aio_context(), fd, NULL, NULL,
++                       NULL, NULL, NULL);
++    if (qemu_plugin_wake_fd == fd) {
++        qemu_plugin_wake_fd = -1;
++    }
++}
++
++void qemu_plugin_wake_notifier_add(Notifier *notifier)
++{
++    notifier_list_add(&qemu_plugin_wake_notifiers, notifier);
++}
++
++void qemu_plugin_wake_notifier_remove(Notifier *notifier)
++{
++    notifier_remove(notifier);
++}
++
++static void qemu_plugin_wake_fd_read(void *opaque)
++{
++    int fd = (intptr_t)opaque;
++    uint8_t buffer[256];
++    bool drained = false;
++
++    for (;;) {
++        ssize_t ret = read(fd, buffer, sizeof(buffer));
++
++        if (ret > 0) {
++            drained = true;
++            continue;
++        }
++        if (ret < 0 && errno == EINTR) {
++            continue;
++        }
++        if (ret < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
++            if (drained) {
++                notifier_list_notify(&qemu_plugin_wake_notifiers,
++                                     (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
++            }
++            if (drained && first_cpu) {
++                qemu_cpu_kick(first_cpu);
++            }
++            return;
++        }
++        if (ret == 0) {
++            error_report("Crucible plugin wake fd %d reached EOF", fd);
++        } else {
++            error_report("Crucible plugin wake fd %d read failed: %s",
++                         fd, strerror(errno));
++        }
++        notifier_list_notify(&qemu_plugin_wake_notifiers,
++                             (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_FAILED);
++        qemu_plugin_unregister_wake_fd(fd);
++        qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR);
++        if (first_cpu) {
++            qemu_cpu_kick(first_cpu);
++        }
++        return;
++    }
++}
++
++int qemu_plugin_register_wake_fd(int fd)
++{
++    int flags;
++
++    if (fd < 0) {
++        return -1;
++    }
++    flags = fcntl(fd, F_GETFL);
++    if (flags < 0 || !(flags & O_NONBLOCK)) {
++        return -1;
++    }
++
++    if (qemu_plugin_wake_fd >= 0) {
++        return qemu_plugin_wake_fd == fd ? 0 : -EBUSY;
++    }
++
++    qemu_plugin_wake_fd = fd;
++    aio_set_fd_handler(qemu_get_aio_context(), fd,
++                       qemu_plugin_wake_fd_read, NULL, NULL, NULL,
++                       (void *)(intptr_t)fd);
++    return 0;
++}
++
++void qemu_plugin_request_shutdown(int failure)
++{
++    qemu_system_shutdown_request(failure ? SHUTDOWN_CAUSE_HOST_ERROR :
++                                           SHUTDOWN_CAUSE_HOST_QMP_QUIT);
++    if (first_cpu) {
++        qemu_cpu_kick(first_cpu);
++    }
++}
++
+ 
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {

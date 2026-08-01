@@ -335,7 +335,10 @@ mod tests {
 
         assert!(text.contains("operatorModules = [ hostModule ]"), "{text}");
         assert!(text.contains("import /nix/store/hash-host.nix"), "{text}");
-        assert!(text.contains("import /nix/store/hash-aos-base-lib"), "{text}");
+        assert!(
+            text.contains("import /nix/store/hash-aos-base-lib"),
+            "{text}"
+        );
         assert!(
             text.contains("import /nix/store/hash-web-config/module.nix"),
             "{text}"
@@ -370,10 +373,10 @@ mod tests {
 
     #[test]
     fn non_store_paths_are_quoted_so_the_expression_parses() {
-        assert_eq!(nix_path_str("/run/aos-eval/host.nix"), "/run/aos-eval/host.nix");
         assert_eq!(
-            nix_path_str("/has spaces/x"),
-            "\"/has spaces/x\""
+            nix_path_str("/run/aos-eval/host.nix"),
+            "/run/aos-eval/host.nix"
         );
+        assert_eq!(nix_path_str("/has spaces/x"), "\"/has spaces/x\"");
     }
 }

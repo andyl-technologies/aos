@@ -248,10 +248,12 @@ pub fn resolve_secret_ref(
     validate_credential_name(&sr.name)?;
 
     // Step 2: require a credstore source.
-    let source = sr
-        .source
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("secretRef '{}' does not declare a credstore source", sr.name))?;
+    let source = sr.source.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "secretRef '{}' does not declare a credstore source",
+            sr.name
+        )
+    })?;
 
     // Step 3: validate the source is provisionable (reuses the existing guard).
     let meta = CredentialMeta::from(sr);
@@ -355,7 +357,9 @@ mod tests {
         }
 
         fn write(&self, source: &str, bytes: &[u8]) -> anyhow::Result<bool> {
-            self.writes.borrow_mut().push((source.to_string(), bytes.to_vec()));
+            self.writes
+                .borrow_mut()
+                .push((source.to_string(), bytes.to_vec()));
             Ok(true)
         }
 
@@ -380,7 +384,10 @@ mod tests {
     fn serde_round_trip_with_ref() {
         let sr = SecretRef {
             resolver: Some(ResolverKind::DesiredToml),
-            ..secret("join-token", Some("/etc/credstore.encrypted/web/join-token"))
+            ..secret(
+                "join-token",
+                Some("/etc/credstore.encrypted/web/join-token"),
+            )
         };
         let json = serde_json::to_string(&sr).unwrap();
         assert!(json.contains("\"ref\":\"desired-toml\""), "got {json}");
@@ -402,7 +409,10 @@ mod tests {
     fn manifest_projection_drops_only_the_resolver_hint() {
         let sr = SecretRef {
             resolver: Some(ResolverKind::DesiredToml),
-            ..secret("join-token", Some("/etc/credstore.encrypted/web/join-token"))
+            ..secret(
+                "join-token",
+                Some("/etc/credstore.encrypted/web/join-token"),
+            )
         };
         let meta = CredentialMeta::from(&sr);
         // The credential-bearing fields round-trip identically (no schema change).
@@ -441,7 +451,10 @@ mod tests {
     #[test]
     fn resolve_encrypts_writes_and_marks_restart() {
         let sink = MockSink::new(Some(b"raw-token"));
-        let sr = secret("join-token", Some("/etc/credstore.encrypted/web/join-token"));
+        let sr = secret(
+            "join-token",
+            Some("/etc/credstore.encrypted/web/join-token"),
+        );
         let outcome = resolve_secret_ref("web", &sr, &sink).expect("resolve");
 
         assert_eq!(outcome.kind, ResolverKind::DesiredToml);

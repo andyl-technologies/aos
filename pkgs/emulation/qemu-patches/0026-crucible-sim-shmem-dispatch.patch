@@ -1,0 +1,201 @@
+diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
+--- a/accel/tcg/meson.build
++++ b/accel/tcg/meson.build
+@@ -30,5 +30,6 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
+   'tcg-accel-ops-mttcg.c',
+   'tcg-accel-ops-rr.c',
+   'tcg-accel-ops-sim.c',
++  'tcg-accel-ops-sim-shmem.c',
+   'watchpoint.c',
+ ))
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -38,6 +38,7 @@
+ #include "tcg-accel-ops.h"
+ #include "tcg-accel-ops-rr.h"
+ #include "tcg-accel-ops-icount.h"
++#include "tcg-accel-ops-sim-shmem.h"
+ 
+ /* Kick all RR vCPUs */
+ void rr_kick_vcpu_thread(CPUState *unused)
+@@ -395,6 +396,19 @@ static void *rr_cpu_thread_fn(void *arg)
+             qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
+                               (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
+ 
++            if (rr_crucible_sim_mode() &&
++                crucible_sim_shmem_dispatch_registered()) {
++                uint64_t current_icount = qemu_plugin_icount_raw();
++
++                cpu_budget = crucible_sim_shmem_clamp_cpu_budget(current_icount,
++                                                                 cpu_budget);
++                if (cpu_budget == 0) {
++                    crucible_sim_shmem_publish_current_icount(current_icount);
++                    qemu_cond_wait_bql(first_cpu->halt_cond);
++                    break;
++                }
++            }
++
+             if (cpu_can_run(cpu)) {
+                 int r;
+ 
+@@ -406,6 +420,10 @@ static void *rr_cpu_thread_fn(void *arg)
+                 if (icount_enabled()) {
+                     icount_process_data(cpu);
+                 }
++                if (rr_crucible_sim_mode() &&
++                    crucible_sim_shmem_dispatch_registered()) {
++                    crucible_sim_shmem_publish_current_icount(qemu_plugin_icount_raw());
++                }
+                 qemu_plugin_maybe_fire_tcg_exec_cb(cpu);
+                 bql_lock();
+ 
+diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
+new file mode 100644
+--- /dev/null
++++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
+@@ -0,0 +1,76 @@
++/*
++ * QEMU TCG Crucible deterministic simulation shmem dispatch glue
++ */
++
++#include "qemu/osdep.h"
++#include "qemu/qemu-plugin.h"
++#include "tcg-accel-ops-sim-shmem.h"
++
++static uint64_t crucible_current_icount;
++static qemu_plugin_sim_shmem_publish_icount_cb_t crucible_publish_icount_cb;
++static qemu_plugin_sim_shmem_max_advance_icount_cb_t crucible_max_advance_icount_cb;
++static void *crucible_sim_shmem_userdata;
++
++void qemu_plugin_register_sim_shmem_dispatch_cb(
++    qemu_plugin_sim_shmem_publish_icount_cb_t publish_icount_cb,
++    qemu_plugin_sim_shmem_max_advance_icount_cb_t max_advance_icount_cb,
++    void *userdata)
++{
++    crucible_sim_shmem_userdata = userdata;
++    crucible_max_advance_icount_cb = max_advance_icount_cb;
++    crucible_publish_icount_cb = publish_icount_cb;
++}
++
++bool crucible_sim_shmem_dispatch_registered(void)
++{
++    return crucible_max_advance_icount_cb != NULL;
++}
++
++void crucible_sim_shmem_publish_current_icount(uint64_t current_icount)
++{
++    crucible_current_icount = current_icount;
++    if (crucible_publish_icount_cb) {
++        crucible_publish_icount_cb(current_icount, crucible_sim_shmem_userdata);
++    }
++}
++
++uint64_t crucible_sim_shmem_current_icount(void)
++{
++    return crucible_current_icount;
++}
++
++uint64_t crucible_sim_shmem_max_advance_icount(void)
++{
++    if (crucible_max_advance_icount_cb) {
++        return crucible_max_advance_icount_cb(crucible_sim_shmem_userdata);
++    }
++
++    return UINT64_MAX;
++}
++
++int64_t crucible_sim_shmem_clamp_cpu_budget(uint64_t current_icount,
++                                            int64_t cpu_budget)
++{
++    uint64_t max_advance_icount;
++    uint64_t remaining;
++
++    if (cpu_budget <= 0) {
++        return cpu_budget;
++    }
++
++    max_advance_icount = crucible_sim_shmem_max_advance_icount();
++    if (current_icount >= max_advance_icount) {
++        return 0;
++    }
++
++    remaining = max_advance_icount - current_icount;
++    if (remaining > (uint64_t)INT64_MAX || (uint64_t)cpu_budget <= remaining) {
++        return cpu_budget;
++    }
++    return (int64_t)remaining;
++}
++
++bool crucible_sim_shmem_may_advance_to(uint64_t candidate_icount)
++{
++    return candidate_icount <= crucible_sim_shmem_max_advance_icount();
++}
+diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-shmem.h
+new file mode 100644
+--- /dev/null
++++ b/accel/tcg/tcg-accel-ops-sim-shmem.h
+@@ -0,0 +1,12 @@
++#ifndef TCG_ACCEL_OPS_SIM_SHMEM_H
++#define TCG_ACCEL_OPS_SIM_SHMEM_H
++
++void crucible_sim_shmem_publish_current_icount(uint64_t current_icount);
++uint64_t crucible_sim_shmem_current_icount(void);
++uint64_t crucible_sim_shmem_max_advance_icount(void);
++bool crucible_sim_shmem_dispatch_registered(void);
++int64_t crucible_sim_shmem_clamp_cpu_budget(uint64_t current_icount,
++                                            int64_t cpu_budget);
++bool crucible_sim_shmem_may_advance_to(uint64_t candidate_icount);
++
++#endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -173,6 +173,22 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,
+ typedef void (*qemu_plugin_vcpu_idle_resume_cb_t)(unsigned int vcpu_index,
+                                                   uint64_t icount,
+                                                   void *userdata);
++/**
++ * typedef qemu_plugin_sim_shmem_publish_icount_cb_t - publish sim icount
++ * @current_icount: the raw bias-excluded icount reached by the sim vCPU loop
++ * @userdata: a pointer supplied when callbacks were registered
++ */
++typedef void (*qemu_plugin_sim_shmem_publish_icount_cb_t)(uint64_t current_icount,
++                                                          void *userdata);
++
++/**
++ * typedef qemu_plugin_sim_shmem_max_advance_icount_cb_t - read sim ceiling
++ * @userdata: a pointer supplied when callbacks were registered
++ *
++ * Returns: the maximum raw icount the sim vCPU loop may advance to.
++ */
++typedef uint64_t (*qemu_plugin_sim_shmem_max_advance_icount_cb_t)(void *userdata);
++
+ /**
+  * typedef qemu_plugin_blk_submit_cb_t - shmem block submit callback
+  * @request_id: driver-assigned request id
+@@ -981,6 +997,24 @@ void qemu_plugin_register_vcpu_idle_resume_cb(qemu_plugin_vcpu_idle_resume_cb_t
+                                               qemu_plugin_vcpu_idle_resume_cb_t resume_cb,
+                                               void *userdata);
+ 
++/**
++ * qemu_plugin_register_sim_shmem_dispatch_cb() - register sim shmem clock hooks
++ * @publish_icount_cb: callback that publishes the current raw icount
++ * @max_advance_icount_cb: callback that returns the scheduler-published ceiling
++ * @userdata: opaque pointer passed to both callbacks
++ *
++ * The callbacks let the Crucible plugin connect QEMU's sim accelerator to the
++ * shared-memory node slot. The plugin owns the ABI acquire/release operations;
++ * QEMU calls the publish hook at deterministic RR-loop boundaries and consults
++ * the ceiling before entering another TCG execution window. With no callbacks
++ * registered, the bridge is inert and allows normal QEMU progress.
++ */
++QEMU_PLUGIN_API
++void qemu_plugin_register_sim_shmem_dispatch_cb(
++    qemu_plugin_sim_shmem_publish_icount_cb_t publish_icount_cb,
++    qemu_plugin_sim_shmem_max_advance_icount_cb_t max_advance_icount_cb,
++    void *userdata);
++
+ /**
+  * qemu_plugin_register_blk_cb() - register shmem block callbacks
+  * @submit_cb: request submit callback, or NULL to disable shmem forwarding

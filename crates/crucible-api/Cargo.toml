@@ -1,0 +1,26 @@
+[package]
+name = "crucible-api"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+axum = { workspace = true }
+bytes = { workspace = true }
+crucible = { path = "../crucible" }
+crucible-protocol = { path = "../crucible-protocol" }
+crucible-qemu = { path = "../crucible-qemu" }
+crucible-session = { path = "../crucible-session" }
+futures-util = { workspace = true }
+reqwest = { workspace = true, features = ["http2"] }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+crucible = { path = "../crucible", features = ["test-double", "test-support"] }
+crucible-qemu = { path = "../crucible-qemu" }
+crucible-session = { path = "../crucible-session", features = ["test-support"] }

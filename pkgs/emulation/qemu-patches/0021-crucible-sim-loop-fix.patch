@@ -1,0 +1,62 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -31,6 +31,7 @@
+ #include "qemu/main-loop.h"
+ #include "qemu/notify.h"
+ #include "qemu/guest-random.h"
++#include "qemu/accel.h"
+ #include "qemu/plugin.h"
+ #include "exec/cpu-common.h"
+ #include "tcg/startup.h"
+@@ -63,6 +64,33 @@ void rr_kick_vcpu_thread(CPUState *unused)
+ static QEMUTimer *rr_kick_vcpu_timer;
+ static CPUState *rr_current_cpu;
+ 
++static bool rr_crucible_sim_mode(void)
++{
++    return strcmp(current_accel_name(), "sim") == 0 &&
++           icount_enabled() == ICOUNT_PRECISE;
++}
++
++static bool rr_crucible_sim_single_vcpu(void)
++{
++    return rr_crucible_sim_mode() && first_cpu && !CPU_NEXT(first_cpu);
++}
++
++static CPUState *rr_crucible_sim_loop_cpu(CPUState *cpu)
++{
++    if (rr_crucible_sim_single_vcpu()) {
++        return first_cpu;
++    }
++    return cpu;
++}
++
++static void rr_crucible_sim_reset_exit_request(CPUState *cpu)
++{
++    if (!cpu) {
++        return;
++    }
++    qatomic_set_mb(&cpu->exit_request, 0);
++}
++
+ static inline int64_t rr_next_kick_time(void)
+ {
+     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
+@@ -252,6 +280,7 @@ static void *rr_cpu_thread_fn(void *arg)
+         if (!cpu) {
+             cpu = first_cpu;
+         }
++        cpu = rr_crucible_sim_loop_cpu(cpu);
+ 
+         while (cpu && cpu_work_list_empty(cpu) && !cpu->exit_request) {
+             /* Store rr_current_cpu before evaluating cpu_can_run().  */
+@@ -299,7 +328,7 @@ static void *rr_cpu_thread_fn(void *arg)
+         qatomic_set(&rr_current_cpu, NULL);
+ 
+         if (cpu && cpu->exit_request) {
+-            qatomic_set_mb(&cpu->exit_request, 0);
++            rr_crucible_sim_reset_exit_request(cpu);
+         }
+ 
+         if (icount_enabled() && all_cpu_threads_idle()) {

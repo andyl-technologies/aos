@@ -1,0 +1,53 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -778,6 +778,16 @@ int qemu_plugin_register_time_advance_cb(qemu_plugin_time_advance_cb_t cb,
+ QEMU_PLUGIN_API
+ int qemu_plugin_advance_time_ns(int64_t time);
+ 
++/**
++ * qemu_plugin_icount_raw() - return raw retired-instruction count
++ *
++ * Returns QEMU's raw icount value without the virtual-clock bias used by
++ * qemu_plugin_update_ns() and the ns conversion path. Crucible uses this as the
++ * fingerprint and divergence-bisection instruction axis.
++ */
++QEMU_PLUGIN_API
++uint64_t qemu_plugin_icount_raw(void);
++
+ /**
+  * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+  * @data: Ethernet frame bytes
+diff --git a/plugins/api-system.c b/plugins/api-system.c
+--- a/plugins/api-system.c
++++ b/plugins/api-system.c
+@@ -19,6 +19,7 @@
+ #include "qemu/timer.h"
+ #include "qemu/plugin-memory.h"
+ #include "qemu/plugin.h"
++#include "system/cpu-timers.h"
+ 
+ /*
+  * In system mode we cannot trace the binary being executed so the
+@@ -224,6 +225,21 @@ int qemu_plugin_advance_time_ns(int64_t new_time)
+     return 0;
+ }
+ 
++uint64_t qemu_plugin_icount_raw(void)
++{
++    int64_t raw_icount;
++
++    if (!icount_enabled()) {
++        return 0;
++    }
++
++    raw_icount = icount_get_raw();
++    if (raw_icount < 0) {
++        return 0;
++    }
++    return (uint64_t)raw_icount;
++}
++
+ 
+ static NetClientState *qemu_plugin_default_nic_queue(void)
+ {

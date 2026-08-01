@@ -1,0 +1,219 @@
+diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+--- a/include/qemu/qemu-plugin.h
++++ b/include/qemu/qemu-plugin.h
+@@ -1425,6 +1425,48 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+                                             struct qemu_plugin_register *handle,
+                                             GByteArray *buf);
+ 
++/**
++ * qemu_plugin_read_vcpu_regs() - read canonical register bytes for a vCPU
++ * @vcpu_index: the vCPU index to inspect
++ * @out_register_bytes: plugin-owned output buffer
++ * @out_register_capacity: size of @out_register_bytes
++ * @out_register_len: output byte count, or required byte count on overflow
++ * @out_retired_instruction_count: output deterministic register-read stamp
++ *
++ * Returns 0 on success and nonzero on failure. The byte stream is a stable
++ * canonicalization of each named architectural register descriptor and value
++ * for @vcpu_index. The read is side-effect-free with respect to guest state.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
++                               uint8_t *out_register_bytes,
++                               size_t out_register_capacity,
++                               size_t *out_register_len,
++                               uint64_t *out_retired_instruction_count);
++
++/**
++ * struct qemu_plugin_rr_cursor - round-robin scheduler cursor snapshot
++ * @current_vcpu: currently executing vCPU index
++ * @cursor_position: retired instructions inside the pinned RR quantum
++ * @rr_switch_quantum: pinned RR switch quantum in node-icount units
++ */
++struct qemu_plugin_rr_cursor {
++    uint64_t current_vcpu;
++    uint64_t cursor_position;
++    uint64_t rr_switch_quantum;
++};
++
++/**
++ * qemu_plugin_rr_cursor() - read the current round-robin cursor
++ * @out: plugin-owned cursor output
++ *
++ * Returns 0 on success and nonzero if no valid vCPU is current, no pinned
++ * rr_switch_quantum is active, or the cursor is not inside that quantum. The
++ * read is side-effect-free with respect to guest state.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out);
++
+ /**
+  * qemu_plugin_crucible_rr_current_vcpu() - return the current RR vCPU index
+  *
+diff --git a/plugins/api.c b/plugins/api.c
+--- a/plugins/api.c
++++ b/plugins/api.c
+@@ -498,6 +498,163 @@ int qemu_plugin_crucible_read_vcpu_register(unsigned int vcpu_index,
+     return gdb_read_register(cpu, buf, GPOINTER_TO_INT(reg) - 1);
+ }
+ 
++static bool qemu_plugin_crucible_write_u64(uint8_t *out,
++                                           size_t capacity,
++                                           size_t *offset,
++                                           uint64_t value)
++{
++    size_t start = *offset;
++
++    *offset += sizeof(value);
++    if (start > capacity || capacity - start < sizeof(value)) {
++        return false;
++    }
++
++    for (size_t i = 0; i < sizeof(value); i++) {
++        out[start + i] = (value >> (i * 8)) & 0xffU;
++    }
++    return true;
++}
++
++static bool qemu_plugin_crucible_write_bytes(uint8_t *out,
++                                             size_t capacity,
++                                             size_t *offset,
++                                             const uint8_t *bytes,
++                                             size_t len)
++{
++    size_t start = *offset;
++
++    *offset += len;
++    if (len == 0) {
++        return true;
++    }
++    if (!bytes || start > capacity || capacity - start < len) {
++        return false;
++    }
++
++    memcpy(out + start, bytes, len);
++    return true;
++}
++
++static bool qemu_plugin_crucible_write_cstr(uint8_t *out,
++                                            size_t capacity,
++                                            size_t *offset,
++                                            const char *text)
++{
++    size_t len = text ? strlen(text) : 0;
++    bool wrote_len;
++    bool wrote_bytes;
++
++    wrote_len = qemu_plugin_crucible_write_u64(out, capacity, offset, len);
++    wrote_bytes = qemu_plugin_crucible_write_bytes(out, capacity, offset,
++                                                   (const uint8_t *)text, len);
++    return wrote_len && wrote_bytes;
++}
++
++int qemu_plugin_read_vcpu_regs(unsigned int vcpu_index,
++                               uint8_t *out_register_bytes,
++                               size_t out_register_capacity,
++                               size_t *out_register_len,
++                               uint64_t *out_retired_instruction_count)
++{
++    CPUState *cpu = qemu_get_cpu(vcpu_index);
++    g_autoptr(GArray) descriptors = NULL;
++    g_autoptr(GByteArray) buffer = NULL;
++    size_t offset = 0;
++    bool ok = true;
++
++    if (!out_register_len || !out_retired_instruction_count ||
++        (!out_register_bytes && out_register_capacity != 0) || !cpu) {
++        return -1;
++    }
++
++    *out_register_len = 0;
++    *out_retired_instruction_count = 0;
++
++    descriptors = qemu_plugin_crucible_get_vcpu_registers(vcpu_index);
++    if (!descriptors || descriptors->len == 0) {
++        return -1;
++    }
++
++    buffer = g_byte_array_new();
++    if (!buffer) {
++        return -1;
++    }
++
++    ok &= qemu_plugin_crucible_write_cstr(out_register_bytes,
++                                          out_register_capacity,
++                                          &offset,
++                                          "aos-qemu-vcpu-regs-v1");
++    ok &= qemu_plugin_crucible_write_u64(out_register_bytes,
++                                         out_register_capacity,
++                                         &offset,
++                                         vcpu_index);
++    ok &= qemu_plugin_crucible_write_u64(out_register_bytes,
++                                         out_register_capacity,
++                                         &offset,
++                                         descriptors->len);
++
++    for (unsigned int i = 0; i < descriptors->len; i++) {
++        const qemu_plugin_reg_descriptor *reg =
++            &g_array_index(descriptors, qemu_plugin_reg_descriptor, i);
++        int size;
++
++        g_byte_array_set_size(buffer, 0);
++        size = qemu_plugin_crucible_read_vcpu_register(vcpu_index,
++                                                       reg->handle,
++                                                       buffer);
++        if (size < 0 || (size_t)size != buffer->len) {
++            return -1;
++        }
++
++        ok &= qemu_plugin_crucible_write_cstr(out_register_bytes,
++                                              out_register_capacity,
++                                              &offset,
++                                              reg->name);
++        ok &= qemu_plugin_crucible_write_cstr(out_register_bytes,
++                                              out_register_capacity,
++                                              &offset,
++                                              reg->feature);
++        ok &= qemu_plugin_crucible_write_u64(out_register_bytes,
++                                             out_register_capacity,
++                                             &offset,
++                                             (uint64_t)size);
++        ok &= qemu_plugin_crucible_write_bytes(out_register_bytes,
++                                               out_register_capacity,
++                                               &offset,
++                                               buffer->data,
++                                               buffer->len);
++    }
++
++    /*
++     * The aggregate sample icount belongs to the caller's trace sample.
++     * qemu_plugin_icount_raw() is not valid in every plugin callback context,
++     * so the canonical register export keeps this ABI field deterministic and
++     * side-effect-free instead of sampling raw icount here.
++     */
++    *out_register_len = offset;
++    return ok ? 0 : -1;
++}
++
++int qemu_plugin_rr_cursor(struct qemu_plugin_rr_cursor *out)
++{
++    uint64_t current_vcpu = qemu_plugin_crucible_rr_current_vcpu();
++    uint64_t cursor_position = qemu_plugin_crucible_rr_cursor_position();
++    uint64_t rr_switch_quantum = qemu_plugin_crucible_rr_switch_quantum();
++    int num_vcpus = qemu_plugin_num_vcpus();
++
++    if (!out || current_vcpu == UINT64_MAX || num_vcpus <= 0 ||
++        current_vcpu >= (uint64_t)num_vcpus || rr_switch_quantum == 0 ||
++        cursor_position >= rr_switch_quantum) {
++        return -1;
++    }
++
++    out->current_vcpu = current_vcpu;
++    out->cursor_position = cursor_position;
++    out->rr_switch_quantum = rr_switch_quantum;
++    return 0;
++}
++
+ uint64_t qemu_plugin_crucible_rr_current_vcpu(void)
+ {
+     if (!current_cpu) {

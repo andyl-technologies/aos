@@ -176,10 +176,10 @@ const NIX_BASE32: &[u8; 32] = b"0123456789abcdfghijklmnpqrsvwxyz";
 /// comparisons) degrade gracefully rather than failing.
 pub fn normalize_sha256_nix32(hash: &str) -> String {
     if let Some(encoded) = hash.strip_prefix("sha256-") {
-        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) {
-            if bytes.len() == 32 {
-                return format!("sha256:{}", encode_nix_base32(&bytes));
-            }
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(encoded)
+            && bytes.len() == 32
+        {
+            return format!("sha256:{}", encode_nix_base32(&bytes));
         }
         return hash.to_string();
     }
@@ -192,12 +192,10 @@ pub fn normalize_sha256_nix32(hash: &str) -> String {
             .as_bytes()
             .iter()
             .all(|byte| byte.is_ascii_hexdigit())
+        && let Ok(bytes) = hex::decode(encoded)
+        && bytes.len() == 32
     {
-        if let Ok(bytes) = hex::decode(encoded) {
-            if bytes.len() == 32 {
-                return format!("sha256:{}", encode_nix_base32(&bytes));
-            }
-        }
+        return format!("sha256:{}", encode_nix_base32(&bytes));
     }
     hash.to_string()
 }

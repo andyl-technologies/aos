@@ -1,0 +1,18 @@
+diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -339,6 +339,14 @@ static void rr_kick_thread(void *opaque)
+ 
+ static void rr_start_kick_timer(void)
+ {
++    if (strcmp(current_accel_name(), "sim") == 0) {
++        /*
++         * Sim mode rotates vCPUs deterministically via rr_switch_quantum;
++         * the stock virtual-time kick timer is redundant and would inject
++         * host-timed nondeterminism into qemu_icount_bias.
++         */
++        return;
++    }
+     if (!rr_kick_vcpu_timer && CPU_NEXT(first_cpu)) {
+         rr_kick_vcpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                            rr_kick_thread, NULL);
