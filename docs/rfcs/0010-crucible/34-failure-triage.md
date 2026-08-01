@@ -540,6 +540,9 @@ form is content-addressable like any artifact. The two renderings mirror the
 CLI's `--format` discipline (23 §4, [CLI-11]): the format changes *how* the report
 is printed, never *which* content it contains.
 
+The supported deterministic `json`, `jsonl`, `table`, and `markdown` renderings
+therefore differ only in encoding and presentation, never in report content.
+
 - **[TRI-13]** Each per-cluster report MUST bundle: the cluster id ([TRI-10]) and
   the full signature (§34.2.1); the member artifact hashes (07 §7) and count; the
   minimal representative by content reference (§34.4); the failing property — for
