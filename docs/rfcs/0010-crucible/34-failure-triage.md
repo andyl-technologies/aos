@@ -946,8 +946,9 @@ recomputable byte-for-byte from what was already stored.
   subcommand (flags --policy/--minimize/--report/--format/--recompute-signatures/
   --compare; pipeline cluster→minimize-representative→emit; exit codes uniform
   with 23), the content-addressed triage result in the DagStore (dedup; --compare
-  content diff), and the offline self-check that recomputed signatures equal
-  discovery-time signatures byte-for-byte. — satisfies [TRI-15], [TRI-16],
+  content diff), and the offline self-check that
+  recomputed signatures equal discovery-time signatures byte-for-byte. — satisfies
+  [TRI-15], [TRI-16],
   [TRI-17], [TRI-18]; spec §34.6, §34.7.
   Completed by `checks.crucible.phase6.triageThinDriver`: the model now exposes
   `FailureFindingsLedger`, `FailureTriageSignatureSelfCheck`,
