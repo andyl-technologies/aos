@@ -440,8 +440,8 @@ the mechanical cases, the gates catch what runs, and this checklist catches the
 
 - **[STD-32]** A reviewer MUST apply the following determinism review checklist to
   any PR touching an engine/scheduler/transport crate, and MUST block the PR on
-  any unchecked item. The checklist is recorded in the PR (a template). *Gate:*
-  enforced by review on top of `gate:harness-lint`. *Spec:* §6.
+  any unchecked item. The completed checklist is recorded in the PR description
+  or review. *Gate:* enforced by review on top of `gate:harness-lint`. *Spec:* §6.
 
 The checklist:
 
