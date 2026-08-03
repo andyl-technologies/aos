@@ -52,6 +52,11 @@ use crate::web::browse::{self, Rendered};
 /// "The `/-/` namespace").
 const BROWSE_MARKER: &str = "-";
 
+/// Canonical Connect namespace for placement collection reads.
+const LIST_PLACEMENTS_PATH: &str = "/aos.hub.v1.TopologyService/ListPlacements";
+/// Canonical Connect namespace for one placement read.
+const GET_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/GetPlacement";
+
 #[cfg(target_arch = "wasm32")]
 use send_wrapper::SendWrapper;
 
@@ -1297,6 +1302,29 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
         "/aos.hub.v1.StorageBindingService/ListBindings",
         list_bindings
     );
+    // TopologyService — typed registry/cache placement inventory.
+    r = r.route(
+        LIST_PLACEMENTS_PATH,
+        post(
+            |State(state): State<SharedState>, headers: HeaderMap, body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(unary(svc, headers, body, |svc, auth, req| async move {
+                    svc.list_placements(auth.as_deref(), req).await
+                }))
+            },
+        ),
+    );
+    r = r.route(
+        GET_PLACEMENT_PATH,
+        post(
+            |State(state): State<SharedState>, headers: HeaderMap, body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(unary(svc, headers, body, |svc, auth, req| async move {
+                    svc.get_placement(auth.as_deref(), req).await
+                }))
+            },
+        ),
+    );
     // PackageService
     r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
     r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);
@@ -1707,6 +1735,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use aos_proto_types as pb;
 
     /// Run [`resolve_prefix_with`] against a fixed set of known slugs.
     async fn resolve(path: &str, slugs: &[&str]) -> Option<(String, String)> {
@@ -1771,5 +1800,36 @@ mod tests {
             Some(("andyl/demo".to_string(), String::new()))
         );
         assert_eq!(split_browse_marker("andyl/demo/packages"), None);
+    }
+
+    #[test]
+    fn topology_paths_use_the_public_hub_namespace() {
+        assert_eq!(
+            LIST_PLACEMENTS_PATH,
+            "/aos.hub.v1.TopologyService/ListPlacements"
+        );
+        assert_eq!(
+            GET_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/GetPlacement"
+        );
+    }
+
+    #[test]
+    fn surface_ref_uses_canonical_camel_case_oneof_json() {
+        let request = pb::ListPlacementsRequest {
+            surface: Some(pb::SurfaceRef {
+                target: Some(pb::surface_ref::Target::RegistrySlug(
+                    "andyl/main".to_string(),
+                )),
+            }),
+            page_size: 25,
+            page_token: "next".to_string(),
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["surface"]["registrySlug"], "andyl/main");
+        assert_eq!(json["pageSize"], 25);
+        assert_eq!(json["pageToken"], "next");
+        assert!(json["surface"].get("target").is_none());
+        assert!(json["surface"].get("registry_slug").is_none());
     }
 }

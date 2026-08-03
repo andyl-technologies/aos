@@ -55,6 +55,14 @@ service StorageBindingService {
   rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
 }
 
+// Read-only topology inventory for registry and binary-cache surfaces.
+// Placement identities are stable names within a typed surface; database ids
+// and backend-specific shard configuration are deliberately not public.
+service TopologyService {
+  rpc ListPlacements(ListPlacementsRequest) returns (ListPlacementsResponse);
+  rpc GetPlacement(GetPlacementRequest) returns (GetPlacementResponse);
+}
+
 // Append-only audit log queries (RFC-0004 "Tenancy and IAM" / "Access
 // matrix"). Reads require audit.read (admin+) on the queried scope.
 service AuditService {
@@ -441,6 +449,49 @@ message ListBindingsRequest {
 
 message ListBindingsResponse {
   repeated Binding bindings = 1;
+}
+
+message SurfaceRef {
+  oneof target {
+    string registry_slug = 1;
+    string cache_slug = 2;
+  }
+}
+
+message Placement {
+  string name = 1;
+  string storage_binding_name = 2;
+  string prefix = 3;
+  string role = 4;
+  string state = 5;
+  string completeness = 6;
+  bool read_enabled = 7;
+  bool write_enabled = 8;
+  int64 read_order = 9;
+  int64 write_order = 10;
+  int64 created_at = 11;
+  int64 updated_at = 12;
+  string resource_version = 13;
+}
+
+message ListPlacementsRequest {
+  SurfaceRef surface = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListPlacementsResponse {
+  repeated Placement placements = 1;
+  string next_page_token = 2;
+}
+
+message GetPlacementRequest {
+  SurfaceRef surface = 1;
+  string name = 2;
+}
+
+message GetPlacementResponse {
+  Placement placement = 1;
 }
 
 // -- Managed registry creation (phase 2c) ----------------------------------

@@ -27,7 +27,14 @@ fn main() {
     config.type_attribute(".", "#[serde(rename_all = \"camelCase\")]");
     // Tolerate absent fields on decode — a Connect-JSON request need not carry
     // every optional field, and responses evolve additively.
-    config.type_attribute(".", "#[serde(default)]");
+    // `default` is a message-container attribute. Applying it to every type
+    // also reaches generated oneof enums, where serde rejects it.
+    config.message_attribute(".", "#[serde(default)]");
+    // Proto oneofs are fields in generated Rust, but canonical proto JSON
+    // exposes the selected alternative directly inside its message. Flatten
+    // `SurfaceRef.target` so the wire shape is
+    // `{ "registrySlug": "acme/main" }`, not a Rust-internal `target` wrapper.
+    config.field_attribute(".aos.hub.v1.SurfaceRef.target", "#[serde(flatten)]");
 
     config
         .compile_protos(&[&proto], &[proto_root])

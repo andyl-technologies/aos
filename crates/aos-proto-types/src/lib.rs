@@ -14,11 +14,12 @@
 //!
 //! # Wire format
 //!
-//! The structs serialize as the Connect-JSON request/response bodies. Field
-//! names follow the generated (snake_case) Rust names; both ends of the wire
-//! are first-party (`aos-remote` ↔ the hub), so this is the agreed shape
-//! rather than canonical proto3-JSON. The `prost` binary codec the derives also
-//! provide is unused on the wire.
+//! The structs serialize as the Connect-JSON request/response bodies using
+//! canonical proto3 JSON field names (`lowerCamelCase`). Oneof fields are
+//! flattened to their named alternatives; for example, a topology surface is
+//! `{ "registrySlug": "acme/cdn" }` rather than a Rust-shaped `target`
+//! wrapper. The `prost` binary codec the derives also provide is unused on the
+//! wire.
 //!
 //! ```text
 //! POST /aos.hub.v1.RegistryService/GetRegistry

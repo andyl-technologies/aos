@@ -12,11 +12,11 @@
 use anyhow::Result;
 
 use aos_core::output::Printer;
-use aos_remote::HubClient;
+use aos_remote::{HubClient, HubSurfaceRef, Placement};
 
 use crate::cli::{
-    HubBindingCmd, HubCacheCmd, HubCmd, HubInstanceCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd,
-    HubWebhookCmd,
+    HubBindingCmd, HubCacheCmd, HubCmd, HubInstanceCmd, HubOrgCmd, HubPlacementCmd, HubProjectCmd,
+    HubRegistryCmd, HubWebhookCmd,
 };
 
 /// Handles `aos hub login`: exchanges a provisioning secret for an access JWT.
@@ -53,6 +53,7 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         } => login(printer, hub, provisioning_token).await,
         HubCmd::Registry { command } => registry(printer, command).await,
         HubCmd::Cache { command } => cache(printer, command).await,
+        HubCmd::Placement { command } => placement(printer, command).await,
         HubCmd::Org { command } => org(printer, command).await,
         HubCmd::Project { command } => project(printer, command).await,
         HubCmd::Binding { command } => binding(printer, command).await,
@@ -69,6 +70,95 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
         HubCmd::Audit { hub, token, scope } => audit(printer, hub, token.as_deref(), scope).await,
         HubCmd::Changesets { hub, token, scope } => {
             changesets(printer, hub, token.as_deref(), scope).await
+        }
+    }
+}
+
+/// Renders one placement as a stable public JSON object.
+fn placement_json(placement: &Placement) -> serde_json::Value {
+    serde_json::json!({
+        "name": placement.name,
+        "storage_binding_name": placement.storage_binding_name,
+        "prefix": placement.prefix,
+        "role": placement.role,
+        "state": placement.state,
+        "completeness": placement.completeness,
+        "read_enabled": placement.read_enabled,
+        "write_enabled": placement.write_enabled,
+        "read_order": placement.read_order,
+        "write_order": placement.write_order,
+        "created_at": placement.created_at,
+        "updated_at": placement.updated_at,
+        "resource_version": placement.resource_version,
+    })
+}
+
+/// Handles `aos hub placement …` read operations.
+async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
+    match command {
+        HubPlacementCmd::List {
+            hub,
+            token,
+            surface,
+        } => {
+            let surface: HubSurfaceRef = surface.parse()?;
+            let client = hub_client(hub, token.as_deref())?;
+            let placements = client.list_placements(&surface).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "surface": surface.to_string(),
+                "placements": placements.iter().map(placement_json).collect::<Vec<_>>(),
+            })) {
+                return Ok(());
+            }
+            if placements.is_empty() {
+                printer.info(&format!("no placements on {surface}"));
+                return Ok(());
+            }
+            printer.header(&format!("{} placement(s) on {surface}", placements.len()));
+            for placement in &placements {
+                printer.plain(&format!(
+                    "  {}  [{} / {} / {}]  {}:{}  read-order={} write-order={}",
+                    placement.name,
+                    placement.role,
+                    placement.state,
+                    placement.completeness,
+                    placement.storage_binding_name,
+                    placement.prefix,
+                    placement.read_order,
+                    placement.write_order,
+                ));
+            }
+            Ok(())
+        }
+        HubPlacementCmd::Show {
+            hub,
+            token,
+            surface,
+            name,
+        } => {
+            let surface: HubSurfaceRef = surface.parse()?;
+            let client = hub_client(hub, token.as_deref())?;
+            let placement = client.get_placement(&surface, name).await?;
+            if printer.json_if_active(&serde_json::json!({
+                "surface": surface.to_string(),
+                "placement": placement_json(&placement),
+            })) {
+                return Ok(());
+            }
+            printer.header(&format!("{} on {surface}", placement.name));
+            printer.kv("storage binding", &placement.storage_binding_name);
+            printer.kv("prefix", &placement.prefix);
+            printer.kv("role", &placement.role);
+            printer.kv("state", &placement.state);
+            printer.kv("completeness", &placement.completeness);
+            printer.kv("read enabled", &placement.read_enabled.to_string());
+            printer.kv("write enabled", &placement.write_enabled.to_string());
+            printer.kv("read order", &placement.read_order.to_string());
+            printer.kv("write order", &placement.write_order.to_string());
+            printer.kv("created at", &placement.created_at.to_string());
+            printer.kv("updated at", &placement.updated_at.to_string());
+            printer.kv("resource version", &placement.resource_version);
+            Ok(())
         }
     }
 }

@@ -28,8 +28,11 @@
 //! authenticated calls.
 
 use anyhow::{Context, Result};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::collections::HashSet;
+use std::fmt;
+use std::str::FromStr;
 
 use aos_proto_types::{
     AuditEntry, Binding, ChangeCacheStorageRequest, ChangeCacheStorageResponse,
@@ -38,21 +41,24 @@ use aos_proto_types::{
     CreateProjectRequest, CreateProjectResponse, CreateRegistryRequest, CreateRegistryResponse,
     CreateWebhookRequest, CreateWebhookResponse, DeleteWebhookRequest, GetChannelRequest,
     GetChannelResponse, GetInstanceSettingsRequest, GetInstanceSettingsResponse, GetPackageRequest,
-    GetPackageResponse, GetRegistryRequest, GetRegistryResponse, GitCommit, GitDiffRequest,
-    GitDiffResponse, GitLogRequest, GitLogResponse, InstanceSettings, LinkCacheRequest,
-    LinkCacheResponse, ListAuditRequest, ListAuditResponse, ListBindingsRequest,
-    ListBindingsResponse, ListChangeRequestsRequest, ListChangeRequestsResponse,
-    ListChangesetsRequest, ListChangesetsResponse, ListChannelsRequest, ListChannelsResponse,
-    ListOrgsRequest, ListOrgsResponse, ListPackagesRequest, ListPackagesResponse,
-    ListProjectsRequest, ListProjectsResponse, ListRegistriesRequest, ListRegistriesResponse,
-    ListReleasesRequest, ListReleasesResponse, ListWebhooksRequest, ListWebhooksResponse,
-    MintUploadCredentialsRequest, MintUploadCredentialsResponse, Org, Package, PackageSummary,
-    Project, Registry, Release, RevertChangesetRequest, RevertChangesetResponse,
-    UnlinkCacheRequest, UnlinkCacheResponse, UpdateInstanceSettingsRequest,
-    UpdateInstanceSettingsResponse, Webhook,
+    GetPackageResponse, GetPlacementRequest, GetPlacementResponse, GetRegistryRequest,
+    GetRegistryResponse, GitCommit, GitDiffRequest, GitDiffResponse, GitLogRequest, GitLogResponse,
+    InstanceSettings, LinkCacheRequest, LinkCacheResponse, ListAuditRequest, ListAuditResponse,
+    ListBindingsRequest, ListBindingsResponse, ListChangeRequestsRequest,
+    ListChangeRequestsResponse, ListChangesetsRequest, ListChangesetsResponse, ListChannelsRequest,
+    ListChannelsResponse, ListOrgsRequest, ListOrgsResponse, ListPackagesRequest,
+    ListPackagesResponse, ListPlacementsRequest, ListPlacementsResponse, ListProjectsRequest,
+    ListProjectsResponse, ListRegistriesRequest, ListRegistriesResponse, ListReleasesRequest,
+    ListReleasesResponse, ListWebhooksRequest, ListWebhooksResponse, MintUploadCredentialsRequest,
+    MintUploadCredentialsResponse, Org, Package, PackageSummary, Placement, Project, Registry,
+    Release, RevertChangesetRequest, RevertChangesetResponse, SurfaceRef, UnlinkCacheRequest,
+    UnlinkCacheResponse, UpdateInstanceSettingsRequest, UpdateInstanceSettingsResponse, Webhook,
 };
 
 use crate::client::validate_base_url;
+
+/// Defensive bound for automatically traversing an untrusted Hub's pages.
+const MAX_PLACEMENT_PAGES: usize = 10_000;
 
 /// The endpoint, region, access mode, and credentials for an `s3`/`r2` storage
 /// binding, passed to [`HubClient::create_binding`].
@@ -106,6 +112,85 @@ pub struct UploadCredentials {
     pub upload_url: String,
     /// Unix seconds at which the credential expires.
     pub expires_at: i64,
+}
+
+/// A typed registry or binary-cache surface accepted by Hub topology APIs.
+///
+/// The command-line spelling is `registry:<slug>` or `cache:<slug>`. Keeping
+/// the kind explicit prevents a same-looking slug from being resolved against
+/// the wrong resource namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HubSurfaceRef {
+    /// A registry addressed by its canonical slug.
+    Registry(String),
+    /// A managed binary cache addressed by its slug.
+    Cache(String),
+}
+
+impl HubSurfaceRef {
+    /// Converts the ergonomic reference into the public protobuf oneof.
+    fn to_message(&self) -> SurfaceRef {
+        let target = match self {
+            Self::Registry(slug) => {
+                aos_proto_types::surface_ref::Target::RegistrySlug(slug.clone())
+            }
+            Self::Cache(slug) => aos_proto_types::surface_ref::Target::CacheSlug(slug.clone()),
+        };
+        SurfaceRef {
+            target: Some(target),
+        }
+    }
+}
+
+impl fmt::Display for HubSurfaceRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Registry(slug) => write!(formatter, "registry:{slug}"),
+            Self::Cache(slug) => write!(formatter, "cache:{slug}"),
+        }
+    }
+}
+
+impl FromStr for HubSurfaceRef {
+    type Err = anyhow::Error;
+
+    /// Parses `registry:<slug>` or `cache:<slug>` into a typed surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown kind or an empty slug.
+    fn from_str(value: &str) -> Result<Self> {
+        let (kind, slug) = value.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!("invalid surface '{value}': expected registry:<slug> or cache:<slug>")
+        })?;
+        if slug.is_empty() {
+            anyhow::bail!("invalid surface '{value}': slug must not be empty");
+        }
+        match kind {
+            "registry" => Ok(Self::Registry(slug.to_string())),
+            "cache" => Ok(Self::Cache(slug.to_string())),
+            _ => {
+                anyhow::bail!("invalid surface '{value}': expected registry:<slug> or cache:<slug>")
+            }
+        }
+    }
+}
+
+/// Accepts an unseen continuation token or reports that pagination is done.
+fn accept_next_page_token(
+    seen_tokens: &mut HashSet<String>,
+    next_page_token: String,
+    surface: &HubSurfaceRef,
+) -> Result<Option<String>> {
+    if next_page_token.is_empty() {
+        return Ok(None);
+    }
+    if !seen_tokens.insert(next_page_token.clone()) {
+        anyhow::bail!(
+            "listing placements for '{surface}': the hub returned a repeated placement page token"
+        );
+    }
+    Ok(Some(next_page_token))
 }
 
 impl HubClient {
@@ -225,6 +310,66 @@ impl HubClient {
             .await
             .context("listing registries")?;
         Ok(resp.registries)
+    }
+
+    /// Lists the physical placements of one registry or binary-cache surface.
+    ///
+    /// Calls `aos.hub.v1.TopologyService/ListPlacements`. Public surfaces may
+    /// be read anonymously; private surfaces require an appropriately scoped
+    /// bearer token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable, an RPC fails, the hub
+    /// repeats a continuation token, or traversal exceeds the defensive page
+    /// limit.
+    pub async fn list_placements(&self, surface: &HubSurfaceRef) -> Result<Vec<Placement>> {
+        let mut placements = Vec::new();
+        let mut page_token = String::new();
+        let mut seen_tokens = HashSet::new();
+        for _ in 0..MAX_PLACEMENT_PAGES {
+            let resp: ListPlacementsResponse = self
+                .call(
+                    "aos.hub.v1.TopologyService/ListPlacements",
+                    &ListPlacementsRequest {
+                        surface: Some(surface.to_message()),
+                        page_size: 100,
+                        page_token,
+                    },
+                )
+                .await
+                .with_context(|| format!("listing placements for '{surface}'"))?;
+            placements.extend(resp.placements);
+            let Some(next_page_token) =
+                accept_next_page_token(&mut seen_tokens, resp.next_page_token, surface)?
+            else {
+                return Ok(placements);
+            };
+            page_token = next_page_token;
+        }
+        anyhow::bail!("listing placements for '{surface}' exceeded {MAX_PLACEMENT_PAGES} pages")
+    }
+
+    /// Fetches one placement by its stable surface-local name.
+    ///
+    /// Calls `aos.hub.v1.TopologyService/GetPlacement`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn get_placement(&self, surface: &HubSurfaceRef, name: &str) -> Result<Placement> {
+        let resp: GetPlacementResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/GetPlacement",
+                &GetPlacementRequest {
+                    surface: Some(surface.to_message()),
+                    name: name.to_string(),
+                },
+            )
+            .await
+            .with_context(|| format!("fetching placement '{name}' from '{surface}'"))?;
+        resp.placement
+            .context("the hub returned GetPlacement without a placement")
     }
 
     /// Fetches one registry by slug, or `None` when it does not exist or is not
@@ -1013,5 +1158,76 @@ fn ensure_trailing_slash(s: &str) -> String {
         s.to_string()
     } else {
         format!("{s}/")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{accept_next_page_token, HubSurfaceRef};
+    use aos_proto_types::surface_ref::Target;
+    use std::collections::HashSet;
+    use std::str::FromStr as _;
+
+    #[test]
+    fn surface_ref_parser_preserves_kind_and_nested_slug() {
+        assert_eq!(
+            HubSurfaceRef::from_str("registry:andyl/infra/main").unwrap(),
+            HubSurfaceRef::Registry("andyl/infra/main".to_string())
+        );
+        assert_eq!(
+            HubSurfaceRef::from_str("cache:release-cache").unwrap(),
+            HubSurfaceRef::Cache("release-cache".to_string())
+        );
+    }
+
+    #[test]
+    fn surface_ref_parser_rejects_ambiguous_or_empty_values() {
+        for value in ["andyl/main", "registry:", "cache:", "bucket:main"] {
+            assert!(HubSurfaceRef::from_str(value).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn surface_refs_round_trip_as_canonical_oneofs() {
+        for (surface, key, slug) in [
+            (
+                HubSurfaceRef::Registry("andyl/main".to_string()),
+                "registrySlug",
+                "andyl/main",
+            ),
+            (
+                HubSurfaceRef::Cache("release-cache".to_string()),
+                "cacheSlug",
+                "release-cache",
+            ),
+        ] {
+            let json = serde_json::to_value(surface.to_message()).unwrap();
+            assert_eq!(json[key], slug);
+            assert!(json.get("target").is_none());
+            let decoded: aos_proto_types::SurfaceRef = serde_json::from_value(json).unwrap();
+            let expected = match surface {
+                HubSurfaceRef::Registry(slug) => Target::RegistrySlug(slug),
+                HubSurfaceRef::Cache(slug) => Target::CacheSlug(slug),
+            };
+            assert_eq!(decoded.target, Some(expected));
+        }
+    }
+
+    #[test]
+    fn placement_pagination_stops_and_reports_surface_on_token_cycles() {
+        let mut seen = HashSet::new();
+        let surface = HubSurfaceRef::Cache("release-cache".to_string());
+        assert_eq!(
+            accept_next_page_token(&mut seen, "page-2".to_string(), &surface).unwrap(),
+            Some("page-2".to_string())
+        );
+        let error = accept_next_page_token(&mut seen, "page-2".to_string(), &surface)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("listing placements for 'cache:release-cache'"));
+        assert_eq!(
+            accept_next_page_token(&mut seen, String::new(), &surface).unwrap(),
+            None
+        );
     }
 }
