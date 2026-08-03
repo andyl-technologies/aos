@@ -6,13 +6,17 @@
 //! hub access JWT via the REST `POST /oauth2/token` endpoint
 //! ([`aos_remote::exchange_token`]); read operations run anonymously by default
 //! and accept an optional `--token` (that JWT) for authenticated reads. The
-//! tenancy writes (`org`/`project`/`binding create`) take that JWT too; further
-//! write subcommands follow in later RFC-0004 Phase 5 increments.
+//! tenancy writes (`org`/`project`/`binding create`) take that JWT too.
+//! Placement writes additionally require storage/topology authority and use
+//! optimistic concurrency; destructive operations are plan-only by default.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use aos_core::output::Printer;
-use aos_remote::{HubClient, HubSurfaceRef, Placement};
+use aos_remote::{
+    CreatePlacementInput, HubClient, HubSurfaceRef, Placement, PlacementMutationPlan,
+    UpdatePlacementInput,
+};
 
 use crate::cli::{
     HubBindingCmd, HubCacheCmd, HubCmd, HubInstanceCmd, HubOrgCmd, HubPlacementCmd, HubProjectCmd,
@@ -93,7 +97,45 @@ fn placement_json(placement: &Placement) -> serde_json::Value {
     })
 }
 
-/// Handles `aos hub placement …` read operations.
+/// Renders a destructive placement plan as stable CLI JSON.
+fn placement_plan_json(plan: &PlacementMutationPlan) -> serde_json::Value {
+    serde_json::json!({
+        "operation": plan.operation,
+        "placement_name": plan.placement_name,
+        "current_resource_version": plan.current_resource_version,
+        "effects": plan.effects,
+    })
+}
+
+/// Prints the public fields returned after a placement create or update.
+fn print_placement_result(printer: &Printer, surface: &HubSurfaceRef, placement: &Placement) {
+    printer.header(&format!("{} on {surface}", placement.name));
+    printer.kv("storage binding", &placement.storage_binding_name);
+    printer.kv("prefix", &placement.prefix);
+    printer.kv("role", &placement.role);
+    printer.kv("state", &placement.state);
+    printer.kv("completeness", &placement.completeness);
+    printer.kv("read enabled", &placement.read_enabled.to_string());
+    printer.kv("write enabled", &placement.write_enabled.to_string());
+    printer.kv("read order", &placement.read_order.to_string());
+    printer.kv("write order", &placement.write_order.to_string());
+    printer.kv("resource version", &placement.resource_version);
+}
+
+/// Prints a plan's effects and whether the server applied them.
+fn print_placement_plan(printer: &Printer, plan: &PlacementMutationPlan, applied: bool) {
+    printer.header(&format!(
+        "{} plan for {}",
+        plan.operation, plan.placement_name
+    ));
+    printer.kv("resource version", &plan.current_resource_version);
+    for effect in &plan.effects {
+        printer.plain(&format!("  - {effect}"));
+    }
+    printer.kv("applied", &applied.to_string());
+}
+
+/// Handles `aos hub placement …` inventory and lifecycle operations.
 async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
     match command {
         HubPlacementCmd::List {
@@ -158,6 +200,139 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
             printer.kv("created at", &placement.created_at.to_string());
             printer.kv("updated at", &placement.updated_at.to_string());
             printer.kv("resource version", &placement.resource_version);
+            Ok(())
+        }
+        HubPlacementCmd::Create {
+            hub,
+            token,
+            surface,
+            name,
+            storage_binding,
+            prefix,
+            role,
+            read_enabled,
+            write_enabled,
+            read_order,
+            write_order,
+        } => {
+            let surface: HubSurfaceRef = surface.parse()?;
+            let client = hub_client(hub, token.as_deref())?;
+            let placement = client
+                .create_placement(
+                    &surface,
+                    &CreatePlacementInput {
+                        name: name.clone(),
+                        storage_binding_name: storage_binding.clone(),
+                        prefix: prefix.clone(),
+                        role: role.clone(),
+                        read_enabled: *read_enabled,
+                        write_enabled: *write_enabled,
+                        read_order: *read_order,
+                        write_order: *write_order,
+                    },
+                )
+                .await?;
+            if printer.json_if_active(&serde_json::json!({
+                "surface": surface.to_string(),
+                "placement": placement_json(&placement),
+            })) {
+                return Ok(());
+            }
+            print_placement_result(printer, &surface, &placement);
+            Ok(())
+        }
+        HubPlacementCmd::Update {
+            hub,
+            token,
+            surface,
+            name,
+            expected_resource_version,
+            read_enabled,
+            write_enabled,
+            read_order,
+            write_order,
+        } => {
+            let surface: HubSurfaceRef = surface.parse()?;
+            let client = hub_client(hub, token.as_deref())?;
+            let placement = client
+                .update_placement(
+                    &surface,
+                    name,
+                    &UpdatePlacementInput {
+                        expected_resource_version: expected_resource_version.clone(),
+                        read_enabled: *read_enabled,
+                        write_enabled: *write_enabled,
+                        read_order: *read_order,
+                        write_order: *write_order,
+                    },
+                )
+                .await?;
+            if printer.json_if_active(&serde_json::json!({
+                "surface": surface.to_string(),
+                "placement": placement_json(&placement),
+            })) {
+                return Ok(());
+            }
+            print_placement_result(printer, &surface, &placement);
+            Ok(())
+        }
+        HubPlacementCmd::Drain {
+            hub,
+            token,
+            surface,
+            name,
+            expected_resource_version,
+            apply,
+        } => {
+            let surface: HubSurfaceRef = surface.parse()?;
+            let client = hub_client(hub, token.as_deref())?;
+            let response = client
+                .drain_placement(&surface, name, expected_resource_version, *apply)
+                .await?;
+            let plan = response
+                .plan
+                .context("the hub returned DrainPlacement without a plan")?;
+            let placement = response
+                .placement
+                .context("the hub returned DrainPlacement without a placement")?;
+            if printer.json_if_active(&serde_json::json!({
+                "surface": surface.to_string(),
+                "applied": response.applied,
+                "plan": placement_plan_json(&plan),
+                "placement": placement_json(&placement),
+            })) {
+                return Ok(());
+            }
+            print_placement_plan(printer, &plan, response.applied);
+            if response.applied {
+                print_placement_result(printer, &surface, &placement);
+            }
+            Ok(())
+        }
+        HubPlacementCmd::Delete {
+            hub,
+            token,
+            surface,
+            name,
+            expected_resource_version,
+            apply,
+        } => {
+            let surface: HubSurfaceRef = surface.parse()?;
+            let client = hub_client(hub, token.as_deref())?;
+            let response = client
+                .delete_placement(&surface, name, expected_resource_version, *apply)
+                .await?;
+            let plan = response
+                .plan
+                .context("the hub returned DeletePlacement without a plan")?;
+            if printer.json_if_active(&serde_json::json!({
+                "surface": surface.to_string(),
+                "applied": response.applied,
+                "plan": placement_plan_json(&plan),
+            })) {
+                return Ok(());
+            }
+            print_placement_plan(printer, &plan, response.applied);
             Ok(())
         }
     }

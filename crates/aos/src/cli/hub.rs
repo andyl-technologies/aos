@@ -6,8 +6,8 @@
 //! reads (registries, releases, packages, channels) run anonymously; tenancy and
 //! audit reads (`org`/`project`/`binding list`, audit, change-sets) take a
 //! `--token` hub access JWT, as do the tenancy writes (`org`/`project`/`binding
-//! create`). Further write operations are layered on in later RFC-0004 Phase 5
-//! increments.
+//! create`). Placement create/update/drain/delete operations use the same API,
+//! with typed surface references and optimistic concurrency.
 //!
 //! Doc comments here are clap `--help` text; the implementation lives in
 //! `commands::hub`, which drives `aos_remote::HubClient`.
@@ -35,7 +35,7 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubCacheCmd,
     },
-    /// Inspect registry and binary-cache placements
+    /// Inspect and manage registry and binary-cache placements
     Placement {
         #[command(subcommand)]
         command: HubPlacementCmd,
@@ -387,6 +387,106 @@ pub enum HubPlacementCmd {
         /// Stable placement name within the surface
         name: String,
     },
+    /// Create a provisioning/unknown placement (needs storage.manage)
+    Create {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT with topology/storage authority
+        #[arg(long)]
+        token: Option<String>,
+        /// Typed surface: registry:<slug> or cache:<slug>
+        surface: String,
+        /// Stable placement name within the surface
+        name: String,
+        /// Stable storage-binding name
+        #[arg(long)]
+        storage_binding: String,
+        /// Binding-relative object prefix
+        #[arg(long)]
+        prefix: String,
+        /// Placement role: primary, replica, or archive
+        #[arg(long, value_parser = ["primary", "replica", "archive"])]
+        role: String,
+        /// Explicitly enable or disable read selection
+        #[arg(long, action = clap::ArgAction::Set, required = true)]
+        read_enabled: bool,
+        /// Explicitly enable or disable write selection
+        #[arg(long, action = clap::ArgAction::Set, required = true)]
+        write_enabled: bool,
+        /// Read-selection priority (lower is preferred)
+        #[arg(long)]
+        read_order: i64,
+        /// Write-selection priority (lower is preferred)
+        #[arg(long)]
+        write_order: i64,
+    },
+    /// Replace desired selection fields under an optimistic-concurrency check
+    Update {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT with topology/storage authority
+        #[arg(long)]
+        token: Option<String>,
+        /// Typed surface: registry:<slug> or cache:<slug>
+        surface: String,
+        /// Stable placement name within the surface
+        name: String,
+        /// Opaque resource version returned by list or show
+        #[arg(long)]
+        expected_resource_version: String,
+        /// Desired read selection; use placement drain to disable an active read
+        #[arg(long, action = clap::ArgAction::Set, required = true)]
+        read_enabled: bool,
+        /// Current write selection; authority changes require future promotion
+        #[arg(long, action = clap::ArgAction::Set, required = true)]
+        write_enabled: bool,
+        /// Read-selection priority (lower is preferred)
+        #[arg(long)]
+        read_order: i64,
+        /// Write-selection priority (lower is preferred)
+        #[arg(long)]
+        write_order: i64,
+    },
+    /// Plan a safe drain; pass --apply to perform it
+    Drain {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT with topology/storage authority
+        #[arg(long)]
+        token: Option<String>,
+        /// Typed surface: registry:<slug> or cache:<slug>
+        surface: String,
+        /// Stable placement name within the surface
+        name: String,
+        /// Opaque resource version returned by list or show
+        #[arg(long)]
+        expected_resource_version: String,
+        /// Revalidate and apply the displayed drain plan
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Plan metadata deletion; pass --apply to perform it
+    Delete {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT with topology/storage authority
+        #[arg(long)]
+        token: Option<String>,
+        /// Typed surface: registry:<slug> or cache:<slug>
+        surface: String,
+        /// Stable placement name within the surface
+        name: String,
+        /// Opaque resource version returned by list or show
+        #[arg(long)]
+        expected_resource_version: String,
+        /// Revalidate and apply the displayed deletion plan
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -618,6 +718,82 @@ mod tests {
                 assert_eq!(surface, "cache:nix");
                 assert_eq!(name, "primary");
             }
+            _ => panic!("unexpected command shape"),
+        }
+    }
+
+    #[test]
+    fn placement_create_requires_explicit_selection_booleans() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "hub",
+            "placement",
+            "create",
+            "--hub",
+            "https://aos.example",
+            "registry:andyl/main",
+            "replica-west",
+            "--storage-binding",
+            "west",
+            "--prefix",
+            "registries/main",
+            "--role",
+            "replica",
+            "--read-enabled",
+            "true",
+            "--write-enabled",
+            "false",
+            "--read-order",
+            "20",
+            "--write-order",
+            "20",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Hub {
+                command:
+                    HubCmd::Placement {
+                        command:
+                            HubPlacementCmd::Create {
+                                surface,
+                                name,
+                                read_enabled,
+                                write_enabled,
+                                ..
+                            },
+                    },
+            } => {
+                assert_eq!(surface, "registry:andyl/main");
+                assert_eq!(name, "replica-west");
+                assert!(read_enabled);
+                assert!(!write_enabled);
+            }
+            _ => panic!("unexpected command shape"),
+        }
+    }
+
+    #[test]
+    fn placement_delete_is_plan_only_without_apply() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "hub",
+            "placement",
+            "delete",
+            "--hub",
+            "https://aos.example",
+            "cache:nix",
+            "cold",
+            "--expected-resource-version",
+            "7",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Hub {
+                command:
+                    HubCmd::Placement {
+                        command: HubPlacementCmd::Delete { apply, .. },
+                    },
+            } => assert!(!apply),
             _ => panic!("unexpected command shape"),
         }
     }

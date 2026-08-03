@@ -2054,6 +2054,212 @@ impl RpcService {
         }
     }
 
+    /// Resolves a typed surface and requires topology write authority.
+    ///
+    /// The IAM model does not yet have a dedicated `topology.manage` verb.
+    /// Placement changes therefore temporarily use the stronger
+    /// [`Permission::StorageManage`] capability on the owning organization;
+    /// org-less resources require root [`Permission::IamAdmin`]. This mapping
+    /// is intentionally centralized so a future dedicated verb is one change.
+    async fn writable_topology_surface(
+        &self,
+        auth: Option<&str>,
+        surface: Option<pb::SurfaceRef>,
+    ) -> Result<(crate::db::SurfaceTarget, Option<i64>), RpcError> {
+        let claims = self.require_claims(auth)?;
+        let (target, org_id) = match surface.and_then(|surface| surface.target) {
+            Some(pb::surface_ref::Target::RegistrySlug(slug)) if !slug.is_empty() => {
+                let registry = self.registry_or_not_found(&slug).await?;
+                (
+                    crate::db::SurfaceTarget::Registry(registry.id),
+                    registry.org_id,
+                )
+            }
+            Some(pb::surface_ref::Target::CacheSlug(slug)) if !slug.is_empty() => {
+                let cache = self.cache_or_not_found(&slug).await?;
+                if cache.deleted_at.is_some() {
+                    return Err(RpcError::not_found("cache"));
+                }
+                (
+                    crate::db::SurfaceTarget::BinaryCache(cache.id),
+                    cache.org_id,
+                )
+            }
+            Some(_) => return Err(RpcError::invalid("surface slug must not be empty")),
+            None => {
+                return Err(RpcError::invalid(
+                    "surface must select exactly one registrySlug or cacheSlug",
+                ))
+            }
+        };
+        match org_id {
+            Some(id) => {
+                if !self
+                    .db
+                    .org_is_active(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                {
+                    return Err(RpcError::not_found("surface"));
+                }
+                let org = self
+                    .db
+                    .org_by_id(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("org"))?;
+                self.require_permission(
+                    &claims,
+                    Permission::StorageManage,
+                    &Scope::parse(&org.slug),
+                )
+                .await?;
+            }
+            None => {
+                self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+                    .await?;
+            }
+        }
+        Ok((target, org_id))
+    }
+
+    /// Resolves a storage binding by its stable name in a surface's scope.
+    async fn topology_binding_id(&self, org_id: Option<i64>, name: &str) -> Result<i64, RpcError> {
+        if name.is_empty() {
+            return Err(RpcError::invalid("storageBindingName is required"));
+        }
+        let binding = match org_id {
+            Some(id) => self
+                .db
+                .storage_binding_by_name(id, name)
+                .await
+                .map_err(RpcError::internal)?,
+            None => None,
+        };
+        if let Some(binding) = binding {
+            return Ok(binding.id);
+        }
+        self.db
+            .instance_default_binding()
+            .await
+            .map_err(RpcError::internal)?
+            .filter(|binding| binding.name == name)
+            .map(|binding| binding.id)
+            .ok_or_else(|| RpcError::not_found("storage binding"))
+    }
+
+    /// Finds one placement by its stable name within an already-resolved surface.
+    async fn topology_placement(
+        &self,
+        surface: crate::db::SurfaceTarget,
+        name: &str,
+    ) -> Result<crate::db::SurfacePlacementRecord, RpcError> {
+        if name.is_empty() {
+            return Err(RpcError::invalid("placement name must not be empty"));
+        }
+        self.db
+            .list_surface_placements(surface)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .find(|placement| placement.name == name)
+            .ok_or_else(|| RpcError::not_found("placement"))
+    }
+
+    /// Parses and verifies an opaque placement resource version.
+    fn expected_placement_version(
+        expected: &str,
+        placement: &crate::db::SurfacePlacementRecord,
+    ) -> Result<i64, RpcError> {
+        let version = expected.parse::<i64>().map_err(|_| {
+            RpcError::invalid("expectedResourceVersion must be a positive opaque version")
+        })?;
+        if version <= 0 {
+            return Err(RpcError::invalid(
+                "expectedResourceVersion must be a positive opaque version",
+            ));
+        }
+        if version != placement.resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "placement resource version is stale".to_string(),
+            ));
+        }
+        Ok(version)
+    }
+
+    /// Requires an explicitly present proto3 optional placement field.
+    fn required_placement_field<T>(value: Option<T>, name: &str) -> Result<T, RpcError> {
+        value.ok_or_else(|| RpcError::invalid(format!("{name} must be specified")))
+    }
+
+    /// Maps typed placement-create failures without parsing SQL-driver text.
+    fn placement_create_error(error: anyhow::Error) -> RpcError {
+        let Some(failure) = crate::db::surface_placement_create_failure(&error) else {
+            return RpcError::internal(error);
+        };
+        match failure.kind() {
+            crate::db::SurfacePlacementCreateFailureKind::InvalidArgument => {
+                RpcError::invalid(failure.public_message())
+            }
+            crate::db::SurfacePlacementCreateFailureKind::AlreadyExists => {
+                RpcError::AlreadyExists(failure.public_message().to_string())
+            }
+            crate::db::SurfacePlacementCreateFailureKind::Conflict => {
+                RpcError::FailedPrecondition(failure.public_message().to_string())
+            }
+        }
+    }
+
+    /// Returns a stable route-pin precondition without backend constraint text.
+    fn placement_route_pin_error(
+        blockers: crate::db::SurfacePlacementBlockers,
+    ) -> Option<RpcError> {
+        if blockers.direct_route {
+            Some(RpcError::FailedPrecondition(
+                "placement is pinned by a direct delivery route".to_string(),
+            ))
+        } else if blockers.routed_policy {
+            Some(RpcError::FailedPrecondition(
+                "placement is pinned by a delivery-route placement policy".to_string(),
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Returns the first stable metadata-deletion precondition.
+    fn placement_delete_blocker_error(
+        blockers: crate::db::SurfacePlacementBlockers,
+    ) -> Option<RpcError> {
+        if blockers.direct_route {
+            Some(RpcError::FailedPrecondition(
+                "placement is referenced by a direct delivery route".to_string(),
+            ))
+        } else if blockers.policy_member {
+            Some(RpcError::FailedPrecondition(
+                "placement is referenced by a placement policy".to_string(),
+            ))
+        } else if blockers.object_presence {
+            Some(RpcError::FailedPrecondition(
+                "placement has object-presence inventory".to_string(),
+            ))
+        } else if blockers.publication {
+            Some(RpcError::FailedPrecondition(
+                "placement has registry-publication state".to_string(),
+            ))
+        } else if blockers.deletion_job {
+            Some(RpcError::FailedPrecondition(
+                "placement has object-deletion jobs".to_string(),
+            ))
+        } else if blockers.topology_operation {
+            Some(RpcError::FailedPrecondition(
+                "placement has topology operations".to_string(),
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Builds the public placement message without exposing database identity
     /// or backend-specific shard configuration.
     async fn placement_message(
@@ -2150,6 +2356,365 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("placement"))?;
         Ok(pb::GetPlacementResponse {
             placement: Some(self.placement_message(placement).await?),
+        })
+    }
+
+    /// `TopologyService.CreatePlacement` — creates one physical placement.
+    ///
+    /// Until IAM gains a dedicated topology verb, this requires the stronger
+    /// [`Permission::StorageManage`] permission on the owning organization (or
+    /// root [`Permission::IamAdmin`] for an org-less surface). Shards are not
+    /// accepted until their partition rule has a typed public representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
+    /// an unknown surface or binding, [`RpcError::InvalidArgument`] for invalid
+    /// placement fields, [`RpcError::AlreadyExists`] for a name collision,
+    /// [`RpcError::FailedPrecondition`] for a physical-location or primary
+    /// conflict, and [`RpcError::Internal`] for an unclassified database error.
+    pub async fn create_placement(
+        &self,
+        auth: Option<&str>,
+        req: pb::CreatePlacementRequest,
+    ) -> Result<pb::CreatePlacementResponse, RpcError> {
+        let (surface, org_id) = self.writable_topology_surface(auth, req.surface).await?;
+        if req.name.is_empty() {
+            return Err(RpcError::invalid("placement name must not be empty"));
+        }
+        if req.role == "shard" {
+            return Err(RpcError::invalid(
+                "shard placements require a future typed partition-rule API",
+            ));
+        }
+        let read_enabled = Self::required_placement_field(req.read_enabled, "readEnabled")?;
+        let write_enabled = Self::required_placement_field(req.write_enabled, "writeEnabled")?;
+        let read_order = Self::required_placement_field(req.read_order, "readOrder")?;
+        let write_order = Self::required_placement_field(req.write_order, "writeOrder")?;
+        let binding_id = self
+            .topology_binding_id(org_id, &req.storage_binding_name)
+            .await?;
+        let placement = self
+            .db
+            .create_surface_placement(&crate::db::NewSurfacePlacement {
+                surface,
+                name: req.name,
+                storage_binding_id: binding_id,
+                prefix: req.prefix,
+                role: req.role,
+                state: "provisioning".to_string(),
+                completeness: "unknown".to_string(),
+                partition_rule_json: None,
+                read_enabled,
+                write_enabled,
+                read_order,
+                write_order,
+            })
+            .await
+            .map_err(Self::placement_create_error)?;
+        Ok(pb::CreatePlacementResponse {
+            placement: Some(self.placement_message(placement).await?),
+        })
+    }
+
+    /// `TopologyService.UpdatePlacement` — replaces desired selection fields.
+    ///
+    /// Observed state and completeness, role, binding, prefix, and any internal
+    /// shard rule remain unchanged. Disabling read selection must use the drain
+    /// workflow; changing write authority awaits atomic promotion. The database
+    /// state machine validates the resulting record and performs the CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
+    /// an unknown placement, [`RpcError::InvalidArgument`] for malformed fields
+    /// or versions, and [`RpcError::FailedPrecondition`] for a stale CAS or a
+    /// placement currently pinned by a delivery route.
+    pub async fn update_placement(
+        &self,
+        auth: Option<&str>,
+        req: pb::UpdatePlacementRequest,
+    ) -> Result<pb::UpdatePlacementResponse, RpcError> {
+        let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
+        let current = self.topology_placement(surface, &req.name).await?;
+        let expected = Self::expected_placement_version(&req.expected_resource_version, &current)?;
+        let read_enabled = Self::required_placement_field(req.read_enabled, "readEnabled")?;
+        let write_enabled = Self::required_placement_field(req.write_enabled, "writeEnabled")?;
+        let read_order = Self::required_placement_field(req.read_order, "readOrder")?;
+        let write_order = Self::required_placement_field(req.write_order, "writeOrder")?;
+        if write_enabled != current.write_enabled {
+            return Err(RpcError::FailedPrecondition(
+                "write authority changes require atomic placement promotion".to_string(),
+            ));
+        }
+        if current.role == "archive" && read_enabled {
+            return Err(RpcError::invalid(
+                "archive placements cannot be read-enabled",
+            ));
+        }
+        if current.read_enabled && !read_enabled {
+            return Err(RpcError::FailedPrecondition(
+                "disabling read selection requires DrainPlacement".to_string(),
+            ));
+        }
+        if !current.read_enabled
+            && read_enabled
+            && matches!(current.state.as_str(), "draining" | "offline")
+        {
+            return Err(RpcError::FailedPrecondition(
+                "a draining or offline placement cannot be re-enabled by UpdatePlacement"
+                    .to_string(),
+            ));
+        }
+        let update = self
+            .db
+            .update_surface_placement(
+                current.id,
+                &crate::db::UpdateSurfacePlacement {
+                    expected_version: expected,
+                    state: current.state.clone(),
+                    completeness: current.completeness.clone(),
+                    partition_rule_json: current.partition_rule_json.clone(),
+                    read_enabled,
+                    write_enabled,
+                    read_order,
+                    write_order,
+                },
+            )
+            .await;
+        let placement = match update {
+            Ok(placement) => placement,
+            Err(error) => {
+                let latest = self
+                    .db
+                    .surface_placement(current.id)
+                    .await
+                    .map_err(RpcError::internal)?;
+                let Some(latest) = latest else {
+                    return Err(RpcError::FailedPrecondition(
+                        "placement changed during update".to_string(),
+                    ));
+                };
+                if latest.resource_version != expected {
+                    return Err(RpcError::FailedPrecondition(
+                        "placement resource version is stale".to_string(),
+                    ));
+                }
+                let blockers = self
+                    .db
+                    .surface_placement_blockers(current.id)
+                    .await
+                    .map_err(RpcError::internal)?;
+                if let Some(error) = Self::placement_route_pin_error(blockers) {
+                    return Err(error);
+                }
+                return Err(RpcError::internal(error));
+            }
+        };
+        Ok(pb::UpdatePlacementResponse {
+            placement: Some(self.placement_message(placement).await?),
+        })
+    }
+
+    /// `TopologyService.DrainPlacement` — plans or applies a safe drain.
+    ///
+    /// Applying revalidates the CAS and route pins, preserves completeness and
+    /// ordering, then transitions a non-primary placement to `draining` and
+    /// disables selection. A primary cannot be drained until a future atomic
+    /// promotion API moves write authority elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
+    /// an unknown placement, [`RpcError::InvalidArgument`] for a malformed
+    /// version, and [`RpcError::FailedPrecondition`] for a primary or stale CAS.
+    pub async fn drain_placement(
+        &self,
+        auth: Option<&str>,
+        req: pb::DrainPlacementRequest,
+    ) -> Result<pb::DrainPlacementResponse, RpcError> {
+        let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
+        let current = self.topology_placement(surface, &req.name).await?;
+        let expected = Self::expected_placement_version(&req.expected_resource_version, &current)?;
+        if current.role == "primary" {
+            return Err(RpcError::FailedPrecondition(
+                "a primary placement cannot drain before write authority is promoted".to_string(),
+            ));
+        }
+        let blockers = self
+            .db
+            .surface_placement_blockers(current.id)
+            .await
+            .map_err(RpcError::internal)?;
+        if let Some(error) = Self::placement_route_pin_error(blockers) {
+            return Err(error);
+        }
+        let plan = pb::PlacementMutationPlan {
+            operation: "drain".to_string(),
+            placement_name: current.name.clone(),
+            current_resource_version: current.resource_version.to_string(),
+            effects: vec![
+                "transition state to draining".to_string(),
+                "disable read selection".to_string(),
+                "disable write selection".to_string(),
+            ],
+        };
+        if !req.apply {
+            return Ok(pb::DrainPlacementResponse {
+                plan: Some(plan),
+                placement: Some(self.placement_message(current).await?),
+                applied: false,
+            });
+        }
+        let blockers = self
+            .db
+            .surface_placement_blockers(current.id)
+            .await
+            .map_err(RpcError::internal)?;
+        if let Some(error) = Self::placement_route_pin_error(blockers) {
+            return Err(error);
+        }
+        let drain = self
+            .db
+            .update_surface_placement(
+                current.id,
+                &crate::db::UpdateSurfacePlacement {
+                    expected_version: expected,
+                    state: "draining".to_string(),
+                    completeness: current.completeness.clone(),
+                    partition_rule_json: current.partition_rule_json.clone(),
+                    read_enabled: false,
+                    write_enabled: false,
+                    read_order: current.read_order,
+                    write_order: current.write_order,
+                },
+            )
+            .await;
+        let placement = match drain {
+            Ok(placement) => placement,
+            Err(error) => {
+                let latest = self
+                    .db
+                    .surface_placement(current.id)
+                    .await
+                    .map_err(RpcError::internal)?;
+                let Some(latest) = latest else {
+                    return Err(RpcError::FailedPrecondition(
+                        "placement changed during drain".to_string(),
+                    ));
+                };
+                if latest.resource_version != expected {
+                    return Err(RpcError::FailedPrecondition(
+                        "placement resource version is stale".to_string(),
+                    ));
+                }
+                let blockers = self
+                    .db
+                    .surface_placement_blockers(current.id)
+                    .await
+                    .map_err(RpcError::internal)?;
+                if let Some(error) = Self::placement_route_pin_error(blockers) {
+                    return Err(error);
+                }
+                return Err(RpcError::internal(error));
+            }
+        };
+        Ok(pb::DrainPlacementResponse {
+            plan: Some(plan),
+            placement: Some(self.placement_message(placement).await?),
+            applied: true,
+        })
+    }
+
+    /// `TopologyService.DeletePlacement` — plans or applies metadata deletion.
+    ///
+    /// The backing objects are deliberately left intact. Plan and apply reject
+    /// primary placements and placements referenced by routes, policies,
+    /// object inventory, publications, jobs, or operations. Apply revalidates
+    /// those references and the CAS immediately before the guarded delete.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
+    /// an unknown placement, [`RpcError::InvalidArgument`] for a malformed
+    /// version, and [`RpcError::FailedPrecondition`] when deletion is unsafe or
+    /// the resource-version CAS is stale.
+    pub async fn delete_placement(
+        &self,
+        auth: Option<&str>,
+        req: pb::DeletePlacementRequest,
+    ) -> Result<pb::DeletePlacementResponse, RpcError> {
+        let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
+        let current = self.topology_placement(surface, &req.name).await?;
+        let expected = Self::expected_placement_version(&req.expected_resource_version, &current)?;
+        if current.role == "primary" {
+            return Err(RpcError::FailedPrecondition(
+                "a primary placement cannot be deleted".to_string(),
+            ));
+        }
+        let blockers = self
+            .db
+            .surface_placement_blockers(current.id)
+            .await
+            .map_err(RpcError::internal)?;
+        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+            return Err(error);
+        }
+        let plan = pb::PlacementMutationPlan {
+            operation: "delete".to_string(),
+            placement_name: current.name.clone(),
+            current_resource_version: current.resource_version.to_string(),
+            effects: vec![
+                "remove placement topology metadata".to_string(),
+                "leave backing storage objects unchanged".to_string(),
+            ],
+        };
+        if !req.apply {
+            return Ok(pb::DeletePlacementResponse {
+                plan: Some(plan),
+                applied: false,
+            });
+        }
+        let blockers = self
+            .db
+            .surface_placement_blockers(current.id)
+            .await
+            .map_err(RpcError::internal)?;
+        if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+            return Err(error);
+        }
+        let deleted = match self.db.delete_surface_placement(current.id, expected).await {
+            Ok(deleted) => deleted,
+            Err(error) => {
+                let blockers = self
+                    .db
+                    .surface_placement_blockers(current.id)
+                    .await
+                    .map_err(RpcError::internal)?;
+                if let Some(error) = Self::placement_delete_blocker_error(blockers) {
+                    return Err(error);
+                }
+                return Err(RpcError::internal(error));
+            }
+        };
+        if !deleted {
+            let latest = self
+                .db
+                .surface_placement(current.id)
+                .await
+                .map_err(RpcError::internal)?;
+            if latest.is_some_and(|latest| latest.resource_version != expected) {
+                return Err(RpcError::FailedPrecondition(
+                    "placement resource version is stale".to_string(),
+                ));
+            }
+            return Err(RpcError::FailedPrecondition(
+                "placement deletion preconditions changed".to_string(),
+            ));
+        }
+        Ok(pb::DeletePlacementResponse {
+            plan: Some(plan),
+            applied: true,
         })
     }
 
@@ -6535,5 +7100,93 @@ mod frontend_url_tests {
             pick_direct_frontend(&list, CACHE).unwrap().domain,
             "first.example.com"
         );
+    }
+}
+
+#[cfg(test)]
+mod placement_mutation_tests {
+    use super::{RpcError, RpcService};
+    use crate::db::SurfacePlacementBlockers;
+
+    #[test]
+    fn blocker_errors_are_stable_topology_preconditions() {
+        let direct = RpcService::placement_route_pin_error(SurfacePlacementBlockers {
+            direct_route: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(direct.code(), "failed_precondition");
+        assert_eq!(
+            direct.message(),
+            "placement is pinned by a direct delivery route"
+        );
+
+        let routed = RpcService::placement_route_pin_error(SurfacePlacementBlockers {
+            routed_policy: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            routed.message(),
+            "placement is pinned by a delivery-route placement policy"
+        );
+
+        let cases = [
+            (
+                SurfacePlacementBlockers {
+                    direct_route: true,
+                    ..Default::default()
+                },
+                "placement is referenced by a direct delivery route",
+            ),
+            (
+                SurfacePlacementBlockers {
+                    policy_member: true,
+                    ..Default::default()
+                },
+                "placement is referenced by a placement policy",
+            ),
+            (
+                SurfacePlacementBlockers {
+                    object_presence: true,
+                    ..Default::default()
+                },
+                "placement has object-presence inventory",
+            ),
+            (
+                SurfacePlacementBlockers {
+                    publication: true,
+                    ..Default::default()
+                },
+                "placement has registry-publication state",
+            ),
+            (
+                SurfacePlacementBlockers {
+                    deletion_job: true,
+                    ..Default::default()
+                },
+                "placement has object-deletion jobs",
+            ),
+            (
+                SurfacePlacementBlockers {
+                    topology_operation: true,
+                    ..Default::default()
+                },
+                "placement has topology operations",
+            ),
+        ];
+        for (blockers, expected) in cases {
+            let error = RpcService::placement_delete_blocker_error(blockers).unwrap();
+            assert_eq!(error.code(), "failed_precondition");
+            assert_eq!(error.message(), expected);
+            assert!(!error.message().contains("FOREIGN KEY"));
+        }
+    }
+
+    #[test]
+    fn unclassified_create_failures_remain_internal() {
+        let error = RpcService::placement_create_error(anyhow::anyhow!("database unavailable"));
+        assert!(matches!(error, RpcError::Internal));
+        assert_eq!(error.message(), "internal error");
     }
 }

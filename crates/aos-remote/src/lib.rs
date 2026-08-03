@@ -29,7 +29,9 @@ pub mod hub;
 pub mod login;
 
 pub use client::AosClient;
-pub use hub::{HubClient, HubSurfaceRef, UploadCredentials};
+pub use hub::{
+    CreatePlacementInput, HubClient, HubSurfaceRef, UpdatePlacementInput, UploadCredentials,
+};
 pub use login::{exchange_token, TokenGrant};
 
 // Re-export proto types that consumers need.
@@ -39,6 +41,7 @@ pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
 // (RFC-0004 Phase 5), so the `aos hub …` CLI consumes these from
 // `aos-proto-types` rather than the connectrpc `aos-proto` types.
 pub use aos_proto_types::{
-    AuditEntry, Binding, ChangeRequest, Changeset, Channel, GitCommit, InstanceSettings, Org,
-    Package, PackageSummary, Placement, Project, Registry, Release, Webhook,
+    AuditEntry, Binding, ChangeRequest, Changeset, Channel, DeletePlacementResponse,
+    DrainPlacementResponse, GitCommit, InstanceSettings, Org, Package, PackageSummary, Placement,
+    PlacementMutationPlan, Project, Registry, Release, Webhook,
 };

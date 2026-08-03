@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use connectrpc::client::{ClientConfig, HttpClient};
 use connectrpc::rustls;
 use http::Uri;

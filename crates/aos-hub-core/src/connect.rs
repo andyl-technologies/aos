@@ -56,6 +56,14 @@ const BROWSE_MARKER: &str = "-";
 const LIST_PLACEMENTS_PATH: &str = "/aos.hub.v1.TopologyService/ListPlacements";
 /// Canonical Connect namespace for one placement read.
 const GET_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/GetPlacement";
+/// Canonical Connect namespace for placement creation.
+const CREATE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/CreatePlacement";
+/// Canonical Connect namespace for mutable placement updates.
+const UPDATE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/UpdatePlacement";
+/// Canonical Connect namespace for placement drain plans/applies.
+const DRAIN_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/DrainPlacement";
+/// Canonical Connect namespace for placement deletion plans/applies.
+const DELETE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/DeletePlacement";
 
 #[cfg(target_arch = "wasm32")]
 use send_wrapper::SendWrapper;
@@ -658,7 +666,7 @@ async fn browse_dispatch(
 /// Mount one `aos.hub.v1` method as a `POST` route delegating to the
 /// same-named [`RpcService`] method.
 macro_rules! rpc_route {
-    ($router:expr, $path:literal, $method:ident) => {
+    ($router:expr, $path:expr, $method:ident) => {
         $router.route(
             $path,
             post(
@@ -1305,6 +1313,10 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             },
         ),
     );
+    r = rpc_route!(r, CREATE_PLACEMENT_PATH, create_placement);
+    r = rpc_route!(r, UPDATE_PLACEMENT_PATH, update_placement);
+    r = rpc_route!(r, DRAIN_PLACEMENT_PATH, drain_placement);
+    r = rpc_route!(r, DELETE_PLACEMENT_PATH, delete_placement);
     // PackageService
     r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
     r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);
@@ -1791,6 +1803,22 @@ mod tests {
         assert_eq!(
             GET_PLACEMENT_PATH,
             "/aos.hub.v1.TopologyService/GetPlacement"
+        );
+        assert_eq!(
+            CREATE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/CreatePlacement"
+        );
+        assert_eq!(
+            UPDATE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/UpdatePlacement"
+        );
+        assert_eq!(
+            DRAIN_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/DrainPlacement"
+        );
+        assert_eq!(
+            DELETE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/DeletePlacement"
         );
     }
 
