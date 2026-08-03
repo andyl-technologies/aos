@@ -317,7 +317,7 @@ impl CacheBackend for HttpBackend {
         // `MintCacheUploadCredentials` lives at the root (Connect-JSON), not
         // under the view path.
         let url = format!(
-            "{}/aos.registry.v1.CacheService/MintCacheUploadCredentials",
+            "{}/aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials",
             self.origin
         );
         // Connect-JSON uses the protobuf JSON mapping (camelCase field names).
@@ -401,7 +401,7 @@ impl CacheBackend for HttpBackend {
             return Ok(empty);
         };
         let url = format!(
-            "{}/aos.registry.v1.CacheService/MintCacheUploadCredentials",
+            "{}/aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials",
             self.origin
         );
         let body = serde_json::json!({ "cacheSlug": slug, "paths": paths }).to_string();
@@ -464,7 +464,7 @@ impl CacheBackend for HttpBackend {
             .filter(|s| !s.is_empty());
         if let (true, Some(slug)) = (has_auth, slug) {
             let url = format!(
-                "{}/aos.registry.v1.CacheService/RegisterCacheNarinfos",
+                "{}/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
                 self.origin
             );
             let items: Vec<serde_json::Value> = narinfos

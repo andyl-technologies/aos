@@ -263,7 +263,7 @@ async fn connectrpc_read_path_serves_index() {
 
     // PackageService over Connect-JSON.
     let (status, body) = post(
-        "/aos.registry.v1.PackageService/ListPackages",
+        "/aos.hub.v1.PackageService/ListPackages",
         r#"{"slug":"demo"}"#,
     )
     .await;
@@ -273,7 +273,7 @@ async fn connectrpc_read_path_serves_index() {
 
     // ChannelService returns the full partition map.
     let (status, body) = post(
-        "/aos.registry.v1.ChannelService/GetChannel",
+        "/aos.hub.v1.ChannelService/GetChannel",
         r#"{"slug":"demo","name":"stable"}"#,
     )
     .await;
@@ -282,7 +282,7 @@ async fn connectrpc_read_path_serves_index() {
 
     // RegistryService reports verified index state and trust anchors.
     let (status, body) = post(
-        "/aos.registry.v1.RegistryService/GetRegistry",
+        "/aos.hub.v1.RegistryService/GetRegistry",
         r#"{"slug":"demo"}"#,
     )
     .await;
@@ -292,12 +292,31 @@ async fn connectrpc_read_path_serves_index() {
 
     // Unknown registries are NotFound, not empty success.
     let (status, body) = post(
-        "/aos.registry.v1.RegistryService/GetRegistry",
+        "/aos.hub.v1.RegistryService/GetRegistry",
         r#"{"slug":"missing"}"#,
     )
     .await;
     assert_ne!(status, StatusCode::OK, "body: {body}");
     assert!(body.contains("not_found"), "body: {body}");
+
+    // The renamed identity service is mounted. An anonymous request reaches
+    // the handler and is rejected by authentication rather than routing.
+    let (status, body) = post("/aos.hub.v1.IdentityService/ListTokens", "{}").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
+
+    // The RFC-0012 cutover is deliberately hard: neither the former package
+    // nor any of the ambiguous service names remains mounted as an alias.
+    for uri in [
+        "/aos.registry.v1.RegistryService/ListRegistries",
+        "/aos.hub.v1.OrgService/ListOrgs",
+        "/aos.hub.v1.StorageService/ListBindings",
+        "/aos.hub.v1.ConfigService/ListChangesets",
+        "/aos.hub.v1.IamService/ListTokens",
+        "/aos.hub.v1.CacheService/ListCaches",
+    ] {
+        let (status, _) = post(uri, "{}").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "legacy route mounted: {uri}");
+    }
 }
 
 /// An RPC request whose body exceeds the small inbound RPC cap is rejected
@@ -323,7 +342,7 @@ async fn rpc_inbound_body_cap_rejects_oversized_request() {
             app.oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/aos.registry.v1.PackageService/ListPackages")
+                    .uri("/aos.hub.v1.PackageService/ListPackages")
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(header::CONTENT_LENGTH, len)
                     .body(Body::from(body))

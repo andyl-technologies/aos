@@ -1,6 +1,6 @@
 //! The Worker's Wrangler binding names (wasm32-only).
 //!
-//! Every request surface — the `aos.registry.v1` RPC methods, the machine-path
+//! Every request surface — the `aos.hub.v1` RPC methods, the machine-path
 //! facade, and the no-JS browse UI + JSON read API — is served by the shared
 //! router ([`aos_hub_core::connect::router`]) over
 //! [`aos_hub_core::web`], single-sourced with the native hub. There is no

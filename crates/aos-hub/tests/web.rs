@@ -147,14 +147,14 @@ async fn security_headers_on_every_route_class() {
     let (app, _db) = serve_fixture(&surface, &fixture).await;
 
     for uri in [
-        "/",                                               // instance home
-        "/demo/",                                          // registry page
-        "/demo/-/packages",                                // /-/ page
-        "/demo/HEAD",                                      // machine path
-        "/_assets/style.css",                              // stylesheet
-        "/_assets/jetbrains-mono-regular.woff2",           // embedded font
-        "/aos.registry.v1.RegistryService/ListRegistries", // RPC path
-        "/demo/does-not-exist",                            // 404s carry the headers too
+        "/",                                          // instance home
+        "/demo/",                                     // registry page
+        "/demo/-/packages",                           // /-/ page
+        "/demo/HEAD",                                 // machine path
+        "/_assets/style.css",                         // stylesheet
+        "/_assets/jetbrains-mono-regular.woff2",      // embedded font
+        "/aos.hub.v1.RegistryService/ListRegistries", // RPC path
+        "/demo/does-not-exist",                       // 404s carry the headers too
     ] {
         let (_, headers, _) = get(&app, uri).await;
         // The default CSP now carries `frame-ancestors 'none'` for

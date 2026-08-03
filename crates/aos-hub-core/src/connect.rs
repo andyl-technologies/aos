@@ -1,4 +1,4 @@
-//! The shared Connect-JSON `axum` router for the `aos.registry.v1` API.
+//! The shared Connect-JSON `axum` router for the `aos.hub.v1` API.
 //!
 //! RFC-0004 Phase 5 serves the registry-hub RPC surface as a single transport
 //! on both deployment targets: **Connect-JSON** — the Connect protocol's JSON
@@ -10,13 +10,13 @@
 //!
 //! # Wire format
 //!
-//! Each method is one route: `POST /aos.registry.v1.{Service}/{Method}`. The
+//! Each method is one route: `POST /aos.hub.v1.{Service}/{Method}`. The
 //! request body is the JSON-encoded request message; the success response is
 //! the JSON-encoded response message with `200 OK`. An error is the Connect
 //! error envelope with the matching HTTP status:
 //!
 //! ```text
-//! POST /aos.registry.v1.RegistryService/GetRegistry
+//! POST /aos.hub.v1.RegistryService/GetRegistry
 //! Content-Type: application/json
 //! { "slug": "acme/cdn" }
 //!   -> 200 { "registry": { "slug": "acme/cdn", … } }
@@ -670,7 +670,7 @@ async fn browse_dispatch(
     browse_response(rendered)
 }
 
-/// Mount one `aos.registry.v1` method as a `POST` route delegating to the
+/// Mount one `aos.hub.v1` method as a `POST` route delegating to the
 /// same-named [`RpcService`] method.
 macro_rules! rpc_route {
     ($router:expr, $path:literal, $method:ident) => {
@@ -691,8 +691,8 @@ macro_rules! rpc_route {
 /// Build the shared Connect-JSON router over the given [`RpcService`],
 /// including the machine-surface facade.
 ///
-/// Wires every ported `aos.registry.v1` method to `POST
-/// /aos.registry.v1.{Service}/{Method}`, including the three `GitService`
+/// Wires every ported `aos.hub.v1` method to `POST
+/// /aos.hub.v1.{Service}/{Method}`, including the three `GitService`
 /// methods served over the surface-read port
 /// ([`SurfaceProvider`](crate::fetch::SurfaceProvider)). It additionally mounts
 /// the machine-surface facade as a catch-all `GET`/`HEAD` `/{slug}/{*path}`
@@ -1255,226 +1255,222 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     // RegistryService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/ListRegistries",
+        "/aos.hub.v1.RegistryService/ListRegistries",
         list_registries
     );
+    r = rpc_route!(r, "/aos.hub.v1.RegistryService/GetRegistry", get_registry);
+    r = rpc_route!(r, "/aos.hub.v1.RegistryService/ListReleases", list_releases);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/GetRegistry",
-        get_registry
-    );
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.RegistryService/ListReleases",
-        list_releases
-    );
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.RegistryService/CreateRegistry",
+        "/aos.hub.v1.RegistryService/CreateRegistry",
         create_registry
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/SetCrawlPolicy",
+        "/aos.hub.v1.RegistryService/SetCrawlPolicy",
         set_crawl_policy
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.RegistryService/ChangeRegistryStorage",
+        "/aos.hub.v1.RegistryService/ChangeRegistryStorage",
         change_registry_storage
     );
-    // OrgService
-    r = rpc_route!(r, "/aos.registry.v1.OrgService/CreateOrg", create_org);
-    r = rpc_route!(r, "/aos.registry.v1.OrgService/GetOrg", get_org);
-    r = rpc_route!(r, "/aos.registry.v1.OrgService/ListOrgs", list_orgs);
+    // OrganizationService
+    r = rpc_route!(r, "/aos.hub.v1.OrganizationService/CreateOrg", create_org);
+    r = rpc_route!(r, "/aos.hub.v1.OrganizationService/GetOrg", get_org);
+    r = rpc_route!(r, "/aos.hub.v1.OrganizationService/ListOrgs", list_orgs);
     // ProjectService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ProjectService/CreateProject",
+        "/aos.hub.v1.ProjectService/CreateProject",
         create_project
     );
+    r = rpc_route!(r, "/aos.hub.v1.ProjectService/ListProjects", list_projects);
+    // StorageBindingService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ProjectService/ListProjects",
-        list_projects
-    );
-    // StorageService
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.StorageService/CreateBinding",
+        "/aos.hub.v1.StorageBindingService/CreateBinding",
         create_binding
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.StorageService/ListBindings",
+        "/aos.hub.v1.StorageBindingService/ListBindings",
         list_bindings
     );
     // PackageService
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.PackageService/ListPackages",
-        list_packages
-    );
-    r = rpc_route!(r, "/aos.registry.v1.PackageService/GetPackage", get_package);
+    r = rpc_route!(r, "/aos.hub.v1.PackageService/ListPackages", list_packages);
+    r = rpc_route!(r, "/aos.hub.v1.PackageService/GetPackage", get_package);
     // ChannelService
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.ChannelService/ListChannels",
-        list_channels
-    );
-    r = rpc_route!(r, "/aos.registry.v1.ChannelService/GetChannel", get_channel);
+    r = rpc_route!(r, "/aos.hub.v1.ChannelService/ListChannels", list_channels);
+    r = rpc_route!(r, "/aos.hub.v1.ChannelService/GetChannel", get_channel);
     // AuditService
-    r = rpc_route!(r, "/aos.registry.v1.AuditService/ListAudit", list_audit);
+    r = rpc_route!(r, "/aos.hub.v1.AuditService/ListAudit", list_audit);
     // InstanceService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.InstanceService/GetInstanceSettings",
+        "/aos.hub.v1.InstanceService/GetInstanceSettings",
         get_instance_settings
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.InstanceService/UpdateInstanceSettings",
+        "/aos.hub.v1.InstanceService/UpdateInstanceSettings",
         update_instance_settings
     );
-    // ConfigService
+    // RegistryConfigurationService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ConfigService/ListChangesets",
+        "/aos.hub.v1.RegistryConfigurationService/ListChangesets",
         list_changesets
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ConfigService/GetChangeset",
+        "/aos.hub.v1.RegistryConfigurationService/GetChangeset",
         get_changeset
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.ConfigService/RevertChangeset",
+        "/aos.hub.v1.RegistryConfigurationService/RevertChangeset",
         revert_changeset
     );
-    // IamService — service-account / grant / token management (the machine API
+    // IdentityService — service-account / grant / token management (the machine API
     // behind the console's identity settings; RFC-0004 ch.14).
     r = rpc_route!(
         r,
-        "/aos.registry.v1.IamService/CreateServiceAccount",
+        "/aos.hub.v1.IdentityService/CreateServiceAccount",
         create_service_account
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.IamService/GrantMembership",
+        "/aos.hub.v1.IdentityService/GrantMembership",
         grant_membership
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.IamService/RevokeMembership",
+        "/aos.hub.v1.IdentityService/RevokeMembership",
         revoke_membership
     );
-    r = rpc_route!(r, "/aos.registry.v1.IamService/MintToken", mint_token);
-    r = rpc_route!(r, "/aos.registry.v1.IamService/RevokeToken", revoke_token);
-    r = rpc_route!(r, "/aos.registry.v1.IamService/ListTokens", list_tokens);
+    r = rpc_route!(r, "/aos.hub.v1.IdentityService/MintToken", mint_token);
+    r = rpc_route!(r, "/aos.hub.v1.IdentityService/RevokeToken", revoke_token);
+    r = rpc_route!(r, "/aos.hub.v1.IdentityService/ListTokens", list_tokens);
     // WebhookService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.WebhookService/CreateWebhook",
+        "/aos.hub.v1.WebhookService/CreateWebhook",
         create_webhook
     );
+    r = rpc_route!(r, "/aos.hub.v1.WebhookService/ListWebhooks", list_webhooks);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.WebhookService/ListWebhooks",
-        list_webhooks
-    );
-    r = rpc_route!(
-        r,
-        "/aos.registry.v1.WebhookService/DeleteWebhook",
+        "/aos.hub.v1.WebhookService/DeleteWebhook",
         delete_webhook
     );
     // PublishService
     r = rpc_route!(
         r,
-        "/aos.registry.v1.PublishService/MintUploadCredentials",
+        "/aos.hub.v1.PublishService/MintUploadCredentials",
         mint_upload_credentials
     );
     // GitService
-    r = rpc_route!(r, "/aos.registry.v1.GitService/GitLog", git_log);
-    r = rpc_route!(r, "/aos.registry.v1.GitService/GitDiff", git_diff);
+    r = rpc_route!(r, "/aos.hub.v1.GitService/GitLog", git_log);
+    r = rpc_route!(r, "/aos.hub.v1.GitService/GitDiff", git_diff);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.GitService/ListChangeRequests",
+        "/aos.hub.v1.GitService/ListChangeRequests",
         list_change_requests
     );
-    // CacheService (RFC-0004 "11-caches")
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/CreateCache", create_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/GetCache", get_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/ListCaches", list_caches);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/UpdateCache", update_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/DeleteCache", delete_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/LinkCache", link_cache);
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/UnlinkCache", unlink_cache);
+    // BinaryCacheService (RFC-0004 "11-caches")
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/ListCacheLinks",
+        "/aos.hub.v1.BinaryCacheService/CreateCache",
+        create_cache
+    );
+    r = rpc_route!(r, "/aos.hub.v1.BinaryCacheService/GetCache", get_cache);
+    r = rpc_route!(r, "/aos.hub.v1.BinaryCacheService/ListCaches", list_caches);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/UpdateCache",
+        update_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/DeleteCache",
+        delete_cache
+    );
+    r = rpc_route!(r, "/aos.hub.v1.BinaryCacheService/LinkCache", link_cache);
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/UnlinkCache",
+        unlink_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/ListCacheLinks",
         list_cache_links
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/SetCacheGcPolicy",
+        "/aos.hub.v1.BinaryCacheService/SetCacheGcPolicy",
         set_cache_gc_policy
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/GetCacheGcPolicy",
+        "/aos.hub.v1.BinaryCacheService/GetCacheGcPolicy",
         get_cache_gc_policy
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/PinCachePath",
+        "/aos.hub.v1.BinaryCacheService/PinCachePath",
         pin_cache_path
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/UnpinCachePath",
+        "/aos.hub.v1.BinaryCacheService/UnpinCachePath",
         unpin_cache_path
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/ListCacheRoots",
+        "/aos.hub.v1.BinaryCacheService/ListCacheRoots",
         list_cache_roots
     );
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/SearchCache", search_cache);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/GetCacheObject",
+        "/aos.hub.v1.BinaryCacheService/SearchCache",
+        search_cache
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/GetCacheObject",
         get_cache_object
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/ListCacheGcRuns",
+        "/aos.hub.v1.BinaryCacheService/ListCacheGcRuns",
         list_cache_gc_runs
     );
-    r = rpc_route!(r, "/aos.registry.v1.CacheService/RunCacheGc", run_cache_gc);
+    r = rpc_route!(r, "/aos.hub.v1.BinaryCacheService/RunCacheGc", run_cache_gc);
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/CacheClosure",
+        "/aos.hub.v1.BinaryCacheService/CacheClosure",
         cache_closure
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/ChangeCacheStorage",
+        "/aos.hub.v1.BinaryCacheService/ChangeCacheStorage",
         change_cache_storage
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/MintCacheUploadCredentials",
+        "/aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials",
         mint_cache_upload_credentials
     );
     r = rpc_route!(
         r,
-        "/aos.registry.v1.CacheService/RegisterCacheNarinfos",
+        "/aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
         register_cache_narinfos
     );
     // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to it,
     // eliding the body) for the registry machine path, registered LAST. The
-    // static `/aos.registry.v1.{Service}/{Method}` RPC routes above win over
+    // static `/aos.hub.v1.{Service}/{Method}` RPC routes above win over
     // this `/{slug}/{*path}` wildcard by axum's static-over-dynamic precedence,
     // so the facade only matches a registry URL. Omitted by [`rpc_router`] so a
     // host with its own `/{slug}/{*path}` (the native hub) does not double-mount
@@ -1622,7 +1618,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     if mount_facade {
         // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to
         // it, eliding the body) for the registry machine path, registered LAST.
-        // The static `/aos.registry.v1.{Service}/{Method}` RPC routes and the
+        // The static `/aos.hub.v1.{Service}/{Method}` RPC routes and the
         // browse routes above win over this `/{slug}/{*path}` wildcard by axum's
         // static-over-dynamic precedence, so the facade only matches a machine
         // URL. Omitted by [`rpc_router`]/[`rpc_browse_router`] so a host with its

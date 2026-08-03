@@ -7,7 +7,7 @@
 //!   usage increment a successful upload makes;
 //! - the per-endpoint rate limiter returning `429` with `Retry-After` on the
 //!   magic-link issuance and device-authorization paths;
-//! - the instance signup policy gating `OrgService.CreateOrg`;
+//! - the instance signup policy gating `OrganizationService.CreateOrg`;
 //! - org export — a redacted SoR manifest plus a round-trippable surface copy;
 //! - org soft-delete excluding a registry from serving, restore, and the
 //!   grace-window purge job.
@@ -152,7 +152,7 @@ async fn rpc(
 ) -> (StatusCode, serde_json::Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/aos.registry.v1.{method}"))
+        .uri(format!("/aos.hub.v1.{method}"))
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {
@@ -307,7 +307,7 @@ async fn signup_policy_gates_create_org() {
     // invite_only blocks a fresh, unaffiliated user.
     let (status, _) = rpc(
         &app,
-        "OrgService/CreateOrg",
+        "OrganizationService/CreateOrg",
         serde_json::json!({"slug": "acme", "name": "Acme"}),
         Some(&token),
     )
@@ -318,7 +318,7 @@ async fn signup_policy_gates_create_org() {
     db.set_signup_policy(SignupPolicy::Open).await.unwrap();
     let (status, value) = rpc(
         &app,
-        "OrgService/CreateOrg",
+        "OrganizationService/CreateOrg",
         serde_json::json!({"slug": "acme", "name": "Acme"}),
         Some(&token),
     )
@@ -341,7 +341,7 @@ async fn invite_only_allows_existing_member() {
     let token = bearer(Principal::user(member), "", &[]);
     let (status, value) = rpc(
         &app,
-        "OrgService/CreateOrg",
+        "OrganizationService/CreateOrg",
         serde_json::json!({"slug": "second", "name": "Second"}),
         Some(&token),
     )
@@ -587,7 +587,7 @@ async fn link_cache_rejects_advertising_a_less_visible_cache() {
     // Advertising the private cache on the public registry is rejected (400).
     let (status, _v) = rpc(
         &app,
-        "CacheService/LinkCache",
+        "BinaryCacheService/LinkCache",
         serde_json::json!({
             "cacheSlug": "priv-cache", "registrySlug": "acme/pub", "advertised": true
         }),
@@ -600,7 +600,7 @@ async fn link_cache_rejects_advertising_a_less_visible_cache() {
     // those with cache-read authority; the registry does not point consumers at it).
     let (status, _v) = rpc(
         &app,
-        "CacheService/LinkCache",
+        "BinaryCacheService/LinkCache",
         serde_json::json!({
             "cacheSlug": "priv-cache", "registrySlug": "acme/pub",
             "advertised": false, "rootsPackages": true
@@ -1045,7 +1045,7 @@ async fn mint_cache_upload_credentials_returns_presigned_put() {
     let app = router(app_state(Arc::clone(&db)).await).await;
     let (status, body) = rpc(
         &app,
-        "CacheService/MintCacheUploadCredentials",
+        "BinaryCacheService/MintCacheUploadCredentials",
         serde_json::json!({"cacheSlug": "ext-cache", "path": "aaaa.narinfo"}),
         Some(&token),
     )
@@ -1065,7 +1065,7 @@ async fn mint_cache_upload_credentials_returns_presigned_put() {
     // Without cache-write authority, the RPC is denied.
     let (status, _) = rpc(
         &app,
-        "CacheService/MintCacheUploadCredentials",
+        "BinaryCacheService/MintCacheUploadCredentials",
         serde_json::json!({"cacheSlug": "ext-cache", "path": "aaaa.narinfo"}),
         None,
     )
@@ -1134,7 +1134,7 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
     // Pin aaaa as a manual GC root.
     let (s, _) = rpc(
         &app,
-        "CacheService/PinCachePath",
+        "BinaryCacheService/PinCachePath",
         serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}),
         Some(&token),
     )
@@ -1160,7 +1160,7 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
     // Run GC: it scans both, retains the rooted closure, reclaims the unrooted.
     let (s, body) = rpc(
         &app,
-        "CacheService/RunCacheGc",
+        "BinaryCacheService/RunCacheGc",
         serde_json::json!({"cacheSlug": "gc-cache"}),
         Some(&token),
     )
@@ -1174,7 +1174,7 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
     // returns 200 with a null `object` for a missing entry).
     let (s, body) = rpc(
         &app,
-        "CacheService/GetCacheObject",
+        "BinaryCacheService/GetCacheObject",
         serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}),
         Some(&token),
     )
@@ -1186,7 +1186,7 @@ async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
     );
     let (s, body) = rpc(
         &app,
-        "CacheService/GetCacheObject",
+        "BinaryCacheService/GetCacheObject",
         serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "dddd"}),
         Some(&token),
     )

@@ -164,7 +164,7 @@ async fn rpc(
 ) -> (StatusCode, serde_json::Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/aos.registry.v1.{method}"))
+        .uri(format!("/aos.hub.v1.{method}"))
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {

@@ -55,7 +55,7 @@ uuid = { workspace = true }
 # surface reader already shared with the Worker.
 aos-registry-surface = { workspace = true }
 # The wasm-clean Connect-JSON message structs (prost-build + serde) for the
-# aos.registry.v1 API. The shared `service` layer speaks these on both the
+# aos.hub.v1 API. The shared `service` layer speaks these on both the
 # native hub and the Cloudflare Worker (RFC-0004 Phase 5, single transport).
 aos-proto-types = { workspace = true }
 # axum *types only* (default-features = false drops the hyper server) — the

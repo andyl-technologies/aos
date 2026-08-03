@@ -4,7 +4,7 @@
 //! shared page chrome and every console page builder — out of the native
 //! `aos-hub` crate so the Cloudflare Worker can eventually serve the
 //! identical console from one code path. The builders are pure string-building
-//! over the `aos.registry.v1` read shapes ([`crate::db`] record types) and the
+//! over the `aos.hub.v1` read shapes ([`crate::db`] record types) and the
 //! callers' explicitly-passed identity, so the module is **transport- and
 //! task-local-free**: the signed-in email, the per-session CSRF token, and the
 //! masthead brand are all passed in (the brand via a process-wide [`set_brand`]

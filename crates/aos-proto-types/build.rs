@@ -1,4 +1,4 @@
-//! Generates the `aos.registry.v1` message structs with `prost-build`.
+//! Generates the `aos.hub.v1` message structs with `prost-build`.
 //!
 //! Unlike the sibling `aos-proto` crate (which runs `connectrpc-build` to emit
 //! `buffa`-based types plus the ConnectRPC client/server), this crate generates
@@ -13,7 +13,7 @@
 fn main() {
     // Workspace-relative: the `.proto` schema is owned by the `aos-proto` crate.
     let proto_root = "../aos-proto/src/proto";
-    let proto = format!("{proto_root}/aos/registry/v1/registry.proto");
+    let proto = format!("{proto_root}/aos/hub/v1/hub.proto");
 
     let mut config = prost_build::Config::new();
     // The structs are serialized as Connect-JSON request/response bodies; the
@@ -31,7 +31,7 @@ fn main() {
 
     config
         .compile_protos(&[&proto], &[proto_root])
-        .expect("prost-build: failed to compile aos/registry/v1/registry.proto");
+        .expect("prost-build: failed to compile aos/hub/v1/hub.proto");
 
     println!("cargo:rerun-if-changed={proto}");
 }

@@ -1,7 +1,7 @@
 //! The single chokepoint for creating a storage binding.
 //!
 //! Both authoring surfaces — the console `POST .../bindings` handler and the
-//! `StorageService.CreateBinding` RPC (and through it the `aos hub` CLI) — funnel
+//! `StorageBindingService.CreateBinding` RPC (and through it the `aos hub` CLI) — funnel
 //! into [`provision_binding`]. Centralizing it here means credential sealing,
 //! input validation, and the `s3`/`r2` origin contract live in exactly one place,
 //! so the WebUI, the Connect API, and the CLI cannot drift apart.

@@ -1,10 +1,11 @@
 syntax = "proto3";
-package aos.registry.v1;
+package aos.hub.v1;
 
 // Read-path services of the registry hub (RFC-0004). Phase 1 exposes the
 // verified index — registries, packages, channels, releases — to browsers,
 // CLIs, and third parties over one schema. Write-path services
-// (ConfigService, PublishService, …) arrive with hub phase 2+; PublishService
+// (RegistryConfigurationService, PublishService, …) arrive with later phases;
+// PublishService
 // mints short-lived, registry-scoped upload credentials.
 //
 // All list RPCs paginate: pass the previous response's next_page_token to
@@ -29,7 +30,7 @@ service RegistryService {
 }
 
 // Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
-service OrgService {
+service OrganizationService {
   // Create an org. Any authenticated principal may bootstrap one; the
   // caller becomes its Owner.
   rpc CreateOrg(CreateOrgRequest) returns (CreateOrgResponse);
@@ -46,9 +47,10 @@ service ProjectService {
 }
 
 // Storage bindings (RFC-0004 "Storage: StorageBinding and shared buckets").
-service StorageService {
+service StorageBindingService {
   // Create a storage binding under an org. Requires registry.configure on
-  // the org scope. Only the local_fs kind is supported this phase.
+  // the org scope. Supported kinds are local_fs, S3-compatible, and R2;
+  // deployment capabilities determine which kinds may be provisioned.
   rpc CreateBinding(CreateBindingRequest) returns (CreateBindingResponse);
   rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
 }
@@ -81,7 +83,7 @@ service InstanceService {
 // management"): the append-only revision log over orgs, projects, members,
 // roles, tokens, visibility, and bindings. Reads require audit.read on the
 // scope; RevertChangeset requires registry.configure on the scope.
-service ConfigService {
+service RegistryConfigurationService {
   // List change-sets at a scope, newest first. Requires audit.read.
   rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
   // Load one change-set's revisions and their semantic field diffs (the
@@ -102,7 +104,7 @@ service ChannelService {
   rpc GetChannel(GetChannelRequest) returns (GetChannelResponse);
 }
 
-// The managed write path (RFC-0004 "API: aos.registry.v1"). This phase
+// The managed write path (RFC-0012 "API: aos.hub.v1"). This phase
 // implements credential minting: a producer with publish rights requests a
 // short-lived, registry-scoped upload credential instead of using the upload
 // facade directly. Requires publish on the registry's canonical scope.
@@ -114,7 +116,7 @@ service PublishService {
       returns (MintUploadCredentialsResponse);
 }
 
-// Git read API for the UI and remote `apr` (RFC-0004 "API: aos.registry.v1"
+// Git read API for the UI and remote `apr` (RFC-0012 "API: aos.hub.v1"
 // GitService; "Configuration management" git-backed change requests). Reads of
 // the committed history and config diffs require `read` (or `audit.read` for the
 // change-request list) on the registry's scope, following registry visibility.
@@ -809,7 +811,7 @@ message ListChangeRequestsResponse {
 // registries. Org-scoped writes require registry.configure on the owning org
 // (instance-level caches require iam.admin on root); reads honor the cache's
 // visibility, like registries.
-service CacheService {
+service BinaryCacheService {
   rpc CreateCache(CreateCacheRequest) returns (CreateCacheResponse);
   rpc GetCache(GetCacheRequest) returns (GetCacheResponse);
   rpc ListCaches(ListCachesRequest) returns (ListCachesResponse);
@@ -1225,7 +1227,7 @@ message RegisterCacheNarinfosResponse {
 // at the target registry/org scope. A minted token's effective permissions are
 // intersected with the owning principal's grants — a token can never exceed its
 // owner's authority.
-service IamService {
+service IdentityService {
   // Create (or return the existing) org-owned service account — a non-human
   // principal for CI/automation, distinct from a user.
   rpc CreateServiceAccount(CreateServiceAccountRequest)

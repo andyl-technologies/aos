@@ -64,7 +64,7 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
 /// Call the hub's `PackageService/ListPackages` over Connect-JSON.
 ///
 /// The Connect protocol's unary JSON encoding is a plain `POST` of the
-/// request message to `{hub_url}/aos.registry.v1.PackageService/ListPackages`
+/// request message to `{hub_url}/aos.hub.v1.PackageService/ListPackages`
 /// with `Content-Type: application/json`; the response body is the JSON
 /// message. This lights up server-side search when `config.json` carries a
 /// `hub_url`; absent it, the caller degrades to a client-side substring
@@ -77,7 +77,7 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(path: &str) -> Result<T> {
 /// (including a CORS rejection for an unregistered frontend origin).
 pub async fn hub_list_packages(hub_url: &str, query: &str) -> Result<serde_json::Value> {
     let url = format!(
-        "{}/aos.registry.v1.PackageService/ListPackages",
+        "{}/aos.hub.v1.PackageService/ListPackages",
         hub_url.trim_end_matches('/')
     );
     let body = serde_json::json!({ "query": query }).to_string();

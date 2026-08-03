@@ -12,7 +12,7 @@
 ##! native build inputs are `pkg-config`/`openssl` (the `reqwest` rustls stack
 ##! still links `openssl-sys` transitively through the workspace) and
 ##! `protobuf` (the `aos-proto` build script runs `protoc` to generate the
-##! `aos.registry.v1` ConnectRPC stubs).
+##! `aos.hub.v1` ConnectRPC stubs).
 {
   mkCargoPackage,
   fetchCargoDeps,

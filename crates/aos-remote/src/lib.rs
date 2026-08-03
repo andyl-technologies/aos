@@ -29,7 +29,7 @@ pub mod hub;
 pub mod login;
 
 pub use client::AosClient;
-pub use hub::{RegistryHubClient, UploadCredentials};
+pub use hub::{HubClient, UploadCredentials};
 pub use login::{TokenGrant, exchange_token};
 
 // Re-export proto types that consumers need.
