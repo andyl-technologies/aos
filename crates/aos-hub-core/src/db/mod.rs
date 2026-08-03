@@ -400,7 +400,7 @@ pub const MIGRATIONS: &[&str] = &[
         id          INTEGER PRIMARY KEY,
         slug        TEXT NOT NULL UNIQUE,
         source_url  TEXT NOT NULL,
-        trust_keys  LONGTEXT NOT NULL DEFAULT '[]',  -- JSON array of name:Ed25519:b64 (unbounded; never truncate)
+        trust_keys  LONGTEXT NOT NULL DEFAULT ('[]'),  -- JSON array of name:Ed25519:b64 (unbounded; never truncate)
         require_signatures INTEGER NOT NULL DEFAULT 1,
         created_at  INTEGER NOT NULL
     );
@@ -748,7 +748,7 @@ pub const MIGRATIONS: &[&str] = &[
         client_secret_enc     LONGTEXT,                   -- sealed; never plaintext (unbounded; never truncate)
         scopes                TEXT NOT NULL DEFAULT 'openid email profile',
         groups_claim          TEXT,
-        role_map_json         LONGTEXT NOT NULL DEFAULT '{}', -- OIDC group->role JSON (unbounded; never truncate)
+        role_map_json         LONGTEXT NOT NULL DEFAULT ('{}'), -- OIDC group->role JSON (unbounded; never truncate)
         allow_jit             INTEGER NOT NULL DEFAULT 1,
         enforce_sso           INTEGER NOT NULL DEFAULT 0,
         default_role          TEXT NOT NULL DEFAULT 'viewer',
@@ -1458,6 +1458,610 @@ pub const MIGRATIONS: &[&str] = &[
     // and D1 support RENAME COLUMN directly — no table rebuild needed.
     "
     ALTER TABLE storage_bindings RENAME COLUMN public_base_url TO endpoint;
+    ",
+    // v34: RFC-0012 topology foundation. This is intentionally additive: the
+    // existing runtime continues to use the v33 binding/frontend/cache-link
+    // representation until the coordinated hard cutover switches every
+    // interface and then removes those legacy objects. New code may build and
+    // test the final resource boundaries without a production dual-read path.
+    "
+    ALTER TABLE channels ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+
+    CREATE TABLE domains (
+        id                   INTEGER PRIMARY KEY,
+        org_id               INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+        hostname             KEYTEXT255 NOT NULL UNIQUE,
+        desired_dns_provider KEYTEXT64,
+        observed_dns_state   KEYTEXT32 NOT NULL DEFAULT 'unconfigured',
+        desired_tls_provider KEYTEXT64,
+        observed_tls_state   KEYTEXT32 NOT NULL DEFAULT 'unconfigured',
+        access_provider_json LONGTEXT NOT NULL DEFAULT ('{}'),
+        verified_at          INTEGER,
+        created_at           INTEGER NOT NULL,
+        updated_at           INTEGER NOT NULL,
+        resource_version     INTEGER NOT NULL DEFAULT 1,
+        CHECK (observed_dns_state IN ('unconfigured', 'pending', 'verified', 'failed')),
+        CHECK (observed_tls_state IN ('unconfigured', 'pending', 'active', 'failed')),
+        CHECK ((verified_at IS NULL AND NOT (
+                observed_dns_state = 'verified' AND observed_tls_state = 'active'))
+            OR (verified_at IS NOT NULL
+                AND observed_dns_state = 'verified' AND observed_tls_state = 'active'))
+    );
+    CREATE INDEX domains_org_idx ON domains (org_id, hostname);
+
+    -- Publication rows have no general-purpose CRUD API. The future atomic
+    -- publisher is the sole intended writer; ordinary topology writes may
+    -- only reference a ready same-registry publication through guarded SQL.
+    CREATE TABLE registry_publications (
+        publication_id       KEYTEXT64 PRIMARY KEY,
+        registry_id          INTEGER NOT NULL REFERENCES registries(id),
+        ordinal              INTEGER NOT NULL,
+        generation           KEYTEXT128 NOT NULL,
+        manifest_digest      KEYTEXT128 NOT NULL,
+        refs_digest          KEYTEXT128 NOT NULL,
+        default_commit       KEYTEXT128,
+        parent_publication_id KEYTEXT64,
+        state                KEYTEXT32 NOT NULL,
+        mutation_version     INTEGER NOT NULL DEFAULT 0,
+        created_at           INTEGER NOT NULL,
+        completed_at         INTEGER,
+        retired_at           INTEGER,
+        CHECK (ordinal > 0),
+        CHECK (state IN ('preparing', 'writing_pointers', 'ready', 'failed', 'retired')),
+        CHECK ((state IN ('preparing', 'writing_pointers')
+                AND completed_at IS NULL AND retired_at IS NULL)
+            OR (state = 'ready' AND completed_at IS NOT NULL AND retired_at IS NULL)
+            OR (state = 'failed' AND completed_at IS NOT NULL AND retired_at IS NULL)
+            OR (state = 'retired' AND completed_at IS NOT NULL
+                AND retired_at IS NOT NULL AND retired_at >= completed_at)),
+        UNIQUE (registry_id, ordinal),
+        UNIQUE (registry_id, generation),
+        UNIQUE (registry_id, manifest_digest),
+        UNIQUE (publication_id, registry_id),
+        FOREIGN KEY (parent_publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id)
+    );
+
+    CREATE TABLE registry_publication_state (
+        registry_id           INTEGER PRIMARY KEY REFERENCES registries(id),
+        current_publication_id KEYTEXT64,
+        next_ordinal          INTEGER NOT NULL DEFAULT 1,
+        resource_version      INTEGER NOT NULL DEFAULT 1,
+        updated_at            INTEGER NOT NULL,
+        CHECK (next_ordinal > 0),
+        FOREIGN KEY (current_publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id)
+    );
+
+    CREATE TABLE registry_index_publication_state (
+        registry_id   INTEGER PRIMARY KEY REFERENCES registry_index(registry_id),
+        publication_id KEYTEXT64 NOT NULL,
+        FOREIGN KEY (publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id)
+    );
+
+    CREATE TABLE surface_placements (
+        id                   INTEGER PRIMARY KEY,
+        registry_id          INTEGER REFERENCES registries(id) ON DELETE CASCADE,
+        cache_id             INTEGER REFERENCES caches(id) ON DELETE CASCADE,
+        primary_registry_id  INTEGER REFERENCES registries(id) ON DELETE CASCADE,
+        primary_cache_id     INTEGER REFERENCES caches(id) ON DELETE CASCADE,
+        name                 KEYTEXT64 NOT NULL,
+        storage_binding_id   INTEGER NOT NULL REFERENCES storage_bindings(id),
+        prefix               KEYTEXT512 NOT NULL,
+        role                 KEYTEXT32 NOT NULL,
+        state                KEYTEXT32 NOT NULL,
+        completeness         KEYTEXT32 NOT NULL,
+        partition_rule_json  LONGTEXT,
+        mutable_publication_id KEYTEXT64,
+        read_enabled         INTEGER NOT NULL DEFAULT 1,
+        write_enabled        INTEGER NOT NULL DEFAULT 0,
+        read_order           INTEGER NOT NULL DEFAULT 0,
+        write_order          INTEGER NOT NULL DEFAULT 0,
+        created_at           INTEGER NOT NULL,
+        updated_at           INTEGER NOT NULL,
+        resource_version     INTEGER NOT NULL DEFAULT 1,
+        CHECK ((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
+        CHECK ((role = 'primary'
+                AND ((registry_id IS NOT NULL
+                      AND primary_registry_id = registry_id
+                      AND primary_cache_id IS NULL)
+                  OR (cache_id IS NOT NULL
+                      AND primary_cache_id = cache_id
+                      AND primary_registry_id IS NULL)))
+            OR (role <> 'primary'
+                AND primary_registry_id IS NULL
+                AND primary_cache_id IS NULL)),
+        CHECK (role IN ('primary', 'replica', 'shard', 'archive')),
+        CHECK (state IN ('provisioning', 'syncing', 'ready', 'degraded',
+                         'draining', 'offline')),
+        CHECK (completeness IN ('complete', 'partial', 'unknown')),
+        CHECK ((role = 'shard' AND partition_rule_json IS NOT NULL)
+            OR (role <> 'shard' AND partition_rule_json IS NULL)),
+        CHECK ((role = 'primary' AND write_enabled = 1)
+            OR (role <> 'primary' AND write_enabled = 0)),
+        CHECK (role <> 'archive' OR read_enabled = 0),
+        CHECK (role <> 'shard' OR completeness = 'partial'),
+        -- v34 deliberately rejects every physical-location collision. An
+        -- equivalence record is evidence, not authority to create an alias;
+        -- a later reviewed alias workflow can replace this with a canonical
+        -- physical-location resource without making ordinary writes unsafe.
+        UNIQUE (storage_binding_id, prefix),
+        UNIQUE (registry_id, name),
+        UNIQUE (cache_id, name),
+        UNIQUE (primary_registry_id),
+        UNIQUE (primary_cache_id),
+        UNIQUE (id, registry_id),
+        FOREIGN KEY (mutable_publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id)
+    );
+    CREATE INDEX surface_placements_registry_idx
+        ON surface_placements (registry_id, read_order, id);
+    CREATE INDEX surface_placements_cache_idx
+        ON surface_placements (cache_id, read_order, id);
+
+    CREATE TABLE placement_policies (
+        id               INTEGER PRIMARY KEY,
+        registry_id      INTEGER REFERENCES registries(id) ON DELETE CASCADE,
+        cache_id         INTEGER REFERENCES caches(id) ON DELETE CASCADE,
+        name             KEYTEXT64 NOT NULL,
+        kind             KEYTEXT32 NOT NULL,
+        config_json      LONGTEXT NOT NULL DEFAULT ('{}'),
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        CHECK ((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
+        CHECK (kind IN ('ordered_failover', 'latency_preferred',
+                        'hash_partition', 'local_then_remote')),
+        UNIQUE (registry_id, name),
+        UNIQUE (cache_id, name)
+    );
+
+    CREATE TABLE placement_policy_members (
+        policy_id    INTEGER NOT NULL REFERENCES placement_policies(id) ON DELETE CASCADE,
+        placement_id INTEGER NOT NULL REFERENCES surface_placements(id),
+        member_order INTEGER NOT NULL,
+        required     INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (policy_id, placement_id),
+        UNIQUE (policy_id, member_order)
+    );
+
+    CREATE TABLE placement_equivalences (
+        id                            INTEGER PRIMARY KEY,
+        placement_a_id                INTEGER NOT NULL REFERENCES surface_placements(id) ON DELETE CASCADE,
+        placement_b_id                INTEGER NOT NULL REFERENCES surface_placements(id) ON DELETE CASCADE,
+        physical_identity_fingerprint KEYTEXT128 NOT NULL,
+        confirmed_by                  KEYTEXT128 NOT NULL,
+        confirmed_at                  INTEGER NOT NULL,
+        validation_revision           KEYTEXT128 NOT NULL,
+        resource_version              INTEGER NOT NULL DEFAULT 1,
+        created_at                    INTEGER NOT NULL,
+        updated_at                    INTEGER NOT NULL,
+        CHECK (placement_a_id < placement_b_id),
+        UNIQUE (placement_a_id, placement_b_id)
+    );
+
+    CREATE TABLE storage_gateways (
+        id                       INTEGER PRIMARY KEY,
+        org_id                   INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+        storage_binding_id       INTEGER NOT NULL REFERENCES storage_bindings(id) ON DELETE CASCADE,
+        domain_id                INTEGER NOT NULL REFERENCES domains(id),
+        base_path                KEYTEXT512 NOT NULL DEFAULT '',
+        origin_path_rewrite      KEYTEXT512 NOT NULL DEFAULT '',
+        access_policy_json       LONGTEXT NOT NULL DEFAULT ('{}'),
+        enabled                  INTEGER NOT NULL DEFAULT 1,
+        desired_generation       INTEGER NOT NULL DEFAULT 1,
+        observed_generation      INTEGER NOT NULL DEFAULT 0,
+        reconciliation_state     KEYTEXT32 NOT NULL DEFAULT 'pending',
+        reconciliation_error     LONGTEXT,
+        resource_version         INTEGER NOT NULL DEFAULT 1,
+        created_at               INTEGER NOT NULL,
+        updated_at               INTEGER NOT NULL,
+        CHECK (reconciliation_state IN ('pending', 'reconciling', 'ready', 'failed')),
+        UNIQUE (domain_id, base_path)
+    );
+    CREATE INDEX storage_gateways_binding_idx ON storage_gateways (storage_binding_id, id);
+
+    CREATE TABLE topology_defaults (
+        id                 INTEGER PRIMARY KEY,
+        scope_kind         KEYTEXT32 NOT NULL,
+        org_id             INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+        scope_key          KEYTEXT64 NOT NULL UNIQUE,
+        storage_binding_id INTEGER REFERENCES storage_bindings(id),
+        domain_id          INTEGER REFERENCES domains(id),
+        storage_gateway_id INTEGER REFERENCES storage_gateways(id),
+        resource_version   INTEGER NOT NULL DEFAULT 1,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL,
+        CHECK ((scope_kind = 'instance' AND org_id IS NULL AND scope_key = 'instance')
+            OR (scope_kind = 'organization' AND org_id IS NOT NULL))
+    );
+    CREATE UNIQUE INDEX topology_defaults_org_idx ON topology_defaults (org_id);
+
+    CREATE TABLE delivery_routes (
+        id                  INTEGER PRIMARY KEY,
+        domain_id           INTEGER NOT NULL REFERENCES domains(id),
+        storage_gateway_id  INTEGER REFERENCES storage_gateways(id),
+        gateway_generation  INTEGER,
+        base_path           KEYTEXT512 NOT NULL DEFAULT '',
+        registry_id         INTEGER REFERENCES registries(id) ON DELETE CASCADE,
+        cache_id            INTEGER REFERENCES caches(id) ON DELETE CASCADE,
+        mode                KEYTEXT32 NOT NULL,
+        access_policy_json  LONGTEXT NOT NULL DEFAULT ('{}'),
+        placement_id        INTEGER REFERENCES surface_placements(id),
+        placement_policy_id INTEGER REFERENCES placement_policies(id),
+        serves_git          INTEGER NOT NULL DEFAULT 0,
+        serves_cache        INTEGER NOT NULL DEFAULT 0,
+        serves_web          INTEGER NOT NULL DEFAULT 0,
+        enabled             INTEGER NOT NULL DEFAULT 1,
+        readiness_state     KEYTEXT32 NOT NULL DEFAULT 'ready',
+        resource_version    INTEGER NOT NULL DEFAULT 1,
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL,
+        CHECK ((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
+        CHECK ((CASE WHEN placement_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN placement_policy_id IS NULL THEN 0 ELSE 1 END) = 1),
+        CHECK (mode IN ('hub_proxy', 'hub_redirect', 'direct')),
+        CHECK (mode <> 'direct' OR placement_id IS NOT NULL),
+        CHECK (readiness_state IN ('pending', 'ready', 'degraded', 'failed')),
+        CHECK (serves_git = 1 OR serves_cache = 1 OR serves_web = 1),
+        CHECK ((storage_gateway_id IS NULL AND gateway_generation IS NULL)
+            OR (storage_gateway_id IS NOT NULL AND gateway_generation IS NOT NULL
+                AND mode = 'direct')),
+        UNIQUE (domain_id, base_path)
+    );
+    CREATE INDEX delivery_routes_registry_idx ON delivery_routes (registry_id, id);
+    CREATE INDEX delivery_routes_cache_idx ON delivery_routes (cache_id, id);
+
+    CREATE TABLE canonical_routes (
+        id                INTEGER PRIMARY KEY,
+        registry_id       INTEGER REFERENCES registries(id) ON DELETE CASCADE,
+        cache_id          INTEGER REFERENCES caches(id) ON DELETE CASCADE,
+        audience          KEYTEXT32 NOT NULL,
+        delivery_route_id INTEGER NOT NULL REFERENCES delivery_routes(id),
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        resource_version  INTEGER NOT NULL DEFAULT 1,
+        CHECK ((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
+        CHECK (audience IN ('git', 'nix_cache', 'web')),
+        UNIQUE (registry_id, audience),
+        UNIQUE (cache_id, audience)
+    );
+
+    CREATE TABLE surface_objects (
+        id                 INTEGER PRIMARY KEY,
+        registry_id        INTEGER REFERENCES registries(id) ON DELETE CASCADE,
+        cache_id           INTEGER REFERENCES caches(id) ON DELETE CASCADE,
+        object_key         KEYTEXT512 NOT NULL,
+        object_kind        KEYTEXT32 NOT NULL,
+        content_hash       KEYTEXT128,
+        size               INTEGER,
+        mutable_publication_id KEYTEXT64,
+        lifecycle_state    KEYTEXT32 NOT NULL DEFAULT 'active',
+        tombstoned_at      INTEGER,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL,
+        resource_version   INTEGER NOT NULL DEFAULT 1,
+        CHECK ((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
+        CHECK ((object_kind = 'immutable' AND mutable_publication_id IS NULL)
+            OR (object_kind = 'mutable_pointer' AND registry_id IS NOT NULL
+                AND mutable_publication_id IS NOT NULL)),
+        CHECK ((lifecycle_state = 'active' AND tombstoned_at IS NULL)
+            OR (lifecycle_state = 'tombstoned' AND tombstoned_at IS NOT NULL)),
+        UNIQUE (registry_id, object_key),
+        UNIQUE (cache_id, object_key),
+        UNIQUE (id, registry_id),
+        FOREIGN KEY (mutable_publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id)
+    );
+
+    CREATE TABLE object_placements (
+        surface_object_id INTEGER NOT NULL REFERENCES surface_objects(id),
+        placement_id      INTEGER NOT NULL REFERENCES surface_placements(id),
+        state             KEYTEXT32 NOT NULL,
+        observed_hash     KEYTEXT128,
+        observed_size     INTEGER,
+        etag              KEYTEXT255,
+        deletion_job_id   KEYTEXT64,
+        observed_at       INTEGER NOT NULL,
+        CHECK (state IN ('present', 'copying', 'missing', 'corrupt', 'deleting')),
+        CHECK ((state = 'deleting' AND deletion_job_id IS NOT NULL)
+            OR (state <> 'deleting' AND deletion_job_id IS NULL)),
+        PRIMARY KEY (surface_object_id, placement_id)
+    );
+
+    CREATE TABLE registry_publication_objects (
+        publication_id    KEYTEXT64 NOT NULL REFERENCES registry_publications(publication_id),
+        registry_id       INTEGER NOT NULL REFERENCES registries(id),
+        surface_object_id INTEGER NOT NULL,
+        object_kind       KEYTEXT32 NOT NULL,
+        expected_hash     KEYTEXT128 NOT NULL,
+        expected_size     INTEGER NOT NULL,
+        CHECK (object_kind IN ('immutable', 'mutable_pointer')),
+        CHECK (expected_size >= 0),
+        PRIMARY KEY (publication_id, surface_object_id),
+        FOREIGN KEY (publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id),
+        FOREIGN KEY (surface_object_id, registry_id)
+            REFERENCES surface_objects(id, registry_id)
+    );
+
+    CREATE TABLE registry_publication_placements (
+        publication_id KEYTEXT64 NOT NULL REFERENCES registry_publications(publication_id),
+        registry_id    INTEGER NOT NULL REFERENCES registries(id),
+        placement_id   INTEGER NOT NULL,
+        required       INTEGER NOT NULL DEFAULT 1,
+        state          KEYTEXT32 NOT NULL,
+        observed_at    INTEGER NOT NULL,
+        CHECK (state IN ('preparing', 'writing_pointers', 'ready', 'failed', 'retired')),
+        PRIMARY KEY (publication_id, placement_id),
+        FOREIGN KEY (publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id),
+        FOREIGN KEY (placement_id, registry_id)
+            REFERENCES surface_placements(id, registry_id)
+    );
+
+    CREATE TABLE object_deletion_jobs (
+        job_id             KEYTEXT64 PRIMARY KEY,
+        surface_object_id  INTEGER NOT NULL REFERENCES surface_objects(id),
+        placement_id       INTEGER NOT NULL REFERENCES surface_placements(id),
+        state              KEYTEXT32 NOT NULL DEFAULT 'preparing',
+        active_slot        INTEGER DEFAULT 1,
+        attempt_count      INTEGER NOT NULL DEFAULT 0,
+        error              LONGTEXT,
+        created_at         INTEGER NOT NULL,
+        started_at         INTEGER,
+        finished_at        INTEGER,
+        resource_version   INTEGER NOT NULL DEFAULT 1,
+        CHECK (state IN ('preparing', 'pending', 'running', 'succeeded', 'failed', 'cancelled')),
+        CHECK (attempt_count >= 0),
+        CHECK ((state IN ('preparing', 'pending')
+                AND started_at IS NULL AND finished_at IS NULL)
+            OR (state = 'running' AND started_at IS NOT NULL AND finished_at IS NULL)
+            OR (state IN ('succeeded', 'failed', 'cancelled')
+                AND started_at IS NOT NULL AND finished_at IS NOT NULL)),
+        CHECK ((state IN ('preparing', 'pending', 'running', 'failed') AND active_slot = 1)
+            OR (state IN ('succeeded', 'cancelled') AND active_slot IS NULL)),
+        UNIQUE (surface_object_id, placement_id, active_slot)
+    );
+    CREATE INDEX object_deletion_jobs_state_idx
+        ON object_deletion_jobs (state, created_at, job_id);
+
+    CREATE TABLE cache_retention_subscriptions (
+        id                           INTEGER PRIMARY KEY,
+        cache_id                     INTEGER NOT NULL REFERENCES caches(id) ON DELETE CASCADE,
+        registry_id                  INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+        selector_json                LONGTEXT NOT NULL,
+        removal_grace_secs           INTEGER NOT NULL DEFAULT 0,
+        exposure_acknowledged_at     INTEGER,
+        enabled                      INTEGER NOT NULL DEFAULT 1,
+        last_successful_revision     KEYTEXT128,
+        last_refresh_at              INTEGER,
+        current_refresh_id            KEYTEXT64,
+        refresh_state                KEYTEXT32 NOT NULL DEFAULT 'stale',
+        refresh_error                LONGTEXT,
+        retired_at                   INTEGER,
+        resource_version             INTEGER NOT NULL DEFAULT 1,
+        created_at                   INTEGER NOT NULL,
+        updated_at                   INTEGER NOT NULL,
+        CHECK (refresh_state IN ('fresh', 'stale', 'refreshing', 'failed')),
+        CHECK (retired_at IS NULL OR enabled = 0),
+        UNIQUE (cache_id, registry_id),
+        UNIQUE (id, cache_id, registry_id)
+    );
+
+    CREATE TABLE cache_population_targets (
+        id                  INTEGER PRIMARY KEY,
+        cache_id            INTEGER NOT NULL REFERENCES caches(id) ON DELETE CASCADE,
+        registry_id         INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+        trigger_kind        KEYTEXT32 NOT NULL,
+        required            INTEGER NOT NULL DEFAULT 0,
+        placement_policy_id INTEGER REFERENCES placement_policies(id),
+        selector_json       LONGTEXT NOT NULL,
+        validation_gate     KEYTEXT32 NOT NULL,
+        enabled             INTEGER NOT NULL DEFAULT 1,
+        resource_version    INTEGER NOT NULL DEFAULT 1,
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL,
+        CHECK (trigger_kind IN ('release', 'manual', 'continuous')),
+        CHECK (validation_gate IN ('none', 'presence', 'closure', 'deep')),
+        UNIQUE (cache_id, registry_id, trigger_kind)
+    );
+
+    CREATE TABLE cache_retention_refreshes (
+        refresh_id       KEYTEXT64 PRIMARY KEY,
+        subscription_id  INTEGER NOT NULL REFERENCES cache_retention_subscriptions(id),
+        parent_refresh_id KEYTEXT64 REFERENCES cache_retention_refreshes(refresh_id),
+        state             KEYTEXT32 NOT NULL DEFAULT 'running',
+        source_revision   KEYTEXT128,
+        error             LONGTEXT,
+        started_at        INTEGER NOT NULL,
+        activated_at      INTEGER,
+        grace_until       INTEGER,
+        finished_at       INTEGER,
+        expected_reason_count INTEGER NOT NULL,
+        CHECK (expected_reason_count >= 0),
+        CHECK (state IN ('running', 'staged', 'failed')),
+        CHECK ((state = 'running' AND finished_at IS NULL AND error IS NULL)
+            OR (state = 'staged' AND finished_at IS NOT NULL
+                AND source_revision IS NOT NULL AND error IS NULL
+                AND activated_at IS NOT NULL AND grace_until >= activated_at)
+            OR (state = 'failed' AND finished_at IS NOT NULL AND error IS NOT NULL))
+    );
+
+    CREATE TABLE release_artifacts (
+        release_id      INTEGER NOT NULL REFERENCES releases(id) ON DELETE CASCADE,
+        package_name    KEYTEXT128 NOT NULL,
+        package_version KEYTEXT64 NOT NULL,
+        platform        KEYTEXT64 NOT NULL,
+        artifact_kind   KEYTEXT32 NOT NULL,
+        store_path      KEYTEXT512 NOT NULL,
+        store_hash      KEYTEXT64 NOT NULL,
+        CHECK (artifact_kind IN ('output', 'image', 'source_derivation')),
+        PRIMARY KEY (release_id, package_name, package_version, platform,
+                     artifact_kind, store_hash)
+    );
+    CREATE INDEX release_artifacts_hash_idx ON release_artifacts (store_hash, release_id);
+    CREATE UNIQUE INDEX releases_id_registry_idx ON releases (id, registry_id);
+
+    CREATE TABLE manual_retention_roots (
+        id               INTEGER PRIMARY KEY,
+        cache_id         INTEGER NOT NULL REFERENCES caches(id) ON DELETE CASCADE,
+        store_hash       KEYTEXT64 NOT NULL,
+        reason           LONGTEXT NOT NULL,
+        created_by       KEYTEXT128 NOT NULL,
+        created_at       INTEGER NOT NULL,
+        deleted_at       INTEGER,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (id, cache_id)
+    );
+    CREATE INDEX manual_retention_roots_cache_idx
+        ON manual_retention_roots (cache_id, deleted_at, id);
+
+    CREATE TABLE retention_leases (
+        id                       INTEGER PRIMARY KEY,
+        manual_retention_root_id INTEGER NOT NULL REFERENCES manual_retention_roots(id) ON DELETE CASCADE,
+        begins_at                INTEGER NOT NULL,
+        expires_at               INTEGER NOT NULL,
+        renewed_from_lease_id    INTEGER,
+        renewed_by               KEYTEXT128 NOT NULL,
+        renewed_at               INTEGER NOT NULL,
+        resource_version         INTEGER NOT NULL DEFAULT 1,
+        CHECK (expires_at > begins_at),
+        UNIQUE (id, manual_retention_root_id),
+        FOREIGN KEY (renewed_from_lease_id, manual_retention_root_id)
+            REFERENCES retention_leases(id, manual_retention_root_id)
+    );
+
+    CREATE TABLE cache_root_reasons (
+        id                        INTEGER PRIMARY KEY,
+        cache_id                  INTEGER NOT NULL REFERENCES caches(id),
+        registry_id               INTEGER REFERENCES registries(id),
+        store_hash                KEYTEXT64 NOT NULL,
+        reason_key                KEYTEXT255 NOT NULL,
+        source_kind               KEYTEXT32 NOT NULL,
+        refresh_id                KEYTEXT64 REFERENCES cache_retention_refreshes(refresh_id),
+        retention_subscription_id INTEGER REFERENCES cache_retention_subscriptions(id),
+        manual_retention_root_id   INTEGER REFERENCES manual_retention_roots(id),
+        retention_lease_id         INTEGER REFERENCES retention_leases(id),
+        release_id                 INTEGER REFERENCES releases(id),
+        channel_id                 INTEGER REFERENCES channels(id),
+        partition_bucket           INTEGER,
+        source_ref                 KEYTEXT255 NOT NULL,
+        source_revision            KEYTEXT128 NOT NULL,
+        expires_at                 INTEGER,
+        refreshed_at               INTEGER NOT NULL,
+        CHECK (source_kind IN ('manual', 'lease', 'registry_catalog', 'release', 'channel')),
+        CHECK ((source_kind = 'manual'
+                AND registry_id IS NULL AND retention_subscription_id IS NULL
+                AND refresh_id IS NULL
+                AND manual_retention_root_id IS NOT NULL
+                AND retention_lease_id IS NULL AND release_id IS NULL
+                AND channel_id IS NULL AND partition_bucket IS NULL)
+            OR (source_kind = 'lease'
+                AND registry_id IS NULL AND retention_subscription_id IS NULL
+                AND refresh_id IS NULL
+                AND manual_retention_root_id IS NOT NULL
+                AND retention_lease_id IS NOT NULL AND release_id IS NULL
+                AND channel_id IS NULL AND partition_bucket IS NULL)
+            OR (source_kind = 'registry_catalog'
+                AND registry_id IS NOT NULL AND retention_subscription_id IS NOT NULL
+                AND refresh_id IS NOT NULL
+                AND manual_retention_root_id IS NULL
+                AND retention_lease_id IS NULL AND release_id IS NULL
+                AND channel_id IS NULL AND partition_bucket IS NULL)
+            OR (source_kind = 'channel'
+                AND registry_id IS NOT NULL AND retention_subscription_id IS NOT NULL
+                AND refresh_id IS NOT NULL
+                AND manual_retention_root_id IS NULL
+                AND retention_lease_id IS NULL AND release_id IS NOT NULL
+                AND channel_id IS NOT NULL AND partition_bucket IS NOT NULL)
+            OR (source_kind = 'release'
+                AND registry_id IS NOT NULL AND retention_subscription_id IS NOT NULL
+                AND refresh_id IS NOT NULL
+                AND manual_retention_root_id IS NULL
+                AND retention_lease_id IS NULL AND release_id IS NOT NULL
+                AND channel_id IS NULL AND partition_bucket IS NULL)),
+        UNIQUE (refresh_id, reason_key),
+        UNIQUE (manual_retention_root_id, reason_key),
+        FOREIGN KEY (retention_subscription_id, cache_id, registry_id)
+            REFERENCES cache_retention_subscriptions(id, cache_id, registry_id),
+        FOREIGN KEY (manual_retention_root_id, cache_id)
+            REFERENCES manual_retention_roots(id, cache_id),
+        FOREIGN KEY (retention_lease_id, manual_retention_root_id)
+            REFERENCES retention_leases(id, manual_retention_root_id),
+        FOREIGN KEY (release_id, registry_id)
+            REFERENCES releases(id, registry_id)
+    );
+    CREATE INDEX cache_root_reasons_cache_idx
+        ON cache_root_reasons (cache_id, store_hash, expires_at);
+
+    CREATE TABLE registry_cache_stack_entries (
+        registry_id      INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+        stack_path       KEYTEXT512 NOT NULL,
+        committed_url    LONGTEXT NOT NULL,
+        resolved_priority INTEGER NOT NULL,
+        cache_id         INTEGER REFERENCES caches(id) ON DELETE SET NULL,
+        delivery_route_id INTEGER REFERENCES delivery_routes(id) ON DELETE SET NULL,
+        indexed_commit   KEYTEXT128 NOT NULL,
+        PRIMARY KEY (registry_id, stack_path)
+    );
+
+    CREATE TABLE topology_plans (
+        plan_id             KEYTEXT64 PRIMARY KEY,
+        plan_kind           KEYTEXT64 NOT NULL,
+        actor_kind          KEYTEXT32 NOT NULL,
+        actor_id            INTEGER,
+        actor_label         TEXT NOT NULL,
+        scope               KEYTEXT255 NOT NULL,
+        input_versions_json LONGTEXT NOT NULL,
+        effects_json        LONGTEXT NOT NULL,
+        warnings_json       LONGTEXT NOT NULL,
+        confirmation_hash   KEYTEXT128,
+        created_at          INTEGER NOT NULL,
+        expires_at          INTEGER NOT NULL,
+        applied_at          INTEGER,
+        CHECK (expires_at > created_at),
+        CHECK (actor_kind IN ('user', 'service_account', 'key', 'system'))
+    );
+    CREATE INDEX topology_plans_scope_idx ON topology_plans (scope, created_at);
+
+    CREATE TABLE topology_operations (
+        operation_id     KEYTEXT64 PRIMARY KEY,
+        operation_kind   KEYTEXT64 NOT NULL,
+        registry_id      INTEGER REFERENCES registries(id),
+        cache_id         INTEGER REFERENCES caches(id),
+        placement_id     INTEGER REFERENCES surface_placements(id),
+        state            KEYTEXT32 NOT NULL,
+        progress_current INTEGER NOT NULL DEFAULT 0,
+        progress_total   INTEGER,
+        detail_json      LONGTEXT NOT NULL DEFAULT ('{}'),
+        error            LONGTEXT,
+        created_at       INTEGER NOT NULL,
+        started_at       INTEGER,
+        finished_at      INTEGER,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        CHECK (state IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+        CHECK (progress_current >= 0),
+        CHECK (progress_total IS NULL OR progress_total >= progress_current),
+        CHECK ((state = 'pending' AND started_at IS NULL AND finished_at IS NULL)
+            OR (state = 'running' AND started_at IS NOT NULL AND finished_at IS NULL)
+            OR (state IN ('succeeded', 'failed', 'cancelled')
+                AND started_at IS NOT NULL AND finished_at IS NOT NULL)),
+        CHECK (started_at IS NULL OR started_at >= created_at),
+        CHECK (finished_at IS NULL OR finished_at >= started_at),
+        CHECK (state <> 'succeeded' OR error IS NULL),
+        CHECK (state <> 'failed' OR error IS NOT NULL)
+    );
+    CREATE INDEX topology_operations_registry_idx
+        ON topology_operations (registry_id, created_at);
+    CREATE INDEX topology_operations_cache_idx
+        ON topology_operations (cache_id, created_at);
     ",
 ];
 
@@ -2349,6 +2953,878 @@ pub struct FrontendProbeRow {
     pub checked_at: Option<i64>,
 }
 
+/// A verified hostname whose paths may be mapped to Hub surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomainRecord {
+    /// Database id.
+    pub id: i64,
+    /// Owning organization, or `None` for instance scope.
+    pub org_id: Option<i64>,
+    /// Lowercase hostname without a scheme or path.
+    pub hostname: String,
+    /// Configured DNS provider identifier, when Hub-managed.
+    pub desired_dns_provider: Option<String>,
+    /// DNS lifecycle state.
+    pub observed_dns_state: String,
+    /// Configured TLS provider identifier, when Hub-managed.
+    pub desired_tls_provider: Option<String>,
+    /// TLS lifecycle state.
+    pub observed_tls_state: String,
+    /// Serialized external-access-provider declaration.
+    pub access_provider_json: String,
+    /// Verification time, or `None` while unverified.
+    pub verified_at: Option<i64>,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+}
+
+/// One immutable registry publication assembled before mutable pointers move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationRecord {
+    /// Stable opaque publication id.
+    pub publication_id: String,
+    /// Registry whose bytes and pointers are published.
+    pub registry_id: i64,
+    /// Monotonic per-registry ordering number.
+    pub ordinal: i64,
+    /// Source generation identifier.
+    pub generation: String,
+    /// Digest of the immutable publication manifest.
+    pub manifest_digest: String,
+    /// Digest of the complete refs snapshot.
+    pub refs_digest: String,
+    /// Default Git commit, when the registry defines one.
+    pub default_commit: Option<String>,
+    /// Immediately preceding publication, when any.
+    pub parent_publication_id: Option<String>,
+    /// `preparing`, `writing_pointers`, `ready`, `failed`, or `retired`.
+    pub state: String,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Completion time once ready or retired.
+    pub completed_at: Option<i64>,
+    /// Retirement time.
+    pub retired_at: Option<i64>,
+}
+
+/// The single authoritative current-publication pointer for a registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationStateRecord {
+    /// Registry owning this singleton state row.
+    pub registry_id: i64,
+    /// Current ready publication, or `None` before first publication.
+    pub current_publication_id: Option<String>,
+    /// Ordinal reserved for the next publication.
+    pub next_ordinal: i64,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+}
+
+/// Immutable expected-object snapshot captured by one publication.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationObjectRecord {
+    /// Publication owning the snapshot entry.
+    pub publication_id: String,
+    /// Registry repeated to enforce same-registry composite references.
+    pub registry_id: i64,
+    /// Logical surface object.
+    pub surface_object_id: i64,
+    /// Snapshotted object kind.
+    pub object_kind: String,
+    /// Expected content digest.
+    pub expected_hash: String,
+    /// Expected byte size.
+    pub expected_size: i64,
+}
+
+/// Per-placement progress toward publishing one registry generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationPlacementRecord {
+    /// Publication being materialized.
+    pub publication_id: String,
+    /// Registry repeated to enforce same-registry composite references.
+    pub registry_id: i64,
+    /// Destination registry placement.
+    pub placement_id: i64,
+    /// Whether failure prevents the publication becoming current.
+    pub required: bool,
+    /// `preparing`, `writing_pointers`, `ready`, `failed`, or `retired`.
+    pub state: String,
+    /// Last observed transition time in Unix seconds.
+    pub observed_at: i64,
+}
+
+/// Expected object snapshot attached to a preparing registry publication.
+#[derive(Debug, Clone)]
+pub struct SetRegistryPublicationObject {
+    /// Publication receiving the immutable snapshot row.
+    pub publication_id: String,
+    /// Logical registry object included by the publication.
+    pub surface_object_id: i64,
+    /// Snapshotted object kind.
+    pub object_kind: String,
+    /// Expected content digest.
+    pub expected_hash: String,
+    /// Expected byte size.
+    pub expected_size: i64,
+}
+
+/// Desired per-placement publication progress update.
+#[derive(Debug, Clone)]
+pub struct SetRegistryPublicationPlacement {
+    /// Publication being materialized.
+    pub publication_id: String,
+    /// Destination registry placement.
+    pub placement_id: i64,
+    /// Whether this placement gates publication readiness.
+    pub required: bool,
+    /// Publication progress state.
+    pub state: String,
+    /// Observation time in Unix seconds.
+    pub observed_at: i64,
+}
+
+/// One physical placement of a registry or binary-cache surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfacePlacementRecord {
+    /// Database id.
+    pub id: i64,
+    /// Registry target, or `None` for a binary-cache placement.
+    pub registry_id: Option<i64>,
+    /// Binary-cache target, or `None` for a registry placement.
+    pub cache_id: Option<i64>,
+    /// Stable human-readable name within the surface.
+    pub name: String,
+    /// Storage binding containing the placement.
+    pub storage_binding_id: i64,
+    /// Surface-relative prefix within the binding.
+    pub prefix: String,
+    /// Placement role: `primary`, `replica`, `shard`, or `archive`.
+    pub role: String,
+    /// Operational state.
+    pub state: String,
+    /// Inventory completeness: `complete`, `partial`, or `unknown`.
+    pub completeness: String,
+    /// Serialized shard rule; present only for a `shard` placement.
+    pub partition_rule_json: Option<String>,
+    /// Last completely published mutable-pointer publication.
+    pub mutable_publication_id: Option<String>,
+    /// Whether reads may select this placement.
+    pub read_enabled: bool,
+    /// Whether writes may select this placement.
+    pub write_enabled: bool,
+    /// Lower ordinal is preferred for reads.
+    pub read_order: i64,
+    /// Lower ordinal is preferred for writes.
+    pub write_order: i64,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+}
+
+/// A named placement-selection policy for one surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacementPolicyRecord {
+    /// Database id.
+    pub id: i64,
+    /// Registry target, or `None` for a binary-cache policy.
+    pub registry_id: Option<i64>,
+    /// Binary-cache target, or `None` for a registry policy.
+    pub cache_id: Option<i64>,
+    /// Stable name within the owning surface.
+    pub name: String,
+    /// Selection algorithm.
+    pub kind: String,
+    /// Algorithm-specific serialized configuration.
+    pub config_json: String,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+}
+
+/// A hostname/path mapping from a domain to one surface and placement policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryRouteRecord {
+    /// Database id.
+    pub id: i64,
+    /// Domain owning the hostname.
+    pub domain_id: i64,
+    /// Source storage gateway for a materialized direct route.
+    pub storage_gateway_id: Option<i64>,
+    /// Gateway generation that produced this route.
+    pub gateway_generation: Option<i64>,
+    /// Normalized rooted path, or the empty string for the domain root.
+    pub base_path: String,
+    /// Registry target, or `None` for a binary-cache route.
+    pub registry_id: Option<i64>,
+    /// Binary-cache target, or `None` for a registry route.
+    pub cache_id: Option<i64>,
+    /// Delivery mode: `hub_proxy`, `hub_redirect`, or `direct`.
+    pub mode: String,
+    /// Serialized authorization/access policy.
+    pub access_policy_json: String,
+    /// Direct placement selection, if this route does not use a policy.
+    pub placement_id: Option<i64>,
+    /// Placement policy selection, if this route does not pin a placement.
+    pub placement_policy_id: Option<i64>,
+    /// Whether the route serves the Git surface.
+    pub serves_git: bool,
+    /// Whether the route serves the Nix-cache surface.
+    pub serves_cache: bool,
+    /// Whether the route serves the Web surface.
+    pub serves_web: bool,
+    /// Whether request matching may select the route.
+    pub enabled: bool,
+    /// Reconciliation/readiness state used by canonical selection.
+    pub readiness_state: String,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+}
+
+/// Creation-time topology defaults for the instance or one organization.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyDefaultsRecord {
+    /// Database id.
+    pub id: i64,
+    /// Scope discriminator: `instance` or `organization`.
+    pub scope_kind: String,
+    /// Organization id for an organization-scoped row.
+    pub org_id: Option<i64>,
+    /// Stable uniqueness key (`instance` or `org:<id>`).
+    pub scope_key: String,
+    /// Default storage binding for new placements.
+    pub storage_binding_id: Option<i64>,
+    /// Default domain for new delivery routes.
+    pub domain_id: Option<i64>,
+    /// Default storage gateway for new direct routes.
+    pub storage_gateway_id: Option<i64>,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+}
+
+/// A registry-derived retention policy owned by one binary cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheRetentionSubscriptionRecord {
+    /// Database id.
+    pub id: i64,
+    /// Binary cache whose GC roots the selector contributes to.
+    pub cache_id: i64,
+    /// Registry supplying verified artifacts.
+    pub registry_id: i64,
+    /// Serialized typed retention selector.
+    pub selector_json: String,
+    /// Grace time before removed reasons become collectable.
+    pub removal_grace_secs: i64,
+    /// Explicit public-exposure acknowledgement time, when required.
+    pub exposure_acknowledged_at: Option<i64>,
+    /// Whether refresh evaluates this subscription.
+    pub enabled: bool,
+    /// Last registry revision successfully materialized.
+    pub last_successful_revision: Option<String>,
+    /// Last refresh attempt time.
+    pub last_refresh_at: Option<i64>,
+    /// Authoritative active immutable refresh generation.
+    pub current_refresh_id: Option<String>,
+    /// Refresh lifecycle: `fresh`, `stale`, `refreshing`, or `failed`.
+    pub refresh_state: String,
+    /// Last refresh error; prior successful reasons remain live on failure.
+    pub refresh_error: Option<String>,
+    /// Retirement time, or `None` while the subscription is active.
+    pub retired_at: Option<i64>,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+}
+
+/// A registry workflow destination that populates one binary cache.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachePopulationTargetRecord {
+    /// Database id.
+    pub id: i64,
+    /// Destination binary cache.
+    pub cache_id: i64,
+    /// Source registry.
+    pub registry_id: i64,
+    /// Population trigger: `release`, `manual`, or `continuous`.
+    pub trigger_kind: String,
+    /// Whether failure blocks the publishing workflow.
+    pub required: bool,
+    /// Placement write policy, when population does not use the cache default.
+    pub placement_policy_id: Option<i64>,
+    /// Serialized artifact selector.
+    pub selector_json: String,
+    /// Required validation gate.
+    pub validation_gate: String,
+    /// Whether the target may enqueue population work.
+    pub enabled: bool,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+}
+
+/// One logical object owned by a registry or binary-cache surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceObjectRecord {
+    /// Database id.
+    pub id: i64,
+    /// Registry target, or `None` for a binary-cache object.
+    pub registry_id: Option<i64>,
+    /// Binary-cache target, or `None` for a registry object.
+    pub cache_id: Option<i64>,
+    /// Surface-relative object key.
+    pub object_key: String,
+    /// Content digest, when known.
+    pub content_hash: Option<String>,
+    /// Object size in bytes, when known.
+    pub size: Option<i64>,
+    /// Object kind: `immutable` or `mutable_pointer`.
+    pub object_kind: String,
+    /// Authoritative publication owning a mutable pointer.
+    pub mutable_publication_id: Option<String>,
+    /// Logical lifecycle: `active` or `tombstoned`.
+    pub lifecycle_state: String,
+    /// Tombstone time, or `None` while active.
+    pub tombstoned_at: Option<i64>,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+}
+
+/// Observed presence of one logical object at one same-surface placement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectPlacementRecord {
+    /// Logical object.
+    pub surface_object_id: i64,
+    /// Physical placement.
+    pub placement_id: i64,
+    /// Presence state.
+    pub state: String,
+    /// Observed content digest.
+    pub observed_hash: Option<String>,
+    /// Observed size in bytes.
+    pub observed_size: Option<i64>,
+    /// Backend entity tag.
+    pub etag: Option<String>,
+    /// Observation time in Unix seconds.
+    pub observed_at: i64,
+}
+
+/// Durable deletion of a tombstoned object from one placement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectDeletionJobRecord {
+    /// Stable opaque job id.
+    pub job_id: String,
+    /// Tombstoned logical object.
+    pub surface_object_id: i64,
+    /// Placement from which the object is deleted.
+    pub placement_id: i64,
+    /// Job lifecycle state.
+    pub state: String,
+    /// Number of physical deletion attempts.
+    pub attempt_count: i64,
+    /// Last failure detail.
+    pub error: Option<String>,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Start time in Unix seconds.
+    pub started_at: Option<i64>,
+    /// Finish time in Unix seconds.
+    pub finished_at: Option<i64>,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+}
+
+/// A typed reference to either kind of servable surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceTarget {
+    /// A registry surface by database id.
+    Registry(i64),
+    /// A managed binary-cache surface by database id.
+    BinaryCache(i64),
+}
+
+impl SurfaceTarget {
+    /// Returns the nullable database ids used by the topology tables.
+    fn ids(self) -> (Option<i64>, Option<i64>) {
+        match self {
+            Self::Registry(id) => (Some(id), None),
+            Self::BinaryCache(id) => (None, Some(id)),
+        }
+    }
+}
+
+/// Input for creating a domain resource.
+#[derive(Debug, Clone)]
+pub struct NewDomain {
+    /// Owning organization, or `None` for instance scope.
+    pub org_id: Option<i64>,
+    /// Hostname without scheme, port, path, query, or fragment.
+    pub hostname: String,
+    /// Optional DNS provider identifier.
+    pub desired_dns_provider: Option<String>,
+    /// Optional TLS provider identifier.
+    pub desired_tls_provider: Option<String>,
+    /// Serialized external-access-provider declaration.
+    pub access_provider_json: String,
+}
+
+/// Input for a version-checked domain lifecycle update.
+#[derive(Debug, Clone)]
+pub struct UpdateDomain {
+    /// Expected optimistic-concurrency version.
+    pub expected_version: i64,
+    /// Optional DNS provider identifier.
+    pub desired_dns_provider: Option<String>,
+    /// Optional TLS provider identifier.
+    pub desired_tls_provider: Option<String>,
+    /// Serialized external-access-provider declaration.
+    pub access_provider_json: String,
+}
+
+/// Input for creating a physical surface placement.
+#[derive(Debug, Clone)]
+pub struct NewSurfacePlacement {
+    /// Surface receiving the placement.
+    pub surface: SurfaceTarget,
+    /// Stable human-readable name within the surface.
+    pub name: String,
+    /// Storage binding containing the placement.
+    pub storage_binding_id: i64,
+    /// Surface-relative prefix within the binding.
+    pub prefix: String,
+    /// `primary`, `replica`, `shard`, or `archive`.
+    pub role: String,
+    /// Initial operational state.
+    pub state: String,
+    /// Initial inventory completeness.
+    pub completeness: String,
+    /// Serialized shard rule, required only for `shard`.
+    pub partition_rule_json: Option<String>,
+    /// Whether reads may select the placement.
+    pub read_enabled: bool,
+    /// Whether writes may select the placement.
+    pub write_enabled: bool,
+    /// Lower ordinal is preferred for reads.
+    pub read_order: i64,
+    /// Lower ordinal is preferred for writes.
+    pub write_order: i64,
+}
+
+/// Input for a version-checked placement update.
+#[derive(Debug, Clone)]
+pub struct UpdateSurfacePlacement {
+    /// Expected optimistic-concurrency version.
+    pub expected_version: i64,
+    /// New operational state.
+    pub state: String,
+    /// New inventory completeness.
+    pub completeness: String,
+    /// Serialized shard rule, required only for `shard`.
+    pub partition_rule_json: Option<String>,
+    /// Whether reads may select the placement.
+    pub read_enabled: bool,
+    /// Whether writes may select the placement.
+    pub write_enabled: bool,
+    /// Lower ordinal is preferred for reads.
+    pub read_order: i64,
+    /// Lower ordinal is preferred for writes.
+    pub write_order: i64,
+}
+
+/// Input for creating a placement-selection policy.
+#[derive(Debug, Clone)]
+pub struct NewPlacementPolicy {
+    /// Surface owning the policy.
+    pub surface: SurfaceTarget,
+    /// Stable name within the surface.
+    pub name: String,
+    /// Selection algorithm.
+    pub kind: String,
+    /// Serialized algorithm-specific configuration.
+    pub config_json: String,
+}
+
+/// One desired member of a placement policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacementPolicyMemberInput {
+    /// Placement to select.
+    pub placement_id: i64,
+    /// Lower ordinal is selected first.
+    pub member_order: i64,
+    /// Whether an unavailable member makes the policy unhealthy.
+    pub required: bool,
+}
+
+/// One stored member of a placement-selection policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlacementPolicyMemberRecord {
+    /// Owning policy.
+    pub policy_id: i64,
+    /// Selected placement.
+    pub placement_id: i64,
+    /// Lower ordinal is selected first.
+    pub member_order: i64,
+    /// Whether an unavailable member makes the policy unhealthy.
+    pub required: bool,
+}
+
+/// A route's placement selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutePlacementSelector {
+    /// Pin the route to one placement.
+    Placement(i64),
+    /// Select through a named placement policy.
+    Policy(i64),
+}
+
+impl RoutePlacementSelector {
+    /// Returns the nullable ids used by `delivery_routes`.
+    fn ids(self) -> (Option<i64>, Option<i64>) {
+        match self {
+            Self::Placement(id) => (Some(id), None),
+            Self::Policy(id) => (None, Some(id)),
+        }
+    }
+}
+
+/// Input for creating a delivery route.
+#[derive(Debug, Clone)]
+pub struct NewDeliveryRoute {
+    /// Domain owning the route's hostname.
+    pub domain_id: i64,
+    /// Materializing storage gateway, for a gateway-derived direct route.
+    pub storage_gateway_id: Option<i64>,
+    /// Gateway generation that materialized the route.
+    pub gateway_generation: Option<i64>,
+    /// Rooted path, or empty for the hostname root.
+    pub base_path: String,
+    /// Surface served by the route.
+    pub surface: SurfaceTarget,
+    /// `hub_proxy`, `hub_redirect`, or `direct`.
+    pub mode: String,
+    /// Serialized authorization/access policy.
+    pub access_policy_json: String,
+    /// Placement or placement-policy selector.
+    pub selector: RoutePlacementSelector,
+    /// Whether the route serves Git.
+    pub serves_git: bool,
+    /// Whether the route serves the Nix cache protocol.
+    pub serves_cache: bool,
+    /// Whether the route serves Web pages.
+    pub serves_web: bool,
+    /// Whether request matching may select the route.
+    pub enabled: bool,
+}
+
+/// Input for a version-checked delivery-route behavior update.
+#[derive(Debug, Clone)]
+pub struct UpdateDeliveryRoute {
+    /// Expected optimistic-concurrency version.
+    pub expected_version: i64,
+    /// Delivery mode.
+    pub mode: String,
+    /// Serialized authorization/access policy.
+    pub access_policy_json: String,
+    /// Whether the route serves Git.
+    pub serves_git: bool,
+    /// Whether the route serves the Nix cache protocol.
+    pub serves_cache: bool,
+    /// Whether the route serves Web pages.
+    pub serves_web: bool,
+    /// Whether request matching may select the route.
+    pub enabled: bool,
+}
+
+/// One canonical route selection for a protocol audience.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalRouteRecord {
+    /// Database id.
+    pub id: i64,
+    /// Surface owning the selection.
+    pub surface: SurfaceTarget,
+    /// `git`, `nix_cache`, or `web`.
+    pub audience: String,
+    /// Selected delivery route.
+    pub delivery_route_id: i64,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last update time in Unix seconds.
+    pub updated_at: i64,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+}
+
+/// Scope receiving creation-time topology defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopologyScope {
+    /// Instance scope.
+    Instance,
+    /// Organization scope by database id.
+    Organization(i64),
+}
+
+/// Input for setting creation-time topology defaults.
+#[derive(Debug, Clone)]
+pub struct SetTopologyDefaults {
+    /// Scope receiving the defaults.
+    pub scope: TopologyScope,
+    /// Default storage binding for new placements.
+    pub storage_binding_id: Option<i64>,
+    /// Default domain for new routes.
+    pub domain_id: Option<i64>,
+    /// Default storage gateway for new direct routes.
+    pub storage_gateway_id: Option<i64>,
+    /// Expected version, or `None` when creating the row.
+    pub expected_version: Option<i64>,
+}
+
+/// Input for creating or replacing a retention subscription.
+#[derive(Debug, Clone)]
+pub struct SetCacheRetentionSubscription {
+    /// Destination binary cache.
+    pub cache_id: i64,
+    /// Artifact-source registry.
+    pub registry_id: i64,
+    /// Serialized typed selector.
+    pub selector_json: String,
+    /// Grace time before removed reasons become collectable.
+    pub removal_grace_secs: i64,
+    /// Explicit public-exposure acknowledgement time.
+    pub exposure_acknowledged_at: Option<i64>,
+    /// Whether refresh evaluates this subscription.
+    pub enabled: bool,
+    /// Expected version, or `None` when creating the subscription.
+    pub expected_version: Option<i64>,
+}
+
+/// One immutable registry-derived reason staged by a retention refresh.
+#[derive(Debug, Clone)]
+pub struct RetentionRefreshReasonInput {
+    /// Stable reason identity within the cache.
+    pub reason_key: String,
+    /// Nix store hash retained by the reason.
+    pub store_hash: String,
+    /// `registry_catalog`, `release`, or `channel`.
+    pub source_kind: String,
+    /// Human-inspectable source identity.
+    pub source_ref: String,
+    /// Stable release provenance for release/channel reasons.
+    pub release_id: Option<i64>,
+    /// Channel provenance for channel reasons.
+    pub channel_id: Option<i64>,
+    /// Channel partition bucket for channel reasons.
+    pub partition_bucket: Option<i64>,
+    /// Optional reason-specific expiry.
+    pub expires_at: Option<i64>,
+}
+
+/// Input for creating or updating a logical surface object.
+#[derive(Debug, Clone)]
+pub struct SetSurfaceObject {
+    /// Owning surface.
+    pub surface: SurfaceTarget,
+    /// Surface-relative object key.
+    pub object_key: String,
+    /// Content digest, when known.
+    pub content_hash: Option<String>,
+    /// Object size in bytes, when known.
+    pub size: Option<i64>,
+    /// `immutable` or `mutable_pointer`.
+    pub object_kind: String,
+    /// Authoritative registry publication for a mutable pointer.
+    pub mutable_publication_id: Option<String>,
+}
+
+/// Input for recording same-surface object presence.
+#[derive(Debug, Clone)]
+pub struct SetObjectPlacement {
+    /// Logical object.
+    pub surface_object_id: i64,
+    /// Placement observing the object.
+    pub placement_id: i64,
+    /// `present`, `copying`, `missing`, `corrupt`, or `deleting`.
+    pub state: String,
+    /// Observed content digest.
+    pub observed_hash: Option<String>,
+    /// Observed size in bytes.
+    pub observed_size: Option<i64>,
+    /// Backend entity tag.
+    pub etag: Option<String>,
+    /// Observation time in Unix seconds.
+    pub observed_at: i64,
+}
+
+/// Input for scheduling one physical deletion of a tombstoned object.
+#[derive(Debug, Clone)]
+pub struct NewObjectDeletionJob {
+    /// Stable opaque job id.
+    pub job_id: String,
+    /// Tombstoned logical object.
+    pub surface_object_id: i64,
+    /// Same-surface placement containing the object.
+    pub placement_id: i64,
+}
+
+/// Input for creating or replacing a population target.
+#[derive(Debug, Clone)]
+pub struct SetCachePopulationTarget {
+    /// Destination binary cache.
+    pub cache_id: i64,
+    /// Artifact-source registry.
+    pub registry_id: i64,
+    /// `release`, `manual`, or `continuous`.
+    pub trigger_kind: String,
+    /// Whether failure blocks publication.
+    pub required: bool,
+    /// Placement policy controlling destination writes.
+    pub placement_policy_id: Option<i64>,
+    /// Serialized artifact selector.
+    pub selector_json: String,
+    /// `none`, `presence`, `closure`, or `deep`.
+    pub validation_gate: String,
+    /// Whether population work may be enqueued.
+    pub enabled: bool,
+    /// Expected version, or `None` when creating the target.
+    pub expected_version: Option<i64>,
+}
+
+/// An immutable semantic plan awaiting an explicit apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyPlanRecord {
+    /// Stable opaque plan id.
+    pub plan_id: String,
+    /// Operation family that produced the plan.
+    pub plan_kind: String,
+    /// Actor kind captured at planning time.
+    pub actor_kind: String,
+    /// Actor database id, when applicable.
+    pub actor_id: Option<i64>,
+    /// Human-readable actor label.
+    pub actor_label: String,
+    /// Authorization scope.
+    pub scope: String,
+    /// Serialized input resource versions.
+    pub input_versions_json: String,
+    /// Serialized semantic effects.
+    pub effects_json: String,
+    /// Serialized warnings.
+    pub warnings_json: String,
+    /// Hash of a required confirmation token.
+    pub confirmation_hash: Option<String>,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Expiry time in Unix seconds.
+    pub expires_at: i64,
+    /// Apply time, or `None` while unused.
+    pub applied_at: Option<i64>,
+}
+
+/// Input for storing an immutable semantic plan.
+#[derive(Debug, Clone)]
+pub struct NewTopologyPlan {
+    /// Stable opaque plan id.
+    pub plan_id: String,
+    /// Operation family that produced the plan.
+    pub plan_kind: String,
+    /// Actor kind captured at planning time.
+    pub actor_kind: String,
+    /// Actor database id, when applicable.
+    pub actor_id: Option<i64>,
+    /// Human-readable actor label.
+    pub actor_label: String,
+    /// Authorization scope.
+    pub scope: String,
+    /// Serialized input resource versions.
+    pub input_versions_json: String,
+    /// Serialized semantic effects.
+    pub effects_json: String,
+    /// Serialized warnings.
+    pub warnings_json: String,
+    /// Hash of a required confirmation token.
+    pub confirmation_hash: Option<String>,
+    /// Expiry time in Unix seconds.
+    pub expires_at: i64,
+}
+
+/// A durable long-running topology operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopologyOperationRecord {
+    /// Stable opaque operation id.
+    pub operation_id: String,
+    /// Operation family.
+    pub operation_kind: String,
+    /// Registry target, when applicable.
+    pub registry_id: Option<i64>,
+    /// Binary-cache target, when applicable.
+    pub cache_id: Option<i64>,
+    /// Placement target, when applicable.
+    pub placement_id: Option<i64>,
+    /// Lifecycle state.
+    pub state: String,
+    /// Completed work units.
+    pub progress_current: i64,
+    /// Total work units, when known.
+    pub progress_total: Option<i64>,
+    /// Serialized operation-specific status.
+    pub detail_json: String,
+    /// Failure detail.
+    pub error: Option<String>,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Start time in Unix seconds.
+    pub started_at: Option<i64>,
+    /// Finish time in Unix seconds.
+    pub finished_at: Option<i64>,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+}
+
+/// Input for creating a durable topology operation.
+#[derive(Debug, Clone)]
+pub struct NewTopologyOperation {
+    /// Stable opaque operation id.
+    pub operation_id: String,
+    /// Operation family.
+    pub operation_kind: String,
+    /// Optional surface target.
+    pub surface: Option<SurfaceTarget>,
+    /// Optional placement target.
+    pub placement_id: Option<i64>,
+    /// Serialized operation-specific status.
+    pub detail_json: String,
+    /// Total work units, when known.
+    pub progress_total: Option<i64>,
+}
+
 /// The full index payload one successful indexing run produces.
 #[derive(Debug, Default)]
 pub struct IndexSnapshot {
@@ -2912,13 +4388,7 @@ impl Database {
         let mut next_channel = self.max_id("channels").await?;
 
         let mut stmts: Vec<Statement> = Vec::new();
-        for table in [
-            "packages",
-            "channels",
-            "releases",
-            "key_rosters",
-            "advertised_caches",
-        ] {
+        for table in ["packages", "key_rosters", "advertised_caches"] {
             stmts.push(Statement::new(
                 format!("DELETE FROM {table} WHERE registry_id = ?1"),
                 vals![registry_id].to_vec(),
@@ -2988,10 +4458,32 @@ impl Database {
         }
 
         for release in &snapshot.releases {
+            if let Some(existing) = self
+                .backend
+                .query_opt(
+                    "SELECT tag_oid, commit_oid FROM releases
+                     WHERE registry_id = ?1 AND semver = ?2",
+                    &vals![registry_id, release.semver],
+                )
+                .await?
+            {
+                let existing_tag_oid: String = existing.get(0)?;
+                let existing_commit_oid: String = existing.get(1)?;
+                if existing_tag_oid != release.tag_oid || existing_commit_oid != release.commit_oid
+                {
+                    bail!(
+                        "release '{}' changed stable tag/commit identity",
+                        release.semver
+                    );
+                }
+            }
             stmts.push(Statement::new(
                 "INSERT INTO releases
                  (registry_id, semver, tag_oid, commit_oid, signer, tagged_at, pack_present)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(registry_id, semver) DO UPDATE SET
+                   signer = excluded.signer, tagged_at = excluded.tagged_at,
+                   pack_present = excluded.pack_present",
                 vals![
                     registry_id,
                     release.semver,
@@ -3005,19 +4497,43 @@ impl Database {
             ));
         }
 
+        stmts.push(Statement::new(
+            "UPDATE channels SET active = 0 WHERE registry_id = ?1",
+            vals![registry_id].to_vec(),
+        ));
         for channel in &snapshot.channels {
-            next_channel += 1;
-            let channel_id = next_channel;
+            let channel_id = if let Some(row) = self
+                .backend
+                .query_opt(
+                    "SELECT id FROM channels WHERE registry_id = ?1 AND name = ?2",
+                    &vals![registry_id, channel.name],
+                )
+                .await?
+            {
+                row.get(0)?
+            } else {
+                next_channel += 1;
+                next_channel
+            };
             stmts.push(Statement::new(
-                "INSERT INTO channels (id, registry_id, name, frontier) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO channels (id, registry_id, name, frontier, active)
+                 VALUES (?1, ?2, ?3, ?4, 1)
+                 ON CONFLICT(registry_id, name) DO UPDATE SET
+                   frontier = excluded.frontier, active = 1",
                 vals![channel_id, registry_id, channel.name, channel.frontier].to_vec(),
             ));
             for (bucket, release) in channel.partitions.iter().enumerate() {
                 if let Some(release) = release {
                     stmts.push(Statement::new(
                         "INSERT INTO channel_partitions (channel_id, bucket, release)
-                         VALUES (?1, ?2, ?3)",
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(channel_id, bucket) DO UPDATE SET release = excluded.release",
                         vals![channel_id, bucket as i64, release].to_vec(),
+                    ));
+                } else {
+                    stmts.push(Statement::new(
+                        "DELETE FROM channel_partitions WHERE channel_id = ?1 AND bucket = ?2",
+                        vals![channel_id, bucket as i64].to_vec(),
                     ));
                 }
             }
@@ -3037,8 +4553,31 @@ impl Database {
             ));
         }
 
-        stmts.push(Statement::new(
-            "INSERT INTO registry_index
+        self.backend.batch(&stmts).await?;
+        for release in &snapshot.releases {
+            let row = self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM releases WHERE registry_id = ?1 AND semver = ?2
+                   AND tag_oid = ?3 AND commit_oid = ?4",
+                    &vals![
+                        registry_id,
+                        release.semver,
+                        release.tag_oid,
+                        release.commit_oid
+                    ],
+                )
+                .await?;
+            if row.is_none() {
+                bail!(
+                    "release '{}' stable identity changed during snapshot application",
+                    release.semver
+                );
+            }
+        }
+        self.backend
+            .execute(
+                "INSERT INTO registry_index
              (registry_id, state, error, last_indexed_commit, name, description, readme,
               indexed_at, refs_digest, cache_stack)
              VALUES (?1, 'fresh', NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -3050,20 +4589,19 @@ impl Database {
                  indexed_at = excluded.indexed_at,
                  refs_digest = excluded.refs_digest,
                  cache_stack = excluded.cache_stack",
-            vals![
-                registry_id,
-                snapshot.commit,
-                snapshot.name,
-                snapshot.description,
-                snapshot.readme,
-                unix_now(),
-                snapshot.refs_digest,
-                snapshot.cache_stack,
-            ]
-            .to_vec(),
-        ));
-
-        self.backend.batch(&stmts).await
+                &vals![
+                    registry_id,
+                    snapshot.commit,
+                    snapshot.name,
+                    snapshot.description,
+                    snapshot.readme,
+                    unix_now(),
+                    snapshot.refs_digest,
+                    snapshot.cache_stack,
+                ],
+            )
+            .await?;
+        Ok(())
     }
 
     /// Returns the current maximum `id` in `table`, or `0` when it is empty.
@@ -3198,24 +4736,45 @@ impl Database {
         // rules out a concurrent writer colliding on the id base.
         let mut next_channel = self.max_id("channels").await?;
         let mut stmts: Vec<Statement> = Vec::new();
-        // Deleting channels cascades to channel_partitions.
         stmts.push(Statement::new(
-            "DELETE FROM channels WHERE registry_id = ?1",
+            "UPDATE channels SET active = 0 WHERE registry_id = ?1",
             vals![registry_id].to_vec(),
         ));
         for channel in channels {
-            next_channel += 1;
-            let channel_id = next_channel;
+            let channel_id = if let Some(row) = self
+                .backend
+                .query_opt(
+                    "SELECT id FROM channels WHERE registry_id = ?1 AND name = ?2",
+                    &vals![registry_id, channel.name],
+                )
+                .await?
+            {
+                row.get(0)?
+            } else {
+                next_channel += 1;
+                next_channel
+            };
             stmts.push(Statement::new(
-                "INSERT INTO channels (id, registry_id, name, frontier) VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO channels (id, registry_id, name, frontier, active)
+                 VALUES (?1, ?2, ?3, ?4, 1)
+                 ON CONFLICT(registry_id, name) DO UPDATE SET
+                   frontier = excluded.frontier, active = 1",
                 vals![channel_id, registry_id, channel.name, channel.frontier].to_vec(),
             ));
             for (bucket, release) in channel.partitions.iter().enumerate() {
                 if let Some(release) = release {
                     stmts.push(Statement::new(
                         "INSERT INTO channel_partitions (channel_id, bucket, release)
-                         VALUES (?1, ?2, ?3)",
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(channel_id, bucket) DO UPDATE SET
+                           release = excluded.release",
                         vals![channel_id, bucket as i64, release].to_vec(),
+                    ));
+                } else {
+                    stmts.push(Statement::new(
+                        "DELETE FROM channel_partitions
+                         WHERE channel_id = ?1 AND bucket = ?2",
+                        vals![channel_id, bucket as i64].to_vec(),
                     ));
                 }
             }
@@ -4289,6 +5848,3291 @@ impl Database {
             .collect()
     }
 
+    // -- topology resources -------------------------------------------------
+
+    /// Creates a normalized domain in instance or organization scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid hostname or access-provider document,
+    /// a missing organization, a hostname collision, or a database failure.
+    pub async fn create_domain(&self, input: &NewDomain) -> Result<DomainRecord> {
+        let hostname = normalize_topology_hostname(&input.hostname)?;
+        if let Some(provider) = input.desired_dns_provider.as_deref() {
+            validate_key_bytes(provider, "DNS provider", 64)?;
+        }
+        if let Some(provider) = input.desired_tls_provider.as_deref() {
+            validate_key_bytes(provider, "TLS provider", 64)?;
+        }
+        validate_json_object(&input.access_provider_json, "domain access provider")?;
+        let now = unix_now();
+        let affected = if let Some(org_id) = input.org_id {
+            self.backend
+                .execute(
+                    "INSERT INTO domains (org_id, hostname, desired_dns_provider, desired_tls_provider,
+                    access_provider_json, created_at, updated_at)
+                 SELECT id, ?2, ?3, ?4, ?5, ?6, ?6 FROM orgs WHERE id = ?1",
+                    &vals![
+                        org_id,
+                        hostname,
+                        input.desired_dns_provider,
+                        input.desired_tls_provider,
+                        input.access_provider_json,
+                        now
+                    ],
+                )
+                .await?
+        } else {
+            self.backend
+                .execute(
+                    "INSERT INTO domains (org_id, hostname, desired_dns_provider, desired_tls_provider,
+                    access_provider_json, created_at, updated_at)
+                 VALUES (NULL, ?1, ?2, ?3, ?4, ?5, ?5)",
+                    &vals![
+                        hostname,
+                        input.desired_dns_provider,
+                        input.desired_tls_provider,
+                        input.access_provider_json,
+                        now
+                    ],
+                )
+                .await?
+        };
+        if affected != 1 {
+            bail!("domain organization does not exist");
+        }
+        self.domain_by_hostname(&hostname)
+            .await?
+            .context("created domain disappeared")
+    }
+
+    /// Returns a domain by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn domain(&self, id: i64) -> Result<Option<DomainRecord>> {
+        let rows = self.backend.query(
+            "SELECT id, org_id, hostname, desired_dns_provider, observed_dns_state, desired_tls_provider,
+                observed_tls_state, access_provider_json, verified_at, created_at, updated_at, resource_version
+             FROM domains WHERE id = ?1", &vals![id]).await?;
+        rows.first().map(row_to_domain).transpose()
+    }
+
+    /// Returns a domain by its globally unique normalized hostname.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn domain_by_hostname(&self, hostname: &str) -> Result<Option<DomainRecord>> {
+        let hostname = normalize_topology_hostname(hostname)?;
+        let rows = self.backend.query(
+            "SELECT id, org_id, hostname, desired_dns_provider, observed_dns_state, desired_tls_provider,
+                observed_tls_state, access_provider_json, verified_at, created_at, updated_at, resource_version
+             FROM domains WHERE hostname = ?1", &vals![hostname]).await?;
+        rows.first().map(row_to_domain).transpose()
+    }
+
+    /// Lists instance-scoped domains or the domains owned by one organization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_domains(&self, org_id: Option<i64>) -> Result<Vec<DomainRecord>> {
+        let (sql, values) = match org_id {
+            Some(id) => ("SELECT id, org_id, hostname, desired_dns_provider, observed_dns_state, desired_tls_provider,
+                    observed_tls_state, access_provider_json, verified_at, created_at, updated_at, resource_version
+                 FROM domains WHERE org_id = ?1 ORDER BY hostname", vals![id]),
+            None => ("SELECT id, org_id, hostname, desired_dns_provider, observed_dns_state, desired_tls_provider,
+                    observed_tls_state, access_provider_json, verified_at, created_at, updated_at, resource_version
+                 FROM domains WHERE org_id IS NULL ORDER BY hostname", vals![]),
+        };
+        self.backend
+            .query(sql, &values)
+            .await?
+            .iter()
+            .map(row_to_domain)
+            .collect()
+    }
+
+    /// Updates a domain's desired provider and access configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid provider/JSON values, a stale version, a missing
+    /// domain, or database failure.
+    pub async fn update_domain(&self, id: i64, input: &UpdateDomain) -> Result<DomainRecord> {
+        if let Some(provider) = input.desired_dns_provider.as_deref() {
+            validate_key_bytes(provider, "DNS provider", 64)?;
+        }
+        if let Some(provider) = input.desired_tls_provider.as_deref() {
+            validate_key_bytes(provider, "TLS provider", 64)?;
+        }
+        validate_json_object(&input.access_provider_json, "domain access provider")?;
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE domains SET observed_dns_state = CASE
+                      WHEN desired_dns_provider = ?3 OR
+                        (desired_dns_provider IS NULL AND ?3 IS NULL)
+                      THEN observed_dns_state
+                      WHEN ?3 IS NULL THEN 'unconfigured' ELSE 'pending' END,
+                    observed_tls_state = CASE
+                      WHEN desired_tls_provider = ?4 OR
+                        (desired_tls_provider IS NULL AND ?4 IS NULL)
+                      THEN observed_tls_state
+                      WHEN ?4 IS NULL THEN 'unconfigured' ELSE 'pending' END,
+                    verified_at = CASE WHEN
+                      (desired_dns_provider = ?3 OR
+                        (desired_dns_provider IS NULL AND ?3 IS NULL)) AND
+                      (desired_tls_provider = ?4 OR
+                        (desired_tls_provider IS NULL AND ?4 IS NULL))
+                      THEN verified_at ELSE NULL END,
+                    desired_dns_provider = ?3, desired_tls_provider = ?4,
+                    access_provider_json = ?5,
+                    updated_at = ?6,
+                    resource_version = resource_version + 1
+                 WHERE id = ?1 AND resource_version = ?2",
+                &vals![
+                    id,
+                    input.expected_version,
+                    input.desired_dns_provider,
+                    input.desired_tls_provider,
+                    input.access_provider_json,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("domain is missing or its resource version is stale");
+        }
+        self.domain(id).await?.context("updated domain disappeared")
+    }
+
+    /// Records reconciler-observed DNS/TLS state separately from desired config.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid or inconsistent observed state, a stale
+    /// version, a missing domain, or database failure.
+    pub async fn record_domain_observation(
+        &self,
+        id: i64,
+        expected_version: i64,
+        dns_state: &str,
+        tls_state: &str,
+        verified_at: Option<i64>,
+    ) -> Result<DomainRecord> {
+        if !matches!(
+            dns_state,
+            "unconfigured" | "pending" | "verified" | "failed"
+        ) {
+            bail!("invalid observed DNS state '{dns_state}'");
+        }
+        if !matches!(tls_state, "unconfigured" | "pending" | "active" | "failed") {
+            bail!("invalid observed TLS state '{tls_state}'");
+        }
+        if verified_at.is_some() != (dns_state == "verified" && tls_state == "active") {
+            bail!("verified_at requires verified DNS and active TLS, and vice versa");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE domains SET observed_dns_state = ?3, observed_tls_state = ?4,
+                verified_at = ?5, updated_at = ?6,
+                resource_version = resource_version + 1
+             WHERE id = ?1 AND resource_version = ?2",
+                &vals![
+                    id,
+                    expected_version,
+                    dns_state,
+                    tls_state,
+                    verified_at,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("domain is missing or its resource version is stale");
+        }
+        self.domain(id)
+            .await?
+            .context("observed domain disappeared")
+    }
+
+    /// Deletes a domain when its optimistic-concurrency version matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or when dependent routes/defaults exist.
+    pub async fn delete_domain(&self, id: i64, expected_version: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "DELETE FROM domains WHERE id = ?1 AND resource_version = ?2",
+                &vals![id, expected_version],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Attaches one same-registry, content-exact object snapshot to a preparing publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identity/content, incompatible ownership/state, or database failure.
+    pub async fn set_registry_publication_object(
+        &self,
+        input: &SetRegistryPublicationObject,
+    ) -> Result<RegistryPublicationObjectRecord> {
+        validate_key_bytes(&input.publication_id, "publication id", 64)?;
+        validate_key_bytes(&input.expected_hash, "publication object hash", 128)?;
+        if !matches!(input.object_kind.as_str(), "immutable" | "mutable_pointer")
+            || input.expected_size < 0
+        {
+            bail!("publication object kind/size is invalid");
+        }
+        // Serialize manifest mutation against the publication row before the
+        // child write. The child INSERT rechecks `preparing`, so a freeze that
+        // wins after this fence makes the mutation fail closed; a crash after
+        // the bump merely leaves a harmless skipped version.
+        self.backend
+            .execute(
+                "UPDATE registry_publications
+                 SET mutation_version = mutation_version + 1
+                 WHERE publication_id = ?1 AND state = 'preparing'",
+                &vals![input.publication_id],
+            )
+            .await?;
+        let affected = self.backend.execute(
+            "INSERT INTO registry_publication_objects
+             (publication_id, registry_id, surface_object_id, object_kind, expected_hash, expected_size)
+             SELECT pub.publication_id, pub.registry_id, o.id, ?3, ?4, ?5
+             FROM registry_publications pub JOIN surface_objects o
+               ON o.registry_id = pub.registry_id
+             WHERE pub.publication_id = ?1 AND o.id = ?2 AND pub.state = 'preparing'
+               AND o.lifecycle_state = 'active' AND o.object_kind = ?3
+               AND o.content_hash = ?4 AND o.size = ?5
+               AND (?3 <> 'mutable_pointer'
+                 OR o.mutable_publication_id = pub.publication_id)
+             ON CONFLICT(publication_id, surface_object_id) DO UPDATE SET
+               object_kind = excluded.object_kind, expected_hash = excluded.expected_hash,
+               expected_size = excluded.expected_size",
+            &vals![input.publication_id, input.surface_object_id, input.object_kind,
+                input.expected_hash, input.expected_size],
+        ).await?;
+        let _ = affected;
+        let record = RegistryPublicationObjectRecord {
+            publication_id: input.publication_id.clone(),
+            registry_id: self
+                .backend
+                .query_opt(
+                    "SELECT registry_id FROM registry_publications WHERE publication_id = ?1",
+                    &vals![input.publication_id],
+                )
+                .await?
+                .context("publication disappeared")?
+                .get(0)?,
+            surface_object_id: input.surface_object_id,
+            object_kind: input.object_kind.clone(),
+            expected_hash: input.expected_hash.clone(),
+            expected_size: input.expected_size,
+        };
+        let exact = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM registry_publication_objects po
+             JOIN registry_publications pub ON pub.publication_id = po.publication_id
+             WHERE po.publication_id = ?1 AND po.surface_object_id = ?2
+               AND pub.state = 'preparing'
+               AND object_kind = ?3 AND expected_hash = ?4 AND expected_size = ?5",
+                &vals![
+                    input.publication_id,
+                    input.surface_object_id,
+                    input.object_kind,
+                    input.expected_hash,
+                    input.expected_size
+                ],
+            )
+            .await?;
+        if exact.is_none() {
+            bail!("publication object must exactly match an active object on the same registry");
+        }
+        Ok(record)
+    }
+
+    /// Records non-authoritative per-placement publication progress.
+    ///
+    /// Only [`Database::finalize_registry_pointer_advance`] may mark a placement
+    /// ready, because readiness must be coupled to its authoritative watermark.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid progress, cross-registry placement, incomplete presence, or database failure.
+    pub async fn set_registry_publication_placement(
+        &self,
+        input: &SetRegistryPublicationPlacement,
+    ) -> Result<RegistryPublicationPlacementRecord> {
+        if !matches!(input.state.as_str(), "preparing" | "failed" | "retired") {
+            bail!("invalid publication-placement state '{}'", input.state);
+        }
+        let exists = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM registry_publication_placements
+                 WHERE publication_id = ?1 AND placement_id = ?2",
+                &vals![input.publication_id, input.placement_id],
+            )
+            .await?
+            .is_some();
+        if exists {
+            self.backend
+                .execute(
+                    "UPDATE registry_publication_placements
+                     SET state = ?4, observed_at = ?5
+                     WHERE publication_id = ?1 AND placement_id = ?2
+                       AND required = ?3
+                       AND EXISTS (SELECT 1 FROM registry_publications pub
+                         WHERE pub.publication_id = ?1 AND (
+                           (?4 = 'preparing' AND pub.state = 'preparing') OR
+                           (?4 = 'failed' AND pub.state IN
+                             ('preparing', 'writing_pointers', 'failed')) OR
+                           (?4 = 'retired' AND pub.state = 'retired')))
+                       AND ((state = 'preparing' AND ?4 = 'failed')
+                         OR (state = 'writing_pointers' AND ?4 = 'failed')
+                         OR (state = 'failed' AND ?4 IN ('preparing', 'retired'))
+                         OR (state = 'ready' AND ?4 = 'retired')
+                         OR (state = ?4 AND required = ?3 AND observed_at = ?5))",
+                    &vals![
+                        input.publication_id,
+                        input.placement_id,
+                        input.required,
+                        input.state,
+                        input.observed_at
+                    ],
+                )
+                .await?;
+        } else {
+            if input.state != "preparing" {
+                bail!("new publication placement progress must start preparing");
+            }
+            // Required-placement membership is part of the frozen manifest.
+            // Fence on the parent row before inserting it for the same reason
+            // as publication-object attachment above.
+            self.backend
+                .execute(
+                    "UPDATE registry_publications
+                     SET mutation_version = mutation_version + 1
+                     WHERE publication_id = ?1 AND state = 'preparing'",
+                    &vals![input.publication_id],
+                )
+                .await?;
+            self.backend
+                .execute(
+                    "INSERT INTO registry_publication_placements
+                     (publication_id, registry_id, placement_id, required, state, observed_at)
+                     SELECT pub.publication_id, pub.registry_id, p.id, ?3, 'preparing', ?5
+                     FROM registry_publications pub JOIN surface_placements p
+                       ON p.registry_id = pub.registry_id
+                     WHERE pub.publication_id = ?1 AND p.id = ?2
+                       AND pub.state = 'preparing'",
+                    &vals![
+                        input.publication_id,
+                        input.placement_id,
+                        input.required,
+                        input.state,
+                        input.observed_at
+                    ],
+                )
+                .await?;
+        }
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT registry_id, required, state, observed_at
+             FROM registry_publication_placements
+             WHERE publication_id = ?1 AND placement_id = ?2
+               AND required = ?3 AND state = ?4 AND observed_at = ?5",
+                &vals![
+                    input.publication_id,
+                    input.placement_id,
+                    input.required,
+                    input.state,
+                    input.observed_at
+                ],
+            )
+            .await?
+            .context("publication placement transition is invalid or cross-registry")?;
+        Ok(RegistryPublicationPlacementRecord {
+            publication_id: input.publication_id.clone(),
+            registry_id: row.get(0)?,
+            placement_id: input.placement_id,
+            required: row.get(1)?,
+            state: row.get(2)?,
+            observed_at: row.get(3)?,
+        })
+    }
+
+    /// Begins a mutable-pointer advance by first clearing the placement watermark.
+    ///
+    /// A crash between the clear and progress transition is fail-closed: readers
+    /// never mistake the old watermark for the new publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale placement/publication progress or database failure.
+    pub async fn begin_registry_pointer_advance(
+        &self,
+        publication_id: &str,
+        placement_id: i64,
+        expected_placement_version: i64,
+        observed_at: i64,
+    ) -> Result<SurfacePlacementRecord> {
+        let cleared = self
+            .backend
+            .execute(
+                "UPDATE surface_placements SET mutable_publication_id = NULL,
+                resource_version = CASE WHEN resource_version = ?3
+                  THEN resource_version + 1 ELSE resource_version END,
+                updated_at = ?4
+             WHERE id = ?2 AND registry_id = (
+               SELECT registry_id FROM registry_publications WHERE publication_id = ?1)
+               AND EXISTS (SELECT 1 FROM registry_publications pub
+                 WHERE pub.publication_id = ?1
+                   AND pub.state = 'writing_pointers')
+               AND ((resource_version = ?3 AND EXISTS (
+                 SELECT 1 FROM registry_publication_placements pp
+                 WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
+                   AND pp.state = 'preparing')) OR
+                 (resource_version = ?3 + 1 AND mutable_publication_id IS NULL
+                   AND updated_at = ?4
+                   AND EXISTS (SELECT 1 FROM registry_publication_placements pp
+                     WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
+                       AND pp.state IN ('preparing', 'writing_pointers'))))",
+                &vals![
+                    publication_id,
+                    placement_id,
+                    expected_placement_version,
+                    observed_at
+                ],
+            )
+            .await?;
+        if cleared != 1
+            && self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM surface_placements p
+                 JOIN registry_publication_placements pp ON pp.placement_id = p.id
+                 JOIN registry_publications pub ON pub.publication_id = pp.publication_id
+                 WHERE p.id = ?2 AND pp.publication_id = ?1
+                   AND p.resource_version = ?3 + 1
+                   AND p.mutable_publication_id IS NULL AND p.updated_at = ?4
+                   AND pp.state IN ('preparing', 'writing_pointers')
+                   AND pub.state = 'writing_pointers'",
+                    &vals![
+                        publication_id,
+                        placement_id,
+                        expected_placement_version,
+                        observed_at
+                    ],
+                )
+                .await?
+                .is_none()
+        {
+            bail!("placement pointer advance is stale or cross-registry");
+        }
+        let moved = self.backend.execute(
+            "UPDATE registry_publication_placements SET state = 'writing_pointers', observed_at = ?3
+             WHERE publication_id = ?1 AND placement_id = ?2
+               AND state IN ('preparing', 'writing_pointers')
+               AND EXISTS (SELECT 1 FROM registry_publications pub
+                 WHERE pub.publication_id = ?1 AND pub.state = 'writing_pointers')",
+            &vals![publication_id, placement_id, observed_at],
+        ).await?;
+        if moved != 1
+            && self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM registry_publication_placements pp
+                 JOIN registry_publications pub ON pub.publication_id = pp.publication_id
+                 WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
+                   AND pp.state = 'writing_pointers'
+                   AND pub.state = 'writing_pointers'",
+                    &vals![publication_id, placement_id],
+                )
+                .await?
+                .is_none()
+        {
+            bail!("publication placement is not ready to write pointers");
+        }
+        self.surface_placement(placement_id)
+            .await?
+            .context("placement disappeared")
+    }
+
+    /// Publishes the authoritative placement watermark with one guarded CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless every manifest object is present exactly, progress
+    /// is writing pointers, placement version is current, and ownership matches.
+    pub async fn finalize_registry_pointer_advance(
+        &self,
+        publication_id: &str,
+        placement_id: i64,
+        expected_placement_version: i64,
+        observed_at: i64,
+    ) -> Result<SurfacePlacementRecord> {
+        let published = self
+            .backend
+            .execute(
+                "UPDATE surface_placements SET
+                resource_version = CASE WHEN mutable_publication_id = ?1
+                  THEN resource_version ELSE resource_version + 1 END,
+                mutable_publication_id = ?1,
+                updated_at = ?4
+             WHERE id = ?2
+               AND (resource_version = ?3 OR
+                 (mutable_publication_id = ?1 AND resource_version = ?3 + 1))
+               AND registry_id = (
+               SELECT registry_id FROM registry_publications WHERE publication_id = ?1)
+               AND EXISTS (SELECT 1 FROM registry_publications pub
+                 WHERE pub.publication_id = ?1
+                   AND pub.state = 'writing_pointers')
+               AND EXISTS (SELECT 1 FROM registry_publication_placements pp
+                 WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
+                   AND pp.state IN ('writing_pointers', 'ready'))
+               AND EXISTS (SELECT 1 FROM registry_publication_objects
+                 WHERE publication_id = ?1)
+               AND NOT EXISTS (SELECT 1 FROM registry_publication_objects po
+                 WHERE po.publication_id = ?1 AND NOT EXISTS (
+                   SELECT 1 FROM object_placements op
+                   WHERE op.surface_object_id = po.surface_object_id
+                     AND op.placement_id = ?2 AND op.state = 'present'
+                     AND op.observed_hash = po.expected_hash
+                     AND op.observed_size = po.expected_size))",
+                &vals![
+                    publication_id,
+                    placement_id,
+                    expected_placement_version,
+                    observed_at
+                ],
+            )
+            .await?;
+        if published != 1
+            && self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM surface_placements p
+                 JOIN registry_publication_placements pp ON pp.placement_id = p.id
+                 JOIN registry_publications pub ON pub.publication_id = pp.publication_id
+                 WHERE p.id = ?2 AND pp.publication_id = ?1
+                   AND p.resource_version = ?3 + 1
+                   AND p.mutable_publication_id = ?1 AND p.updated_at = ?4
+                   AND pp.state IN ('writing_pointers', 'ready')
+                   AND pub.state = 'writing_pointers'",
+                    &vals![
+                        publication_id,
+                        placement_id,
+                        expected_placement_version,
+                        observed_at
+                    ],
+                )
+                .await?
+                .is_none()
+        {
+            bail!("placement watermark CAS is stale or cross-registry");
+        }
+        let ready = self
+            .backend
+            .execute(
+                "UPDATE registry_publication_placements
+                 SET state = 'ready', observed_at = ?3
+                 WHERE publication_id = ?1 AND placement_id = ?2
+                   AND state IN ('writing_pointers', 'ready')
+                   AND EXISTS (SELECT 1 FROM registry_publications pub
+                     WHERE pub.publication_id = ?1 AND pub.state = 'writing_pointers')
+                   AND EXISTS (SELECT 1 FROM surface_placements p
+                     WHERE p.id = ?2 AND p.mutable_publication_id = ?1)",
+                &vals![publication_id, placement_id, observed_at],
+            )
+            .await?;
+        if ready != 1
+            && self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM registry_publication_placements pp
+                 JOIN surface_placements p ON p.id = pp.placement_id
+                 JOIN registry_publications pub ON pub.publication_id = pp.publication_id
+                 WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
+                   AND pp.state = 'ready' AND p.mutable_publication_id = ?1
+                   AND pub.state = 'writing_pointers'",
+                    &vals![publication_id, placement_id],
+                )
+                .await?
+                .is_none()
+        {
+            bail!("publication placement progress could not record the published watermark");
+        }
+        self.surface_placement(placement_id)
+            .await?
+            .context("placement disappeared")
+    }
+
+    /// Advances a publication state by compare-and-set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid transition, unmet required placements, stale state, or database failure.
+    pub async fn advance_registry_publication(
+        &self,
+        publication_id: &str,
+        expected_state: &str,
+        next_state: &str,
+        at: i64,
+    ) -> Result<bool> {
+        let valid = matches!(
+            (expected_state, next_state),
+            ("preparing", "writing_pointers")
+                | ("preparing", "failed")
+                | ("writing_pointers", "ready")
+                | ("writing_pointers", "failed")
+                | ("failed", "retired")
+                | ("ready", "retired")
+        );
+        if !valid {
+            bail!("invalid publication state transition {expected_state}->{next_state}");
+        }
+        Ok(self
+            .backend
+            .execute(
+                "UPDATE registry_publications SET state = ?3,
+               completed_at = CASE WHEN ?3 IN ('ready','failed') THEN ?4 ELSE completed_at END,
+               retired_at = CASE WHEN ?3 = 'retired' THEN ?4 ELSE retired_at END
+             WHERE publication_id = ?1 AND state = ?2
+               AND (?3 <> 'ready' OR (EXISTS (
+                 SELECT 1 FROM registry_publication_placements pp
+                 WHERE pp.publication_id = ?1 AND pp.required = 1)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM registry_publication_placements pp
+                   JOIN surface_placements p ON p.id = pp.placement_id
+                   WHERE pp.publication_id = ?1 AND pp.required = 1
+                     AND (pp.state <> 'ready'
+                       OR p.mutable_publication_id <> ?1
+                       OR p.mutable_publication_id IS NULL))))
+               AND (?3 <> 'retired' OR NOT EXISTS (
+                 SELECT 1 FROM registry_publication_state ps
+                 WHERE ps.current_publication_id = ?1)) ",
+                &vals![publication_id, expected_state, next_state, at],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Lists registry-derived GC roots reachable from current refresh lineages.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn active_cache_retention_hashes(
+        &self,
+        cache_id: i64,
+        at: i64,
+    ) -> Result<Vec<String>> {
+        let rows = self
+            .backend
+            .query(
+                "WITH RECURSIVE lineage(subscription_id, refresh_id) AS (
+               SELECT id, current_refresh_id FROM cache_retention_subscriptions
+                WHERE cache_id = ?1 AND current_refresh_id IS NOT NULL
+                  AND (retired_at IS NULL OR retired_at + removal_grace_secs > ?2)
+               UNION ALL
+               SELECT lineage.subscription_id, child.parent_refresh_id
+                FROM lineage JOIN cache_retention_refreshes child
+                  ON child.refresh_id = lineage.refresh_id
+                WHERE child.parent_refresh_id IS NOT NULL AND child.grace_until > ?2
+             )
+             SELECT DISTINCT rr.store_hash FROM cache_root_reasons rr
+             JOIN lineage ON lineage.refresh_id = rr.refresh_id
+             WHERE rr.expires_at IS NULL OR rr.expires_at > ?2
+             ORDER BY rr.store_hash",
+                &vals![cache_id, at],
+            )
+            .await?;
+        rows.iter().map(|row| row.get(0)).collect()
+    }
+
+    /// Compare-and-sets the one authoritative current ready publication for a registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale version, non-ready/cross-registry publication, or database failure.
+    pub async fn set_current_registry_publication(
+        &self,
+        registry_id: i64,
+        publication_id: &str,
+        expected_version: Option<i64>,
+    ) -> Result<RegistryPublicationStateRecord> {
+        if let Some(row) = self
+            .backend
+            .query_opt(
+                "SELECT registry_id, current_publication_id, next_ordinal,
+                resource_version, updated_at
+             FROM registry_publication_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await?
+        {
+            let current: Option<String> = row.get(1)?;
+            let version: i64 = row.get(3)?;
+            if current.as_deref() == Some(publication_id)
+                && expected_version.map_or(true, |expected| expected == version)
+            {
+                return Ok(RegistryPublicationStateRecord {
+                    registry_id: row.get(0)?,
+                    current_publication_id: current,
+                    next_ordinal: row.get(2)?,
+                    resource_version: version,
+                    updated_at: row.get(4)?,
+                });
+            }
+        }
+        let now = unix_now();
+        let affected = if let Some(version) = expected_version {
+            self.backend
+                .execute(
+                    "UPDATE registry_publication_state SET current_publication_id = ?2,
+                    next_ordinal = CASE WHEN next_ordinal <= (SELECT ordinal
+                      FROM registry_publications WHERE publication_id = ?2)
+                      THEN (SELECT ordinal + 1 FROM registry_publications WHERE publication_id = ?2)
+                      ELSE next_ordinal END,
+                    resource_version = resource_version + 1, updated_at = ?4
+                 WHERE registry_id = ?1 AND resource_version = ?3 AND EXISTS (
+                   SELECT 1 FROM registry_publications pub
+                   WHERE pub.publication_id = ?2 AND pub.registry_id = ?1 AND pub.state = 'ready'
+                     AND pub.parent_publication_id = registry_publication_state.current_publication_id
+                     AND pub.ordinal > (SELECT current.ordinal FROM registry_publications current
+                       WHERE current.publication_id = registry_publication_state.current_publication_id)
+                     AND EXISTS (SELECT 1 FROM registry_publication_placements pp
+                       WHERE pp.publication_id = pub.publication_id AND pp.required = 1)
+                     AND NOT EXISTS (SELECT 1 FROM registry_publication_placements pp
+                       JOIN surface_placements p ON p.id = pp.placement_id
+                       WHERE pp.publication_id = pub.publication_id AND pp.required = 1
+                         AND (pp.state <> 'ready'
+                           OR p.mutable_publication_id <> pub.publication_id
+                           OR p.mutable_publication_id IS NULL)))",
+                    &vals![registry_id, publication_id, version, now],
+                )
+                .await?
+        } else {
+            self.backend
+                .execute(
+                    "INSERT INTO registry_publication_state
+                 (registry_id, current_publication_id, next_ordinal, updated_at)
+                 SELECT ?1, pub.publication_id, pub.ordinal + 1, ?3
+                 FROM registry_publications pub
+                 WHERE pub.publication_id = ?2 AND pub.registry_id = ?1 AND pub.state = 'ready'
+                   AND pub.parent_publication_id IS NULL
+                   AND EXISTS (SELECT 1 FROM registry_publication_placements pp
+                     WHERE pp.publication_id = pub.publication_id AND pp.required = 1)
+                   AND NOT EXISTS (SELECT 1 FROM registry_publication_placements pp
+                     JOIN surface_placements p ON p.id = pp.placement_id
+                     WHERE pp.publication_id = pub.publication_id AND pp.required = 1
+                       AND (pp.state <> 'ready'
+                         OR p.mutable_publication_id <> pub.publication_id
+                         OR p.mutable_publication_id IS NULL))",
+                    &vals![registry_id, publication_id, now],
+                )
+                .await?
+        };
+        if affected != 1 {
+            bail!("current publication CAS is stale or publication is not ready on this registry");
+        }
+        let row = self.backend.query_opt(
+            "SELECT registry_id, current_publication_id, next_ordinal, resource_version, updated_at
+             FROM registry_publication_state WHERE registry_id = ?1",
+            &vals![registry_id],
+        ).await?.context("publication state disappeared")?;
+        Ok(RegistryPublicationStateRecord {
+            registry_id: row.get(0)?,
+            current_publication_id: row.get(1)?,
+            next_ordinal: row.get(2)?,
+            resource_version: row.get(3)?,
+            updated_at: row.get(4)?,
+        })
+    }
+
+    /// Creates one physical placement after atomically checking binding ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid placement fields, an absent/cross-scope
+    /// surface or binding, a primary/location collision, or database failure.
+    pub async fn create_surface_placement(
+        &self,
+        input: &NewSurfacePlacement,
+    ) -> Result<SurfacePlacementRecord> {
+        validate_stable_name(&input.name, "placement name")?;
+        validate_placement_fields(
+            input.role.as_str(),
+            input.state.as_str(),
+            input.completeness.as_str(),
+            input.partition_rule_json.as_deref(),
+            input.read_enabled,
+            input.write_enabled,
+        )?;
+        let prefix = normalize_placement_prefix(&input.prefix)?;
+        if let Some(json) = input.partition_rule_json.as_deref() {
+            validate_json_object(json, "placement partition rule")?;
+        }
+        let (registry_id, cache_id) = input.surface.ids();
+        let (primary_registry_id, primary_cache_id) = if input.role == "primary" {
+            (registry_id, cache_id)
+        } else {
+            (None, None)
+        };
+        let now = unix_now();
+        let affected = self
+            .backend
+            .execute(
+                "INSERT INTO surface_placements
+                (registry_id, cache_id, primary_registry_id, primary_cache_id,
+                 name, storage_binding_id, prefix, role, state, completeness,
+                 partition_rule_json, read_enabled, write_enabled, read_order,
+                 write_order, created_at, updated_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, b.id, ?7, ?8, ?9, ?10, ?11,
+                    ?12, ?13, ?14, ?15, ?16, ?16
+             FROM storage_bindings b
+             LEFT JOIN registries r ON r.id = ?1
+             LEFT JOIN caches c ON c.id = ?2
+             WHERE b.id = ?6
+               AND ((?1 IS NOT NULL AND r.id IS NOT NULL
+                     AND (b.is_instance_default = 1 OR b.org_id = r.org_id))
+                 OR (?2 IS NOT NULL AND c.id IS NOT NULL
+                     AND (b.is_instance_default = 1 OR b.org_id = c.org_id)))",
+                &vals![
+                    registry_id,
+                    cache_id,
+                    primary_registry_id,
+                    primary_cache_id,
+                    input.name,
+                    input.storage_binding_id,
+                    prefix,
+                    input.role,
+                    input.state,
+                    input.completeness,
+                    input.partition_rule_json,
+                    input.read_enabled,
+                    input.write_enabled,
+                    input.read_order,
+                    input.write_order,
+                    now
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("surface and storage binding must exist in a compatible scope");
+        }
+        self.surface_placement_at(input.storage_binding_id, &prefix)
+            .await?
+            .context("created placement disappeared")
+    }
+
+    /// Returns a placement by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn surface_placement(&self, id: i64) -> Result<Option<SurfacePlacementRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!("SELECT {PLACEMENT_COLUMNS} FROM surface_placements WHERE id = ?1"),
+                &vals![id],
+            )
+            .await?;
+        rows.first().map(row_to_surface_placement).transpose()
+    }
+
+    /// Returns the placement occupying one binding-relative location.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn surface_placement_at(
+        &self,
+        binding_id: i64,
+        prefix: &str,
+    ) -> Result<Option<SurfacePlacementRecord>> {
+        let rows = self.backend.query(&format!("SELECT {PLACEMENT_COLUMNS} FROM surface_placements WHERE storage_binding_id = ?1 AND prefix = ?2"), &vals![binding_id, prefix]).await?;
+        rows.first().map(row_to_surface_placement).transpose()
+    }
+
+    /// Lists placements belonging to one surface in selection order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_surface_placements(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<SurfacePlacementRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {PLACEMENT_COLUMNS} FROM surface_placements
+             WHERE registry_id = ?1 OR cache_id = ?2
+             ORDER BY read_order, name"
+                ),
+                &vals![registry_id, cache_id],
+            )
+            .await?;
+        rows.iter().map(row_to_surface_placement).collect()
+    }
+
+    /// Updates mutable placement selection fields with optimistic concurrency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid fields, a stale version, a primary
+    /// collision, a missing placement, or database failure.
+    pub async fn update_surface_placement(
+        &self,
+        id: i64,
+        input: &UpdateSurfacePlacement,
+    ) -> Result<SurfacePlacementRecord> {
+        let existing = self
+            .surface_placement(id)
+            .await?
+            .context("placement does not exist")?;
+        validate_placement_fields(
+            existing.role.as_str(),
+            input.state.as_str(),
+            input.completeness.as_str(),
+            input.partition_rule_json.as_deref(),
+            input.read_enabled,
+            input.write_enabled,
+        )?;
+        if let Some(json) = input.partition_rule_json.as_deref() {
+            validate_json_object(json, "placement partition rule")?;
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_placements SET state = ?3, completeness = ?4,
+                partition_rule_json = ?5,
+                read_enabled = ?6, write_enabled = ?7,
+                read_order = ?8, write_order = ?9,
+                resource_version = resource_version + 1, updated_at = ?10
+             WHERE id = ?1 AND resource_version = ?2
+               AND NOT EXISTS (
+                 SELECT 1 FROM delivery_routes r
+                 WHERE r.placement_id = ?1 OR EXISTS (
+                   SELECT 1 FROM placement_policy_members pm
+                   WHERE pm.policy_id = r.placement_policy_id
+                     AND pm.placement_id = ?1))",
+                &vals![
+                    id,
+                    input.expected_version,
+                    input.state,
+                    input.completeness,
+                    input.partition_rule_json,
+                    input.read_enabled,
+                    input.write_enabled,
+                    input.read_order,
+                    input.write_order,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("placement is missing or its resource version is stale");
+        }
+        self.surface_placement(id)
+            .await?
+            .context("updated placement disappeared")
+    }
+
+    /// Deletes a placement at an expected version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or when routes/policies still reference it.
+    pub async fn delete_surface_placement(&self, id: i64, expected_version: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "DELETE FROM surface_placements
+                 WHERE id = ?1 AND resource_version = ?2 AND role <> 'primary'",
+                &vals![id, expected_version],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Creates a logical object on an existing surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty key, negative size, missing surface,
+    /// duplicate key, or database failure.
+    pub async fn create_surface_object(
+        &self,
+        input: &SetSurfaceObject,
+    ) -> Result<SurfaceObjectRecord> {
+        validate_key_bytes(&input.object_key, "surface object key", 512)?;
+        if !matches!(input.object_kind.as_str(), "immutable" | "mutable_pointer") {
+            bail!("invalid surface-object kind '{}'", input.object_kind);
+        }
+        if (input.object_kind == "immutable") != input.mutable_publication_id.is_none() {
+            bail!("immutable objects cannot name a publication and mutable pointers must name one");
+        }
+        if input.size.is_some_and(|size| size < 0) {
+            bail!("surface object size cannot be negative");
+        }
+        if let Some(hash) = input.content_hash.as_deref() {
+            validate_key_bytes(hash, "content hash", 128)?;
+        }
+        if let Some(publication_id) = input.mutable_publication_id.as_deref() {
+            validate_key_bytes(publication_id, "mutable publication id", 64)?;
+        }
+        let (registry_id, cache_id) = input.surface.ids();
+        let now = unix_now();
+        let affected = self
+            .backend
+            .execute(
+                "INSERT INTO surface_objects (registry_id, cache_id, object_key,
+                object_kind, content_hash, size, mutable_publication_id, created_at, updated_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8
+             WHERE EXISTS (SELECT 1 FROM registries WHERE id = ?1)
+                AND (?4 = 'immutable' OR EXISTS (
+                  SELECT 1 FROM registry_publications pub
+                  WHERE pub.publication_id = ?7 AND pub.registry_id = ?1))
+                OR (EXISTS (SELECT 1 FROM caches WHERE id = ?2) AND ?4 = 'immutable')",
+                &vals![
+                    registry_id,
+                    cache_id,
+                    input.object_key,
+                    input.object_kind,
+                    input.content_hash,
+                    input.size,
+                    input.mutable_publication_id,
+                    now
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("surface object target does not exist");
+        }
+        self.surface_object_named(input.surface, &input.object_key)
+            .await?
+            .context("created surface object disappeared")
+    }
+
+    /// Returns a logical object by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn surface_object(&self, id: i64) -> Result<Option<SurfaceObjectRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!("SELECT {SURFACE_OBJECT_COLUMNS} FROM surface_objects WHERE id = ?1"),
+                &vals![id],
+            )
+            .await?;
+        rows.first().map(row_to_surface_object).transpose()
+    }
+
+    /// Returns a logical object by surface-relative key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn surface_object_named(
+        &self,
+        surface: SurfaceTarget,
+        object_key: &str,
+    ) -> Result<Option<SurfaceObjectRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {SURFACE_OBJECT_COLUMNS} FROM surface_objects
+                WHERE (registry_id = ?1 OR cache_id = ?2) AND object_key = ?3"
+                ),
+                &vals![registry_id, cache_id, object_key],
+            )
+            .await?;
+        rows.first().map(row_to_surface_object).transpose()
+    }
+
+    /// Logically tombstones an unreferenced registry object before physical deletion.
+    ///
+    /// Generic tombstoning is deliberately registry-only. Cache objects remain
+    /// fail-closed until root-aware cache GC owns their plan/apply lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn tombstone_surface_object(
+        &self,
+        id: i64,
+        expected_version: i64,
+        tombstoned_at: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "UPDATE surface_objects SET lifecycle_state = 'tombstoned',
+                tombstoned_at = ?3, updated_at = ?3,
+                resource_version = resource_version + 1
+             WHERE id = ?1 AND resource_version = ?2 AND lifecycle_state = 'active'
+               AND registry_id IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM registry_publication_objects po
+                 JOIN registry_publications pub
+                   ON pub.publication_id = po.publication_id
+                 WHERE po.surface_object_id = ?1 AND pub.state <> 'retired')",
+                &vals![id, expected_version, tombstoned_at],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Records object presence only when object and placement own the same surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid state/size, cross-surface references,
+    /// missing resources, or database failure.
+    pub async fn set_object_placement(
+        &self,
+        input: &SetObjectPlacement,
+    ) -> Result<ObjectPlacementRecord> {
+        if !matches!(
+            input.state.as_str(),
+            "present" | "copying" | "missing" | "corrupt"
+        ) {
+            bail!("invalid object-placement state '{}'", input.state);
+        }
+        if input.observed_size.is_some_and(|size| size < 0) {
+            bail!("observed object size cannot be negative");
+        }
+        if input.state == "present"
+            && (input.observed_hash.is_none() || input.observed_size.is_none())
+        {
+            bail!("present object observations require the expected hash and size");
+        }
+        if let Some(hash) = input.observed_hash.as_deref() {
+            validate_key_bytes(hash, "observed hash", 128)?;
+        }
+        if let Some(etag) = input.etag.as_deref() {
+            validate_key_bytes(etag, "object ETag", 255)?;
+        }
+        let exists = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM object_placements
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![input.surface_object_id, input.placement_id],
+            )
+            .await?
+            .is_some();
+        if exists {
+            self.backend
+                .execute(
+                    "UPDATE object_placements SET state = ?3, observed_hash = ?4,
+                    observed_size = ?5, etag = ?6, observed_at = ?7
+                 WHERE surface_object_id = ?1 AND placement_id = ?2
+                   AND deletion_job_id IS NULL AND state <> 'deleting'
+                   AND EXISTS (SELECT 1 FROM surface_objects o
+                     JOIN surface_placements p ON p.id = ?2
+                     WHERE o.id = ?1
+                       AND ((o.registry_id IS NOT NULL AND o.registry_id = p.registry_id)
+                         OR (o.cache_id IS NOT NULL AND o.cache_id = p.cache_id))
+                       AND (?3 <> 'present' OR
+                         (o.content_hash = ?4 AND o.size = ?5)))",
+                    &vals![
+                        input.surface_object_id,
+                        input.placement_id,
+                        input.state,
+                        input.observed_hash,
+                        input.observed_size,
+                        input.etag,
+                        input.observed_at
+                    ],
+                )
+                .await?;
+        } else {
+            self.backend
+                .execute(
+                    "INSERT INTO object_placements (surface_object_id, placement_id, state,
+                    observed_hash, observed_size, etag, observed_at)
+                 SELECT o.id, p.id, ?3, ?4, ?5, ?6, ?7
+                 FROM surface_objects o JOIN surface_placements p ON p.id = ?2
+                 WHERE o.id = ?1
+                   AND ((o.registry_id IS NOT NULL AND o.registry_id = p.registry_id)
+                     OR (o.cache_id IS NOT NULL AND o.cache_id = p.cache_id))
+                   AND (?3 <> 'present' OR (o.content_hash = ?4 AND o.size = ?5))",
+                    &vals![
+                        input.surface_object_id,
+                        input.placement_id,
+                        input.state,
+                        input.observed_hash,
+                        input.observed_size,
+                        input.etag,
+                        input.observed_at
+                    ],
+                )
+                .await?;
+        }
+        let record = self
+            .object_placement(input.surface_object_id, input.placement_id)
+            .await?
+            .context("object placement is missing or belongs to another surface")?;
+        if record.state != input.state
+            || record.observed_hash != input.observed_hash
+            || record.observed_size != input.observed_size
+            || record.etag != input.etag
+            || record.observed_at != input.observed_at
+        {
+            bail!("object presence requires an object and placement on the same surface");
+        }
+        Ok(record)
+    }
+
+    /// Returns one object-placement observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn object_placement(
+        &self,
+        object_id: i64,
+        placement_id: i64,
+    ) -> Result<Option<ObjectPlacementRecord>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT surface_object_id, placement_id, state, observed_hash,
+                observed_size, etag, observed_at FROM object_placements
+             WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![object_id, placement_id],
+            )
+            .await?;
+        rows.first().map(row_to_object_placement).transpose()
+    }
+
+    /// Schedules durable physical deletion for a tombstoned same-surface object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless presence is recorded at the placement, the
+    /// object is tombstoned, the relationship is same-surface, or on database failure.
+    pub async fn create_object_deletion_job(
+        &self,
+        input: &NewObjectDeletionJob,
+    ) -> Result<ObjectDeletionJobRecord> {
+        validate_key_bytes(&input.job_id, "object deletion job id", 64)?;
+        let now = unix_now();
+        // Phase 1 is durable and happens before presence mutation, so job-id or
+        // active-slot conflicts cannot strand an object behind the wrong link.
+        self.backend
+            .execute(
+                "INSERT INTO object_deletion_jobs
+                 (job_id, surface_object_id, placement_id, state, created_at)
+                 SELECT ?1, o.id, p.id, 'preparing', ?4
+                 FROM surface_objects o JOIN surface_placements p ON p.id = ?3
+                 JOIN object_placements op ON op.surface_object_id = o.id
+                   AND op.placement_id = p.id
+                 WHERE o.id = ?2 AND o.lifecycle_state = 'tombstoned'
+                   AND (op.state IN ('present', 'corrupt')
+                     OR (op.state = 'deleting' AND op.deletion_job_id = ?1))
+                   AND ((o.registry_id IS NOT NULL AND o.registry_id = p.registry_id)
+                     OR (o.cache_id IS NOT NULL AND o.cache_id = p.cache_id))
+                 ON CONFLICT(job_id) DO NOTHING",
+                &vals![
+                    input.job_id,
+                    input.surface_object_id,
+                    input.placement_id,
+                    now
+                ],
+            )
+            .await?;
+        let job = self
+            .object_deletion_job(&input.job_id)
+            .await?
+            .context("preparing deletion job was not created")?;
+        if job.surface_object_id != input.surface_object_id
+            || job.placement_id != input.placement_id
+            || !matches!(job.state.as_str(), "preparing" | "pending")
+        {
+            bail!("deletion job identity conflicts with existing work");
+        }
+        if job.state == "pending" {
+            let linked = self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM object_placements WHERE surface_object_id = ?2
+                   AND placement_id = ?3 AND state = 'deleting'
+                   AND deletion_job_id = ?1",
+                    &vals![input.job_id, input.surface_object_id, input.placement_id],
+                )
+                .await?;
+            if linked.is_none() {
+                bail!("pending deletion job has lost its authoritative presence link");
+            }
+            return Ok(job);
+        }
+
+        // Phase 2 links presence. A retry after either this CAS or the durable
+        // insert above accepts the exact state and continues.
+        self.backend
+            .execute(
+                "UPDATE object_placements SET state = 'deleting', observed_at = ?4,
+                    deletion_job_id = ?1
+                 WHERE surface_object_id = ?2 AND placement_id = ?3
+                   AND (state IN ('present', 'corrupt')
+                     OR (state = 'deleting' AND deletion_job_id = ?1))
+                   AND EXISTS (SELECT 1 FROM object_deletion_jobs j
+                     WHERE j.job_id = ?1 AND j.surface_object_id = ?2
+                       AND j.placement_id = ?3 AND j.state = 'preparing')",
+                &vals![
+                    input.job_id,
+                    input.surface_object_id,
+                    input.placement_id,
+                    now
+                ],
+            )
+            .await?;
+        let linked = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM object_placements WHERE surface_object_id = ?2
+               AND placement_id = ?3 AND state = 'deleting'
+               AND deletion_job_id = ?1",
+                &vals![input.job_id, input.surface_object_id, input.placement_id],
+            )
+            .await?;
+        if linked.is_none() {
+            self.backend
+                .execute(
+                    "UPDATE object_deletion_jobs SET state = 'cancelled', active_slot = NULL,
+                    error = 'presence could not be linked', started_at = ?2,
+                    finished_at = ?2, resource_version = resource_version + 1
+                 WHERE job_id = ?1 AND state = 'preparing'",
+                    &vals![input.job_id, now],
+                )
+                .await?;
+            bail!("deletion jobs require tombstoned, same-surface recorded presence");
+        }
+
+        // Phase 3 exposes the job to workers only after its exact link exists.
+        self.backend
+            .execute(
+                "UPDATE object_deletion_jobs SET state = 'pending',
+                resource_version = resource_version + 1
+             WHERE job_id = ?1 AND state = 'preparing'
+               AND EXISTS (SELECT 1 FROM object_placements op
+                 WHERE op.surface_object_id = object_deletion_jobs.surface_object_id
+                   AND op.placement_id = object_deletion_jobs.placement_id
+                   AND op.state = 'deleting' AND op.deletion_job_id = ?1)",
+                &vals![input.job_id],
+            )
+            .await?;
+        let pending = self
+            .object_deletion_job(&input.job_id)
+            .await?
+            .context("prepared deletion job disappeared")?;
+        if pending.state != "pending" {
+            bail!("deletion job could not become pending after presence linked");
+        }
+        Ok(pending)
+    }
+
+    /// Returns a durable object deletion job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn object_deletion_job(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<ObjectDeletionJobRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {DELETION_JOB_COLUMNS} FROM object_deletion_jobs WHERE job_id = ?1"
+                ),
+                &vals![job_id],
+            )
+            .await?;
+        rows.first().map(row_to_object_deletion_job).transpose()
+    }
+
+    /// Claims a pending or failed physical-deletion job for one worker attempt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing, stale, or non-claimable job, or on database failure.
+    pub async fn claim_object_deletion_job(
+        &self,
+        job_id: &str,
+        expected_version: i64,
+        started_at: i64,
+    ) -> Result<ObjectDeletionJobRecord> {
+        let linked = self
+            .backend
+            .execute(
+                "UPDATE object_placements SET state = 'deleting', deletion_job_id = ?1,
+                    observed_at = ?3
+                 WHERE (state IN ('present', 'corrupt') AND deletion_job_id IS NULL
+                     OR state = 'deleting' AND deletion_job_id = ?1)
+                   AND EXISTS (SELECT 1 FROM object_deletion_jobs j
+                     WHERE j.job_id = ?1 AND j.resource_version = ?2
+                       AND j.state IN ('pending', 'failed')
+                       AND j.surface_object_id = object_placements.surface_object_id
+                       AND j.placement_id = object_placements.placement_id)",
+                &vals![job_id, expected_version, started_at],
+            )
+            .await?;
+        if linked != 1
+            && self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM object_deletion_jobs j
+                 JOIN object_placements op
+                   ON op.surface_object_id = j.surface_object_id
+                  AND op.placement_id = j.placement_id
+                 WHERE j.job_id = ?1 AND j.resource_version = ?2
+                   AND j.state IN ('pending', 'failed')
+                   AND op.state = 'deleting' AND op.deletion_job_id = ?1",
+                    &vals![job_id, expected_version],
+                )
+                .await?
+                .is_none()
+        {
+            bail!("deletion job is missing, stale, or not claimable");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE object_deletion_jobs SET state = 'running', started_at = ?3,
+                    finished_at = NULL, error = NULL,
+                    attempt_count = attempt_count + 1,
+                    resource_version = resource_version + 1
+                 WHERE job_id = ?1 AND resource_version = ?2
+                   AND state IN ('pending', 'failed')
+                   AND EXISTS (SELECT 1 FROM object_placements op
+                     WHERE op.surface_object_id = object_deletion_jobs.surface_object_id
+                       AND op.placement_id = object_deletion_jobs.placement_id
+                       AND op.state = 'deleting' AND op.deletion_job_id = ?1)",
+                &vals![job_id, expected_version, started_at],
+            )
+            .await?;
+        let job = self
+            .object_deletion_job(job_id)
+            .await?
+            .context("claimed deletion job disappeared")?;
+        if job.state != "running"
+            || job.resource_version != expected_version + 1
+            || job.started_at != Some(started_at)
+        {
+            bail!("deletion job is missing, stale, or not claimable");
+        }
+        let _ = affected;
+        Ok(job)
+    }
+
+    /// Completes a claimed deletion attempt and reconciles observed presence.
+    ///
+    /// A terminal job row is authoritative. Retrying the same completion safely
+    /// reconciles the placement after a failure between the two guarded writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for inconsistent outcome fields, a stale/non-running job, or database failure.
+    pub async fn finish_object_deletion_job(
+        &self,
+        job_id: &str,
+        expected_version: i64,
+        succeeded: bool,
+        error: Option<&str>,
+        finished_at: i64,
+    ) -> Result<ObjectDeletionJobRecord> {
+        if succeeded == error.is_some() {
+            bail!("successful deletion has no error and failed deletion requires one");
+        }
+        let job_state = if succeeded { "succeeded" } else { "failed" };
+        let presence_state = if succeeded { "missing" } else { "corrupt" };
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE object_deletion_jobs SET state = ?3, error = ?4,
+                    finished_at = ?5,
+                    active_slot = CASE WHEN ?3 = 'succeeded' THEN NULL ELSE 1 END,
+                    resource_version = resource_version + 1
+                 WHERE job_id = ?1 AND resource_version = ?2 AND state = 'running'
+                   AND EXISTS (SELECT 1 FROM object_placements op
+                     WHERE op.surface_object_id = object_deletion_jobs.surface_object_id
+                       AND op.placement_id = object_deletion_jobs.placement_id
+                       AND op.state = 'deleting' AND op.deletion_job_id = ?1)",
+                &vals![job_id, expected_version, job_state, error, finished_at],
+            )
+            .await?;
+        let job = self
+            .object_deletion_job(job_id)
+            .await?
+            .context("deletion job does not exist")?;
+        let exact_terminal_retry = affected == 0
+            && job.resource_version == expected_version
+            && job.state == job_state
+            && job.error.as_deref() == error
+            && job.finished_at == Some(finished_at);
+        if affected != 1 && !exact_terminal_retry {
+            bail!("deletion job is stale or not running");
+        }
+        self.backend
+            .execute(
+                "UPDATE object_placements SET state = ?2, observed_at = ?3,
+                deletion_job_id = NULL
+             WHERE state = 'deleting' AND deletion_job_id = ?1",
+                &vals![job_id, presence_state, finished_at],
+            )
+            .await?;
+        let terminal_version = if affected == 1 {
+            expected_version + 1
+        } else {
+            expected_version
+        };
+        if job.resource_version != terminal_version || job.state != job_state {
+            bail!("deletion job is stale or not running");
+        }
+        Ok(job)
+    }
+
+    /// Creates a named placement policy for an existing surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed config, a missing surface, a name
+    /// collision, or database failure.
+    pub async fn create_placement_policy(
+        &self,
+        input: &NewPlacementPolicy,
+    ) -> Result<PlacementPolicyRecord> {
+        validate_stable_name(&input.name, "placement policy name")?;
+        if !matches!(
+            input.kind.as_str(),
+            "ordered_failover" | "latency_preferred" | "hash_partition" | "local_then_remote"
+        ) {
+            bail!("invalid placement-policy kind '{}'", input.kind);
+        }
+        validate_json_object(&input.config_json, "placement policy config")?;
+        let (registry_id, cache_id) = input.surface.ids();
+        let now = unix_now();
+        let affected = self
+            .backend
+            .execute(
+                "INSERT INTO placement_policies (registry_id, cache_id, name, kind,
+                config_json, created_at, updated_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?6
+             WHERE EXISTS (SELECT 1 FROM registries WHERE id = ?1)
+                OR EXISTS (SELECT 1 FROM caches WHERE id = ?2)",
+                &vals![
+                    registry_id,
+                    cache_id,
+                    input.name,
+                    input.kind,
+                    input.config_json,
+                    now
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("placement-policy surface does not exist");
+        }
+        self.placement_policy_named(input.surface, &input.name)
+            .await?
+            .context("created placement policy disappeared")
+    }
+
+    /// Returns a placement policy by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn placement_policy(&self, id: i64) -> Result<Option<PlacementPolicyRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!("SELECT {POLICY_COLUMNS} FROM placement_policies WHERE id = ?1"),
+                &vals![id],
+            )
+            .await?;
+        rows.first().map(row_to_placement_policy).transpose()
+    }
+
+    /// Returns a named policy on one surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn placement_policy_named(
+        &self,
+        surface: SurfaceTarget,
+        name: &str,
+    ) -> Result<Option<PlacementPolicyRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        let rows = self.backend.query(&format!("SELECT {POLICY_COLUMNS} FROM placement_policies WHERE (registry_id = ?1 OR cache_id = ?2) AND name = ?3"), &vals![registry_id, cache_id, name]).await?;
+        rows.first().map(row_to_placement_policy).transpose()
+    }
+
+    /// Lists placement policies owned by one surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_placement_policies(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<PlacementPolicyRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        self.backend.query(&format!("SELECT {POLICY_COLUMNS} FROM placement_policies WHERE registry_id = ?1 OR cache_id = ?2 ORDER BY name"), &vals![registry_id, cache_id]).await?.iter().map(row_to_placement_policy).collect()
+    }
+
+    /// Adds a policy member only when policy and placement own the same surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a cross-surface member, duplicate placement/order,
+    /// missing resource, or database failure.
+    pub async fn add_placement_policy_member(
+        &self,
+        policy_id: i64,
+        input: PlacementPolicyMemberInput,
+    ) -> Result<()> {
+        let now = unix_now();
+        self.backend.batch(&[
+            Statement::new("INSERT INTO placement_policy_members (policy_id, placement_id, member_order, required)
+             SELECT pol.id, p.id, ?3, ?4 FROM placement_policies pol
+             JOIN surface_placements p ON p.id = ?2
+             WHERE pol.id = ?1
+               AND ((pol.registry_id IS NOT NULL AND pol.registry_id = p.registry_id)
+                 OR (pol.cache_id IS NOT NULL AND pol.cache_id = p.cache_id))
+               AND p.role <> 'archive' AND p.read_enabled = 1
+               AND p.completeness = 'complete'
+               AND p.state IN ('ready', 'degraded')
+               AND NOT EXISTS (SELECT 1 FROM delivery_routes
+                   WHERE placement_policy_id = pol.id)", vals![policy_id, input.placement_id, input.member_order, input.required].to_vec()),
+            Statement::new("UPDATE placement_policies SET resource_version = resource_version + 1,
+                updated_at = ?3 WHERE id = ?1 AND EXISTS (
+                  SELECT 1 FROM placement_policy_members
+                  WHERE policy_id = ?1 AND placement_id = ?2)",
+                vals![policy_id, input.placement_id, now].to_vec()),
+        ]).await?;
+        if !self
+            .list_placement_policy_members(policy_id)
+            .await?
+            .iter()
+            .any(|member| member.placement_id == input.placement_id)
+        {
+            bail!("policy member must select a placement on the same surface");
+        }
+        Ok(())
+    }
+
+    /// Lists a policy's ordered placement members.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_placement_policy_members(
+        &self,
+        policy_id: i64,
+    ) -> Result<Vec<PlacementPolicyMemberRecord>> {
+        let rows = self.backend.query("SELECT policy_id, placement_id, member_order, required FROM placement_policy_members WHERE policy_id = ?1 ORDER BY member_order", &vals![policy_id]).await?;
+        rows.iter()
+            .map(|row| {
+                Ok(PlacementPolicyMemberRecord {
+                    policy_id: row.get(0)?,
+                    placement_id: row.get(1)?,
+                    member_order: row.get(2)?,
+                    required: row.get(3)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Updates a placement policy's algorithm with optimistic concurrency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed config, invalid kind, a stale version,
+    /// a missing policy, or database failure.
+    pub async fn update_placement_policy(
+        &self,
+        id: i64,
+        expected_version: i64,
+        kind: &str,
+        config_json: &str,
+    ) -> Result<PlacementPolicyRecord> {
+        if !matches!(
+            kind,
+            "ordered_failover" | "latency_preferred" | "hash_partition" | "local_then_remote"
+        ) {
+            bail!("invalid placement-policy kind '{kind}'");
+        }
+        validate_json_object(config_json, "placement policy config")?;
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE placement_policies SET kind = ?3, config_json = ?4,
+                resource_version = resource_version + 1, updated_at = ?5
+             WHERE id = ?1 AND resource_version = ?2
+               AND NOT EXISTS (SELECT 1 FROM delivery_routes
+                   WHERE placement_policy_id = ?1)",
+                &vals![id, expected_version, kind, config_json, unix_now()],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("placement policy is missing or its resource version is stale");
+        }
+        self.placement_policy(id)
+            .await?
+            .context("updated placement policy disappeared")
+    }
+
+    /// Deletes a placement policy at an expected version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or while a route/target references it.
+    pub async fn delete_placement_policy(&self, id: i64, expected_version: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "DELETE FROM placement_policies WHERE id = ?1 AND resource_version = ?2",
+                &vals![id, expected_version],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Removes one placement from a policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn remove_placement_policy_member(
+        &self,
+        policy_id: i64,
+        placement_id: i64,
+    ) -> Result<bool> {
+        let exists = self
+            .list_placement_policy_members(policy_id)
+            .await?
+            .iter()
+            .any(|member| member.placement_id == placement_id);
+        if !exists {
+            return Ok(false);
+        }
+        self.backend
+            .batch(&[
+                Statement::new(
+                    "DELETE FROM placement_policy_members
+                 WHERE policy_id = ?1 AND placement_id = ?2
+                   AND NOT EXISTS (SELECT 1 FROM delivery_routes
+                       WHERE placement_policy_id = ?1)",
+                    vals![policy_id, placement_id].to_vec(),
+                ),
+                Statement::new(
+                    "UPDATE placement_policies SET resource_version = resource_version + 1,
+                updated_at = ?3 WHERE id = ?1 AND NOT EXISTS (
+                  SELECT 1 FROM placement_policy_members
+                  WHERE policy_id = ?1 AND placement_id = ?2)",
+                    vals![policy_id, placement_id, unix_now()].to_vec(),
+                ),
+            ])
+            .await?;
+        Ok(!self
+            .list_placement_policy_members(policy_id)
+            .await?
+            .iter()
+            .any(|member| member.placement_id == placement_id))
+    }
+
+    /// Creates a hostname/path route with a same-surface placement selector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid path, JSON, mode, capabilities, domain
+    /// ownership, selector ownership, private direct origin, gateway
+    /// provenance, route collision, or database failure.
+    pub async fn create_delivery_route(
+        &self,
+        input: &NewDeliveryRoute,
+    ) -> Result<DeliveryRouteRecord> {
+        let base_path = normalize_topology_base_path(&input.base_path)?;
+        validate_json_object(&input.access_policy_json, "route access policy")?;
+        if !matches!(input.mode.as_str(), "hub_proxy" | "hub_redirect" | "direct") {
+            bail!(
+                "invalid delivery-route mode '{}', expected hub_proxy, hub_redirect, or direct",
+                input.mode
+            );
+        }
+        if !(input.serves_git || input.serves_cache || input.serves_web) {
+            bail!("a delivery route must serve at least one protocol audience");
+        }
+        if matches!(input.surface, SurfaceTarget::BinaryCache(_)) && input.serves_git {
+            bail!("a binary-cache route cannot serve the Git protocol");
+        }
+        if input.storage_gateway_id.is_some() != input.gateway_generation.is_some() {
+            bail!("storage gateway and gateway generation must be supplied together");
+        }
+        if input.storage_gateway_id.is_some() && input.mode != "direct" {
+            bail!("storage gateway provenance is valid only for direct routes");
+        }
+        let (registry_id, cache_id) = input.surface.ids();
+        let (placement_id, policy_id) = input.selector.ids();
+        if input.mode == "direct" && policy_id.is_some() {
+            bail!("direct routes require one concrete placement, not a placement policy");
+        }
+        if let Some(gateway_id) = input.storage_gateway_id {
+            let placement_id = placement_id.context(
+                "gateway-derived direct routes require one concrete placement, not a policy",
+            )?;
+            let row = self
+                .backend
+                .query_opt(
+                    "SELECT g.base_path, p.prefix FROM storage_gateways g
+                 JOIN surface_placements p ON p.storage_binding_id = g.storage_binding_id
+                 WHERE g.id = ?1 AND p.id = ?2",
+                    &vals![gateway_id, placement_id],
+                )
+                .await?
+                .context("gateway and placement must share one storage binding")?;
+            let gateway_base: String = row.get(0)?;
+            let placement_prefix: String = row.get(1)?;
+            let derived_path = join_topology_paths(&gateway_base, &placement_prefix)?;
+            if base_path != derived_path {
+                bail!(
+                    "gateway-derived route path must equal gateway base path plus placement prefix"
+                );
+            }
+        }
+        let now = unix_now();
+        let affected = if let Some(placement_id) = placement_id {
+            self.backend
+                .execute(
+                    "INSERT INTO delivery_routes
+                    (domain_id, storage_gateway_id, gateway_generation, base_path,
+                     registry_id, cache_id, mode, access_policy_json, placement_id,
+                     placement_policy_id, serves_git, serves_cache, serves_web,
+                     enabled, created_at, updated_at)
+                 SELECT d.id, ?2, ?3, ?4, ?5, ?6, ?7, ?8, p.id, NULL,
+                        ?11, ?12, ?13, ?14, ?15, ?15
+                 FROM domains d JOIN surface_placements p ON p.id = ?9
+                 LEFT JOIN registries r ON r.id = ?5
+                 LEFT JOIN caches c ON c.id = ?6
+                 JOIN storage_bindings b ON b.id = p.storage_binding_id
+                 WHERE d.id = ?1
+                   AND (?14 = 0 OR (d.verified_at IS NOT NULL
+                     AND d.observed_dns_state = 'verified'
+                     AND d.observed_tls_state = 'active'))
+                   AND ((?5 IS NOT NULL AND p.registry_id = ?5 AND r.id IS NOT NULL)
+                     OR (?6 IS NOT NULL AND p.cache_id = ?6 AND c.id IS NOT NULL))
+                   AND (d.org_id IS NULL OR d.org_id = COALESCE(r.org_id, c.org_id))
+                   AND p.role <> 'archive' AND p.read_enabled = 1
+                   AND p.completeness = 'complete'
+                   AND p.state IN ('ready', 'degraded')
+                   AND (?7 <> 'direct' OR ?2 IS NOT NULL OR b.access = 'public')
+                   AND (?2 IS NULL OR EXISTS (
+                        SELECT 1 FROM storage_gateways g
+                        WHERE g.id = ?2 AND g.domain_id = d.id
+                          AND g.storage_binding_id = p.storage_binding_id
+                          AND g.enabled = 1 AND g.reconciliation_state = 'ready'
+                          AND g.desired_generation = ?3
+                          AND g.observed_generation = ?3))",
+                    &vals![
+                        input.domain_id,
+                        input.storage_gateway_id,
+                        input.gateway_generation,
+                        base_path,
+                        registry_id,
+                        cache_id,
+                        input.mode,
+                        input.access_policy_json,
+                        placement_id,
+                        policy_id,
+                        input.serves_git,
+                        input.serves_cache,
+                        input.serves_web,
+                        input.enabled,
+                        now
+                    ],
+                )
+                .await?
+        } else {
+            self.backend
+                .execute(
+                    "INSERT INTO delivery_routes
+                    (domain_id, storage_gateway_id, gateway_generation, base_path,
+                     registry_id, cache_id, mode, access_policy_json, placement_id,
+                     placement_policy_id, serves_git, serves_cache, serves_web,
+                     enabled, created_at, updated_at)
+                 SELECT d.id, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, pol.id,
+                        ?11, ?12, ?13, ?14, ?15, ?15
+                 FROM domains d JOIN placement_policies pol ON pol.id = ?10
+                 LEFT JOIN registries r ON r.id = ?5
+                 LEFT JOIN caches c ON c.id = ?6
+                 WHERE d.id = ?1
+                   AND ?7 <> 'direct'
+                   AND (?14 = 0 OR (d.verified_at IS NOT NULL
+                     AND d.observed_dns_state = 'verified'
+                     AND d.observed_tls_state = 'active'))
+                   AND ((?5 IS NOT NULL AND pol.registry_id = ?5 AND r.id IS NOT NULL)
+                     OR (?6 IS NOT NULL AND pol.cache_id = ?6 AND c.id IS NOT NULL))
+                   AND (d.org_id IS NULL OR d.org_id = COALESCE(r.org_id, c.org_id))
+                   AND EXISTS (SELECT 1 FROM placement_policy_members WHERE policy_id = pol.id)
+                   AND NOT EXISTS (
+                        SELECT 1 FROM placement_policy_members pm
+                        JOIN surface_placements p ON p.id = pm.placement_id
+                        WHERE pm.policy_id = pol.id
+                          AND (p.role = 'archive' OR p.read_enabled = 0
+                            OR p.completeness <> 'complete'
+                            OR p.state NOT IN ('ready', 'degraded')))
+                   AND (?7 <> 'direct' OR ?2 IS NOT NULL OR NOT EXISTS (
+                        SELECT 1 FROM placement_policy_members pm
+                        JOIN surface_placements p ON p.id = pm.placement_id
+                        JOIN storage_bindings b ON b.id = p.storage_binding_id
+                        WHERE pm.policy_id = pol.id AND b.access <> 'public'))
+                   AND (?2 IS NULL OR EXISTS (
+                        SELECT 1 FROM storage_gateways g WHERE g.id = ?2
+                          AND g.domain_id = d.id
+                          AND g.enabled = 1 AND g.reconciliation_state = 'ready'
+                          AND g.desired_generation = ?3
+                          AND g.observed_generation = ?3
+                          AND NOT EXISTS (
+                            SELECT 1 FROM placement_policy_members pm
+                            JOIN surface_placements p ON p.id = pm.placement_id
+                            WHERE pm.policy_id = pol.id
+                              AND p.storage_binding_id <> g.storage_binding_id)))",
+                    &vals![
+                        input.domain_id,
+                        input.storage_gateway_id,
+                        input.gateway_generation,
+                        base_path,
+                        registry_id,
+                        cache_id,
+                        input.mode,
+                        input.access_policy_json,
+                        placement_id,
+                        policy_id,
+                        input.serves_git,
+                        input.serves_cache,
+                        input.serves_web,
+                        input.enabled,
+                        now
+                    ],
+                )
+                .await?
+        };
+        if affected != 1 {
+            bail!("route domain, surface, selector, access mode, and gateway must be compatible");
+        }
+        self.delivery_route_at(input.domain_id, &base_path)
+            .await?
+            .context("created delivery route disappeared")
+    }
+
+    /// Returns a delivery route by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delivery_route(&self, id: i64) -> Result<Option<DeliveryRouteRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!("SELECT {ROUTE_COLUMNS} FROM delivery_routes WHERE id = ?1"),
+                &vals![id],
+            )
+            .await?;
+        rows.first().map(row_to_delivery_route).transpose()
+    }
+
+    /// Returns the route occupying one domain-relative path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delivery_route_at(
+        &self,
+        domain_id: i64,
+        base_path: &str,
+    ) -> Result<Option<DeliveryRouteRecord>> {
+        let rows = self.backend.query(&format!("SELECT {ROUTE_COLUMNS} FROM delivery_routes WHERE domain_id = ?1 AND base_path = ?2"), &vals![domain_id, base_path]).await?;
+        rows.first().map(row_to_delivery_route).transpose()
+    }
+
+    /// Lists all routes for one surface in domain/path order.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_delivery_routes(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<DeliveryRouteRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        self.backend.query(&format!("SELECT {ROUTE_COLUMNS} FROM delivery_routes WHERE registry_id = ?1 OR cache_id = ?2 ORDER BY domain_id, base_path"), &vals![registry_id, cache_id]).await?.iter().map(row_to_delivery_route).collect()
+    }
+
+    /// Updates a route's behavior without changing its identity or selector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid mode/JSON/capabilities, a private direct
+    /// origin without a gateway, a stale version, or database failure.
+    pub async fn update_delivery_route(
+        &self,
+        id: i64,
+        input: &UpdateDeliveryRoute,
+    ) -> Result<DeliveryRouteRecord> {
+        if !matches!(input.mode.as_str(), "hub_proxy" | "hub_redirect" | "direct") {
+            bail!("invalid delivery-route mode '{}'", input.mode);
+        }
+        if !(input.serves_git || input.serves_cache || input.serves_web) {
+            bail!("a delivery route must serve at least one protocol audience");
+        }
+        validate_json_object(&input.access_policy_json, "route access policy")?;
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE delivery_routes SET mode = ?3, access_policy_json = ?4,
+                serves_git = ?5, serves_cache = ?6, serves_web = ?7,
+                enabled = ?8, resource_version = resource_version + 1,
+                updated_at = ?9
+             WHERE id = ?1 AND resource_version = ?2
+               AND (cache_id IS NULL OR ?5 = 0)
+               AND (?8 = 0 OR EXISTS (SELECT 1 FROM domains d
+                   WHERE d.id = delivery_routes.domain_id
+                     AND d.verified_at IS NOT NULL
+                     AND d.observed_dns_state = 'verified'
+                     AND d.observed_tls_state = 'active'))
+               AND (?8 = 1 OR NOT EXISTS (SELECT 1 FROM canonical_routes
+                   WHERE delivery_route_id = ?1))
+               AND NOT EXISTS (SELECT 1 FROM canonical_routes cr
+                   WHERE cr.delivery_route_id = ?1 AND
+                     ((cr.audience = 'git' AND ?5 = 0)
+                       OR (cr.audience = 'nix_cache' AND ?6 = 0)
+                       OR (cr.audience = 'web' AND ?7 = 0)))
+               AND (storage_gateway_id IS NULL OR ?3 = 'direct')
+               AND (?3 <> 'direct' OR placement_id IS NOT NULL)
+               AND (storage_gateway_id IS NULL OR EXISTS (
+                    SELECT 1 FROM storage_gateways g
+                    WHERE g.id = delivery_routes.storage_gateway_id
+                      AND g.enabled = 1 AND g.reconciliation_state = 'ready'
+                      AND g.observed_generation = delivery_routes.gateway_generation))
+               AND ((placement_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM surface_placements p
+                    WHERE p.id = delivery_routes.placement_id
+                      AND p.state IN ('ready', 'degraded')))
+                 OR (placement_policy_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM placement_policy_members pm
+                    WHERE pm.policy_id = delivery_routes.placement_policy_id)
+                   AND NOT EXISTS (
+                    SELECT 1 FROM placement_policy_members pm
+                    JOIN surface_placements p ON p.id = pm.placement_id
+                    WHERE pm.policy_id = delivery_routes.placement_policy_id
+                      AND p.state NOT IN ('ready', 'degraded'))))
+               AND (?3 <> 'direct' OR storage_gateway_id IS NOT NULL
+                 OR (placement_id IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM surface_placements p
+                    JOIN storage_bindings b ON b.id = p.storage_binding_id
+                    WHERE p.id = delivery_routes.placement_id AND b.access = 'public'))
+                 OR (placement_policy_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM placement_policy_members pm
+                    JOIN surface_placements p ON p.id = pm.placement_id
+                    JOIN storage_bindings b ON b.id = p.storage_binding_id
+                    WHERE pm.policy_id = delivery_routes.placement_policy_id
+                      AND b.access <> 'public')))",
+                &vals![
+                    id,
+                    input.expected_version,
+                    input.mode,
+                    input.access_policy_json,
+                    input.serves_git,
+                    input.serves_cache,
+                    input.serves_web,
+                    input.enabled,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("delivery route is missing, stale, or incompatible with the requested behavior");
+        }
+        self.delivery_route(id)
+            .await?
+            .context("updated delivery route disappeared")
+    }
+
+    /// Deletes a route at an expected version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delete_delivery_route(&self, id: i64, expected_version: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "DELETE FROM delivery_routes WHERE id = ?1 AND resource_version = ?2",
+                &vals![id, expected_version],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Sets the canonical route for one surface/audience with version checking.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the route targets another surface, lacks the
+    /// audience capability, the expected version is stale, or on database failure.
+    pub async fn set_canonical_route(
+        &self,
+        surface: SurfaceTarget,
+        audience: &str,
+        route_id: i64,
+        expected_version: Option<i64>,
+    ) -> Result<CanonicalRouteRecord> {
+        if !matches!(audience, "git" | "nix_cache" | "web") {
+            bail!("invalid canonical-route audience '{audience}'");
+        }
+        let (registry_id, cache_id) = surface.ids();
+        let now = unix_now();
+        let capability = match audience {
+            "git" => "serves_git",
+            "nix_cache" => "serves_cache",
+            _ => "serves_web",
+        };
+        let sql = if expected_version.is_none() {
+            format!(
+                "INSERT INTO canonical_routes (registry_id, cache_id, audience,
+                    delivery_route_id, created_at, updated_at)
+                 SELECT ?1, ?2, ?3, r.id, ?5, ?5 FROM delivery_routes r
+                 WHERE r.id = ?4 AND (r.registry_id = ?1 OR r.cache_id = ?2)
+                   AND r.enabled = 1 AND r.readiness_state = 'ready'
+                   AND r.{capability} = 1
+                   AND EXISTS (SELECT 1 FROM domains d WHERE d.id = r.domain_id
+                     AND d.verified_at IS NOT NULL AND d.observed_dns_state = 'verified'
+                     AND d.observed_tls_state = 'active')
+                   AND (r.storage_gateway_id IS NULL OR EXISTS (
+                     SELECT 1 FROM storage_gateways g WHERE g.id = r.storage_gateway_id
+                       AND g.enabled = 1 AND g.reconciliation_state = 'ready'
+                       AND g.observed_generation = r.gateway_generation))
+                   AND (r.mode <> 'direct' OR r.storage_gateway_id IS NOT NULL
+                     OR (r.placement_id IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM surface_placements p JOIN storage_bindings b
+                         ON b.id = p.storage_binding_id
+                       WHERE p.id = r.placement_id AND b.access = 'public'))
+                     OR (r.placement_policy_id IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM placement_policy_members pm
+                       JOIN surface_placements p ON p.id = pm.placement_id
+                       JOIN storage_bindings b ON b.id = p.storage_binding_id
+                       WHERE pm.policy_id = r.placement_policy_id
+                         AND b.access <> 'public')))"
+            )
+        } else {
+            format!(
+                "UPDATE canonical_routes SET delivery_route_id = ?4,
+                    updated_at = ?5, resource_version = resource_version + 1
+                 WHERE (registry_id = ?1 OR cache_id = ?2) AND audience = ?3
+                   AND resource_version = ?6 AND EXISTS (
+                     SELECT 1 FROM delivery_routes r WHERE r.id = ?4
+                       AND (r.registry_id = ?1 OR r.cache_id = ?2)
+                       AND r.enabled = 1 AND r.readiness_state = 'ready'
+                       AND r.{capability} = 1
+                       AND EXISTS (SELECT 1 FROM domains d WHERE d.id = r.domain_id
+                         AND d.verified_at IS NOT NULL AND d.observed_dns_state = 'verified'
+                         AND d.observed_tls_state = 'active')
+                       AND (r.storage_gateway_id IS NULL OR EXISTS (
+                         SELECT 1 FROM storage_gateways g WHERE g.id = r.storage_gateway_id
+                           AND g.enabled = 1 AND g.reconciliation_state = 'ready'
+                           AND g.observed_generation = r.gateway_generation))
+                       AND (r.mode <> 'direct' OR r.storage_gateway_id IS NOT NULL
+                         OR (r.placement_id IS NOT NULL AND EXISTS (
+                           SELECT 1 FROM surface_placements p JOIN storage_bindings b
+                             ON b.id = p.storage_binding_id
+                           WHERE p.id = r.placement_id AND b.access = 'public'))
+                         OR (r.placement_policy_id IS NOT NULL AND NOT EXISTS (
+                           SELECT 1 FROM placement_policy_members pm
+                           JOIN surface_placements p ON p.id = pm.placement_id
+                           JOIN storage_bindings b ON b.id = p.storage_binding_id
+                           WHERE pm.policy_id = r.placement_policy_id
+                             AND b.access <> 'public'))))"
+            )
+        };
+        let affected = if let Some(version) = expected_version {
+            self.backend
+                .execute(
+                    &sql,
+                    &vals![registry_id, cache_id, audience, route_id, now, version],
+                )
+                .await?
+        } else {
+            self.backend
+                .execute(&sql, &vals![registry_id, cache_id, audience, route_id, now])
+                .await?
+        };
+        if affected != 1 {
+            bail!("canonical route is incompatible, missing, duplicated, or stale");
+        }
+        self.configured_canonical_route(surface, audience)
+            .await?
+            .context("canonical route disappeared")
+    }
+
+    /// Returns the configured canonical row for a surface/audience.
+    ///
+    /// This management view deliberately does not filter on observed route,
+    /// domain, or gateway health, so a degraded selection and its version remain
+    /// inspectable and modifiable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn configured_canonical_route(
+        &self,
+        surface: SurfaceTarget,
+        audience: &str,
+    ) -> Result<Option<CanonicalRouteRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, registry_id, cache_id, audience, delivery_route_id,
+                    created_at, updated_at, resource_version
+                 FROM canonical_routes
+                 WHERE (registry_id = ?1 OR cache_id = ?2) AND audience = ?3",
+                &vals![registry_id, cache_id, audience],
+            )
+            .await?;
+        rows.first().map(row_to_canonical_route).transpose()
+    }
+
+    /// Resolves the healthy canonical route for a surface/audience.
+    ///
+    /// Unlike [`Database::configured_canonical_route`], this serving view returns
+    /// `None` while the selected route, domain, or gateway is unhealthy.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn canonical_route(
+        &self,
+        surface: SurfaceTarget,
+        audience: &str,
+    ) -> Result<Option<CanonicalRouteRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        let rows = self
+            .backend
+            .query(
+                "SELECT cr.id, cr.registry_id, cr.cache_id, cr.audience,
+                    cr.delivery_route_id, cr.created_at, cr.updated_at, cr.resource_version
+                 FROM canonical_routes cr
+                 JOIN delivery_routes r ON r.id = cr.delivery_route_id
+                 JOIN domains d ON d.id = r.domain_id
+                 LEFT JOIN storage_gateways g ON g.id = r.storage_gateway_id
+                 WHERE (cr.registry_id = ?1 OR cr.cache_id = ?2) AND cr.audience = ?3
+                   AND r.enabled = 1 AND r.readiness_state = 'ready'
+                   AND d.verified_at IS NOT NULL
+                   AND d.observed_dns_state = 'verified' AND d.observed_tls_state = 'active'
+                   AND ((cr.audience = 'git' AND r.serves_git = 1)
+                     OR (cr.audience = 'nix_cache' AND r.serves_cache = 1)
+                     OR (cr.audience = 'web' AND r.serves_web = 1))
+                   AND (r.storage_gateway_id IS NULL OR
+                     (g.enabled = 1 AND g.reconciliation_state = 'ready'
+                       AND g.observed_generation = r.gateway_generation))
+                   AND (r.mode <> 'direct' OR r.storage_gateway_id IS NOT NULL
+                     OR (r.placement_id IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM surface_placements p JOIN storage_bindings b
+                         ON b.id = p.storage_binding_id
+                       WHERE p.id = r.placement_id AND b.access = 'public'))
+                     OR (r.placement_policy_id IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM placement_policy_members pm
+                       JOIN surface_placements p ON p.id = pm.placement_id
+                       JOIN storage_bindings b ON b.id = p.storage_binding_id
+                       WHERE pm.policy_id = r.placement_policy_id
+                         AND b.access <> 'public'))) ",
+                &vals![registry_id, cache_id, audience],
+            )
+            .await?;
+        rows.first().map(row_to_canonical_route).transpose()
+    }
+
+    /// Lists configured canonical rows for one surface.
+    ///
+    /// This is the unfiltered management counterpart to
+    /// [`Database::list_canonical_routes`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_configured_canonical_routes(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<CanonicalRouteRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        self.backend
+            .query(
+                "SELECT id, registry_id, cache_id, audience, delivery_route_id,
+                    created_at, updated_at, resource_version
+                 FROM canonical_routes
+                 WHERE registry_id = ?1 OR cache_id = ?2
+                 ORDER BY audience",
+                &vals![registry_id, cache_id],
+            )
+            .await?
+            .iter()
+            .map(row_to_canonical_route)
+            .collect()
+    }
+
+    /// Lists healthy resolved canonical routes for one surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_canonical_routes(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<CanonicalRouteRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        self.backend
+            .query(
+                "SELECT cr.id, cr.registry_id, cr.cache_id, cr.audience,
+                    cr.delivery_route_id, cr.created_at, cr.updated_at, cr.resource_version
+                 FROM canonical_routes cr JOIN delivery_routes r ON r.id = cr.delivery_route_id
+                 JOIN domains d ON d.id = r.domain_id
+                 LEFT JOIN storage_gateways g ON g.id = r.storage_gateway_id
+                 WHERE (cr.registry_id = ?1 OR cr.cache_id = ?2)
+                   AND r.enabled = 1 AND r.readiness_state = 'ready'
+                   AND d.verified_at IS NOT NULL AND d.observed_dns_state = 'verified'
+                   AND d.observed_tls_state = 'active'
+                   AND ((cr.audience = 'git' AND r.serves_git = 1)
+                     OR (cr.audience = 'nix_cache' AND r.serves_cache = 1)
+                     OR (cr.audience = 'web' AND r.serves_web = 1))
+                   AND (r.storage_gateway_id IS NULL OR
+                     (g.enabled = 1 AND g.reconciliation_state = 'ready'
+                       AND g.observed_generation = r.gateway_generation))
+                   AND (r.mode <> 'direct' OR r.storage_gateway_id IS NOT NULL
+                     OR (r.placement_id IS NOT NULL AND EXISTS (
+                       SELECT 1 FROM surface_placements p JOIN storage_bindings b
+                         ON b.id = p.storage_binding_id
+                       WHERE p.id = r.placement_id AND b.access = 'public'))
+                     OR (r.placement_policy_id IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM placement_policy_members pm
+                       JOIN surface_placements p ON p.id = pm.placement_id
+                       JOIN storage_bindings b ON b.id = p.storage_binding_id
+                       WHERE pm.policy_id = r.placement_policy_id
+                         AND b.access <> 'public')))
+                 ORDER BY cr.audience",
+                &vals![registry_id, cache_id],
+            )
+            .await?
+            .iter()
+            .map(row_to_canonical_route)
+            .collect()
+    }
+
+    /// Creates or version-updates topology defaults after checking scope ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing/cross-scope references, a stale version,
+    /// a duplicate create, or database failure.
+    pub async fn set_topology_defaults(
+        &self,
+        input: &SetTopologyDefaults,
+    ) -> Result<TopologyDefaultsRecord> {
+        let (scope_kind, org_id, scope_key) = match input.scope {
+            TopologyScope::Instance => ("instance", None, "instance".to_string()),
+            TopologyScope::Organization(id) => ("organization", Some(id), format!("org:{id}")),
+        };
+        let owned = match input.scope {
+            TopologyScope::Instance => self.backend.query(
+                "SELECT
+                  (?1 IS NULL OR EXISTS (SELECT 1 FROM storage_bindings WHERE id = ?1 AND is_instance_default = 1))
+                  AND (?2 IS NULL OR EXISTS (SELECT 1 FROM domains WHERE id = ?2 AND org_id IS NULL))
+                  AND (?3 IS NULL OR (?1 IS NOT NULL AND ?2 IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM storage_gateways WHERE id = ?3 AND org_id IS NULL
+                      AND storage_binding_id = ?1 AND domain_id = ?2)))",
+                &vals![input.storage_binding_id, input.domain_id, input.storage_gateway_id]).await?,
+            TopologyScope::Organization(id) => self.backend.query(
+                "SELECT EXISTS (SELECT 1 FROM orgs WHERE id = ?1)
+                  AND (?2 IS NULL OR EXISTS (SELECT 1 FROM storage_bindings WHERE id = ?2 AND (org_id = ?1 OR is_instance_default = 1)))
+                  AND (?3 IS NULL OR EXISTS (SELECT 1 FROM domains WHERE id = ?3 AND (org_id = ?1 OR org_id IS NULL)))
+                  AND (?4 IS NULL OR (?2 IS NOT NULL AND ?3 IS NOT NULL AND EXISTS (
+                    SELECT 1 FROM storage_gateways WHERE id = ?4
+                      AND (org_id = ?1 OR org_id IS NULL)
+                      AND storage_binding_id = ?2 AND domain_id = ?3)))",
+                &vals![id, input.storage_binding_id, input.domain_id, input.storage_gateway_id]).await?,
+        };
+        if !owned
+            .first()
+            .context("ownership query returned no row")?
+            .get::<bool>(0)?
+        {
+            bail!("topology defaults may reference only resources visible in their scope");
+        }
+        let now = unix_now();
+        let affected = if let Some(version) = input.expected_version {
+            self.backend
+                .execute(
+                    "UPDATE topology_defaults SET storage_binding_id = ?2, domain_id = ?3,
+                    storage_gateway_id = ?4, resource_version = resource_version + 1,
+                    updated_at = ?5 WHERE scope_key = ?1 AND resource_version = ?6",
+                    &vals![
+                        scope_key,
+                        input.storage_binding_id,
+                        input.domain_id,
+                        input.storage_gateway_id,
+                        now,
+                        version
+                    ],
+                )
+                .await?
+        } else {
+            self.backend
+                .execute(
+                    "INSERT INTO topology_defaults (scope_kind, org_id, scope_key,
+                    storage_binding_id, domain_id, storage_gateway_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                    &vals![
+                        scope_kind,
+                        org_id,
+                        scope_key,
+                        input.storage_binding_id,
+                        input.domain_id,
+                        input.storage_gateway_id,
+                        now
+                    ],
+                )
+                .await?
+        };
+        if affected != 1 {
+            bail!("topology defaults are missing, duplicated, or stale");
+        }
+        self.topology_defaults(input.scope)
+            .await?
+            .context("topology defaults disappeared")
+    }
+
+    /// Returns topology defaults for one scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn topology_defaults(
+        &self,
+        scope: TopologyScope,
+    ) -> Result<Option<TopologyDefaultsRecord>> {
+        let key = match scope {
+            TopologyScope::Instance => "instance".to_string(),
+            TopologyScope::Organization(id) => format!("org:{id}"),
+        };
+        let rows = self
+            .backend
+            .query(
+                "SELECT id, scope_kind, org_id, scope_key,
+            storage_binding_id, domain_id, storage_gateway_id, resource_version,
+            created_at, updated_at FROM topology_defaults WHERE scope_key = ?1",
+                &vals![key],
+            )
+            .await?;
+        rows.first().map(row_to_topology_defaults).transpose()
+    }
+
+    /// Deletes topology defaults at an expected version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delete_topology_defaults(
+        &self,
+        scope: TopologyScope,
+        expected_version: i64,
+    ) -> Result<bool> {
+        let key = match scope {
+            TopologyScope::Instance => "instance".to_string(),
+            TopologyScope::Organization(id) => format!("org:{id}"),
+        };
+        Ok(self
+            .backend
+            .execute(
+                "DELETE FROM topology_defaults WHERE scope_key = ?1 AND resource_version = ?2",
+                &vals![key, expected_version],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Creates or version-updates one registry-derived cache retention subscription.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed selectors, negative grace, missing
+    /// resources, a stale version, a duplicate create, or database failure.
+    pub async fn set_cache_retention_subscription(
+        &self,
+        input: &SetCacheRetentionSubscription,
+    ) -> Result<CacheRetentionSubscriptionRecord> {
+        validate_json_object(&input.selector_json, "retention selector")?;
+        if input.removal_grace_secs < 0 {
+            bail!("retention removal grace cannot be negative");
+        }
+        let now = unix_now();
+        let affected = if let Some(version) = input.expected_version {
+            self.backend
+                .execute(
+                    "UPDATE cache_retention_subscriptions SET selector_json = ?3,
+                    removal_grace_secs = ?4, exposure_acknowledged_at = ?5,
+                    enabled = ?6, refresh_state = 'stale', retired_at = NULL,
+                    resource_version = resource_version + 1,
+                    updated_at = ?7 WHERE cache_id = ?1 AND registry_id = ?2
+                    AND resource_version = ?8",
+                    &vals![
+                        input.cache_id,
+                        input.registry_id,
+                        input.selector_json,
+                        input.removal_grace_secs,
+                        input.exposure_acknowledged_at,
+                        input.enabled,
+                        now,
+                        version
+                    ],
+                )
+                .await?
+        } else {
+            self.backend
+                .execute(
+                    "INSERT INTO cache_retention_subscriptions (cache_id, registry_id,
+                    selector_json, removal_grace_secs, exposure_acknowledged_at,
+                    enabled, created_at, updated_at)
+                 SELECT c.id, r.id, ?3, ?4, ?5, ?6, ?7, ?7
+                 FROM caches c CROSS JOIN registries r WHERE c.id = ?1 AND r.id = ?2",
+                    &vals![
+                        input.cache_id,
+                        input.registry_id,
+                        input.selector_json,
+                        input.removal_grace_secs,
+                        input.exposure_acknowledged_at,
+                        input.enabled,
+                        now
+                    ],
+                )
+                .await?
+        };
+        if affected != 1 {
+            bail!("retention subscription is missing, duplicated, stale, or references missing resources");
+        }
+        self.cache_retention_subscription(input.cache_id, input.registry_id)
+            .await?
+            .context("retention subscription disappeared")
+    }
+
+    /// Returns one cache/registry retention subscription.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_retention_subscription(
+        &self,
+        cache_id: i64,
+        registry_id: i64,
+    ) -> Result<Option<CacheRetentionSubscriptionRecord>> {
+        let rows = self.backend.query(&format!("SELECT {RETENTION_COLUMNS} FROM cache_retention_subscriptions WHERE cache_id = ?1 AND registry_id = ?2"), &vals![cache_id, registry_id]).await?;
+        rows.first()
+            .map(row_to_cache_retention_subscription)
+            .transpose()
+    }
+
+    /// Lists retention subscriptions owned by one cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_cache_retention_subscriptions(
+        &self,
+        cache_id: i64,
+    ) -> Result<Vec<CacheRetentionSubscriptionRecord>> {
+        self.backend.query(&format!("SELECT {RETENTION_COLUMNS} FROM cache_retention_subscriptions WHERE cache_id = ?1 ORDER BY registry_id"), &vals![cache_id]).await?.iter().map(row_to_cache_retention_subscription).collect()
+    }
+
+    /// Soft-retires a retention subscription without deleting prior root reasons.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn retire_cache_retention_subscription(
+        &self,
+        id: i64,
+        expected_version: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "UPDATE cache_retention_subscriptions
+                 SET enabled = 0, retired_at = ?3, refresh_state = 'stale',
+                     resource_version = resource_version + 1, updated_at = ?3
+                 WHERE id = ?1 AND resource_version = ?2 AND retired_at IS NULL",
+                &vals![id, expected_version, unix_now()],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Begins an unreachable immutable retention generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identity/count, stale subscription, or database failure.
+    pub async fn begin_cache_retention_refresh(
+        &self,
+        refresh_id: &str,
+        subscription_id: i64,
+        expected_version: i64,
+        source_revision: &str,
+        expected_reason_count: i64,
+        started_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(refresh_id, "retention refresh id", 64)?;
+        validate_key_bytes(source_revision, "retention source revision", 128)?;
+        if expected_reason_count < 0 {
+            bail!("expected reason count cannot be negative");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "INSERT INTO cache_retention_refreshes
+             (refresh_id, subscription_id, parent_refresh_id, source_revision,
+              started_at, expected_reason_count)
+             SELECT ?1, id, current_refresh_id, ?4, ?6, ?5
+             FROM cache_retention_subscriptions
+             WHERE id = ?2 AND resource_version = ?3 AND enabled = 1 AND retired_at IS NULL",
+                &vals![
+                    refresh_id,
+                    subscription_id,
+                    expected_version,
+                    source_revision,
+                    expected_reason_count,
+                    started_at
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("retention subscription is stale, disabled, retired, or missing");
+        }
+        Ok(())
+    }
+
+    /// Stages one immutable source-proven retention reason under a refresh id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid provenance, duplicate identity, inactive refresh, or database failure.
+    pub async fn stage_cache_retention_reason(
+        &self,
+        refresh_id: &str,
+        input: &RetentionRefreshReasonInput,
+        refreshed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(&input.reason_key, "retention reason key", 255)?;
+        validate_key_bytes(&input.store_hash, "retention store hash", 64)?;
+        validate_key_bytes(&input.source_ref, "retention source ref", 255)?;
+        if !matches!(
+            input.source_kind.as_str(),
+            "registry_catalog" | "release" | "channel"
+        ) {
+            bail!(
+                "invalid registry-derived retention source kind '{}'",
+                input.source_kind
+            );
+        }
+        let affected = self
+            .backend
+            .execute(
+                "INSERT INTO cache_root_reasons
+             (cache_id, registry_id, store_hash, reason_key, source_kind, refresh_id,
+              retention_subscription_id, release_id, channel_id, partition_bucket,
+              source_ref, source_revision, expires_at, refreshed_at)
+             SELECT sub.cache_id, sub.registry_id, ?2, ?3, ?4, rr.refresh_id,
+                    sub.id, ?6, ?7, ?8, ?5, rr.source_revision, ?9, ?10
+             FROM cache_retention_refreshes rr
+             JOIN cache_retention_subscriptions sub ON sub.id = rr.subscription_id
+             WHERE rr.refresh_id = ?1 AND rr.state = 'running'
+               AND ((?4 = 'registry_catalog' AND ?6 IS NULL AND ?7 IS NULL AND ?8 IS NULL)
+                 OR (?4 = 'release' AND ?6 IS NOT NULL AND ?7 IS NULL AND ?8 IS NULL
+                   AND EXISTS (SELECT 1 FROM releases rel
+                     JOIN release_artifacts ra ON ra.release_id = rel.id
+                     WHERE rel.id = ?6 AND rel.registry_id = sub.registry_id
+                       AND ra.store_hash = ?2))
+                 OR (?4 = 'channel' AND ?6 IS NOT NULL AND ?7 IS NOT NULL AND ?8 IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM channels ch JOIN channel_partitions cp
+                     ON cp.channel_id = ch.id AND cp.bucket = ?8
+                     JOIN releases rel ON rel.id = ?6 AND rel.registry_id = ch.registry_id
+                       AND rel.semver = cp.release
+                     JOIN release_artifacts ra ON ra.release_id = rel.id
+                       AND ra.store_hash = ?2
+                     WHERE ch.id = ?7 AND ch.registry_id = sub.registry_id)))",
+                &vals![
+                    refresh_id,
+                    input.store_hash,
+                    input.reason_key,
+                    input.source_kind,
+                    input.source_ref,
+                    input.release_id,
+                    input.channel_id,
+                    input.partition_bucket,
+                    input.expires_at,
+                    refreshed_at
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("retention reason provenance is invalid or duplicated");
+        }
+        Ok(())
+    }
+
+    /// Seals a complete staged generation, then advances the subscription with one pointer CAS.
+    ///
+    /// Old reasons remain immutable and reachable through the parent lineage until grace expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incomplete staging, stale lineage/version, retired subscription, or database failure.
+    pub async fn commit_cache_retention_refresh(
+        &self,
+        refresh_id: &str,
+        expected_version: i64,
+        activated_at: i64,
+    ) -> Result<CacheRetentionSubscriptionRecord> {
+        let sealed = self
+            .backend
+            .execute(
+                "UPDATE cache_retention_refreshes SET state = 'staged',
+                activated_at = ?2, grace_until = ?2 + (SELECT removal_grace_secs
+                  FROM cache_retention_subscriptions WHERE id = subscription_id),
+                finished_at = ?2
+             WHERE refresh_id = ?1 AND state = 'running'
+               AND expected_reason_count = (SELECT COUNT(*) FROM cache_root_reasons
+                 WHERE refresh_id = ?1)",
+                &vals![refresh_id, activated_at],
+            )
+            .await?;
+        if sealed != 1 {
+            let staged = self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM cache_retention_refreshes rr
+                 WHERE rr.refresh_id = ?1 AND rr.state = 'staged' AND rr.activated_at = ?2
+                   AND rr.expected_reason_count = (SELECT COUNT(*) FROM cache_root_reasons
+                     WHERE refresh_id = rr.refresh_id)",
+                    &vals![refresh_id, activated_at],
+                )
+                .await?;
+            if staged.is_none() {
+                bail!("retention refresh staging is incomplete or terminal with different inputs");
+            }
+        }
+        let advanced = self.backend.execute(
+            "UPDATE cache_retention_subscriptions SET current_refresh_id = ?1,
+                last_successful_revision = (SELECT source_revision FROM cache_retention_refreshes
+                  WHERE refresh_id = ?1), last_refresh_at = ?3,
+                refresh_state = 'fresh', refresh_error = NULL,
+                resource_version = resource_version + 1, updated_at = ?3
+             WHERE id = (SELECT subscription_id FROM cache_retention_refreshes WHERE refresh_id = ?1)
+               AND resource_version = ?2 AND enabled = 1 AND retired_at IS NULL
+               AND (current_refresh_id = (SELECT parent_refresh_id
+                      FROM cache_retention_refreshes WHERE refresh_id = ?1)
+                 OR (current_refresh_id IS NULL AND (SELECT parent_refresh_id
+                      FROM cache_retention_refreshes WHERE refresh_id = ?1) IS NULL))
+               AND EXISTS (SELECT 1 FROM cache_retention_refreshes
+                 WHERE refresh_id = ?1 AND state = 'staged')",
+            &vals![refresh_id, expected_version, activated_at],
+        ).await?;
+        if advanced != 1 {
+            let already_current = self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM cache_retention_subscriptions WHERE current_refresh_id = ?1",
+                    &vals![refresh_id],
+                )
+                .await?;
+            if already_current.is_none() {
+                bail!("retention refresh pointer CAS is stale or subscription is inactive");
+            }
+        }
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {RETENTION_COLUMNS} FROM cache_retention_subscriptions
+                WHERE current_refresh_id = ?1"
+                ),
+                &vals![refresh_id],
+            )
+            .await?;
+        rows.first()
+            .map(row_to_cache_retention_subscription)
+            .transpose()?
+            .context("committed retention subscription disappeared")
+    }
+
+    /// Marks an unreachable staging refresh failed without changing active roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty error, non-running refresh, or database failure.
+    pub async fn fail_cache_retention_refresh(
+        &self,
+        refresh_id: &str,
+        error: &str,
+        finished_at: i64,
+    ) -> Result<bool> {
+        if error.trim().is_empty() {
+            bail!("retention refresh failure requires an error");
+        }
+        let failed = self
+            .backend
+            .execute(
+                "UPDATE cache_retention_refreshes SET state = 'failed', error = ?2,
+                finished_at = ?3 WHERE refresh_id = ?1 AND state = 'running'",
+                &vals![refresh_id, error, finished_at],
+            )
+            .await?
+            == 1;
+        if failed {
+            self.backend
+                .execute(
+                    "UPDATE cache_retention_subscriptions SET refresh_state = 'failed',
+                    refresh_error = ?2, last_refresh_at = ?3, updated_at = ?3,
+                    resource_version = resource_version + 1
+                 WHERE id = (SELECT subscription_id FROM cache_retention_refreshes
+                   WHERE refresh_id = ?1)
+                   AND (current_refresh_id = (SELECT parent_refresh_id
+                          FROM cache_retention_refreshes WHERE refresh_id = ?1)
+                     OR (current_refresh_id IS NULL AND (SELECT parent_refresh_id
+                          FROM cache_retention_refreshes WHERE refresh_id = ?1) IS NULL))
+                   AND (last_refresh_at IS NULL OR last_refresh_at <= (
+                     SELECT started_at FROM cache_retention_refreshes
+                     WHERE refresh_id = ?1))
+                   AND NOT EXISTS (SELECT 1 FROM cache_retention_refreshes newer
+                     WHERE newer.subscription_id = cache_retention_subscriptions.id
+                       AND newer.started_at > (SELECT started_at
+                         FROM cache_retention_refreshes WHERE refresh_id = ?1))",
+                    &vals![refresh_id, error, finished_at],
+                )
+                .await?;
+        }
+        Ok(failed)
+    }
+
+    /// Creates or version-updates one registry-to-cache population effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed selectors, invalid vocabulary, a policy
+    /// on another cache, missing resources, stale version, or database failure.
+    pub async fn set_cache_population_target(
+        &self,
+        input: &SetCachePopulationTarget,
+    ) -> Result<CachePopulationTargetRecord> {
+        validate_json_object(&input.selector_json, "population selector")?;
+        if !matches!(
+            input.trigger_kind.as_str(),
+            "release" | "manual" | "continuous"
+        ) {
+            bail!(
+                "invalid population trigger '{}', expected release, manual, or continuous",
+                input.trigger_kind
+            );
+        }
+        if !matches!(
+            input.validation_gate.as_str(),
+            "none" | "presence" | "closure" | "deep"
+        ) {
+            bail!(
+                "invalid population validation gate '{}'",
+                input.validation_gate
+            );
+        }
+        let now = unix_now();
+        let affected = if let Some(version) = input.expected_version {
+            self.backend
+                .execute(
+                    "UPDATE cache_population_targets SET required = ?4,
+                    placement_policy_id = ?5, selector_json = ?6,
+                    validation_gate = ?7, enabled = ?8,
+                    resource_version = resource_version + 1, updated_at = ?9
+                 WHERE cache_id = ?1 AND registry_id = ?2 AND trigger_kind = ?3
+                   AND resource_version = ?10
+                   AND (?5 IS NULL OR EXISTS (SELECT 1 FROM placement_policies
+                       WHERE id = ?5 AND cache_id = ?1))",
+                    &vals![
+                        input.cache_id,
+                        input.registry_id,
+                        input.trigger_kind,
+                        input.required,
+                        input.placement_policy_id,
+                        input.selector_json,
+                        input.validation_gate,
+                        input.enabled,
+                        now,
+                        version
+                    ],
+                )
+                .await?
+        } else {
+            self.backend
+                .execute(
+                    "INSERT INTO cache_population_targets (cache_id, registry_id,
+                    trigger_kind, required, placement_policy_id, selector_json,
+                    validation_gate, enabled, created_at, updated_at)
+                 SELECT c.id, r.id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9
+                 FROM caches c CROSS JOIN registries r WHERE c.id = ?1 AND r.id = ?2
+                   AND (?5 IS NULL OR EXISTS (SELECT 1 FROM placement_policies
+                       WHERE id = ?5 AND cache_id = c.id))",
+                    &vals![
+                        input.cache_id,
+                        input.registry_id,
+                        input.trigger_kind,
+                        input.required,
+                        input.placement_policy_id,
+                        input.selector_json,
+                        input.validation_gate,
+                        input.enabled,
+                        now
+                    ],
+                )
+                .await?
+        };
+        if affected != 1 {
+            bail!("population target is missing, duplicated, stale, or topologically incompatible");
+        }
+        self.cache_population_target(input.cache_id, input.registry_id, &input.trigger_kind)
+            .await?
+            .context("population target disappeared")
+    }
+
+    /// Returns one population target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn cache_population_target(
+        &self,
+        cache_id: i64,
+        registry_id: i64,
+        trigger_kind: &str,
+    ) -> Result<Option<CachePopulationTargetRecord>> {
+        let rows = self.backend.query(&format!("SELECT {POPULATION_COLUMNS} FROM cache_population_targets WHERE cache_id = ?1 AND registry_id = ?2 AND trigger_kind = ?3"), &vals![cache_id, registry_id, trigger_kind]).await?;
+        rows.first().map(row_to_cache_population_target).transpose()
+    }
+
+    /// Lists population targets that write to one cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_cache_population_targets(
+        &self,
+        cache_id: i64,
+    ) -> Result<Vec<CachePopulationTargetRecord>> {
+        self.backend.query(&format!("SELECT {POPULATION_COLUMNS} FROM cache_population_targets WHERE cache_id = ?1 ORDER BY registry_id, trigger_kind"), &vals![cache_id]).await?.iter().map(row_to_cache_population_target).collect()
+    }
+
+    /// Deletes a population target at an expected version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn delete_cache_population_target(
+        &self,
+        id: i64,
+        expected_version: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "DELETE FROM cache_population_targets WHERE id = ?1 AND resource_version = ?2",
+                &vals![id, expected_version],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Stores an immutable, expiring semantic topology plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed JSON, non-future expiry, duplicate id,
+    /// or database failure.
+    pub async fn create_topology_plan(
+        &self,
+        input: &NewTopologyPlan,
+    ) -> Result<TopologyPlanRecord> {
+        validate_key_bytes(&input.plan_id, "topology plan id", 64)?;
+        validate_key_bytes(&input.plan_kind, "topology plan kind", 64)?;
+        validate_key_bytes(&input.actor_kind, "topology plan actor kind", 32)?;
+        if !matches!(
+            input.actor_kind.as_str(),
+            "user" | "service_account" | "key" | "system"
+        ) {
+            bail!("invalid topology plan actor kind '{}'", input.actor_kind);
+        }
+        validate_key_bytes(&input.scope, "topology plan scope", 255)?;
+        if let Some(hash) = input.confirmation_hash.as_deref() {
+            validate_key_bytes(hash, "confirmation hash", 128)?;
+        }
+        validate_json_value(&input.input_versions_json, "plan input versions")?;
+        validate_json_value(&input.effects_json, "plan effects")?;
+        validate_json_value(&input.warnings_json, "plan warnings")?;
+        let now = unix_now();
+        if input.expires_at <= now {
+            bail!("topology plan expiry must be in the future");
+        }
+        self.backend
+            .execute(
+                "INSERT INTO topology_plans (plan_id, plan_kind, actor_kind, actor_id,
+                actor_label, scope, input_versions_json, effects_json, warnings_json,
+                confirmation_hash, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                &vals![
+                    input.plan_id,
+                    input.plan_kind,
+                    input.actor_kind,
+                    input.actor_id,
+                    input.actor_label,
+                    input.scope,
+                    input.input_versions_json,
+                    input.effects_json,
+                    input.warnings_json,
+                    input.confirmation_hash,
+                    now,
+                    input.expires_at
+                ],
+            )
+            .await?;
+        self.topology_plan(&input.plan_id)
+            .await?
+            .context("created topology plan disappeared")
+    }
+
+    /// Returns a topology plan by opaque id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn topology_plan(&self, plan_id: &str) -> Result<Option<TopologyPlanRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!("SELECT {PLAN_COLUMNS} FROM topology_plans WHERE plan_id = ?1"),
+                &vals![plan_id],
+            )
+            .await?;
+        rows.first().map(row_to_topology_plan).transpose()
+    }
+
+    /// Lists plans in one authorization scope, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_topology_plans(&self, scope: &str) -> Result<Vec<TopologyPlanRecord>> {
+        self.backend.query(&format!("SELECT {PLAN_COLUMNS} FROM topology_plans WHERE scope = ?1 ORDER BY created_at DESC, plan_id"), &vals![scope]).await?.iter().map(row_to_topology_plan).collect()
+    }
+
+    /// Creates a durable topology operation after validating its target tuple.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed detail, an incompatible surface and
+    /// placement, a missing target, duplicate id, or database failure.
+    pub async fn create_topology_operation(
+        &self,
+        input: &NewTopologyOperation,
+    ) -> Result<TopologyOperationRecord> {
+        validate_key_bytes(&input.operation_id, "topology operation id", 64)?;
+        validate_key_bytes(&input.operation_kind, "topology operation kind", 64)?;
+        validate_json_value(&input.detail_json, "operation detail")?;
+        if input.progress_total.is_some_and(|total| total < 0) {
+            bail!("operation progress total cannot be negative");
+        }
+        let (registry_id, cache_id) = input
+            .surface
+            .map(SurfaceTarget::ids)
+            .unwrap_or((None, None));
+        let now = unix_now();
+        let affected = self
+            .backend
+            .execute(
+                "INSERT INTO topology_operations (operation_id, operation_kind,
+                registry_id, cache_id, placement_id, state, progress_total,
+                detail_json, created_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8
+             WHERE (?3 IS NULL OR EXISTS (SELECT 1 FROM registries WHERE id = ?3))
+               AND (?4 IS NULL OR EXISTS (SELECT 1 FROM caches WHERE id = ?4))
+               AND (?5 IS NULL OR EXISTS (SELECT 1 FROM surface_placements p
+                    WHERE p.id = ?5 AND ((?3 IS NOT NULL AND p.registry_id = ?3)
+                      OR (?4 IS NOT NULL AND p.cache_id = ?4))))",
+                &vals![
+                    input.operation_id,
+                    input.operation_kind,
+                    registry_id,
+                    cache_id,
+                    input.placement_id,
+                    input.progress_total,
+                    input.detail_json,
+                    now
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("operation targets must exist and a placement must belong to its surface");
+        }
+        self.topology_operation(&input.operation_id)
+            .await?
+            .context("created topology operation disappeared")
+    }
+
+    /// Returns a topology operation by opaque id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn topology_operation(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<TopologyOperationRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {OPERATION_COLUMNS} FROM topology_operations WHERE operation_id = ?1"
+                ),
+                &vals![operation_id],
+            )
+            .await?;
+        rows.first().map(row_to_topology_operation).transpose()
+    }
+
+    /// Lists operations for a surface, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn list_topology_operations(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Vec<TopologyOperationRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        self.backend.query(&format!("SELECT {OPERATION_COLUMNS} FROM topology_operations WHERE registry_id = ?1 OR cache_id = ?2 ORDER BY created_at DESC, operation_id"), &vals![registry_id, cache_id]).await?.iter().map(row_to_topology_operation).collect()
+    }
+
+    /// Advances an operation with optimistic concurrency.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid state, malformed detail, a stale
+    /// version, missing operation, or database failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_topology_operation(
+        &self,
+        operation_id: &str,
+        expected_version: i64,
+        state: &str,
+        progress_current: i64,
+        progress_total: Option<i64>,
+        detail_json: &str,
+        error: Option<&str>,
+        started_at: Option<i64>,
+        finished_at: Option<i64>,
+    ) -> Result<TopologyOperationRecord> {
+        if !matches!(state, "running" | "succeeded" | "failed" | "cancelled") {
+            bail!("invalid topology-operation state '{state}'");
+        }
+        validate_json_value(detail_json, "operation detail")?;
+        if progress_current < 0 || progress_total.is_some_and(|total| total < progress_current) {
+            bail!("operation progress must be non-negative and cannot exceed its total");
+        }
+        match state {
+            "running" if started_at.is_none() || finished_at.is_some() || error.is_some() => {
+                bail!("a running operation requires started_at and no finish/error")
+            }
+            "succeeded" if started_at.is_none() || finished_at.is_none() || error.is_some() => {
+                bail!("a succeeded operation requires start/finish times and no error")
+            }
+            "failed" if started_at.is_none() || finished_at.is_none() || error.is_none() => {
+                bail!("a failed operation requires start/finish times and an error")
+            }
+            "cancelled" if started_at.is_none() || finished_at.is_none() => {
+                bail!("a cancelled operation requires start/finish times")
+            }
+            _ => {}
+        }
+        if finished_at
+            .zip(started_at)
+            .is_some_and(|(finish, start)| finish < start)
+        {
+            bail!("operation finish time cannot precede its start time");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE topology_operations SET state = ?3, progress_current = ?4,
+                progress_total = COALESCE(?5, progress_total), detail_json = ?6, error = ?7,
+                started_at = ?8, finished_at = ?9,
+                resource_version = resource_version + 1
+             WHERE operation_id = ?1 AND resource_version = ?2
+               AND progress_current <= ?4
+               AND (progress_total IS NULL OR ?5 IS NULL OR progress_total = ?5)
+               AND (?3 <> 'succeeded' OR COALESCE(?5, progress_total) IS NULL
+                    OR ?4 = COALESCE(?5, progress_total))
+               AND ((state = 'pending' AND ?3 IN ('running', 'cancelled'))
+                 OR (state = 'running' AND ?3 IN ('succeeded', 'failed', 'cancelled'))) ",
+                &vals![
+                    operation_id,
+                    expected_version,
+                    state,
+                    progress_current,
+                    progress_total,
+                    detail_json,
+                    error,
+                    started_at,
+                    finished_at
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("topology operation is missing or its resource version is stale");
+        }
+        self.topology_operation(operation_id)
+            .await?
+            .context("updated topology operation disappeared")
+    }
+
     /// Every distinct store hash the registry's index references, sorted.
     ///
     /// The union of (a) the hash prefix of every `version_platforms`
@@ -4773,7 +9617,8 @@ impl Database {
         let channel_rows = self
             .backend
             .query(
-                "SELECT id, name, frontier FROM channels WHERE registry_id = ?1 ORDER BY name",
+                "SELECT id, name, frontier FROM channels
+                 WHERE registry_id = ?1 AND active = 1 ORDER BY name",
                 &vals![registry_id],
             )
             .await?;
@@ -11359,6 +16204,415 @@ fn validate_frontend_target(domain: &str, base_path: &str) -> Result<(String, St
     Ok((domain, base_path.to_string()))
 }
 
+/// Normalizes a topology-domain hostname without accepting URL components.
+fn normalize_topology_hostname(hostname: &str) -> Result<String> {
+    let hostname = hostname.trim().trim_end_matches('.').to_ascii_lowercase();
+    if hostname.is_empty()
+        || hostname.len() > 253
+        || hostname.contains(char::is_whitespace)
+        || hostname.contains(['/', ':', '?', '#'])
+    {
+        bail!("domain hostname must contain only a host, without scheme, port, path, query, or fragment");
+    }
+    for label in hostname.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            bail!("domain hostname '{hostname}' contains an invalid DNS label");
+        }
+    }
+    Ok(hostname)
+}
+
+/// Normalizes a delivery base path to empty-at-root and no trailing slash.
+fn normalize_topology_base_path(base_path: &str) -> Result<String> {
+    let path = base_path.trim();
+    if path.is_empty() || path == "/" {
+        return Ok(String::new());
+    }
+    if !path.starts_with('/') || path.contains(['?', '#']) || path.contains("//") {
+        bail!("delivery base path must be empty or a simple rooted path");
+    }
+    if path
+        .split('/')
+        .any(|component| matches!(component, "." | ".."))
+    {
+        bail!("delivery base path cannot contain '.' or '..' components");
+    }
+    let normalized = path.trim_end_matches('/');
+    validate_key_bytes(normalized, "delivery base path", 512)?;
+    Ok(normalized.to_string())
+}
+
+/// Normalizes a safe binding-relative placement prefix.
+fn normalize_placement_prefix(prefix: &str) -> Result<String> {
+    if prefix != prefix.trim() {
+        bail!("placement prefix must not have surrounding whitespace");
+    }
+    let prefix = prefix.trim_matches('/');
+    if prefix.contains("//") || prefix.split('/').any(|part| matches!(part, "." | "..")) {
+        bail!("placement prefix must be a safe binding-relative path");
+    }
+    if prefix.is_empty() {
+        return Ok(String::new());
+    }
+    validate_key_bytes(prefix, "placement prefix", 512)?;
+    Ok(prefix.to_string())
+}
+
+/// Joins a normalized rooted gateway base with a binding-relative placement prefix.
+fn join_topology_paths(base_path: &str, placement_prefix: &str) -> Result<String> {
+    let joined = match (base_path.is_empty(), placement_prefix.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => format!("/{placement_prefix}"),
+        (false, true) => base_path.to_string(),
+        (false, false) => format!("{base_path}/{placement_prefix}"),
+    };
+    normalize_topology_base_path(&joined)
+}
+
+fn validate_key_bytes(value: &str, label: &str, capacity: usize) -> Result<()> {
+    if value.trim().is_empty()
+        || value != value.trim()
+        || value.len() > capacity
+        || value.chars().any(char::is_control)
+    {
+        bail!("{label} must be non-empty, have no surrounding whitespace or control characters, and fit in {capacity} UTF-8 bytes");
+    }
+    Ok(())
+}
+
+fn validate_stable_name(value: &str, label: &str) -> Result<()> {
+    validate_key_bytes(value, label, 64)?;
+    if value != value.trim() || value.contains('/') {
+        bail!("{label} must be a stable name without surrounding whitespace or '/'");
+    }
+    Ok(())
+}
+
+fn validate_json_value(json: &str, label: &str) -> Result<()> {
+    serde_json::from_str::<serde_json::Value>(json)
+        .with_context(|| format!("invalid {label} JSON"))?;
+    Ok(())
+}
+
+fn validate_json_object(json: &str, label: &str) -> Result<()> {
+    if !serde_json::from_str::<serde_json::Value>(json)
+        .with_context(|| format!("invalid {label} JSON"))?
+        .is_object()
+    {
+        bail!("{label} must be a JSON object");
+    }
+    Ok(())
+}
+
+fn validate_placement_fields(
+    role: &str,
+    state: &str,
+    completeness: &str,
+    partition_rule_json: Option<&str>,
+    read_enabled: bool,
+    write_enabled: bool,
+) -> Result<()> {
+    if !matches!(role, "primary" | "replica" | "shard" | "archive") {
+        bail!("invalid placement role '{role}'");
+    }
+    if !matches!(
+        state,
+        "provisioning" | "syncing" | "ready" | "degraded" | "draining" | "offline"
+    ) {
+        bail!("invalid placement state '{state}'");
+    }
+    if !matches!(completeness, "complete" | "partial" | "unknown") {
+        bail!("invalid placement completeness '{completeness}'");
+    }
+    if (role == "shard") != partition_rule_json.is_some() {
+        bail!("only shard placements require a partition rule");
+    }
+    if role == "primary" && !write_enabled {
+        bail!("a primary placement must be write-enabled");
+    }
+    if role != "primary" && write_enabled {
+        bail!("only a primary placement may be write-enabled");
+    }
+    if role == "archive" && read_enabled {
+        bail!("an archive placement cannot be read-enabled");
+    }
+    if role == "shard" && completeness != "partial" {
+        bail!("a shard placement must declare partial completeness");
+    }
+    Ok(())
+}
+
+fn surface_from_ids(registry_id: Option<i64>, cache_id: Option<i64>) -> Result<SurfaceTarget> {
+    match (registry_id, cache_id) {
+        (Some(id), None) => Ok(SurfaceTarget::Registry(id)),
+        (None, Some(id)) => Ok(SurfaceTarget::BinaryCache(id)),
+        _ => bail!("corrupt topology row: surface target must satisfy XOR"),
+    }
+}
+
+const PLACEMENT_COLUMNS: &str = "id, registry_id, cache_id, name, storage_binding_id,
+    prefix, role, state, completeness, partition_rule_json, mutable_publication_id,
+    read_enabled, write_enabled, read_order, write_order, created_at, updated_at,
+    resource_version";
+const POLICY_COLUMNS: &str = "id, registry_id, cache_id, name, kind, config_json,
+    resource_version, created_at, updated_at";
+const ROUTE_COLUMNS: &str = "id, domain_id, storage_gateway_id, gateway_generation,
+    base_path, registry_id, cache_id, mode, access_policy_json, placement_id,
+    placement_policy_id, serves_git, serves_cache, serves_web, enabled,
+    readiness_state, resource_version, created_at, updated_at";
+const RETENTION_COLUMNS: &str = "id, cache_id, registry_id, selector_json,
+    removal_grace_secs, exposure_acknowledged_at, enabled,
+    last_successful_revision, last_refresh_at, current_refresh_id, refresh_state, refresh_error,
+    retired_at, resource_version, created_at, updated_at";
+const SURFACE_OBJECT_COLUMNS: &str = "id, registry_id, cache_id, object_key,
+    object_kind, content_hash, size, mutable_publication_id, lifecycle_state,
+    tombstoned_at, created_at, updated_at, resource_version";
+const DELETION_JOB_COLUMNS: &str = "job_id, surface_object_id, placement_id, state,
+    attempt_count, error, created_at, started_at, finished_at, resource_version";
+const POPULATION_COLUMNS: &str = "id, cache_id, registry_id, trigger_kind, required,
+    placement_policy_id, selector_json, validation_gate, enabled, resource_version,
+    created_at, updated_at";
+const PLAN_COLUMNS: &str = "plan_id, plan_kind, actor_kind, actor_id, actor_label,
+    scope, input_versions_json, effects_json, warnings_json, confirmation_hash,
+    created_at, expires_at, applied_at";
+const OPERATION_COLUMNS: &str = "operation_id, operation_kind, registry_id, cache_id,
+    placement_id, state, progress_current, progress_total, detail_json, error,
+    created_at, started_at, finished_at, resource_version";
+
+fn row_to_domain(row: &Row) -> Result<DomainRecord> {
+    Ok(DomainRecord {
+        id: row.get(0)?,
+        org_id: row.get(1)?,
+        hostname: row.get(2)?,
+        desired_dns_provider: row.get(3)?,
+        observed_dns_state: row.get(4)?,
+        desired_tls_provider: row.get(5)?,
+        observed_tls_state: row.get(6)?,
+        access_provider_json: row.get(7)?,
+        verified_at: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+        resource_version: row.get(11)?,
+    })
+}
+
+fn row_to_surface_placement(row: &Row) -> Result<SurfacePlacementRecord> {
+    Ok(SurfacePlacementRecord {
+        id: row.get(0)?,
+        registry_id: row.get(1)?,
+        cache_id: row.get(2)?,
+        name: row.get(3)?,
+        storage_binding_id: row.get(4)?,
+        prefix: row.get(5)?,
+        role: row.get(6)?,
+        state: row.get(7)?,
+        completeness: row.get(8)?,
+        partition_rule_json: row.get(9)?,
+        mutable_publication_id: row.get(10)?,
+        read_enabled: row.get(11)?,
+        write_enabled: row.get(12)?,
+        read_order: row.get(13)?,
+        write_order: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
+        resource_version: row.get(17)?,
+    })
+}
+
+fn row_to_placement_policy(row: &Row) -> Result<PlacementPolicyRecord> {
+    Ok(PlacementPolicyRecord {
+        id: row.get(0)?,
+        registry_id: row.get(1)?,
+        cache_id: row.get(2)?,
+        name: row.get(3)?,
+        kind: row.get(4)?,
+        config_json: row.get(5)?,
+        resource_version: row.get(6)?,
+        created_at: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+fn row_to_delivery_route(row: &Row) -> Result<DeliveryRouteRecord> {
+    Ok(DeliveryRouteRecord {
+        id: row.get(0)?,
+        domain_id: row.get(1)?,
+        storage_gateway_id: row.get(2)?,
+        gateway_generation: row.get(3)?,
+        base_path: row.get(4)?,
+        registry_id: row.get(5)?,
+        cache_id: row.get(6)?,
+        mode: row.get(7)?,
+        access_policy_json: row.get(8)?,
+        placement_id: row.get(9)?,
+        placement_policy_id: row.get(10)?,
+        serves_git: row.get(11)?,
+        serves_cache: row.get(12)?,
+        serves_web: row.get(13)?,
+        enabled: row.get(14)?,
+        readiness_state: row.get(15)?,
+        resource_version: row.get(16)?,
+        created_at: row.get(17)?,
+        updated_at: row.get(18)?,
+    })
+}
+
+fn row_to_canonical_route(row: &Row) -> Result<CanonicalRouteRecord> {
+    let registry_id = row.get(1)?;
+    let cache_id = row.get(2)?;
+    Ok(CanonicalRouteRecord {
+        id: row.get(0)?,
+        surface: surface_from_ids(registry_id, cache_id)?,
+        audience: row.get(3)?,
+        delivery_route_id: row.get(4)?,
+        created_at: row.get(5)?,
+        updated_at: row.get(6)?,
+        resource_version: row.get(7)?,
+    })
+}
+
+fn row_to_topology_defaults(row: &Row) -> Result<TopologyDefaultsRecord> {
+    Ok(TopologyDefaultsRecord {
+        id: row.get(0)?,
+        scope_kind: row.get(1)?,
+        org_id: row.get(2)?,
+        scope_key: row.get(3)?,
+        storage_binding_id: row.get(4)?,
+        domain_id: row.get(5)?,
+        storage_gateway_id: row.get(6)?,
+        resource_version: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
+fn row_to_cache_retention_subscription(row: &Row) -> Result<CacheRetentionSubscriptionRecord> {
+    Ok(CacheRetentionSubscriptionRecord {
+        id: row.get(0)?,
+        cache_id: row.get(1)?,
+        registry_id: row.get(2)?,
+        selector_json: row.get(3)?,
+        removal_grace_secs: row.get(4)?,
+        exposure_acknowledged_at: row.get(5)?,
+        enabled: row.get(6)?,
+        last_successful_revision: row.get(7)?,
+        last_refresh_at: row.get(8)?,
+        current_refresh_id: row.get(9)?,
+        refresh_state: row.get(10)?,
+        refresh_error: row.get(11)?,
+        retired_at: row.get(12)?,
+        resource_version: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
+}
+
+fn row_to_cache_population_target(row: &Row) -> Result<CachePopulationTargetRecord> {
+    Ok(CachePopulationTargetRecord {
+        id: row.get(0)?,
+        cache_id: row.get(1)?,
+        registry_id: row.get(2)?,
+        trigger_kind: row.get(3)?,
+        required: row.get(4)?,
+        placement_policy_id: row.get(5)?,
+        selector_json: row.get(6)?,
+        validation_gate: row.get(7)?,
+        enabled: row.get(8)?,
+        resource_version: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+    })
+}
+
+fn row_to_surface_object(row: &Row) -> Result<SurfaceObjectRecord> {
+    Ok(SurfaceObjectRecord {
+        id: row.get(0)?,
+        registry_id: row.get(1)?,
+        cache_id: row.get(2)?,
+        object_key: row.get(3)?,
+        object_kind: row.get(4)?,
+        content_hash: row.get(5)?,
+        size: row.get(6)?,
+        mutable_publication_id: row.get(7)?,
+        lifecycle_state: row.get(8)?,
+        tombstoned_at: row.get(9)?,
+        created_at: row.get(10)?,
+        updated_at: row.get(11)?,
+        resource_version: row.get(12)?,
+    })
+}
+
+fn row_to_object_placement(row: &Row) -> Result<ObjectPlacementRecord> {
+    Ok(ObjectPlacementRecord {
+        surface_object_id: row.get(0)?,
+        placement_id: row.get(1)?,
+        state: row.get(2)?,
+        observed_hash: row.get(3)?,
+        observed_size: row.get(4)?,
+        etag: row.get(5)?,
+        observed_at: row.get(6)?,
+    })
+}
+
+fn row_to_object_deletion_job(row: &Row) -> Result<ObjectDeletionJobRecord> {
+    Ok(ObjectDeletionJobRecord {
+        job_id: row.get(0)?,
+        surface_object_id: row.get(1)?,
+        placement_id: row.get(2)?,
+        state: row.get(3)?,
+        attempt_count: row.get(4)?,
+        error: row.get(5)?,
+        created_at: row.get(6)?,
+        started_at: row.get(7)?,
+        finished_at: row.get(8)?,
+        resource_version: row.get(9)?,
+    })
+}
+
+fn row_to_topology_plan(row: &Row) -> Result<TopologyPlanRecord> {
+    Ok(TopologyPlanRecord {
+        plan_id: row.get(0)?,
+        plan_kind: row.get(1)?,
+        actor_kind: row.get(2)?,
+        actor_id: row.get(3)?,
+        actor_label: row.get(4)?,
+        scope: row.get(5)?,
+        input_versions_json: row.get(6)?,
+        effects_json: row.get(7)?,
+        warnings_json: row.get(8)?,
+        confirmation_hash: row.get(9)?,
+        created_at: row.get(10)?,
+        expires_at: row.get(11)?,
+        applied_at: row.get(12)?,
+    })
+}
+
+fn row_to_topology_operation(row: &Row) -> Result<TopologyOperationRecord> {
+    Ok(TopologyOperationRecord {
+        operation_id: row.get(0)?,
+        operation_kind: row.get(1)?,
+        registry_id: row.get(2)?,
+        cache_id: row.get(3)?,
+        placement_id: row.get(4)?,
+        state: row.get(5)?,
+        progress_current: row.get(6)?,
+        progress_total: row.get(7)?,
+        detail_json: row.get(8)?,
+        error: row.get(9)?,
+        created_at: row.get(10)?,
+        started_at: row.get(11)?,
+        finished_at: row.get(12)?,
+        resource_version: row.get(13)?,
+    })
+}
+
 /// Map a `frontends` row into a [`FrontendRecord`] (columns in the order
 /// [`Database::list_frontends`] selects).
 fn row_to_frontend(row: &Row) -> Result<FrontendRecord> {
@@ -11609,7 +16863,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        let snapshot = IndexSnapshot {
+        let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
             name: "demo".into(),
             description: None,
@@ -11634,7 +16888,124 @@ mod tests {
             cache_stack: None,
         };
         db.apply_snapshot(id, &snapshot).await.unwrap();
+        let release_id: i64 = db
+            .backend
+            .query_opt(
+                "SELECT id FROM releases WHERE registry_id = ?1 AND semver = '1.0.0'",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO release_artifacts
+             (release_id, package_name, package_version, platform, artifact_kind,
+              store_path, store_hash)
+             VALUES (?1, 'curl', '8.5.0', 'x86_64-linux', 'output',
+                     '/nix/store/abc-curl', 'abc')",
+                &vals![release_id],
+            )
+            .await
+            .unwrap();
         db.apply_snapshot(id, &snapshot).await.unwrap();
+        let stable_release_id: i64 = db
+            .backend
+            .query_opt(
+                "SELECT id FROM releases WHERE registry_id = ?1 AND semver = '1.0.0'",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(stable_release_id, release_id);
+        let artifact_count: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM release_artifacts WHERE release_id = ?1",
+                &vals![release_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(artifact_count, 1);
+
+        let channel_id: i64 = db
+            .backend
+            .query_opt(
+                "SELECT id FROM channels WHERE registry_id = ?1 AND name = 'stable'",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        let channels = std::mem::take(&mut snapshot.channels);
+        db.apply_snapshot(id, &snapshot).await.unwrap();
+        assert!(db.list_channels(id).await.unwrap().is_empty());
+        snapshot.channels = channels;
+        db.apply_snapshot(id, &snapshot).await.unwrap();
+        let restored_channel_id: i64 = db
+            .backend
+            .query_opt(
+                "SELECT id FROM channels WHERE registry_id = ?1 AND name = 'stable'",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(restored_channel_id, channel_id);
+        let mut refreshed_channels = snapshot.channels.clone();
+        refreshed_channels[0].partitions[0] = None;
+        db.update_channels(id, &refreshed_channels).await.unwrap();
+        db.update_channels(id, &refreshed_channels).await.unwrap();
+        assert_eq!(
+            db.list_channels(id).await.unwrap()[0]
+                .partitions
+                .iter()
+                .flatten()
+                .count(),
+            255
+        );
+        db.apply_snapshot(id, &snapshot).await.unwrap();
+
+        snapshot.releases[0].tag_oid = "force-retag".repeat(8);
+        snapshot.releases[0].commit_oid = "changed-commit".repeat(8);
+        assert!(db.apply_snapshot(id, &snapshot).await.is_err());
+        let unchanged_release = db
+            .backend
+            .query_opt(
+                "SELECT id, tag_oid, commit_oid FROM releases
+                 WHERE registry_id = ?1 AND semver = '1.0.0'",
+                &vals![id],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged_release.get::<i64>(0).unwrap(), release_id);
+        assert_eq!(unchanged_release.get::<String>(1).unwrap(), "t".repeat(64));
+        assert_eq!(unchanged_release.get::<String>(2).unwrap(), "c".repeat(64));
+        let artifact_count_after_retag: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM release_artifacts WHERE release_id = ?1",
+                &vals![release_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(artifact_count_after_retag, 1);
 
         let packages = db.list_packages(id).await.unwrap();
         assert_eq!(packages.len(), 1);
@@ -14764,6 +20135,1392 @@ mod tests {
             .collect();
         assert!(scopes.iter().any(|s| s.is_empty()), "root scope granted");
         assert!(scopes.iter().any(|s| s == "acme/cdn"));
+    }
+
+    fn topology_placement(
+        surface: SurfaceTarget,
+        name: &str,
+        prefix: &str,
+        read_order: i64,
+    ) -> NewSurfacePlacement {
+        NewSurfacePlacement {
+            surface,
+            name: name.to_string(),
+            storage_binding_id: 0,
+            prefix: prefix.to_string(),
+            role: "replica".to_string(),
+            state: "ready".to_string(),
+            completeness: "complete".to_string(),
+            partition_rule_json: None,
+            read_enabled: true,
+            write_enabled: false,
+            read_order,
+            write_order: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn topology_v34_opens_and_rejects_xor_and_location_collisions() {
+        let db = Database::open_in_memory().await.unwrap();
+        let version: i64 = db
+            .backend
+            .query_opt("SELECT version FROM schema_version", &[])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+
+        let org = db.create_org("topology", "Topology").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "placement", "local_fs", "/tmp/topology")
+            .await
+            .unwrap();
+        let registry = db
+            .create_managed_registry(
+                org,
+                "",
+                "registry",
+                "public",
+                Some(binding),
+                "legacy-registry",
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        let cache = db
+            .create_cache(
+                Some(org),
+                "topology-cache",
+                "Topology cache",
+                Some(binding),
+                "legacy-cache",
+                None,
+                "public",
+                10,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+
+        let raw_xor = db
+            .backend
+            .execute(
+                "INSERT INTO surface_placements (registry_id, cache_id, name,
+                storage_binding_id, prefix, role, state, completeness,
+                read_enabled, write_enabled, created_at, updated_at)
+             VALUES (?1, ?2, 'invalid-xor', ?3, 'invalid-xor', 'replica',
+                'ready', 'complete', 1, 0, ?4, ?4)",
+                &vals![registry, cache, binding, unix_now()],
+            )
+            .await;
+        assert!(
+            raw_xor.is_err(),
+            "database CHECK must reject a dual-surface row"
+        );
+
+        let mut first = topology_placement(SurfaceTarget::Registry(registry), "one", "same", 0);
+        first.storage_binding_id = binding;
+        db.create_surface_placement(&first).await.unwrap();
+        let mut collision = topology_placement(SurfaceTarget::BinaryCache(cache), "two", "same", 1);
+        collision.storage_binding_id = binding;
+        assert!(
+            db.create_surface_placement(&collision).await.is_err(),
+            "physical-location aliases require a future reviewed equivalence workflow"
+        );
+    }
+
+    #[tokio::test]
+    async fn topology_rejects_cross_scope_and_cross_surface_relationships() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_a = db.create_org("orga", "Org A").await.unwrap();
+        let org_b = db.create_org("orgb", "Org B").await.unwrap();
+        let binding_a = db
+            .create_storage_binding(org_a, "a", "local_fs", "/tmp/a")
+            .await
+            .unwrap();
+        let binding_b = db
+            .create_storage_binding(org_b, "b", "local_fs", "/tmp/b")
+            .await
+            .unwrap();
+        let registry = db
+            .create_managed_registry(
+                org_a,
+                "",
+                "registry",
+                "public",
+                Some(binding_a),
+                "legacy-a",
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        let cache = db
+            .create_cache(
+                Some(org_a),
+                "cache-a",
+                "Cache A",
+                Some(binding_a),
+                "legacy-cache-a",
+                None,
+                "public",
+                10,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+
+        let mut wrong_binding =
+            topology_placement(SurfaceTarget::Registry(registry), "wrong", "wrong", 0);
+        wrong_binding.storage_binding_id = binding_b;
+        assert!(db.create_surface_placement(&wrong_binding).await.is_err());
+
+        let mut registry_placement = topology_placement(
+            SurfaceTarget::Registry(registry),
+            "registry-primary",
+            "registry-placement",
+            0,
+        );
+        registry_placement.storage_binding_id = binding_a;
+        let registry_placement = db
+            .create_surface_placement(&registry_placement)
+            .await
+            .unwrap();
+        let mut cache_placement = topology_placement(
+            SurfaceTarget::BinaryCache(cache),
+            "cache-primary",
+            "cache-placement",
+            0,
+        );
+        cache_placement.storage_binding_id = binding_a;
+        let cache_placement = db.create_surface_placement(&cache_placement).await.unwrap();
+        let policy = db
+            .create_placement_policy(&NewPlacementPolicy {
+                surface: SurfaceTarget::Registry(registry),
+                name: "read".to_string(),
+                kind: "ordered_failover".to_string(),
+                config_json: "{}".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(db
+            .add_placement_policy_member(
+                policy.id,
+                PlacementPolicyMemberInput {
+                    placement_id: cache_placement.id,
+                    member_order: 0,
+                    required: true,
+                }
+            )
+            .await
+            .is_err());
+        db.add_placement_policy_member(
+            policy.id,
+            PlacementPolicyMemberInput {
+                placement_id: registry_placement.id,
+                member_order: 0,
+                required: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.placement_policy(policy.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .resource_version,
+            policy.resource_version + 1
+        );
+
+        let domain = db
+            .create_domain(&NewDomain {
+                org_id: Some(org_a),
+                hostname: "Routes.Example.COM.".to_string(),
+                desired_dns_provider: None,
+                desired_tls_provider: None,
+                access_provider_json: "{}".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(domain.hostname, "routes.example.com");
+        let bad_route = NewDeliveryRoute {
+            domain_id: domain.id,
+            storage_gateway_id: None,
+            gateway_generation: None,
+            base_path: "/cache/".to_string(),
+            surface: SurfaceTarget::BinaryCache(cache),
+            mode: "hub_proxy".to_string(),
+            access_policy_json: "{}".to_string(),
+            selector: RoutePlacementSelector::Placement(cache_placement.id),
+            serves_git: true,
+            serves_cache: true,
+            serves_web: false,
+            enabled: true,
+        };
+        assert!(db.create_delivery_route(&bad_route).await.is_err());
+        let domain = db
+            .record_domain_observation(
+                domain.id,
+                domain.resource_version,
+                "verified",
+                "active",
+                Some(unix_now()),
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .create_delivery_route(&NewDeliveryRoute {
+                domain_id: domain.id,
+                storage_gateway_id: None,
+                gateway_generation: None,
+                base_path: "/direct-policy".to_string(),
+                surface: SurfaceTarget::Registry(registry),
+                mode: "direct".to_string(),
+                access_policy_json: "{}".to_string(),
+                selector: RoutePlacementSelector::Policy(policy.id),
+                serves_git: true,
+                serves_cache: false,
+                serves_web: false,
+                enabled: true,
+            })
+            .await
+            .is_err());
+        let route = db
+            .create_delivery_route(&NewDeliveryRoute {
+                domain_id: domain.id,
+                storage_gateway_id: None,
+                gateway_generation: None,
+                base_path: "/cache".to_string(),
+                surface: SurfaceTarget::BinaryCache(cache),
+                mode: "hub_proxy".to_string(),
+                access_policy_json: "{}".to_string(),
+                selector: RoutePlacementSelector::Placement(cache_placement.id),
+                serves_git: false,
+                serves_cache: true,
+                serves_web: true,
+                enabled: true,
+            })
+            .await
+            .unwrap();
+        db.set_canonical_route(
+            SurfaceTarget::BinaryCache(cache),
+            "nix_cache",
+            route.id,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .update_delivery_route(
+                route.id,
+                &UpdateDeliveryRoute {
+                    expected_version: route.resource_version,
+                    mode: route.mode.clone(),
+                    access_policy_json: route.access_policy_json.clone(),
+                    serves_git: false,
+                    serves_cache: false,
+                    serves_web: true,
+                    enabled: true,
+                }
+            )
+            .await
+            .is_err());
+        let pending_domain = db
+            .update_domain(
+                domain.id,
+                &UpdateDomain {
+                    expected_version: domain.resource_version,
+                    desired_dns_provider: Some("dns-provider-2".to_string()),
+                    desired_tls_provider: domain.desired_tls_provider.clone(),
+                    access_provider_json: domain.access_provider_json.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(pending_domain.observed_dns_state, "pending");
+        assert!(pending_domain.verified_at.is_none());
+        assert!(db
+            .canonical_route(SurfaceTarget::BinaryCache(cache), "nix_cache")
+            .await
+            .unwrap()
+            .is_none());
+        let domain = db
+            .record_domain_observation(
+                pending_domain.id,
+                pending_domain.resource_version,
+                "verified",
+                "active",
+                Some(unix_now()),
+            )
+            .await
+            .unwrap();
+        let degraded_domain = db
+            .record_domain_observation(
+                domain.id,
+                domain.resource_version,
+                "pending",
+                "pending",
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .canonical_route(SurfaceTarget::BinaryCache(cache), "nix_cache")
+            .await
+            .unwrap()
+            .is_none());
+        let configured = db
+            .configured_canonical_route(SurfaceTarget::BinaryCache(cache), "nix_cache")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(configured.delivery_route_id, route.id);
+        assert_eq!(
+            db.list_configured_canonical_routes(SurfaceTarget::BinaryCache(cache))
+                .await
+                .unwrap(),
+            vec![configured.clone()]
+        );
+        db.record_domain_observation(
+            degraded_domain.id,
+            degraded_domain.resource_version,
+            "verified",
+            "active",
+            Some(unix_now()),
+        )
+        .await
+        .unwrap();
+        let updated_canonical = db
+            .set_canonical_route(
+                SurfaceTarget::BinaryCache(cache),
+                "nix_cache",
+                route.id,
+                Some(configured.resource_version),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            updated_canonical.resource_version,
+            configured.resource_version + 1
+        );
+        db.set_binding_public(binding_a, "public", None)
+            .await
+            .unwrap();
+        db.update_delivery_route(
+            route.id,
+            &UpdateDeliveryRoute {
+                expected_version: route.resource_version,
+                mode: "direct".to_string(),
+                access_policy_json: route.access_policy_json.clone(),
+                serves_git: false,
+                serves_cache: true,
+                serves_web: true,
+                enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .canonical_route(SurfaceTarget::BinaryCache(cache), "nix_cache")
+            .await
+            .unwrap()
+            .is_some());
+        db.set_binding_public(binding_a, "private", None)
+            .await
+            .unwrap();
+        assert!(db
+            .canonical_route(SurfaceTarget::BinaryCache(cache), "nix_cache")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(db
+            .configured_canonical_route(SurfaceTarget::BinaryCache(cache), "nix_cache")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn topology_orders_named_placements_and_rejects_stale_versions() {
+        assert_eq!(join_topology_paths("", "").unwrap(), "");
+        assert_eq!(
+            join_topology_paths("/cdn", "registry/main").unwrap(),
+            "/cdn/registry/main"
+        );
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("ordered", "Ordered").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "ordered", "local_fs", "/tmp/ordered")
+            .await
+            .unwrap();
+        let registry = db
+            .create_managed_registry(
+                org,
+                "",
+                "registry",
+                "public",
+                Some(binding),
+                "legacy-ordered",
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        for (name, prefix, order) in [
+            ("zeta", "zeta", 0),
+            ("alpha", "alpha", 0),
+            ("middle", "middle", 1),
+            ("binding-root", "", 2),
+        ] {
+            let mut input =
+                topology_placement(SurfaceTarget::Registry(registry), name, prefix, order);
+            input.storage_binding_id = binding;
+            db.create_surface_placement(&input).await.unwrap();
+        }
+        let placements = db
+            .list_surface_placements(SurfaceTarget::Registry(registry))
+            .await
+            .unwrap();
+        assert_eq!(
+            placements
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha", "zeta", "middle", "binding-root"]
+        );
+        let selected = &placements[0];
+        let update = UpdateSurfacePlacement {
+            expected_version: selected.resource_version,
+            state: "degraded".to_string(),
+            completeness: selected.completeness.clone(),
+            partition_rule_json: selected.partition_rule_json.clone(),
+            read_enabled: selected.read_enabled,
+            write_enabled: selected.write_enabled,
+            read_order: selected.read_order,
+            write_order: selected.write_order,
+        };
+        let updated = db
+            .update_surface_placement(selected.id, &update)
+            .await
+            .unwrap();
+        assert_eq!(updated.resource_version, selected.resource_version + 1);
+        assert!(db
+            .update_surface_placement(selected.id, &update)
+            .await
+            .is_err());
+
+        let defaults = db
+            .set_topology_defaults(&SetTopologyDefaults {
+                scope: TopologyScope::Organization(org),
+                storage_binding_id: Some(binding),
+                domain_id: None,
+                storage_gateway_id: None,
+                expected_version: None,
+            })
+            .await
+            .unwrap();
+        let stale_defaults = SetTopologyDefaults {
+            scope: TopologyScope::Organization(org),
+            storage_binding_id: Some(binding),
+            domain_id: None,
+            storage_gateway_id: None,
+            expected_version: Some(defaults.resource_version + 1),
+        };
+        assert!(db.set_topology_defaults(&stale_defaults).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn publication_topology_enforces_authoritative_same_registry_ownership() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("publication", "Publication").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "publication", "local_fs", "/tmp/publication")
+            .await
+            .unwrap();
+        let first = db
+            .create_managed_registry(
+                org,
+                "",
+                "first",
+                "public",
+                Some(binding),
+                "legacy-first",
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        let second = db
+            .create_managed_registry(
+                org,
+                "",
+                "second",
+                "public",
+                Some(binding),
+                "legacy-second",
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        let now = unix_now();
+        db.backend
+            .execute(
+                "INSERT INTO registry_publications
+                 (publication_id, registry_id, ordinal, generation,
+                  manifest_digest, refs_digest, default_commit, state,
+                  created_at)
+                 VALUES ('pub-first-1', ?1, 1, 'generation-1', 'manifest-1',
+                         'refs-1', 'commit-1', 'preparing', ?2)",
+                &vals![first, now],
+            )
+            .await
+            .unwrap();
+        let mut placement =
+            topology_placement(SurfaceTarget::Registry(first), "published", "published", 0);
+        placement.storage_binding_id = binding;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let mut cross = topology_placement(SurfaceTarget::Registry(second), "cross", "cross", 0);
+        cross.storage_binding_id = binding;
+        let cross = db.create_surface_placement(&cross).await.unwrap();
+
+        let pointer = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(first),
+                object_key: "refs/heads/main".to_string(),
+                content_hash: Some("pointer-hash".to_string()),
+                size: Some(42),
+                object_kind: "mutable_pointer".to_string(),
+                mutable_publication_id: Some("pub-first-1".to_string()),
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: "pub-first-1".to_string(),
+            surface_object_id: pointer.id,
+            object_kind: "mutable_pointer".to_string(),
+            expected_hash: "pointer-hash".to_string(),
+            expected_size: 42,
+        })
+        .await
+        .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO registry_publications
+                 (publication_id, registry_id, ordinal, generation,
+                  manifest_digest, refs_digest, state, created_at)
+                 VALUES ('pub-other-3', ?1, 3, 'generation-3',
+                         'manifest-3', 'refs-3', 'preparing', ?2)",
+                &vals![first, now],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .set_registry_publication_object(&SetRegistryPublicationObject {
+                publication_id: "pub-other-3".to_string(),
+                surface_object_id: pointer.id,
+                object_kind: "mutable_pointer".to_string(),
+                expected_hash: "pointer-hash".to_string(),
+                expected_size: 42,
+            })
+            .await
+            .is_err());
+        assert!(!db
+            .tombstone_surface_object(pointer.id, pointer.resource_version, now)
+            .await
+            .unwrap());
+        db.set_object_placement(&SetObjectPlacement {
+            surface_object_id: pointer.id,
+            placement_id: placement.id,
+            state: "present".to_string(),
+            observed_hash: Some("pointer-hash".to_string()),
+            observed_size: Some(42),
+            etag: Some("etag-1".to_string()),
+            observed_at: now,
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .begin_registry_pointer_advance(
+                "pub-first-1",
+                placement.id,
+                placement.resource_version,
+                now,
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            db.surface_placement(placement.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .resource_version,
+            placement.resource_version
+        );
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: "pub-first-1".to_string(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".to_string(),
+            observed_at: now,
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .set_registry_publication_placement(&SetRegistryPublicationPlacement {
+                publication_id: "pub-first-1".to_string(),
+                placement_id: placement.id,
+                required: false,
+                state: "preparing".to_string(),
+                observed_at: now,
+            })
+            .await
+            .is_err());
+        let frozen_mutation_version: i64 = db
+            .backend
+            .query_opt(
+                "SELECT mutation_version FROM registry_publications
+                 WHERE publication_id = 'pub-first-1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(frozen_mutation_version, 2);
+        assert!(db
+            .set_registry_publication_placement(&SetRegistryPublicationPlacement {
+                publication_id: "pub-first-1".to_string(),
+                placement_id: placement.id,
+                required: true,
+                state: "ready".to_string(),
+                observed_at: now,
+            })
+            .await
+            .is_err());
+        assert!(db
+            .begin_registry_pointer_advance(
+                "pub-first-1",
+                placement.id,
+                placement.resource_version,
+                now,
+            )
+            .await
+            .is_err());
+        assert!(db
+            .advance_registry_publication("pub-first-1", "preparing", "writing_pointers", now)
+            .await
+            .unwrap());
+        assert!(db
+            .set_registry_publication_object(&SetRegistryPublicationObject {
+                publication_id: "pub-first-1".to_string(),
+                surface_object_id: pointer.id,
+                object_kind: "mutable_pointer".to_string(),
+                expected_hash: "pointer-hash".to_string(),
+                expected_size: 42,
+            })
+            .await
+            .is_err());
+        let after_frozen_append: i64 = db
+            .backend
+            .query_opt(
+                "SELECT mutation_version FROM registry_publications
+                 WHERE publication_id = 'pub-first-1'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(after_frozen_append, frozen_mutation_version);
+        // Simulate a process dying after the authoritative watermark clear and
+        // version bump but before placement progress leaves `preparing`.
+        db.backend
+            .execute(
+                "UPDATE surface_placements SET mutable_publication_id = NULL,
+                    resource_version = resource_version + 1, updated_at = ?2
+                 WHERE id = ?1",
+                &vals![placement.id, now],
+            )
+            .await
+            .unwrap();
+        let cleared = db
+            .begin_registry_pointer_advance(
+                "pub-first-1",
+                placement.id,
+                placement.resource_version,
+                now,
+            )
+            .await
+            .unwrap();
+        assert!(cleared.mutable_publication_id.is_none());
+        let recleared = db
+            .begin_registry_pointer_advance(
+                "pub-first-1",
+                placement.id,
+                placement.resource_version,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(recleared.resource_version, cleared.resource_version);
+        let published = db
+            .finalize_registry_pointer_advance(
+                "pub-first-1",
+                placement.id,
+                cleared.resource_version,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            published.mutable_publication_id.as_deref(),
+            Some("pub-first-1")
+        );
+        let republished = db
+            .finalize_registry_pointer_advance(
+                "pub-first-1",
+                placement.id,
+                cleared.resource_version,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(republished.resource_version, published.resource_version);
+        db.backend
+            .execute(
+                "UPDATE surface_placements SET mutable_publication_id = NULL WHERE id = ?1",
+                &vals![placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(!db
+            .advance_registry_publication("pub-first-1", "writing_pointers", "ready", now)
+            .await
+            .unwrap());
+        db.backend
+            .execute(
+                "UPDATE surface_placements SET mutable_publication_id = 'pub-first-1'
+                 WHERE id = ?1",
+                &vals![placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .advance_registry_publication("pub-first-1", "writing_pointers", "ready", now)
+            .await
+            .unwrap());
+        db.backend
+            .execute(
+                "UPDATE surface_placements SET mutable_publication_id = NULL WHERE id = ?1",
+                &vals![placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .set_current_registry_publication(first, "pub-first-1", None)
+            .await
+            .is_err());
+        db.backend
+            .execute(
+                "UPDATE surface_placements SET mutable_publication_id = 'pub-first-1'
+                 WHERE id = ?1",
+                &vals![placement.id],
+            )
+            .await
+            .unwrap();
+        let current = db
+            .set_current_registry_publication(first, "pub-first-1", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            current.current_publication_id.as_deref(),
+            Some("pub-first-1")
+        );
+        db.backend
+            .execute(
+                "INSERT INTO registry_publications
+                 (publication_id, registry_id, ordinal, generation,
+                  manifest_digest, refs_digest, state, created_at, completed_at)
+                 VALUES ('pub-fork-4', ?1, 4, 'generation-4',
+                         'manifest-4', 'refs-4', 'ready', ?2, ?2)",
+                &vals![first, now],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO registry_publication_placements
+                 (publication_id, registry_id, placement_id, required, state, observed_at)
+                 VALUES ('pub-fork-4', ?1, ?2, 1, 'ready', ?3)",
+                &vals![first, placement.id, now],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "UPDATE surface_placements SET mutable_publication_id = 'pub-fork-4'
+                 WHERE id = ?1",
+                &vals![placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .set_current_registry_publication(first, "pub-fork-4", Some(current.resource_version),)
+            .await
+            .is_err());
+        db.backend
+            .execute(
+                "UPDATE surface_placements SET mutable_publication_id = 'pub-first-1'
+                 WHERE id = ?1",
+                &vals![placement.id],
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .set_current_registry_publication(second, "pub-first-1", None)
+            .await
+            .is_err());
+        assert!(db
+            .set_registry_publication_placement(&SetRegistryPublicationPlacement {
+                publication_id: "pub-first-1".to_string(),
+                placement_id: placement.id,
+                required: true,
+                state: "retired".to_string(),
+                observed_at: now + 1,
+            })
+            .await
+            .is_err());
+        assert!(!db
+            .advance_registry_publication("pub-first-1", "ready", "retired", now + 1)
+            .await
+            .unwrap());
+        assert!(!db
+            .tombstone_surface_object(pointer.id, pointer.resource_version, now)
+            .await
+            .unwrap());
+        db.backend
+            .execute(
+                "INSERT INTO registry_publications
+                 (publication_id, registry_id, ordinal, generation,
+                  manifest_digest, refs_digest, state, created_at)
+                 VALUES ('pub-failed-2', ?1, 2, 'generation-2',
+                         'manifest-2', 'refs-2', 'preparing', ?2)",
+                &vals![first, now],
+            )
+            .await
+            .unwrap();
+        let failed_object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(first),
+                object_key: "objects/failed-publication".to_string(),
+                content_hash: Some("failed-hash".to_string()),
+                size: Some(9),
+                object_kind: "immutable".to_string(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_registry_publication_object(&SetRegistryPublicationObject {
+            publication_id: "pub-failed-2".to_string(),
+            surface_object_id: failed_object.id,
+            object_kind: "immutable".to_string(),
+            expected_hash: "failed-hash".to_string(),
+            expected_size: 9,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: "pub-failed-2".to_string(),
+            placement_id: placement.id,
+            required: false,
+            state: "preparing".to_string(),
+            observed_at: now + 1,
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .advance_registry_publication("pub-failed-2", "preparing", "failed", now + 1)
+            .await
+            .unwrap());
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: "pub-failed-2".to_string(),
+            placement_id: placement.id,
+            required: false,
+            state: "failed".to_string(),
+            observed_at: now + 1,
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .set_registry_publication_placement(&SetRegistryPublicationPlacement {
+                publication_id: "pub-failed-2".to_string(),
+                placement_id: placement.id,
+                required: false,
+                state: "retired".to_string(),
+                observed_at: now + 2,
+            })
+            .await
+            .is_err());
+        assert!(!db
+            .tombstone_surface_object(failed_object.id, failed_object.resource_version, now + 1)
+            .await
+            .unwrap());
+        assert!(db
+            .advance_registry_publication("pub-failed-2", "failed", "retired", now + 2)
+            .await
+            .unwrap());
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: "pub-failed-2".to_string(),
+            placement_id: placement.id,
+            required: false,
+            state: "retired".to_string(),
+            observed_at: now + 2,
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .tombstone_surface_object(failed_object.id, failed_object.resource_version, now + 2)
+            .await
+            .unwrap());
+        let garbage = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(first),
+                object_key: "objects/garbage".to_string(),
+                content_hash: Some("garbage-hash".to_string()),
+                size: Some(7),
+                object_kind: "immutable".to_string(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_object_placement(&SetObjectPlacement {
+            surface_object_id: garbage.id,
+            placement_id: placement.id,
+            state: "present".to_string(),
+            observed_hash: Some("garbage-hash".to_string()),
+            observed_size: Some(7),
+            etag: None,
+            observed_at: now,
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .tombstone_surface_object(garbage.id, garbage.resource_version, now)
+            .await
+            .unwrap());
+        // Simulate a Worker failure after the presence link but before the
+        // preparing job becomes pending.
+        db.backend
+            .execute(
+                "INSERT INTO object_deletion_jobs
+                 (job_id, surface_object_id, placement_id, state, created_at)
+                 VALUES ('delete-pointer-1', ?1, ?2, 'preparing', ?3)",
+                &vals![garbage.id, placement.id, now],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "UPDATE object_placements SET state = 'deleting',
+                    deletion_job_id = 'delete-pointer-1'
+                 WHERE surface_object_id = ?1 AND placement_id = ?2",
+                &vals![garbage.id, placement.id],
+            )
+            .await
+            .unwrap();
+        let deletion = db
+            .create_object_deletion_job(&NewObjectDeletionJob {
+                job_id: "delete-pointer-1".to_string(),
+                surface_object_id: garbage.id,
+                placement_id: placement.id,
+            })
+            .await
+            .unwrap();
+        assert_eq!(deletion.state, "pending");
+        let deletion_retry = db
+            .create_object_deletion_job(&NewObjectDeletionJob {
+                job_id: deletion.job_id.clone(),
+                surface_object_id: garbage.id,
+                placement_id: placement.id,
+            })
+            .await
+            .unwrap();
+        assert_eq!(deletion_retry, deletion);
+        db.set_object_placement(&SetObjectPlacement {
+            surface_object_id: failed_object.id,
+            placement_id: placement.id,
+            state: "present".to_string(),
+            observed_hash: Some("failed-hash".to_string()),
+            observed_size: Some(9),
+            etag: None,
+            observed_at: now,
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .create_object_deletion_job(&NewObjectDeletionJob {
+                job_id: deletion.job_id.clone(),
+                surface_object_id: failed_object.id,
+                placement_id: placement.id,
+            })
+            .await
+            .is_err());
+        assert_eq!(
+            db.object_placement(failed_object.id, placement.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "present"
+        );
+        assert!(db
+            .set_object_placement(&SetObjectPlacement {
+                surface_object_id: garbage.id,
+                placement_id: placement.id,
+                state: "corrupt".to_string(),
+                observed_hash: None,
+                observed_size: None,
+                etag: None,
+                observed_at: now,
+            })
+            .await
+            .is_err());
+        assert_eq!(
+            db.object_placement(garbage.id, placement.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "deleting"
+        );
+        let claimed = db
+            .claim_object_deletion_job(&deletion.job_id, deletion.resource_version, now + 1)
+            .await
+            .unwrap();
+        let failed = db
+            .finish_object_deletion_job(
+                &claimed.job_id,
+                claimed.resource_version,
+                false,
+                Some("backend unavailable"),
+                now + 2,
+            )
+            .await
+            .unwrap();
+        assert_eq!(failed.state, "failed");
+        assert!(db
+            .create_object_deletion_job(&NewObjectDeletionJob {
+                job_id: "delete-conflicting-active".to_string(),
+                surface_object_id: garbage.id,
+                placement_id: placement.id,
+            })
+            .await
+            .is_err());
+        let after_conflict = db
+            .object_placement(garbage.id, placement.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_conflict.state, "corrupt");
+        let retried = db
+            .claim_object_deletion_job(&failed.job_id, failed.resource_version, now + 3)
+            .await
+            .unwrap();
+        let finished = db
+            .finish_object_deletion_job(
+                &retried.job_id,
+                retried.resource_version,
+                true,
+                None,
+                now + 4,
+            )
+            .await
+            .unwrap();
+        assert_eq!(finished.state, "succeeded");
+        let reconciled = db
+            .finish_object_deletion_job(
+                &finished.job_id,
+                finished.resource_version,
+                true,
+                None,
+                now + 4,
+            )
+            .await
+            .unwrap();
+        assert_eq!(reconciled, finished);
+        assert_eq!(
+            db.object_placement(garbage.id, placement.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "missing"
+        );
+        assert!(db
+            .set_object_placement(&SetObjectPlacement {
+                surface_object_id: garbage.id,
+                placement_id: placement.id,
+                state: "deleting".to_string(),
+                observed_hash: None,
+                observed_size: None,
+                etag: None,
+                observed_at: now + 5,
+            })
+            .await
+            .is_err());
+        db.set_object_placement(&SetObjectPlacement {
+            surface_object_id: garbage.id,
+            placement_id: placement.id,
+            state: "present".to_string(),
+            observed_hash: Some("garbage-hash".to_string()),
+            observed_size: Some(7),
+            etag: None,
+            observed_at: now + 5,
+        })
+        .await
+        .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO object_deletion_jobs
+                 (job_id, surface_object_id, placement_id, state, created_at)
+                 VALUES ('delete-pointer-2', ?1, ?2, 'preparing', ?3)",
+                &vals![garbage.id, placement.id, now + 5],
+            )
+            .await
+            .unwrap();
+        let second_deletion = db
+            .create_object_deletion_job(&NewObjectDeletionJob {
+                job_id: "delete-pointer-2".to_string(),
+                surface_object_id: garbage.id,
+                placement_id: placement.id,
+            })
+            .await
+            .unwrap();
+        assert_eq!(second_deletion.state, "pending");
+        assert!(db
+            .set_registry_publication_placement(&SetRegistryPublicationPlacement {
+                publication_id: "pub-first-1".to_string(),
+                placement_id: cross.id,
+                required: true,
+                state: "preparing".to_string(),
+                observed_at: now,
+            })
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn retention_retirement_preserves_structurally_proven_root_reasons() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("retention", "Retention").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "retention", "local_fs", "/tmp/retention")
+            .await
+            .unwrap();
+        let registry = db
+            .create_managed_registry(
+                org,
+                "",
+                "source",
+                "public",
+                Some(binding),
+                "source",
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        let cache = db
+            .create_cache(
+                Some(org),
+                "retained",
+                "Retained",
+                Some(binding),
+                "retained",
+                None,
+                "public",
+                10,
+                "zstd",
+                true,
+            )
+            .await
+            .unwrap();
+        let cache_object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::BinaryCache(cache),
+                object_key: "nar/cache-only".to_string(),
+                content_hash: Some("cache-hash".to_string()),
+                size: Some(5),
+                object_kind: "immutable".to_string(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        assert!(!db
+            .tombstone_surface_object(cache_object.id, cache_object.resource_version, unix_now())
+            .await
+            .unwrap());
+        let subscription = db
+            .set_cache_retention_subscription(&SetCacheRetentionSubscription {
+                cache_id: cache,
+                registry_id: registry,
+                selector_json: "{\"tags\":3}".to_string(),
+                removal_grace_secs: 86_400,
+                exposure_acknowledged_at: None,
+                enabled: true,
+                expected_version: None,
+            })
+            .await
+            .unwrap();
+        let now = unix_now();
+        db.begin_cache_retention_refresh(
+            "refresh-1",
+            subscription.id,
+            subscription.resource_version,
+            "revision-1",
+            1,
+            now,
+        )
+        .await
+        .unwrap();
+        db.stage_cache_retention_reason(
+            "refresh-1",
+            &RetentionRefreshReasonInput {
+                reason_key: "catalog:tag:v1:hash-1".to_string(),
+                store_hash: "hash-1".to_string(),
+                source_kind: "registry_catalog".to_string(),
+                source_ref: "tag:v1".to_string(),
+                release_id: None,
+                channel_id: None,
+                partition_bucket: None,
+                expires_at: None,
+            },
+            now,
+        )
+        .await
+        .unwrap();
+        let committed = db
+            .commit_cache_retention_refresh("refresh-1", subscription.resource_version, now)
+            .await
+            .unwrap();
+        // Retry after the seal/pointer boundary is idempotent.
+        db.commit_cache_retention_refresh("refresh-1", subscription.resource_version, now)
+            .await
+            .unwrap();
+        db.begin_cache_retention_refresh(
+            "refresh-stale",
+            subscription.id,
+            committed.resource_version,
+            "revision-stale",
+            0,
+            now + 1,
+        )
+        .await
+        .unwrap();
+        db.begin_cache_retention_refresh(
+            "refresh-2",
+            subscription.id,
+            committed.resource_version,
+            "revision-2",
+            0,
+            now + 2,
+        )
+        .await
+        .unwrap();
+        let committed = db
+            .commit_cache_retention_refresh("refresh-2", committed.resource_version, now + 3)
+            .await
+            .unwrap();
+        assert!(db
+            .fail_cache_retention_refresh("refresh-stale", "late stale failure", now + 4)
+            .await
+            .unwrap());
+        let after_stale_failure = db
+            .cache_retention_subscription(cache, registry)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_stale_failure.refresh_state, "fresh");
+        assert_eq!(after_stale_failure.refresh_error, None);
+        assert_eq!(
+            after_stale_failure.current_refresh_id.as_deref(),
+            Some("refresh-2")
+        );
+        db.begin_cache_retention_refresh(
+            "refresh-failed",
+            subscription.id,
+            committed.resource_version,
+            "revision-3",
+            0,
+            now + 5,
+        )
+        .await
+        .unwrap();
+        assert!(db
+            .fail_cache_retention_refresh("refresh-failed", "source unavailable", now + 6)
+            .await
+            .unwrap());
+        let after_failure = db
+            .cache_retention_subscription(cache, registry)
+            .await
+            .unwrap()
+            .unwrap();
+        let current: String = db
+            .backend
+            .query_opt(
+                "SELECT current_refresh_id FROM cache_retention_subscriptions WHERE id = ?1",
+                &vals![subscription.id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(current, "refresh-2");
+        assert_eq!(
+            after_failure.last_successful_revision.as_deref(),
+            Some("revision-2")
+        );
+        assert_eq!(after_failure.refresh_state, "failed");
+        assert_eq!(
+            db.active_cache_retention_hashes(cache, now + 6)
+                .await
+                .unwrap(),
+            vec!["hash-1"]
+        );
+        assert!(db
+            .retire_cache_retention_subscription(subscription.id, after_failure.resource_version,)
+            .await
+            .unwrap());
+        let count: i64 = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM cache_root_reasons WHERE retention_subscription_id = ?1",
+                &vals![subscription.id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(db
+            .backend
+            .execute(
+                "DELETE FROM cache_retention_subscriptions WHERE id = ?1",
+                &vals![subscription.id],
+            )
+            .await
+            .is_err());
     }
 
     /// Test helper: register a managed registry owned by `org` at `slug` with a
