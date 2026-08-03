@@ -56,6 +56,7 @@ use crate::compat;
 use crate::db::{Database, IndexStatus, PackageRow, RegistryRecord};
 use crate::domain::{Permission, Principal, Scope};
 use crate::ui::pages;
+use aos_hub_core::service::ReadAuthorization;
 
 /// Lifetime, in seconds, of a hub access token minted at `/oauth2/token`
 /// (1 hour).
@@ -1111,10 +1112,11 @@ async fn machine_path(
 
     match state.db.registry_by_slug(&slug).await {
         Ok(Some(registry)) => {
-            if let Err(deny) = authorize_registry_read(&state, &registry, &headers).await {
-                return *deny;
-            }
-            serve_registry_machine_path(&state, &registry, &path).await
+            let auth = match authorize_registry_read(&state, &registry, &headers).await {
+                Ok(auth) => auth,
+                Err(deny) => return *deny,
+            };
+            serve_registry_machine_path(&state, &registry, &path, &headers, auth).await
         }
         // Not a flat registry: resolve a nested machine/browse path.
         Ok(None) => {
@@ -1126,6 +1128,10 @@ async fn machine_path(
             // generated from the cache's config.
             if nested.status() == StatusCode::NOT_FOUND {
                 if let Ok(Some(cache)) = state.db.cache_by_slug(&slug).await {
+                    let auth = match authorize_cache_read(&state, &cache, &headers).await {
+                        Ok(auth) => auth,
+                        Err(deny) => return *deny,
+                    };
                     // NAR explorer (native-only): `/{cache}/nar/<file>?explore`
                     // lists the archive's file tree instead of downloading. `nix`
                     // substitution never sends `?explore`. Gate + resolve the
@@ -1137,9 +1143,6 @@ async fn machine_path(
                                 .any(|kv| kv == "explore" || kv.starts_with("explore="))
                         })
                     {
-                        if let Err(deny) = authorize_cache_read(&state, &cache, &headers).await {
-                            return *deny;
-                        }
                         let Some(root) = state.db.cache_surface_root(cache.id).await.ok().flatten()
                         else {
                             return StatusCode::NOT_FOUND.into_response();
@@ -1150,9 +1153,6 @@ async fn machine_path(
                     // the Worker: visibility gate, generated `nix-cache-info`,
                     // presigned-`302` for a private origin, and Range-aware
                     // streaming (a large NAR never buffers into memory).
-                    let auth = headers
-                        .get(axum::http::header::AUTHORIZATION)
-                        .and_then(|v| v.to_str().ok());
                     let range = headers
                         .get(axum::http::header::RANGE)
                         .and_then(|v| v.to_str().ok());
@@ -1309,43 +1309,46 @@ async fn resolve_write_target(
     }
 }
 
-/// Serve a machine path for a registry, resolving a managed registry's
-/// surface from its storage binding.
+/// Serves a registry machine path through the shared placement-aware streamer.
 ///
-/// Phase-1 `file://`/`http` registries carry their surface in `source_url`
-/// and serve straight through [`compat::serve_machine_path`]. Managed
-/// registries (empty `source_url`) instead resolve their on-disk surface
-/// via [`crate::db::Database::registry_surface_root`]; the resolved path is
-/// spliced into a `source_url` so the same byte-faithful facade serves it.
-/// (The full managed upload/serve facade is phase 2d; this is the read
-/// path the nested URL space needs now.)
+/// Native and Worker requests use the same ordered selection, Range handling,
+/// and pre-body failover contract. An unplaced migration surface uses the
+/// resource reader; only an atomic unplaced miss may enter the native-only
+/// pull-through compatibility path, which the final topology cutover removes.
 async fn serve_registry_machine_path(
     state: &AppState,
     registry: &RegistryRecord,
     path: &str,
+    headers: &HeaderMap,
+    auth: ReadAuthorization<'_>,
 ) -> Response {
-    if !registry.source_url.is_empty() {
-        return compat::serve_machine_path(registry, path).await;
-    }
-    match state.db.registry_surface_root(registry.id).await {
-        Ok(Some(root)) => {
-            let mut resolved = registry.clone();
-            resolved.source_url = root.to_string_lossy().into_owned();
-            let response = compat::serve_machine_path(&resolved, path).await;
-            // Pull-through: a pullthrough mirror serving from an empty (or
-            // partial) local binding fetches the missing path from upstream,
-            // verifies it, persists content-addressed payloads, and serves it.
-            if response.status() == StatusCode::NOT_FOUND {
-                if let Some(pulled) = pull_through_machine_path(state, registry, &root, path).await
-                {
-                    return pulled;
-                }
-            }
-            response
+    use aos_hub_core::service::RegistryServeOutcome;
+
+    let range = headers
+        .get(axum::http::header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    match crate::facade::write_service(state)
+        .registry_serve(auth, registry, path, range)
+        .await
+    {
+        Ok(RegistryServeOutcome::Response(response)) => response,
+        Ok(RegistryServeOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
+        Ok(RegistryServeOutcome::UnplacedNotFound) => {
+            // Transitional pull-through exists only for an atomic
+            // zero-placement migration snapshot. A configured topology miss
+            // never writes into the resource-level legacy root.
+            let root = match state.db.registry_surface_root(registry.id).await {
+                Ok(Some(root)) => root,
+                Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+                Err(error) => return internal(error),
+            };
+            pull_through_machine_path(state, registry, &root, path)
+                .await
+                .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
         }
-        // No local surface (unbound managed registry): nothing to serve.
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(err) => internal(err),
+        Err(error) => StatusCode::from_u16(error.http_status())
+            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+            .into_response(),
     }
 }
 
@@ -1548,9 +1551,10 @@ async fn resolve_nested(
     let trimmed = decoded.trim_end_matches('/');
     match resolve_by_prefix(state, trimmed).await {
         Ok(Some((registry, tail))) => {
-            if let Err(deny) = authorize_registry_read(state, &registry, headers).await {
-                return *deny;
-            }
+            let auth = match authorize_registry_read(state, &registry, headers).await {
+                Ok(auth) => auth,
+                Err(deny) => return *deny,
+            };
             if tail.is_empty() {
                 let params = SearchParams::from_query(uri.query());
                 render_page(
@@ -1564,7 +1568,7 @@ async fn resolve_nested(
                 )
                 .await
             } else {
-                serve_registry_machine_path(state, &registry, &tail).await
+                serve_registry_machine_path(state, &registry, &tail, headers, auth).await
             }
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -1824,13 +1828,14 @@ async fn registry_manage_link(
 /// # Errors
 ///
 /// Returns the denial [`Response`] (a 404) in the `Err` arm when the read is
-/// not authorized; `Ok(())` means the caller may proceed. The denial is
-/// boxed to keep the common `Ok` path small.
-pub(crate) async fn authorize_registry_read(
+/// not authorized. The success value records whether the shared streamer must
+/// verify a bearer header or may trust this already-validated native session;
+/// the denial is boxed to keep the common success path small.
+pub(crate) async fn authorize_registry_read<'a>(
     state: &AppState,
     registry: &RegistryRecord,
-    headers: &HeaderMap,
-) -> Result<(), Box<Response>> {
+    headers: &'a HeaderMap,
+) -> Result<ReadAuthorization<'a>, Box<Response>> {
     let denied = || Box::new(StatusCode::NOT_FOUND.into_response());
     // A registry owned by a soft-deleted org stops serving entirely (RFC-0004
     // offboarding): 404, never disclosing that it once existed.
@@ -1841,13 +1846,17 @@ pub(crate) async fn authorize_registry_read(
     }
     match registry.visibility.as_str() {
         // Public (and any unowned phase-1 registry) is always readable.
-        "public" => Ok(()),
+        "public" => Ok(ReadAuthorization::AuthorizationHeader(
+            authorization_header(headers),
+        )),
         "internal" => {
             let Some(org_id) = registry.org_id else {
-                return Ok(());
+                return Ok(ReadAuthorization::AuthorizationHeader(
+                    authorization_header(headers),
+                ));
             };
             if session_is_org_member(state, headers, org_id).await {
-                Ok(())
+                Ok(ReadAuthorization::PreauthorizedSession)
             } else {
                 Err(denied())
             }
@@ -1856,10 +1865,12 @@ pub(crate) async fn authorize_registry_read(
         // the registry scope from a session or a bearer token.
         _ => {
             let scope = Scope::parse(&registry.slug);
-            if session_allows_read(state, headers, &scope).await
-                || bearer_allows_read(state, headers, &scope)
-            {
-                Ok(())
+            if session_allows_read(state, headers, &scope).await {
+                Ok(ReadAuthorization::PreauthorizedSession)
+            } else if bearer_allows_read(state, headers, &scope) {
+                Ok(ReadAuthorization::AuthorizationHeader(
+                    authorization_header(headers),
+                ))
             } else {
                 Err(denied())
             }
@@ -1867,17 +1878,17 @@ pub(crate) async fn authorize_registry_read(
     }
 }
 
-/// Whether the request's session user holds any membership covering `org_id`.
 /// Whether this caller may read `cache` — the cache analog of
 /// [`authorize_registry_read`]: a tombstoned cache or one under a suspended org
 /// is `404`; `public` is open; `internal` requires org membership; `private`
 /// requires `read` on the owning org scope (or root for an instance-level
-/// cache). Returns the `404` response to send on denial.
-pub(crate) async fn authorize_cache_read(
+/// cache). Returns typed authorization evidence on success and the `404`
+/// response to send on denial.
+pub(crate) async fn authorize_cache_read<'a>(
     state: &AppState,
     cache: &crate::db::Cache,
-    headers: &HeaderMap,
-) -> Result<(), Box<Response>> {
+    headers: &'a HeaderMap,
+) -> Result<ReadAuthorization<'a>, Box<Response>> {
     let denied = || Box::new(StatusCode::NOT_FOUND.into_response());
     if cache.deleted_at.is_some() {
         return Err(denied());
@@ -1888,12 +1899,16 @@ pub(crate) async fn authorize_cache_read(
         }
     }
     match cache.visibility.as_str() {
-        "public" => Ok(()),
+        "public" => Ok(ReadAuthorization::AuthorizationHeader(
+            authorization_header(headers),
+        )),
         "internal" => match cache.org_id {
-            None => Ok(()),
+            None => Ok(ReadAuthorization::AuthorizationHeader(
+                authorization_header(headers),
+            )),
             Some(org_id) => {
                 if session_is_org_member(state, headers, org_id).await {
-                    Ok(())
+                    Ok(ReadAuthorization::PreauthorizedSession)
                 } else {
                     Err(denied())
                 }
@@ -1907,10 +1922,12 @@ pub(crate) async fn authorize_cache_read(
                 },
                 None => Scope::root(),
             };
-            if session_allows_read(state, headers, &scope).await
-                || bearer_allows_read(state, headers, &scope)
-            {
-                Ok(())
+            if session_allows_read(state, headers, &scope).await {
+                Ok(ReadAuthorization::PreauthorizedSession)
+            } else if bearer_allows_read(state, headers, &scope) {
+                Ok(ReadAuthorization::AuthorizationHeader(
+                    authorization_header(headers),
+                ))
             } else {
                 Err(denied())
             }
@@ -2082,10 +2099,7 @@ async fn session_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scop
 
 /// Whether a bearer JWT in `headers` grants `Read` at `scope`.
 fn bearer_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> bool {
-    let Some(value) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-    else {
+    let Some(value) = authorization_header(headers) else {
         return false;
     };
     let Some(token) = value.strip_prefix("Bearer ") else {
@@ -2095,6 +2109,13 @@ fn bearer_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> b
         Ok(claims) => crate::auth::extract::token_allows(&claims, Permission::Read, scope),
         Err(_) => false,
     }
+}
+
+/// Return the request's UTF-8 `Authorization` header without interpreting it.
+fn authorization_header(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
 }
 
 /// Extract the `__Host-aos_session` cookie value from a request's headers.

@@ -39,6 +39,9 @@
 //!   pure logic over the [`SurfaceFetch`](fetch::SurfaceFetch) read port and the
 //!   [`Database`](db::Database) write side, so the native hub's reindex and the
 //!   Worker's Cron job run byte-identical indexing.
+//! - [`placement_read`] — deterministic multi-placement read planning, exact
+//!   inventory/current-publication eligibility, and pre-stream failover shared
+//!   by both serving runtimes.
 //!
 //! Later phases move the remaining HTTP handlers here too, leaving the
 //! deployment crates as thin shells around their concrete backend (sqlx for
@@ -78,6 +81,7 @@ pub mod kv;
 pub mod lease;
 pub mod migrate;
 pub mod nix_sign;
+pub mod placement_read;
 pub mod ratelimit;
 pub mod reindex;
 pub mod robots;

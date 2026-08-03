@@ -98,6 +98,15 @@ pub fn content_type(path: &str) -> &'static str {
     }
 }
 
+/// Whether a machine path is producer-controlled executable document content.
+///
+/// These paths must be served with a sandbox CSP and attachment disposition so
+/// uploaded HTML or JavaScript cannot execute in the authenticated Hub origin.
+#[must_use]
+pub fn is_producer_document(path: &str) -> bool {
+    path.ends_with(".html") || path.ends_with(".js")
+}
+
 /// Map a registry prefix and a machine path to its R2 object key.
 ///
 /// The registry's surface lives under `{prefix}` in the hub-owned bucket
@@ -290,5 +299,15 @@ mod tests {
             r2_key("acme/infra/prod", "nar/x.nar"),
             "acme/infra/prod/nar/x.nar"
         );
+    }
+
+    #[test]
+    fn producer_documents_are_classified_for_inert_serving() {
+        for path in ["index.html", "browse/pkg.html", "web/app.js"] {
+            assert!(is_producer_document(path), "{path}");
+        }
+        for path in ["web/index.json", "web/app.wasm", "abcd.narinfo"] {
+            assert!(!is_producer_document(path), "{path}");
+        }
     }
 }

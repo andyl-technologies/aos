@@ -19,10 +19,11 @@
 //!   [`aos_hub_core::fetch::SurfaceFetch`] impl with the identical
 //!   `fetch`/`describe` signatures, delegating to their inherent methods.
 //! - [`HubSurfaceProvider`] is the
-//!   [`SurfaceProvider`](aos_hub_core::fetch::SurfaceProvider): it resolves a
-//!   per-registry fetcher through the existing
-//!   [`gitwrite::fetcher_for_registry`](crate::gitwrite::fetcher_for_registry) and
-//!   re-boxes it as a core [`SurfaceFetch`] via [`CoreFetchAdapter`].
+//!   [`SurfaceProvider`](aos_hub_core::fetch::SurfaceProvider): topology reads
+//!   open the selected placement's binding and prefix directly; unplaced legacy
+//!   registries retain the existing
+//!   [`gitwrite::fetcher_for_registry`](crate::gitwrite::fetcher_for_registry)
+//!   migration fallback through [`CoreFetchAdapter`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,13 +32,34 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 
 use aos_hub_core::auth::seal::SecretSealer;
-use aos_hub_core::db::{Database, RegistryRecord};
+use aos_hub_core::binding::BindingKind;
+use aos_hub_core::db::{Database, RegistryRecord, SurfacePlacementRecord};
 use aos_hub_core::fetch as core_fetch;
 use aos_hub_core::ratelimit as core_rl;
 use aos_hub_core::reindex as core_reindex;
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::surface_write as core_sw;
 use aos_hub_core::web::console::ports as console_ports;
+
+/// Classifies native filesystem failures before placement failover.
+fn native_placement_read_error(error: anyhow::Error) -> anyhow::Error {
+    if error
+        .chain()
+        .any(|cause| cause.is::<aos_hub_core::placement_read::ClassifiedReadError>())
+    {
+        return error;
+    }
+    let detail = format!("{error:#}");
+    if error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::fetch::LocalFsReadError>())
+        .is_some_and(crate::fetch::LocalFsReadError::is_retryable)
+    {
+        aos_hub_core::placement_read::retryable_read_error(detail)
+    } else {
+        aos_hub_core::placement_read::terminal_read_error(detail)
+    }
+}
 
 /// Resolve a registry's/cache's storage binding into an [`S3Surface`] when it is
 /// an external `s3`/`r2` object store, or `Ok(None)` otherwise.
@@ -126,7 +148,9 @@ impl core_rl::RateLimiter for crate::ratelimit::RateLimiter {
 #[async_trait]
 impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        crate::fetch::SurfaceFetch::fetch(self, path).await
+        crate::fetch::SurfaceFetch::fetch(self, path)
+            .await
+            .map_err(native_placement_read_error)
     }
 
     /// Streams the file from disk (`tokio` `ReaderStream`, Range-aware) instead
@@ -137,13 +161,17 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
         path: &str,
         range: Option<(u64, u64)>,
     ) -> Result<Option<core_fetch::StreamedRead>> {
-        self.stream_read(path, range).await
+        self.stream_read(path, range)
+            .await
+            .map_err(native_placement_read_error)
     }
 
     /// Forwards to the hub fetcher's efficient `metadata`-based size (avoids a
     /// full read, and probes a never-written binding cleanly as `None`).
     async fn size(&self, path: &str) -> Result<Option<u64>> {
-        crate::fetch::SurfaceFetch::size(self, path).await
+        crate::fetch::SurfaceFetch::size(self, path)
+            .await
+            .map_err(native_placement_read_error)
     }
 
     fn describe(&self) -> String {
@@ -211,13 +239,11 @@ impl core_fetch::SurfaceFetch for CoreFetchAdapter {
     }
 }
 
-/// The native [`SurfaceProvider`](core_fetch::SurfaceProvider): resolves a
-/// per-registry surface fetcher over the hub's storage bindings.
+/// The native [`SurfaceProvider`](core_fetch::SurfaceProvider) over Hub bindings.
 ///
-/// Delegates to
-/// [`gitwrite::fetcher_for_registry`](crate::gitwrite::fetcher_for_registry) —
-/// the same resolver the rest of the hub uses — and re-boxes the chosen fetcher
-/// through [`CoreFetchAdapter`] so it satisfies the core port.
+/// Explicit placements resolve their own binding plus prefix. The registry and
+/// cache methods below are retained only for unplaced migration fallbacks and
+/// background consumers not yet switched to a topology plan.
 pub struct HubSurfaceProvider {
     /// The hub database, used to resolve a registry's storage-binding root.
     db: Arc<Database>,
@@ -250,6 +276,54 @@ impl HubSurfaceProvider {
 
 #[async_trait]
 impl core_fetch::SurfaceProvider for HubSurfaceProvider {
+    async fn placement_fetcher(
+        &self,
+        placement: &SurfacePlacementRecord,
+    ) -> Result<Box<dyn core_fetch::SurfaceFetch>> {
+        let binding = self
+            .db
+            .storage_binding(placement.storage_binding_id)
+            .await?
+            .ok_or_else(|| {
+                aos_hub_core::placement_read::terminal_read_error(format!(
+                    "placement '{}' references a missing storage binding",
+                    placement.name
+                ))
+            })?;
+        match BindingKind::parse(&binding.kind) {
+            Some(BindingKind::S3 | BindingKind::R2) => {
+                let sealer = self.sealer.as_ref().ok_or_else(|| {
+                    aos_hub_core::placement_read::terminal_read_error(format!(
+                        "placement '{}' requires a configured secret sealer",
+                        placement.name
+                    ))
+                })?;
+                let surface = S3Surface::from_binding(&binding, &placement.prefix, sealer.as_ref())
+                    .map_err(|error| {
+                        aos_hub_core::placement_read::terminal_read_error(format!(
+                            "placement '{}' has invalid object-store configuration: {error:#}",
+                            placement.name
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        aos_hub_core::placement_read::terminal_read_error(format!(
+                            "placement '{}' could not resolve its object-store binding",
+                            placement.name
+                        ))
+                    })?;
+                Ok(Box::new(S3Fetch::new(surface, self.http.clone())))
+            }
+            Some(BindingKind::LocalFs) => {
+                let root = PathBuf::from(&binding.root).join(&placement.prefix);
+                Ok(Box::new(crate::fetch::LocalFsFetch::new(root)))
+            }
+            None => Err(aos_hub_core::placement_read::terminal_read_error(format!(
+                "placement '{}' uses unknown storage binding kind '{}'",
+                placement.name, binding.kind
+            ))),
+        }
+    }
+
     async fn fetcher(
         &self,
         registry: &RegistryRecord,
@@ -828,12 +902,12 @@ impl core_fetch::SurfaceFetch for S3Fetch {
         let url =
             self.surface
                 .object_url(S3Method::Get, path, aos_hub_core::clock::now_unix_secs())?;
-        let resp = self
-            .http
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("s3 GET {}", self.surface.describe()))?;
+        let resp = self.http.get(&url).send().await.map_err(|error| {
+            aos_hub_core::placement_read::retryable_read_error(format!(
+                "s3 GET {}: {error}",
+                self.surface.describe()
+            ))
+        })?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -844,9 +918,16 @@ impl core_fetch::SurfaceFetch for S3Fetch {
         // it loudly rather than silently serving the registry as empty. (This
         // matches the Worker provider; only a true 404 is a miss.)
         if !status.is_success() {
-            bail!("s3 GET {path}: status {status}");
+            return Err(aos_hub_core::placement_read::http_status_read_error(
+                &format!("s3 GET {path}"),
+                status.as_u16(),
+            ));
         }
-        let bytes = resp.bytes().await.context("reading s3 object body")?;
+        let bytes = resp.bytes().await.map_err(|error| {
+            aos_hub_core::placement_read::retryable_read_error(format!(
+                "reading s3 object body: {error}"
+            ))
+        })?;
         Ok(Some(bytes.to_vec()))
     }
 
@@ -871,13 +952,18 @@ impl core_fetch::SurfaceFetch for S3Fetch {
             };
             req = req.header(header::RANGE, spec);
         }
-        let resp = req.send().await.with_context(|| format!("s3 GET {path}"))?;
+        let resp = req.send().await.map_err(|error| {
+            aos_hub_core::placement_read::retryable_read_error(format!("s3 GET {path}: {error}"))
+        })?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
         if !status.is_success() {
-            bail!("s3 GET {path}: status {status}");
+            return Err(aos_hub_core::placement_read::http_status_read_error(
+                &format!("s3 GET {path}"),
+                status.as_u16(),
+            ));
         }
         let served;
         let total;
@@ -926,7 +1012,10 @@ impl core_fetch::SurfaceFetch for S3Fetch {
             return Ok(None);
         }
         if !status.is_success() {
-            bail!("s3 HEAD {path}: status {status}");
+            return Err(aos_hub_core::placement_read::http_status_read_error(
+                &format!("s3 HEAD {path}"),
+                status.as_u16(),
+            ));
         }
         Ok(resp.content_length())
     }
@@ -1015,6 +1104,41 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
 mod multipart_tests {
     use super::*;
     use core_sw::SurfaceWrite as _;
+
+    #[test]
+    fn native_placement_io_retries_only_known_transient_kinds() {
+        use aos_hub_core::placement_read::{classify_read_error, ReadFailureClass};
+
+        for kind in [
+            std::io::ErrorKind::Interrupted,
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::ConnectionReset,
+        ] {
+            let error = crate::fetch::local_fs_io_error("test read", std::io::Error::from(kind));
+            assert_eq!(
+                classify_read_error(&native_placement_read_error(error)),
+                ReadFailureClass::Retryable,
+                "{kind:?}"
+            );
+        }
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::InvalidInput,
+            std::io::ErrorKind::Other,
+        ] {
+            let error = crate::fetch::local_fs_io_error("test read", std::io::Error::from(kind));
+            assert_eq!(
+                classify_read_error(&native_placement_read_error(error)),
+                ReadFailureClass::Terminal,
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            classify_read_error(&native_placement_read_error(anyhow::anyhow!("unknown"))),
+            ReadFailureClass::Terminal
+        );
+    }
 
     #[tokio::test]
     async fn local_fs_multipart_assembles_in_order_and_matches_single_write() {

@@ -19,9 +19,12 @@ use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{Database, OrgQuota, SignupPolicy, TokenAuth};
+use aos_hub::db::{
+    Database, NewSurfacePlacement, OrgQuota, SignupPolicy, SurfaceTarget, TokenAuth,
+};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
+use aos_hub_core::service::{ReadAuthorization, RpcError, RpcService};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
@@ -53,6 +56,27 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     })
 }
 
+/// Build the native shared service over the exact ports held by `state`.
+fn machine_service(state: &Arc<AppState>) -> RpcService {
+    RpcService::new(
+        Arc::clone(&state.db),
+        state.auth.jwt_keys.clone(),
+        state.external_url.clone(),
+        Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
+        Arc::new(
+            aos_hub::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
+        Arc::new(
+            aos_hub::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
+                .with_sealer(Arc::clone(&state.sealer)),
+        ),
+        Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
+        Arc::new(aos_hub::coreports::HubReindexer::new(Arc::clone(&state.db))),
+        Some(Arc::clone(&state.sealer)),
+    )
+}
+
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
 fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
     JwtKeys::from_secret(TEST_JWT_SECRET)
@@ -66,6 +90,32 @@ fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
             900,
         )
         .unwrap()
+}
+
+/// GET one machine path with optional native-session and bearer credentials.
+async fn machine_get(
+    app: &axum::Router,
+    uri: &str,
+    cookie: Option<&str>,
+    bearer: Option<&str>,
+) -> (StatusCode, axum::body::Bytes) {
+    let mut request = Request::builder().uri(uri);
+    if let Some(cookie) = cookie {
+        request = request.header(header::COOKIE, cookie);
+    }
+    if let Some(bearer) = bearer {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+    }
+    let response = app
+        .clone()
+        .oneshot(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    (status, body)
 }
 
 /// Create org "acme", a `local_fs` binding over an empty dir, and a managed
@@ -92,6 +142,228 @@ async fn empty_managed() -> (Arc<Database>, PathBuf) {
     .await
     .unwrap();
     (db, root.join("cdn"))
+}
+
+#[tokio::test]
+async fn registry_route_streams_ranges_through_the_selected_placement() {
+    let (db, surface) = empty_managed().await;
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
+    let binding = registry.storage_binding_id.unwrap();
+    db.create_surface_placement(&NewSurfacePlacement {
+        surface: SurfaceTarget::Registry(registry.id),
+        name: "primary-read".to_string(),
+        storage_binding_id: binding,
+        prefix: "cdn".to_string(),
+        role: "replica".to_string(),
+        state: "ready".to_string(),
+        completeness: "complete".to_string(),
+        partition_rule_json: None,
+        read_enabled: true,
+        write_enabled: false,
+        read_order: 0,
+        write_order: 0,
+    })
+    .await
+    .unwrap();
+    std::fs::create_dir_all(surface.join("nar")).unwrap();
+    std::fs::write(surface.join("nar/range.nar"), b"0123456789").unwrap();
+    std::fs::create_dir_all(surface.join("web")).unwrap();
+    std::fs::write(surface.join("web/app-hash.js"), b"alert('no')").unwrap();
+
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/acme/infra/prod/cdn/nar/range.nar")
+                .header(header::RANGE, "bytes=2-5")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok()),
+        Some("bytes 2-5/10")
+    );
+    let body = axum::body::to_bytes(response.into_body(), 64)
+        .await
+        .unwrap();
+    assert_eq!(body.as_ref(), b"2345");
+
+    let document = app
+        .oneshot(
+            Request::builder()
+                .uri("/acme/infra/prod/cdn/web/app-hash.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(document.status(), StatusCode::OK);
+    assert_eq!(
+        document
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok()),
+        Some("sandbox")
+    );
+    assert_eq!(
+        document
+            .headers()
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok()),
+        Some("attachment")
+    );
+}
+
+#[tokio::test]
+async fn native_machine_streams_preserve_session_and_bearer_authorization() {
+    let root = tempfile::tempdir().unwrap().keep();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("private-org", "Private Org").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "primary", "local_fs", root.to_str().unwrap())
+        .await
+        .unwrap();
+    let registry_id = db
+        .create_managed_registry(
+            org,
+            "",
+            "private-registry",
+            "private",
+            Some(binding),
+            "registry",
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+    let cache_id = db
+        .create_cache(
+            Some(org),
+            "private-cache",
+            "Private Cache",
+            Some(binding),
+            "cache",
+            None,
+            "private",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    for (surface, name, prefix) in [
+        (SurfaceTarget::Registry(registry_id), "registry", "registry"),
+        (SurfaceTarget::BinaryCache(cache_id), "cache", "cache"),
+    ] {
+        db.create_surface_placement(&NewSurfacePlacement {
+            surface,
+            name: name.to_string(),
+            storage_binding_id: binding,
+            prefix: prefix.to_string(),
+            role: "primary".to_string(),
+            state: "ready".to_string(),
+            completeness: "complete".to_string(),
+            partition_rule_json: None,
+            read_enabled: true,
+            write_enabled: true,
+            read_order: 0,
+            write_order: 0,
+        })
+        .await
+        .unwrap();
+    }
+    std::fs::create_dir_all(root.join("registry/nar")).unwrap();
+    std::fs::write(root.join("registry/nar/private.nar"), b"registry-private").unwrap();
+    std::fs::create_dir_all(root.join("cache/nar")).unwrap();
+    std::fs::write(root.join("cache/nar/private.nar"), b"cache-private").unwrap();
+
+    let member = db
+        .create_user("member@private.invalid", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", member, "private-org", "viewer")
+        .await
+        .unwrap();
+    let session = db.create_session(member, 3600, 0).await.unwrap();
+    let cookie = format!("__Host-aos_session={session}");
+    let token = bearer(Principal::user(member), "private-org", &[Permission::Read]);
+    let stale_registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+    let stale_cache = db.cache_by_id(cache_id).await.unwrap().unwrap();
+    let state = app_state(Arc::clone(&db)).await;
+    let service = machine_service(&state);
+    let app = router(state).await;
+
+    for (uri, expected) in [
+        (
+            "/private-org/private-registry/nar/private.nar",
+            b"registry-private".as_slice(),
+        ),
+        (
+            "/private-cache/nar/private.nar",
+            b"cache-private".as_slice(),
+        ),
+    ] {
+        for denied_cookie in [None, Some("__Host-aos_session=invalid")] {
+            let (status, _) = machine_get(&app, uri, denied_cookie, None).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "hidden path {uri}");
+        }
+
+        let (status, body) = machine_get(&app, uri, Some(&cookie), None).await;
+        assert_eq!(status, StatusCode::OK, "session path {uri}");
+        assert_eq!(body.as_ref(), expected);
+
+        let (status, body) = machine_get(&app, uri, None, Some(&token)).await;
+        assert_eq!(status, StatusCode::OK, "bearer path {uri}");
+        assert_eq!(body.as_ref(), expected);
+
+        let (status, _) = machine_get(&app, uri, None, Some("invalid")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "invalid bearer path {uri}");
+    }
+
+    // The service, not the route snapshot, is the final authorization/serve
+    // linearization point. A concurrent hard registry delete cascades its
+    // placements; a stale record must not fall back to the still-present bytes.
+    assert!(db.delete_registry(registry_id).await.unwrap());
+    match service
+        .registry_serve(
+            ReadAuthorization::PreauthorizedSession,
+            &stale_registry,
+            "nar/private.nar",
+            None,
+        )
+        .await
+    {
+        Err(RpcError::NotFound(_)) => {}
+        _ => panic!("deleted registry must not serve from a stale record"),
+    }
+
+    // Cache soft-delete leaves both its row and placement intact, making this a
+    // stronger regression: the freshly reloaded tombstone must stop the read
+    // before placement selection or generated/fallback serving.
+    assert!(db.soft_delete_cache(cache_id, i64::MAX).await.unwrap());
+    match service
+        .cache_serve(
+            ReadAuthorization::PreauthorizedSession,
+            &stale_cache,
+            "nar/private.nar",
+            None,
+        )
+        .await
+    {
+        Err(RpcError::NotFound(_)) => {}
+        _ => panic!("soft-deleted cache must not serve from a stale record"),
+    }
 }
 
 /// `PUT` one surface file, returning the `(status, retry_after)`.

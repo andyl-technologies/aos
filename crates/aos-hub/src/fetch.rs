@@ -52,6 +52,52 @@ pub const MAX_FETCH_BYTES: u64 = 64 * 1024 * 1024;
 /// independently.
 pub const MAX_NAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Typed filesystem failure retained for placement failover classification.
+#[derive(Debug, thiserror::Error)]
+#[error("{marker}")]
+pub(crate) struct LocalFsReadError {
+    /// Original IO category, or `None` for a structural containment failure.
+    kind: Option<std::io::ErrorKind>,
+    /// Fetch-error marker preserved for the legacy indexer's stale classification.
+    #[source]
+    marker: FetchError,
+}
+
+impl LocalFsReadError {
+    /// Whether this error is a positively identified transient IO condition.
+    #[must_use]
+    pub(crate) fn is_retryable(&self) -> bool {
+        matches!(
+            self.kind,
+            Some(
+                std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::NotConnected
+            )
+        )
+    }
+}
+
+/// Wraps a native filesystem IO error without erasing its stable kind.
+pub(crate) fn local_fs_io_error(context: &str, error: std::io::Error) -> anyhow::Error {
+    anyhow::Error::new(LocalFsReadError {
+        kind: Some(error.kind()),
+        marker: FetchError(format!("{context}: {error}")),
+    })
+}
+
+/// Wraps a structural filesystem refusal, which is always terminal.
+fn local_fs_structural_error(message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(LocalFsReadError {
+        kind: None,
+        marker: FetchError(message.into()),
+    })
+}
+
 /// Read a response body into memory, rejecting anything past `cap` bytes.
 ///
 /// Rejects up front when the server declares a `Content-Length` over `cap`,
@@ -291,34 +337,46 @@ impl LocalFsFetch {
         let root = match tokio::fs::canonicalize(&self.root).await {
             Ok(root) => root,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(fetch_err(format!("canonicalizing surface root: {err}"))),
+            Err(err) => return Err(local_fs_io_error("canonicalizing surface root", err)),
         };
         let canonical = match tokio::fs::canonicalize(&full).await {
             Ok(canonical) => canonical,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(fetch_err(format!("resolving {}: {err}", full.display()))),
+            Err(err) => {
+                return Err(local_fs_io_error(
+                    &format!("resolving {}", full.display()),
+                    err,
+                ));
+            }
         };
         if !canonical.starts_with(&root) {
-            return Err(fetch_err(format!(
+            return Err(local_fs_structural_error(format!(
                 "surface path '{path}' escapes the surface root via symlink"
             )));
         }
         let mut file = match tokio::fs::File::open(&canonical).await {
             Ok(file) => file,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(fetch_err(format!("opening {}: {err}", canonical.display()))),
+            Err(err) => {
+                return Err(local_fs_io_error(
+                    &format!("opening {}", canonical.display()),
+                    err,
+                ));
+            }
         };
         let total = file
             .metadata()
             .await
-            .map_err(|err| fetch_err(format!("stat {}: {err}", canonical.display())))?
+            .map_err(|err| local_fs_io_error(&format!("stat {}", canonical.display()), err))?
             .len();
         match range {
             Some((start, end)) if start < total => {
                 let end = end.min(total.saturating_sub(1));
                 file.seek(std::io::SeekFrom::Start(start))
                     .await
-                    .map_err(|err| fetch_err(format!("seek {}: {err}", canonical.display())))?;
+                    .map_err(|err| {
+                        local_fs_io_error(&format!("seek {}", canonical.display()), err)
+                    })?;
                 let stream = ReaderStream::new(file.take(end - start + 1));
                 Ok(Some(aos_hub_core::fetch::StreamedRead {
                     body: axum::body::Body::from_stream(stream),
@@ -341,28 +399,38 @@ impl SurfaceFetch for LocalFsFetch {
         let full = safe_join(&self.root, path)?;
         // Containment: resolve symlinks and require the real file to live
         // under the real root, so a hostile surface cannot link out of it.
-        let root = tokio::fs::canonicalize(&self.root).await.map_err(|err| {
-            fetch_err(format!(
-                "canonicalizing surface root {}: {err}",
-                self.root.display()
-            ))
-        })?;
+        let root = match tokio::fs::canonicalize(&self.root).await {
+            Ok(root) => root,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => {
+                return Err(local_fs_io_error(
+                    &format!("canonicalizing surface root {}", self.root.display()),
+                    err,
+                ));
+            }
+        };
         let canonical = match tokio::fs::canonicalize(&full).await {
             Ok(canonical) => canonical,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => {
-                return Err(fetch_err(format!("resolving {}: {err}", full.display())));
+                return Err(local_fs_io_error(
+                    &format!("resolving {}", full.display()),
+                    err,
+                ));
             }
         };
         if !canonical.starts_with(&root) {
-            return Err(fetch_err(format!(
+            return Err(local_fs_structural_error(format!(
                 "surface path '{path}' escapes the surface root via symlink"
             )));
         }
         match tokio::fs::read(&canonical).await {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(fetch_err(format!("reading {}: {err}", canonical.display()))),
+            Err(err) => Err(local_fs_io_error(
+                &format!("reading {}", canonical.display()),
+                err,
+            )),
         }
     }
 
@@ -376,7 +444,7 @@ impl SurfaceFetch for LocalFsFetch {
         match tokio::fs::metadata(&full).await {
             Ok(meta) => Ok(Some(meta.len())),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(fetch_err(format!("stat {}: {err}", full.display()))),
+            Err(err) => Err(local_fs_io_error(&format!("stat {}", full.display()), err)),
         }
     }
 

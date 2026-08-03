@@ -3372,6 +3372,28 @@ pub enum SurfaceTarget {
     BinaryCache(i64),
 }
 
+/// Consistency contract applied when selecting placements for one read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlacementReadRequirement<'a> {
+    /// Reads a registry pointer key only from a placement at the current publication.
+    RegistryCurrentPublication(&'a str),
+    /// Reads an immutable object, using exact presence when it is inventoried.
+    ImmutableObject(&'a str),
+    /// Reads an object that has no publication or per-object consistency contract.
+    Untracked,
+}
+
+/// One atomic snapshot of configured placements and its readable candidates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlacementReadPlan {
+    /// Whether the surface has any placement rows, including ineligible ones.
+    pub has_configured_placements: bool,
+    /// Consistency-eligible candidates in deterministic read order.
+    pub candidates: Vec<SurfacePlacementRecord>,
+    /// Whether a miss contradicts authoritative logical object inventory.
+    pub miss_is_inconsistent: bool,
+}
+
 impl SurfaceTarget {
     /// Returns the nullable database ids used by the topology tables.
     fn ids(self) -> (Option<i64>, Option<i64>) {
@@ -6790,6 +6812,135 @@ impl Database {
             )
             .await?;
         rows.iter().map(row_to_surface_placement).collect()
+    }
+
+    /// Lists placements that may safely serve one read in deterministic order.
+    ///
+    /// Every returned placement is read-enabled, ready or degraded, complete,
+    /// and non-archive. Registry pointer reads additionally require the
+    /// placement watermark to equal the registry's authoritative current
+    /// publication. Immutable reads use exact `present` hash-and-size evidence
+    /// whenever an object inventory row exists. A surface-relative key with no
+    /// inventory row uses the eligible placement set as a bootstrap fallback;
+    /// an incomplete or tombstoned inventory row fails closed instead of
+    /// silently bypassing recorded state. The returned plan also distinguishes
+    /// an ordinary bootstrap miss from a miss that contradicts authoritative
+    /// current object inventory.
+    ///
+    /// Results are ordered by `read_order`, placement name, then database id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a current-publication read targets a cache, an
+    /// object key is invalid, or the database query fails.
+    pub async fn readable_surface_placements(
+        &self,
+        surface: SurfaceTarget,
+        requirement: PlacementReadRequirement<'_>,
+    ) -> Result<PlacementReadPlan> {
+        let (registry_id, cache_id) = surface.ids();
+        let eligibility = "p.read_enabled = 1
+            AND p.state IN ('ready', 'degraded')
+            AND p.completeness = 'complete'
+            AND p.role <> 'archive'";
+        let (sql, values) = match requirement {
+            PlacementReadRequirement::RegistryCurrentPublication(object_key) => {
+                let Some(registry_id) = registry_id else {
+                    bail!("current-publication placement reads require a registry");
+                };
+                validate_key_bytes(object_key, "surface object key", 512)?;
+                (
+                    format!(
+                        "SELECT {PLACEMENT_COLUMNS},
+                           CASE WHEN {eligibility}
+                             AND p.mutable_publication_id IS NOT NULL
+                             AND p.mutable_publication_id = (
+                               SELECT ps.current_publication_id
+                               FROM registry_publication_state ps
+                               WHERE ps.registry_id = ?1)
+                           THEN 1 ELSE 0 END,
+                           CASE WHEN EXISTS (SELECT 1 FROM surface_objects o
+                             JOIN registry_publication_state ps
+                               ON ps.registry_id = o.registry_id
+                             WHERE o.registry_id = ?1 AND o.object_key = ?2
+                               AND o.object_kind = 'mutable_pointer'
+                               AND o.lifecycle_state = 'active'
+                               AND o.mutable_publication_id = ps.current_publication_id)
+                           THEN 1 ELSE 0 END
+                         FROM surface_placements p
+                         WHERE p.registry_id = ?1
+                         ORDER BY p.read_order, p.name, p.id"
+                    ),
+                    vals![registry_id, object_key],
+                )
+            }
+            PlacementReadRequirement::ImmutableObject(object_key) => {
+                validate_key_bytes(object_key, "surface object key", 512)?;
+                (
+                    format!(
+                        "SELECT {PLACEMENT_COLUMNS},
+                           CASE WHEN {eligibility} AND (
+                               NOT EXISTS (SELECT 1 FROM surface_objects o
+                                 WHERE (o.registry_id = ?1 OR o.cache_id = ?2)
+                                   AND o.object_key = ?3)
+                               OR EXISTS (SELECT 1 FROM surface_objects o
+                                 JOIN object_placements op
+                                   ON op.surface_object_id = o.id
+                                  AND op.placement_id = p.id
+                                 WHERE (o.registry_id = ?1 OR o.cache_id = ?2)
+                                   AND o.object_key = ?3
+                                   AND o.object_kind = 'immutable'
+                                   AND o.lifecycle_state = 'active'
+                                   AND o.content_hash IS NOT NULL
+                                   AND o.size IS NOT NULL
+                                   AND op.state = 'present'
+                                   AND op.observed_hash = o.content_hash
+                                   AND op.observed_size = o.size))
+                           THEN 1 ELSE 0 END,
+                           CASE WHEN EXISTS (SELECT 1 FROM surface_objects o
+                             WHERE (o.registry_id = ?1 OR o.cache_id = ?2)
+                               AND o.object_key = ?3
+                               AND o.object_kind = 'immutable'
+                               AND o.lifecycle_state = 'active')
+                           THEN 1 ELSE 0 END
+                         FROM surface_placements p
+                         WHERE (p.registry_id = ?1 OR p.cache_id = ?2)
+                         ORDER BY p.read_order, p.name, p.id"
+                    ),
+                    vals![registry_id, cache_id, object_key],
+                )
+            }
+            PlacementReadRequirement::Untracked => (
+                format!(
+                    "SELECT {PLACEMENT_COLUMNS},
+                       CASE WHEN {eligibility} THEN 1 ELSE 0 END,
+                       0
+                     FROM surface_placements p
+                     WHERE (p.registry_id = ?1 OR p.cache_id = ?2)
+                     ORDER BY p.read_order, p.name, p.id"
+                ),
+                vals![registry_id, cache_id],
+            ),
+        };
+        let rows = self.backend.query(&sql, &values).await?;
+        let candidates = rows
+            .iter()
+            .filter_map(|row| match row.get::<bool>(18) {
+                Ok(true) => Some(row_to_surface_placement(row)),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let miss_is_inconsistent = rows
+            .first()
+            .map(|row| row.get::<bool>(19))
+            .transpose()?
+            .unwrap_or(false);
+        Ok(PlacementReadPlan {
+            has_configured_placements: !rows.is_empty(),
+            candidates,
+            miss_is_inconsistent,
+        })
     }
 
     /// Updates mutable placement selection fields with optimistic concurrency.
@@ -20633,6 +20784,222 @@ mod tests {
             expected_version: Some(defaults.resource_version + 1),
         };
         assert!(db.set_topology_defaults(&stale_defaults).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn readable_placements_enforce_health_order_and_exact_inventory() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("read-plan", "Read plan").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "read-plan", "local_fs", "/tmp/read-plan")
+            .await
+            .unwrap();
+        let cache = db
+            .create_cache(
+                Some(org),
+                "read-plan",
+                "Read plan",
+                Some(binding),
+                "legacy",
+                None,
+                "public",
+                40,
+                "zstd",
+                false,
+            )
+            .await
+            .unwrap();
+
+        let mut second =
+            topology_placement(SurfaceTarget::BinaryCache(cache), "second", "second", 1);
+        second.storage_binding_id = binding;
+        let second = db.create_surface_placement(&second).await.unwrap();
+        let mut first = topology_placement(SurfaceTarget::BinaryCache(cache), "first", "first", 0);
+        first.storage_binding_id = binding;
+        let first = db.create_surface_placement(&first).await.unwrap();
+        for (name, prefix, state, completeness, role, enabled) in [
+            (
+                "disabled", "disabled", "ready", "complete", "replica", false,
+            ),
+            ("offline", "offline", "offline", "complete", "replica", true),
+            ("partial", "partial", "ready", "partial", "replica", true),
+            ("archive", "archive", "ready", "complete", "archive", true),
+        ] {
+            let mut placement =
+                topology_placement(SurfaceTarget::BinaryCache(cache), name, prefix, 0);
+            placement.storage_binding_id = binding;
+            placement.state = state.to_string();
+            placement.completeness = completeness.to_string();
+            placement.role = role.to_string();
+            placement.read_enabled = enabled;
+            db.create_surface_placement(&placement).await.unwrap();
+        }
+
+        let bootstrap = db
+            .readable_surface_placements(
+                SurfaceTarget::BinaryCache(cache),
+                PlacementReadRequirement::ImmutableObject("nar/unindexed.nar"),
+            )
+            .await
+            .unwrap();
+        assert!(!bootstrap.miss_is_inconsistent);
+        assert_eq!(
+            bootstrap
+                .candidates
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::BinaryCache(cache),
+                object_key: "nar/exact.nar".to_string(),
+                content_hash: Some("sha256:exact".to_string()),
+                size: Some(5),
+                object_kind: "immutable".to_string(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_object_placement(&SetObjectPlacement {
+            surface_object_id: object.id,
+            placement_id: second.id,
+            state: "present".to_string(),
+            observed_hash: Some("sha256:exact".to_string()),
+            observed_size: Some(5),
+            etag: None,
+            observed_at: unix_now(),
+        })
+        .await
+        .unwrap();
+        let exact = db
+            .readable_surface_placements(
+                SurfaceTarget::BinaryCache(cache),
+                PlacementReadRequirement::ImmutableObject("nar/exact.nar"),
+            )
+            .await
+            .unwrap();
+        assert!(exact.miss_is_inconsistent);
+        assert_eq!(exact.candidates, vec![second]);
+
+        let incomplete = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::BinaryCache(cache),
+                object_key: "nar/incomplete.nar".to_string(),
+                content_hash: None,
+                size: None,
+                object_kind: "immutable".to_string(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_object_placement(&SetObjectPlacement {
+            surface_object_id: incomplete.id,
+            placement_id: first.id,
+            state: "copying".to_string(),
+            observed_hash: None,
+            observed_size: None,
+            etag: None,
+            observed_at: unix_now(),
+        })
+        .await
+        .unwrap();
+        let incomplete_plan = db
+            .readable_surface_placements(
+                SurfaceTarget::BinaryCache(cache),
+                PlacementReadRequirement::ImmutableObject("nar/incomplete.nar"),
+            )
+            .await
+            .unwrap();
+        assert!(incomplete_plan.has_configured_placements);
+        assert!(incomplete_plan.miss_is_inconsistent);
+        assert!(incomplete_plan.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn readable_registry_pointers_require_the_current_watermark() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("watermark", "Watermark").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "watermark", "local_fs", "/tmp/watermark")
+            .await
+            .unwrap();
+        let registry = db
+            .create_managed_registry(
+                org,
+                "",
+                "watermark",
+                "public",
+                Some(binding),
+                "legacy",
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        let mut stale = topology_placement(SurfaceTarget::Registry(registry), "stale", "stale", 0);
+        stale.storage_binding_id = binding;
+        let stale = db.create_surface_placement(&stale).await.unwrap();
+        let mut current =
+            topology_placement(SurfaceTarget::Registry(registry), "current", "current", 1);
+        current.storage_binding_id = binding;
+        let current = db.create_surface_placement(&current).await.unwrap();
+        let now = unix_now();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO registry_publications
+                     (publication_id, registry_id, ordinal, generation, manifest_digest,
+                      refs_digest, state, created_at, completed_at)
+                     VALUES (?1, ?2, 1, 'generation', 'manifest', 'refs',
+                             'ready', ?3, ?3)",
+                    vals!["publication-current", registry, now],
+                ),
+                Statement::new(
+                    "INSERT INTO registry_publication_state
+                     (registry_id, current_publication_id, next_ordinal, updated_at)
+                     VALUES (?1, ?2, 2, ?3)",
+                    vals![registry, "publication-current", now],
+                ),
+                Statement::new(
+                    "UPDATE surface_placements SET mutable_publication_id = ?1
+                     WHERE id = ?2",
+                    vals!["publication-current", current.id],
+                ),
+            ])
+            .await
+            .unwrap();
+        db.create_surface_object(&SetSurfaceObject {
+            surface: SurfaceTarget::Registry(registry),
+            object_key: "HEAD".to_string(),
+            content_hash: Some("sha256:pointer".to_string()),
+            size: Some(24),
+            object_kind: "mutable_pointer".to_string(),
+            mutable_publication_id: Some("publication-current".to_string()),
+        })
+        .await
+        .unwrap();
+
+        let selected = db
+            .readable_surface_placements(
+                SurfaceTarget::Registry(registry),
+                PlacementReadRequirement::RegistryCurrentPublication("HEAD"),
+            )
+            .await
+            .unwrap();
+        assert!(selected.has_configured_placements);
+        assert!(selected.miss_is_inconsistent);
+        assert_eq!(selected.candidates, vec![current]);
+        assert_ne!(selected.candidates[0].id, stale.id);
+        assert!(db
+            .readable_surface_placements(
+                SurfaceTarget::BinaryCache(registry),
+                PlacementReadRequirement::RegistryCurrentPublication("HEAD"),
+            )
+            .await
+            .is_err());
     }
 
     #[tokio::test]
