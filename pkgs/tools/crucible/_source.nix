@@ -16,8 +16,6 @@ in
       && (
         pathString
         == repoRootString
-        || pathString == "${repoRootString}/.github"
-        || pathString == "${repoRootString}/.github/pull_request_template.md"
         || pathString == "${repoRootString}/CLAUDE.md"
         || pathString == "${repoRootString}/AGENTS.md"
         || lib.hasPrefix "${repoRootString}/crates" pathString
