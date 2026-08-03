@@ -1,4 +1,4 @@
-//! Tenancy read-path authorization for the `aos.hub.v1` RPCs (sec H-2, H-3).
+//! Tenancy read and topology-write authorization for the `aos.hub.v1` RPCs.
 //!
 //! Drives the real axum router with Connect-JSON `POST`s, with and without a
 //! bearer JWT, to prove the read-path services do not disclose another tenant's
@@ -20,7 +20,8 @@ use std::sync::Arc;
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
-    ChannelSummary, Database, IndexSnapshot, NewSurfacePlacement, SurfaceTarget, TokenAuth,
+    ChannelSummary, Database, IndexSnapshot, NewDeliveryRoute, NewDomain, NewSurfacePlacement,
+    RoutePlacementSelector, SurfaceTarget, TokenAuth, UpdateSurfacePlacement,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
@@ -418,6 +419,578 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
     .await;
     assert_eq!(status, StatusCode::OK, "member placement read: {resp}");
     assert_eq!(resp["placement"]["prefix"], "registry/private");
+}
+
+#[tokio::test]
+async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db
+        .create_org("placement-owner", "Placement Owner")
+        .await
+        .unwrap();
+    let other_org = db
+        .create_org("placement-other", "Placement Other")
+        .await
+        .unwrap();
+    let binding = db
+        .create_storage_binding(org, "origin", "local_fs", "/var/lib/aos/placements")
+        .await
+        .unwrap();
+    let registry = db
+        .create_managed_registry(
+            org,
+            "",
+            "private",
+            "private",
+            Some(binding),
+            "registry/private",
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+    db.create_cache(
+        Some(org),
+        "private-cache-write",
+        "Private cache write target",
+        Some(binding),
+        "cache/private",
+        None,
+        "private",
+        40,
+        "zstd",
+        true,
+    )
+    .await
+    .unwrap();
+    seed_placement(
+        &db,
+        SurfaceTarget::Registry(registry),
+        binding,
+        "primary",
+        "registry/private",
+    )
+    .await;
+    let primary_version = db
+        .list_surface_placements(SurfaceTarget::Registry(registry))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|placement| placement.name == "primary")
+        .unwrap()
+        .resource_version
+        .to_string();
+
+    db.grant_membership("user", 50, "placement-owner", "admin")
+        .await
+        .unwrap();
+    let owner_admin = bearer(
+        Principal::user(50),
+        "placement-owner",
+        &[Permission::Read, Permission::StorageManage],
+    );
+    db.grant_membership("user", 51, "placement-other", "admin")
+        .await
+        .unwrap();
+    let wrong_org = bearer(
+        Principal::user(51),
+        "placement-other",
+        &[Permission::StorageManage],
+    );
+    db.grant_membership("user", 52, "placement-owner", "viewer")
+        .await
+        .unwrap();
+    let viewer = bearer(Principal::user(52), "placement-owner", &[Permission::Read]);
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let create = serde_json::json!({
+        "surface": { "registrySlug": "placement-owner/private" },
+        "name": "replica-west",
+        "storageBindingName": "origin",
+        "prefix": "registry/private-west",
+        "role": "replica",
+        "readEnabled": true,
+        "writeEnabled": false,
+        "readOrder": 20,
+        "writeOrder": 20
+    });
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        create.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        create.clone(),
+        Some(&viewer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        create.clone(),
+        Some(&wrong_org),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        create.clone(),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create placement: {resp}");
+    let created = &resp["placement"];
+    assert_eq!(created["storageBindingName"], "origin");
+    assert_eq!(created["readEnabled"], true);
+    assert_eq!(created["writeEnabled"], false);
+    assert_eq!(created["state"], "provisioning");
+    assert_eq!(created["completeness"], "unknown");
+    assert!(created.get("id").is_none());
+    assert!(created.get("storageBindingId").is_none());
+    assert!(created.get("partitionRuleJson").is_none());
+    let version = created["resourceVersion"].as_str().unwrap().to_string();
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        create,
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "duplicate name: {resp}");
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "same-location",
+            "storageBindingName": "origin",
+            "prefix": "registry/private-west",
+            "role": "replica",
+            "readEnabled": true,
+            "writeEnabled": false,
+            "readOrder": 20,
+            "writeOrder": 20
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "physical-location conflict: {resp}"
+    );
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "second-primary",
+            "storageBindingName": "origin",
+            "prefix": "registry/second-primary",
+            "role": "primary",
+            "readEnabled": true,
+            "writeEnabled": true,
+            "readOrder": 0,
+            "writeOrder": 0
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "primary conflict: {resp}"
+    );
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        serde_json::json!({
+            "surface": { "cacheSlug": "private-cache-write" },
+            "name": "cache-replica",
+            "storageBindingName": "origin",
+            "prefix": "cache/private-replica",
+            "role": "replica",
+            "readEnabled": true,
+            "writeEnabled": false,
+            "readOrder": 20,
+            "writeOrder": 20
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "private cache placement: {resp}");
+    assert_eq!(resp["placement"]["name"], "cache-replica");
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "cold-archive",
+            "storageBindingName": "origin",
+            "prefix": "registry/cold-archive",
+            "role": "archive",
+            "readEnabled": false,
+            "writeEnabled": false,
+            "readOrder": 100,
+            "writeOrder": 100
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create archive: {resp}");
+    let archive_version = resp["placement"]["resourceVersion"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/UpdatePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "cold-archive",
+            "expectedResourceVersion": archive_version,
+            "readEnabled": true,
+            "writeEnabled": false,
+            "readOrder": 100,
+            "writeOrder": 100
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "archive read enable must be a stable client error, never 500: {resp}"
+    );
+    assert_eq!(resp["message"], "archive placements cannot be read-enabled");
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/DrainPlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "primary",
+            "expectedResourceVersion": primary_version.clone(),
+            "apply": false
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "primary drain must fail closed: {resp}"
+    );
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/DeletePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "primary",
+            "expectedResourceVersion": primary_version,
+            "apply": false
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "primary delete must fail closed: {resp}"
+    );
+
+    let update = |expected: &str| {
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "replica-west",
+            "expectedResourceVersion": expected,
+            "readEnabled": true,
+            "writeEnabled": false,
+            "readOrder": 30,
+            "writeOrder": 30
+        })
+    };
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/UpdatePlacement",
+        update("999999"),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "stale CAS: {resp}");
+
+    let mut disable_without_drain = update(&version);
+    disable_without_drain["readEnabled"] = serde_json::json!(false);
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/UpdatePlacement",
+        disable_without_drain,
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "read disable must use drain: {resp}"
+    );
+
+    let mut promote_without_cas = update(&version);
+    promote_without_cas["writeEnabled"] = serde_json::json!(true);
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/UpdatePlacement",
+        promote_without_cas,
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "write enable must use atomic promotion: {resp}"
+    );
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/UpdatePlacement",
+        update(&version),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update placement: {resp}");
+    assert_eq!(resp["placement"]["state"], "provisioning");
+    assert_eq!(resp["placement"]["completeness"], "unknown");
+    // Simulate the scanner recording readiness; observed lifecycle fields are
+    // intentionally not client-settable through UpdatePlacement.
+    let current = db
+        .list_surface_placements(SurfaceTarget::Registry(registry))
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|placement| placement.name == "replica-west")
+        .unwrap();
+    let observed = db
+        .update_surface_placement(
+            current.id,
+            &UpdateSurfacePlacement {
+                expected_version: current.resource_version,
+                state: "ready".to_string(),
+                completeness: "complete".to_string(),
+                partition_rule_json: current.partition_rule_json,
+                read_enabled: current.read_enabled,
+                write_enabled: current.write_enabled,
+                read_order: current.read_order,
+                write_order: current.write_order,
+            },
+        )
+        .await
+        .unwrap();
+    let updated_version = observed.resource_version.to_string();
+    let domain = db
+        .create_domain(&NewDomain {
+            org_id: Some(org),
+            hostname: "placement-route.example.com".to_string(),
+            desired_dns_provider: None,
+            desired_tls_provider: None,
+            access_provider_json: "{}".to_string(),
+        })
+        .await
+        .unwrap();
+    let route = db
+        .create_delivery_route(&NewDeliveryRoute {
+            domain_id: domain.id,
+            storage_gateway_id: None,
+            gateway_generation: None,
+            base_path: "/replica".to_string(),
+            surface: SurfaceTarget::Registry(registry),
+            mode: "hub_proxy".to_string(),
+            access_policy_json: "{}".to_string(),
+            selector: RoutePlacementSelector::Placement(observed.id),
+            serves_git: true,
+            serves_cache: false,
+            serves_web: false,
+            enabled: false,
+        })
+        .await
+        .unwrap();
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/DrainPlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "replica-west",
+            "expectedResourceVersion": updated_version.clone(),
+            "apply": false
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "route-pinned drain: {resp}"
+    );
+    assert_eq!(
+        resp["message"],
+        "placement is pinned by a direct delivery route"
+    );
+    assert!(db
+        .delete_delivery_route(route.id, route.resource_version)
+        .await
+        .unwrap());
+
+    let drain = |apply: bool, expected: &str| {
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "replica-west",
+            "expectedResourceVersion": expected,
+            "apply": apply
+        })
+    };
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/DrainPlacement",
+        drain(false, &updated_version),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "drain plan: {resp}");
+    assert_eq!(resp["applied"], false);
+    assert_eq!(resp["placement"]["state"], "ready");
+    assert_eq!(resp["plan"]["currentResourceVersion"], updated_version);
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/DrainPlacement",
+        drain(true, &updated_version),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "drain apply: {resp}");
+    assert_eq!(resp["applied"], true);
+    assert_eq!(resp["placement"]["state"], "draining");
+    assert_eq!(resp["placement"]["readEnabled"], false);
+    let drained_version = resp["placement"]["resourceVersion"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let delete = |apply: bool| {
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "replica-west",
+            "expectedResourceVersion": drained_version.clone(),
+            "apply": apply
+        })
+    };
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/DeletePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "replica-west",
+            "expectedResourceVersion": "1",
+            "apply": false
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "stale delete CAS: {resp}"
+    );
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/DeletePlacement",
+        delete(false),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "delete plan: {resp}");
+    assert_eq!(resp["applied"], false);
+    assert!(resp["plan"]["effects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|effect| effect.as_str() == Some("leave backing storage objects unchanged")));
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/DeletePlacement",
+        delete(true),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "delete apply: {resp}");
+    assert_eq!(resp["applied"], true);
+
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/GetPlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "replica-west"
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let shard = serde_json::json!({
+        "surface": { "registrySlug": "placement-owner/private" },
+        "name": "shard-a",
+        "storageBindingName": "origin",
+        "prefix": "registry/shard-a",
+        "role": "shard",
+        "readEnabled": true,
+        "writeEnabled": false,
+        "readOrder": 40,
+        "writeOrder": 40
+    });
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        shard,
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "missing-read-flag",
+            "storageBindingName": "origin",
+            "prefix": "registry/missing-read-flag",
+            "role": "replica",
+            "writeEnabled": false,
+            "readOrder": 50,
+            "writeOrder": 50
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Keep the second org observably in scope so the wrong-org membership is
+    // not an accidental grant on a missing tenant.
+    assert!(db.org_by_id(other_org).await.unwrap().is_some());
 }
 
 #[tokio::test]

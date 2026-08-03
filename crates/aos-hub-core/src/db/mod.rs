@@ -3131,6 +3131,99 @@ pub struct SurfacePlacementRecord {
     pub resource_version: i64,
 }
 
+/// Stable classification for caller-correctable placement-create failures.
+///
+/// Errors without this marker are infrastructure failures and must remain
+/// internal. This avoids interpreting backend-specific SQL error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfacePlacementCreateFailureKind {
+    /// A request field violates the placement contract.
+    InvalidArgument,
+    /// The surface already has the requested stable placement name.
+    AlreadyExists,
+    /// Another placement owns a mutually exclusive topology resource.
+    Conflict,
+}
+
+/// Typed placement-create failure preserved through `anyhow` context chains.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct SurfacePlacementCreateFailure {
+    kind: SurfacePlacementCreateFailureKind,
+    message: String,
+}
+
+impl SurfacePlacementCreateFailure {
+    /// Returns the stable public classification.
+    #[must_use]
+    pub fn kind(&self) -> SurfacePlacementCreateFailureKind {
+        self.kind
+    }
+
+    /// Returns the stable, backend-independent public message.
+    #[must_use]
+    pub fn public_message(&self) -> &str {
+        &self.message
+    }
+
+    /// Builds a classified failure without backend error detail.
+    fn new(kind: SurfacePlacementCreateFailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+/// Finds a typed placement-create failure in an error context chain.
+#[must_use]
+pub fn surface_placement_create_failure(
+    error: &anyhow::Error,
+) -> Option<&SurfacePlacementCreateFailure> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SurfacePlacementCreateFailure>())
+}
+
+/// References that constrain a placement drain or metadata deletion.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SurfacePlacementBlockers {
+    /// A direct delivery route selects the placement.
+    pub direct_route: bool,
+    /// A delivery route selects a policy containing the placement.
+    pub routed_policy: bool,
+    /// A placement-selection policy contains the placement.
+    pub policy_member: bool,
+    /// Object-presence inventory exists for the placement.
+    pub object_presence: bool,
+    /// Registry-publication progress exists for the placement.
+    pub publication: bool,
+    /// Object-deletion jobs refer to the placement.
+    pub deletion_job: bool,
+    /// A topology operation refers to the placement.
+    pub topology_operation: bool,
+}
+
+impl SurfacePlacementBlockers {
+    /// Returns whether a serving route currently pins the placement.
+    #[must_use]
+    pub fn route_pinned(self) -> bool {
+        self.direct_route || self.routed_policy
+    }
+
+    /// Returns whether any reference prevents metadata deletion.
+    #[must_use]
+    pub fn prevents_deletion(self) -> bool {
+        self.direct_route
+            || self.routed_policy
+            || self.policy_member
+            || self.object_presence
+            || self.publication
+            || self.deletion_job
+            || self.topology_operation
+    }
+}
+
 /// A named placement-selection policy for one surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementPolicyRecord {
@@ -6688,13 +6781,20 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid placement fields, an absent/cross-scope
-    /// surface or binding, a primary/location collision, or database failure.
+    /// Returns a typed [`SurfacePlacementCreateFailure`] for invalid placement
+    /// fields, a duplicate name, an absent/cross-scope target, or a
+    /// primary/location conflict. Unclassified errors are database failures.
     pub async fn create_surface_placement(
         &self,
         input: &NewSurfacePlacement,
     ) -> Result<SurfacePlacementRecord> {
-        validate_stable_name(&input.name, "placement name")?;
+        let invalid = |error: anyhow::Error| {
+            SurfacePlacementCreateFailure::new(
+                SurfacePlacementCreateFailureKind::InvalidArgument,
+                format!("{error:#}"),
+            )
+        };
+        validate_stable_name(&input.name, "placement name").map_err(invalid)?;
         validate_placement_fields(
             input.role.as_str(),
             input.state.as_str(),
@@ -6702,10 +6802,11 @@ impl Database {
             input.partition_rule_json.as_deref(),
             input.read_enabled,
             input.write_enabled,
-        )?;
-        let prefix = normalize_placement_prefix(&input.prefix)?;
+        )
+        .map_err(invalid)?;
+        let prefix = normalize_placement_prefix(&input.prefix).map_err(invalid)?;
         if let Some(json) = input.partition_rule_json.as_deref() {
-            validate_json_object(json, "placement partition rule")?;
+            validate_json_object(json, "placement partition rule").map_err(invalid)?;
         }
         let (registry_id, cache_id) = input.surface.ids();
         let (primary_registry_id, primary_cache_id) = if input.role == "primary" {
@@ -6714,7 +6815,7 @@ impl Database {
             (None, None)
         };
         let now = unix_now();
-        let affected = self
+        let affected = match self
             .backend
             .execute(
                 "INSERT INTO surface_placements
@@ -6751,9 +6852,56 @@ impl Database {
                     now
                 ],
             )
-            .await?;
+            .await
+        {
+            Ok(affected) => affected,
+            Err(error) => {
+                // SQL engines format uniqueness failures differently. Inspect
+                // the now-authoritative rows after the failed statement so a
+                // concurrent winner and an ordinary duplicate receive the same
+                // typed result without parsing backend error strings.
+                let placements = self.list_surface_placements(input.surface).await?;
+                if placements
+                    .iter()
+                    .any(|placement| placement.name == input.name)
+                {
+                    return Err(SurfacePlacementCreateFailure::new(
+                        SurfacePlacementCreateFailureKind::AlreadyExists,
+                        format!("placement '{}' already exists", input.name),
+                    )
+                    .into());
+                }
+                if self
+                    .surface_placement_at(input.storage_binding_id, &prefix)
+                    .await?
+                    .is_some()
+                {
+                    return Err(SurfacePlacementCreateFailure::new(
+                        SurfacePlacementCreateFailureKind::Conflict,
+                        "storage binding and prefix are already used by another placement",
+                    )
+                    .into());
+                }
+                if input.role == "primary"
+                    && placements
+                        .iter()
+                        .any(|placement| placement.role == "primary")
+                {
+                    return Err(SurfacePlacementCreateFailure::new(
+                        SurfacePlacementCreateFailureKind::Conflict,
+                        "surface already has a primary placement",
+                    )
+                    .into());
+                }
+                return Err(error);
+            }
+        };
         if affected != 1 {
-            bail!("surface and storage binding must exist in a compatible scope");
+            return Err(SurfacePlacementCreateFailure::new(
+                SurfacePlacementCreateFailureKind::InvalidArgument,
+                "surface and storage binding must exist in a compatible scope",
+            )
+            .into());
         }
         self.surface_placement_at(input.storage_binding_id, &prefix)
             .await?
@@ -6812,6 +6960,46 @@ impl Database {
             )
             .await?;
         rows.iter().map(row_to_surface_placement).collect()
+    }
+
+    /// Returns references that constrain a placement drain or deletion.
+    ///
+    /// The result names topology concepts instead of exposing backend foreign
+    /// key or constraint details. Callers must re-read it immediately before a
+    /// destructive apply; the guarded write remains the final race-safe check.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the blocker query fails or returns no row.
+    pub async fn surface_placement_blockers(&self, id: i64) -> Result<SurfacePlacementBlockers> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT
+                   EXISTS (SELECT 1 FROM delivery_routes WHERE placement_id = ?1),
+                   EXISTS (
+                     SELECT 1 FROM delivery_routes r
+                     JOIN placement_policy_members pm
+                       ON pm.policy_id = r.placement_policy_id
+                     WHERE pm.placement_id = ?1),
+                   EXISTS (SELECT 1 FROM placement_policy_members WHERE placement_id = ?1),
+                   EXISTS (SELECT 1 FROM object_placements WHERE placement_id = ?1),
+                   EXISTS (SELECT 1 FROM registry_publication_placements WHERE placement_id = ?1),
+                   EXISTS (SELECT 1 FROM object_deletion_jobs WHERE placement_id = ?1),
+                   EXISTS (SELECT 1 FROM topology_operations WHERE placement_id = ?1)",
+                &vals![id],
+            )
+            .await?
+            .context("placement blocker query returned no row")?;
+        Ok(SurfacePlacementBlockers {
+            direct_route: row.get(0)?,
+            routed_policy: row.get(1)?,
+            policy_member: row.get(2)?,
+            object_presence: row.get(3)?,
+            publication: row.get(4)?,
+            deletion_job: row.get(5)?,
+            topology_operation: row.get(6)?,
+        })
     }
 
     /// Lists placements that may safely serve one read in deterministic order.
@@ -20376,12 +20564,217 @@ mod tests {
         let mut first = topology_placement(SurfaceTarget::Registry(registry), "one", "same", 0);
         first.storage_binding_id = binding;
         db.create_surface_placement(&first).await.unwrap();
+        let mut duplicate_name =
+            topology_placement(SurfaceTarget::Registry(registry), "one", "different", 1);
+        duplicate_name.storage_binding_id = binding;
+        let error = db
+            .create_surface_placement(&duplicate_name)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
+            Some(SurfacePlacementCreateFailureKind::AlreadyExists)
+        );
         let mut collision = topology_placement(SurfaceTarget::BinaryCache(cache), "two", "same", 1);
         collision.storage_binding_id = binding;
-        assert!(
-            db.create_surface_placement(&collision).await.is_err(),
+        let error = db.create_surface_placement(&collision).await.unwrap_err();
+        assert_eq!(
+            surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
+            Some(SurfacePlacementCreateFailureKind::Conflict),
             "physical-location aliases require a future reviewed equivalence workflow"
         );
+
+        let mut primary =
+            topology_placement(SurfaceTarget::Registry(registry), "primary", "primary", 2);
+        primary.storage_binding_id = binding;
+        primary.role = "primary".to_string();
+        primary.write_enabled = true;
+        db.create_surface_placement(&primary).await.unwrap();
+        let mut second_primary = topology_placement(
+            SurfaceTarget::Registry(registry),
+            "second-primary",
+            "second-primary",
+            3,
+        );
+        second_primary.storage_binding_id = binding;
+        second_primary.role = "primary".to_string();
+        second_primary.write_enabled = true;
+        let error = db
+            .create_surface_placement(&second_primary)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
+            Some(SurfacePlacementCreateFailureKind::Conflict)
+        );
+
+        let mut invalid = second_primary.clone();
+        invalid.name = "invalid-role".to_string();
+        invalid.prefix = "invalid-role".to_string();
+        invalid.role = "writer".to_string();
+        invalid.write_enabled = false;
+        let error = db.create_surface_placement(&invalid).await.unwrap_err();
+        assert_eq!(
+            surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
+            Some(SurfacePlacementCreateFailureKind::InvalidArgument)
+        );
+
+        db.backend
+            .execute("DROP TABLE surface_placements", &[])
+            .await
+            .unwrap();
+        let error = db
+            .create_surface_placement(&second_primary)
+            .await
+            .unwrap_err();
+        assert!(
+            surface_placement_create_failure(&error).is_none(),
+            "infrastructure failures must remain unclassified and internal"
+        );
+    }
+
+    #[tokio::test]
+    async fn placement_blockers_classify_every_restricting_reference() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org = db.create_org("blockers", "Blockers").await.unwrap();
+        let binding = db
+            .create_storage_binding(org, "blockers", "local_fs", "/tmp/blockers")
+            .await
+            .unwrap();
+        let registry = db
+            .create_managed_registry(
+                org,
+                "",
+                "registry",
+                "public",
+                Some(binding),
+                "legacy-blockers",
+                &[],
+                false,
+            )
+            .await
+            .unwrap();
+        let mut input =
+            topology_placement(SurfaceTarget::Registry(registry), "replica", "replica", 0);
+        input.storage_binding_id = binding;
+        let placement = db.create_surface_placement(&input).await.unwrap();
+        let policy = db
+            .create_placement_policy(&NewPlacementPolicy {
+                surface: SurfaceTarget::Registry(registry),
+                name: "reads".to_string(),
+                kind: "ordered_failover".to_string(),
+                config_json: "{}".to_string(),
+            })
+            .await
+            .unwrap();
+        db.add_placement_policy_member(
+            policy.id,
+            PlacementPolicyMemberInput {
+                placement_id: placement.id,
+                member_order: 0,
+                required: true,
+            },
+        )
+        .await
+        .unwrap();
+        let domain = db
+            .create_domain(&NewDomain {
+                org_id: Some(org),
+                hostname: "blockers.example.com".to_string(),
+                desired_dns_provider: None,
+                desired_tls_provider: None,
+                access_provider_json: "{}".to_string(),
+            })
+            .await
+            .unwrap();
+        let object = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry),
+                object_key: "objects/blocker".to_string(),
+                content_hash: Some("sha256:blocker".to_string()),
+                size: Some(7),
+                object_kind: "immutable".to_string(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.set_object_placement(&SetObjectPlacement {
+            surface_object_id: object.id,
+            placement_id: placement.id,
+            state: "present".to_string(),
+            observed_hash: Some("sha256:blocker".to_string()),
+            observed_size: Some(7),
+            etag: None,
+            observed_at: unix_now(),
+        })
+        .await
+        .unwrap();
+        db.create_topology_operation(&NewTopologyOperation {
+            operation_id: "placement-blocker".to_string(),
+            operation_kind: "scan".to_string(),
+            surface: Some(SurfaceTarget::Registry(registry)),
+            placement_id: Some(placement.id),
+            detail_json: "{}".to_string(),
+            progress_total: None,
+        })
+        .await
+        .unwrap();
+        let now = unix_now();
+        db.backend
+            .batch(&[
+                Statement::new(
+                    "INSERT INTO delivery_routes
+                     (domain_id, base_path, registry_id, mode, access_policy_json,
+                      placement_id, serves_git, enabled, created_at, updated_at)
+                     VALUES (?1, '/direct', ?2, 'hub_proxy', '{}', ?3, 1, 0, ?4, ?4)",
+                    vals![domain.id, registry, placement.id, now].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO delivery_routes
+                     (domain_id, base_path, registry_id, mode, access_policy_json,
+                      placement_policy_id, serves_git, enabled, created_at, updated_at)
+                     VALUES (?1, '/policy', ?2, 'hub_proxy', '{}', ?3, 1, 0, ?4, ?4)",
+                    vals![domain.id, registry, policy.id, now].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO registry_publications
+                     (publication_id, registry_id, ordinal, generation,
+                      manifest_digest, refs_digest, state, created_at)
+                     VALUES ('blocker-publication', ?1, 1, 'generation',
+                             'manifest', 'refs', 'preparing', ?2)",
+                    vals![registry, now].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO registry_publication_placements
+                     (publication_id, registry_id, placement_id, required, state, observed_at)
+                     VALUES ('blocker-publication', ?1, ?2, 1, 'preparing', ?3)",
+                    vals![registry, placement.id, now].to_vec(),
+                ),
+                Statement::new(
+                    "INSERT INTO object_deletion_jobs
+                     (job_id, surface_object_id, placement_id, state, created_at)
+                     VALUES ('blocker-job', ?1, ?2, 'preparing', ?3)",
+                    vals![object.id, placement.id, now].to_vec(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let blockers = db.surface_placement_blockers(placement.id).await.unwrap();
+        assert_eq!(
+            blockers,
+            SurfacePlacementBlockers {
+                direct_route: true,
+                routed_policy: true,
+                policy_member: true,
+                object_presence: true,
+                publication: true,
+                deletion_job: true,
+                topology_operation: true,
+            }
+        );
+        assert!(blockers.route_pinned());
+        assert!(blockers.prevents_deletion());
     }
 
     #[tokio::test]

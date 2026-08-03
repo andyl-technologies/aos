@@ -55,12 +55,22 @@ service StorageBindingService {
   rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
 }
 
-// Read-only topology inventory for registry and binary-cache surfaces.
+// Topology inventory and bounded placement lifecycle management for registry
+// and binary-cache surfaces.
 // Placement identities are stable names within a typed surface; database ids
 // and backend-specific shard configuration are deliberately not public.
+// PromotePlacement is intentionally absent: promotion requires a portable,
+// single-row write-authority CAS before it can be exposed safely across native,
+// Worker/D1, and MySQL deployments.
+// All placement writes temporarily require storage.manage on the owning org
+// (or root iam.admin for an org-less surface) until topology.manage exists.
 service TopologyService {
   rpc ListPlacements(ListPlacementsRequest) returns (ListPlacementsResponse);
   rpc GetPlacement(GetPlacementRequest) returns (GetPlacementResponse);
+  rpc CreatePlacement(CreatePlacementRequest) returns (CreatePlacementResponse);
+  rpc UpdatePlacement(UpdatePlacementRequest) returns (UpdatePlacementResponse);
+  rpc DrainPlacement(DrainPlacementRequest) returns (DrainPlacementResponse);
+  rpc DeletePlacement(DeletePlacementRequest) returns (DeletePlacementResponse);
 }
 
 // Append-only audit log queries (RFC-0004 "Tenancy and IAM" / "Access
@@ -492,6 +502,120 @@ message GetPlacementRequest {
 
 message GetPlacementResponse {
   Placement placement = 1;
+}
+
+// Creates one named placement on an existing storage binding. New placements
+// always begin with observed state `provisioning` and completeness `unknown`;
+// clients cannot assert observations they have not scanned. Shard roles are
+// reserved until the public API has a typed partition-rule contract; the
+// backend's partition-rule JSON is never accepted or exposed here.
+message CreatePlacementRequest {
+  // Typed registry or binary-cache surface receiving the placement.
+  SurfaceRef surface = 1;
+  // Stable name within the surface.
+  string name = 2;
+  // Stable storage-binding name in the surface's owning scope.
+  string storage_binding_name = 3;
+  // Binding-relative object prefix.
+  string prefix = 4;
+  // primary | replica | archive. Shard is not public in this API revision.
+  string role = 5;
+  // Whether read selection may use this placement. Presence is required.
+  optional bool read_enabled = 6;
+  // Whether write selection may use this placement. Presence is required.
+  optional bool write_enabled = 7;
+  // Lower values are preferred for reads. Presence is required.
+  optional int64 read_order = 8;
+  // Lower values are preferred for writes. Presence is required.
+  optional int64 write_order = 9;
+}
+
+message CreatePlacementResponse {
+  // Created placement with its initial opaque resource version.
+  Placement placement = 1;
+}
+
+// Replaces desired selection fields under one optimistic-concurrency check.
+// Observed lifecycle state and completeness, role, binding, prefix, and shard
+// rules are immutable through this bounded API. Disabling read selection uses
+// DrainPlacement; changing write authority awaits a future portable atomic
+// promotion operation.
+message UpdatePlacementRequest {
+  // Typed registry or binary-cache surface owning the placement.
+  SurfaceRef surface = 1;
+  // Stable placement name within the surface.
+  string name = 2;
+  // Opaque resource version returned by a preceding read.
+  string expected_resource_version = 3;
+  // Replacement read-selection flag. Presence is required; disabling uses drain.
+  optional bool read_enabled = 4;
+  // Current write-selection flag. Presence is required and changes are rejected.
+  optional bool write_enabled = 5;
+  // Replacement read priority. Presence is required.
+  optional int64 read_order = 6;
+  // Replacement write priority. Presence is required.
+  optional int64 write_order = 7;
+}
+
+message UpdatePlacementResponse {
+  // Placement after the successful resource-version CAS.
+  Placement placement = 1;
+}
+
+// A reviewable description returned by destructive placement operations.
+message PlacementMutationPlan {
+  // Stable operation name (`drain` or `delete`).
+  string operation = 1;
+  // Stable placement name within the request's typed surface.
+  string placement_name = 2;
+  // Resource version against which this plan was computed.
+  string current_resource_version = 3;
+  // Ordered, human-readable effects applied by this exact operation.
+  repeated string effects = 4;
+}
+
+// Drain is plan-only unless apply is true. Applying revalidates the resource
+// version and route pins, transitions a non-primary placement to draining, and
+// disables both read and write selection.
+message DrainPlacementRequest {
+  // Typed registry or binary-cache surface owning the placement.
+  SurfaceRef surface = 1;
+  // Stable placement name within the surface.
+  string name = 2;
+  // Opaque resource version returned by a preceding read.
+  string expected_resource_version = 3;
+  // False returns only a plan; true revalidates and applies it under the CAS.
+  bool apply = 4;
+}
+
+message DrainPlacementResponse {
+  // Reviewed effects, returned for both plan and apply calls.
+  PlacementMutationPlan plan = 1;
+  // Current placement for a plan, or resulting placement after apply.
+  Placement placement = 2;
+  // Whether the server applied the plan.
+  bool applied = 3;
+}
+
+// Delete is plan-only unless apply is true. Apply revalidates all references and
+// the resource version. Deletion removes topology metadata; it does not delete
+// objects from the backing storage binding.
+message DeletePlacementRequest {
+  // Typed registry or binary-cache surface owning the placement.
+  SurfaceRef surface = 1;
+  // Stable placement name within the surface.
+  string name = 2;
+  // Opaque resource version returned by a preceding read.
+  string expected_resource_version = 3;
+  // False returns only a plan; true revalidates and applies it under the CAS.
+  bool apply = 4;
+}
+
+message DeletePlacementResponse {
+  // Reviewed effects, returned for both plan and apply calls.
+  PlacementMutationPlan plan = 1;
+  // Whether the server applied the plan.
+  bool applied = 2;
 }
 
 // -- Managed registry creation (phase 2c) ----------------------------------

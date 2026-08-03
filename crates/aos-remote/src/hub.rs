@@ -24,8 +24,8 @@
 //! This client speaks that transport directly with `reqwest`, exchanging the
 //! [`aos_proto_types`] message structs as JSON. Construct one with
 //! [`HubClient::connect_anonymous`] for public reads, or
-//! [`HubClient::connect_with_token`] to attach a hub access JWT for
-//! authenticated calls.
+//! [`HubClient::connect_with_token`] to attach a hub access JWT for private
+//! inventory and authorized placement lifecycle calls.
 
 use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
@@ -38,21 +38,24 @@ use aos_proto_types::{
     AuditEntry, Binding, ChangeCacheStorageRequest, ChangeCacheStorageResponse,
     ChangeRegistryStorageRequest, ChangeRegistryStorageResponse, ChangeRequest, Changeset, Channel,
     CreateBindingRequest, CreateBindingResponse, CreateOrgRequest, CreateOrgResponse,
-    CreateProjectRequest, CreateProjectResponse, CreateRegistryRequest, CreateRegistryResponse,
-    CreateWebhookRequest, CreateWebhookResponse, DeleteWebhookRequest, GetChannelRequest,
-    GetChannelResponse, GetInstanceSettingsRequest, GetInstanceSettingsResponse, GetPackageRequest,
-    GetPackageResponse, GetPlacementRequest, GetPlacementResponse, GetRegistryRequest,
-    GetRegistryResponse, GitCommit, GitDiffRequest, GitDiffResponse, GitLogRequest, GitLogResponse,
-    InstanceSettings, LinkCacheRequest, LinkCacheResponse, ListAuditRequest, ListAuditResponse,
-    ListBindingsRequest, ListBindingsResponse, ListChangeRequestsRequest,
-    ListChangeRequestsResponse, ListChangesetsRequest, ListChangesetsResponse, ListChannelsRequest,
-    ListChannelsResponse, ListOrgsRequest, ListOrgsResponse, ListPackagesRequest,
-    ListPackagesResponse, ListPlacementsRequest, ListPlacementsResponse, ListProjectsRequest,
-    ListProjectsResponse, ListRegistriesRequest, ListRegistriesResponse, ListReleasesRequest,
-    ListReleasesResponse, ListWebhooksRequest, ListWebhooksResponse, MintUploadCredentialsRequest,
+    CreatePlacementRequest, CreatePlacementResponse, CreateProjectRequest, CreateProjectResponse,
+    CreateRegistryRequest, CreateRegistryResponse, CreateWebhookRequest, CreateWebhookResponse,
+    DeletePlacementRequest, DeletePlacementResponse, DeleteWebhookRequest, DrainPlacementRequest,
+    DrainPlacementResponse, GetChannelRequest, GetChannelResponse, GetInstanceSettingsRequest,
+    GetInstanceSettingsResponse, GetPackageRequest, GetPackageResponse, GetPlacementRequest,
+    GetPlacementResponse, GetRegistryRequest, GetRegistryResponse, GitCommit, GitDiffRequest,
+    GitDiffResponse, GitLogRequest, GitLogResponse, InstanceSettings, LinkCacheRequest,
+    LinkCacheResponse, ListAuditRequest, ListAuditResponse, ListBindingsRequest,
+    ListBindingsResponse, ListChangeRequestsRequest, ListChangeRequestsResponse,
+    ListChangesetsRequest, ListChangesetsResponse, ListChannelsRequest, ListChannelsResponse,
+    ListOrgsRequest, ListOrgsResponse, ListPackagesRequest, ListPackagesResponse,
+    ListPlacementsRequest, ListPlacementsResponse, ListProjectsRequest, ListProjectsResponse,
+    ListRegistriesRequest, ListRegistriesResponse, ListReleasesRequest, ListReleasesResponse,
+    ListWebhooksRequest, ListWebhooksResponse, MintUploadCredentialsRequest,
     MintUploadCredentialsResponse, Org, Package, PackageSummary, Placement, Project, Registry,
     Release, RevertChangesetRequest, RevertChangesetResponse, SurfaceRef, UnlinkCacheRequest,
-    UnlinkCacheResponse, UpdateInstanceSettingsRequest, UpdateInstanceSettingsResponse, Webhook,
+    UnlinkCacheResponse, UpdateInstanceSettingsRequest, UpdateInstanceSettingsResponse,
+    UpdatePlacementRequest, UpdatePlacementResponse, Webhook,
 };
 
 use crate::client::validate_base_url;
@@ -125,6 +128,50 @@ pub enum HubSurfaceRef {
     Registry(String),
     /// A managed binary cache addressed by its slug.
     Cache(String),
+}
+
+/// Explicit fields for creating one registry or binary-cache placement.
+///
+/// `role` supports `primary`, `replica`, and `archive`. Shards remain private
+/// to the backend until their partition rule has a typed public contract. The
+/// server owns observed lifecycle fields and initializes them to
+/// `provisioning`/`unknown`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatePlacementInput {
+    /// Stable placement name within the surface.
+    pub name: String,
+    /// Stable storage-binding name in the surface's organization.
+    pub storage_binding_name: String,
+    /// Binding-relative object prefix.
+    pub prefix: String,
+    /// Placement role: `primary`, `replica`, or `archive`.
+    pub role: String,
+    /// Whether read selection may use the placement.
+    pub read_enabled: bool,
+    /// Whether write selection may use the placement.
+    pub write_enabled: bool,
+    /// Lower values are preferred for reads.
+    pub read_order: i64,
+    /// Lower values are preferred for writes.
+    pub write_order: i64,
+}
+
+/// Explicit desired selection fields for a version-checked placement update.
+///
+/// Read-disable transitions use the drain workflow, write-authority changes
+/// await atomic promotion, and observed lifecycle fields are not client-settable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdatePlacementInput {
+    /// Opaque resource version returned by a preceding placement read.
+    pub expected_resource_version: String,
+    /// Whether read selection may use the placement.
+    pub read_enabled: bool,
+    /// Whether write selection may use the placement.
+    pub write_enabled: bool,
+    /// Lower values are preferred for reads.
+    pub read_order: i64,
+    /// Lower values are preferred for writes.
+    pub write_order: i64,
 }
 
 impl HubSurfaceRef {
@@ -370,6 +417,126 @@ impl HubClient {
             .with_context(|| format!("fetching placement '{name}' from '{surface}'"))?;
         resp.placement
             .context("the hub returned GetPlacement without a placement")
+    }
+
+    /// Creates one placement on a typed registry or binary-cache surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid request, insufficient topology/storage
+    /// authority, a conflicting placement, or a transport/protocol failure.
+    pub async fn create_placement(
+        &self,
+        surface: &HubSurfaceRef,
+        input: &CreatePlacementInput,
+    ) -> Result<Placement> {
+        let resp: CreatePlacementResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/CreatePlacement",
+                &CreatePlacementRequest {
+                    surface: Some(surface.to_message()),
+                    name: input.name.clone(),
+                    storage_binding_name: input.storage_binding_name.clone(),
+                    prefix: input.prefix.clone(),
+                    role: input.role.clone(),
+                    read_enabled: Some(input.read_enabled),
+                    write_enabled: Some(input.write_enabled),
+                    read_order: Some(input.read_order),
+                    write_order: Some(input.write_order),
+                },
+            )
+            .await
+            .with_context(|| format!("creating placement '{}' on '{surface}'", input.name))?;
+        resp.placement
+            .context("the hub returned CreatePlacement without a placement")
+    }
+
+    /// Replaces all publicly mutable fields of one placement under a CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid desired selection, a stale resource
+    /// version, insufficient authority, or a transport/protocol failure.
+    pub async fn update_placement(
+        &self,
+        surface: &HubSurfaceRef,
+        name: &str,
+        input: &UpdatePlacementInput,
+    ) -> Result<Placement> {
+        let resp: UpdatePlacementResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/UpdatePlacement",
+                &UpdatePlacementRequest {
+                    surface: Some(surface.to_message()),
+                    name: name.to_string(),
+                    expected_resource_version: input.expected_resource_version.clone(),
+                    read_enabled: Some(input.read_enabled),
+                    write_enabled: Some(input.write_enabled),
+                    read_order: Some(input.read_order),
+                    write_order: Some(input.write_order),
+                },
+            )
+            .await
+            .with_context(|| format!("updating placement '{name}' on '{surface}'"))?;
+        resp.placement
+            .context("the hub returned UpdatePlacement without a placement")
+    }
+
+    /// Plans or applies a non-primary placement drain under a CAS.
+    ///
+    /// Apply revalidates the version and route pins before mutating.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a primary placement, stale resource version,
+    /// insufficient authority, or a transport/protocol failure.
+    pub async fn drain_placement(
+        &self,
+        surface: &HubSurfaceRef,
+        name: &str,
+        expected_resource_version: &str,
+        apply: bool,
+    ) -> Result<DrainPlacementResponse> {
+        self.call(
+            "aos.hub.v1.TopologyService/DrainPlacement",
+            &DrainPlacementRequest {
+                surface: Some(surface.to_message()),
+                name: name.to_string(),
+                expected_resource_version: expected_resource_version.to_string(),
+                apply,
+            },
+        )
+        .await
+        .with_context(|| format!("draining placement '{name}' on '{surface}'"))
+    }
+
+    /// Plans or applies placement metadata deletion under a CAS.
+    ///
+    /// Apply revalidates the version and all dependent references before
+    /// deleting metadata; backing storage objects are not removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when deletion is unsafe, the resource version is stale,
+    /// authority is insufficient, or transport/protocol handling fails.
+    pub async fn delete_placement(
+        &self,
+        surface: &HubSurfaceRef,
+        name: &str,
+        expected_resource_version: &str,
+        apply: bool,
+    ) -> Result<DeletePlacementResponse> {
+        self.call(
+            "aos.hub.v1.TopologyService/DeletePlacement",
+            &DeletePlacementRequest {
+                surface: Some(surface.to_message()),
+                name: name.to_string(),
+                expected_resource_version: expected_resource_version.to_string(),
+                apply,
+            },
+        )
+        .await
+        .with_context(|| format!("deleting placement '{name}' on '{surface}'"))
     }
 
     /// Fetches one registry by slug, or `None` when it does not exist or is not
@@ -1165,6 +1332,7 @@ fn ensure_trailing_slash(s: &str) -> String {
 mod tests {
     use super::{accept_next_page_token, HubSurfaceRef};
     use aos_proto_types::surface_ref::Target;
+    use aos_proto_types::{CreatePlacementRequest, UpdatePlacementRequest};
     use std::collections::HashSet;
     use std::str::FromStr as _;
 
@@ -1211,6 +1379,45 @@ mod tests {
             };
             assert_eq!(decoded.target, Some(expected));
         }
+    }
+
+    #[test]
+    fn placement_mutations_serialize_explicit_false_and_camel_case_fields() {
+        let surface = Some(HubSurfaceRef::Cache("nix".to_string()).to_message());
+        let create = serde_json::to_value(CreatePlacementRequest {
+            surface: surface.clone(),
+            name: "replica".to_string(),
+            storage_binding_name: "origin".to_string(),
+            prefix: "cache/replica".to_string(),
+            role: "replica".to_string(),
+            read_enabled: Some(true),
+            write_enabled: Some(false),
+            read_order: Some(10),
+            write_order: Some(20),
+        })
+        .unwrap();
+        assert_eq!(create["surface"]["cacheSlug"], "nix");
+        assert_eq!(create["storageBindingName"], "origin");
+        assert_eq!(create["writeEnabled"], false);
+        assert_eq!(create["writeOrder"], 20);
+        assert!(create.get("storage_binding_name").is_none());
+        assert!(create.get("state").is_none());
+        assert!(create.get("completeness").is_none());
+
+        let update = serde_json::to_value(UpdatePlacementRequest {
+            surface,
+            name: "replica".to_string(),
+            expected_resource_version: "7".to_string(),
+            read_enabled: Some(true),
+            write_enabled: Some(false),
+            read_order: Some(30),
+            write_order: Some(30),
+        })
+        .unwrap();
+        assert_eq!(update["expectedResourceVersion"], "7");
+        assert_eq!(update["readEnabled"], true);
+        assert!(update.get("state").is_none());
+        assert!(update.get("completeness").is_none());
     }
 
     #[test]
