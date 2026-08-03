@@ -1980,6 +1980,129 @@ impl RpcService {
         Ok(pb::ListBindingsResponse { bindings })
     }
 
+    /// Resolves and authorizes a typed topology surface reference.
+    async fn readable_topology_surface(
+        &self,
+        auth: Option<&str>,
+        surface: Option<pb::SurfaceRef>,
+    ) -> Result<crate::db::SurfaceTarget, RpcError> {
+        match surface.and_then(|surface| surface.target) {
+            Some(pb::surface_ref::Target::RegistrySlug(slug)) if !slug.is_empty() => {
+                let registry = self.registry_or_not_found(&slug).await?;
+                self.require_read(auth, &registry).await?;
+                Ok(crate::db::SurfaceTarget::Registry(registry.id))
+            }
+            Some(pb::surface_ref::Target::CacheSlug(slug)) if !slug.is_empty() => {
+                let cache = self.cache_or_not_found(&slug).await?;
+                self.require_cache_read(auth, &cache).await?;
+                Ok(crate::db::SurfaceTarget::BinaryCache(cache.id))
+            }
+            Some(_) => Err(RpcError::invalid("surface slug must not be empty")),
+            None => Err(RpcError::invalid(
+                "surface must select exactly one registrySlug or cacheSlug",
+            )),
+        }
+    }
+
+    /// Builds the public placement message without exposing database identity
+    /// or backend-specific shard configuration.
+    async fn placement_message(
+        &self,
+        placement: crate::db::SurfacePlacementRecord,
+    ) -> Result<pb::Placement, RpcError> {
+        let binding = self
+            .db
+            .storage_binding(placement.storage_binding_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::internal(anyhow::anyhow!(
+                    "placement '{}' references missing storage binding {}",
+                    placement.name,
+                    placement.storage_binding_id
+                ))
+            })?;
+        Ok(pb::Placement {
+            name: placement.name,
+            storage_binding_name: binding.name,
+            prefix: placement.prefix,
+            role: placement.role,
+            state: placement.state,
+            completeness: placement.completeness,
+            read_enabled: placement.read_enabled,
+            write_enabled: placement.write_enabled,
+            read_order: placement.read_order,
+            write_order: placement.write_order,
+            created_at: placement.created_at,
+            updated_at: placement.updated_at,
+            resource_version: placement.resource_version.to_string(),
+        })
+    }
+
+    /// `TopologyService.ListPlacements` — lists physical placements by stable name.
+    ///
+    /// Registry visibility and cache visibility use their existing read gates;
+    /// private surfaces therefore require the same bearer authority as their
+    /// other public read APIs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::InvalidArgument`] for a missing surface or malformed
+    /// page token, the surface's usual authentication/authorization errors,
+    /// [`RpcError::NotFound`] for an unknown surface, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn list_placements(
+        &self,
+        auth: Option<&str>,
+        req: pb::ListPlacementsRequest,
+    ) -> Result<pb::ListPlacementsResponse, RpcError> {
+        let surface = self.readable_topology_surface(auth, req.surface).await?;
+        let records = self
+            .db
+            .list_surface_placements(surface)
+            .await
+            .map_err(RpcError::internal)?;
+        let mut placements = Vec::with_capacity(records.len());
+        for record in records {
+            placements.push(self.placement_message(record).await?);
+        }
+        let (placements, next_page_token) = paginate(placements, req.page_size, &req.page_token)?;
+        Ok(pb::ListPlacementsResponse {
+            placements,
+            next_page_token,
+        })
+    }
+
+    /// `TopologyService.GetPlacement` — reads one placement by surface-local name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::InvalidArgument`] for a missing surface or empty
+    /// placement name, the surface's usual authentication/authorization errors,
+    /// [`RpcError::NotFound`] for an unknown surface or placement, and
+    /// [`RpcError::Internal`] on database failure.
+    pub async fn get_placement(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetPlacementRequest,
+    ) -> Result<pb::GetPlacementResponse, RpcError> {
+        if req.name.is_empty() {
+            return Err(RpcError::invalid("placement name must not be empty"));
+        }
+        let surface = self.readable_topology_surface(auth, req.surface).await?;
+        let placement = self
+            .db
+            .list_surface_placements(surface)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .find(|placement| placement.name == req.name)
+            .ok_or_else(|| RpcError::not_found("placement"))?;
+        Ok(pb::GetPlacementResponse {
+            placement: Some(self.placement_message(placement).await?),
+        })
+    }
+
     /// `AuditService.ListAudit` — recent audit entries at a scope, newest first.
     ///
     /// The caller must hold [`Permission::AuditRead`] (admin+) on the queried

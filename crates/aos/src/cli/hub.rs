@@ -35,6 +35,11 @@ pub enum HubCmd {
         #[command(subcommand)]
         command: HubCacheCmd,
     },
+    /// Inspect registry and binary-cache placements
+    Placement {
+        #[command(subcommand)]
+        command: HubPlacementCmd,
+    },
     /// Manage organizations (the tenant boundary)
     Org {
         #[command(subcommand)]
@@ -357,6 +362,34 @@ pub enum HubCacheCmd {
 }
 
 #[derive(Subcommand)]
+pub enum HubPlacementCmd {
+    /// List a surface's physical placements
+    List {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Typed surface: registry:<slug> or cache:<slug>
+        surface: String,
+    },
+    /// Show one placement by its stable name
+    Show {
+        /// Hub base URL (http:// or https://)
+        #[arg(long)]
+        hub: String,
+        /// Hub access JWT for authenticated access (omit for public reads)
+        #[arg(long)]
+        token: Option<String>,
+        /// Typed surface: registry:<slug> or cache:<slug>
+        surface: String,
+        /// Stable placement name within the surface
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum HubRegistryCmd {
     /// List registries (public ones when unauthenticated)
     List {
@@ -520,4 +553,72 @@ pub enum HubRegistryCmd {
         /// Channel name
         name: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use crate::cli::{Cli, Commands, HubCmd, HubPlacementCmd};
+
+    #[test]
+    fn placement_list_parses_typed_surface() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "hub",
+            "placement",
+            "list",
+            "--hub",
+            "https://aos.example",
+            "registry:andyl/main",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Hub {
+                command:
+                    HubCmd::Placement {
+                        command:
+                            HubPlacementCmd::List {
+                                hub,
+                                token,
+                                surface,
+                            },
+                    },
+            } => {
+                assert_eq!(hub, "https://aos.example");
+                assert!(token.is_none());
+                assert_eq!(surface, "registry:andyl/main");
+            }
+            _ => panic!("unexpected command shape"),
+        }
+    }
+
+    #[test]
+    fn placement_show_accepts_global_json_flag() {
+        let cli = Cli::try_parse_from([
+            "aos",
+            "--json",
+            "hub",
+            "placement",
+            "show",
+            "--hub",
+            "https://aos.example",
+            "cache:nix",
+            "primary",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        match cli.command {
+            Commands::Hub {
+                command:
+                    HubCmd::Placement {
+                        command: HubPlacementCmd::Show { surface, name, .. },
+                    },
+            } => {
+                assert_eq!(surface, "cache:nix");
+                assert_eq!(name, "primary");
+            }
+            _ => panic!("unexpected command shape"),
+        }
+    }
 }

@@ -19,7 +19,9 @@ use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{ChannelSummary, Database, IndexSnapshot, TokenAuth};
+use aos_hub::db::{
+    ChannelSummary, Database, IndexSnapshot, NewSurfacePlacement, SurfaceTarget, TokenAuth,
+};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use axum::body::Body;
@@ -145,6 +147,32 @@ fn is_denied(status: StatusCode) -> bool {
         status,
         StatusCode::NOT_FOUND | StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED
     )
+}
+
+/// Creates one ready primary placement for a registry or binary cache.
+async fn seed_placement(
+    db: &Database,
+    surface: SurfaceTarget,
+    binding_id: i64,
+    name: &str,
+    prefix: &str,
+) {
+    db.create_surface_placement(&NewSurfacePlacement {
+        surface,
+        name: name.to_string(),
+        storage_binding_id: binding_id,
+        prefix: prefix.to_string(),
+        role: "primary".to_string(),
+        state: "ready".to_string(),
+        completeness: "complete".to_string(),
+        partition_rule_json: None,
+        read_enabled: true,
+        write_enabled: true,
+        read_order: 0,
+        write_order: 0,
+    })
+    .await
+    .unwrap();
 }
 
 // -- H-2: package / channel / registry read gating --------------------------
@@ -275,6 +303,229 @@ async fn public_registry_inventory_reads_anonymously() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "anon public GetRegistry: {resp}");
+}
+
+#[tokio::test]
+async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("topology", "Topology").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "origin", "local_fs", "/var/lib/aos/topology")
+        .await
+        .unwrap();
+    let public_registry = db
+        .create_managed_registry(
+            org,
+            "",
+            "public",
+            "public",
+            Some(binding),
+            "public",
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+    let private_registry = db
+        .create_managed_registry(
+            org,
+            "",
+            "private",
+            "private",
+            Some(binding),
+            "private",
+            &[],
+            false,
+        )
+        .await
+        .unwrap();
+    seed_placement(
+        &db,
+        SurfaceTarget::Registry(public_registry),
+        binding,
+        "primary",
+        "registry/public",
+    )
+    .await;
+    seed_placement(
+        &db,
+        SurfaceTarget::Registry(private_registry),
+        binding,
+        "primary",
+        "registry/private",
+    )
+    .await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/ListPlacements",
+        serde_json::json!({ "surface": { "registrySlug": "topology/public" } }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "public placement list: {resp}");
+    let placement = &resp["placements"][0];
+    assert_eq!(placement["name"], "primary");
+    assert_eq!(placement["storageBindingName"], "origin");
+    assert_eq!(placement["readEnabled"], true);
+    assert_eq!(placement["writeEnabled"], true);
+    assert!(placement["resourceVersion"].is_string());
+    assert!(placement.get("id").is_none());
+    assert!(placement.get("storageBindingId").is_none());
+    assert!(placement.get("partitionRuleJson").is_none());
+
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/GetPlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "topology/public" },
+            "name": "missing"
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/GetPlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "topology/private" },
+            "name": "primary"
+        }),
+        None,
+    )
+    .await;
+    assert!(
+        is_denied(status),
+        "anonymous private placement read: {status}"
+    );
+
+    db.grant_membership("user", 44, "topology", "viewer")
+        .await
+        .unwrap();
+    let member = bearer(Principal::user(44), "topology", &[Permission::Read]);
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/GetPlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "topology/private" },
+            "name": "primary"
+        }),
+        Some(&member),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "member placement read: {resp}");
+    assert_eq!(resp["placement"]["prefix"], "registry/private");
+}
+
+#[tokio::test]
+async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org = db.create_org("cache-owner", "Cache Owner").await.unwrap();
+    let other_org = db.create_org("other-org", "Other Org").await.unwrap();
+    let binding = db
+        .create_storage_binding(org, "cache-origin", "local_fs", "/var/lib/aos/caches")
+        .await
+        .unwrap();
+    let public_cache = db
+        .create_cache(
+            Some(org),
+            "public-cache",
+            "Public cache",
+            Some(binding),
+            "legacy/public",
+            None,
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    let private_cache = db
+        .create_cache(
+            Some(org),
+            "private-cache",
+            "Private cache",
+            Some(binding),
+            "legacy/private",
+            None,
+            "private",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    seed_placement(
+        &db,
+        SurfaceTarget::BinaryCache(public_cache),
+        binding,
+        "primary",
+        "cache/public",
+    )
+    .await;
+    seed_placement(
+        &db,
+        SurfaceTarget::BinaryCache(private_cache),
+        binding,
+        "primary",
+        "cache/private",
+    )
+    .await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/ListPlacements",
+        serde_json::json!({ "surface": { "cacheSlug": "public-cache" } }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "public cache placements: {resp}");
+    assert_eq!(resp["placements"][0]["prefix"], "cache/public");
+
+    let private_request = serde_json::json!({
+        "surface": { "cacheSlug": "private-cache" },
+        "name": "primary"
+    });
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/GetPlacement",
+        private_request.clone(),
+        None,
+    )
+    .await;
+    assert!(is_denied(status), "anonymous private cache read: {status}");
+
+    db.grant_membership("user", 45, "cache-owner", "viewer")
+        .await
+        .unwrap();
+    let owner_member = bearer(Principal::user(45), "cache-owner", &[Permission::Read]);
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/GetPlacement",
+        private_request.clone(),
+        Some(&owner_member),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "cache owner read: {resp}");
+    assert_eq!(resp["placement"]["prefix"], "cache/private");
+
+    db.grant_membership("user", 46, "other-org", "viewer")
+        .await
+        .unwrap();
+    let other_member = bearer(Principal::user(46), "other-org", &[Permission::Read]);
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/GetPlacement",
+        private_request,
+        Some(&other_member),
+    )
+    .await;
+    assert!(is_denied(status), "cross-org private cache read: {status}");
 }
 
 #[tokio::test]
