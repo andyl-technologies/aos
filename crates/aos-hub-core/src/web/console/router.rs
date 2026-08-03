@@ -32,7 +32,7 @@
 //! native the bridge is the identity.
 
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, Uri};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::routing::{get, post};
 use axum::Router;
 
@@ -81,6 +81,16 @@ fn send_bridge<F: std::future::Future>(fut: F) -> F {
 #[cfg(target_arch = "wasm32")]
 fn send_bridge<F: std::future::Future>(fut: F) -> SendWrapper<F> {
     SendWrapper::new(fut)
+}
+
+/// Rejects HEAD explicitly on console reads.
+///
+/// Axum normally supplies HEAD automatically for a GET route. The nested
+/// console classifier deliberately accepts only declared GET/POST methods, so
+/// flat and nested registry settings must override that implicit behavior to
+/// expose one method contract on both shells.
+async fn method_not_allowed() -> StatusCode {
+    StatusCode::METHOD_NOT_ALLOWED
 }
 
 /// Builds the shared producer-console router over `deps`.
@@ -495,14 +505,20 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
             ),
         )
         .route(
-            "/-/org/{org}/settings",
-            get(|p: Path<_>| send_bridge(handlers::org_settings(p))),
-        )
-        .route(
             "/-/org/{org}/caches/{slug}",
+            // The canonical cache landing page is deliberately read-only.
+            // Mutable cache policy lives at the General section below.
             get(
                 |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
                     send_bridge(handlers::cache_detail(from_state(s), h, r, p))
+                },
+            ),
+        )
+        .route(
+            "/-/org/{org}/caches/{slug}/general",
+            get(
+                |State(s): State<SharedState>, h: HeaderMap, r: RequestStart, p: Path<_>| {
+                    send_bridge(handlers::cache_general(from_state(s), h, r, p))
                 },
             )
             .post(
@@ -514,8 +530,7 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                 },
             ),
         )
-        // Cache settings tabs (each renders the cache chrome with its section
-        // active): Linked registries, GC & pins, and Danger.
+        // Cache settings sections, each rendered in the same grouped chrome.
         .route(
             "/-/org/{org}/caches/{slug}/links",
             get(
@@ -659,7 +674,16 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
         )
         .route(
             "/-/org/{org}/registries",
-            post(
+            get(
+                |State(s): State<SharedState>,
+                 h: HeaderMap,
+                 r: RequestStart,
+                 p: Path<_>,
+                 q: Query<_>| {
+                    send_bridge(handlers::org_registries(from_state(s), h, r, p, q))
+                },
+            )
+            .post(
                 |State(s): State<SharedState>,
                  h: HeaderMap,
                  r: RequestStart,
@@ -805,7 +829,21 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  p: Path<_>| {
                     send_bridge(handlers::registry_settings(from_state(s), h, r, u, p))
                 },
-            ),
+            )
+            .head(method_not_allowed),
+        )
+        .route(
+            "/{slug}/-/settings/general",
+            get(
+                |State(s): State<SharedState>,
+                 h: HeaderMap,
+                 r: RequestStart,
+                 u: Uri,
+                 p: Path<_>| {
+                    send_bridge(handlers::registry_general(from_state(s), h, r, u, p))
+                },
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/settings/visibility",
@@ -867,7 +905,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                         f,
                     ))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/settings/advertise-frontend",
@@ -899,7 +938,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  p: Path<_>| {
                     send_bridge(handlers::registry_caches(from_state(s), h, r, u, p))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/settings/danger",
@@ -911,7 +951,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  p: Path<_>| {
                     send_bridge(handlers::registry_danger(from_state(s), h, r, u, p))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/settings/cache-link",
@@ -978,7 +1019,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  b: axum::body::Bytes| {
                     send_bridge(handlers::serving_post(from_state(s), h, r, u, p, b))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/settings/tokens",
@@ -1001,7 +1043,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  f: axum::extract::Form<_>| {
                     send_bridge(handlers::tokens_create(from_state(s), h, r, u, p, f))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/settings/tokens/revoke",
@@ -1049,7 +1092,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  f: axum::extract::Form<_>| {
                     send_bridge(handlers::channel_advance(from_state(s), h, r, u, p, f))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/channels/{name}/advance",
@@ -1082,7 +1126,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  q: Query<_>| {
                     send_bridge(handlers::keys(from_state(s), h, r, u, p, q))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/keys/rotate",
@@ -1094,7 +1139,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  p: Path<_>| {
                     send_bridge(handlers::keys_rotate(from_state(s), h, r, u, p))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/publishes",
@@ -1106,7 +1152,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  p: Path<_>| {
                     send_bridge(handlers::publishes(from_state(s), h, r, u, p))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/settings/config",
@@ -1128,7 +1175,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  b: String| {
                     send_bridge(handlers::config_submit(from_state(s), h, r, u, p, b))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/changes",
@@ -1140,7 +1188,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  p: Path<_>| {
                     send_bridge(handlers::changes(from_state(s), h, r, u, p))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/changes/{id}",
@@ -1152,7 +1201,8 @@ pub fn console_router(deps: ConsoleDeps) -> Router {
                  p: Path<_>| {
                     send_bridge(handlers::change_detail(from_state(s), h, r, u, p))
                 },
-            ),
+            )
+            .head(method_not_allowed),
         )
         .route(
             "/{slug}/-/changes/{id}/comment",

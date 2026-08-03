@@ -102,3 +102,5 @@ send_wrapper = { version = "0.6", features = ["futures"] }
 # signs the surface with a deterministic maintainer key. Already in the
 # workspace lockfile via aos-registry-surface, so this adds no new dependency.
 ed25519-dalek = { workspace = true }
+# Drives the native unit test for the pure Worker request-routing seam.
+tokio = { workspace = true, features = ["macros", "rt"] }

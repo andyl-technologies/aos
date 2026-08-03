@@ -8,25 +8,27 @@
 //! slashes (`andyl/demo`, `acme/infra/cdn`) never matches those routes: the
 //! request falls through to the facade wildcard and 404s.
 //!
-//! The native hub solves this in its own catch-all
-//! ([`aos-hub`'s `console::dispatch_nested`]); the Cloudflare Worker has no such
-//! catch-all and serves the console from the *shared* handlers
+//! The native hub and Cloudflare Worker each offer their unmatched path to this
+//! shared dispatcher before machine-facade routing. Both serve the console from
+//! the *shared* handlers
 //! ([`super::handlers`]), which are already nested-aware (each registry-scoped
 //! handler calls `resolve_registry`, reconstructing the nested registry from the
 //! request URI when the flat slug misses). Only the *routing* was missing.
 //!
 //! [`dispatch_nested`] is that missing piece: the Worker invokes it before the
 //! normal router dispatch. It recognizes a nested `/-/` console path, classifies
-//! its tail with [`is_console_path`] (mirroring the native classifier), and
+//! its tail with [`console_path_methods`] (mirroring the native classifier), and
 //! calls the matching shared handler directly — passing the full pre-`/-/` path
 //! as the `Path(slug)` so `resolve_registry` resolves the nested registry with
-//! no first-segment ambiguity. A path that is not a nested console page returns
-//! [`None`] so the caller falls through to the facade's browse handling.
+//! no first-segment ambiguity. Recognized console paths reject methods other
+//! than their declared `GET`/`POST` set with `405`; a path that is not a nested
+//! console page returns [`None`] so the caller falls through to browse handling.
 //!
 //! # Recognized tails
 //!
 //! ```text
-//! settings                       GET   registry settings landing
+//! settings                       GET   registry settings overview
+//! settings/general               GET   registry general policy
 //! settings/visibility            POST  change visibility
 //! settings/crawl                 POST  change crawl policy
 //! settings/delete                POST  unregister
@@ -56,70 +58,122 @@ use crate::clock::Instant;
 use crate::web::console::handlers::{self, PageQuery, RequestStart};
 use crate::web::console::ports::ConsoleDeps;
 
-/// Whether the `/-/` tail `right` (with the given method) names a
-/// producer-console page, as opposed to a consumer browse page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsoleMethod {
+    Get,
+    Post,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AllowedMethods {
+    Get,
+    Post,
+    GetAndPost,
+}
+
+impl AllowedMethods {
+    fn allows(self, method: ConsoleMethod) -> bool {
+        matches!(
+            (self, method),
+            (Self::Get, ConsoleMethod::Get)
+                | (Self::Post, ConsoleMethod::Post)
+                | (Self::GetAndPost, _)
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConsolePathDispatch {
+    Method(ConsoleMethod),
+    MethodNotAllowed,
+}
+
+/// Returns the declared methods for a producer-console tail, or `None` for a
+/// consumer browse path.
 ///
 /// Mirrors the native hub's classifier so both shells recognize the same set of
-/// `(tail, method)` console pages. Returns `false` for browse pages
+/// `(tail, method)` console pages. Returns `None` for browse pages
 /// (`packages`, `channels/{name}`, `releases`, `health`, …) so
-/// [`dispatch_nested`] leaves them to the browse resolver and never bounces an
-/// anonymous reader to `/login`.
+/// [`dispatch_nested`] leaves browse paths to the browse resolver and never
+/// bounces an anonymous reader to `/login`.
 ///
 /// # Examples
 ///
 /// ```no_run
 /// # // (private fn; shown for documentation only)
 /// // settings is a GET-only landing page
-/// // is_console_path("settings", false) == true
-/// // is_console_path("settings", true)  == false  (visibility/delete are the POSTs)
+/// // console_path_methods("settings") == Some(AllowedMethods::Get)
 /// // a browse tail is never a console path
-/// // is_console_path("packages", false) == false
+/// // console_path_methods("packages") == None
 /// ```
-fn is_console_path(right: &str, is_post: bool) -> bool {
+fn console_path_methods(right: &str) -> Option<AllowedMethods> {
     match right {
-        "settings/tokens" => true,
-        "settings/tokens/revoke" | "settings/tokens/rotate" => is_post,
+        "settings/tokens" => Some(AllowedMethods::GetAndPost),
+        "settings/tokens/revoke" | "settings/tokens/rotate" => Some(AllowedMethods::Post),
         // The config-edit page is GET (form) + POST (submit).
-        "settings/config" => true,
-        // The settings tabs (general landing, binary caches, danger) are
-        // GET-only; visibility, crawl, and delete are POST-only mutations.
-        "settings" | "settings/caches" | "settings/danger" => !is_post,
+        "settings/config" => Some(AllowedMethods::GetAndPost),
+        // These settings sections are GET-only; visibility, crawl, and delete
+        // are POST-only mutations.
+        "settings" | "settings/general" | "settings/caches" | "settings/danger" => {
+            Some(AllowedMethods::Get)
+        }
         // Storage is GET (view) + POST (change storage).
-        "settings/storage" => true,
+        "settings/storage" => Some(AllowedMethods::GetAndPost),
         // The bucket-direct frontend advertise toggle is POST-only.
-        "settings/advertise-frontend" => is_post,
-        "settings/visibility" | "settings/crawl" | "settings/delete" => is_post,
-        "settings/cache-link" | "settings/cache-unlink" => is_post,
+        "settings/advertise-frontend" => Some(AllowedMethods::Post),
+        "settings/visibility" | "settings/crawl" | "settings/delete" => Some(AllowedMethods::Post),
+        "settings/cache-link" | "settings/cache-unlink" => Some(AllowedMethods::Post),
         // The serving & mirror page is GET (view) + POST (mutate).
-        "settings/serving" => true,
-        "changes" => !is_post,
-        "keys" | "keys/rotate" | "publishes" => !is_post,
+        "settings/serving" => Some(AllowedMethods::GetAndPost),
+        "changes" => Some(AllowedMethods::Get),
+        "keys" | "keys/rotate" | "publishes" => Some(AllowedMethods::Get),
         other => {
             // changes/{id} (GET detail) and changes/{id}/{action} (POST).
             if let Some(rest) = other.strip_prefix("changes/") {
                 return match rest.split_once('/') {
-                    Some((id, action)) => {
-                        is_post
-                            && !id.is_empty()
-                            && matches!(action, "comment" | "review" | "close" | "reopen")
+                    Some((id, action))
+                        if !id.is_empty()
+                            && matches!(action, "comment" | "review" | "close" | "reopen") =>
+                    {
+                        Some(AllowedMethods::Post)
                     }
-                    None => !is_post && !rest.is_empty(),
+                    Some(_) => None,
+                    None if !rest.is_empty() => Some(AllowedMethods::Get),
+                    None => None,
                 };
             }
             if let Some(name) = other
                 .strip_prefix("channels/")
                 .and_then(|rest| rest.strip_suffix("/console"))
             {
-                return !name.contains('/');
+                return (!name.contains('/')).then_some(AllowedMethods::GetAndPost);
             }
             // The direct hosted-key advance is POST-only.
-            is_post
-                && other
-                    .strip_prefix("channels/")
-                    .and_then(|rest| rest.strip_suffix("/advance"))
-                    .is_some_and(|name| !name.contains('/'))
+            other
+                .strip_prefix("channels/")
+                .and_then(|rest| rest.strip_suffix("/advance"))
+                .filter(|name| !name.contains('/'))
+                .map(|_| AllowedMethods::Post)
         }
     }
+}
+
+/// Classifies a recognized console path without treating arbitrary non-POST
+/// methods as reads.
+fn classify_console_path(right: &str, method: &Method) -> Option<ConsolePathDispatch> {
+    let allowed = console_path_methods(right)?;
+    let method = if *method == Method::GET {
+        ConsoleMethod::Get
+    } else if *method == Method::POST {
+        ConsoleMethod::Post
+    } else {
+        return Some(ConsolePathDispatch::MethodNotAllowed);
+    };
+    Some(if allowed.allows(method) {
+        ConsolePathDispatch::Method(method)
+    } else {
+        ConsolePathDispatch::MethodNotAllowed
+    })
 }
 
 /// The `?page=N` of a paginated console read, decoded by hand.
@@ -145,7 +199,7 @@ fn bad_request() -> Response {
 /// The shared console routes capture only a single-segment `{slug}`, so a
 /// registry whose canonical path has slashes never matches them. This function
 /// splits the request path on the `/-/` marker, classifies the tail with
-/// [`is_console_path`], and — for a recognized console page — invokes the
+/// [`console_path_methods`], and — for a recognized console page — invokes the
 /// matching shared handler directly, passing the full pre-`/-/` path as
 /// `Path(slug)`. The shared handlers resolve the nested registry from that slug
 /// via `resolve_registry`, so no first-segment disambiguation is needed here.
@@ -160,9 +214,9 @@ fn bad_request() -> Response {
 ///   slug (served by the normal routes), a path with no `/-/` marker, or a
 ///   browse tail (`packages`, `channels/{name}`, …). The caller then falls
 ///   through to its normal router / facade dispatch.
-/// * `Some(response)` for a recognized nested console page (including auth
-///   redirects, `404`s for a missing registry, and `400`s for a malformed form
-///   body — all produced by the shared handlers).
+/// * `Some(response)` for a recognized nested console page (including `405`
+///   for an undeclared method, auth redirects, `404`s for a missing registry,
+///   and `400`s for a malformed form body).
 ///
 /// # Examples
 ///
@@ -201,73 +255,77 @@ pub async fn dispatch_nested(
         return None;
     }
 
-    let is_post = method == Method::POST;
-
     // Classify the tail before touching the registry or session: a browse page
     // (`packages`, `channels/{name}`, …) is not a console path, so return `None`
     // and let the facade's nested browse handling take it.
-    if !is_console_path(right, is_post) {
-        return None;
-    }
+    let dispatch_method = match classify_console_path(right, &method)? {
+        ConsolePathDispatch::Method(method) => method,
+        ConsolePathDispatch::MethodNotAllowed => {
+            return Some(StatusCode::METHOD_NOT_ALLOWED.into_response());
+        }
+    };
 
     let slug = left.trim_end_matches('/').to_string();
     let started = RequestStart(Instant::now());
 
-    let response = match (right, is_post) {
+    let response = match (right, dispatch_method) {
         // -- settings landing & mutations ------------------------------------
-        ("settings", false) => {
+        ("settings", ConsoleMethod::Get) => {
             handlers::registry_settings(deps, headers, started, uri, Path(slug)).await
         }
-        ("settings/storage", false) => {
+        ("settings/general", ConsoleMethod::Get) => {
+            handlers::registry_general(deps, headers, started, uri, Path(slug)).await
+        }
+        ("settings/storage", ConsoleMethod::Get) => {
             handlers::registry_storage(deps, headers, started, uri, Path(slug)).await
         }
-        ("settings/caches", false) => {
+        ("settings/caches", ConsoleMethod::Get) => {
             handlers::registry_caches(deps, headers, started, uri, Path(slug)).await
         }
-        ("settings/danger", false) => {
+        ("settings/danger", ConsoleMethod::Get) => {
             handlers::registry_danger(deps, headers, started, uri, Path(slug)).await
         }
-        ("settings/visibility", true) => {
+        ("settings/visibility", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             handlers::registry_visibility(deps, headers, started, uri, Path(slug), Form(form)).await
         }
-        ("settings/crawl", true) => {
+        ("settings/crawl", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             handlers::registry_crawl_policy(deps, headers, started, uri, Path(slug), Form(form))
                 .await
         }
-        ("settings/delete", true) => {
+        ("settings/delete", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             // `registry_delete` takes no `RequestStart`.
             handlers::registry_delete(deps, headers, uri, Path(slug), Form(form)).await
         }
-        ("settings/cache-link", true) => {
+        ("settings/cache-link", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             handlers::registry_cache_link(deps, headers, started, uri, Path(slug), Form(form)).await
         }
-        ("settings/cache-unlink", true) => {
+        ("settings/cache-unlink", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             handlers::registry_cache_unlink(deps, headers, started, uri, Path(slug), Form(form))
                 .await
         }
-        ("settings/storage", true) => {
+        ("settings/storage", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             handlers::registry_change_storage(deps, headers, started, uri, Path(slug), Form(form))
                 .await
         }
-        ("settings/advertise-frontend", true) => {
+        ("settings/advertise-frontend", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
@@ -282,16 +340,16 @@ pub async fn dispatch_nested(
             .await
         }
         // -- serving & mirror ------------------------------------------------
-        ("settings/serving", false) => {
+        ("settings/serving", ConsoleMethod::Get) => {
             handlers::serving(deps, headers, started, uri, Path(slug)).await
         }
-        ("settings/serving", true) => {
+        ("settings/serving", ConsoleMethod::Post) => {
             // `serving_post` consumes the raw body itself (it accepts multiple
             // form shapes), so pass the bytes straight through.
             handlers::serving_post(deps, headers, started, uri, Path(slug), body).await
         }
         // -- tokens ----------------------------------------------------------
-        ("settings/tokens", false) => {
+        ("settings/tokens", ConsoleMethod::Get) => {
             handlers::tokens(
                 deps,
                 headers,
@@ -302,48 +360,50 @@ pub async fn dispatch_nested(
             )
             .await
         }
-        ("settings/tokens", true) => {
+        ("settings/tokens", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             handlers::tokens_create(deps, headers, started, uri, Path(slug), Form(form)).await
         }
-        ("settings/tokens/revoke", true) => {
+        ("settings/tokens/revoke", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             handlers::tokens_revoke(deps, headers, started, uri, Path(slug), Form(form)).await
         }
-        ("settings/tokens/rotate", true) => {
+        ("settings/tokens/rotate", ConsoleMethod::Post) => {
             let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                 return Some(bad_request());
             };
             handlers::tokens_rotate(deps, headers, started, uri, Path(slug), Form(form)).await
         }
         // -- git-backed config / change requests -----------------------------
-        ("settings/config", false) => {
+        ("settings/config", ConsoleMethod::Get) => {
             handlers::config_edit(deps, headers, started, uri, Path(slug)).await
         }
-        ("settings/config", true) => {
+        ("settings/config", ConsoleMethod::Post) => {
             // The config form posts repeated cache rows, which serde_urlencoded
             // can't collect into a Vec; hand the raw body to the shared decoder.
             let body = String::from_utf8_lossy(&body).into_owned();
             handlers::config_submit(deps, headers, started, uri, Path(slug), body).await
         }
-        ("changes", false) => handlers::changes(deps, headers, started, uri, Path(slug)).await,
+        ("changes", ConsoleMethod::Get) => {
+            handlers::changes(deps, headers, started, uri, Path(slug)).await
+        }
         // -- change-request detail & review actions --------------------------
-        (other, false)
+        (other, ConsoleMethod::Get)
             if other
                 .strip_prefix("changes/")
                 .is_some_and(|r| !r.contains('/')) =>
         {
-            // `is_console_path` proved the shape; recover the id defensively.
+            // The method classifier proved the shape; recover the id defensively.
             let Some(id) = other.strip_prefix("changes/").map(str::to_string) else {
                 return Some(bad_request());
             };
             handlers::change_detail(deps, headers, started, uri, Path((slug, id))).await
         }
-        (other, true)
+        (other, ConsoleMethod::Post)
             if other
                 .strip_prefix("changes/")
                 .is_some_and(|r| r.contains('/')) =>
@@ -384,7 +444,7 @@ pub async fn dispatch_nested(
             }
         }
         // -- hosted keys & publishes -----------------------------------------
-        ("keys", false) => {
+        ("keys", ConsoleMethod::Get) => {
             handlers::keys(
                 deps,
                 headers,
@@ -395,14 +455,16 @@ pub async fn dispatch_nested(
             )
             .await
         }
-        ("keys/rotate", false) => {
+        ("keys/rotate", ConsoleMethod::Get) => {
             handlers::keys_rotate(deps, headers, started, uri, Path(slug)).await
         }
-        ("publishes", false) => handlers::publishes(deps, headers, started, uri, Path(slug)).await,
+        ("publishes", ConsoleMethod::Get) => {
+            handlers::publishes(deps, headers, started, uri, Path(slug)).await
+        }
         // -- channel rollout -------------------------------------------------
-        (other, true) if other.ends_with("/advance") => {
+        (other, ConsoleMethod::Post) if other.ends_with("/advance") => {
             // channels/{name}/advance (POST): the direct hosted-key advance.
-            // `is_console_path` already proved this matches.
+            // The method classifier already proved this matches.
             let name = other
                 .strip_prefix("channels/")
                 .and_then(|rest| rest.strip_suffix("/advance"))
@@ -421,15 +483,15 @@ pub async fn dispatch_nested(
             )
             .await
         }
-        (other, _) => {
+        (other, method) => {
             // channels/{name}/console (GET renders, POST prepares an advance);
-            // `is_console_path` already proved this matches.
+            // The method classifier already proved this matches.
             let name = other
                 .strip_prefix("channels/")
                 .and_then(|rest| rest.strip_suffix("/console"))
                 .filter(|name| !name.contains('/'))?
                 .to_string();
-            if is_post {
+            if method == ConsoleMethod::Post {
                 let Ok(form) = serde_urlencoded::from_bytes(&body) else {
                     return Some(bad_request());
                 };
@@ -454,64 +516,73 @@ pub async fn dispatch_nested(
 mod tests {
     use super::*;
 
+    fn accepts(tail: &str, method: Method) -> bool {
+        matches!(
+            classify_console_path(tail, &method),
+            Some(ConsolePathDispatch::Method(_))
+        )
+    }
+
     #[test]
     fn classifies_settings_landing_as_get_console_page() {
-        assert!(is_console_path("settings", false));
-        assert!(!is_console_path("settings", true));
+        assert!(accepts("settings", Method::GET));
+        assert!(!accepts("settings", Method::POST));
+        assert!(accepts("settings/general", Method::GET));
+        assert!(!accepts("settings/general", Method::POST));
     }
 
     #[test]
     fn classifies_settings_mutations_as_post_console_pages() {
         for tail in ["settings/visibility", "settings/crawl", "settings/delete"] {
-            assert!(is_console_path(tail, true), "{tail} POST");
-            assert!(!is_console_path(tail, false), "{tail} GET");
+            assert!(accepts(tail, Method::POST), "{tail} POST");
+            assert!(!accepts(tail, Method::GET), "{tail} GET");
         }
     }
 
     #[test]
     fn classifies_storage_and_advertise_frontend() {
         // Storage is GET (view) + POST (change storage).
-        assert!(is_console_path("settings/storage", false));
-        assert!(is_console_path("settings/storage", true));
+        assert!(accepts("settings/storage", Method::GET));
+        assert!(accepts("settings/storage", Method::POST));
         // The bucket-direct frontend advertise toggle is POST-only — a nested
         // (org/name) registry must reach it here, else its save falls through to
         // the surface catch-all ("unsupported POST to a surface path").
-        assert!(is_console_path("settings/advertise-frontend", true));
-        assert!(!is_console_path("settings/advertise-frontend", false));
+        assert!(accepts("settings/advertise-frontend", Method::POST));
+        assert!(!accepts("settings/advertise-frontend", Method::GET));
     }
 
     #[test]
     fn classifies_token_pages() {
-        assert!(is_console_path("settings/tokens", false));
-        assert!(is_console_path("settings/tokens", true));
-        assert!(is_console_path("settings/tokens/revoke", true));
-        assert!(!is_console_path("settings/tokens/revoke", false));
-        assert!(is_console_path("settings/tokens/rotate", true));
+        assert!(accepts("settings/tokens", Method::GET));
+        assert!(accepts("settings/tokens", Method::POST));
+        assert!(accepts("settings/tokens/revoke", Method::POST));
+        assert!(!accepts("settings/tokens/revoke", Method::GET));
+        assert!(accepts("settings/tokens/rotate", Method::POST));
     }
 
     #[test]
     fn classifies_serving_config_changes_keys_publishes() {
-        assert!(is_console_path("settings/serving", false));
-        assert!(is_console_path("settings/serving", true));
-        assert!(is_console_path("settings/config", false));
-        assert!(is_console_path("settings/config", true));
-        assert!(is_console_path("changes", false));
-        assert!(!is_console_path("changes", true));
-        assert!(is_console_path("keys", false));
-        assert!(is_console_path("keys/rotate", false));
-        assert!(is_console_path("publishes", false));
-        assert!(!is_console_path("publishes", true));
+        assert!(accepts("settings/serving", Method::GET));
+        assert!(accepts("settings/serving", Method::POST));
+        assert!(accepts("settings/config", Method::GET));
+        assert!(accepts("settings/config", Method::POST));
+        assert!(accepts("changes", Method::GET));
+        assert!(!accepts("changes", Method::POST));
+        assert!(accepts("keys", Method::GET));
+        assert!(accepts("keys/rotate", Method::GET));
+        assert!(accepts("publishes", Method::GET));
+        assert!(!accepts("publishes", Method::POST));
     }
 
     #[test]
     fn classifies_channel_console_and_advance() {
-        assert!(is_console_path("channels/stable/console", false));
-        assert!(is_console_path("channels/stable/console", true));
-        assert!(is_console_path("channels/stable/advance", true));
+        assert!(accepts("channels/stable/console", Method::GET));
+        assert!(accepts("channels/stable/console", Method::POST));
+        assert!(accepts("channels/stable/advance", Method::POST));
         // advance is POST-only.
-        assert!(!is_console_path("channels/stable/advance", false));
+        assert!(!accepts("channels/stable/advance", Method::GET));
         // a nested channel name is not a single segment.
-        assert!(!is_console_path("channels/a/b/console", false));
+        assert!(!accepts("channels/a/b/console", Method::GET));
     }
 
     #[test]
@@ -523,8 +594,35 @@ mod tests {
             "releases",
             "health",
         ] {
-            assert!(!is_console_path(tail, false), "{tail} GET");
-            assert!(!is_console_path(tail, true), "{tail} POST");
+            assert!(!accepts(tail, Method::GET), "{tail} GET");
+            assert!(!accepts(tail, Method::POST), "{tail} POST");
+        }
+    }
+
+    #[test]
+    fn recognized_console_paths_reject_all_undeclared_methods() {
+        let matrix = [
+            ("settings", true, false),
+            ("settings/general", true, false),
+            ("settings/storage", true, true),
+            ("settings/visibility", false, true),
+            ("settings/serving", true, true),
+            ("settings/tokens/revoke", false, true),
+            ("changes/abc", true, false),
+            ("changes/abc/comment", false, true),
+            ("channels/stable/console", true, true),
+            ("channels/stable/advance", false, true),
+        ];
+        for (tail, get, post) in matrix {
+            assert_eq!(accepts(tail, Method::GET), get, "{tail} GET");
+            assert_eq!(accepts(tail, Method::POST), post, "{tail} POST");
+            for method in [Method::PUT, Method::PATCH, Method::DELETE] {
+                assert_eq!(
+                    classify_console_path(tail, &method),
+                    Some(ConsolePathDispatch::MethodNotAllowed),
+                    "{tail} {method}",
+                );
+            }
         }
     }
 
@@ -532,7 +630,7 @@ mod tests {
     /// it) and for a browse tail (the facade serves it), so neither call ever
     /// touches the registry. These need a `ConsoleDeps`, which is heavy to
     /// construct, so the cheap early-outs are asserted indirectly through
-    /// `is_console_path` and the `left.contains('/')` guard below.
+    /// `classify_console_path` and the `left.contains('/')` guard below.
     #[test]
     fn flat_slug_short_circuits_before_classification() {
         // A flat slug path has no inner slash before `/-/`.
@@ -544,6 +642,6 @@ mod tests {
         let path = "andyl/demo/-/settings";
         let (left, right) = path.split_once("/-/").expect("has marker");
         assert!(left.contains('/'), "nested slug proceeds");
-        assert!(is_console_path(right, false));
+        assert!(accepts(right, Method::GET));
     }
 }

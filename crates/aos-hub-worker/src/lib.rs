@@ -54,9 +54,11 @@
 //! As of stage H3 that includes the git-backed config/change-request flow
 //! (`/{slug}/-/settings/config`, `/{slug}/-/changes`): its base-commit reads go
 //! through the R2 [`surface`] read provider and its draft-object writes through
-//! the R2 [`surface::R2SurfaceWriteProvider`] write provider, so **every** flat
-//! console route is mounted on the Worker. The only console code that stays
-//! native is the hub's nested-canonical fallback for slugs with slashes.
+//! the R2 [`surface::R2SurfaceWriteProvider`] write provider, so **every**
+//! console route is mounted on the Worker. Registries whose canonical paths
+//! contain slashes are offered to the shared nested dispatcher by the Worker
+//! bridge before frontend and facade routing, matching the native hub's
+//! catch-all ordering.
 //!
 //! Worker-local: only the Cron-trigger indexer ([`indexer`]). The `fetch`
 //! handler bridges every request to the shared router; the schema is migrated
@@ -115,6 +117,12 @@
 //! this crate to the workspace members never breaks the native build.
 
 pub mod keymap;
+
+// The method-agnostic nested-console bridge seam is compiled for the Worker
+// and for native unit tests. Keeping the Workers request conversion outside
+// this module makes the routing boundary testable without a JS runtime.
+#[cfg(any(target_arch = "wasm32", test))]
+mod bridge_dispatch;
 
 #[cfg(target_arch = "wasm32")]
 pub mod bridge;

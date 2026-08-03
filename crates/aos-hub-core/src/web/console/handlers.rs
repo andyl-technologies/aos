@@ -1659,6 +1659,17 @@ pub(crate) async fn org_dashboard(
     path: Path<String>,
     pages: Query<DashboardPages>,
 ) -> Response {
+    org_view(deps, headers, started, path, pages, "overview").await
+}
+
+/// `GET /-/org/{org}/registries` — the organization's registry inventory.
+pub(crate) async fn org_registries(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    path: Path<String>,
+    pages: Query<DashboardPages>,
+) -> Response {
     org_view(deps, headers, started, path, pages, "registries").await
 }
 
@@ -1717,15 +1728,7 @@ pub(crate) async fn org_danger(
     org_view(deps, headers, started, path, pages, "danger").await
 }
 
-/// `GET /-/org/{org}/settings` — legacy alias; the former single settings tab
-/// is now split into Projects/Members/Storage/Danger. Redirect to Projects.
-pub(crate) async fn org_settings(Path(org_slug): Path<String>) -> Response {
-    Redirect::to(&format!("/-/org/{org_slug}/projects")).into_response()
-}
-
-/// Renders one org section (`registries` / `caches` / `settings`) — the split
-/// of the former single dense dashboard. All three load the same org data and
-/// differ only in which section `org_dashboard` renders.
+/// Renders one organization settings section from the shared data model.
 async fn org_view(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -1782,6 +1785,9 @@ async fn org_view(
         let can_configure = session
             .allows(&deps.db, Permission::RegistryConfigure, &scope)
             .await;
+        let can_manage_storage = session
+            .allows(&deps.db, Permission::StorageManage, &scope)
+            .await;
         let can_delete = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
         Ok::<_, anyhow::Error>(Some(console::org_dashboard(
             &session.email,
@@ -1795,6 +1801,7 @@ async fn org_view(
             can_manage,
             can_audit,
             can_configure,
+            can_manage_storage,
             can_delete,
             owner_count,
             pages.registries(),
@@ -2087,6 +2094,8 @@ async fn render_cache_detail(
                 .unwrap_or_default(),
             None => "default".to_string(),
         };
+        let placements =
+            placement_overview_rows(deps, crate::db::SurfaceTarget::BinaryCache(cache.id)).await?;
         // The org's storage bindings — targets for the "change storage" control.
         let binding_names: Vec<String> = deps
             .db
@@ -2172,6 +2181,7 @@ async fn render_cache_detail(
             &session.csrf(),
             cache,
             &binding,
+            &placements,
             &binding_names,
             &usage,
             &link_rows,
@@ -2190,6 +2200,32 @@ async fn render_cache_detail(
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// Resolves placement records to the id-free rows shown on surface overviews.
+async fn placement_overview_rows(
+    deps: &ConsoleDeps,
+    surface: crate::db::SurfaceTarget,
+) -> anyhow::Result<Vec<console::PlacementOverviewRow>> {
+    let mut rows = Vec::new();
+    for placement in deps.db.list_surface_placements(surface).await? {
+        let binding_name = deps
+            .db
+            .storage_binding(placement.storage_binding_id)
+            .await?
+            .map(|binding| binding.name)
+            .unwrap_or_else(|| "unavailable".to_string());
+        rows.push(console::PlacementOverviewRow {
+            name: placement.name,
+            binding_name,
+            prefix: placement.prefix,
+            role: placement.role,
+            state: placement.state,
+            read_enabled: placement.read_enabled,
+            write_enabled: placement.write_enabled,
+        });
+    }
+    Ok(rows)
 }
 
 /// Resolve `(org, cache)` for a cache console route, enforcing that the cache
@@ -2211,8 +2247,18 @@ async fn cache_in_org(
     Ok((org, cache))
 }
 
-/// `GET /-/org/{org}/caches/{slug}` — a cache's **General** settings tab.
+/// `GET /-/org/{org}/caches/{slug}` — a cache's read-only overview.
 pub(crate) async fn cache_detail(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "overview").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/general` — mutable cache policy.
+pub(crate) async fn cache_general(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
@@ -2413,7 +2459,7 @@ pub(crate) async fn org_create_cache(
     }
 }
 
-/// `POST /-/org/{org}/caches/{slug}` — update a cache's mutable settings.
+/// `POST /-/org/{org}/caches/{slug}/general` — update mutable cache policy.
 pub(crate) async fn cache_update(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -2474,7 +2520,9 @@ pub(crate) async fn cache_update(
         )
         .await;
     match result {
-        Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
+        Ok(_) => {
+            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/general")).into_response()
+        }
         Err(err) => internal(err),
     }
 }
@@ -2541,7 +2589,9 @@ pub(crate) async fn cache_link(
     }
     .await;
     match result {
-        Ok(None) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
+        Ok(None) => {
+            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/links")).into_response()
+        }
         Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
     }
@@ -2602,7 +2652,9 @@ pub(crate) async fn cache_change_storage(
     }
     .await;
     match result {
-        Ok(None) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
+        Ok(None) => {
+            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/storage")).into_response()
+        }
         Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Err(err) => internal(err),
     }
@@ -2649,7 +2701,7 @@ pub(crate) async fn cache_set_advertise_frontend(
     {
         return internal(err);
     }
-    Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response()
+    Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/serving")).into_response()
 }
 
 /// `POST /-/org/{org}/caches/{slug}/unlink` — remove a cache⇄registry link.
@@ -2686,7 +2738,9 @@ pub(crate) async fn cache_unlink(
     }
     .await;
     match result {
-        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}")).into_response(),
+        Ok(()) => {
+            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/links")).into_response()
+        }
         Err(err) => internal(err),
     }
 }
@@ -2948,7 +3002,7 @@ pub(crate) async fn cache_delete(
     }
     .await;
     match result {
-        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}/caches")).into_response(),
         Err(err) => internal(err),
     }
 }
@@ -3100,7 +3154,7 @@ pub(crate) async fn org_invite_member(
     }
     .await;
     match result {
-        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
         Ok(Err(reject)) => reject.into_response(),
         Err(err) => internal(err),
     }
@@ -3168,7 +3222,7 @@ pub(crate) async fn org_remove_member(
     }
     .await;
     match result {
-        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
         Ok(Err(())) => (
             StatusCode::CONFLICT,
             "cannot remove the last owner of an organization",
@@ -3257,7 +3311,7 @@ pub(crate) async fn org_member_role(
     }
     .await;
     match result {
-        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
         Ok(Err(reject)) => reject.into_response(),
         Err(err) if crate::db::is_last_owner_error(&err) => {
             MembershipReject::LastOwner.into_response()
@@ -3475,7 +3529,7 @@ pub(crate) async fn org_create_project(
     }
     .await;
     match result {
-        Ok(true) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(true) => Redirect::to(&format!("/-/org/{org_slug}/projects")).into_response(),
         Ok(false) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     }
@@ -3549,7 +3603,7 @@ pub(crate) async fn org_delete_project(
     }
     .await;
     match result {
-        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}/projects")).into_response(),
         Ok(Some(Err(msg))) => (StatusCode::CONFLICT, msg).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
@@ -3625,7 +3679,7 @@ pub(crate) async fn org_delete_binding(
     }
     .await;
     match result {
-        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}/storage")).into_response(),
         Ok(Some(Err(msg))) => (StatusCode::CONFLICT, msg).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
@@ -3766,7 +3820,7 @@ pub(crate) async fn org_create_binding(
     }
     .await;
     match result {
-        Ok(Some(_)) => Redirect::to(&format!("/-/org/{org_slug}")).into_response(),
+        Ok(Some(_)) => Redirect::to(&format!("/-/org/{org_slug}/storage")).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(crate::binding_provision::ProvisionError::AlreadyExists(_)) => (
             StatusCode::CONFLICT,
@@ -4854,7 +4908,7 @@ pub(crate) async fn registry_settings(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    registry_settings_view(&deps, &session, &registry, None, "general", started).await
+    registry_settings_view(&deps, &session, &registry, None, "overview", started).await
 }
 
 /// Returns the committed `[caches]` priority for `url`, matching by URL with
@@ -4984,12 +5038,15 @@ async fn registry_settings_view(
         let binding_ref = binding
             .as_ref()
             .map(|(n, r, p)| (n.as_str(), r.as_str(), p.as_str()));
+        let placements =
+            placement_overview_rows(deps, crate::db::SurfaceTarget::Registry(registry.id)).await?;
         Ok::<_, anyhow::Error>(console::registry_settings_page(
             &session.email,
             registry,
             &org_slug,
             &session.csrf(),
             binding_ref,
+            &placements,
             &binding_names,
             &caches,
             &external_caches,
@@ -5006,6 +5063,17 @@ async fn registry_settings_view(
         Ok(html) => Html(html).into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// `GET /{slug}/-/settings/general` — registry visibility and crawl policy.
+pub(crate) async fn registry_general(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "general").await
 }
 
 /// `GET /{slug}/-/settings/storage` — the registry's storage tab.
@@ -5328,7 +5396,14 @@ pub(crate) async fn registry_set_advertise_frontend(
     {
         return internal(err);
     }
-    registry_settings_view(&deps, &session, &registry, None, "storage", started).await
+    serving_view(
+        &deps,
+        &session,
+        &registry,
+        Some("Serving route updated."),
+        started,
+    )
+    .await
 }
 
 /// Resolve a storage-change form's `binding` value to a target binding id.
@@ -5612,10 +5687,10 @@ async fn registry_delete_action(
         }
         let target = match registry.org_id {
             Some(org_id) => match deps.db.org_by_id(org_id).await? {
-                Some(org) => format!("/-/org/{}", org.slug),
-                None => "/".to_string(),
+                Some(org) => registry_delete_target(Some(&org.slug)),
+                None => registry_delete_target(None),
             },
-            None => "/".to_string(),
+            None => registry_delete_target(None),
         };
         Ok::<_, anyhow::Error>(target)
     }
@@ -5624,6 +5699,14 @@ async fn registry_delete_action(
         Ok(target) => Redirect::to(&target).into_response(),
         Err(err) => internal(err),
     }
+}
+
+/// Returns the post-delete inventory destination for a registry.
+fn registry_delete_target(org_slug: Option<&str>) -> String {
+    org_slug.map_or_else(
+        || "/".to_string(),
+        |slug| format!("/-/org/{slug}/registries"),
+    )
 }
 
 // -- registry tokens --------------------------------------------------------
@@ -7008,6 +7091,10 @@ async fn serving_view(
     let result = async {
         let frontends = deps.db.list_frontends(registry.id).await?;
         let mirror = deps.db.mirror_source(registry.id).await?;
+        let advertise_storage_frontend = deps
+            .db
+            .registry_advertises_storage_frontend(registry.id)
+            .await?;
         // Frontends inherited from the storage binding this registry lives on
         // (the instance-default binding when the registry is unbound): they also
         // serve this registry, under its prefix. Shown read-only, with a link to
@@ -7048,6 +7135,7 @@ async fn serving_view(
             &inherited,
             &inh_label,
             &inh_href,
+            advertise_storage_frontend,
             mirror.as_ref(),
             notice,
             started,
@@ -8306,4 +8394,18 @@ pub(crate) async fn change_reopen(
         return internal(err);
     }
     redirect_to_change(&slug, &cs.change_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::registry_delete_target;
+
+    #[test]
+    fn registry_delete_returns_to_owning_org_inventory() {
+        assert_eq!(
+            registry_delete_target(Some("acme")),
+            "/-/org/acme/registries"
+        );
+        assert_eq!(registry_delete_target(None), "/");
+    }
 }

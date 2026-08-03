@@ -1443,14 +1443,83 @@ pub struct LinkedCacheSuggestion {
     pub present: bool,
 }
 
+/// A read-only, public-safe placement summary shown on a surface overview.
+///
+/// Database ids and backend-specific partition rules are deliberately absent;
+/// handlers resolve the storage binding to its scope-local name before render.
+pub struct PlacementOverviewRow {
+    /// Stable placement name within the registry or cache.
+    pub name: String,
+    /// Scope-local storage binding name.
+    pub binding_name: String,
+    /// Binding-relative object prefix.
+    pub prefix: String,
+    /// Placement role (`primary`, `replica`, `shard`, or `archive`).
+    pub role: String,
+    /// Lifecycle state.
+    pub state: String,
+    /// Whether reads may select this placement.
+    pub read_enabled: bool,
+    /// Whether writes may select this placement.
+    pub write_enabled: bool,
+}
+
+fn placement_overview(rows: &[PlacementOverviewRow]) -> String {
+    let mut body = String::from("<h2>Physical placements</h2>\n");
+    if rows.is_empty() {
+        body.push_str(
+            "<p class=\"dim\">No physical placements are registered for this surface.</p>\n",
+        );
+        return body;
+    }
+    let table_rows = rows
+        .iter()
+        .map(|placement| {
+            vec![
+                escape(&placement.name),
+                escape(&placement.role),
+                escape(&placement.state),
+                escape(&placement.binding_name),
+                if placement.prefix.is_empty() {
+                    "<span class=\"dim\">root</span>".to_string()
+                } else {
+                    format!("<code>{}</code>", escape(&placement.prefix))
+                },
+                if placement.read_enabled {
+                    "<span class=\"ok\">read</span>".to_string()
+                } else {
+                    "<span class=\"dim\">read off</span>".to_string()
+                },
+                if placement.write_enabled {
+                    "<span class=\"ok\">write</span>".to_string()
+                } else {
+                    "<span class=\"dim\">write off</span>".to_string()
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+    body.push_str(&table(
+        &[
+            "placement",
+            "role",
+            "state",
+            "binding",
+            "prefix",
+            "reads",
+            "writes",
+        ],
+        &table_rows,
+    ));
+    body
+}
+
 /// The org dashboard: projects, registries, members, bindings, audit link.
 ///
 /// `can_manage_members` gates the member-management controls (invite/remove)
 /// to admins; a viewer sees the lists without the forms. `can_configure` gates
-/// the create affordances — the "create registry" link and the inline
-/// create-project/create-binding forms — to a caller holding
-/// `registry.configure`/`storage.manage` at the org scope. `can_delete` gates
-/// the typed-confirmation org-delete form to an org owner. `owner_count` is the
+/// registry, project, and cache creation. `can_manage_storage` separately
+/// gates binding mutations and backend locations. `can_delete` gates the
+/// typed-confirmation org-delete form to an org owner. `owner_count` is the
 /// number of org owners, used to hard-block removing the last one.
 #[allow(clippy::too_many_arguments)]
 #[must_use]
@@ -1468,40 +1537,61 @@ pub fn org_dashboard(
     // sidebar tab whose page enforces `audit.read` itself.
     _can_read_audit: bool,
     can_configure: bool,
+    // Backend locations and binding mutations require the narrower storage
+    // authority used by the binding-detail handlers. Registry configuration
+    // alone must not reveal host paths or object-store endpoints.
+    can_manage_storage: bool,
     can_delete: bool,
     owner_count: usize,
     registries_page: usize,
     members_page: usize,
-    // Which org section to render: `registries` (default), `caches`, or
-    // `settings`. The overview was one dense page; it is now split across these
-    // sidebar tabs so each view is focused.
+    // Which org section to render. `overview` is the read-only landing page;
+    // resource inventories and mutation controls live in their named sections.
     active: &str,
     started: Instant,
 ) -> String {
-    // The registries and members lists each paginate independently; each
-    // pager preserves the other list's page so navigating one keeps the other.
+    // The registries and members inventories paginate independently on their
+    // own routes.
     let reg_pager = Pager::new(registries_page, LIST_PER_PAGE, registries.len());
     let mem_pager = Pager::new(members_page, LIST_PER_PAGE, members.len());
-    let reg_keep = (mem_pager.page() > 1)
-        .then(|| format!("members_page={}", mem_pager.page()))
-        .unwrap_or_default();
-    let mem_keep = (reg_pager.page() > 1)
-        .then(|| format!("registries_page={}", reg_pager.page()))
-        .unwrap_or_default();
     let slug = &org.slug;
-    // No page-title <h1>: the selected sidebar tab names the section, so a
-    // "{org} · {section}" heading would just repeat it. This identity line names
-    // the org by display name then slug (matching the orgs list); each section
-    // supplies its own descriptive <h2> below.
+    // The shared settings layout supplies the contextual section <h1>. This
+    // identity line adds the organization's display name and canonical slug.
     let mut body = format!(
         "<p class=\"dim\">{} · <code>{}</code></p>\n",
         escape(&org.name),
         escape(slug),
     );
 
-    // -- Registries (the default tab) ----------------------------------------
+    // -- Overview (the default route) ----------------------------------------
+    if active == "overview" {
+        body.push_str(
+            "<h2>Organization topology</h2>\n\
+             <p class=\"dim\">Resources, storage, and access owned by this organization.</p>\n\
+             <div class=\"settings-overview-grid\">\n",
+        );
+        let cards = [
+            ("registries", "Registries", registries.len()),
+            ("projects", "Projects", projects.len()),
+            ("caches", "Caches", caches.len()),
+            ("storage", "Storage bindings", bindings.len()),
+            ("members", "Members", members.len()),
+        ];
+        for (path, label, count) in cards {
+            let _ = write!(
+                body,
+                "<a class=\"settings-overview-card\" href=\"/-/org/{slug}/{path}\">\
+                 <strong>{count}</strong><span>{label}</span></a>\n",
+                slug = escape(slug),
+                path = escape(path),
+                label = escape(label),
+            );
+        }
+        body.push_str("</div>\n");
+    }
+
+    // -- Registries ----------------------------------------------------------
     if active == "registries" {
-        body.push_str("<h2>Registries</h2>\n");
         if registries.is_empty() {
             body.push_str("<p class=\"dim\">No registries.</p>\n");
         } else {
@@ -1534,8 +1624,8 @@ pub fn org_dashboard(
                 .collect();
             body.push_str(&table(&["registry", "visibility", ""], &rows));
             body.push_str(&reg_pager.nav_with(
-                &format!("/-/org/{slug}"),
-                &reg_keep,
+                &format!("/-/org/{slug}/registries"),
+                "",
                 "registries_page",
             ));
         }
@@ -1550,7 +1640,6 @@ pub fn org_dashboard(
 
     // -- Binary caches -------------------------------------------------------
     if active == "caches" {
-        body.push_str("<h2>Caches</h2>\n");
         if caches.is_empty() {
             body.push_str("<p class=\"dim\">No caches.</p>\n");
         } else {
@@ -1625,7 +1714,6 @@ pub fn org_dashboard(
 
     // -- Projects ------------------------------------------------------------
     if active == "projects" {
-        body.push_str("<h2>Projects</h2>\n");
         if projects.is_empty() {
             body.push_str("<p class=\"dim\">No projects.</p>\n");
         } else {
@@ -1671,7 +1759,6 @@ pub fn org_dashboard(
 
     // -- Storage -------------------------------------------------------------
     if active == "storage" {
-        body.push_str("<h2>Storage</h2>\n");
         // The deployment's default storage is always present and is what new
         // registries use with no binding at all. Render it as the first row — a
         // `default` chip, no delete — so it is *apparent* that storage already works
@@ -1698,8 +1785,8 @@ pub fn org_dashboard(
         );
         for b in bindings.iter() {
             // The name links to the binding's serving page (public access +
-            // frontends) for those who can configure it (RFC-0004 §12).
-            let name_cell = if can_configure {
+            // frontends) only for callers with storage management authority.
+            let name_cell = if can_manage_storage {
                 format!(
                     "<a href=\"/-/org/{org}/bindings/{id}\">{name}</a>",
                     org = escape(slug),
@@ -1709,7 +1796,7 @@ pub fn org_dashboard(
             } else {
                 escape(&b.name)
             };
-            let delete = if can_configure {
+            let delete = if can_manage_storage {
                 format!(
                     "<form class=\"console\" method=\"post\" \
                      action=\"/-/org/{org}/bindings/delete\">{csrf}\
@@ -1725,7 +1812,13 @@ pub fn org_dashboard(
             // Object stores carry an access chip in the head and the
             // endpoint+bucket on the wrapping location line; never the sealed
             // credential. local_fs shows its host path.
-            let (access_chip, location) = if b.kind == "local_fs" {
+            let (access_chip, location) = if !can_manage_storage {
+                (
+                    String::new(),
+                    "<span class=\"dim\">location hidden · storage management required</span>"
+                        .to_string(),
+                )
+            } else if b.kind == "local_fs" {
                 (String::new(), format!("<code>{}</code>", escape(&b.root)))
             } else {
                 let endpoint = b.endpoint.as_deref().unwrap_or("");
@@ -1752,7 +1845,7 @@ pub fn org_dashboard(
             );
         }
         body.push_str("</div>\n");
-        if can_configure {
+        if can_manage_storage {
             let creatable = RuntimeKind::current().creatable_binding_kinds();
             body.push_str("<h4>Add a storage binding</h4>\n");
             let mut kind_options = String::new();
@@ -1798,7 +1891,6 @@ pub fn org_dashboard(
 
     // -- Members -------------------------------------------------------------
     if active == "members" {
-        body.push_str("<h2>Members</h2>\n");
         let rows: Vec<Vec<String>> = mem_pager
             .slice(members)
             .iter()
@@ -1847,7 +1939,7 @@ pub fn org_dashboard(
             })
             .collect();
         body.push_str(&table(&["member", "role", ""], &rows));
-        body.push_str(&mem_pager.nav_with(&format!("/-/org/{slug}"), &mem_keep, "members_page"));
+        body.push_str(&mem_pager.nav_with(&format!("/-/org/{slug}/members"), "", "members_page"));
 
         if can_manage_members {
             body.push_str("<h4>Invite a member</h4>\n");
@@ -1980,6 +2072,7 @@ pub fn cache_page(
     csrf: &str,
     cache: &Cache,
     binding_name: &str,
+    placements: &[PlacementOverviewRow],
     bindings: &[String],
     usage: &CacheUsage,
     links: &[CacheLinkRow],
@@ -1991,8 +2084,8 @@ pub fn cache_page(
     // Whether this cache advertises its inherited storage-binding frontend
     // (RFC-0004 §12) — the serving tab's opt-out checkbox.
     advertise_storage_frontend: bool,
-    // The active settings section/tab: "general", "storage", "serving",
-    // "links", "pins", or "danger".
+    // The active settings section: "overview", "general", "storage",
+    // "serving", "links", "pins", or "danger".
     active: &str,
     notice: Option<&str>,
     started: Instant,
@@ -2003,8 +2096,8 @@ pub fn cache_page(
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
     }
 
-    // -- General tab: identity + usage chips --------------------------------
-    if active == "general" {
+    // -- Overview: read-only identity, topology, and usage -------------------
+    if active == "overview" {
         let _ = write!(body, "<h1>Cache · {}</h1>\n", escape(&cache.slug));
         // Usage + identity chips.
         let signed = if cache.hosted_key_id.is_some() {
@@ -2027,10 +2120,27 @@ pub fn cache_page(
             links = links.len(),
             ago = ago(cache.created_at),
         );
+        let _ = write!(
+            body,
+            "<div class=\"settings-overview-grid\">\
+             <a class=\"settings-overview-card\" href=\"/-/org/{org}/caches/{slug}/storage\">\
+             <strong>{binding}</strong><span>Storage</span></a>\
+             <a class=\"settings-overview-card\" href=\"/-/org/{org}/caches/{slug}/links\">\
+             <strong>{links}</strong><span>Registry relationships</span></a>\
+             <a class=\"settings-overview-card\" href=\"/-/org/{org}/caches/{slug}/pins\">\
+             <strong>{objects}</strong><span>Objects under GC</span></a></div>\n",
+            org = escape(org_slug),
+            slug = escape(&cache.slug),
+            binding = escape(binding_name),
+            links = links.len(),
+            objects = usage.object_count,
+        );
+        body.push_str(&placement_overview(placements));
     }
 
     // -- Storage tab: binding location + change storage ---------------------
-    if active == "storage" && can_admin {
+    if active == "storage" {
+        body.push_str("<h2>Current storage</h2>\n");
         let _ = write!(
             body,
             "<p class=\"dim\">binding <code>{binding}</code>{prefix}</p>\n",
@@ -2041,6 +2151,8 @@ pub fn cache_page(
                 format!(" · prefix <code>{}</code>", escape(&cache.prefix))
             },
         );
+    }
+    if active == "storage" && can_admin {
         // Change storage: copy every object to a new backend, then re-point.
         let on_default = cache.storage_binding_id.is_none();
         let mut options = String::new();
@@ -2069,6 +2181,19 @@ pub fn cache_page(
     }
 
     // -- Serving tab: advertise the inherited bucket frontend ---------------
+    if active == "serving" {
+        body.push_str("<h2>Delivery status</h2>\n");
+        let status = if advertise_storage_frontend {
+            "advertised"
+        } else {
+            "hub-served"
+        };
+        let _ = writeln!(
+            body,
+            "<p>delivery <span class=\"chip\">{}</span></p>",
+            status,
+        );
+    }
     if active == "serving" && can_admin {
         // Advertise the inherited storage-binding frontend (RFC-0004 §12): when
         // the bucket is public with a direct frontend, this cache's advertised
@@ -2095,9 +2220,17 @@ pub fn cache_page(
         );
     }
 
+    if active == "general" {
+        body.push_str("<h2>Cache policy</h2>\n");
+        let _ = write!(
+            body,
+            "<p class=\"dim\">Cache <code>{}</code> · created {}</p>\n",
+            escape(&cache.slug),
+            ago(cache.created_at),
+        );
+    }
     if active == "general" && can_admin {
-        // -- Settings --------------------------------------------------------
-        body.push_str("<h2>Settings</h2>\n");
+        // -- Mutable cache policy -------------------------------------------
         let opt = |value: &str, current: &str, label: &str| {
             let sel = if value == current { " selected" } else { "" };
             format!("<option value=\"{value}\"{sel}>{label}</option>")
@@ -2109,7 +2242,7 @@ pub fn cache_page(
         };
         let _ = write!(
             body,
-            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}\">{csrf}\
+            "<form class=\"console\" method=\"post\" action=\"/-/org/{org}/caches/{slug}/general\">{csrf}\
              <label>name <input type=\"text\" name=\"name\" value=\"{name}\"></label>\n\
              <label>visibility <select name=\"visibility\">{vis_pub}{vis_int}{vis_priv}</select></label>\n\
              <label>priority <input type=\"number\" name=\"priority\" value=\"{prio}\"></label>\n\
@@ -2130,11 +2263,15 @@ pub fn cache_page(
             c_none = opt("none", &cache.compression, "none"),
             mass = mass,
         );
+    } else if active == "general" {
+        body.push_str(
+            "<p class=\"dim\">Changing cache policy requires cache administration.</p>\n",
+        );
     }
 
     // -- Linked registries (Links tab) --------------------------------------
     if active == "links" {
-        body.push_str("<h2>Linked registries</h2>\n");
+        body.push_str("<h2>Registry relationships</h2>\n");
         if links.is_empty() {
             body.push_str("<p class=\"dim\">No linked registries.</p>\n");
         } else {
@@ -2432,7 +2569,7 @@ pub fn audit_page(
     page_number: usize,
     started: Instant,
 ) -> String {
-    // No page-title <h1>: the selected "Audit" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     if rows.is_empty() {
         body.push_str("<p class=\"dim\">No audit entries.</p>\n");
@@ -2567,48 +2704,49 @@ pub fn new_registry_page(
     )
 }
 
-/// The per-registry settings / management landing page (`/{slug}/-/settings`).
-///
-/// The "manage this registry" hub: it shows the current visibility with a
-/// change form (a confirmation-gated [`config::change_registry_visibility`]
-/// change-set), the read-only storage binding/prefix and trust anchors, a link
-/// hub to every per-registry management page (tokens, keys, channels, changes,
-/// publishes, health, packages), and — for an org owner/admin — a
-/// typed-confirmation delete form. `binding` is the resolved
-/// `(name, root, prefix)` of the registry's storage binding, when bound.
-/// `can_delete` gates the delete form. `result` echoes a just-applied
-/// visibility change-set id.
-///
-/// [`config::change_registry_visibility`]: crate::config::change_registry_visibility
-#[must_use]
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-/// One entry in a settings left-sidebar nav.
-///
-/// The settings IA is uniform across the registry, org, and instance scopes
-/// (RFC-0004 console): every management page in a scope renders the same
-/// [`settings_layout`] with one of these marked active.
-pub struct SettingsTab {
-    /// The destination URL.
-    pub href: String,
-    /// The visible label.
-    pub label: String,
-    /// Whether this is the current page.
-    pub active: bool,
+/// One destination in a grouped settings navigation model.
+struct SettingsNavItem {
+    key: &'static str,
+    label: &'static str,
+    href: String,
 }
 
-impl SettingsTab {
-    /// Builds a tab, marking it active when `key == active`.
-    fn new(key: &str, label: &str, href: String, active: &str) -> SettingsTab {
-        SettingsTab {
-            href,
-            label: label.to_string(),
-            active: key == active,
+impl SettingsNavItem {
+    fn new(key: &'static str, label: &'static str, href: String) -> Self {
+        Self { key, label, href }
+    }
+}
+
+/// A related set of settings destinations.
+struct SettingsNavGroup {
+    label: &'static str,
+    items: Vec<SettingsNavItem>,
+}
+
+impl SettingsNavGroup {
+    fn new(label: &'static str, items: Vec<SettingsNavItem>) -> Self {
+        Self { label, items }
+    }
+}
+
+/// The complete navigation model for one settings scope.
+struct SettingsNavigation<'a> {
+    active: &'a str,
+    context: String,
+    groups: Vec<SettingsNavGroup>,
+}
+
+impl<'a> SettingsNavigation<'a> {
+    fn new(active: &'a str, context: String, groups: Vec<SettingsNavGroup>) -> Self {
+        Self {
+            active,
+            context,
+            groups,
         }
     }
 }
 
-/// Wraps settings `content` in the shared left-sidebar layout.
+/// Wraps settings `content` in the shared grouped left-sidebar layout.
 ///
 /// Renders a vertical nav of `tabs` (the active one highlighted) beside the
 /// content, so the registry, org, and instance settings scopes share one
@@ -2616,85 +2754,143 @@ impl SettingsTab {
 /// (in the content column, beside the nav — the GitHub settings convention).
 /// On a narrow viewport the sidebar stacks above the content (see the
 /// `.settings` rules in `style.css`).
-fn settings_layout(tabs: &[SettingsTab], content: &str) -> String {
+fn settings_layout(navigation: &SettingsNavigation<'_>, content: &str) -> String {
+    let selected = navigation
+        .groups
+        .iter()
+        .flat_map(|group| group.items.iter())
+        .find(|item| item.key == navigation.active)
+        .or_else(|| {
+            navigation
+                .groups
+                .iter()
+                .find_map(|group| group.items.first())
+        });
+    let selected_key = selected.map(|item| item.key);
     let mut nav = String::from("<nav class=\"settings-nav\" aria-label=\"Settings sections\">\n");
-    for tab in tabs {
-        let _ = write!(
+    for group in &navigation.groups {
+        let _ = writeln!(
             nav,
-            "<a href=\"{href}\"{active}>{label}</a>\n",
-            href = escape(&tab.href),
-            active = if tab.active {
-                " class=\"active\" aria-current=\"page\""
+            "<div class=\"settings-nav-group\"{}>",
+            if group.label.is_empty() {
+                String::new()
             } else {
-                ""
+                format!(" role=\"group\" aria-label=\"{}\"", escape(group.label))
             },
-            label = escape(&tab.label),
         );
+        if !group.label.is_empty() {
+            let _ = writeln!(
+                nav,
+                "<span class=\"settings-nav-label\" aria-hidden=\"true\">{}</span>",
+                escape(group.label),
+            );
+        }
+        for item in &group.items {
+            let _ = write!(
+                nav,
+                "<a href=\"{href}\"{active}>{label}</a>\n",
+                href = escape(&item.href),
+                active = if Some(item.key) == selected_key {
+                    " class=\"active\" aria-current=\"page\""
+                } else {
+                    ""
+                },
+                label = escape(item.label),
+            );
+        }
+        nav.push_str("</div>\n");
     }
     nav.push_str("</nav>\n");
+    let heading = if content.contains("<h1") {
+        String::new()
+    } else {
+        let section = selected.map_or("Settings", |item| item.label);
+        format!(
+            "<h1>{section} · {context}</h1>\n",
+            section = escape(section),
+            context = escape(&navigation.context),
+        )
+    };
     format!(
-        "<div class=\"settings\">\n{nav}<div class=\"settings-body\">\n{content}</div>\n</div>\n"
+        "<div class=\"settings\">\n{nav}<div class=\"settings-body\">\n{heading}{content}</div>\n</div>\n"
     )
 }
 
 /// The registry-scope settings sidebar (one of the management pages active).
 ///
-/// `active` is the key of the current page (`general`, `tokens`, `keys`,
-/// `changes`, `config`, `serving`, `publishes`, `health`); an unknown key
-/// leaves none highlighted.
-fn registry_settings_tabs(slug: &str, active: &str) -> Vec<SettingsTab> {
-    vec![
-        SettingsTab::new("general", "General", format!("/{slug}/-/settings"), active),
-        SettingsTab::new(
-            "storage",
-            "Storage",
-            format!("/{slug}/-/settings/storage"),
-            active,
-        ),
-        SettingsTab::new(
-            "caches",
-            "Binary caches",
-            format!("/{slug}/-/settings/caches"),
-            active,
-        ),
-        SettingsTab::new("keys", "Keys", format!("/{slug}/-/keys"), active),
-        SettingsTab::new(
-            "tokens",
-            "Tokens",
-            format!("/{slug}/-/settings/tokens"),
-            active,
-        ),
-        SettingsTab::new(
-            "serving",
-            "Serving & mirror",
-            format!("/{slug}/-/settings/serving"),
-            active,
-        ),
-        SettingsTab::new(
-            "config",
-            "Config",
-            format!("/{slug}/-/settings/config"),
-            active,
-        ),
-        SettingsTab::new(
-            "changes",
-            "Change requests",
-            format!("/{slug}/-/changes"),
-            active,
-        ),
-        SettingsTab::new(
-            "publishes",
-            "Publishes",
-            format!("/{slug}/-/publishes"),
-            active,
-        ),
-        SettingsTab::new(
-            "danger",
-            "Danger",
-            format!("/{slug}/-/settings/danger"),
-            active,
-        ),
-    ]
+/// `active` is the key of the current page. An unknown key safely falls back
+/// to Overview so the navigation always exposes exactly one current page.
+fn registry_settings_navigation<'a>(slug: &str, active: &'a str) -> SettingsNavigation<'a> {
+    SettingsNavigation::new(
+        active,
+        slug.to_string(),
+        vec![
+            SettingsNavGroup::new(
+                "",
+                vec![SettingsNavItem::new(
+                    "overview",
+                    "Overview",
+                    format!("/{slug}/-/settings"),
+                )],
+            ),
+            SettingsNavGroup::new(
+                "Configuration",
+                vec![
+                    SettingsNavItem::new(
+                        "general",
+                        "General",
+                        format!("/{slug}/-/settings/general"),
+                    ),
+                    SettingsNavItem::new(
+                        "storage",
+                        "Storage",
+                        format!("/{slug}/-/settings/storage"),
+                    ),
+                    SettingsNavItem::new(
+                        "serving",
+                        "Serving",
+                        format!("/{slug}/-/settings/serving"),
+                    ),
+                    SettingsNavItem::new(
+                        "caches",
+                        "Binary caches",
+                        format!("/{slug}/-/settings/caches"),
+                    ),
+                ],
+            ),
+            SettingsNavGroup::new(
+                "Access",
+                vec![
+                    SettingsNavItem::new("keys", "Keys", format!("/{slug}/-/keys")),
+                    SettingsNavItem::new("tokens", "Tokens", format!("/{slug}/-/settings/tokens")),
+                ],
+            ),
+            SettingsNavGroup::new(
+                "Operations",
+                vec![
+                    SettingsNavItem::new(
+                        "config",
+                        "Registry config",
+                        format!("/{slug}/-/settings/config"),
+                    ),
+                    SettingsNavItem::new(
+                        "changes",
+                        "Change requests",
+                        format!("/{slug}/-/changes"),
+                    ),
+                    SettingsNavItem::new("publishes", "Publishes", format!("/{slug}/-/publishes")),
+                ],
+            ),
+            SettingsNavGroup::new(
+                "",
+                vec![SettingsNavItem::new(
+                    "danger",
+                    "Danger zone",
+                    format!("/{slug}/-/settings/danger"),
+                )],
+            ),
+        ],
+    )
 }
 
 /// Renders a registry management page: the shared sidebar (with `active`
@@ -2710,7 +2906,7 @@ pub fn registry_settings_chrome(
 ) -> String {
     // Each page supplies its own section `<h1>` (e.g. "Tokens · {slug}"); the
     // chrome adds only the sidebar, so no scope title is repeated across tabs.
-    let body = settings_layout(&registry_settings_tabs(slug, active), content);
+    let body = settings_layout(&registry_settings_navigation(slug, active), content);
     page_with_session(
         &format!("manage · {slug}"),
         &registry_crumbs(slug),
@@ -2722,67 +2918,79 @@ pub fn registry_settings_chrome(
 
 /// The org-scope settings sidebar (one of the org management pages active).
 ///
-/// `active` is the key of the current page (`registries`, `projects`,
-/// `members`, `caches`, `storage`, `keys`, `webhooks`, `sso`, `audit`,
-/// `danger`). Ordered contents → people → infra → integrations → audit →
-/// danger.
-fn org_settings_tabs(org_slug: &str, active: &str) -> Vec<SettingsTab> {
-    vec![
-        SettingsTab::new(
-            "projects",
-            "Projects",
-            format!("/-/org/{org_slug}/projects"),
-            active,
-        ),
-        SettingsTab::new(
-            "registries",
-            "Registries",
-            format!("/-/org/{org_slug}"),
-            active,
-        ),
-        SettingsTab::new(
-            "caches",
-            "Caches",
-            format!("/-/org/{org_slug}/caches"),
-            active,
-        ),
-        SettingsTab::new(
-            "members",
-            "Members",
-            format!("/-/org/{org_slug}/members"),
-            active,
-        ),
-        SettingsTab::new(
-            "storage",
-            "Storage",
-            format!("/-/org/{org_slug}/storage"),
-            active,
-        ),
-        SettingsTab::new(
-            "keys",
-            "Hosted keys",
-            format!("/-/org/{org_slug}/keys"),
-            active,
-        ),
-        SettingsTab::new(
-            "webhooks",
-            "Webhooks",
-            format!("/-/org/{org_slug}/webhooks"),
-            active,
-        ),
-        SettingsTab::new("sso", "SSO", format!("/-/org/{org_slug}/sso"), active),
-        SettingsTab::new("audit", "Audit", format!("/-/org/{org_slug}/audit"), active),
-        SettingsTab::new(
-            "danger",
-            "Danger",
-            format!("/-/org/{org_slug}/danger"),
-            active,
-        ),
-    ]
+/// Resources, access, and operations are visually grouped below Overview; the
+/// destructive section remains isolated at the end.
+fn org_settings_navigation<'a>(org_slug: &str, active: &'a str) -> SettingsNavigation<'a> {
+    SettingsNavigation::new(
+        active,
+        org_slug.to_string(),
+        vec![
+            SettingsNavGroup::new(
+                "",
+                vec![SettingsNavItem::new(
+                    "overview",
+                    "Overview",
+                    format!("/-/org/{org_slug}"),
+                )],
+            ),
+            SettingsNavGroup::new(
+                "Resources",
+                vec![
+                    SettingsNavItem::new(
+                        "registries",
+                        "Registries",
+                        format!("/-/org/{org_slug}/registries"),
+                    ),
+                    SettingsNavItem::new(
+                        "projects",
+                        "Projects",
+                        format!("/-/org/{org_slug}/projects"),
+                    ),
+                    SettingsNavItem::new("caches", "Caches", format!("/-/org/{org_slug}/caches")),
+                    SettingsNavItem::new(
+                        "storage",
+                        "Storage",
+                        format!("/-/org/{org_slug}/storage"),
+                    ),
+                ],
+            ),
+            SettingsNavGroup::new(
+                "Access",
+                vec![
+                    SettingsNavItem::new(
+                        "members",
+                        "Members",
+                        format!("/-/org/{org_slug}/members"),
+                    ),
+                    SettingsNavItem::new("keys", "Hosted keys", format!("/-/org/{org_slug}/keys")),
+                    SettingsNavItem::new("sso", "SSO", format!("/-/org/{org_slug}/sso")),
+                ],
+            ),
+            SettingsNavGroup::new(
+                "Operations",
+                vec![
+                    SettingsNavItem::new(
+                        "webhooks",
+                        "Webhooks",
+                        format!("/-/org/{org_slug}/webhooks"),
+                    ),
+                    SettingsNavItem::new("audit", "Audit log", format!("/-/org/{org_slug}/audit")),
+                ],
+            ),
+            SettingsNavGroup::new(
+                "",
+                vec![SettingsNavItem::new(
+                    "danger",
+                    "Danger zone",
+                    format!("/-/org/{org_slug}/danger"),
+                )],
+            ),
+        ],
+    )
 }
 
 /// Renders an org management page: the shared sidebar (with `active`
-/// highlighted) beside `content` (which carries its own `<h1>`), in the
+/// highlighted) beside `content`, supplying a contextual `<h1>` when needed.
 /// standard session chrome. Mirrors [`registry_settings_chrome`] so the org and
 /// registry settings IAs are identical.
 fn org_settings_chrome(
@@ -2792,7 +3000,7 @@ fn org_settings_chrome(
     content: &str,
     started: Instant,
 ) -> String {
-    let body = settings_layout(&org_settings_tabs(org_slug, active), content);
+    let body = settings_layout(&org_settings_navigation(org_slug, active), content);
     page_with_session(
         &format!("{org_slug} · settings"),
         &[
@@ -2807,24 +3015,56 @@ fn org_settings_chrome(
 
 /// The cache-scope settings sidebar (one of a cache's sections active).
 ///
-/// `active` is the current section key: `general` (identity, storage, settings),
-/// `links` (linked registries), `pins` (garbage collection + manual pins), or
-/// `danger` (delete). An unknown key highlights none.
-fn cache_settings_tabs(org_slug: &str, cache_slug: &str, active: &str) -> Vec<SettingsTab> {
+/// Configuration, topology relationships, and lifecycle controls are grouped
+/// below Overview. An unknown key safely falls back to Overview.
+fn cache_settings_navigation<'a>(
+    org_slug: &str,
+    cache_slug: &str,
+    active: &'a str,
+) -> SettingsNavigation<'a> {
     let base = format!("/-/org/{org_slug}/caches/{cache_slug}");
-    vec![
-        SettingsTab::new("general", "General", base.clone(), active),
-        SettingsTab::new("storage", "Storage", format!("{base}/storage"), active),
-        SettingsTab::new("serving", "Serving", format!("{base}/serving"), active),
-        SettingsTab::new(
-            "links",
-            "Linked registries",
-            format!("{base}/links"),
-            active,
-        ),
-        SettingsTab::new("pins", "GC & pins", format!("{base}/pins"), active),
-        SettingsTab::new("danger", "Danger", format!("{base}/danger"), active),
-    ]
+    SettingsNavigation::new(
+        active,
+        cache_slug.to_string(),
+        vec![
+            SettingsNavGroup::new(
+                "",
+                vec![SettingsNavItem::new("overview", "Overview", base.clone())],
+            ),
+            SettingsNavGroup::new(
+                "Configuration",
+                vec![
+                    SettingsNavItem::new("general", "General", format!("{base}/general")),
+                    SettingsNavItem::new("storage", "Storage", format!("{base}/storage")),
+                    SettingsNavItem::new("serving", "Serving", format!("{base}/serving")),
+                ],
+            ),
+            SettingsNavGroup::new(
+                "Topology",
+                vec![SettingsNavItem::new(
+                    "links",
+                    "Registries",
+                    format!("{base}/links"),
+                )],
+            ),
+            SettingsNavGroup::new(
+                "Lifecycle",
+                vec![SettingsNavItem::new(
+                    "pins",
+                    "GC & retention",
+                    format!("{base}/pins"),
+                )],
+            ),
+            SettingsNavGroup::new(
+                "",
+                vec![SettingsNavItem::new(
+                    "danger",
+                    "Danger zone",
+                    format!("{base}/danger"),
+                )],
+            ),
+        ],
+    )
 }
 
 /// Renders a cache management page: the cache-scope sidebar (with `active`
@@ -2840,7 +3080,10 @@ fn cache_settings_chrome(
     content: &str,
     started: Instant,
 ) -> String {
-    let body = settings_layout(&cache_settings_tabs(org_slug, &cache.slug, active), content);
+    let body = settings_layout(
+        &cache_settings_navigation(org_slug, &cache.slug, active),
+        content,
+    );
     page_with_session(
         &format!("cache {}", cache.slug),
         &[
@@ -2853,6 +3096,12 @@ fn cache_settings_chrome(
     )
 }
 
+/// Renders one section of a registry's grouped management interface.
+///
+/// The default `overview` section is read-only. General policy, storage,
+/// serving, cache topology, and destructive operations each render in their
+/// own destination while sharing one navigation model.
+#[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn registry_settings_page(
     email: &str,
@@ -2860,6 +3109,7 @@ pub fn registry_settings_page(
     org_slug: &str,
     csrf: &str,
     binding: Option<(&str, &str, &str)>,
+    placements: &[PlacementOverviewRow],
     bindings: &[String],
     caches: &[RegistryCacheRow],
     // Committed `[caches]` URLs that match no linked managed cache (third-party
@@ -2868,28 +3118,70 @@ pub fn registry_settings_page(
     linkable_caches: &[(String, String)],
     can_delete: bool,
     // Whether this registry advertises its inherited storage-binding frontend
-    // (RFC-0004 §12) — the storage tab's opt-out checkbox.
+    // (RFC-0004 §12), summarized on Overview and edited under Serving.
     advertise_storage_frontend: bool,
     result: Option<&str>,
-    // Which registry settings section to render: `general` (visibility + crawl),
-    // `storage`, `caches`, or `danger`. The former single dense page is split
-    // across these sidebar tabs.
+    // Which registry settings section to render. `overview` is the read-only
+    // landing page; mutations live under General, Storage, Serving, and Danger.
     active: &str,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    // No page-title <h1>: the selected sidebar tab names the section and the
-    // masthead crumbs name the registry, so a "{section} · {slug}" heading would
-    // just repeat them. Each section's own <h2> (Visibility, Storage, …) is the
-    // descriptive heading.
+    // The shared settings layout supplies a contextual <h1> for sections that
+    // do not already carry a more specific one.
     let mut body = String::new();
 
     if let Some(change_id) = result {
         let _ = writeln!(
             body,
-            "<p class=\"good\">Visibility updated · change <code>{}</code>.</p>",
+            "<p class=\"good\">Registry policy updated · change <code>{}</code>.</p>",
             escape(change_id),
         );
+    }
+
+    // -- Overview: read-only registry topology -------------------------------
+    if active == "overview" {
+        let storage_label = binding.map_or_else(
+            || {
+                if registry.source_url.is_empty() {
+                    "default storage"
+                } else {
+                    "source mirror"
+                }
+            },
+            |(name, _, _)| name,
+        );
+        let advertised_caches = caches
+            .iter()
+            .filter(|cache| cache.config_priority.is_some())
+            .count()
+            + external_caches.len();
+        let _ = write!(
+            body,
+            "<h1>Registry · {slug}</h1>\n\
+             <p class=\"chips\"><span class=\"chip\">{visibility}</span>\
+             <span class=\"chip\">{crawl}</span></p>\n\
+             <div class=\"settings-overview-grid\">\
+             <a class=\"settings-overview-card\" href=\"/{slug}/-/settings/general\">\
+             <strong>{visibility}</strong><span>General policy</span></a>\
+             <a class=\"settings-overview-card\" href=\"/{slug}/-/settings/storage\">\
+             <strong>{storage}</strong><span>Storage placement</span></a>\
+             <a class=\"settings-overview-card\" href=\"/{slug}/-/settings/serving\">\
+             <strong>{serving}</strong><span>Serving path</span></a>\
+             <a class=\"settings-overview-card\" href=\"/{slug}/-/settings/caches\">\
+             <strong>{cache_count}</strong><span>Advertised caches</span></a></div>\n",
+            slug = escape(slug),
+            visibility = escape(&registry.visibility),
+            crawl = escape(&registry.crawl_policy),
+            storage = escape(storage_label),
+            serving = if advertise_storage_frontend {
+                "storage-direct"
+            } else {
+                "hub / configured routes"
+            },
+            cache_count = advertised_caches,
+        );
+        body.push_str(&placement_overview(placements));
     }
 
     // -- General: visibility + crawl policy ----------------------------------
@@ -2961,7 +3253,7 @@ pub fn registry_settings_page(
         // Storage (read-only). Three cases: a custom binding, the deployment's
         // default storage (a managed registry with no binding), or a phase-1
         // source-URL mirror (read-only upstream, no writable surface here).
-        body.push_str("<h2>Storage</h2>\n");
+        body.push_str("<h2>Current storage</h2>\n");
         match binding {
             Some((name, root, prefix)) => {
                 let _ = writeln!(
@@ -3023,23 +3315,6 @@ pub fn registry_settings_page(
             );
             }
         }
-
-        // Advertise the inherited storage-binding frontend (RFC-0004 §12): when its
-        // bucket is public and has a direct frontend, this registry's setup snippets
-        // point clients straight at the bucket. Un-check to keep it hub-served.
-        let _ = write!(
-        body,
-        "<h3>Bucket-direct serving</h3>\n\
-         <p class=\"dim\">When this registry's storage bucket is public and has a direct \
-         frontend, advertise it so clients fetch the git surface straight from the bucket.</p>\n\
-         <form class=\"console\" method=\"post\" action=\"/{slug}/-/settings/advertise-frontend\">{csrf}\
-         <label><span class=\"lbl\">advertise the inherited bucket frontend</span> \
-         <input type=\"checkbox\" name=\"advertise\" value=\"1\"{checked}></label>\n\
-         <button>save</button>\n</form>\n",
-        slug = escape(slug),
-        csrf = csrf_field(csrf),
-        checked = if advertise_storage_frontend { " checked" } else { "" },
-    );
     }
 
     // -- Binary caches serving this registry ---------------------------------
@@ -3242,7 +3517,7 @@ pub fn tokens_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    // No page-title <h1>: the selected "Tokens" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
 
     if let Some((label, secret)) = result {
@@ -3463,7 +3738,7 @@ pub fn keys_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    // No page-title <h1>: the selected "Keys" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">The roster is signed tree content. Keys are added and retired by \
@@ -3583,7 +3858,7 @@ pub fn org_hosted_keys_page(
     started: Instant,
 ) -> String {
     let org_slug = &org.slug;
-    // No page-title <h1>: the selected "Hosted keys" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">A hosted key lets the hub sign channel advances and tag re-signs \
@@ -3700,7 +3975,7 @@ pub fn org_webhooks_page(
     started: Instant,
 ) -> String {
     let org_slug = &org.slug;
-    // No page-title <h1>: the selected "Webhooks" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">Each subscription receives an HMAC-SHA256-signed JSON \
@@ -3807,7 +4082,7 @@ pub fn org_sso_page(
     started: Instant,
 ) -> String {
     let org_slug = &org.slug;
-    // No page-title <h1>: the selected "SSO" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">Configure an OIDC identity provider and capture the email domains \
@@ -3969,34 +4244,26 @@ pub fn org_sso_page(
 
 /// The instance-scope settings sidebar (`general`, `branding`, `serving`, or
 /// `storage` active).
-fn instance_settings_tabs(active: &str) -> Vec<SettingsTab> {
-    vec![
-        SettingsTab::new("general", "General", "/-/instance".to_string(), active),
-        SettingsTab::new(
-            "branding",
-            "Branding",
-            "/-/instance/branding".to_string(),
-            active,
-        ),
-        SettingsTab::new(
-            "serving",
-            "Serving",
-            "/-/instance/serving".to_string(),
-            active,
-        ),
-        SettingsTab::new(
-            "storage",
-            "Storage",
-            "/-/instance/storage".to_string(),
-            active,
-        ),
-    ]
+fn instance_settings_navigation(active: &str) -> SettingsNavigation<'_> {
+    SettingsNavigation::new(
+        active,
+        "Instance".to_string(),
+        vec![SettingsNavGroup::new(
+            "Configuration",
+            vec![
+                SettingsNavItem::new("general", "General", "/-/instance".to_string()),
+                SettingsNavItem::new("branding", "Branding", "/-/instance/branding".to_string()),
+                SettingsNavItem::new("storage", "Storage", "/-/instance/storage".to_string()),
+                SettingsNavItem::new("serving", "Serving", "/-/instance/serving".to_string()),
+            ],
+        )],
+    )
 }
 
 /// Renders an instance settings page: the shared sidebar beside `content`
-/// (which carries its own `<h1>`), in the standard chrome.
+/// in the standard chrome, supplying a contextual `<h1>` when needed.
 fn instance_settings_chrome(email: &str, active: &str, content: &str, started: Instant) -> String {
-    let body = settings_layout(&instance_settings_tabs(active), content);
+    let body = settings_layout(&instance_settings_navigation(active), content);
     page_with_session(
         "instance settings",
         &[(String::new(), "instance settings".into())],
@@ -4017,7 +4284,7 @@ pub fn instance_settings_page(
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    // No page-title <h1>: the selected "General" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
@@ -4090,7 +4357,7 @@ pub fn instance_branding_page(
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    // No page-title <h1>: the selected "Branding" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
@@ -4138,7 +4405,7 @@ pub fn instance_serving_page(
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    // No page-title <h1>: the selected "Serving" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
@@ -4356,7 +4623,7 @@ pub fn instance_storage_page(
     notice: Option<&str>,
     started: Instant,
 ) -> String {
-    // No page-title <h1>: the selected "Storage" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
@@ -4451,12 +4718,13 @@ pub fn serving_page(
     inherited: &[FrontendRecord],
     inherited_label: &str,
     inherited_href: &str,
+    advertise_storage_frontend: bool,
     mirror: Option<&MirrorSource>,
     notice: Option<&str>,
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    // No page-title <h1>: the selected "Serving & mirror" tab + crumbs say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     if let Some(notice) = notice {
         let _ = writeln!(body, "<p class=\"notice\">{}</p>", escape(notice));
@@ -4572,6 +4840,27 @@ pub fn serving_page(
         body.push_str(&table(&["domain", "mode", "serves", "advertised"], &rows));
     }
 
+    // --- Inherited-route selection ---
+    let _ = write!(
+        body,
+        "<h3>Storage-direct serving</h3>\n\
+         <p class=\"dim\">Use an advertised direct frontend from this registry's storage \
+         binding as the consumer-facing route. Disable it to keep traffic on the hub or on \
+         registry-specific frontends.</p>\n\
+         <form class=\"console\" method=\"post\" \
+         action=\"/{slug}/-/settings/advertise-frontend\">{csrf}\
+         <label><span class=\"lbl\">advertise an inherited storage frontend</span> \
+         <input type=\"checkbox\" name=\"advertise\" value=\"1\"{checked}></label>\n\
+         <button>save serving route</button></form>\n",
+        slug = escape(slug),
+        csrf = csrf_field(csrf),
+        checked = if advertise_storage_frontend {
+            " checked"
+        } else {
+            ""
+        },
+    );
+
     // --- Mirror ---
     body.push_str("<h2>Upstream mirror</h2>\n");
     if let Some(m) = mirror {
@@ -4660,7 +4949,7 @@ pub fn publishes_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    // No page-title <h1>: the selected "Publishes" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
 
     body.push_str("<h2>Index</h2>\n");
@@ -4743,7 +5032,7 @@ pub fn publishes_page(
         },
         None => StateLine::timed(started),
     };
-    let content = settings_layout(&registry_settings_tabs(slug, "publishes"), &body);
+    let content = settings_layout(&registry_settings_navigation(slug, "publishes"), &body);
     page_with_session(
         &format!("manage · {slug}"),
         &registry_crumbs(slug),
@@ -4799,7 +5088,7 @@ pub fn config_edit_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    // No page-title <h1>: the selected "Config" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">Web edits to committed config are <strong>change \
@@ -4900,7 +5189,7 @@ pub fn registry_config_form_page(
     started: Instant,
 ) -> String {
     let slug = &registry.slug;
-    // No page-title <h1>: the selected "Config" tab + crumbs already say it.
+    // The shared settings layout supplies the contextual page heading.
     let mut body = String::new();
     body.push_str(
         "<p class=\"dim\">Web edits to committed config are <strong>change \
@@ -5575,6 +5864,63 @@ fn registry_crumbs(slug: &str) -> Vec<(String, String)> {
 mod cache_render_tests {
     use super::*;
 
+    #[test]
+    fn scoped_settings_navigation_is_grouped_overview_first_and_single_current() {
+        let navigations = [
+            settings_layout(&org_settings_navigation("acme", "overview"), ""),
+            settings_layout(&registry_settings_navigation("acme/main", "overview"), ""),
+            settings_layout(&cache_settings_navigation("acme", "build", "overview"), ""),
+        ];
+        for html in navigations {
+            assert_eq!(html.matches("aria-current=\"page\"").count(), 1);
+            assert!(html.find(">Overview</a>").unwrap() < html.find("settings-nav-label").unwrap());
+            assert!(html.contains("class=\"settings-nav-group\""));
+        }
+        assert!(navigations_unavailable_active_falls_back_to_overview());
+    }
+
+    #[test]
+    fn settings_navigation_supplies_one_contextual_h1_for_every_section() {
+        let cases = [
+            (
+                settings_layout(&org_settings_navigation("acme", "storage"), "<p>body</p>"),
+                "<h1>Storage · acme</h1>",
+            ),
+            (
+                settings_layout(
+                    &registry_settings_navigation("acme/main", "serving"),
+                    "<p>body</p>",
+                ),
+                "<h1>Serving · acme/main</h1>",
+            ),
+            (
+                settings_layout(
+                    &cache_settings_navigation("acme", "build", "pins"),
+                    "<p>body</p>",
+                ),
+                "<h1>GC &amp; retention · build</h1>",
+            ),
+        ];
+        for (html, heading) in cases {
+            assert!(html.contains(heading), "missing {heading}");
+            assert_eq!(html.matches("<h1").count(), 1);
+        }
+
+        let existing = settings_layout(
+            &registry_settings_navigation("acme/main", "overview"),
+            "<h1>Registry · acme/main</h1>",
+        );
+        assert_eq!(existing.matches("<h1").count(), 1);
+    }
+
+    fn navigations_unavailable_active_falls_back_to_overview() -> bool {
+        let html = settings_layout(&cache_settings_navigation("acme", "build", "missing"), "");
+        html.matches("aria-current=\"page\"").count() == 1
+            && html.contains(
+                "href=\"/-/org/acme/caches/build\" class=\"active\" aria-current=\"page\"",
+            )
+    }
+
     fn cache() -> Cache {
         Cache {
             id: 1,
@@ -5625,6 +5971,15 @@ mod cache_render_tests {
             deleted_objects: 5,
             freed_bytes: 1024 * 1024,
         }];
+        let placements = [PlacementOverviewRow {
+            name: "primary".into(),
+            binding_name: "primary".into(),
+            prefix: "caches/build".into(),
+            role: "primary".into(),
+            state: "ready".into(),
+            read_enabled: true,
+            write_enabled: true,
+        }];
         let render = |active: &str| {
             cache_page(
                 "a@b.com",
@@ -5632,6 +5987,7 @@ mod cache_render_tests {
                 "csrf-tok",
                 &cache(),
                 "primary",
+                &placements,
                 &["cold".to_string()],
                 &usage(),
                 &[],
@@ -5646,26 +6002,40 @@ mod cache_render_tests {
             )
         };
 
-        // Every tab renders inside the cache settings chrome — its own left-tabs
-        // sidebar (General / Linked registries / GC & pins / Danger) and a
-        // `caches / build` breadcrumb — not the org tabs.
+        // Every section renders inside the cache settings chrome. Overview is
+        // the first destination and the only current item on the default page.
+        let overview = render("overview");
+        assert!(overview.contains("class=\"settings-nav\""));
+        assert!(overview.contains("Registry relationships"));
+        assert!(overview.contains("Danger zone"));
+        assert!(overview.contains("caches"));
+        assert!(overview.contains("Cache · build"));
+        assert!(overview.contains("2.0 MiB"));
+        assert!(overview.contains("<span class=\"chip\">signed</span>"));
+        assert!(overview.contains("Physical placements"));
+        assert!(overview.contains("caches/build"));
+        assert!(overview.contains("<span class=\"ok\">write</span>"));
+        assert!(!overview.contains("<button>save</button>"));
+        assert_eq!(overview.matches("aria-current=\"page\"").count(), 1);
+        assert!(overview.find(">Overview</a>").unwrap() < overview.find(">General</a>").unwrap());
+
+        // General owns mutable cache policy and no longer overloads Overview.
         let general = render("general");
-        assert!(general.contains("class=\"settings-nav\""));
-        assert!(general.contains("Linked registries"));
-        assert!(general.contains("Danger"));
-        assert!(general.contains("caches"));
-        // General: identity, usage, and the settings form.
-        assert!(general.contains("Cache · build"));
-        assert!(general.contains("2.0 MiB"));
-        assert!(general.contains("<span class=\"chip\">signed</span>"));
-        assert!(general.contains("save"));
+        assert!(general.contains("<h1>General · build</h1>"));
+        assert!(general.contains("<h2>Cache policy</h2>"));
+        assert!(general.contains("<button>save</button>"));
+        assert!(general.contains("action=\"/-/org/acme/caches/build/general\""));
         assert!(general.contains("csrf-tok"));
-        // The sidebar carries the Storage and Serving tabs too (mirroring the
-        // registry settings IA); General no longer holds storage/serving.
+        assert_eq!(general.matches("aria-current=\"page\"").count(), 1);
         assert!(general.contains("Storage"));
         assert!(general.contains("Serving"));
         assert!(!general.contains("Change storage"));
         assert!(!general.contains("Bucket-direct serving"));
+
+        // The base cache route is a read-only overview; its content never owns
+        // a mutation form or points a form action back at the base route.
+        assert!(!overview.contains("<form"));
+        assert!(!overview.contains("action=\"/-/org/acme/caches/build\""));
 
         // Storage tab: the binding + change-storage form.
         let storage = render("storage");
@@ -5724,6 +6094,7 @@ mod cache_render_tests {
                 "csrf-tok",
                 &cache(),
                 "primary",
+                &[],
                 &["cold".to_string()],
                 &usage(),
                 &[],
@@ -5737,10 +6108,12 @@ mod cache_render_tests {
                 Instant::now(),
             )
         };
-        // The General tab shows identity but no settings form for a plain member.
+        // Overview remains useful to a plain member; General exposes no form.
+        let overview = render("overview");
+        assert!(overview.contains("Cache · build"));
         let general = render("general");
-        assert!(general.contains("Cache · build"));
         assert!(!general.contains("<h2>Settings</h2>"));
+        assert!(general.contains("requires cache administration"));
         // The privileged tabs show an admins-only notice, not the controls.
         let pins = render("pins");
         assert!(!pins.contains("/caches/build/pin/"));
@@ -5759,6 +6132,7 @@ mod cache_render_tests {
             "csrf-tok",
             &cache(),
             "primary",
+            &[],
             &["cold".to_string()],
             &usage(),
             &[],
@@ -5795,6 +6169,190 @@ mod cache_render_tests {
     }
 
     #[test]
+    fn registry_overview_is_read_only_and_general_owns_policy_forms() {
+        let render = |active: &str| {
+            registry_settings_page(
+                "a@b.com",
+                &settings_registry(),
+                "acme",
+                "csrf-tok",
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                false,
+                false,
+                None,
+                active,
+                Instant::now(),
+            )
+        };
+        let overview = render("overview");
+        assert!(overview.contains("Registry · demo"));
+        assert!(overview.contains("Storage placement"));
+        assert!(!overview.contains("change visibility"));
+        assert_eq!(overview.matches("aria-current=\"page\"").count(), 1);
+
+        let general = render("general");
+        assert!(general.contains("<h1>General · demo</h1>"));
+        assert!(general.contains("change visibility"));
+        assert!(general.contains("change crawl policy"));
+        assert!(!general.contains("Storage placement"));
+        assert_eq!(general.matches("aria-current=\"page\"").count(), 1);
+
+        let storage = render("storage");
+        assert!(storage.contains("<h1>Storage · demo</h1>"));
+        assert!(!storage.contains("advertise an inherited storage frontend"));
+    }
+
+    #[test]
+    fn registry_storage_direct_control_lives_under_serving() {
+        let html = serving_page(
+            "a@b.com",
+            &settings_registry(),
+            "csrf-tok",
+            &[],
+            &[],
+            "default storage",
+            "/-/instance/storage",
+            true,
+            None,
+            None,
+            Instant::now(),
+        );
+        assert!(html.contains("Storage-direct serving"));
+        assert!(html.contains("advertise an inherited storage frontend"));
+        assert!(html.contains("name=\"advertise\" value=\"1\" checked"));
+        assert_eq!(html.matches("aria-current=\"page\"").count(), 1);
+    }
+
+    fn org() -> OrgRecord {
+        OrgRecord {
+            id: 1,
+            slug: "acme".into(),
+            name: "Acme Systems".into(),
+            created_at: 1_700_000_000,
+        }
+    }
+
+    fn storage_bindings() -> Vec<StorageBindingRecord> {
+        vec![
+            StorageBindingRecord {
+                id: 10,
+                org_id: Some(1),
+                name: "local-primary".into(),
+                kind: "local_fs".into(),
+                root: "/srv/private/acme".into(),
+                access: "private".into(),
+                endpoint: None,
+                credential_ref: None,
+                is_instance_default: false,
+                created_at: 1_700_000_000,
+            },
+            StorageBindingRecord {
+                id: 11,
+                org_id: Some(1),
+                name: "object-replica".into(),
+                kind: "s3".into(),
+                root: "private-bucket/tenant-prefix".into(),
+                access: "private".into(),
+                endpoint: Some("https://origin.internal.example".into()),
+                credential_ref: Some("sealed:never-render".into()),
+                is_instance_default: false,
+                created_at: 1_700_000_000,
+            },
+        ]
+    }
+
+    fn render_org_storage(can_configure: bool, can_manage_storage: bool) -> String {
+        org_dashboard(
+            "viewer@acme.example",
+            &org(),
+            "csrf-tok",
+            &[],
+            &[],
+            &[],
+            &storage_bindings(),
+            &[],
+            false,
+            false,
+            can_configure,
+            can_manage_storage,
+            false,
+            1,
+            1,
+            1,
+            "storage",
+            Instant::now(),
+        )
+    }
+
+    #[test]
+    fn org_storage_redacts_locations_without_storage_manage() {
+        // Deliberately grant registry configuration but not storage management:
+        // the two permissions must not be conflated by the renderer.
+        let redacted = render_org_storage(true, false);
+        assert!(redacted.contains("<h1>Storage · acme</h1>"));
+        assert!(redacted.contains("location hidden · storage management required"));
+        for secret_location in [
+            "/srv/private/acme",
+            "https://origin.internal.example",
+            "private-bucket/tenant-prefix",
+            "sealed:never-render",
+        ] {
+            assert!(
+                !redacted.contains(secret_location),
+                "leaked {secret_location}"
+            );
+        }
+        assert!(!redacted.contains("/-/org/acme/bindings/10"));
+        assert!(!redacted.contains("action=\"/-/org/acme/bindings\""));
+        assert!(!redacted.contains("action=\"/-/org/acme/bindings/delete\""));
+
+        let privileged = render_org_storage(false, true);
+        assert!(privileged.contains("/srv/private/acme"));
+        assert!(privileged.contains("https://origin.internal.example/private-bucket/tenant-prefix"));
+        assert!(privileged.contains("/-/org/acme/bindings/10"));
+        assert!(privileged.contains("action=\"/-/org/acme/bindings\""));
+        assert!(!privileged.contains("sealed:never-render"));
+    }
+
+    #[test]
+    fn settings_route_matrix_uses_section_destinations() {
+        let cache_nav =
+            settings_layout(&cache_settings_navigation("acme", "build", "overview"), "");
+        for route in [
+            "/-/org/acme/caches/build",
+            "/-/org/acme/caches/build/general",
+            "/-/org/acme/caches/build/storage",
+            "/-/org/acme/caches/build/serving",
+            "/-/org/acme/caches/build/links",
+            "/-/org/acme/caches/build/pins",
+            "/-/org/acme/caches/build/danger",
+        ] {
+            assert!(cache_nav.contains(&format!("href=\"{route}\"")), "{route}");
+        }
+
+        let registry_nav =
+            settings_layout(&registry_settings_navigation("acme/main", "overview"), "");
+        for route in [
+            "/acme/main/-/settings",
+            "/acme/main/-/settings/general",
+            "/acme/main/-/settings/storage",
+            "/acme/main/-/settings/serving",
+            "/acme/main/-/settings/caches",
+            "/acme/main/-/settings/danger",
+        ] {
+            assert!(
+                registry_nav.contains(&format!("href=\"{route}\"")),
+                "{route}"
+            );
+        }
+    }
+
+    #[test]
     fn caches_tab_reconciles_config_against_links() {
         let caches = [
             RegistryCacheRow {
@@ -5817,6 +6375,7 @@ mod cache_render_tests {
             "acme",
             "csrf-tok",
             None,
+            &[],
             &[],
             &caches,
             &external,
