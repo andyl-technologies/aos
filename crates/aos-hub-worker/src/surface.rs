@@ -1,17 +1,17 @@
 //! The R2-backed [`SurfaceProvider`] for the shared service (wasm32-only).
 //!
 //! The shared [`RpcService`](aos_hub_core::service::RpcService) reads a
-//! registry's wire surface (loose git objects, `info/refs`, channel partitions,
-//! NARs, …) through the [`SurfaceProvider`]/[`SurfaceFetch`] ports
-//! ([`aos_hub_core::fetch`]). On the Cloudflare Worker that surface lives
-//! in the hub-owned R2 bucket, with each registry occupying a *prefix*
-//! (RFC-0004 "Storage": registries as prefixes in a shared bucket). This module
-//! supplies the Worker's concrete fetcher: it resolves the per-registry prefix
-//! from the [`RegistryRecord`] and reads R2 keys `{prefix}{path}` via the
-//! [`crate::keymap::r2_key`] mapping and `bucket.get(...).execute()`. The shared
+//! registry/cache wire surface (loose git objects, `info/refs`, channel
+//! partitions, NARs, …) through the [`SurfaceProvider`]/[`SurfaceFetch`] ports
+//! ([`aos_hub_core::fetch`]). On the Cloudflare Worker a topology placement maps
+//! its binding plus prefix to either the hub-owned R2 bucket or an external
+//! S3-compatible store. Unplaced resources retain the earlier resource-prefix
+//! resolver as a migration fallback. R2 reads map `{prefix}{path}` via the
+//! [`crate::keymap::r2_key`] mapping. The shared
 //! machine-surface facade
-//! ([`aos_hub_core::service::RpcService::facade_fetch`]) and the RPC
-//! `GitService` reads both read through this one provider, so they cannot drift.
+//! ([`aos_hub_core::service::RpcService::registry_serve`] and
+//! [`aos_hub_core::service::RpcService::cache_serve`]) and the RPC `GitService`
+//! reads all use this provider, so runtime adapters cannot drift.
 //!
 //! The R2 bucket handle is not `Send`/`Sync`, but on the single-threaded Worker
 //! the core ports drop those bounds (the wasm32 `BackendBounds` is unbounded),
@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use worker::Bucket;
 
 use aos_hub_core::auth::seal::SecretSealer;
-use aos_hub_core::db::{Cache, Database, RegistryRecord};
+use aos_hub_core::db::{Cache, Database, RegistryRecord, SurfacePlacementRecord};
 use aos_hub_core::fetch::{OriginFetch, StreamedRead, SurfaceFetch, SurfaceProvider};
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
@@ -101,6 +101,42 @@ async fn cache_s3_surface(
     S3Surface::from_binding(&binding, &cache.prefix, sealer)
 }
 
+/// Resolves one explicit placement to an external object store.
+///
+/// The instance-default binding maps to the Worker's bound R2 bucket and thus
+/// returns `None`; external S3/R2 bindings return a signed surface scoped to the
+/// placement prefix.
+async fn placement_s3_surface(
+    db: &Database,
+    sealer: &dyn SecretSealer,
+    placement: &SurfacePlacementRecord,
+) -> Result<Option<S3Surface>> {
+    let binding = db
+        .storage_binding(placement.storage_binding_id)
+        .await?
+        .ok_or_else(|| {
+            aos_hub_core::placement_read::terminal_read_error(format!(
+                "placement '{}' references a missing storage binding",
+                placement.name
+            ))
+        })?;
+    if binding.is_instance_default {
+        return Ok(None);
+    }
+    if !matches!(binding.kind.as_str(), "s3" | "r2") {
+        return Err(aos_hub_core::placement_read::terminal_read_error(format!(
+            "placement '{}' uses unsupported Worker storage kind '{}'",
+            placement.name, binding.kind
+        )));
+    }
+    S3Surface::from_binding(&binding, &placement.prefix, sealer).map_err(|error| {
+        aos_hub_core::placement_read::terminal_read_error(format!(
+            "placement '{}' has invalid object-store configuration: {error:#}",
+            placement.name
+        ))
+    })
+}
+
 /// Whether an R2 error message names a transient, retryable condition.
 ///
 /// Cloudflare R2 surfaces error `10001` ("We encountered an internal error.
@@ -155,7 +191,16 @@ async fn r2_get(bucket: &Bucket, key: &str) -> Result<Option<wasm_bindgen::JsVal
             Ok(v) if v.is_null() || v.is_undefined() => return Ok(None),
             Ok(v) => return Ok(Some(v)),
             Err(e) if attempt < 2 && is_transient_r2(&format!("{e:?}")) => attempt += 1,
-            Err(e) => return Err(anyhow::anyhow!("R2 get {key}: {e:?}")),
+            Err(e) if is_transient_r2(&format!("{e:?}")) => {
+                return Err(aos_hub_core::placement_read::retryable_read_error(format!(
+                    "R2 get {key}: {e:?}"
+                )));
+            }
+            Err(e) => {
+                return Err(aos_hub_core::placement_read::terminal_read_error(format!(
+                    "R2 get {key}: {e:?}"
+                )));
+            }
         }
     }
 }
@@ -240,6 +285,21 @@ impl R2SurfaceProvider {
 
 #[async_trait(?Send)]
 impl SurfaceProvider for R2SurfaceProvider {
+    async fn placement_fetcher(
+        &self,
+        placement: &SurfacePlacementRecord,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        if let Some(surface) =
+            placement_s3_surface(&self.db, self.sealer.as_ref(), placement).await?
+        {
+            return Ok(Box::new(S3SurfaceFetch { surface }));
+        }
+        Ok(Box::new(R2SurfaceFetch {
+            bucket: self.bucket.clone(),
+            prefix: placement.prefix.clone(),
+        }))
+    }
+
     async fn fetcher(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceFetch>> {
         if let Some(surface) = registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
         {
@@ -294,9 +354,12 @@ impl SurfaceFetch for R2SurfaceFetch {
             .map_err(|e| anyhow::anyhow!("R2 read body {key}: arrayBuffer call: {e:?}"))?
             .dyn_into()
             .map_err(|e| anyhow::anyhow!("R2 read body {key}: not a promise: {e:?}"))?;
-        let buffer = JsFuture::from(promise)
-            .await
-            .map_err(|e| anyhow::anyhow!("R2 read body {key}: {e:?}"))?;
+        let buffer = JsFuture::from(promise).await.map_err(|e| {
+            // The platform provides no stable error code for this rejection.
+            // Unknown JS failures fail closed; only `r2_get`'s explicitly
+            // recognized transient 10001 class is retryable.
+            aos_hub_core::placement_read::terminal_read_error(format!("R2 read body {key}: {e:?}"))
+        })?;
         Ok(Some(Uint8Array::new(&buffer).to_vec()))
     }
 
@@ -536,18 +599,28 @@ impl SurfaceFetch for S3SurfaceFetch {
         )
         .send()
         .await
-        .map_err(|err| anyhow::anyhow!("s3 GET {}: {err}", self.surface.describe()))?;
+        .map_err(|err| {
+            aos_hub_core::placement_read::retryable_read_error(format!(
+                "s3 GET {}: {err}",
+                self.surface.describe()
+            ))
+        })?;
         let status = response.status_code();
         if status == 404 {
             return Ok(None);
         }
         if !(200..300).contains(&status) {
-            anyhow::bail!("s3 GET {}: status {status}", self.surface.describe());
+            return Err(aos_hub_core::placement_read::http_status_read_error(
+                &format!("s3 GET {}", self.surface.describe()),
+                status,
+            ));
         }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| anyhow::anyhow!("s3 read body {}: {err}", self.surface.describe()))?;
+        let bytes = response.bytes().await.map_err(|err| {
+            aos_hub_core::placement_read::retryable_read_error(format!(
+                "s3 read body {}: {err}",
+                self.surface.describe()
+            ))
+        })?;
         Ok(Some(bytes))
     }
 
@@ -568,7 +641,10 @@ impl SurfaceFetch for S3SurfaceFetch {
             .map_err(|err| anyhow::anyhow!("s3 list {}: {err}", self.surface.describe()))?;
             let status = response.status_code();
             if !(200..300).contains(&status) {
-                anyhow::bail!("s3 list {}: status {status}", self.surface.describe());
+                return Err(aos_hub_core::placement_read::http_status_read_error(
+                    &format!("s3 list {}", self.surface.describe()),
+                    status,
+                ));
             }
             let body = response.text().await.map_err(|err| {
                 anyhow::anyhow!("s3 list body {}: {err}", self.surface.describe())
@@ -618,16 +694,21 @@ impl SurfaceFetch for S3SurfaceFetch {
         init.with_method(Method::Get).with_headers(headers);
         let request = Request::new_with_init(&url, &init)
             .map_err(|err| anyhow::anyhow!("s3 build request: {err}"))?;
-        let mut response = Fetch::Request(request)
-            .send()
-            .await
-            .map_err(|err| anyhow::anyhow!("s3 GET {}: {err}", self.surface.describe()))?;
+        let mut response = Fetch::Request(request).send().await.map_err(|err| {
+            aos_hub_core::placement_read::retryable_read_error(format!(
+                "s3 GET {}: {err}",
+                self.surface.describe()
+            ))
+        })?;
         let status = response.status_code();
         if status == 404 {
             return Ok(None);
         }
         if !(200..300).contains(&status) {
-            anyhow::bail!("s3 GET {}: status {status}", self.surface.describe());
+            return Err(aos_hub_core::placement_read::http_status_read_error(
+                &format!("s3 GET {}", self.surface.describe()),
+                status,
+            ));
         }
         // A `206` carries the served range + total in `Content-Range`; a `200`
         // carries the size in `Content-Length` and serves the whole object.
@@ -696,7 +777,10 @@ impl SurfaceFetch for S3SurfaceFetch {
             return Ok(None);
         }
         if !(200..300).contains(&status) {
-            anyhow::bail!("s3 HEAD {}: status {status}", self.surface.describe());
+            return Err(aos_hub_core::placement_read::http_status_read_error(
+                &format!("s3 HEAD {}", self.surface.describe()),
+                status,
+            ));
         }
         let len = response
             .headers()

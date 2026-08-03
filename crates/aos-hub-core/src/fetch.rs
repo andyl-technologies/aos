@@ -11,10 +11,11 @@
 //!   commits through it), and [`list`](SurfaceFetch::list) the whole surface —
 //!   the enumeration storage migration and the cache re-scan walk, treating the
 //!   store as the source of truth.
-//! - [`SurfaceProvider`] — resolve the [`SurfaceFetch`] for a given registry.
-//!   The native hub picks a filesystem or HTTP fetcher per the registry's
-//!   storage binding; the Worker returns an R2-backed fetcher scoped to the
-//!   registry's prefix.
+//! - [`SurfaceProvider`] — open a [`SurfaceFetch`] for an explicitly selected
+//!   physical placement. The native hub resolves its binding and prefix to a
+//!   filesystem or object-store reader; the Worker resolves the same record to
+//!   bound R2 or an external S3-compatible origin. Resource-based methods remain
+//!   as the migration seam for surfaces without placement inventory.
 //!
 //! Both carry the same target-conditional bound as the rest of the core ports
 //! ([`BackendBounds`]): `Send + Sync` natively, unbounded on the single-threaded
@@ -23,7 +24,7 @@
 use anyhow::Result;
 
 use crate::backend::BackendBounds;
-use crate::db::RegistryRecord;
+use crate::db::{RegistryRecord, SurfacePlacementRecord};
 
 /// A streaming read of a surface object: the body, the object's total size, and
 /// the served byte range (`None` = the whole object was served).
@@ -190,15 +191,36 @@ pub trait OriginFetch: BackendBounds {
     ) -> Result<Option<StreamedRead>>;
 }
 
-/// Resolves the [`SurfaceFetch`] for a registry (the per-registry store seam).
+/// Resolves a [`SurfaceFetch`] for a physical placement or legacy resource.
 ///
-/// The native hub inspects the registry's storage binding to choose a
-/// filesystem or HTTP fetcher; the Worker returns an R2-backed fetcher scoped to
-/// the registry's prefix. Keeping this a port lets the `GitService` methods and
-/// the facade in [`crate::service`] obtain a reader without knowing the store.
+/// Topology-aware serving selects a placement in the shared planner, then this
+/// port resolves only that placement's binding and prefix. The resource-based
+/// methods preserve the migration path for unplaced surfaces and older
+/// background consumers.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceProvider: BackendBounds {
+    /// Opens a reader rooted at one explicit physical placement.
+    ///
+    /// New topology-aware serving paths use this method so selection remains in
+    /// the shared planner and adapters only translate a binding plus prefix into
+    /// a concrete backend reader. The default errors for compatibility with
+    /// providers that have not yet adopted topology-aware reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the placement's binding cannot be resolved or the
+    /// runtime does not support its backend kind.
+    async fn placement_fetcher(
+        &self,
+        placement: &SurfacePlacementRecord,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        let _ = placement;
+        Err(crate::placement_read::terminal_read_error(
+            "this surface provider does not support placement-aware reads",
+        ))
+    }
+
     /// Build the surface reader for `registry`.
     ///
     /// # Errors

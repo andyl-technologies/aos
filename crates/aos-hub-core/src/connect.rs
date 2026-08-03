@@ -42,7 +42,7 @@ use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::service::{FacadeObject, FacadeWrite, RpcError, RpcService};
+use crate::service::{FacadeWrite, ReadAuthorization, RegistryServeOutcome, RpcError, RpcService};
 use crate::web::browse::{self, Rendered};
 
 /// The reserved human-namespace marker segment (`/{slug}/-/…`).
@@ -184,17 +184,17 @@ where
 ///
 /// The catch-all `GET`/`HEAD` handler for the registry machine surface
 /// (`/{slug}/{*path}`): it delegates to
-/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch), which
-/// classifies the path, enforces registry visibility against the
-/// `Authorization` header, and reads the bytes through the
+/// [`RpcService::registry_serve`](crate::service::RpcService::registry_serve),
+/// which classifies the path, enforces registry visibility against the
+/// `Authorization` header, and streams through the placement-aware
 /// [`SurfaceProvider`](crate::fetch::SurfaceProvider). A hit renders as `200`
 /// with the path's `Content-Type` and `Cache-Control`; a `None` (non-machine
 /// path or absent object) renders as `404`; an [`RpcError`] renders as the
 /// Connect error envelope (so a private registry read without authority is the
 /// usual `401`/`403`/`404`).
 ///
-/// The body is dropped for the response either way, so a `HEAD` and a `GET`
-/// share this one handler and differ only in whether axum elides the body.
+/// A `HEAD` and a `GET` share this one handler and differ only in whether axum
+/// elides the already-streaming body.
 async fn facade(
     svc: Arc<RpcService>,
     headers: HeaderMap,
@@ -207,69 +207,49 @@ async fn facade(
     // (Range-aware, generated `nix-cache-info`, presigned-`302`) — the *same*
     // path the native hub uses, so the Worker streams a NAR from R2 rather than
     // buffering it. Caches and registries are separate slug namespaces, so a
-    // cache slug is never a registry; registries fall through to `facade_fetch`.
+    // cache slug is never a registry; registries continue to `registry_serve`.
     if let Ok(Some(cache)) = svc.db.cache_by_slug(&slug).await {
         let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
-        return match svc.cache_serve(auth.as_deref(), &cache, &path, range).await {
+        return match svc
+            .cache_serve(
+                ReadAuthorization::AuthorizationHeader(auth.as_deref()),
+                &cache,
+                &path,
+                range,
+            )
+            .await
+        {
             Ok(Some(resp)) => resp,
             Ok(None) => StatusCode::NOT_FOUND.into_response(),
             Err(err) => error_response(&err),
         };
     }
-    match svc.facade_fetch(auth.as_deref(), &slug, &path).await {
-        // A presigned private-origin read: `302` to the (short-lived) origin URL
-        // the client fetches directly, instead of serving bytes through the hub.
-        Ok(Some(FacadeObject {
-            redirect: Some(location),
-            ..
-        })) => match header::HeaderValue::from_str(&location) {
-            Ok(value) => (StatusCode::FOUND, [(header::LOCATION, value)]).into_response(),
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        },
-        Ok(Some(object)) => (
-            [
-                (header::CONTENT_TYPE, object.content_type),
-                (header::CACHE_CONTROL, object.cache_control),
-            ],
-            object.bytes,
-        )
-            .into_response(),
-        // Nothing served for the single-segment slug. If that slug is itself a
-        // flat registry, the path is genuinely absent (`404`). Otherwise the
-        // `/{slug}/{*path}` wildcard captured a NESTED-canonical URL — the slug
-        // spans `/` (e.g. `andyl/demo`) — so resolve it over the full path and
-        // dispatch to the shared browse/facade handlers. This is the Worker's
-        // equivalent of the native hub's `machine_path` nested fallthrough; the
-        // extra `registry_by_slug` lookup runs only on this cold (would-be-404)
-        // branch, never on a successful serve.
-        Ok(None) => {
-            if matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_))) {
+    // A resolved registry uses the same placement-aware streaming path as the
+    // native shell. Selection/failover finishes before the Body is returned;
+    // Range and large NAR/release payloads therefore retain parity without
+    // buffering the object in the Worker isolate.
+    if let Ok(Some(registry)) = svc.db.registry_by_slug(&slug).await {
+        let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+        return match svc
+            .registry_serve(
+                ReadAuthorization::AuthorizationHeader(auth.as_deref()),
+                &registry,
+                &path,
+                range,
+            )
+            .await
+        {
+            Ok(RegistryServeOutcome::Response(resp)) => resp,
+            Ok(RegistryServeOutcome::NotFound | RegistryServeOutcome::UnplacedNotFound) => {
                 StatusCode::NOT_FOUND.into_response()
-            } else {
-                nested_dispatch(svc, headers, &slug, &path, query).await
             }
-        }
-        // A `not_found("registry")` for a single-segment slug that is itself a
-        // real registry is a genuine miss (`404`); otherwise it is the
-        // nested-canonical case the `Ok(None)` arm also handles. `facade_fetch`
-        // reports `Err(NotFound)` rather than `Ok(None)` precisely when the
-        // requested machine path is suffix-classified (`*.narinfo`) at the
-        // org-level slug — e.g. `/andyl/main/<hash>.narinfo` splits to
-        // `slug = "andyl"`, `path = "main/<hash>.narinfo"`, whose `.narinfo`
-        // suffix makes `is_machine_path` true even though `andyl` names no
-        // registry. Root machine pointers (`info/refs`, `HEAD`, `nar/…`) are
-        // dir/exact-classified and so reach `Ok(None)` and the nested
-        // fallthrough already; this arm extends that same fallthrough to the
-        // suffix-classified paths so a nested registry's narinfos resolve too.
-        Err(err) if matches!(err, RpcError::NotFound(_)) => {
-            if matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_))) {
-                error_response(&err)
-            } else {
-                nested_dispatch(svc, headers, &slug, &path, query).await
-            }
-        }
-        Err(err) => error_response(&err),
+            Err(err) => error_response(&err),
+        };
     }
+    // Neither flat namespace matched. Reconstruct the full path and resolve a
+    // nested registry directly; all public machine reads then re-enter this
+    // function through the placement-aware streaming branches above.
+    nested_dispatch(svc, headers, &slug, &path, query).await
 }
 
 /// Dispatch a nested-canonical (`org/registry`, `acme/infra/cdn`) GET/HEAD
@@ -701,19 +681,19 @@ macro_rules! rpc_route {
 /// methods served over the surface-read port
 /// ([`SurfaceProvider`](crate::fetch::SurfaceProvider)). It additionally mounts
 /// the machine-surface facade as a catch-all `GET`/`HEAD` `/{slug}/{*path}`
-/// route (delegating to
-/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch) over
-/// the same surface port), registered last so the static RPC method paths win
-/// over the wildcard by axum's static-over-dynamic precedence.
+/// route (delegating to the placement-aware streaming
+/// [`RpcService::registry_serve`](crate::service::RpcService::registry_serve)
+/// and [`RpcService::cache_serve`](crate::service::RpcService::cache_serve)
+/// paths), registered last so the static RPC method paths win over the wildcard
+/// by axum's static-over-dynamic precedence.
 ///
 /// This is the variant the Cloudflare Worker mounts whole: it has no facade of
 /// its own, so the shared route is its only machine-surface serving path. The
 /// native hub instead mounts the facade-less [`rpc_router`] and keeps its own
-/// richer `/{slug}/{*path}` handler (filesystem autoindex, `http(s)` redirect,
-/// pull-through mirroring, producer-document inert serving, and session-cookie
-/// authorization), delegating only the plain fetch+serve to the same
-/// [`RpcService::facade_fetch`](crate::service::RpcService::facade_fetch). The
-/// returned router carries the service as axum state.
+/// `/{slug}/{*path}` route for nested resolution, session-cookie authorization,
+/// and the transitional pull-through hook; successful registry bytes still run
+/// through the same [`RpcService::registry_serve`] streamer. The returned router
+/// carries the service as axum state.
 #[must_use]
 /// Which serving target a frontend domain resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

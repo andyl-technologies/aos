@@ -34,8 +34,10 @@
 //!   authentication (tokens/sessions/SSO/device-flow), private-registry access
 //!   control, and IAM/config/webhook/publish RPCs;
 //! - the machine-path facade (`GET`/`HEAD` `/{slug}/{*path}`), delegating to
-//!   [`aos_hub_core::service::RpcService::facade_fetch`] over the R2
-//!   [`surface`] provider;
+//!   the shared streaming
+//!   [`registry_serve`](aos_hub_core::service::RpcService::registry_serve) and
+//!   [`cache_serve`](aos_hub_core::service::RpcService::cache_serve) paths over
+//!   the placement-aware R2 [`surface`] provider;
 //! - the no-JS browse UI and JSON read API (the hub home `/`, the
 //!   `/{slug}/-/…` pages, and `/{slug}/-/api/…`), served by
 //!   [`aos_hub_core::web`] from the same `RpcService` read methods.

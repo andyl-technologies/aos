@@ -37,12 +37,13 @@ use aos_registry_surface::object::Oid;
 use crate::auth::jwt::{Claims, JwtKeys};
 use crate::binding::{BindingKind, RuntimeKind};
 use crate::clock;
-use crate::db::{Database, FrontendRecord, IndexStatus, RegistryRecord};
+use crate::db::{Database, FrontendRecord, IndexStatus, RegistryRecord, SurfaceTarget};
 use crate::domain::iam::{self, claims_principal, token_allows};
 use crate::domain::{Permission, PrincipalKind, Role, Scope};
 use crate::fetch::SurfaceProvider;
 use crate::keymap;
 use crate::lease::PublishLease;
+use crate::placement_read::{self, PlacementReadOutcome};
 use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
 use crate::reindex::Reindexer;
 use crate::surface_write::SurfaceWriteProvider;
@@ -649,16 +650,12 @@ fn changeset_message(row: crate::db::ChangesetRow) -> pb::Changeset {
     }
 }
 
-/// One byte payload served from a registry's machine surface, with its headers.
+/// A buffered compatibility payload for an internal machine-surface lookup.
 ///
-/// The shared machine-path facade ([`RpcService::facade_fetch`]) returns this so
-/// both shells render an identical response: the surface `bytes`, plus the
-/// `Content-Type` and `Cache-Control` the runtime-neutral [`keymap`]
-/// classification assigns the requested path. The two header fields are
-/// `'static` because [`keymap::content_type`] and [`keymap::cache_control`]
-/// return the fixed serving contract `apr origin upload` writes (the
-/// immutable/60-second cache split), so the surface stays byte-and-header
-/// faithful to what `apm`, stock git, and Nix expect.
+/// [`RpcService::facade_fetch`] remains for bounded internal browse lookups and
+/// nested-resolution compatibility. Public registry/cache machine routes use
+/// [`RpcService::registry_serve`] / [`RpcService::cache_serve`] so large objects
+/// stream. The fixed header values still come from runtime-neutral [`keymap`].
 #[derive(Debug)]
 pub struct FacadeObject {
     /// The object's bytes, read from the registry's surface store. Empty when
@@ -673,6 +670,33 @@ pub struct FacadeObject {
     /// a private external binding (RFC-0004 "presigned GET → 302"). `302`
     /// (temporary), never a cacheable permanent redirect, since the URL expires.
     pub redirect: Option<String>,
+}
+
+/// Result of the placement-aware registry streaming path.
+pub enum RegistryServeOutcome {
+    /// A streamed response was opened from the selected backend.
+    Response(axum::response::Response),
+    /// Topology was configured, but the path was not servable.
+    NotFound,
+    /// The atomic read-plan snapshot had no placements and its migration reader missed.
+    UnplacedNotFound,
+}
+
+/// Authorization evidence accepted by the shared machine-surface streamers.
+///
+/// Worker and other transport-neutral callers pass their raw authorization
+/// header so [`RpcService`] remains the authorization boundary. The native
+/// transport may instead pass [`PreauthorizedSession`](Self::PreauthorizedSession)
+/// only after its session-aware registry/cache gate has validated the cookie
+/// against the requested surface. The service still checks resource liveness
+/// for both variants, so org suspension and cache deletion take effect between
+/// the transport gate and placement selection.
+#[derive(Clone, Copy, Debug)]
+pub enum ReadAuthorization<'a> {
+    /// A raw `Authorization` header, or `None` for an anonymous request.
+    AuthorizationHeader(Option<&'a str>),
+    /// A native browser session already authorized for this exact surface.
+    PreauthorizedSession,
 }
 
 /// Maximum surface-file upload size accepted by a single facade `PUT` (256 MiB).
@@ -1279,6 +1303,32 @@ impl RpcService {
         let claims = self.require_claims(auth)?;
         self.require_permission(&claims, Permission::Read, &Scope::parse(&registry.slug))
             .await
+    }
+
+    /// Authorize a registry machine read while rechecking registry liveness.
+    async fn require_registry_stream_read(
+        &self,
+        auth: ReadAuthorization<'_>,
+        registry: &RegistryRecord,
+    ) -> Result<(), RpcError> {
+        match auth {
+            ReadAuthorization::AuthorizationHeader(header) => {
+                self.require_read(header, registry).await
+            }
+            ReadAuthorization::PreauthorizedSession => {
+                if let Some(org_id) = registry.org_id {
+                    if !self
+                        .db
+                        .org_is_active(org_id)
+                        .await
+                        .map_err(RpcError::internal)?
+                    {
+                        return Err(RpcError::not_found("registry"));
+                    }
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Resolve a registry by slug or map a miss to `NotFound`.
@@ -2989,6 +3039,35 @@ impl RpcService {
         }
     }
 
+    /// Authorize a cache machine read while rechecking cache liveness.
+    async fn require_cache_stream_read(
+        &self,
+        auth: ReadAuthorization<'_>,
+        cache: &crate::db::Cache,
+    ) -> Result<(), RpcError> {
+        match auth {
+            ReadAuthorization::AuthorizationHeader(header) => {
+                self.require_cache_read(header, cache).await
+            }
+            ReadAuthorization::PreauthorizedSession => {
+                if cache.deleted_at.is_some() {
+                    return Err(RpcError::not_found("cache"));
+                }
+                if let Some(org_id) = cache.org_id {
+                    if !self
+                        .db
+                        .org_is_active(org_id)
+                        .await
+                        .map_err(RpcError::internal)?
+                    {
+                        return Err(RpcError::not_found("cache"));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Build the wire [`pb::ManagedCache`] for a cache record, resolving its org
     /// slug and binding name; `stats` folds in usage/link/root counts.
     async fn managed_cache_message(
@@ -4622,8 +4701,10 @@ impl RpcService {
     /// targets (the native hub's `compat` serve path and the Cloudflare Worker's
     /// R2 facade): every registry URL is simultaneously a dumb-HTTP git origin
     /// and a Nix binary cache (RFC-0004 "URL design"), and this reads that
-    /// surface through the [`SurfaceProvider`] port so the byte-and-header
-    /// contract is written once.
+    /// surface through the shared placement planner and [`SurfaceProvider`] port
+    /// so selection, failover, and the byte-and-header contract are written once.
+    /// A surface with no placement rows uses the resource-based migration
+    /// fallback; once any placement exists, the request never bypasses topology.
     ///
     /// Returns `Ok(None)` — which the transport renders as a `404` — when
     /// `machine_path` is not part of the machine surface ([`keymap::is_machine_path`])
@@ -4663,17 +4744,36 @@ impl RpcService {
             .map_err(RpcError::internal)?
         {
             self.require_read(auth, &registry).await?;
-            let fetch = self
-                .surface
-                .fetcher(&registry)
-                .await
-                .map_err(RpcError::internal)?;
-            let Some(bytes) = fetch
-                .fetch(machine_path)
-                .await
-                .map_err(RpcError::internal)?
-            else {
-                return Ok(None);
+            let bytes = match placement_read::fetch_from_placements(
+                self.db.as_ref(),
+                self.surface.as_ref(),
+                SurfaceTarget::Registry(registry.id),
+                machine_path,
+            )
+            .await
+            .map_err(RpcError::internal)?
+            {
+                PlacementReadOutcome::Found(read) => read.value,
+                PlacementReadOutcome::NotFound => return Ok(None),
+                PlacementReadOutcome::NoPlacements => {
+                    // Transitional migration fallback, selected only when the
+                    // planner's one-statement snapshot saw zero placement rows.
+                    // The final cutover backfills all surfaces and deletes this
+                    // branch together with resource-level storage columns.
+                    let fetch = self
+                        .surface
+                        .fetcher(&registry)
+                        .await
+                        .map_err(RpcError::internal)?;
+                    let Some(bytes) = fetch
+                        .fetch(machine_path)
+                        .await
+                        .map_err(RpcError::internal)?
+                    else {
+                        return Ok(None);
+                    };
+                    bytes
+                }
             };
             return Ok(Some(FacadeObject {
                 bytes,
@@ -4697,7 +4797,8 @@ impl RpcService {
     ///
     /// `nix-cache-info` is generated from the cache's config; `<hash>.narinfo`
     /// and `nar/<file>` are served as stored bytes from the cache surface. Reads
-    /// honor the cache's visibility ([`Self::require_cache_read`]).
+    /// honor the cache's visibility ([`Self::require_cache_read`]) and use
+    /// ordered placement failover when topology is configured.
     ///
     /// # Errors
     ///
@@ -4719,6 +4820,35 @@ impl RpcService {
                 cache_control: keymap::cache_control(path),
                 redirect: None,
             }));
+        }
+        match placement_read::fetch_from_placements(
+            self.db.as_ref(),
+            self.surface.as_ref(),
+            SurfaceTarget::BinaryCache(cache.id),
+            path,
+        )
+        .await
+        .map_err(RpcError::internal)?
+        {
+            PlacementReadOutcome::Found(read) => {
+                if let Some(hash) = path.strip_suffix(".narinfo").filter(|h| !h.contains('/')) {
+                    let _ = self
+                        .db
+                        .touch_cache_object(cache.id, hash, clock::now_unix_secs())
+                        .await;
+                }
+                return Ok(Some(FacadeObject {
+                    bytes: read.value,
+                    content_type: keymap::content_type(path),
+                    cache_control: keymap::cache_control(path),
+                    redirect: None,
+                }));
+            }
+            PlacementReadOutcome::NotFound => return Ok(None),
+            PlacementReadOutcome::NoPlacements => {
+                // Transitional zero-placement snapshot: continue into the
+                // resource-level migration reader below. Deleted at cutover.
+            }
         }
         // Authenticated-origin read: when the cache's binding is a private
         // external origin (presign-mode), the hub holds no local bytes — it mints
@@ -5063,13 +5193,104 @@ impl RpcService {
         Ok(Some(registry))
     }
 
+    /// Serves one registry machine object as a streaming, range-aware response.
+    ///
+    /// Placement selection and every retry complete before the response body is
+    /// returned. A body-stream failure is therefore reported on the selected
+    /// placement's response and is never spliced with bytes from a replica.
+    /// During the incremental migration only, a one-statement snapshot with no
+    /// configured placements uses the resource-level reader; the final topology
+    /// cutover removes that branch after backfill.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authentication/authorization error when the registry is not
+    /// readable by the caller, or [`RpcError::Internal`] on planning or backend
+    /// failure.
+    pub async fn registry_serve(
+        &self,
+        auth: ReadAuthorization<'_>,
+        registry: &RegistryRecord,
+        path: &str,
+        range_header: Option<&str>,
+    ) -> Result<RegistryServeOutcome, RpcError> {
+        if !keymap::is_machine_path(path) {
+            return Ok(RegistryServeOutcome::NotFound);
+        }
+        // Reload by id to establish the authorization/serve linearization
+        // point. Route resolution may have happened before a concurrent delete;
+        // only this fresh row may drive auth, placement planning, or migration
+        // fallback decisions.
+        let registry = self
+            .db
+            .registry_by_id(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry"))?;
+        self.require_registry_stream_read(auth, &registry).await?;
+        let requested = parse_byte_range(range_header);
+        let read = match placement_read::stream_from_placements(
+            self.db.as_ref(),
+            self.surface.as_ref(),
+            SurfaceTarget::Registry(registry.id),
+            path,
+            requested,
+        )
+        .await
+        .map_err(RpcError::internal)?
+        {
+            PlacementReadOutcome::Found(read) => read.value,
+            PlacementReadOutcome::NotFound => return Ok(RegistryServeOutcome::NotFound),
+            PlacementReadOutcome::NoPlacements => {
+                // Registration-only HTTP surfaces retain their direct legacy
+                // redirect during migration. Proxying through the default
+                // buffered fetch implementation would regress large NARs and
+                // release packs. Topology-backed HTTP placements use their
+                // streaming adapter above instead.
+                if registry.source_url.starts_with("http://")
+                    || registry.source_url.starts_with("https://")
+                {
+                    let location =
+                        format!("{}/{}", registry.source_url.trim_end_matches('/'), path);
+                    let response = axum::response::Response::builder()
+                        .status(axum::http::StatusCode::FOUND)
+                        .header(axum::http::header::LOCATION, location)
+                        .header(
+                            axum::http::header::CACHE_CONTROL,
+                            keymap::cache_control(path),
+                        )
+                        .body(axum::body::Body::empty())
+                        .map_err(|error| RpcError::internal(anyhow::anyhow!("{error}")))?;
+                    return Ok(RegistryServeOutcome::Response(response));
+                }
+                let fetch = self
+                    .surface
+                    .fetcher(&registry)
+                    .await
+                    .map_err(RpcError::internal)?;
+                let Some(read) = fetch
+                    .fetch_stream(path, requested)
+                    .await
+                    .map_err(RpcError::internal)?
+                else {
+                    return Ok(RegistryServeOutcome::UnplacedNotFound);
+                };
+                read
+            }
+        };
+        Ok(RegistryServeOutcome::Response(
+            Self::streamed_surface_response(path, read)?,
+        ))
+    }
+
     /// Serve a managed cache's machine surface as a **streaming** response — the
     /// single shared cache-read path both shells route through.
     ///
     /// This replaces the former native-only `cache_serve_file` so the native hub
     /// and the Worker stream NAR/narinfo through the *same* code: visibility gate
-    /// → generated `nix-cache-info` → presigned-`302` for a private origin → a
-    /// streaming body from [`SurfaceFetch::fetch_stream`](crate::fetch::SurfaceFetch::fetch_stream)
+    /// → generated `nix-cache-info` → placement selection/failover → legacy
+    /// presigned-`302` for an unplaced private origin → a streaming body from
+    /// [`SurfaceFetch::fetch_stream`](crate::fetch::SurfaceFetch::fetch_stream)
     /// honoring `Range:` (`206` + `Content-Range`). Each shell's fetcher supplies
     /// the stream (native: a `tokio` file `ReaderStream`; Worker: an R2 ranged
     /// GET), so a large NAR never buffers into memory on either.
@@ -5082,13 +5303,22 @@ impl RpcService {
     /// [`RpcError::Internal`] on store/database failure.
     pub async fn cache_serve(
         &self,
-        auth: Option<&str>,
+        auth: ReadAuthorization<'_>,
         cache: &crate::db::Cache,
         path: &str,
         range_header: Option<&str>,
     ) -> Result<Option<axum::response::Response>, RpcError> {
         use axum::http::{header, StatusCode};
-        self.require_cache_read(auth, cache).await?;
+        // As for registries, discard the route's potentially stale snapshot.
+        // Soft/hard deletion must win before generated responses, topology
+        // planning, or any resource-level migration fallback can serve bytes.
+        let cache = self
+            .db
+            .cache_by_id(cache.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("cache"))?;
+        self.require_cache_stream_read(auth, &cache).await?;
 
         // `nix-cache-info` is hub-generated — small, never streamed or presigned.
         if path == "nix-cache-info" {
@@ -5103,21 +5333,47 @@ impl RpcService {
             return Ok(Some(resp));
         }
 
+        let requested = parse_byte_range(range_header);
+        match placement_read::stream_from_placements(
+            self.db.as_ref(),
+            self.surface.as_ref(),
+            SurfaceTarget::BinaryCache(cache.id),
+            path,
+            requested,
+        )
+        .await
+        .map_err(RpcError::internal)?
+        {
+            PlacementReadOutcome::Found(read) => {
+                if let Some(hash) = path.strip_suffix(".narinfo").filter(|h| !h.contains('/')) {
+                    let _ = self
+                        .db
+                        .touch_cache_object(cache.id, hash, clock::now_unix_secs())
+                        .await;
+                }
+                return Ok(Some(Self::streamed_surface_response(path, read.value)?));
+            }
+            PlacementReadOutcome::NotFound => return Ok(None),
+            PlacementReadOutcome::NoPlacements => {
+                // Transitional zero-placement snapshot: continue into the
+                // resource-level migration reader below. Deleted at cutover.
+            }
+        }
+
         // A private external origin: the hub holds no local bytes. Either stream
         // the origin through the hub (proxy mode) or `302` the client to the
         // presigned URL — the same signed URL, differing only in who fetches it.
         if let Some(url) = self
-            .presign_cache_read(cache, path, clock::now_unix_secs())
+            .presign_cache_read(&cache, path, clock::now_unix_secs())
             .await
             .map_err(RpcError::internal)?
         {
-            let requested = parse_byte_range(range_header);
             // Streamed proxy: only when an OriginFetch is wired AND the cache's
             // primary frontend opts into it (`proxy_config.stream`). The hub
             // fetches the presigned URL and streams the body, so the origin
             // endpoint never reaches the client.
             if let Some(origin) = &self.origin_fetch {
-                if let Some(proxy) = self.cache_streamed_proxy_config(cache).await {
+                if let Some(proxy) = self.cache_streamed_proxy_config(&cache).await {
                     let Some(read) = origin
                         .get_stream(&url, requested)
                         .await
@@ -5135,7 +5391,7 @@ impl RpcService {
                             proxy.max_body_bytes
                         )));
                     }
-                    return Ok(Some(Self::streamed_cache_response(path, read)?));
+                    return Ok(Some(Self::streamed_surface_response(path, read)?));
                 }
             }
             // Otherwise redirect the client to the presigned origin URL.
@@ -5150,10 +5406,9 @@ impl RpcService {
         // Stream the object (or a byte range) through the shared fetch port.
         let fetch = self
             .surface
-            .cache_fetcher(cache)
+            .cache_fetcher(&cache)
             .await
             .map_err(RpcError::internal)?;
-        let requested = parse_byte_range(range_header);
         let Some(read) = fetch
             .fetch_stream(path, requested)
             .await
@@ -5170,7 +5425,7 @@ impl RpcService {
                 .await;
         }
 
-        Ok(Some(Self::streamed_cache_response(path, read)?))
+        Ok(Some(Self::streamed_surface_response(path, read)?))
     }
 
     /// The proxy tuning to use for streamed proxying of a cache's private origin,
@@ -5198,25 +5453,33 @@ impl RpcService {
             .cloned()
     }
 
-    /// Build the `200`/`206` streaming HTTP response for a served cache object.
+    /// Builds the `200`/`206` response for a streamed surface object.
     ///
     /// Shared by the local-surface read and the streamed-origin proxy: a
     /// `StreamedRead` with a `Some` range becomes a `206 Partial Content` with
     /// `Content-Range`/`Content-Length`, and a `None` range a `200 OK` with
-    /// `Content-Length`; both advertise `Accept-Ranges: bytes`.
+    /// `Content-Length`; both advertise `Accept-Ranges: bytes`. The selected
+    /// topology placement is recorded only in structured server logs so an
+    /// unauthenticated response cannot disclose internal storage topology.
     ///
     /// # Errors
     ///
     /// Returns [`RpcError::Internal`] if the response builder rejects a header.
-    fn streamed_cache_response(
+    fn streamed_surface_response(
         path: &str,
         read: crate::fetch::StreamedRead,
     ) -> Result<axum::response::Response, RpcError> {
         use axum::http::{header, StatusCode};
         let ct = keymap::content_type(path);
         let cc = keymap::cache_control(path);
+        let mut builder = axum::response::Response::builder();
+        if keymap::is_producer_document(path) {
+            builder = builder
+                .header(header::CONTENT_SECURITY_POLICY, "sandbox")
+                .header(header::CONTENT_DISPOSITION, "attachment");
+        }
         let resp = match read.range {
-            Some((start, end)) => axum::response::Response::builder()
+            Some((start, end)) => builder
                 .status(StatusCode::PARTIAL_CONTENT)
                 .header(header::CONTENT_TYPE, ct)
                 .header(header::CACHE_CONTROL, cc)
@@ -5227,7 +5490,7 @@ impl RpcService {
                 )
                 .header(header::CONTENT_LENGTH, end - start + 1)
                 .body(read.body),
-            None => axum::response::Response::builder()
+            None => builder
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, ct)
                 .header(header::CACHE_CONTROL, cc)
@@ -6048,8 +6311,9 @@ fn frontend_base_url(domain: &str, base_path: &str, prefix: &str) -> String {
 mod cache_facade_tests {
     use super::{
         assess_cache_link, narinfo_store_hash, parse_cache_narinfo, render_nix_cache_info,
-        visibility_rank, LinkAdvisory,
+        visibility_rank, LinkAdvisory, RpcService,
     };
+    use crate::fetch::StreamedRead;
 
     #[test]
     fn visibility_rank_orders_public_over_internal_over_private() {
@@ -6149,6 +6413,47 @@ mod cache_facade_tests {
         assert!(s.contains("WantMassQuery: 1"), "{s}");
         assert!(s.contains("Priority: 40"), "{s}");
         assert!(render_nix_cache_info(false, 7).contains("WantMassQuery: 0"));
+    }
+
+    #[test]
+    fn streamed_topology_read_does_not_expose_the_placement() {
+        let response = RpcService::streamed_surface_response(
+            "nar/example.nar",
+            StreamedRead {
+                body: axum::body::Body::from("data"),
+                total: 4,
+                range: None,
+            },
+        )
+        .unwrap();
+        assert!(!response.headers().contains_key("x-aos-placement"));
+    }
+
+    #[test]
+    fn streamed_producer_document_is_inert() {
+        let response = RpcService::streamed_surface_response(
+            "index.html",
+            StreamedRead {
+                body: axum::body::Body::from("<script>bad()</script>"),
+                total: 22,
+                range: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .and_then(|value| value.to_str().ok()),
+            Some("sandbox")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(axum::http::header::CONTENT_DISPOSITION)
+                .and_then(|value| value.to_str().ok()),
+            Some("attachment")
+        );
     }
 }
 
