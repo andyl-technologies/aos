@@ -128,8 +128,8 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
 /// router with [`tower::ServiceExt::oneshot`], and converts the
 /// [`http::Response`] back to a [`worker::Response`].
 ///
-/// Before the normal router dispatch, a `GET`/`POST` request is offered to the
-/// shared nested-canonical console dispatcher
+/// Before the normal router dispatch, every request is offered to the shared
+/// nested-canonical console dispatcher
 /// ([`aos_hub_core::web::console::dispatch_nested`]): the shared console routes
 /// capture only a single-segment `{slug}`, so a registry whose canonical path
 /// has slashes (`andyl/demo`) never matches them and would otherwise 404 at the
@@ -152,33 +152,23 @@ pub async fn dispatch(
 ) -> Result<Response> {
     let axum_req = to_axum(req).await?;
 
-    // Buffer the body once: the nested-console check needs it for POST form
-    // parsing, and the fall-through router dispatch needs it too. Decompose into
-    // parts + bytes, run the check, then reassemble so the body is read only
-    // once (a GET carries empty bytes). The body was already fully buffered in
-    // `to_axum`, so `to_bytes` cannot exceed a real limit here.
-    let (parts, body) = axum_req.into_parts();
-    let body_bytes = axum::body::to_bytes(body, usize::MAX)
-        .await
-        .map_err(|err| worker::Error::RustError(format!("buffering request body: {err}")))?;
-
-    // Nested-canonical producer-console pages: only GET/POST can be console
-    // pages, so skip the check for any other method.
-    if parts.method == http::Method::GET || parts.method == http::Method::POST {
-        if let Some(resp) = aos_hub_core::web::console::dispatch_nested(
-            console_deps,
-            parts.method.clone(),
-            parts.uri.clone(),
-            parts.headers.clone(),
-            body_bytes.clone(),
-        )
-        .await
-        {
-            return to_worker(resp).await;
-        }
-    }
-
-    let axum_req = http::Request::from_parts(parts, Body::from(body_bytes));
+    // Buffer once and offer *every* method to the shared nested-console
+    // classifier before frontend/facade routing. This ordering is load-bearing:
+    // recognized console PUT/HEAD/DELETE/PATCH requests must become 405s rather
+    // than storage operations. GET/POST form bodies and the fall-through router
+    // receive the same bytes, so no request body is consumed twice.
+    let axum_req = match crate::bridge_dispatch::dispatch_nested_first(
+        axum_req,
+        |method, uri, headers, body| {
+            aos_hub_core::web::console::dispatch_nested(console_deps, method, uri, headers, body)
+        },
+    )
+    .await
+    .map_err(|err| worker::Error::RustError(format!("buffering request body: {err}")))?
+    {
+        crate::bridge_dispatch::NestedDispatch::Handled(resp) => return to_worker(resp).await,
+        crate::bridge_dispatch::NestedDispatch::Forward(req) => req,
+    };
 
     // Shared frontend domain-routing: rewrite the request to its bound
     // `/{slug}/…` identity by `Host` (or short-circuit a `404`) before dispatch.

@@ -164,6 +164,38 @@ async fn serve_managed(
 }
 
 #[tokio::test]
+async fn nested_settings_reject_unsupported_methods_before_machine_facade() {
+    let dir = tempfile::tempdir().unwrap();
+    let surface = dir.path().join("surface");
+    std::fs::create_dir_all(&surface).unwrap();
+    let fixture = common::standard_registry(&surface);
+    let db = serve_managed(&surface, &fixture, "public").await;
+    let app = router(app_state(db).await).await;
+
+    for method in ["PUT", "HEAD", "DELETE", "PATCH"] {
+        let resp = send(
+            &app,
+            method,
+            "/acme/infra/prod/cdn/-/settings/storage",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            resp.status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{method} escaped the nested console classifier: {}",
+            resp.body
+        );
+    }
+
+    // Axum normally derives HEAD from GET. The flat router overrides that
+    // convenience so both canonical path shapes publish the same contract.
+    let resp = send(&app, "HEAD", "/missing/-/settings/storage", None, None).await;
+    assert_eq!(resp.status, StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
 async fn login_flow_creates_user_session_and_logout_revokes() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let app = router(app_state(Arc::clone(&db)).await).await;
@@ -682,9 +714,12 @@ async fn org_dashboard_shows_create_affordances_to_admins() {
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     let a_cookie = login(&app, &db, "admin@acme.com").await;
-    // The org view is split across focused tabs: registries (default) shows the
-    // create-registry affordance; the create forms live on their own tabs.
+    // The organization default is a read-only topology overview. Registry
+    // creation lives on the focused Registries section instead.
     let resp = send(&app, "GET", "/-/org/acme", Some(&a_cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(!resp.body.contains("create a registry"), "{}", resp.body);
+    let resp = send(&app, "GET", "/-/org/acme/registries", Some(&a_cookie), None).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("create a registry"), "{}", resp.body);
     let resp = send(&app, "GET", "/-/org/acme/projects", Some(&a_cookie), None).await;

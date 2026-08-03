@@ -263,9 +263,22 @@ button.danger { color: var(--bad); border-color: var(--bad); }
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: 0.9rem;
   border-right: 1px solid var(--rule);
   padding-right: 1rem;
+}
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.settings-nav-label {
+  padding: 0 0.7rem 0.2rem;
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .settings-nav a {
   display: block;
@@ -286,6 +299,30 @@ button.danger { color: var(--bad); border-color: var(--bad); }
  * blowing out the grid track. The first heading aligns with the nav's top. */
 .settings-body { min-width: 0; }
 .settings-body > :first-child { margin-top: 0; }
+.settings-overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.8rem;
+  margin: 1rem 0 1.4rem;
+}
+.settings-overview-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--rule);
+  color: var(--ink);
+  text-decoration: none;
+}
+.settings-overview-card:hover {
+  border-color: var(--accent);
+  text-decoration: none;
+}
+.settings-overview-card strong {
+  overflow-wrap: anywhere;
+  font-size: 1.05rem;
+}
+.settings-overview-card span { color: var(--dim); }
 @media (max-width: 48rem) {
   .settings { grid-template-columns: 1fr; gap: 0.6rem; }
   .settings-nav {
@@ -296,6 +333,12 @@ button.danger { color: var(--bad); border-color: var(--bad); }
     padding-right: 0;
     padding-bottom: 0.5rem;
   }
+  .settings-nav-group {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+  }
+  .settings-nav-label { width: 100%; padding-top: 0.3rem; }
   .settings-nav a { border-left: none; border-bottom: 2px solid transparent; }
   .settings-nav a.active { border-left: none; border-bottom-color: var(--accent); }
 }

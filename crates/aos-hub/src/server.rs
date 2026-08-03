@@ -1094,6 +1094,21 @@ async fn machine_path(
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
+    // Offer the complete request path to the nested console before resolving
+    // the first captured segment as a flat registry. A flat registry named
+    // `acme` must not shadow the console for nested `acme/infra/...`.
+    if let Some(response) = aos_hub_core::web::console::dispatch_nested(
+        console_deps(&state),
+        axum::http::Method::GET,
+        uri.clone(),
+        headers.clone(),
+        axum::body::Bytes::new(),
+    )
+    .await
+    {
+        return response;
+    }
+
     match state.db.registry_by_slug(&slug).await {
         Ok(Some(registry)) => {
             if let Err(deny) = authorize_registry_read(&state, &registry, &headers).await {
@@ -1101,21 +1116,8 @@ async fn machine_path(
             }
             serve_registry_machine_path(&state, &registry, &path).await
         }
-        // Not a flat registry: a nested-canonical registry's console `/-/`
-        // page (its flat console routes capture only a single-segment slug),
-        // else a nested machine/browse path.
+        // Not a flat registry: resolve a nested machine/browse path.
         Ok(None) => {
-            if let Some(response) = aos_hub_core::web::console::dispatch_nested(
-                console_deps(&state),
-                axum::http::Method::GET,
-                uri.clone(),
-                headers.clone(),
-                axum::body::Bytes::new(),
-            )
-            .await
-            {
-                return response;
-            }
             let nested = resolve_nested(&state, &uri, &headers, peer, Instant::now()).await;
             // A managed cache is tried last, so it can never shadow a flat or
             // nested registry (or console path) that shares the first URL
@@ -1213,9 +1215,22 @@ async fn post_machine_path(
 async fn put_machine_path(
     State(state): State<Arc<AppState>>,
     Path((slug, path)): Path<(String, String)>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
+    if let Some(response) = aos_hub_core::web::console::dispatch_nested(
+        console_deps(&state),
+        axum::http::Method::PUT,
+        uri,
+        headers.clone(),
+        body.clone(),
+    )
+    .await
+    {
+        return response;
+    }
+
     match resolve_write_target(&state, &slug, &path).await {
         Ok(Some((registry_slug, tail))) => {
             crate::facade::put_machine_path(&state, &registry_slug, &tail, &headers, body).await
@@ -1237,8 +1252,21 @@ async fn put_machine_path(
 async fn head_machine_path(
     State(state): State<Arc<AppState>>,
     Path((slug, path)): Path<(String, String)>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(response) = aos_hub_core::web::console::dispatch_nested(
+        console_deps(&state),
+        axum::http::Method::HEAD,
+        uri,
+        headers.clone(),
+        axum::body::Bytes::new(),
+    )
+    .await
+    {
+        return response;
+    }
+
     match resolve_write_target(&state, &slug, &path).await {
         Ok(Some((registry_slug, tail))) => {
             crate::facade::head_machine_path(&state, &registry_slug, &tail, &headers).await
@@ -1423,27 +1451,27 @@ async fn nested_catch_all(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    // The fallback receives every method; route the upload facade's
-    // PUT/HEAD to a nested registry's surface, and everything else to the
-    // read resolver — but first give the producer console a chance to claim
-    // a nested-canonical `/-/` console path (its flat routes only capture a
-    // single-segment slug, so nested registries land here).
+    // The fallback receives every method. Always let the producer-console
+    // classifier claim a recognized nested `/-/` path first, including its
+    // 405 response for unsupported methods; only true machine paths may reach
+    // the upload facade or read resolver.
+    if let Some(response) = aos_hub_core::web::console::dispatch_nested(
+        console_deps(&state),
+        method.clone(),
+        uri.clone(),
+        headers.clone(),
+        body.clone(),
+    )
+    .await
+    {
+        return response;
+    }
+
     match method {
         axum::http::Method::PUT | axum::http::Method::HEAD => {
             resolve_nested_write(&state, &method, &uri, &headers, body).await
         }
         axum::http::Method::GET | axum::http::Method::POST => {
-            if let Some(response) = aos_hub_core::web::console::dispatch_nested(
-                console_deps(&state),
-                method.clone(),
-                uri.clone(),
-                headers.clone(),
-                body,
-            )
-            .await
-            {
-                return response;
-            }
             resolve_nested(&state, &uri, &headers, peer, Instant::now()).await
         }
         _ => resolve_nested(&state, &uri, &headers, peer, Instant::now()).await,
