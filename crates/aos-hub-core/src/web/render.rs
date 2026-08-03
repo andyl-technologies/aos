@@ -7,7 +7,7 @@
 //! [`PageChrome`] rather than read from a task-local, so the module compiles to
 //! `wasm32-unknown-unknown` (no `axum`, no `tokio`, no `std::fs`).
 //!
-//! Every page renders from the `aos.registry.v1` read shapes the
+//! Every page renders from the `aos.hub.v1` read shapes the
 //! [`RpcService`](crate::service::RpcService) returns
 //! ([`aos_proto_types`] structs) — the same data the JSON read API serializes —
 //! and is a complete document built by [`page`]: a masthead with the brand, a
@@ -323,7 +323,7 @@ pub fn home_page(chrome: &PageChrome, registries: &[pb::Registry]) -> String {
 
 /// The registry home page: trust anchors, channels, packages, setup snippet.
 ///
-/// Renders entirely from the `aos.registry.v1` read shapes: trust anchors from
+/// Renders entirely from the `aos.hub.v1` read shapes: trust anchors from
 /// the registry's `roster`, plus the channel and package lists.
 #[must_use]
 pub fn registry_home(

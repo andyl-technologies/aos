@@ -1,4 +1,4 @@
-//! Tenancy read-path authorization for the `aos.registry.v1` RPCs (sec H-2, H-3).
+//! Tenancy read-path authorization for the `aos.hub.v1` RPCs (sec H-2, H-3).
 //!
 //! Drives the real axum router with Connect-JSON `POST`s, with and without a
 //! bearer JWT, to prove the read-path services do not disclose another tenant's
@@ -76,7 +76,7 @@ async fn rpc(
 ) -> (StatusCode, serde_json::Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/aos.registry.v1.{method}"))
+        .uri(format!("/aos.hub.v1.{method}"))
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {
@@ -351,7 +351,13 @@ async fn list_orgs_requires_membership_and_filters() {
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous enumeration is denied (was the per-slug harvest primitive).
-    let (status, _resp) = rpc(&app, "OrgService/ListOrgs", serde_json::json!({}), None).await;
+    let (status, _resp) = rpc(
+        &app,
+        "OrganizationService/ListOrgs",
+        serde_json::json!({}),
+        None,
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
@@ -365,7 +371,7 @@ async fn list_orgs_requires_membership_and_filters() {
     let member = bearer(Principal::user(1), "acme", &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
-        "OrgService/ListOrgs",
+        "OrganizationService/ListOrgs",
         serde_json::json!({}),
         Some(&member),
     )
@@ -429,7 +435,7 @@ async fn list_bindings_requires_membership_and_redacts_root_for_non_admin() {
     // Anonymous is denied — the host path never leaks.
     let (status, resp) = rpc(
         &app,
-        "StorageService/ListBindings",
+        "StorageBindingService/ListBindings",
         serde_json::json!({ "orgSlug": "acme" }),
         None,
     )
@@ -448,7 +454,7 @@ async fn list_bindings_requires_membership_and_redacts_root_for_non_admin() {
     let member = bearer(Principal::user(2), "acme", &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
-        "StorageService/ListBindings",
+        "StorageBindingService/ListBindings",
         serde_json::json!({ "orgSlug": "acme" }),
         Some(&member),
     )
@@ -477,7 +483,7 @@ async fn list_bindings_requires_membership_and_redacts_root_for_non_admin() {
     );
     let (status, resp) = rpc(
         &app,
-        "StorageService/ListBindings",
+        "StorageBindingService/ListBindings",
         serde_json::json!({ "orgSlug": "acme" }),
         Some(&admin),
     )

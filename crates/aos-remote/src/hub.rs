@@ -8,13 +8,13 @@
 //!
 //! RFC-0004 Phase 5 unifies the native hub and the Cloudflare Worker on one
 //! transport: **Connect-JSON** — plain JSON over HTTP. Each method is one POST
-//! route, `POST {base}/aos.registry.v1.{Service}/{Method}`, with the
+//! route, `POST {base}/aos.hub.v1.{Service}/{Method}`, with the
 //! JSON-encoded request message as the body and the JSON-encoded response
 //! message as a `200` body. Errors are the Connect error envelope with a
 //! matching non-2xx status:
 //!
 //! ```text
-//! POST /aos.registry.v1.RegistryService/GetRegistry
+//! POST /aos.hub.v1.RegistryService/GetRegistry
 //! Content-Type: application/json
 //! { "slug": "acme/cdn" }
 //!   -> 200 { "registry": { "slug": "acme/cdn", … } }
@@ -23,8 +23,8 @@
 //!
 //! This client speaks that transport directly with `reqwest`, exchanging the
 //! [`aos_proto_types`] message structs as JSON. Construct one with
-//! [`RegistryHubClient::connect_anonymous`] for public reads, or
-//! [`RegistryHubClient::connect_with_token`] to attach a hub access JWT for
+//! [`HubClient::connect_anonymous`] for public reads, or
+//! [`HubClient::connect_with_token`] to attach a hub access JWT for
 //! authenticated calls.
 
 use anyhow::{Context, Result};
@@ -82,10 +82,10 @@ const HUB_TIMEOUT_SECS: u64 = 30;
 ///
 /// Cheap to clone (the inner `reqwest` client is reference counted). Anonymous
 /// instances see only public registries; a token-bearing instance (see
-/// [`RegistryHubClient::connect_with_token`]) additionally sees what the
+/// [`HubClient::connect_with_token`]) additionally sees what the
 /// token's scope/permissions allow.
 #[derive(Clone)]
-pub struct RegistryHubClient {
+pub struct HubClient {
     /// The shared `reqwest` client (rustls TLS for `https://`).
     http: reqwest::Client,
     /// The hub root with a single trailing slash, e.g. `https://hub.example/`.
@@ -96,7 +96,7 @@ pub struct RegistryHubClient {
 
 /// A short-lived, registry-scoped upload credential minted by the hub.
 ///
-/// Returned by [`RegistryHubClient::mint_upload_credentials`]; the `token` is
+/// Returned by [`HubClient::mint_upload_credentials`]; the `token` is
 /// shown exactly once.
 #[derive(Debug, Clone)]
 pub struct UploadCredentials {
@@ -108,7 +108,7 @@ pub struct UploadCredentials {
     pub expires_at: i64,
 }
 
-impl RegistryHubClient {
+impl HubClient {
     /// Connects to a hub for **unauthenticated** public reads.
     ///
     /// No credential is attached, so calls see only public registries and
@@ -156,7 +156,7 @@ impl RegistryHubClient {
     /// Performs one unary Connect-JSON call against the hub.
     ///
     /// POSTs `req` as a JSON body to `{base}{full_method}` (e.g.
-    /// `aos.registry.v1.RegistryService/ListRegistries`), attaching the bearer
+    /// `aos.hub.v1.RegistryService/ListRegistries`), attaching the bearer
     /// token when one is set, and decodes the JSON response message. A non-2xx
     /// status is parsed as the Connect error envelope `{ code, message }`.
     ///
@@ -211,7 +211,7 @@ impl RegistryHubClient {
 
     /// Lists the registries visible to this client (public ones when anonymous).
     ///
-    /// Calls `aos.registry.v1.RegistryService/ListRegistries`.
+    /// Calls `aos.hub.v1.RegistryService/ListRegistries`.
     ///
     /// # Errors
     ///
@@ -219,7 +219,7 @@ impl RegistryHubClient {
     pub async fn list_registries(&self) -> Result<Vec<Registry>> {
         let resp: ListRegistriesResponse = self
             .call(
-                "aos.registry.v1.RegistryService/ListRegistries",
+                "aos.hub.v1.RegistryService/ListRegistries",
                 &ListRegistriesRequest::default(),
             )
             .await
@@ -230,7 +230,7 @@ impl RegistryHubClient {
     /// Fetches one registry by slug, or `None` when it does not exist or is not
     /// visible to this client.
     ///
-    /// Calls `aos.registry.v1.RegistryService/GetRegistry`.
+    /// Calls `aos.hub.v1.RegistryService/GetRegistry`.
     ///
     /// # Errors
     ///
@@ -239,7 +239,7 @@ impl RegistryHubClient {
     pub async fn get_registry(&self, slug: &str) -> Result<Option<Registry>> {
         let resp: GetRegistryResponse = self
             .call(
-                "aos.registry.v1.RegistryService/GetRegistry",
+                "aos.hub.v1.RegistryService/GetRegistry",
                 &GetRegistryRequest {
                     slug: slug.into(),
                     ..Default::default()
@@ -253,7 +253,7 @@ impl RegistryHubClient {
     /// Lists a registry's verified releases (newest first), for a public
     /// registry when anonymous.
     ///
-    /// Calls `aos.registry.v1.RegistryService/ListReleases`.
+    /// Calls `aos.hub.v1.RegistryService/ListReleases`.
     ///
     /// # Errors
     ///
@@ -261,7 +261,7 @@ impl RegistryHubClient {
     pub async fn list_releases(&self, slug: &str) -> Result<Vec<Release>> {
         let resp: ListReleasesResponse = self
             .call(
-                "aos.registry.v1.RegistryService/ListReleases",
+                "aos.hub.v1.RegistryService/ListReleases",
                 &ListReleasesRequest {
                     slug: slug.into(),
                     ..Default::default()
@@ -275,7 +275,7 @@ impl RegistryHubClient {
     /// Lists a registry's published packages (the verified index), for a public
     /// registry when anonymous.
     ///
-    /// Calls `aos.registry.v1.PackageService/ListPackages`.
+    /// Calls `aos.hub.v1.PackageService/ListPackages`.
     ///
     /// # Errors
     ///
@@ -283,7 +283,7 @@ impl RegistryHubClient {
     pub async fn list_packages(&self, slug: &str) -> Result<Vec<PackageSummary>> {
         let resp: ListPackagesResponse = self
             .call(
-                "aos.registry.v1.PackageService/ListPackages",
+                "aos.hub.v1.PackageService/ListPackages",
                 &ListPackagesRequest {
                     slug: slug.into(),
                     ..Default::default()
@@ -297,7 +297,7 @@ impl RegistryHubClient {
     /// Lists a registry's rollout channels, for a public registry when
     /// anonymous.
     ///
-    /// Calls `aos.registry.v1.ChannelService/ListChannels`.
+    /// Calls `aos.hub.v1.ChannelService/ListChannels`.
     ///
     /// # Errors
     ///
@@ -305,7 +305,7 @@ impl RegistryHubClient {
     pub async fn list_channels(&self, slug: &str) -> Result<Vec<Channel>> {
         let resp: ListChannelsResponse = self
             .call(
-                "aos.registry.v1.ChannelService/ListChannels",
+                "aos.hub.v1.ChannelService/ListChannels",
                 &ListChannelsRequest {
                     slug: slug.into(),
                     ..Default::default()
@@ -320,7 +320,7 @@ impl RegistryHubClient {
     ///
     /// Orgs are a tenant boundary, so this needs an authenticated client (see
     /// [`connect_with_token`](Self::connect_with_token)); an anonymous client
-    /// sees none. Calls `aos.registry.v1.OrgService/ListOrgs`.
+    /// sees none. Calls `aos.hub.v1.OrganizationService/ListOrgs`.
     ///
     /// # Errors
     ///
@@ -328,7 +328,7 @@ impl RegistryHubClient {
     pub async fn list_orgs(&self) -> Result<Vec<Org>> {
         let resp: ListOrgsResponse = self
             .call(
-                "aos.registry.v1.OrgService/ListOrgs",
+                "aos.hub.v1.OrganizationService/ListOrgs",
                 &ListOrgsRequest::default(),
             )
             .await
@@ -338,7 +338,7 @@ impl RegistryHubClient {
 
     /// Lists the projects under an org.
     ///
-    /// Calls `aos.registry.v1.ProjectService/ListProjects`.
+    /// Calls `aos.hub.v1.ProjectService/ListProjects`.
     ///
     /// # Errors
     ///
@@ -346,7 +346,7 @@ impl RegistryHubClient {
     pub async fn list_projects(&self, org_slug: &str) -> Result<Vec<Project>> {
         let resp: ListProjectsResponse = self
             .call(
-                "aos.registry.v1.ProjectService/ListProjects",
+                "aos.hub.v1.ProjectService/ListProjects",
                 &ListProjectsRequest {
                     org_slug: org_slug.into(),
                     ..Default::default()
@@ -359,7 +359,7 @@ impl RegistryHubClient {
 
     /// Lists the storage bindings under an org.
     ///
-    /// Calls `aos.registry.v1.StorageService/ListBindings`.
+    /// Calls `aos.hub.v1.StorageBindingService/ListBindings`.
     ///
     /// # Errors
     ///
@@ -367,7 +367,7 @@ impl RegistryHubClient {
     pub async fn list_bindings(&self, org_slug: &str) -> Result<Vec<Binding>> {
         let resp: ListBindingsResponse = self
             .call(
-                "aos.registry.v1.StorageService/ListBindings",
+                "aos.hub.v1.StorageBindingService/ListBindings",
                 &ListBindingsRequest {
                     org_slug: org_slug.into(),
                     ..Default::default()
@@ -382,7 +382,7 @@ impl RegistryHubClient {
     /// newest first.
     ///
     /// Requires an authenticated client with `audit.read` on the scope. Calls
-    /// `aos.registry.v1.AuditService/ListAudit`.
+    /// `aos.hub.v1.AuditService/ListAudit`.
     ///
     /// # Errors
     ///
@@ -390,7 +390,7 @@ impl RegistryHubClient {
     pub async fn list_audit(&self, scope: &str) -> Result<Vec<AuditEntry>> {
         let resp: ListAuditResponse = self
             .call(
-                "aos.registry.v1.AuditService/ListAudit",
+                "aos.hub.v1.AuditService/ListAudit",
                 &ListAuditRequest {
                     scope: scope.into(),
                     ..Default::default()
@@ -404,7 +404,7 @@ impl RegistryHubClient {
     /// Fetches the full editable instance-settings bundle.
     ///
     /// Requires an authenticated client with `iam.admin` at the instance root.
-    /// Calls `aos.registry.v1.InstanceService/GetInstanceSettings`.
+    /// Calls `aos.hub.v1.InstanceService/GetInstanceSettings`.
     ///
     /// # Errors
     ///
@@ -413,7 +413,7 @@ impl RegistryHubClient {
     pub async fn get_instance_settings(&self) -> Result<InstanceSettings> {
         let resp: GetInstanceSettingsResponse = self
             .call(
-                "aos.registry.v1.InstanceService/GetInstanceSettings",
+                "aos.hub.v1.InstanceService/GetInstanceSettings",
                 &GetInstanceSettingsRequest {},
             )
             .await
@@ -427,7 +427,7 @@ impl RegistryHubClient {
     /// Each `(key, value)` in `values` is set (a blank value clears the key to
     /// its default); each key in `clear` is reset to its default. Requires an
     /// authenticated client with `iam.admin` at the instance root. Calls
-    /// `aos.registry.v1.InstanceService/UpdateInstanceSettings`.
+    /// `aos.hub.v1.InstanceService/UpdateInstanceSettings`.
     ///
     /// # Errors
     ///
@@ -441,7 +441,7 @@ impl RegistryHubClient {
     ) -> Result<InstanceSettings> {
         let resp: UpdateInstanceSettingsResponse = self
             .call(
-                "aos.registry.v1.InstanceService/UpdateInstanceSettings",
+                "aos.hub.v1.InstanceService/UpdateInstanceSettings",
                 &UpdateInstanceSettingsRequest { values, clear },
             )
             .await
@@ -454,7 +454,7 @@ impl RegistryHubClient {
     /// instance-wide), newest first.
     ///
     /// Requires an authenticated client with `audit.read` on the scope. Calls
-    /// `aos.registry.v1.ConfigService/ListChangesets`.
+    /// `aos.hub.v1.RegistryConfigurationService/ListChangesets`.
     ///
     /// # Errors
     ///
@@ -462,7 +462,7 @@ impl RegistryHubClient {
     pub async fn list_changesets(&self, scope: &str) -> Result<Vec<Changeset>> {
         let resp: ListChangesetsResponse = self
             .call(
-                "aos.registry.v1.ConfigService/ListChangesets",
+                "aos.hub.v1.RegistryConfigurationService/ListChangesets",
                 &ListChangesetsRequest {
                     scope: scope.into(),
                     ..Default::default()
@@ -477,7 +477,7 @@ impl RegistryHubClient {
     ///
     /// Requires an authenticated client (see
     /// [`connect_with_token`](Self::connect_with_token)). Calls
-    /// `aos.registry.v1.OrgService/CreateOrg`.
+    /// `aos.hub.v1.OrganizationService/CreateOrg`.
     ///
     /// # Errors
     ///
@@ -487,7 +487,7 @@ impl RegistryHubClient {
     pub async fn create_org(&self, slug: &str, name: &str) -> Result<Org> {
         let resp: CreateOrgResponse = self
             .call(
-                "aos.registry.v1.OrgService/CreateOrg",
+                "aos.hub.v1.OrganizationService/CreateOrg",
                 &CreateOrgRequest {
                     slug: slug.into(),
                     name: name.into(),
@@ -504,7 +504,7 @@ impl RegistryHubClient {
     ///
     /// Requires `registry.configure` on the org scope. The `path` is the
     /// materialized path within the org (`""` for an org-root project). Calls
-    /// `aos.registry.v1.ProjectService/CreateProject`.
+    /// `aos.hub.v1.ProjectService/CreateProject`.
     ///
     /// # Errors
     ///
@@ -514,7 +514,7 @@ impl RegistryHubClient {
     pub async fn create_project(&self, org_slug: &str, path: &str, name: &str) -> Result<Project> {
         let resp: CreateProjectResponse = self
             .call(
-                "aos.registry.v1.ProjectService/CreateProject",
+                "aos.hub.v1.ProjectService/CreateProject",
                 &CreateProjectRequest {
                     org_slug: org_slug.into(),
                     path: path.into(),
@@ -534,7 +534,7 @@ impl RegistryHubClient {
     /// `s3`, or `r2`; `root` is the backend root (a host path for `local_fs`, or
     /// the bucket for `s3`/`r2`). For an `s3`/`r2` binding, `origin` carries the
     /// endpoint, region, access mode, and (for a private binding) credentials.
-    /// Calls `aos.registry.v1.StorageService/CreateBinding`.
+    /// Calls `aos.hub.v1.StorageBindingService/CreateBinding`.
     ///
     /// # Errors
     ///
@@ -551,7 +551,7 @@ impl RegistryHubClient {
     ) -> Result<Binding> {
         let resp: CreateBindingResponse = self
             .call(
-                "aos.registry.v1.StorageService/CreateBinding",
+                "aos.hub.v1.StorageBindingService/CreateBinding",
                 &CreateBindingRequest {
                     org_slug: org_slug.into(),
                     name: name.into(),
@@ -574,7 +574,7 @@ impl RegistryHubClient {
     ///
     /// An empty `binding_name` targets the deployment default store. Returns the
     /// `(objects, bytes)` copied. Calls
-    /// `aos.registry.v1.RegistryService/ChangeRegistryStorage`.
+    /// `aos.hub.v1.RegistryService/ChangeRegistryStorage`.
     ///
     /// # Errors
     ///
@@ -587,7 +587,7 @@ impl RegistryHubClient {
     ) -> Result<(u64, u64)> {
         let resp: ChangeRegistryStorageResponse = self
             .call(
-                "aos.registry.v1.RegistryService/ChangeRegistryStorage",
+                "aos.hub.v1.RegistryService/ChangeRegistryStorage",
                 &ChangeRegistryStorageRequest {
                     slug: slug.into(),
                     binding_name: binding_name.into(),
@@ -602,7 +602,7 @@ impl RegistryHubClient {
     ///
     /// An empty `binding_name` targets the deployment default store. Returns the
     /// `(objects, bytes)` copied. Calls
-    /// `aos.registry.v1.CacheService/ChangeCacheStorage`.
+    /// `aos.hub.v1.BinaryCacheService/ChangeCacheStorage`.
     ///
     /// # Errors
     ///
@@ -614,7 +614,7 @@ impl RegistryHubClient {
     ) -> Result<(u64, u64)> {
         let resp: ChangeCacheStorageResponse = self
             .call(
-                "aos.registry.v1.CacheService/ChangeCacheStorage",
+                "aos.hub.v1.BinaryCacheService/ChangeCacheStorage",
                 &ChangeCacheStorageRequest {
                     cache_slug: cache_slug.into(),
                     binding_name: binding_name.into(),
@@ -633,7 +633,7 @@ impl RegistryHubClient {
     /// Requires `registry.configure` on the registry. Returns the id of the
     /// proposed advertise change request (empty when none was needed — promote
     /// it with `apr change merge`). Calls
-    /// `aos.registry.v1.CacheService/LinkCache`.
+    /// `aos.hub.v1.BinaryCacheService/LinkCache`.
     ///
     /// # Errors
     ///
@@ -648,7 +648,7 @@ impl RegistryHubClient {
     ) -> Result<String> {
         let resp: LinkCacheResponse = self
             .call(
-                "aos.registry.v1.CacheService/LinkCache",
+                "aos.hub.v1.BinaryCacheService/LinkCache",
                 &LinkCacheRequest {
                     cache_slug: cache_slug.into(),
                     registry_slug: registry_slug.into(),
@@ -669,7 +669,7 @@ impl RegistryHubClient {
     /// was advertised) via a change request. Requires `registry.configure` on the
     /// registry. Returns `(removed, change_id)` — whether a link row was deleted
     /// and the id of any proposed de-advertise change request. Calls
-    /// `aos.registry.v1.CacheService/UnlinkCache`.
+    /// `aos.hub.v1.BinaryCacheService/UnlinkCache`.
     ///
     /// # Errors
     ///
@@ -681,7 +681,7 @@ impl RegistryHubClient {
     ) -> Result<(bool, String)> {
         let resp: UnlinkCacheResponse = self
             .call(
-                "aos.registry.v1.CacheService/UnlinkCache",
+                "aos.hub.v1.BinaryCacheService/UnlinkCache",
                 &UnlinkCacheRequest {
                     cache_slug: cache_slug.into(),
                     registry_slug: registry_slug.into(),
@@ -702,7 +702,7 @@ impl RegistryHubClient {
     /// place the surface in a storage binding (an empty `binding_name` leaves the
     /// registry unbound); `trust_keys` are pinned anchors in
     /// `name:Ed25519:<base64>` form. Calls
-    /// `aos.registry.v1.RegistryService/CreateRegistry`.
+    /// `aos.hub.v1.RegistryService/CreateRegistry`.
     ///
     /// # Errors
     ///
@@ -722,7 +722,7 @@ impl RegistryHubClient {
     ) -> Result<Registry> {
         let resp: CreateRegistryResponse = self
             .call(
-                "aos.registry.v1.RegistryService/CreateRegistry",
+                "aos.hub.v1.RegistryService/CreateRegistry",
                 &CreateRegistryRequest {
                     org_slug: org_slug.into(),
                     project_path: project_path.into(),
@@ -743,7 +743,7 @@ impl RegistryHubClient {
     /// Lists an org's webhook subscriptions (secrets are never returned).
     ///
     /// Requires `members.manage` on the org scope. Calls
-    /// `aos.registry.v1.WebhookService/ListWebhooks`.
+    /// `aos.hub.v1.WebhookService/ListWebhooks`.
     ///
     /// # Errors
     ///
@@ -751,7 +751,7 @@ impl RegistryHubClient {
     pub async fn list_webhooks(&self, org_slug: &str) -> Result<Vec<Webhook>> {
         let resp: ListWebhooksResponse = self
             .call(
-                "aos.registry.v1.WebhookService/ListWebhooks",
+                "aos.hub.v1.WebhookService/ListWebhooks",
                 &ListWebhooksRequest {
                     org_slug: org_slug.into(),
                     ..Default::default()
@@ -768,7 +768,7 @@ impl RegistryHubClient {
     /// Requires `members.manage` on the org scope. `events` is the set of
     /// subscribed event types (empty subscribes to all); an empty `secret` asks
     /// the hub to generate one. Calls
-    /// `aos.registry.v1.WebhookService/CreateWebhook`.
+    /// `aos.hub.v1.WebhookService/CreateWebhook`.
     ///
     /// # Errors
     ///
@@ -783,7 +783,7 @@ impl RegistryHubClient {
     ) -> Result<(Webhook, String)> {
         let resp: CreateWebhookResponse = self
             .call(
-                "aos.registry.v1.WebhookService/CreateWebhook",
+                "aos.hub.v1.WebhookService/CreateWebhook",
                 &CreateWebhookRequest {
                     org_slug: org_slug.into(),
                     url: url.into(),
@@ -804,7 +804,7 @@ impl RegistryHubClient {
     /// Deletes a webhook by id, returning whether one was removed.
     ///
     /// Requires `members.manage` on the owning org's scope. Calls
-    /// `aos.registry.v1.WebhookService/DeleteWebhook`.
+    /// `aos.hub.v1.WebhookService/DeleteWebhook`.
     ///
     /// # Errors
     ///
@@ -812,7 +812,7 @@ impl RegistryHubClient {
     pub async fn delete_webhook(&self, id: i64) -> Result<bool> {
         let resp: aos_proto_types::DeleteWebhookResponse = self
             .call(
-                "aos.registry.v1.WebhookService/DeleteWebhook",
+                "aos.hub.v1.WebhookService/DeleteWebhook",
                 &DeleteWebhookRequest {
                     id,
                     ..Default::default()
@@ -828,7 +828,7 @@ impl RegistryHubClient {
     /// Requires `publish` on the registry's canonical scope. The returned
     /// [`UploadCredentials::token`] is a provisioning secret shown exactly once;
     /// hand it to `apr origin upload --token` or exchange it at `/oauth2/token`.
-    /// Calls `aos.registry.v1.PublishService/MintUploadCredentials`.
+    /// Calls `aos.hub.v1.PublishService/MintUploadCredentials`.
     ///
     /// # Errors
     ///
@@ -837,7 +837,7 @@ impl RegistryHubClient {
     pub async fn mint_upload_credentials(&self, slug: &str) -> Result<UploadCredentials> {
         let resp: MintUploadCredentialsResponse = self
             .call(
-                "aos.registry.v1.PublishService/MintUploadCredentials",
+                "aos.hub.v1.PublishService/MintUploadCredentials",
                 &MintUploadCredentialsRequest {
                     slug: slug.into(),
                     ..Default::default()
@@ -855,7 +855,7 @@ impl RegistryHubClient {
     /// Lists a registry's committed commit log (newest first), the first page.
     ///
     /// Requires `read` on the registry scope (follows registry visibility).
-    /// Calls `aos.registry.v1.GitService/GitLog`.
+    /// Calls `aos.hub.v1.GitService/GitLog`.
     ///
     /// # Errors
     ///
@@ -863,7 +863,7 @@ impl RegistryHubClient {
     pub async fn git_log(&self, slug: &str) -> Result<Vec<GitCommit>> {
         let resp: GitLogResponse = self
             .call(
-                "aos.registry.v1.GitService/GitLog",
+                "aos.hub.v1.GitService/GitLog",
                 &GitLogRequest {
                     slug: slug.into(),
                     ..Default::default()
@@ -879,7 +879,7 @@ impl RegistryHubClient {
     ///
     /// An empty `from_oid` diffs the whole tree as additions; an empty `to_oid`
     /// defaults to the current HEAD. Requires `read` on the registry scope.
-    /// Calls `aos.registry.v1.GitService/GitDiff`.
+    /// Calls `aos.hub.v1.GitService/GitDiff`.
     ///
     /// # Errors
     ///
@@ -887,7 +887,7 @@ impl RegistryHubClient {
     pub async fn git_diff(&self, slug: &str, from_oid: &str, to_oid: &str) -> Result<String> {
         let resp: GitDiffResponse = self
             .call(
-                "aos.registry.v1.GitService/GitDiff",
+                "aos.hub.v1.GitService/GitDiff",
                 &GitDiffRequest {
                     slug: slug.into(),
                     from_oid: from_oid.into(),
@@ -903,7 +903,7 @@ impl RegistryHubClient {
     /// Lists a registry's draft git-backed change requests.
     ///
     /// Requires `audit.read` on the registry scope. Calls
-    /// `aos.registry.v1.GitService/ListChangeRequests`.
+    /// `aos.hub.v1.GitService/ListChangeRequests`.
     ///
     /// # Errors
     ///
@@ -911,7 +911,7 @@ impl RegistryHubClient {
     pub async fn list_change_requests(&self, slug: &str) -> Result<Vec<ChangeRequest>> {
         let resp: ListChangeRequestsResponse = self
             .call(
-                "aos.registry.v1.GitService/ListChangeRequests",
+                "aos.hub.v1.GitService/ListChangeRequests",
                 &ListChangeRequestsRequest {
                     slug: slug.into(),
                     ..Default::default()
@@ -925,7 +925,7 @@ impl RegistryHubClient {
     /// Fetches full detail for one package (every version and platform artifact),
     /// or `None` when it does not exist or is not visible to this client.
     ///
-    /// Calls `aos.registry.v1.PackageService/GetPackage`.
+    /// Calls `aos.hub.v1.PackageService/GetPackage`.
     ///
     /// # Errors
     ///
@@ -933,7 +933,7 @@ impl RegistryHubClient {
     pub async fn get_package(&self, slug: &str, name: &str) -> Result<Option<Package>> {
         let resp: GetPackageResponse = self
             .call(
-                "aos.registry.v1.PackageService/GetPackage",
+                "aos.hub.v1.PackageService/GetPackage",
                 &GetPackageRequest {
                     slug: slug.into(),
                     name: name.into(),
@@ -948,7 +948,7 @@ impl RegistryHubClient {
     /// Fetches one rollout channel with its partition map, or `None` when it does
     /// not exist or is not visible to this client.
     ///
-    /// Calls `aos.registry.v1.ChannelService/GetChannel`.
+    /// Calls `aos.hub.v1.ChannelService/GetChannel`.
     ///
     /// # Errors
     ///
@@ -956,7 +956,7 @@ impl RegistryHubClient {
     pub async fn get_channel(&self, slug: &str, name: &str) -> Result<Option<Channel>> {
         let resp: GetChannelResponse = self
             .call(
-                "aos.registry.v1.ChannelService/GetChannel",
+                "aos.hub.v1.ChannelService/GetChannel",
                 &GetChannelRequest {
                     slug: slug.into(),
                     name: name.into(),
@@ -972,7 +972,7 @@ impl RegistryHubClient {
     /// revert change-set.
     ///
     /// Requires `registry.configure` on the change-set's scope. Calls
-    /// `aos.registry.v1.ConfigService/RevertChangeset`.
+    /// `aos.hub.v1.RegistryConfigurationService/RevertChangeset`.
     ///
     /// # Errors
     ///
@@ -981,7 +981,7 @@ impl RegistryHubClient {
     pub async fn revert_changeset(&self, change_id: &str) -> Result<Changeset> {
         let resp: RevertChangesetResponse = self
             .call(
-                "aos.registry.v1.ConfigService/RevertChangeset",
+                "aos.hub.v1.RegistryConfigurationService/RevertChangeset",
                 &RevertChangesetRequest {
                     change_id: change_id.into(),
                     ..Default::default()

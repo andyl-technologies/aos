@@ -1,6 +1,6 @@
 //! The transport-free registry-hub service layer (RFC-0004 Phase 5).
 //!
-//! [`RpcService`] holds the `aos.registry.v1` method bodies once, decoupled
+//! [`RpcService`] holds the `aos.hub.v1` method bodies once, decoupled
 //! from any HTTP framework or wire protocol. Both deployment targets call it:
 //!
 //! - the **native hub** mounts it behind `axum` (served via `axum::serve`);
@@ -9,7 +9,7 @@
 //!
 //! Because the `connectrpc` server runtime cannot target `wasm32`, the hub does
 //! not run it; instead these methods are served as **Connect-JSON** — plain
-//! JSON over HTTP, `POST /aos.registry.v1.{Service}/{Method}` — by a thin `axum`
+//! JSON over HTTP, `POST /aos.hub.v1.{Service}/{Method}` — by a thin `axum`
 //! layer (see the worker/native shells). The method bodies here are wholly
 //! transport-agnostic: each takes the caller's raw `Authorization` header (so
 //! the JWT is verified once, here, against [`JwtKeys`]) plus a request struct
@@ -22,7 +22,7 @@
 //! status (see [`RpcError::code`] / [`RpcError::http_status`]).
 //!
 //! ```text
-//! POST /aos.registry.v1.RegistryService/GetRegistry
+//! POST /aos.hub.v1.RegistryService/GetRegistry
 //! { "slug": "acme/cdn" }
 //!   -> 200 { "registry": { "slug": "acme/cdn", "index_state": "fresh", … } }
 //!   -> 404 { "code": "not_found", "message": "registry not found" }
@@ -758,7 +758,7 @@ fn triggers_reindex(path: &str) -> bool {
     path == "info/refs" || path == "nix-cache-info"
 }
 
-/// The shared, transport-free implementation of the `aos.registry.v1` services.
+/// The shared, transport-free implementation of the `aos.hub.v1` services.
 ///
 /// Holds only data the method bodies need — the [`Database`], the [`JwtKeys`]
 /// that verify (and mint) bearer tokens, and the externally reachable base URL
@@ -1478,7 +1478,7 @@ impl RpcService {
         }
     }
 
-    /// `OrgService.CreateOrg` — create an org and grant the caller `Owner`.
+    /// `OrganizationService.CreateOrg` — create an org and grant the caller `Owner`.
     ///
     /// The bootstrap exception: any authenticated principal may create an org.
     /// A user caller is granted `Owner` at the new org's scope; a
@@ -1849,7 +1849,7 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("org"))
     }
 
-    /// `OrgService.GetOrg` — look up an organization by slug.
+    /// `OrganizationService.GetOrg` — look up an organization by slug.
     ///
     /// # Errors
     ///
@@ -1866,7 +1866,7 @@ impl RpcService {
         })
     }
 
-    /// `OrgService.ListOrgs` — the organizations the caller is a member of,
+    /// `OrganizationService.ListOrgs` — the organizations the caller is a member of,
     /// ordered by slug.
     ///
     /// This is *not* a public directory: the caller must present a bearer JWT,
@@ -1939,7 +1939,7 @@ impl RpcService {
         Ok(pb::ListProjectsResponse { projects })
     }
 
-    /// `StorageService.ListBindings` — an org's storage bindings, by name.
+    /// `StorageBindingService.ListBindings` — an org's storage bindings, by name.
     ///
     /// The caller must present a bearer JWT granting [`Permission::Read`] on
     /// the org scope. A binding's `root` is the on-disk path on the hub host,
@@ -2146,7 +2146,7 @@ impl RpcService {
         })
     }
 
-    /// `IamService.CreateServiceAccount` — create (or return) an org-owned
+    /// `IdentityService.CreateServiceAccount` — create (or return) an org-owned
     /// service account, a non-human principal for CI/automation.
     ///
     /// Idempotent: returns the existing account when one of that name already
@@ -2237,7 +2237,7 @@ impl RpcService {
         }
     }
 
-    /// `IamService.GrantMembership` — grant a role to a principal at a scope.
+    /// `IdentityService.GrantMembership` — grant a role to a principal at a scope.
     ///
     /// Requires [`Permission::IamAdmin`] at the target scope.
     ///
@@ -2272,7 +2272,7 @@ impl RpcService {
         Ok(pb::GrantMembershipResponse {})
     }
 
-    /// `IamService.RevokeMembership` — revoke a principal's grant at a scope
+    /// `IdentityService.RevokeMembership` — revoke a principal's grant at a scope
     /// (a no-op when none exists). Requires [`Permission::IamAdmin`] at the scope.
     ///
     /// # Errors
@@ -2298,7 +2298,7 @@ impl RpcService {
         Ok(pb::RevokeMembershipResponse {})
     }
 
-    /// `IamService.MintToken` — mint a registry-scoped bearer token for `owner`.
+    /// `IdentityService.MintToken` — mint a registry-scoped bearer token for `owner`.
     ///
     /// The token's permissions are intersected with the **owner's** effective
     /// grants at the scope, so a token can never exceed its owner's authority.
@@ -2347,7 +2347,7 @@ impl RpcService {
                 owner,
                 scope.as_str(),
                 &perms,
-                Some("minted via IamService"),
+                Some("minted via IdentityService"),
                 None,
             )
             .await
@@ -2355,7 +2355,7 @@ impl RpcService {
         Ok(pb::MintTokenResponse { token_id, secret })
     }
 
-    /// `IamService.RevokeToken` — revoke a token by id.
+    /// `IdentityService.RevokeToken` — revoke a token by id.
     ///
     /// Requires [`Permission::IamAdmin`] at the instance root (an instance admin
     /// may revoke any token); per-owner self-revoke remains the console's path.
@@ -2379,7 +2379,7 @@ impl RpcService {
         Ok(pb::RevokeTokenResponse {})
     }
 
-    /// `IamService.ListTokens` — the caller's own active tokens, filtered to
+    /// `IdentityService.ListTokens` — the caller's own active tokens, filtered to
     /// `scope` (empty `scope` lists all).
     ///
     /// # Errors
@@ -2417,9 +2417,9 @@ impl RpcService {
         Ok(pb::ListTokensResponse { tokens })
     }
 
-    /// `ConfigService.ListChangesets` — change-sets at a scope, newest first.
+    /// `RegistryConfigurationService.ListChangesets` — change-sets at a scope, newest first.
     ///
-    /// Reads require [`Permission::AuditRead`] on the scope (ConfigService
+    /// Reads require [`Permission::AuditRead`] on the scope (RegistryConfigurationService
     /// reads are an admin+ surface, same as the audit feed).
     ///
     /// # Errors
@@ -2452,7 +2452,7 @@ impl RpcService {
         })
     }
 
-    /// `ConfigService.GetChangeset` — one change-set's revisions and diffs.
+    /// `RegistryConfigurationService.GetChangeset` — one change-set's revisions and diffs.
     ///
     /// Loads the change-set summary plus its revisions, each rendered with the
     /// field-level diff [`crate::config::semantic_diff`] produces (the
@@ -2766,7 +2766,7 @@ impl RpcService {
         Ok(Some(binding.id))
     }
 
-    // -- CacheService (RFC-0004 "11-caches") ---------------------------------
+    // -- BinaryCacheService (RFC-0004 "11-caches") ---------------------------------
 
     /// Resolve a managed cache by slug or map a miss to `NotFound`.
     async fn cache_or_not_found(&self, slug: &str) -> Result<crate::db::Cache, RpcError> {
@@ -2936,7 +2936,7 @@ impl RpcService {
         })
     }
 
-    /// `CacheService.CreateCache` — create an org-owned managed cache.
+    /// `BinaryCacheService.CreateCache` — create an org-owned managed cache.
     ///
     /// An empty `binding_name` uses the deployment's default storage (the
     /// binding-less path); otherwise the named storage binding backs the cache.
@@ -3035,7 +3035,7 @@ impl RpcService {
         })
     }
 
-    /// `CacheService.GetCache` — a cache's configuration + usage.
+    /// `BinaryCacheService.GetCache` — a cache's configuration + usage.
     ///
     /// # Errors
     ///
@@ -3053,7 +3053,7 @@ impl RpcService {
         })
     }
 
-    /// `CacheService.ListCaches` — servable caches, visibility-filtered.
+    /// `BinaryCacheService.ListCaches` — servable caches, visibility-filtered.
     ///
     /// # Errors
     ///
@@ -3086,7 +3086,7 @@ impl RpcService {
         Ok(pb::ListCachesResponse { caches: out })
     }
 
-    /// `CacheService.UpdateCache` — update a cache's mutable fields.
+    /// `BinaryCacheService.UpdateCache` — update a cache's mutable fields.
     ///
     /// # Errors
     ///
@@ -3131,7 +3131,7 @@ impl RpcService {
         })
     }
 
-    /// `CacheService.DeleteCache` — soft- or hard-delete a cache.
+    /// `BinaryCacheService.DeleteCache` — soft- or hard-delete a cache.
     ///
     /// # Errors
     ///
@@ -3288,7 +3288,7 @@ impl RpcService {
         Ok(None)
     }
 
-    /// `CacheService.LinkCache` — link (or update) a cache⇄registry association.
+    /// `BinaryCacheService.LinkCache` — link (or update) a cache⇄registry association.
     ///
     /// # Errors
     ///
@@ -3342,7 +3342,7 @@ impl RpcService {
         })
     }
 
-    /// `CacheService.ChangeCacheStorage` — migrate a cache's surface to a
+    /// `BinaryCacheService.ChangeCacheStorage` — migrate a cache's surface to a
     /// different storage backend.
     ///
     /// Resolves the target binding (empty name = the deployment default), then
@@ -3379,7 +3379,7 @@ impl RpcService {
         })
     }
 
-    /// `CacheService.UnlinkCache` — remove a cache⇄registry association.
+    /// `BinaryCacheService.UnlinkCache` — remove a cache⇄registry association.
     ///
     /// # Errors
     ///
@@ -3417,7 +3417,7 @@ impl RpcService {
         })
     }
 
-    /// `CacheService.ListCacheLinks` — a cache's registry links.
+    /// `BinaryCacheService.ListCacheLinks` — a cache's registry links.
     ///
     /// # Errors
     ///
@@ -3453,7 +3453,7 @@ impl RpcService {
         Ok(pb::ListCacheLinksResponse { links })
     }
 
-    /// `CacheService.SetCacheGcPolicy` — replace a cache's GC policy.
+    /// `BinaryCacheService.SetCacheGcPolicy` — replace a cache's GC policy.
     ///
     /// # Errors
     ///
@@ -3483,7 +3483,7 @@ impl RpcService {
         Ok(pb::SetCacheGcPolicyResponse {})
     }
 
-    /// `CacheService.GetCacheGcPolicy` — a cache's GC policy, if set.
+    /// `BinaryCacheService.GetCacheGcPolicy` — a cache's GC policy, if set.
     ///
     /// # Errors
     ///
@@ -3512,7 +3512,7 @@ impl RpcService {
         Ok(pb::GetCacheGcPolicyResponse { policy })
     }
 
-    /// `CacheService.PinCachePath` — pin a store path (or renew its deadline).
+    /// `BinaryCacheService.PinCachePath` — pin a store path (or renew its deadline).
     ///
     /// # Errors
     ///
@@ -3532,7 +3532,7 @@ impl RpcService {
         Ok(pb::PinCachePathResponse {})
     }
 
-    /// `CacheService.UnpinCachePath` — remove a manual GC pin.
+    /// `BinaryCacheService.UnpinCachePath` — remove a manual GC pin.
     ///
     /// # Errors
     ///
@@ -3553,7 +3553,7 @@ impl RpcService {
         Ok(pb::UnpinCachePathResponse { removed })
     }
 
-    /// `CacheService.ListCacheRoots` — a cache's GC roots.
+    /// `BinaryCacheService.ListCacheRoots` — a cache's GC roots.
     ///
     /// # Errors
     ///
@@ -3583,7 +3583,7 @@ impl RpcService {
         Ok(pb::ListCacheRootsResponse { roots })
     }
 
-    /// `CacheService.SearchCache` — search a cache's objects.
+    /// `BinaryCacheService.SearchCache` — search a cache's objects.
     ///
     /// # Errors
     ///
@@ -3608,7 +3608,7 @@ impl RpcService {
         Ok(pb::SearchCacheResponse { objects })
     }
 
-    /// `CacheService.GetCacheObject` — one object's narinfo metadata.
+    /// `BinaryCacheService.GetCacheObject` — one object's narinfo metadata.
     ///
     /// # Errors
     ///
@@ -3630,7 +3630,7 @@ impl RpcService {
         Ok(pb::GetCacheObjectResponse { object })
     }
 
-    /// `CacheService.ListCacheGcRuns` — a cache's recent GC runs.
+    /// `BinaryCacheService.ListCacheGcRuns` — a cache's recent GC runs.
     ///
     /// # Errors
     ///
@@ -3665,7 +3665,7 @@ impl RpcService {
         Ok(pb::ListCacheGcRunsResponse { runs })
     }
 
-    /// `CacheService.RunCacheGc` — garbage-collect a cache (mark/sweep).
+    /// `BinaryCacheService.RunCacheGc` — garbage-collect a cache (mark/sweep).
     ///
     /// Runs the shared [`crate::gc::sweep_cache`] over this service's write port,
     /// so the native hub and the Worker GC identically. A real run records a
@@ -3751,7 +3751,7 @@ impl RpcService {
         }
     }
 
-    /// `CacheService.MintCacheUploadCredentials` — a presigned `PUT` URL for
+    /// `BinaryCacheService.MintCacheUploadCredentials` — a presigned `PUT` URL for
     /// uploading one object directly to a cache's private external origin.
     ///
     /// Requires cache-write authority. Returns an empty `upload_url` when the
@@ -3815,7 +3815,7 @@ impl RpcService {
         })
     }
 
-    /// `CacheService.RegisterCacheNarinfos` — write + index a batch of narinfos.
+    /// `BinaryCacheService.RegisterCacheNarinfos` — write + index a batch of narinfos.
     ///
     /// Used after the NAR bytes were uploaded directly to the origin via
     /// presigned URLs: the client sends the (small) narinfos and the hub writes
@@ -3865,7 +3865,7 @@ impl RpcService {
         Ok(pb::RegisterCacheNarinfosResponse { registered })
     }
 
-    /// `CacheService.CacheClosure` — the transitive closure of a store path.
+    /// `BinaryCacheService.CacheClosure` — the transitive closure of a store path.
     ///
     /// Breadth-first over `cache_objects.refs` from `store_hash` (root first); a
     /// reference absent from the cache appears with `present = false`. Bounded at
@@ -3964,7 +3964,7 @@ impl RpcService {
         })
     }
 
-    /// `StorageService.CreateBinding` — create a storage binding under an org.
+    /// `StorageBindingService.CreateBinding` — create a storage binding under an org.
     ///
     /// The `kind` must be a known [`BindingKind`](crate::binding::BindingKind)
     /// (`local_fs`, `s3`, or `r2`) that the serving runtime supports — the
@@ -4239,7 +4239,7 @@ impl RpcService {
         })
     }
 
-    /// `ConfigService.RevertChangeset` — draft and apply a forward revert.
+    /// `RegistryConfigurationService.RevertChangeset` — draft and apply a forward revert.
     ///
     /// Drafts the snapshot-targeted forward revert ([`crate::config::revert`])
     /// and immediately applies it, returning the new revert change-set. The

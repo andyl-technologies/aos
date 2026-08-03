@@ -16,7 +16,7 @@
 ##!
 ##! ```text
 ##! migrate D1 from schema dump                           (CLI-driven init)
-##! POST /aos.registry.v1.RegistryService/ListRegistries -> 200 (RPC over D1)
+##! POST /aos.hub.v1.RegistryService/ListRegistries -> 200 (RPC over D1)
 ##! GET  /                                                -> 200 HTML (browse)
 ##! GET  /missing/                                        -> 404 (visibility/miss)
 ##! ```
@@ -86,7 +86,7 @@
       for (const stmt of stmts) { await db.prepare(stmt).run(); }
       console.log("ok   migrate D1 from schema dump (" + stmts.length + " stmts)");
 
-      await expect("POST RPC ListRegistries", "/aos.registry.v1.RegistryService/ListRegistries",
+      await expect("POST RPC ListRegistries", "/aos.hub.v1.RegistryService/ListRegistries",
         { method: "POST", body: "{}" }, (s, b) => s === 200 && b.includes("registries"));
       await expect("GET / (browse HTML)", "/", {}, (s, b) => s === 200 && b.includes("<!DOCTYPE html>"));
       await expect("GET /missing/", "/missing/", {}, (s) => s === 404);

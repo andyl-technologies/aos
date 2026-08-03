@@ -29,8 +29,8 @@
 //! provider, Durable-Object-backed rate limiter via [`coordinatorobj`]). One
 //! router serves three surfaces:
 //!
-//! - the `aos.registry.v1` RPC surface (`POST
-//!   /aos.registry.v1.{Service}/{Method}`) — the write/publish path,
+//! - the `aos.hub.v1` RPC surface (`POST
+//!   /aos.hub.v1.{Service}/{Method}`) — the write/publish path,
 //!   authentication (tokens/sessions/SSO/device-flow), private-registry access
 //!   control, and IAM/config/webhook/publish RPCs;
 //! - the machine-path facade (`GET`/`HEAD` `/{slug}/{*path}`), delegating to
@@ -152,7 +152,7 @@ mod entry {
     //! ([`aos_hub_core::connect::router`]), built per request over the
     //! Worker's D1/R2 bindings ([`service_from`]) and bridged to the Workers
     //! runtime by [`crate::bridge`]. That one router serves the
-    //! `aos.registry.v1.*` RPC surface, the machine-path facade, and the no-JS
+    //! `aos.hub.v1.*` RPC surface, the machine-path facade, and the no-JS
     //! browse UI + JSON read API ([`aos_hub_core::web`]), all single-sourced
     //! with the native hub.
     //!
@@ -478,7 +478,7 @@ mod entry {
     /// The HTTP entry point: bridge every request to the shared router.
     ///
     /// The shared router ([`aos_hub_core::connect::router`]) owns the
-    /// entire request surface — the `aos.registry.v1` RPC methods, the
+    /// entire request surface — the `aos.hub.v1` RPC methods, the
     /// machine-path facade (`GET`/`HEAD` `/{slug}/{*path}`), and the no-JS
     /// browse UI + JSON read API (the hub home `/` and the `/{slug}/-/…` pages),
     /// all single-sourced with the native hub. The [`crate::surface`]

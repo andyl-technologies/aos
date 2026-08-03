@@ -1,6 +1,6 @@
 //! Phase-3a integration coverage: the SQL-backed configuration change-set
 //! engine and the audit log, both at the engine level and over the
-//! Connect-JSON `AuditService`/`ConfigService` RPCs.
+//! Connect-JSON `AuditService`/`RegistryConfigurationService` RPCs.
 //!
 //! Exercises the full lifecycle — open draft, stage, review (semantic
 //! diffs), apply (live mutation + audit row), and snapshot-targeted forward
@@ -68,7 +68,7 @@ async fn rpc(
 ) -> (StatusCode, serde_json::Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/aos.registry.v1.{method}"))
+        .uri(format!("/aos.hub.v1.{method}"))
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {
@@ -464,7 +464,7 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     // GetChangeset (authorized via audit.read): returns revisions + diffs.
     let (status, value) = rpc(
         &app,
-        "ConfigService/GetChangeset",
+        "RegistryConfigurationService/GetChangeset",
         serde_json::json!({"changeId": change_id.as_str()}),
         Some(&audit_token),
     )
@@ -478,7 +478,7 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     // RevertChangeset (needs registry.configure; audit.read alone fails).
     let (status, _) = rpc(
         &app,
-        "ConfigService/RevertChangeset",
+        "RegistryConfigurationService/RevertChangeset",
         serde_json::json!({"changeId": change_id.as_str()}),
         Some(&audit_token),
     )
@@ -489,7 +489,7 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     let cfg_token = bearer(actor, scope, &[Permission::RegistryConfigure]);
     let (status, value) = rpc(
         &app,
-        "ConfigService/RevertChangeset",
+        "RegistryConfigurationService/RevertChangeset",
         serde_json::json!({"changeId": change_id.as_str()}),
         Some(&cfg_token),
     )

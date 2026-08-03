@@ -1,6 +1,6 @@
 //! `aos hub` — the registry-hub control-plane client (RFC-0004).
 //!
-//! Drives [`aos_remote::RegistryHubClient`] so the CLI interacts with a running
+//! Drives [`aos_remote::HubClient`] so the CLI interacts with a running
 //! `aos-hub` purely through its public ConnectRPC API, never by
 //! touching the hub's database. `login` exchanges a provisioning secret for a
 //! hub access JWT via the REST `POST /oauth2/token` endpoint
@@ -12,7 +12,7 @@
 use anyhow::Result;
 
 use aos_core::output::Printer;
-use aos_remote::RegistryHubClient;
+use aos_remote::HubClient;
 
 use crate::cli::{
     HubBindingCmd, HubCacheCmd, HubCmd, HubInstanceCmd, HubOrgCmd, HubProjectCmd, HubRegistryCmd,
@@ -551,10 +551,10 @@ fn render_instance_settings(printer: &Printer, s: &aos_remote::InstanceSettings)
 
 /// Builds a hub client: token-authenticated when a JWT is supplied, else
 /// anonymous (public reads only).
-fn hub_client(hub: &str, token: Option<&str>) -> Result<RegistryHubClient> {
+fn hub_client(hub: &str, token: Option<&str>) -> Result<HubClient> {
     match token {
-        Some(token) => RegistryHubClient::connect_with_token(hub, token),
-        None => RegistryHubClient::connect_anonymous(hub),
+        Some(token) => HubClient::connect_with_token(hub, token),
+        None => HubClient::connect_anonymous(hub),
     }
 }
 

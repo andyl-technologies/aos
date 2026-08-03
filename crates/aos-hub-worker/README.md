@@ -23,7 +23,7 @@ porting the whole hub.
   (`src/render.rs`, `src/handlers.rs`). D1 *is* sqlite, so the read queries are
   the native hub's sqlite SQL strings unchanged (`src/sql.rs`).
 - **A JSON read API** at `/{slug}/-/api/{registry,packages,channels,releases}`
-  and `/-/api/packages/{name}` — the same data as the `aos.registry.v1` read
+  and `/-/api/packages/{name}` — the same data as the `aos.hub.v1` read
   services, served as plain `application/json`. See "What is NOT ported" for why
   this is a simple JSON shape, not full Connect framing.
 - **A Cron-trigger indexer.** The `scheduled` handler re-walks every public
@@ -67,7 +67,7 @@ they cannot shadow the machine surface that owns the registry root.
 > **Phase 5 update (shipped):** the lists below predate the Phase 5 runtime
 > unification. The write/publish path, the producer console, authentication
 > (sessions, tokens, device-code, magic links, OIDC SSO), and the
-> `aos.registry.v1` surface are **no longer native-only** — they now live in the
+> `aos.hub.v1` surface are **no longer native-only** — they now live in the
 > shared `aos-hub-core` router and the Worker serves them over its D1/R2/KV
 > bindings (the transport is Connect-JSON over `axum`, since the `connectrpc`
 > *server* runtime can't target wasm). The Worker serves only the request

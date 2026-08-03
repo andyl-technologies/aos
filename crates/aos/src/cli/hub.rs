@@ -10,7 +10,7 @@
 //! increments.
 //!
 //! Doc comments here are clap `--help` text; the implementation lives in
-//! `commands::hub`, which drives `aos_remote::RegistryHubClient`.
+//! `commands::hub`, which drives `aos_remote::HubClient`.
 
 use clap::Subcommand;
 

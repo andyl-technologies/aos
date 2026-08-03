@@ -98,7 +98,7 @@ async fn rpc(
 ) -> (StatusCode, serde_json::Value) {
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/aos.registry.v1.{method}"))
+        .uri(format!("/aos.hub.v1.{method}"))
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {
@@ -443,7 +443,7 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     let token = bearer(Principal::user(user), "", &[]);
     let (status, value) = rpc(
         &app,
-        "OrgService/CreateOrg",
+        "OrganizationService/CreateOrg",
         serde_json::json!({"slug": "acme", "name": "Acme, Inc."}),
         Some(&token),
     )
@@ -478,7 +478,7 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     // CreateBinding.
     let (status, value) = rpc(
         &app,
-        "StorageService/CreateBinding",
+        "StorageBindingService/CreateBinding",
         serde_json::json!({"orgSlug": "acme", "name": "primary", "kind": "local_fs", "root": "/srv/aos-hub"}),
         Some(&owner_token),
     ).await
@@ -544,7 +544,7 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     ] {
         let (status, value) = rpc(
             &app,
-            "OrgService/CreateOrg",
+            "OrganizationService/CreateOrg",
             serde_json::json!({"slug": bad, "name": "Anything"}),
             Some(&token),
         )
@@ -580,7 +580,7 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     // exactly that org's scope.
     let (status, value) = rpc(
         &app,
-        "OrgService/CreateOrg",
+        "OrganizationService/CreateOrg",
         serde_json::json!({"slug": "acme", "name": "Acme, Inc."}),
         Some(&token),
     )
@@ -616,7 +616,7 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
     for i in 0..CREATE_ORG_PER_OWNER {
         let (status, value) = rpc(
             &app,
-            "OrgService/CreateOrg",
+            "OrganizationService/CreateOrg",
             serde_json::json!({"slug": format!("acme{i}"), "name": "Acme"}),
             Some(&token),
         )
@@ -628,7 +628,7 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
     // to HTTP 429.
     let (status, value) = rpc(
         &app,
-        "OrgService/CreateOrg",
+        "OrganizationService/CreateOrg",
         serde_json::json!({"slug": "acme-over", "name": "Acme"}),
         Some(&token),
     )
@@ -641,7 +641,7 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
     let other_token = bearer(Principal::user(other), "", &[]);
     let (status, value) = rpc(
         &app,
-        "OrgService/CreateOrg",
+        "OrganizationService/CreateOrg",
         serde_json::json!({"slug": "beta", "name": "Beta"}),
         Some(&other_token),
     )
@@ -763,7 +763,7 @@ async fn rpc_mutations_reject_unauthenticated_and_unauthorized() {
     // No bearer at all: unauthenticated.
     let (status, _) = rpc(
         &app,
-        "OrgService/CreateOrg",
+        "OrganizationService/CreateOrg",
         serde_json::json!({"slug": "globex", "name": "Globex"}),
         None,
     )

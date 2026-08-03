@@ -140,7 +140,7 @@ in
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
           # aos-proto-types' build script runs protoc to generate the
-          # aos.registry.v1 message structs (the worker depends on it via
+          # aos.hub.v1 message structs (the worker depends on it via
           # aos-hub-core), so point prost-build at the hermetic protoc.
           export PROTOC="${protobuf}/bin/protoc"
           # Step 1 — compile the worker cdylib to wasm32. rust-lld (shipped in

@@ -286,8 +286,8 @@ impl SearchParams {
 
 /// Build the complete hub router.
 ///
-/// `aos.registry.v1` Connect-JSON method paths are static two-segment routes
-/// (`/aos.registry.v1.RegistryService/ListRegistries`), so axum's
+/// `aos.hub.v1` Connect-JSON method paths are static two-segment routes
+/// (`/aos.hub.v1.RegistryService/ListRegistries`), so axum's
 /// static-over-dynamic precedence keeps them from being shadowed by the
 /// hub's own `/{slug}/{*path}` facade wildcard.
 ///
@@ -336,7 +336,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
             state.http.clone(),
         ))),
     );
-    // The shared router owns `/aos.registry.v1.*` and carries its own axum state
+    // The shared router owns `/aos.hub.v1.*` and carries its own axum state
     // (the `Arc<RpcService>`), so it is already fully stated; it is merged into
     // the finished AppState-stated router below. The *facade-less* variant is
     // used: the hub keeps its own `/{slug}/{*path}` machine-surface handler
@@ -443,7 +443,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
         // The shared Connect-JSON RPC router carries its own `Arc<RpcService>`
         // state, so it is merged after `with_state` (when the surrounding router
-        // is `Router<()>` too). Its static `/aos.registry.v1.*` paths win over
+        // is `Router<()>` too). Its static `/aos.hub.v1.*` paths win over
         // the hub's own `/{slug}/{*path}` facade wildcard by static-over-dynamic
         // precedence. It is the facade-less variant (`rpc_router`), so it does
         // not redefine `/{slug}/{*path}` and cannot collide with the hub's

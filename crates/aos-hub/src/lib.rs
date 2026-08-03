@@ -62,7 +62,7 @@
 //! - [`gitwrite`] — git-backed configuration change requests: writes a
 //!   draft-signed commit editing a committed file to
 //!   `refs/hub/changes/<change_id>` for a maintainer to review and promote.
-//! - [`rpc`] — the `aos.registry.v1` ConnectRPC read-path services plus the
+//! - [`rpc`] — the `aos.hub.v1` ConnectRPC read-path services plus the
 //!   tenancy and webhook write-path services.
 //! - [`seed`] — dev seed: populates a fresh hub with a browsable, signed demo
 //!   registry, a demo org/user/password, and a sample publish token.

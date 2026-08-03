@@ -1,10 +1,10 @@
-//! Wasm-clean message structs for the `aos.registry.v1` registry-hub API.
+//! Wasm-clean message structs for the `aos.hub.v1` Hub API.
 //!
 //! RFC-0004 Phase 5 unifies the native registry hub and the Cloudflare Worker
 //! on one shared `axum` router. Because the `connectrpc` server runtime cannot
 //! target `wasm32-unknown-unknown` (it pulls `hyper`/`tokio`/`zstd-sys`), the
 //! hub serves a single **Connect-JSON** transport — plain JSON over HTTP
-//! (`POST /aos.registry.v1.{Service}/{Method}`) — as ordinary `axum` handlers
+//! (`POST /aos.hub.v1.{Service}/{Method}`) — as ordinary `axum` handlers
 //! on both targets. This crate holds the request/response **message types** for
 //! that surface, generated from the `.proto` (owned by `aos-proto`) with
 //! `prost-build` + `serde` derives and **nothing else**: no `connectrpc`, no
@@ -21,7 +21,7 @@
 //! provide is unused on the wire.
 //!
 //! ```text
-//! POST /aos.registry.v1.RegistryService/GetRegistry
+//! POST /aos.hub.v1.RegistryService/GetRegistry
 //! Content-Type: application/json
 //! { "slug": "acme/cdn" }
 //!   -> 200 { "registry": { "slug": "acme/cdn", "name": "…", … } }
@@ -29,17 +29,17 @@
 //! ```
 //!
 //! The generated module mirrors the proto package path: the
-//! `aos.registry.v1` messages are re-exported at the crate root.
+//! `aos.hub.v1` messages are re-exported at the crate root.
 
 #![allow(clippy::all)]
 
-/// The generated `aos.registry.v1` message structs.
+/// The generated `aos.hub.v1` message structs.
 ///
 /// `prost-build` emits one file per proto package; this is the
-/// `aos.registry.v1` package. The contents are re-exported at the crate root
+/// `aos.hub.v1` package. The contents are re-exported at the crate root
 /// (see the [`pub use`] below) so consumers write `aos_proto_types::Registry`.
-pub mod registry_v1 {
-    include!(concat!(env!("OUT_DIR"), "/aos.registry.v1.rs"));
+pub mod hub_v1 {
+    include!(concat!(env!("OUT_DIR"), "/aos.hub.v1.rs"));
 }
 
-pub use registry_v1::*;
+pub use hub_v1::*;
