@@ -1,7 +1,11 @@
 # Managed caches — hosting Nix binary caches in `aos-hub`
 
-- **Status:** Proposed (2026-06-17). Not yet implemented; this file carries
-  its own working status and the implementation checklist at the bottom.
+- **Status:** Implemented as recorded by the checklist below. The target
+  topology for cache placements, routes, registry/cache relationships, and GC
+  provenance is superseded by
+  [RFC-0012](../0012-hub-surface-topology/README.md). This file remains the
+  historical record for the shipped single-placement/link model until that
+  migration is implemented.
 - **Supersedes naming:** the hub becomes **`aos-hub`** — it manages two
   first-class surface kinds, *registries* (git wire surfaces) and *caches*
   (Nix binary caches), so the `aos-registry-*` crate/binary names are renamed

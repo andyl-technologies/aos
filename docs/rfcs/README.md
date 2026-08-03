@@ -21,10 +21,12 @@ topic files.
 | --- | --- | --- | --- |
 | [0001](0001-package-sandboxing/README.md) | 2026-06-08 | AOS Package Sandboxing (`expose` manifests, per-unit sandboxing, preset enablement) | Proposed — phased plan in [`implementation-plan.md`](0001-package-sandboxing/implementation-plan.md) (14/19 decisions resolved; gated on the Decision 17 spike) |
 | [0003](0003-install-from-image.md) | 2026-06-12 | Installation from image (UEFI + Ignition first boot, CI-enforced) | Implemented (`checks.fleet.install-from-image`) |
-| [0004](0004-registry-hub/README.md) | 2026-06-12 | `aos-registry-hub` — a multi-tenant registry management WebUI | Implemented (phases 1–4 + managed caches); Phase 5 (unified async runtime + full Cloudflare parity) Proposed |
+| [0004](0004-registry-hub/README.md) | 2026-06-12 | `aos-registry-hub` — a multi-tenant registry management WebUI | Implemented through managed caches and the unified native/Worker runtime; topology rewrite proposed in RFC-0012 |
 | [0005](0005-ca-trust-map.md) | 2026-06-12 | The `store/` realisation graph: content-addressed closure validation | Proposed |
 | [0006](0006-secure-boot/README.md) | 2026-06-13 | Full Secure Boot integration — sign, measure, attest | Implemented (all phases CI-green) |
 | [0009](0009-toolchain-ladder-stdenv.md) | 2026-06-15 | Coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap` | Proposed |
 | [0010](0010-crucible/README.md) | 2026-06-18 | Crucible — a hermetically deterministic multi-VM simulation harness | Proposed (design-only) |
+| [0011](0011-on-host-config-eval/README.md) | 2026-06-25 | On-host, eval-only configuration — generations from downloaded Nix modules | Accepted; phased implementation plan and locked decisions |
+| [0012](0012-hub-surface-topology/README.md) | 2026-08-03 | AOS Hub surface topology — multiple placements, simultaneous delivery routes, and principled registry/cache relationships | Proposed |
 
 Numbering is chronological by the date the design entered the tree.
