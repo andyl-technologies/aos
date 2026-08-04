@@ -384,6 +384,9 @@ pub enum PackageCommand {
         /// Roll back the system sysroot
         #[arg(long)]
         system: bool,
+        /// Roll back the durable A/B image selection instead of configuration
+        #[arg(long, requires = "system")]
+        image: bool,
         /// List profile generations (system generations with --system)
         #[arg(long)]
         list: bool,
@@ -507,6 +510,9 @@ pub enum PackageCommand {
         /// The in-image module library store path
         #[arg(long = "base-lib")]
         base_lib: PathBuf,
+        /// Normalized metadata facts consumed as declared host inputs
+        #[arg(long = "facts", default_value = config_eval::stock::DEFAULT_FACTS_PATH)]
+        facts_json: PathBuf,
         /// A desired.toml whose `packages` seed the working set
         #[arg(long)]
         desired: Option<PathBuf>,
@@ -525,29 +531,67 @@ pub enum PackageCommand {
         /// Require a detached host.nix signature from a trusted config key.
         #[arg(long = "require-signed-host-nix")]
         require_signed_host_nix: bool,
+        /// Mark host.nix as the image-authored empty no-input fallback.
+        #[arg(long = "image-default-host")]
+        image_default_host: bool,
     },
-    /// Apply a converged config manifest's `/etc` tree into a per-generation
-    /// lower. Called by `activate` when applying a configuration manifest.
+    /// Apply a converged config manifest into a per-generation `/etc` lower.
     ///
     /// Reads `--manifest` (an `aos.config-manifest/v1` document), writes its
-    /// `etc` entries (text files with modes, relative + store symlinks) under
-    /// `--etc-root`, materializes its job scripts under
-    /// `<etc-root>/aos-job-scripts/`, and rewrites `#aos-jobscript:<key>#`
-    /// unit-body placeholders to the job scripts' runtime paths. Idempotent.
+    /// `--generation-dir` atomically publishes and validates the retained
+    /// EROFS artifact used by activation. `--etc-root` is the unmounted-tree
+    /// test and compatibility seam. Exactly one mode must be selected.
     #[command(name = "__materialize", hide = true)]
     Materialize {
         /// The converged manifest (`aos.config-manifest/v1` JSON).
         #[arg(long)]
         manifest: PathBuf,
-        /// The per-generation `/etc` lower to write into.
+        /// An unmounted `/etc` tree to write directly (test/compatibility mode).
         #[arg(long = "etc-root")]
-        etc_root: PathBuf,
+        etc_root: Option<PathBuf>,
+        /// The durable config-generation directory that owns `config-lower/`.
+        #[arg(long = "generation-dir")]
+        generation_dir: Option<PathBuf>,
+        /// Absolute path to the running image's AOS-built mkfs.erofs.
+        #[arg(long = "mkfs-erofs")]
+        mkfs_erofs: Option<PathBuf>,
+        /// Absolute path to the running image's AOS-built fsck.erofs.
+        #[arg(long = "fsck-erofs")]
+        fsck_erofs: Option<PathBuf>,
         /// Runtime directory job scripts resolve to once the lower is `/etc`.
         #[arg(
             long = "job-scripts-runtime-dir",
             default_value = config_eval::materialize::DEFAULT_JOB_SCRIPTS_RUNTIME_DIR
         )]
         job_scripts_runtime_dir: String,
+    },
+    /// Hidden: commit a converged manifest as a configuration generation.
+    ///
+    /// Called by `aos-activate.service` after the soft fetch/render wing has
+    /// settled. Re-projects the manifest onto successfully materialized
+    /// packages, prepares a content-addressed generation, invokes the atomic
+    /// toplevel activation script, and publishes the generation only after
+    /// the `/etc` swap succeeds.
+    #[command(name = "__activate-config", hide = true)]
+    ActivateConfig {
+        /// The evaluator-produced source manifest
+        #[arg(long, default_value = graph_compile::DEFAULT_MANIFEST_PATH)]
+        manifest: PathBuf,
+        /// The evaluator-produced package dependency graph
+        #[arg(long, default_value = graph_compile::DEFAULT_GRAPH_PATH)]
+        graph: PathBuf,
+        /// Root containing package fetch and render completion markers
+        #[arg(long = "marker-root", default_value = graph_compile::subverbs::MARKER_ROOT)]
+        marker_root: PathBuf,
+        /// System-generation profile directory
+        #[arg(long, default_value = "/var/lib/profiles/system")]
+        profile: PathBuf,
+        /// Running image's base-lib ABI
+        #[arg(long = "module-abi")]
+        module_abi: u32,
+        /// Fail closed unless a TPM-backed generation quote is persisted.
+        #[arg(long = "require-attestation-quote")]
+        require_attestation_quote: bool,
     },
     /// Evaluate the configuration and diff it against the live generation.
     ///
@@ -572,6 +616,9 @@ pub enum PackageCommand {
         /// The in-image module library store path
         #[arg(long = "base-lib")]
         base_lib: PathBuf,
+        /// Normalized metadata facts consumed by the same eval transaction
+        #[arg(long = "facts", default_value = config_eval::stock::DEFAULT_FACTS_PATH)]
+        facts_json: PathBuf,
         /// A desired.toml whose `packages` seed the working set
         #[arg(long)]
         desired: Option<PathBuf>,
@@ -1026,6 +1073,12 @@ pub enum RegistryCommand {
         /// Expose manifest.json to publish with package metadata
         #[arg(long = "expose-manifest")]
         expose_manifest: Option<String>,
+        /// Config-only module output to publish (contains module.nix and config-meta.json)
+        #[arg(long = "config-module")]
+        config_module: Option<String>,
+        /// Trusted AOS base-lib store path used for the publish-time options-only eval
+        #[arg(long = "config-base-lib", requires = "config_module")]
+        config_base_lib: Option<String>,
         /// Bless additional content for paths already recorded with different
         /// bits in the store/ graph instead of failing
         #[arg(long)]
@@ -2152,18 +2205,21 @@ pub async fn run(
     if let PackageCommand::Eval {
         host_nix,
         base_lib,
+        facts_json,
         desired,
         module_abi,
         out,
         eval_root,
         trusted_config_keys_dir,
         require_signed_host_nix,
+        image_default_host,
     } = command
     {
         let verbose = u8::from(printer.mode() == OutputMode::Verbose);
-        return config_eval::run_eval_command(&config_eval::EvalCommand {
+        let result = config_eval::run_eval_command(&config_eval::EvalCommand {
             host_nix: host_nix.clone(),
             base_lib: base_lib.clone(),
+            facts_json: Some(facts_json.clone()),
             desired: desired.clone(),
             module_abi: *module_abi,
             out: out.clone(),
@@ -2171,7 +2227,19 @@ pub async fn run(
             verbose,
             trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
             require_signed_host_nix: *require_signed_host_nix,
+            image_default_host: *image_default_host,
         });
+        if let Err(error) = &result
+            && let Some(failure) =
+                error.downcast_ref::<config_eval::diagnostics::EvalCommandFailure>()
+        {
+            eprintln!("config-eval.class={} {}", failure.class_tag(), failure);
+            if verbose > 0 {
+                eprintln!("{}", failure.detail());
+            }
+            std::process::exit(failure.exit_code());
+        }
+        return result;
     }
 
     // `apm __materialize`: apply a converged manifest's
@@ -2180,14 +2248,70 @@ pub async fn run(
     if let PackageCommand::Materialize {
         manifest,
         etc_root,
+        generation_dir,
+        mkfs_erofs,
+        fsck_erofs,
         job_scripts_runtime_dir,
     } = command
     {
-        return config_eval::materialize::materialize_manifest(
-            manifest,
-            etc_root,
-            job_scripts_runtime_dir,
-        );
+        return match (etc_root, generation_dir, mkfs_erofs, fsck_erofs) {
+            (Some(etc_root), None, None, None) => config_eval::materialize::materialize_manifest(
+                manifest,
+                etc_root,
+                job_scripts_runtime_dir,
+            ),
+            (None, Some(generation_dir), Some(mkfs_erofs), Some(fsck_erofs)) => {
+                config_eval::materialize::materialize_generation_lower(
+                    manifest,
+                    generation_dir,
+                    job_scripts_runtime_dir,
+                    mkfs_erofs,
+                    fsck_erofs,
+                )
+                .map(|_| ())
+            }
+            _ => bail!(
+                "__materialize requires either --etc-root alone, or --generation-dir with --mkfs-erofs and --fsck-erofs"
+            ),
+        };
+    }
+
+    // The activation commit owns generation metadata and invokes the image's
+    // switch script; it intentionally does not load registry/profile config.
+    if let PackageCommand::ActivateConfig {
+        manifest,
+        graph,
+        marker_root,
+        profile,
+        module_abi,
+        require_attestation_quote,
+    } = command
+    {
+        return match config_eval::activation::activate_config(
+            &config_eval::activation::ActivateConfigParams {
+                manifest: manifest.clone(),
+                graph: graph.clone(),
+                marker_root: marker_root.clone(),
+                profile: profile.clone(),
+                module_abi: *module_abi,
+                switch_lock: PathBuf::from("/run/apm/switch.lock"),
+                running_image: None,
+                image_profile: PathBuf::from("/var/lib/profiles/image"),
+                switch_lock_held: false,
+                require_attestation_quote: *require_attestation_quote,
+            },
+        ) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                if let Some(failure) =
+                    error.downcast_ref::<config_eval::activation::ActivationFailure>()
+                {
+                    eprintln!("config activation: {failure}");
+                    std::process::exit(failure.exit_code());
+                }
+                Err(error)
+            }
+        };
     }
 
     // `apm switch [--dry-run]`: evaluate and diff against
@@ -2199,6 +2323,7 @@ pub async fn run(
         diff_against,
         base_label,
         base_lib,
+        facts_json,
         desired,
         module_abi,
         eval_root,
@@ -2216,6 +2341,7 @@ pub async fn run(
             eval: config_eval::EvalCommand {
                 host_nix: from.clone(),
                 base_lib: base_lib.clone(),
+                facts_json: Some(facts_json.clone()),
                 desired: desired.clone(),
                 module_abi: *module_abi,
                 out: candidate,
@@ -2223,6 +2349,7 @@ pub async fn run(
                 verbose,
                 trusted_config_keys_dirs: trusted_config_keys_dir.clone(),
                 require_signed_host_nix: *require_signed_host_nix,
+                image_default_host: false,
             },
             base_manifest: diff_against.clone(),
             base_label: base_label.clone(),
@@ -2230,7 +2357,7 @@ pub async fn run(
             live_manifest: live_manifest.clone(),
             json_out,
         };
-        return config_eval::dry_run::run_switch(&params).map(|_| ());
+        return config_eval::dry_run::run_switch(&params).await.map(|_| ());
     }
 
     // The graph compiler (`aos-graph-compile.service`) drives systemd
@@ -2585,13 +2712,25 @@ pub async fn run(
         PackageCommand::Rollback {
             generation,
             system: rollback_system,
+            image,
             list: rollback_list,
             kexec,
             reboot,
             live,
             drain,
         } => {
-            if *rollback_system {
+            if *rollback_system && *image {
+                let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
+                sysroot::rollback_image_generation(
+                    *generation,
+                    *rollback_list,
+                    dry_run,
+                    kernel_mode,
+                    *drain,
+                    printer,
+                )
+                .await
+            } else if *rollback_system {
                 let kernel_mode = parse_kernel_mode(*kexec, *reboot, *live);
                 sysroot::rollback_system(
                     &config,
@@ -2647,6 +2786,9 @@ pub async fn run(
         }
         PackageCommand::Materialize { .. } => {
             unreachable!("Materialize is handled before ApmConfig::load")
+        }
+        PackageCommand::ActivateConfig { .. } => {
+            unreachable!("ActivateConfig is handled before ApmConfig::load")
         }
         PackageCommand::Switch { .. } => {
             unreachable!("Switch is handled before ApmConfig::load")
@@ -2756,6 +2898,7 @@ fn run_verify_package_attestation(
         let mut output = serde_json::json!({
             "pcr15": verified.pcr15,
             "package_count": verified.package_count,
+            "generation_attestations": &verified.generation_attestations,
         });
         if matches!(
             trust,
@@ -2781,8 +2924,10 @@ fn run_verify_package_attestation(
         printer.json(&output);
     } else {
         let mut message = format!(
-            "Package attestation event log verified ({} package events, PCR 15 {}).",
-            verified.package_count, verified.pcr15
+            "AOS attestation event log verified ({} package events, {} generation attestations, PCR 15 {}).",
+            verified.package_count,
+            verified.generation_attestations.len(),
+            verified.pcr15
         );
         if trust == AttestationQuoteTrust::BundleSelfConsistent {
             message.push_str(" Quote bundle is self-consistent; AK/EK trust was not checked.");
@@ -3055,6 +3200,8 @@ async fn run_registry(
             images,
             image_formats,
             expose_manifest,
+            config_module,
+            config_base_lib,
             bless,
             no_ca,
             no_commit,
@@ -3079,6 +3226,8 @@ async fn run_registry(
                 images,
                 image_formats,
                 expose_manifest.as_deref(),
+                config_module.as_deref(),
+                config_base_lib.as_deref(),
                 *bless,
                 *no_ca,
                 *no_commit,

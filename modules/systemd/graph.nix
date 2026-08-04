@@ -18,6 +18,9 @@
 }: let
   cfg = config.aos.config.unitGraph;
   apm = "${pkgs.aos}/bin/apm";
+  attestationQuoteArg =
+    lib.optionalString config.aos.boot.secureBoot.measuredBoot.enable
+    "--require-attestation-quote";
 in {
   options.aos.config.unitGraph = {
     manifest = lib.mkOption {
@@ -44,14 +47,16 @@ in {
         wantedBy = [];
         wants = ["network-online.target"];
         after = ["network-online.target"];
+        unitConfig = {
+          StartLimitIntervalSec = "120s";
+          StartLimitBurst = 5;
+        };
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
           ExecStart = "${apm} fetch %i";
           Restart = "on-failure";
           RestartSec = "5s";
-          StartLimitIntervalSec = "120s";
-          StartLimitBurst = 5;
           TimeoutStartSec = "180s";
           PrivateTmp = true;
           ProtectSystem = "strict";
@@ -75,25 +80,88 @@ in {
           ExecStart = "${apm} render-one %i";
           TimeoutStartSec = "60s";
           PrivateTmp = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          ProtectKernelTunables = true;
+          ProtectKernelModules = true;
+          ProtectControlGroups = true;
+          ReadWritePaths = ["/run/aos"];
           NoNewPrivileges = true;
+          UMask = "0077";
         };
       };
 
       # ---- aos-graph-compile.service ---------------------------------------
       # Parse manifest.json + graph.json → write /run/systemd/system dropins +
-      # .wants → daemon-reload → start --no-block aos-config.target. A missing
+      # .wants → daemon-reload → await aos-config.target. A missing
       # manifest makes this a clean no-op (the box stays on the gen-0 seed).
       aos-graph-compile = {
         description = "Compile the AOS config eval output into a systemd unit graph";
         wantedBy = ["multi-user.target"];
+        before = ["aos-preset.service" "multi-user.target"];
         after = ["aos-eval.service"];
         wants = ["aos-eval.service"];
-        unitConfig.ConditionPathExists = cfg.manifest;
+        unitConfig = {
+          ConditionPathExists = cfg.manifest;
+        };
         serviceConfig = {
           Type = "oneshot";
           RemainAfterExit = true;
           ExecStart = "${apm} __graph-compile --manifest ${cfg.manifest} --graph ${cfg.graph}";
+          PrivateTmp = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          ProtectKernelTunables = true;
+          ProtectKernelModules = true;
+          ProtectControlGroups = true;
+          ReadWritePaths = ["/run/aos" "/run/systemd/system"];
+          NoNewPrivileges = true;
+          UMask = "0077";
         };
+      };
+
+      # ---- aos-activate.service -------------------------------------------
+      # The target pulls this in only after the soft fetch/render wing. A
+      # missing marker never makes the wing hard-fail: the commit command
+      # re-projects the manifest onto the successful subset, records the
+      # dropped closure, then invokes the toplevel's atomic activation script.
+      aos-activate = {
+        description = "Commit the evaluated AOS host configuration";
+        wantedBy = [];
+        wants = ["aos-config-render.target" "aos-fetch.target"];
+        after = [
+          "aos-config-render.target"
+          "aos-fetch.target"
+          "aos-seed-profiles.service"
+        ];
+        before = ["aos-preset.service"];
+        unitConfig = {
+          ConditionPathExists = cfg.manifest;
+          StartLimitIntervalSec = "30s";
+          StartLimitBurst = 3;
+        };
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          Restart = "on-failure";
+          RestartSec = "2s";
+          RestartPreventExitStatus = "4 6";
+          TimeoutStartSec = "180s";
+        };
+        script = ''
+          set +e
+          ${apm} __activate-config \
+            --manifest ${cfg.manifest} \
+            --graph ${cfg.graph} \
+            --module-abi ${toString config.aos.system.moduleAbi} ${attestationQuoteArg}
+          rc=$?
+          set -e
+          if [ "$rc" -eq 4 ]; then
+            echo "aos-activate: /etc swap is indeterminate; entering rescue mode" >&2
+            ${pkgs.systemd}/bin/systemctl --no-block isolate rescue.target
+          fi
+          exit "$rc"
+        '';
       };
     };
 
@@ -113,8 +181,12 @@ in {
       };
       aos-config = {
         description = "AOS on-host config applied";
-        after = ["aos-config-render.target"];
-        wants = ["aos-config-render.target" "aos-fetch.target"];
+        after = ["aos-activate.service"];
+        wants = [
+          "aos-activate.service"
+          "aos-config-render.target"
+          "aos-fetch.target"
+        ];
         wantedBy = [];
       };
     };

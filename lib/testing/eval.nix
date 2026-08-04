@@ -41,10 +41,106 @@
     then throw "the stock system must emit aos-eval.service"
     else if !(builtins.hasAttr "aos-graph-compile" system.config.systemd.services)
     then throw "the stock system must emit aos-graph-compile.service"
+    else if !(builtins.hasAttr "aos-activate" system.config.systemd.services)
+    then throw "the stock system must emit aos-activate.service"
+    else if system.config.systemd.services."aos-pkg-install@".serviceConfig.ProtectSystem != "strict"
+    then throw "package config rendering must run with ProtectSystem=strict"
+    else if
+      system.config.systemd.services."aos-pkg-install@".serviceConfig.ReadWritePaths
+      != ["/run/aos"]
+    then throw "package config rendering must write only beneath /run/aos"
+    else if system.config.systemd.services.aos-graph-compile.serviceConfig.ProtectSystem != "strict"
+    then throw "the graph compiler must run with ProtectSystem=strict"
+    else if
+      system.config.systemd.services.aos-graph-compile.serviceConfig.ReadWritePaths
+      != ["/run/aos" "/run/systemd/system"]
+    then throw "the graph compiler must write only its transaction and runtime unit roots"
+    else if !system.config.systemd.services.aos-graph-compile.serviceConfig.NoNewPrivileges
+    then throw "the graph compiler must not gain privileges"
+    else if !(builtins.hasAttr "aos-image-boot-commit" system.config.systemd.services)
+    then throw "the stock system must commit or demote pending image transitions after configuration rebind"
+    else if system.config.systemd.services.aos-eval.serviceConfig ? SuccessExitStatus
+    then throw "aos-eval failures must remain visible as failed units"
+    else if
+      !(builtins.elem
+        "@system-service"
+        system.config.systemd.services.aos-eval.serviceConfig.SystemCallFilter)
+    then throw "aos-eval.service must have an allowlisted system-call baseline"
+    else if
+      !(builtins.elem
+        "-${system.config.aos.config.evalAtBoot.hostNix}"
+        system.config.systemd.services.aos-eval.serviceConfig.ReadOnlyPaths)
+    then throw "aos-eval.service must bind the delivered host.nix read-only"
+    else if system.config.systemd.services.aos-eval.unitConfig ? ConditionPathExists
+    then throw "aos-eval.service must evaluate the image-default empty module when operator input is absent"
+    else if
+      !(containsStr
+        "image_default_arg=\"--image-default-host\""
+        system.config.systemd.services.aos-eval.script)
+    then throw "aos-eval.service must enter the authenticated no-input fallback arm"
+    else if
+      !(builtins.elem
+        "aos-activate.service"
+        system.config.systemd.services.aos-image-boot-commit.after)
+    then throw "image boot success must wait for configuration activation"
+    else if
+      !(builtins.elem
+        "aos-graph-compile.service"
+        system.config.systemd.services.aos-image-boot-commit.requires)
+    then throw "image boot assessment must wait for successful no-input or operator-input evaluation"
+    else if
+      !(containsStr
+        "gen-$current/manifest.json"
+        system.config.systemd.services.aos-image-boot-commit.script)
+    then throw "image boot success must require a durable committed configuration manifest"
+    else if
+      !(builtins.elem
+        (toString system.config.aos.config.evalAtBoot.baseLib)
+        system.config.systemd.services.aos-eval.serviceConfig.ReadOnlyPaths)
+    then throw "aos-eval.service must bind the immutable base library read-only"
+    else if
+      !(containsStr
+        "readlink /sysroot/aos-toplevel"
+        system.config.boot.initrd.systemd.services."etc-overlay-setup".script)
+    then throw "the boot /etc lower must come from the image that actually booted"
+    else if
+      !(containsStr
+        ".apm-unwrapped __materialize"
+        system.config.boot.initrd.systemd.services."aos-config-seed".script)
+    then throw "the initrd must restore the committed non-base configuration lower before mounting /etc"
+    else if !(builtins.elem pkgs.aos system.config.aos.boot.initrd.extraPackages)
+    then throw "the initrd configuration backend must carry the AOS materializer closure explicitly"
+    else if
+      !(containsStr
+        "/sysroot/var/lib/profiles/system/gen-$AOS_PROFILE_GEN/manifest.json"
+        system.config.boot.initrd.systemd.services."aos-config-seed".script)
+    then throw "initrd configuration restoration must use the current retained generation manifest"
+    else if
+      !(builtins.elem
+        "aos-activate.service"
+        system.config.systemd.targets.aos-config.wants)
+    then throw "aos-config.target must pull in the atomic activation commit"
+    else if
+      !(builtins.elem
+        "aos-activate.service"
+        system.config.systemd.targets.aos-config.after)
+    then throw "aos-config.target must wait for the atomic activation commit"
+    else if
+      !(builtins.elem
+        "aos-activate.service"
+        system.config.systemd.services.aos-preset.after)
+    then throw "package presets must run after host configuration activation"
+    else if
+      !(containsStr
+        "__activate-config"
+        system.config.systemd.services.aos-activate.script)
+    then throw "aos-activate.service must invoke the configuration-generation commit"
     else if !(builtins.hasAttr "aos-metadata-fetch" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-metadata-fetch.service"
     else if !(builtins.hasAttr "aos-metadata-authorize" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-metadata-authorize.service"
+    else if !(builtins.hasAttr "aos-metadata-network-seed" system.config.boot.initrd.systemd.services)
+    then throw "the stock system must emit aos-metadata-network-seed.service"
     else if !(builtins.hasAttr "aos-provisioning-eval" system.config.boot.initrd.systemd.services)
     then throw "the stock system must emit aos-provisioning-eval.service"
     else if !(builtins.hasAttr "aos-repart" system.config.boot.initrd.systemd.services)
@@ -63,6 +159,33 @@
       system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
+    else if
+      !(builtins.elem
+        "mount-var.service"
+        system.config.boot.initrd.systemd.services."aos-metadata-network-seed".requires)
+    then throw "the static metadata network seed must wait for the persistent /var mount"
+    else if
+      !(builtins.elem
+        "aos-metadata-fetch.service"
+        system.config.boot.initrd.systemd.services."aos-metadata-network-seed".after)
+    then throw "the static metadata network seed must run after acquisition"
+    else if
+      !(builtins.elem
+        "etc-overlay-setup.service"
+        system.config.boot.initrd.systemd.services."aos-metadata-network-seed".before)
+    then throw "the static metadata network seed must precede /etc overlay assembly"
+    else if
+      !(containsStr
+        "/sysroot/var/etc/systemd/network/10-aos-seed.network"
+        system.config.boot.initrd.systemd.services."aos-metadata-network-seed".script)
+    then throw "the static metadata network seed must be installed into the persistent gen-0 lower"
+    else if
+      system.config.boot.initrd.systemd.network."80-dhcp".networkConfig.LinkLocalAddressing
+      != "ipv4"
+    then throw "DHCP-less metadata acquisition requires an initrd IPv4 link-local source address"
+    else if
+      !system.config.boot.initrd.systemd.network."80-dhcp".networkConfig.IPv4LLRoute
+    then throw "DHCP-less metadata acquisition requires an initrd route to link-local IMDS"
     else if
       !(builtins.elem
         "aos-host-config-restore.service"
@@ -285,7 +408,10 @@
         enable = true;
         packages = ["web" "worker"];
         config.web.env.TOKEN = "<tag>|{x}";
-        credentials.web.join-token = "secret value";
+        credentials.web.join-token = {
+          source = "/etc/credstore.encrypted/web/join-token";
+          ref = "desired-toml";
+        };
         systemCredentials.worker.join-token = "bootstrap-token";
       };
     }
@@ -311,10 +437,8 @@
     then throw "aos.apm.installAtBoot desired.toml is missing the config table: ${desiredText}"
     else if !(containsStr ''TOKEN = "<tag>|{x}"'' desiredText)
     then throw "aos.apm.installAtBoot desired.toml is missing the config value: ${desiredText}"
-    else if !(containsStr "[credentials.web]" desiredText)
-    then throw "aos.apm.installAtBoot desired.toml is missing the credential table: ${desiredText}"
-    else if !(containsStr ''join-token = "secret value"'' desiredText)
-    then throw "aos.apm.installAtBoot desired.toml is missing the credential value: ${desiredText}"
+    else if containsStr "[credentials.web]" desiredText
+    then throw "aos.apm.installAtBoot desired.toml must not serialize opaque references as values: ${desiredText}"
     else if !(containsStr "[credentials.worker.join-token]" desiredText)
     then throw "aos.apm.installAtBoot desired.toml is missing the system credential table: ${desiredText}"
     else if !(containsStr ''system-credential = "bootstrap-token"'' desiredText)
@@ -346,7 +470,10 @@
     {
       aos.apm.installAtBoot = {
         enable = true;
-        credentials.web."bad/name" = "abc";
+        credentials.web."bad/name" = {
+          source = "/etc/credstore/bad";
+          ref = "desired-toml";
+        };
       };
     }
   ];
@@ -355,6 +482,22 @@
   in
     if forced.success
     then throw "aos.apm.installAtBoot.credentials must reject invalid credential names"
+    else "ok";
+
+  plaintextInstallAtBootCredentialSystem = mkSystem [
+    ../../systems/server.nix
+    {
+      aos.apm.installAtBoot.credentials.web.join-token = {
+        ref = "desired-toml";
+        value = "must-not-enter-the-value-graph";
+      };
+    }
+  ];
+  apmInstallAtBootRejectsPlaintextCredential = let
+    forced = builtins.tryEval (plaintextInstallAtBootCredentialSystem.config.system.build.toplevel.outPath);
+  in
+    if forced.success
+    then throw "aos.apm.installAtBoot.credentials secretRef must reject plaintext value fields"
     else "ok";
 
   invalidInstallAtBootSystemCredentialSystem = mkSystem [
@@ -378,7 +521,10 @@
     {
       aos.apm.installAtBoot = {
         enable = true;
-        credentials.web.join-token = "secret value";
+        credentials.web.join-token = {
+          source = "/etc/credstore.encrypted/web/join-token";
+          ref = "desired-toml";
+        };
         systemCredentials.web.join-token = "bootstrap-token";
       };
     }
@@ -621,7 +767,7 @@ in
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
-        echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
+        echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), plaintext credential (${apmInstallAtBootRejectsPlaintextCredential}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"
         echo "firewall:       no package drop-in include (${firewallNoNftablesDropin}), scan-dir storage rejected (${scanDirStorageRejected})"
         echo "package expose: enumerated ${builtins.toJSON exposedPackageNames} (${exposeEnumeration})"

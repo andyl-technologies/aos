@@ -4,8 +4,8 @@
 //! A sysroot package is a regular package with `sysroot = true` whose store
 //! path is a system toplevel. Installing it as the system sysroot creates a
 //! numbered **generation** under `/var/lib/profiles/system/`: a `gen-N/`
-//! directory holding a `toplevel` symlink, recorded in `state.json` (see
-//! [`SystemGenerationState`]) alongside a `current` symlink that always
+//! directory holding a materialized configuration, recorded in `state.json`
+//! (see [`ConfigGenerationState`]) alongside a `current` symlink that always
 //! points at the live generation.
 //!
 //! # Install / upgrade / rollback flow
@@ -47,7 +47,7 @@
 use std::collections::HashSet;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -67,7 +67,10 @@ use crate::registry::sb_certs::{self, SbCertsToml};
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::{collect_unique_metas, resolve_multiple};
 use crate::store::{filter_missing, import_nar};
-use crate::types::{PackageMeta, ProfileScope, SystemGeneration, SystemGenerationState};
+use crate::types::{
+    ConfigGeneration, ConfigGenerationState, ImageGeneration, ImageGenerationState, ImageSlot,
+    PackageMeta, ProfileScope, ReactivationPlan, SysrootImageEntry, SysrootUkiEntry, UkiSlot,
+};
 use crate::unit_diff::{self, UnitDiff};
 use crate::verify::{verify_download_hash, verify_downloads, verify_nar_hash};
 
@@ -95,9 +98,254 @@ pub enum KernelUpgradeMode {
 
 /// File name of the generation-state JSON inside the system profile dir.
 const SYSTEM_STATE_FILE: &str = "state.json";
-/// systemd-boot loader entry rewritten when the kernel changes.
-const BOOT_LOADER_ENTRY: &str = "/boot/loader/entries/aos.conf";
+const SYSTEM_COMMIT_JOURNAL: &str = ".state-commit.json";
+const ACTIVATION_INTENT: &str = ".activation-intent.json";
+const IMAGE_STATE_FILE: &str = "state.json";
+const IMAGE_TRANSITION_INTENT: &str = ".transition-intent.json";
+const IMAGE_PROFILE_DIR: &str = "/var/lib/profiles/image";
+const NIX_OVERLAY_UPPER_STORE: &str = "/var/lib/nix-overlay/upper/store";
+const BOOT_ROOT: &str = "/boot";
+const ROOT_A_DEVICE: &str = "/dev/disk/by-partlabel/root-a";
+const ROOT_B_DEVICE: &str = "/dev/disk/by-partlabel/root-b";
+const ROOT_A_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-a-hash";
+const ROOT_B_HASH_DEVICE: &str = "/dev/disk/by-partlabel/root-b-hash";
+const RUNNING_TOPLEVEL_LINK: &str = "/aos-toplevel";
+const RUNNING_OS_RELEASE: &str = "/aos-toplevel/os-release";
+const RUNNING_CMDLINE: &str = "/proc/cmdline";
 
+/// Recoverable intent record for publishing a generation as current.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct GenerationCommitJournal {
+    generation: u32,
+    state: ConfigGenerationState,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ActivationIntent {
+    generation: u32,
+    nonce: String,
+    state: ConfigGenerationState,
+}
+
+/// Retired bundled generation schema, accepted only by one-shot migration.
+#[derive(Debug, serde::Deserialize)]
+struct LegacySystemGeneration {
+    number: u32,
+    toplevel: String,
+    created_at: String,
+    image_gen_parent: Option<u32>,
+    module_abi_pinned: Option<u32>,
+    manifest_hash: Option<String>,
+    config_module_closure: Option<String>,
+    config_module_paths: Option<Vec<String>>,
+    config_module_packages: Option<Vec<String>>,
+    host_nix_ref: Option<String>,
+    host_nix_commit: Option<String>,
+    facts_hash: Option<String>,
+    facts_ref: Option<String>,
+    base_lib_ref: Option<String>,
+    evaluator_ref: Option<String>,
+}
+
+/// Retired system-profile state, never written by current code.
+#[derive(Debug, serde::Deserialize)]
+struct LegacySystemGenerationState {
+    current: u32,
+    next: u32,
+    generations: Vec<LegacySystemGeneration>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ImageTransitionIntent {
+    target: u32,
+    prior_default: u32,
+    entry_id: String,
+}
+
+/// Filesystem locations used by the offline A/B writer.
+struct ImageSlotLayout<'a> {
+    boot_root: &'a Path,
+    root_a: &'a Path,
+    root_b: &'a Path,
+    root_a_hash: &'a Path,
+    root_b_hash: &'a Path,
+}
+
+impl Default for ImageSlotLayout<'static> {
+    fn default() -> Self {
+        Self {
+            boot_root: Path::new(BOOT_ROOT),
+            root_a: Path::new(ROOT_A_DEVICE),
+            root_b: Path::new(ROOT_B_DEVICE),
+            root_a_hash: Path::new(ROOT_A_HASH_DEVICE),
+            root_b_hash: Path::new(ROOT_B_HASH_DEVICE),
+        }
+    }
+}
+
+/// Resolves the booted image generation from immutable image identity.
+///
+/// The `/var` image index is accepted only after its running record agrees
+/// with the baked `/aos-toplevel` pointer and metadata, the measured
+/// `AOS_MODULE_ABI` and `AOS_BASELIB_DIGEST` fields from the running image's
+/// `os-release`, and the root slot/verity hash in `/proc/cmdline`.
+/// Config-generation state is deliberately not consulted. The initrd seed
+/// service separately compares the early-boot PCR-11 value because PCR-11 has
+/// advanced beyond that phase by the time this stage-2 path runs.
+///
+/// # Errors
+///
+/// Returns an error if any identity input is absent, malformed, or disagrees.
+pub(crate) fn running_image_generation() -> Result<ImageGeneration> {
+    load_running_image_generation_from(
+        Path::new(IMAGE_PROFILE_DIR),
+        Path::new(RUNNING_OS_RELEASE),
+        Path::new(RUNNING_TOPLEVEL_LINK),
+        Path::new(RUNNING_CMDLINE),
+    )
+}
+
+pub(crate) fn load_image_generation_state_pub(profile: &Path) -> Result<ImageGenerationState> {
+    let path = profile.join(IMAGE_STATE_FILE);
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("reading image generation state {}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing image generation state {}", path.display()))
+}
+
+fn load_running_image_generation_from(
+    image_profile: &Path,
+    os_release: &Path,
+    toplevel_link: &Path,
+    cmdline: &Path,
+) -> Result<ImageGeneration> {
+    let state_path = image_profile.join(IMAGE_STATE_FILE);
+    let state_bytes = std::fs::read(&state_path)
+        .with_context(|| format!("reading image generation state {}", state_path.display()))?;
+    let state: ImageGenerationState = serde_json::from_slice(&state_bytes)
+        .with_context(|| format!("parsing image generation state {}", state_path.display()))?;
+    let running = state.running_generation().cloned().with_context(|| {
+        format!(
+            "image generation state names missing running generation {}",
+            state.running
+        )
+    })?;
+    let baked_toplevel = std::fs::read_link(toplevel_link)
+        .with_context(|| format!("reading running image pointer {}", toplevel_link.display()))?;
+    if baked_toplevel != Path::new(&running.toplevel) {
+        bail!(
+            "running image pointer {} disagrees with image generation {} toplevel {}",
+            baked_toplevel.display(),
+            running.number,
+            running.toplevel
+        );
+    }
+    let baked_base_lib = std::fs::read_link(toplevel_link.join("base-lib")).with_context(|| {
+        format!(
+            "reading immutable running base-library pointer {}/base-lib",
+            toplevel_link.display()
+        )
+    })?;
+    if baked_base_lib != Path::new(&running.evaluator_ref) {
+        bail!(
+            "running image base library {} disagrees with image generation {} evaluator_ref {}",
+            baked_base_lib.display(),
+            running.number,
+            running.evaluator_ref
+        );
+    }
+    let immutable_abi = read_toplevel_meta(toplevel_link, "module-abi")?
+        .parse::<u32>()
+        .context("immutable toplevel has invalid module ABI")?;
+    let immutable_digest = read_toplevel_meta(toplevel_link, "baselib-digest")?;
+    let immutable_uki = read_toplevel_meta(toplevel_link, "uki-path")?;
+    let immutable_package = read_toplevel_meta(toplevel_link, "package-name")?;
+    let immutable_version = read_toplevel_meta(toplevel_link, "version")?;
+    if immutable_abi != running.module_abi
+        || immutable_digest != running.baselib_digest
+        || immutable_uki != running.uki_path
+        || immutable_package != running.package_name
+        || immutable_version != running.version
+    {
+        bail!(
+            "running immutable toplevel metadata disagrees with image generation {}",
+            running.number
+        );
+    }
+    let fields = parse_os_release(os_release)?;
+    let abi = fields
+        .get("AOS_MODULE_ABI")
+        .context("running os-release has no AOS_MODULE_ABI")?
+        .parse::<u32>()
+        .context("running os-release has invalid AOS_MODULE_ABI")?;
+    let digest = fields
+        .get("AOS_BASELIB_DIGEST")
+        .context("running os-release has no AOS_BASELIB_DIGEST")?;
+    if abi != running.module_abi || digest != &running.baselib_digest {
+        bail!("running image identity disagrees with image state (abi {abi}, digest {digest})");
+    }
+    let cmdline_fields = parse_kernel_cmdline(cmdline)?;
+    let root_hash = cmdline_fields.get("roothash").cloned();
+    if root_hash != running.root_verity_roothash {
+        bail!(
+            "running kernel roothash disagrees with image generation {}",
+            running.number
+        );
+    }
+    if let Some(root) = cmdline_fields
+        .get("systemd.verity_root_data")
+        .or_else(|| cmdline_fields.get("root"))
+    {
+        let booted_slot = match root.as_str() {
+            ROOT_A_DEVICE => Some(ImageSlot::A),
+            ROOT_B_DEVICE => Some(ImageSlot::B),
+            _ => None,
+        };
+        if booted_slot.is_some() && booted_slot != Some(running.slot) {
+            bail!(
+                "running root slot disagrees with image generation {}",
+                running.number
+            );
+        }
+    }
+    Ok(running)
+}
+
+fn parse_kernel_cmdline(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading kernel command line {}", path.display()))?;
+    let mut fields = std::collections::BTreeMap::new();
+    for word in text.split_ascii_whitespace() {
+        let Some((key, value)) = word.split_once('=') else {
+            continue;
+        };
+        if fields.insert(key.to_string(), value.to_string()).is_some() {
+            bail!("kernel command line repeats {key}");
+        }
+    }
+    Ok(fields)
+}
+
+fn parse_os_release(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading running image identity {}", path.display()))?;
+    let mut fields = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, raw)) = line.split_once('=') else {
+            continue;
+        };
+        let value = raw
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .unwrap_or(raw);
+        fields.insert(key.to_string(), value.to_string());
+    }
+    Ok(fields)
+}
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -176,17 +424,6 @@ pub async fn install_system(
     // Handle image download mode.
     if let Some(fmt) = image_format {
         return download_image(config, toplevel_meta, fmt, image_output, dry_run, printer).await;
-    }
-
-    // Check if already provided by current sysroot.
-    if let Some(current_toplevel) = current_sysroot_store_path()? {
-        if current_toplevel == toplevel_meta.store_path {
-            printer.info(&format!(
-                "{} {} is already the active system sysroot.",
-                pkg_name, toplevel_meta.version,
-            ));
-            return Ok(());
-        }
     }
 
     // Trust-graph totality (RFC-0005 §2.6): seed from the WHOLE graph closure
@@ -296,143 +533,219 @@ pub async fn install_system(
     // download-time refusal rather than a boot-time brick.
     validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
 
-    // Step 7: Create new system generation.
-    printer.step(7, 8, "Creating system generation...");
-    let profile_path = ProfileScope::System.profile_path();
-    std::fs::create_dir_all(&profile_path)
-        .with_context(|| format!("creating {}", profile_path.display()))?;
+    // RFC-0011 image generations are never activated into the running root.
+    // When the two-axis image state exists, import the authenticated OTA
+    // payload, write only the inactive root/hash slot, publish its counted UKI
+    // last, and make it the durable next boot. First-boot evaluation under the
+    // new image creates the config generation after reboot.
+    let image_profile = Path::new(IMAGE_PROFILE_DIR);
+    if image_profile.join(IMAGE_STATE_FILE).is_file() {
+        if kernel_mode == KernelUpgradeMode::Kexec {
+            bail!(
+                "A/B image upgrades cannot use kexec because the inactive root slot must become the next boot root; use --reboot or the default advisory mode"
+            );
+        }
+        let image = toplevel_meta
+            .images
+            .iter()
+            .find(|image| image.format == "raw")
+            .or_else(|| {
+                toplevel_meta
+                    .images
+                    .iter()
+                    .find(|image| image.root_image.is_some())
+            })
+            .context(
+                "sysroot package has no authenticated raw OTA image carrying root.img and slot UKIs",
+            )?;
+        printer.step(7, 8, "Importing inactive-slot image payload...");
+        let image_store = ensure_image_imported(config, toplevel_meta, image, printer).await?;
+        validate_sysroot_secure_boot(config, toplevel_meta, &closure.registry_name, printer)?;
 
-    let mut state = load_generation_state(&profile_path)?;
-    let old_gen = state
-        .generations
+        let switch_lock =
+            crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
+        let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
+        printer.step(8, 8, "Staging inactive A/B image slot...");
+        let staged = stage_pending_image_generation_with(
+            image_profile,
+            &ProfileScope::System.profile_path(),
+            Path::new(NIX_OVERLAY_UPPER_STORE),
+            &ImageSlotLayout::default(),
+            toplevel_meta,
+            &closure.registry_name,
+            image,
+            &image_store,
+            |entry| {
+                let status = std::process::Command::new("bootctl")
+                    .arg("set-default")
+                    .arg(entry)
+                    .status()
+                    .context("running bootctl set-default for staged image")?;
+                if !status.success() {
+                    bail!("bootctl set-default failed with {status}");
+                }
+                Ok(())
+            },
+        )?;
+        printer.success(&format!(
+            "Image generation {} staged in slot {:?}; configuration remains unchanged until reboot.",
+            staged.number, staged.slot
+        ));
+        match kernel_mode {
+            KernelUpgradeMode::Reboot => {
+                if drain {
+                    drain_workloads(&staged.toplevel, printer).await?;
+                }
+                SystemdClient::connect().await?.reboot().await?;
+            }
+            KernelUpgradeMode::Advisory | KernelUpgradeMode::Live => {
+                printer.plain(
+                    "  Reboot to assess the counted image and re-evaluate host configuration.",
+                );
+            }
+            KernelUpgradeMode::Kexec => unreachable!("kexec rejected before staging"),
+        }
+        return Ok(());
+    }
+    bail!(
+        "image generation state is absent; refusing to recreate the retired single-axis system-generation authority"
+    )
+}
+
+fn reeval_and_activate_config_generation(
+    config: &ApmConfig,
+    profile_path: &Path,
+    target: &ConfigGeneration,
+    inputs: &crate::types::CrossAbiReEvalInputs,
+    running_base_lib: &Path,
+    running_abi: u32,
+) -> Result<u32> {
+    let source_manifest = validate_generation_manifest(profile_path, target)?;
+    let eval_root = PathBuf::from(format!(
+        "/run/aos/rollback-eval-{}-{}",
+        target.number,
+        std::process::id()
+    ));
+    let manifest = eval_root.join("manifest.json");
+    crate::config_eval::reeval_cross_abi(
+        inputs,
+        running_base_lib,
+        &source_manifest,
+        eval_root.clone(),
+        manifest.clone(),
+        0,
+    )?;
+    let graph = eval_root.join("graph.json");
+    let marker_root = eval_root.join("markers");
+    stage_retained_runtime(config, &manifest, &marker_root)?;
+    crate::config_eval::activation::activate_config(
+        &crate::config_eval::activation::ActivateConfigParams {
+            manifest,
+            graph,
+            marker_root,
+            profile: profile_path.to_path_buf(),
+            module_abi: running_abi,
+            switch_lock_held: true,
+            ..crate::config_eval::activation::ActivateConfigParams::default()
+        },
+    )
+}
+
+fn stage_retained_runtime(
+    config: &ApmConfig,
+    manifest_path: &Path,
+    marker_root: &Path,
+) -> Result<()> {
+    let bytes = std::fs::read(manifest_path)
+        .with_context(|| format!("reading rollback manifest {}", manifest_path.display()))?;
+    let manifest: crate::config_eval::materialize::ConfigManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing rollback manifest {}", manifest_path.display()))?;
+    for path in manifest
+        .store_paths
         .iter()
-        .find(|g| g.number == state.current)
-        .cloned();
-
-    let gen_num = state.next;
-    state.next += 1;
-
-    let now_iso = chrono_iso8601_now();
-    let kernel_path = resolve_kernel_path(&toplevel_meta.store_path);
-
-    let new_gen = SystemGeneration {
-        number: gen_num,
-        toplevel: toplevel_meta.store_path.clone(),
-        version: toplevel_meta.version.clone(),
-        package_name: pkg_name.clone(),
-        registry: closure.registry_name.clone(),
-        created_at: now_iso,
-        kernel_path: kernel_path.clone(),
-        // This single-axis sysroot-install path does not populate two-axis fields;
-        // not run the on-host config evaluator, so the config-gen axis metadata
-        // is absent. A `None` `module_abi_pinned` makes the rollback pin treat
-        // the generation is treated as same-ABI for direct reactivation.
-        image_gen_parent: None,
-        module_abi_pinned: None,
-        manifest_hash: None,
-        config_module_closure: None,
-        host_nix_ref: None,
-        host_nix_commit: None,
-        facts_hash: None,
-    };
-
-    // Create generation directory with a symlink to the toplevel.
-    let gen_dir = profile_path.join(format!("gen-{gen_num}"));
-    std::fs::create_dir_all(&gen_dir)?;
-    let toplevel_link = gen_dir.join("toplevel");
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&toplevel_meta.store_path, &toplevel_link)
-        .with_context(|| format!("creating toplevel symlink in gen-{gen_num}"))?;
-
-    state.generations.push(new_gen);
-    save_generation_state(&profile_path, &state)?;
-
-    // Step 8: Activation and kernel comparison.
-    printer.step(8, 8, "Activating...");
-
-    // Run the toplevel's activate script with the generation number. It
-    // rebuilds this gen's /etc overlay, reconciles running daemons, and
-    // swaps /etc in atomically (daemon reconciliation now happens inside
-    // the activate script, not here). Its exit code is the authority on
-    // what happened (see modules/base/activate.sh.in):
-    //   0      switch succeeded, every unit healthy
-    //   5      switch succeeded; only stale-mount cleanup failed (cosmetic)
-    //   6      switch succeeded but some units failed — the upgrade is
-    //          applied and the gen stays live, but apm exits non-zero
-    //   1/2/3  failed before the swap; the previous gen is still live
-    //   4      swap incomplete; /etc indeterminate — operator must intervene
-    let mut activate_degraded = false;
-    let activate_script = format!("{}/activate", toplevel_meta.store_path);
-    if Path::new(&activate_script).exists() {
-        let status = std::process::Command::new(&activate_script)
-            .arg(gen_num.to_string())
-            .status()
-            .with_context(|| format!("running {activate_script}"))?;
-        match status.code() {
-            Some(0) => {}
-            Some(5) => printer.warning(
-                "Activation succeeded, but cleanup of the previous \
-                 generation's mounts failed (stale /run/etc mounts).",
-            ),
-            Some(6) => activate_degraded = true,
-            Some(4) => anyhow::bail!(
-                "FATAL: the /etc swap is incomplete; the running system's \
-                 /etc may be in an indeterminate state. Manual intervention \
-                 is required (gen-{gen_num})."
-            ),
-            other => anyhow::bail!(
-                "Activation failed before the /etc swap (exit {other:?}); the \
-                 previous generation is still live."
-            ),
+        .chain(manifest.package_outputs.values().flat_map(|package| {
+            package
+                .closure
+                .iter()
+                .filter_map(|member| member.store_path.as_ref())
+        }))
+    {
+        if !path.starts_with("/nix/store/") || !Path::new(path).exists() {
+            bail!(
+                "retained runtime closure path is unavailable: {path}; cross-ABI rollback refused"
+            );
         }
     }
-    commit_current_generation(&profile_path, &mut state, gen_num)?;
+    let mut transaction = crate::graph_compile::graph_transaction(&manifest)?;
+    transaction.completed = true;
+    std::fs::create_dir_all(marker_root)
+        .with_context(|| format!("creating rollback marker root {}", marker_root.display()))?;
+    std::fs::write(
+        crate::graph_compile::transaction_state_path(marker_root),
+        serde_json::to_vec(&transaction)?,
+    )?;
+    for (package, pin) in &transaction.packages {
+        let marker = format!("{} {pin}\n", transaction.manifest);
+        let fetch = marker_root.join("fetch");
+        std::fs::create_dir_all(&fetch)?;
+        std::fs::write(fetch.join(format!("{package}.ok")), &marker)?;
+        crate::graph_compile::subverbs::stage_retained_package(
+            config,
+            package,
+            manifest_path,
+            marker_root,
+            &marker_root.join("staging"),
+        )?;
+    }
+    Ok(())
+}
 
-    // Handle kernel upgrade according to the chosen mode. Both sides are
-    // canonicalized so a seeded generation's `<toplevel>/kernel` symlink
-    // form compares equal to the resolved form `resolve_kernel_path`
-    // stores.
-    let old_kernel_path =
-        canonicalize_kernel_path(&old_gen.as_ref().and_then(|g| g.kernel_path.clone()));
-    let kernel_path = canonicalize_kernel_path(&kernel_path);
-    handle_kernel_upgrade(
-        &old_kernel_path,
-        &kernel_path,
-        &toplevel_meta.store_path,
-        kernel_mode,
-        drain,
-        printer,
-    )
-    .await?;
-
-    let reboot_hint = match kernel_mode {
-        KernelUpgradeMode::Advisory => {
-            let kernel_changed = match (&old_kernel_path, &kernel_path) {
-                (Some(old), Some(new)) if !old.is_empty() && !new.is_empty() => old != new,
-                _ => false,
-            };
-            if kernel_changed {
-                " (reboot required)"
-            } else {
-                ""
-            }
-        }
-        _ => "",
-    };
-
-    if activate_degraded {
-        anyhow::bail!(
-            "System generation {gen_num} is live, but one or more units failed \
-             to (re)start (see the reconcile report above). The upgrade was \
-             applied; the failing units need attention."
+fn validate_generation_manifest(
+    profile_path: &Path,
+    generation: &ConfigGeneration,
+) -> Result<PathBuf> {
+    let path = profile_path
+        .join(format!("gen-{}", generation.number))
+        .join("manifest.json");
+    let expected = generation.manifest_hash.as_str();
+    let bytes = std::fs::read(&path)
+        .with_context(|| format!("reading retained manifest {}", path.display()))?;
+    let manifest: crate::config_eval::materialize::ConfigManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parsing retained manifest {}", path.display()))?;
+    manifest.validate()?;
+    let value = serde_json::to_value(&manifest)?;
+    let actual = crate::graph_compile::reproject::hash_cjson(&value);
+    if actual != expected {
+        bail!(
+            "config generation {} manifest hash mismatch: recorded {expected}, actual {actual}",
+            generation.number
         );
     }
+    Ok(path)
+}
 
-    printer.success(&format!(
-        "System generation {gen_num} active: {} {}{}",
-        pkg_name, toplevel_meta.version, reboot_hint,
-    ));
-
+fn validate_direct_reactivation(
+    target: &ConfigGeneration,
+    running: &ImageGeneration,
+    manifest_path: &Path,
+) -> Result<()> {
+    if target.module_abi_pinned != running.module_abi {
+        bail!(
+            "configuration generation {} is not ABI-compatible with running image generation {}",
+            target.number,
+            running.number
+        );
+    }
+    let manifest: crate::config_eval::materialize::ConfigManifest =
+        serde_json::from_slice(&std::fs::read(manifest_path)?)?;
+    if manifest.module_abi != running.module_abi
+        || target.base_lib_ref != manifest.inputs.base_lib.store_path
+    {
+        bail!(
+            "configuration generation {} manifest does not match its recorded ABI/base-library binding",
+            target.number
+        );
+    }
     Ok(())
 }
 
@@ -455,14 +768,7 @@ pub async fn upgrade_system(
     drain: bool,
     printer: &Printer,
 ) -> Result<()> {
-    let profile_path = ProfileScope::System.profile_path();
-    let state = load_generation_state(&profile_path)?;
-
-    let current_gen = state
-        .generations
-        .iter()
-        .find(|g| g.number == state.current)
-        .ok_or_else(|| anyhow::anyhow!("no active system generation"))?;
+    let current_gen = running_image_generation()?;
 
     printer.info(&format!(
         "Current sysroot: {} {} (generation {})",
@@ -533,7 +839,7 @@ pub async fn upgrade_system(
 /// script fails (including the degraded exit-6 case, where the rollback is
 /// live but some units failed).
 pub async fn rollback_system(
-    _config: &ApmConfig,
+    config: &ApmConfig,
     generation: Option<u32>,
     list: bool,
     dry_run: bool,
@@ -542,13 +848,12 @@ pub async fn rollback_system(
     printer: &Printer,
 ) -> Result<()> {
     let profile_path = ProfileScope::System.profile_path();
-    let mut state = load_generation_state(&profile_path)?;
-
     if list {
+        let state = load_generation_state_readonly(&profile_path)?;
         if state.generations.is_empty() {
             printer.info("No system generations.");
         } else {
-            printer.header("System generations:");
+            printer.header("Configuration generations:");
             for sysgen in &state.generations {
                 let marker = if sysgen.number == state.current {
                     " (current)"
@@ -556,13 +861,21 @@ pub async fn rollback_system(
                     ""
                 };
                 printer.plain(&format!(
-                    "  gen-{}: {} {} [{}]{}",
-                    sysgen.number, sysgen.package_name, sysgen.version, sysgen.created_at, marker,
+                    "  gen-{}: image-gen-{}, ABI {}, {} [{}]{}",
+                    sysgen.number,
+                    sysgen.image_gen_parent,
+                    sysgen.module_abi_pinned,
+                    sysgen.manifest_hash,
+                    sysgen.created_at,
+                    marker,
                 ));
             }
         }
         return Ok(());
     }
+    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
+    let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
+    let mut state = load_generation_state(&profile_path)?;
 
     let current = state
         .generations
@@ -590,13 +903,8 @@ pub async fn rollback_system(
     };
 
     printer.info(&format!(
-        "Rolling back system from generation {} ({} {}) to generation {} ({} {}).",
-        current.number,
-        current.package_name,
-        current.version,
-        target.number,
-        target.package_name,
-        target.version,
+        "Rolling back configuration from generation {} to generation {}.",
+        current.number, target.number,
     ));
 
     if dry_run {
@@ -604,68 +912,777 @@ pub async fn rollback_system(
         return Ok(());
     }
 
-    // Run the target generation's activate script with its gen number.
-    // It rebuilds the target gen's /etc overlay, reconciles daemons, and
-    // swaps /etc in atomically. Exit-code contract matches install (see
-    // modules/base/activate.sh.in).
-    let mut activate_degraded = false;
-    let activate_script = format!("{}/activate", target.toplevel);
-    if Path::new(&activate_script).exists() {
-        let status = std::process::Command::new(&activate_script)
-            .arg(target.number.to_string())
-            .status()
-            .with_context(|| format!("running {activate_script}"))?;
-        match status.code() {
-            Some(0) => {}
-            Some(5) => printer.warning(
-                "Rollback activation succeeded, but cleanup of the previous \
-                 generation's mounts failed (stale /run/etc mounts).",
-            ),
-            Some(6) => activate_degraded = true,
-            Some(4) => anyhow::bail!(
-                "FATAL: the /etc swap is incomplete; the running system's \
-                 /etc may be in an indeterminate state. Manual intervention \
-                 is required (gen-{}).",
-                target.number
-            ),
-            other => anyhow::bail!(
-                "Rollback activation failed before the /etc swap (exit \
-                 {other:?}); the previous generation is still live."
-            ),
+    if Path::new(IMAGE_PROFILE_DIR)
+        .join(IMAGE_STATE_FILE)
+        .is_file()
+    {
+        let running_image = running_image_generation()?;
+        let running_abi = running_image.module_abi;
+        match target.reactivation_plan(running_abi)? {
+            ReactivationPlan::DirectReactivate => {
+                let manifest = validate_generation_manifest(&profile_path, &target)?;
+                validate_direct_reactivation(&target, &running_image, &manifest)?;
+                direct_reactivate_config_generation_with(
+                    &profile_path,
+                    &mut state,
+                    Path::new(&running_image.toplevel),
+                    &target,
+                    printer,
+                    |activate, number, nonce| {
+                        let status = std::process::Command::new(activate)
+                            .arg(number.to_string())
+                            .env("AOS_SWITCH_LOCK_HELD", "1")
+                            .env("AOS_ACTIVATION_NONCE", nonce)
+                            .status()
+                            .with_context(|| format!("running {}", activate.display()))?;
+                        Ok(status.code())
+                    },
+                )?;
+                return Ok(());
+            }
+            ReactivationPlan::CrossAbiReEval(inputs) => {
+                let activated = reeval_and_activate_config_generation(
+                    config,
+                    &profile_path,
+                    &target,
+                    &inputs,
+                    Path::new(&running_image.evaluator_ref),
+                    running_abi,
+                )?;
+                printer.success(&format!(
+                    "Re-evaluated generation {} under module ABI {} and activated it as generation {}.",
+                    target.number, running_abi, activated
+                ));
+                return Ok(());
+            }
         }
     }
-    commit_current_generation(&profile_path, &mut state, target.number)?;
 
-    // Handle kernel upgrade according to the chosen mode (canonicalized
-    // for the same reason as the upgrade path: the seeded generation
-    // records the `kernel` symlink, not its target).
-    handle_kernel_upgrade(
-        &canonicalize_kernel_path(&current.kernel_path),
-        &canonicalize_kernel_path(&target.kernel_path),
-        &target.toplevel,
-        kernel_mode,
-        drain,
-        printer,
-    )
-    .await?;
+    let _ = (kernel_mode, drain);
+    bail!("image generation state is absent; refusing config rollback through legacy state")
+}
 
-    if activate_degraded {
-        anyhow::bail!(
-            "Rolled back to system generation {} ({} {}), which is now live, \
-             but one or more units failed to (re)start (see the reconcile \
-             report above). The rollback was applied; the failing units need \
-             attention.",
-            target.number,
-            target.package_name,
-            target.version,
+/// Copies a store tree into the persistent overlay upper using an atomic
+/// destination rename.
+fn copy_store_tree_to_upper(source: &Path, upper_store: &Path) -> Result<()> {
+    let name = source.file_name().context("store path has no basename")?;
+    let destination = upper_store.join(name);
+    if destination.exists() || destination.symlink_metadata().is_ok() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(upper_store)
+        .with_context(|| format!("creating persistent store upper {}", upper_store.display()))?;
+    let temp = upper_store.join(format!(
+        ".aos-copyup-{}-{}",
+        std::process::id(),
+        name.to_string_lossy()
+    ));
+    if temp.exists() || temp.symlink_metadata().is_ok() {
+        if temp.is_dir() && !temp.is_symlink() {
+            std::fs::remove_dir_all(&temp)?;
+        } else {
+            std::fs::remove_file(&temp)?;
+        }
+    }
+    copy_tree(source, &temp)?;
+    sync_tree_files(&temp)?;
+    std::fs::rename(&temp, &destination)
+        .with_context(|| format!("publishing persistent store copy {}", destination.display()))?;
+    sync_directory(upper_store)
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(source)
+        .with_context(|| format!("stat retained store path {}", source.display()))?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(source)?;
+        std::os::unix::fs::symlink(target, destination)?;
+    } else if metadata.is_dir() {
+        std::fs::create_dir(destination)?;
+        std::fs::set_permissions(destination, metadata.permissions())?;
+        let mut entries = std::fs::read_dir(source)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            copy_tree(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+    } else if metadata.is_file() {
+        std::fs::copy(source, destination)?;
+        std::fs::set_permissions(destination, metadata.permissions())?;
+    } else {
+        bail!(
+            "retained store path contains unsupported file type: {}",
+            source.display()
         );
     }
+    Ok(())
+}
 
+fn sync_tree_files(path: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.is_file() {
+        OpenOptions::new().read(true).open(path)?.sync_all()?;
+    } else if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            sync_tree_files(&entry?.path())?;
+        }
+        sync_directory(path)?;
+    }
+    Ok(())
+}
+
+/// Materializes an evaluator closure from the current immutable lower into
+/// `/var` before its root slot may be overwritten.
+fn persist_store_closure_to_upper(evaluator_ref: &str, upper_store: &Path) -> Result<()> {
+    let output = std::process::Command::new("nix-store")
+        .args(["--query", "--requisites", evaluator_ref])
+        .output()
+        .context("querying evaluator closure for persistent copy-up")?;
+    if !output.status.success() {
+        bail!(
+            "nix-store --query --requisites failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    for line in String::from_utf8(output.stdout)?.lines() {
+        let source = Path::new(line);
+        if !source.starts_with("/nix/store") || source.parent() != Some(Path::new("/nix/store")) {
+            bail!("nix-store returned unsafe closure path {line}");
+        }
+        copy_store_tree_to_upper(source, upper_store)?;
+    }
+    Ok(())
+}
+
+fn image_artifact_path(
+    image_store: &Path,
+    declared: Option<&str>,
+    fallback: &str,
+) -> Result<PathBuf> {
+    let relative = declared.unwrap_or(fallback);
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("unsafe image artifact path {relative:?}");
+    }
+    let artifact = image_store.join(path);
+    let metadata = std::fs::symlink_metadata(&artifact)
+        .with_context(|| format!("reading staged image artifact {}", artifact.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!(
+            "image artifact is not a regular file: {}",
+            artifact.display()
+        );
+    }
+    Ok(artifact)
+}
+
+fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
+    let source_len = std::fs::metadata(source)?.len();
+    let destination_metadata = std::fs::symlink_metadata(destination)
+        .with_context(|| format!("opening inactive image slot {}", destination.display()))?;
+    if destination_metadata.file_type().is_symlink()
+        || !(destination_metadata.file_type().is_block_device() || destination_metadata.is_file())
+    {
+        bail!(
+            "inactive image slot is not a block device: {}",
+            destination.display()
+        );
+    }
+    if destination_metadata.is_file()
+        && destination_metadata.len() != 0
+        && destination_metadata.len() < source_len
+    {
+        bail!(
+            "inactive image slot {} is smaller than payload ({} < {})",
+            destination.display(),
+            destination_metadata.len(),
+            source_len
+        );
+    }
+    let mut input = OpenOptions::new().read(true).open(source)?;
+    let mut output = OpenOptions::new().write(true).open(destination)?;
+    let copied = std::io::copy(&mut input, &mut output)?;
+    if copied != source_len {
+        bail!("short image-slot write: copied {copied} of {source_len} bytes");
+    }
+    output.sync_all()?;
+    Ok(())
+}
+
+fn read_toplevel_meta(toplevel: &Path, name: &str) -> Result<String> {
+    let value = std::fs::read_to_string(toplevel.join("meta").join(name))
+        .with_context(|| format!("reading target image metadata {name}"))?;
+    Ok(value.trim().to_string())
+}
+
+fn stage_slot_artifacts(
+    layout: &ImageSlotLayout<'_>,
+    target_slot: ImageSlot,
+    image_store: &Path,
+    image: &SysrootImageEntry,
+    uki_entry: &str,
+    reusable_uki: Option<&Path>,
+) -> Result<()> {
+    let (root_device, hash_device, legacy_uki_name) = match target_slot {
+        ImageSlot::A => (layout.root_a, layout.root_a_hash, "uki-a.efi"),
+        ImageSlot::B => (layout.root_b, layout.root_b_hash, "uki-b.efi"),
+    };
+    let root = image_artifact_path(image_store, image.root_image.as_deref(), "root.img")?;
+    let verity = image
+        .root_verity
+        .as_deref()
+        .map(|path| image_artifact_path(image_store, Some(path), "root.verity"))
+        .transpose()?
+        .or_else(|| {
+            let fallback = image_store.join("root.verity");
+            fallback.is_file().then_some(fallback)
+        });
+    let root_hash_file = image_store.join("root.roothash");
+    if root_hash_file.is_file() != verity.is_some() {
+        bail!("image root payload and dm-verity metadata are incomplete");
+    }
+    if let Some(expected) = image.root_hash.as_deref() {
+        let actual = std::fs::read_to_string(&root_hash_file)?;
+        if actual.trim() != expected {
+            bail!("image root hash metadata does not match root.roothash");
+        }
+    }
+    let uki = if let Some(slot) = image_uki_for_slot(image, target_slot)? {
+        image_artifact_path(image_store, Some(&slot.path), legacy_uki_name)?
+    } else {
+        image_artifact_path(image_store, None, legacy_uki_name)?
+    };
+
+    // The UKI is published last: at every earlier crash point sd-boot can see
+    // only the still-running slot, never a UKI that targets a partial root.
+    copy_payload_to_slot(&root, root_device)?;
+    if let Some(verity) = verity {
+        copy_payload_to_slot(&verity, hash_device)?;
+    }
+    let destination = layout.boot_root.join(uki_entry);
+    let parent = destination
+        .parent()
+        .context("UKI destination has no parent")?;
+    std::fs::create_dir_all(parent)?;
+    let staging_dir = layout.boot_root.join("EFI/.aos-staging");
+    std::fs::create_dir_all(&staging_dir)?;
+    let slot_name = match target_slot {
+        ImageSlot::A => "a",
+        ImageSlot::B => "b",
+    };
+    let temp = staging_dir.join(format!("slot-{slot_name}.efi"));
+    if !temp.exists() {
+        if let Some(reusable) = reusable_uki.filter(|path| path.is_file()) {
+            std::fs::rename(reusable, &temp)?;
+            if let Some(reusable_parent) = reusable.parent() {
+                sync_directory(reusable_parent)?;
+            }
+            sync_directory(&staging_dir)?;
+        }
+    }
+    let mut input = OpenOptions::new().read(true).open(&uki)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o644)
+        .open(&temp)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.sync_all()?;
+    std::fs::rename(&temp, &destination)?;
+    sync_directory(parent)?;
+    sync_directory(&staging_dir)
+}
+
+fn reusable_slot_uki_path(
+    layout: &ImageSlotLayout<'_>,
+    state: &ImageGenerationState,
+    slot: ImageSlot,
+) -> Option<PathBuf> {
+    let previous = state
+        .generations
+        .iter()
+        .rev()
+        .find(|generation| generation.slot == slot)?;
+    let entry = resolve_installed_uki_entry(layout.boot_root, &previous.uki_path).ok()?;
+    let parent = Path::new(&previous.uki_path).parent().map_or_else(
+        || layout.boot_root.to_path_buf(),
+        |path| layout.boot_root.join(path),
+    );
+    let path = parent.join(entry);
+    path.is_file().then_some(path)
+}
+
+fn image_uki_for_slot<'a>(
+    image: &'a SysrootImageEntry,
+    target_slot: ImageSlot,
+) -> Result<Option<&'a SysrootUkiEntry>> {
+    if image.ukis.is_empty() {
+        if image.sb_signer_cert_sha256.is_some()
+            || !image.sbat.is_empty()
+            || image.expected_pcr11.is_some()
+        {
+            bail!(
+                "signed A/B image '{}' has no slot-specific UKI metadata",
+                image.store_path
+            );
+        }
+        return Ok(None);
+    }
+    let slot = match target_slot {
+        ImageSlot::A => UkiSlot::A,
+        ImageSlot::B => UkiSlot::B,
+    };
+    image
+        .ukis
+        .iter()
+        .find(|entry| entry.slot == slot)
+        .map(Some)
+        .with_context(|| {
+            format!(
+                "image '{}' records no UKI for slot {:?}",
+                image.store_path, target_slot
+            )
+        })
+}
+
+fn cleanup_replaced_slot_ukis(
+    layout: &ImageSlotLayout<'_>,
+    state: &ImageGenerationState,
+    slot: ImageSlot,
+    keep_recorded: &str,
+) -> Result<()> {
+    let keep_entry = stable_uki_entry_id(
+        Path::new(keep_recorded)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("published UKI path has no UTF-8 entry id")?,
+    )?;
+    let linux = layout.boot_root.join("EFI/Linux");
+    for previous in state
+        .generations
+        .iter()
+        .filter(|generation| generation.slot == slot)
+    {
+        let Ok(entry) = resolve_installed_uki_entry(layout.boot_root, &previous.uki_path) else {
+            continue;
+        };
+        if stable_uki_entry_id(&entry)? == keep_entry {
+            continue;
+        }
+        let source = linux.join(entry);
+        if source.is_file() {
+            std::fs::remove_file(&source)?;
+        }
+    }
+    if linux.is_dir() {
+        sync_directory(&linux)?;
+    }
+
+    // Remove artifacts left by the pre-publication disable implementation.
+    // This directory is AOS-owned and is never part of sd-boot discovery.
+    let disabled_dir = layout.boot_root.join("EFI/.aos-disabled");
+    if disabled_dir.is_dir() {
+        for entry in std::fs::read_dir(&disabled_dir)? {
+            let path = entry?.path();
+            if path.is_dir() || path.is_symlink() {
+                bail!(
+                    "unexpected non-file in disabled UKI directory: {}",
+                    path.display()
+                );
+            }
+            std::fs::remove_file(path)?;
+        }
+        std::fs::remove_dir(&disabled_dir)?;
+        if let Some(parent) = disabled_dir.parent() {
+            sync_directory(parent)?;
+        }
+    }
+    let staging_dir = layout.boot_root.join("EFI/.aos-staging");
+    if staging_dir.is_dir() && std::fs::read_dir(&staging_dir)?.next().is_none() {
+        std::fs::remove_dir(&staging_dir)?;
+        if let Some(parent) = staging_dir.parent() {
+            sync_directory(parent)?;
+        }
+    }
+    Ok(())
+}
+
+fn stage_pending_image_generation_with<F>(
+    profile: &Path,
+    system_profile: &Path,
+    upper_store: &Path,
+    layout: &ImageSlotLayout<'_>,
+    package: &PackageMeta,
+    registry: &str,
+    image: &SysrootImageEntry,
+    image_store: &Path,
+    select: F,
+) -> Result<ImageGeneration>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
+    let mut state = load_image_generation_state_pub(profile)?;
+    let running = state
+        .running_generation()
+        .cloned()
+        .context("image state has no running generation")?;
+    let target_slot = match running.slot {
+        ImageSlot::A => ImageSlot::B,
+        ImageSlot::B => ImageSlot::A,
+    };
+    let toplevel = Path::new(&package.store_path);
+    let evaluator_ref = std::fs::read_link(toplevel.join("base-lib"))?
+        .to_string_lossy()
+        .into_owned();
+    let module_abi = read_toplevel_meta(toplevel, "module-abi")?
+        .parse::<u32>()
+        .context("target image has invalid module ABI")?;
+    let baselib_digest = read_toplevel_meta(toplevel, "baselib-digest")?;
+    let recorded_uki = read_toplevel_meta(toplevel, "uki-path")?;
+    let uki_path = Path::new(&recorded_uki);
+    if uki_path.is_absolute()
+        || uki_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!("target image records unsafe UKI path {recorded_uki:?}");
+    }
+    let entry_id = uki_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("target UKI has no UTF-8 entry name")?
+        .to_string();
+
+    if let Some(pending) = state.pending.and_then(|number| {
+        state
+            .generations
+            .iter()
+            .find(|generation| generation.number == number)
+            .cloned()
+    }) {
+        if pending.toplevel != package.store_path {
+            bail!(
+                "image generation {} is already pending; refusing to replace it",
+                pending.number
+            );
+        }
+        select_image_default_with(profile, &mut state, pending.number, &entry_id, select)?;
+        cleanup_replaced_slot_ukis(layout, &state, pending.slot, &pending.uki_path)?;
+        return Ok(pending);
+    }
+
+    // Copy the lower-backed running evaluator before the inactive slot is
+    // overwritten. The target closure arrived through Nix and is copied too,
+    // making both baselib roots physical `/var` retention rather than dangling
+    // symlinks into whichever immutable root happens to be mounted.
+    persist_store_closure_to_upper(&running.evaluator_ref, upper_store)?;
+    persist_store_closure_to_upper(&evaluator_ref, upper_store)?;
+    let reusable_uki = reusable_slot_uki_path(layout, &state, target_slot);
+    stage_slot_artifacts(
+        layout,
+        target_slot,
+        image_store,
+        image,
+        &recorded_uki,
+        reusable_uki.as_deref(),
+    )?;
+
+    let number = state
+        .generations
+        .iter()
+        .map(|generation| generation.number)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let generation = ImageGeneration {
+        number,
+        slot: target_slot,
+        uki_path: recorded_uki.clone(),
+        toplevel: package.store_path.clone(),
+        package_name: package.name.clone(),
+        version: package.version.clone(),
+        registry: registry.to_string(),
+        kernel_path: resolve_kernel_path(&package.store_path),
+        evaluator_ref: evaluator_ref.clone(),
+        module_abi,
+        baselib_digest,
+        root_verity_roothash: image.root_hash.clone().or_else(|| {
+            std::fs::read_to_string(image_store.join("root.roothash"))
+                .ok()
+                .map(|value| value.trim().to_string())
+        }),
+        expected_pcr11: image_uki_for_slot(image, target_slot)?
+            .and_then(|uki| uki.expected_pcr11.clone())
+            .or_else(|| image.expected_pcr11.clone()),
+        created_at: chrono_iso8601_now(),
+    };
+    state.generations.push(generation.clone());
+    crate::store::create_baselib_gc_root(
+        &profile.join(format!("image-gen-{number}")),
+        module_abi,
+        &evaluator_ref,
+    )?;
+    let configs = load_generation_state_readonly(system_profile)?;
+    crate::store::reconcile_baselib_gc_roots(profile, &state, &configs)?;
+    select_image_default_with(profile, &mut state, number, &entry_id, select)?;
+    cleanup_replaced_slot_ukis(layout, &state, target_slot, &recorded_uki)?;
+    Ok(generation)
+}
+
+/// Selects an older A/B image generation durably with `bootctl set-default`.
+///
+/// This changes only the next-boot image axis. The currently running image and
+/// config pointer remain untouched; after reboot `aos-firstboot-reeval`
+/// rebinds configuration to the image that actually booted.
+///
+/// # Errors
+///
+/// Returns an error for an unknown image generation, unsafe UKI path,
+/// `bootctl` failure, state publication failure, or requested reboot failure.
+pub async fn rollback_image_generation(
+    generation: Option<u32>,
+    list: bool,
+    dry_run: bool,
+    kernel_mode: KernelUpgradeMode,
+    drain: bool,
+    printer: &Printer,
+) -> Result<()> {
+    let profile = Path::new(IMAGE_PROFILE_DIR);
+    let mut state = load_image_generation_state_pub(profile)?;
+    if list {
+        for image in &state.generations {
+            let running = if image.number == state.running {
+                " (running)"
+            } else {
+                ""
+            };
+            let default = if image.number == state.default {
+                " (default)"
+            } else {
+                ""
+            };
+            printer.plain(&format!(
+                "  image-gen-{}: {} {} [{}]{}{}",
+                image.number, image.package_name, image.version, image.uki_path, running, default
+            ));
+        }
+        return Ok(());
+    }
+    let switch_lock = crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
+    let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
+    state = load_image_generation_state_pub(profile)?;
+    let target = match generation {
+        Some(number) => state
+            .generations
+            .iter()
+            .find(|image| image.number == number)
+            .cloned()
+            .with_context(|| format!("image generation {number} not found"))?,
+        None => state
+            .generations
+            .iter()
+            .rev()
+            .find(|image| image.number < state.running)
+            .cloned()
+            .context("no previous image generation to roll back to")?,
+    };
+    let entry_id = resolve_installed_uki_entry(Path::new("/boot"), &target.uki_path)
+        .with_context(|| format!("resolving image generation {} UKI", target.number))?;
+    if dry_run {
+        printer.info(&format!(
+            "Would set image generation {} ({}) as the durable next boot.",
+            target.number, entry_id
+        ));
+        return Ok(());
+    }
+    select_image_default_with(profile, &mut state, target.number, &entry_id, |entry| {
+        let status = std::process::Command::new("bootctl")
+            .arg("set-default")
+            .arg(entry)
+            .status()
+            .context("running bootctl set-default")?;
+        if !status.success() {
+            bail!("bootctl set-default failed with {status}");
+        }
+        Ok(())
+    })?;
     printer.success(&format!(
-        "Rolled back to system generation {} ({} {}).",
-        target.number, target.package_name, target.version,
+        "Image generation {} is the durable next-boot default.",
+        target.number
     ));
+    if kernel_mode == KernelUpgradeMode::Reboot {
+        if drain {
+            drain_workloads(&target.toplevel, printer).await?;
+        }
+        SystemdClient::connect().await?.reboot().await?;
+    }
+    Ok(())
+}
 
+fn resolve_installed_uki_entry(boot_root: &Path, recorded: &str) -> Result<String> {
+    let path = Path::new(recorded);
+    if path.is_absolute()
+        || recorded.is_empty()
+        || recorded == "seed"
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )
+        })
+    {
+        bail!("unsafe UKI path {recorded:?}");
+    }
+    let file = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("image generation UKI path has no UTF-8 entry id")?;
+    let stable = stable_uki_entry_id(file)?;
+    let directory = path
+        .parent()
+        .map_or_else(|| boot_root.to_path_buf(), |parent| boot_root.join(parent));
+    let exact = directory.join(file);
+    if exact.is_file() {
+        return Ok(file.to_string());
+    }
+    if directory.join(&stable).is_file() {
+        return Ok(stable);
+    }
+    let stable_stem = stable
+        .strip_suffix(".efi")
+        .context("UKI entry does not end in .efi")?;
+    let mut counted = std::fs::read_dir(&directory)
+        .with_context(|| format!("reading ESP UKI directory {}", directory.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| {
+            name.strip_prefix(stable_stem)
+                .and_then(|suffix| suffix.strip_prefix('+'))
+                .and_then(|suffix| suffix.strip_suffix(".efi"))
+                .is_some_and(valid_boot_count_suffix)
+        })
+        .collect::<Vec<_>>();
+    counted.sort();
+    counted
+        .pop()
+        .with_context(|| format!("no installed UKI matches {recorded:?}"))
+}
+
+fn stable_uki_entry_id(entry: &str) -> Result<String> {
+    let stem = entry
+        .strip_suffix(".efi")
+        .context("UKI entry does not end in .efi")?;
+    let stable = stem.rsplit_once('+').map_or(stem, |(prefix, suffix)| {
+        if valid_boot_count_suffix(suffix) {
+            prefix
+        } else {
+            stem
+        }
+    });
+    Ok(format!("{stable}.efi"))
+}
+
+fn valid_boot_count_suffix(suffix: &str) -> bool {
+    let mut parts = suffix.split('-');
+    parts
+        .next()
+        .is_some_and(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        && parts
+            .next()
+            .is_none_or(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+        && parts.next().is_none()
+}
+
+fn select_image_default_with<F>(
+    profile: &Path,
+    state: &mut ImageGenerationState,
+    target: u32,
+    entry_id: &str,
+    select: F,
+) -> Result<()>
+where
+    F: FnOnce(&str) -> Result<()>,
+{
+    let intent_path = profile.join(IMAGE_TRANSITION_INTENT);
+    if intent_path.is_file() {
+        let existing: ImageTransitionIntent = serde_json::from_slice(&std::fs::read(&intent_path)?)
+            .with_context(|| {
+                format!("parsing image transition intent {}", intent_path.display())
+            })?;
+        if existing.target != target || existing.entry_id != entry_id {
+            bail!(
+                "unfinished image transition targets generation {}; refusing generation {target}",
+                existing.target
+            );
+        }
+    } else {
+        let intent = ImageTransitionIntent {
+            target,
+            prior_default: state.default,
+            entry_id: entry_id.to_string(),
+        };
+        write_atomic_durable(&intent_path, &serde_json::to_vec_pretty(&intent)?)?;
+    }
+    select(entry_id)?;
+    let mut candidate = state.clone();
+    candidate.default = target;
+    candidate.pending = Some(target);
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(&candidate)?,
+    )?;
+    remove_file_durable(&intent_path)?;
+    *state = candidate;
+    Ok(())
+}
+
+fn direct_reactivate_config_generation_with<F>(
+    profile_path: &Path,
+    state: &mut ConfigGenerationState,
+    running_toplevel: &Path,
+    target: &ConfigGeneration,
+    printer: &Printer,
+    run_activate: F,
+) -> Result<()>
+where
+    F: FnOnce(&Path, u32, &str) -> Result<Option<i32>>,
+{
+    let activate = running_toplevel.join("activate");
+    let nonce = write_activation_intent_pub(profile_path, state, target.number)?;
+    let degraded = match run_activate(&activate, target.number, &nonce)? {
+        Some(0) => false,
+        Some(5) => {
+            printer.warning(
+                "Configuration rollback succeeded, but cleanup of the previous generation's mounts failed.",
+            );
+            false
+        }
+        Some(6) => true,
+        Some(4) | None => {
+            bail!("FATAL: configuration rollback left /etc indeterminate; rescue mode is required")
+        }
+        other => {
+            clear_activation_intent_pub(profile_path)?;
+            bail!(
+                "Configuration rollback failed before the /etc swap (exit {other:?}); the previous generation remains current."
+            )
+        }
+    };
+    commit_current_generation(profile_path, state, target.number)?;
+    if degraded {
+        bail!(
+            "Configuration generation {} is live, but one or more units failed to restart",
+            target.number
+        );
+    }
+    printer.success(&format!(
+        "Configuration generation {} is active under the running image.",
+        target.number
+    ));
     Ok(())
 }
 
@@ -681,16 +1698,10 @@ pub fn check_sysroot_containment(
     pkg_refs: &[String],
     config: &ApmConfig,
 ) -> Option<(String, String)> {
-    let profile_path = ProfileScope::System.profile_path();
-    let state = match load_generation_state(&profile_path) {
-        Ok(s) => s,
+    let current = match running_image_generation() {
+        Ok(image) => image,
         Err(_) => return None,
     };
-
-    let current = state
-        .generations
-        .iter()
-        .find(|g| g.number == state.current)?;
 
     // Load registries to get the sysroot package's references.
     let registries = match load_registries(config) {
@@ -752,6 +1763,62 @@ pub fn show_sysroot_info(meta: &PackageMeta, printer: &Printer) {
 // ---------------------------------------------------------------------------
 // Image download
 // ---------------------------------------------------------------------------
+
+/// Ensures an authenticated image artifact is present in the local store.
+async fn ensure_image_imported(
+    config: &ApmConfig,
+    package: &PackageMeta,
+    image: &SysrootImageEntry,
+    printer: &Printer,
+) -> Result<PathBuf> {
+    let store_path = PathBuf::from(&image.store_path);
+    if store_path.exists() {
+        return Ok(store_path);
+    }
+
+    let chain = resolve_image_mirror(config, package);
+    let (mirror_url, fallback_mirrors) = split_mirror_chain(&chain);
+    let request = DownloadRequest {
+        store_path: image.store_path.clone(),
+        mirror_url,
+        fallback_mirrors,
+    };
+    let engine = std::sync::Arc::new(default_engine());
+    let resolved = fetch_narinfos(
+        std::sync::Arc::clone(&engine),
+        &[request],
+        config.settings.parallel_downloads,
+        printer,
+    )
+    .await?;
+    let results = download_nars(
+        &resolved,
+        &config.nar_cache_path(),
+        config.settings.parallel_downloads,
+        printer,
+    )
+    .await?;
+    let result = results
+        .first()
+        .context("image artifact download returned no result")?;
+    verify_download_hash(&result.local_path, &result.download_hash)?;
+    verify_nar_hash(&result.local_path, &image.nar_hash)
+        .with_context(|| format!("verifying image NAR for {}", image.store_path))?;
+    import_nar(
+        &result.local_path,
+        &result.store_path,
+        &result.references,
+        result.deriver.as_deref(),
+    )
+    .await?;
+    if !store_path.exists() {
+        bail!(
+            "imported image artifact is absent from its authenticated store path {}",
+            store_path.display()
+        );
+    }
+    Ok(store_path)
+}
 
 /// Download a pre-compiled image from a sysroot package (`--image <FMT>`).
 ///
@@ -936,16 +2003,89 @@ async fn download_image(
 /// # Errors
 ///
 /// Returns an error when the state file exists but cannot be read or parsed
-/// as [`SystemGenerationState`] JSON.
-pub fn load_generation_state_pub(profile_path: &Path) -> Result<SystemGenerationState> {
+/// as [`ConfigGenerationState`] JSON.
+pub fn load_generation_state_pub(profile_path: &Path) -> Result<ConfigGenerationState> {
+    load_generation_state_readonly(profile_path)
+}
+
+/// Recovers interrupted activation journals and then loads generation state.
+///
+/// The caller must hold the global system switch lock because recovery may
+/// publish `state.json` and the `current` pointer.
+pub(crate) fn recover_generation_state_pub(profile_path: &Path) -> Result<ConfigGenerationState> {
     load_generation_state(profile_path)
 }
 
+/// Persists system-generation state for the configuration activation path.
+///
+/// This is the write-side companion to [`load_generation_state_pub`]. The
+/// caller must hold the system switch lock and must only publish a state whose
+/// referenced generation directories are already durable.
+///
+/// # Errors
+///
+/// Returns an error when `state.json` cannot be serialized or written.
+pub(crate) fn save_generation_state_pub(
+    profile_path: &Path,
+    state: &ConfigGenerationState,
+) -> Result<()> {
+    save_generation_state(profile_path, state)
+}
+
+pub(crate) fn write_activation_intent_pub(
+    profile_path: &Path,
+    state: &ConfigGenerationState,
+    generation: u32,
+) -> Result<String> {
+    let nonce = activation_nonce(generation);
+    let intent = ActivationIntent {
+        generation,
+        nonce: nonce.clone(),
+        state: state.clone(),
+    };
+    write_atomic_durable(
+        &profile_path.join(ACTIVATION_INTENT),
+        &serde_json::to_vec_pretty(&intent)?,
+    )?;
+    Ok(nonce)
+}
+
+fn activation_nonce(generation: u32) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    format!("{generation}-{}-{nanos:x}", std::process::id())
+}
+
+pub(crate) fn clear_activation_intent_pub(profile_path: &Path) -> Result<()> {
+    remove_file_durable(&profile_path.join(ACTIVATION_INTENT))
+}
+
+/// Commits an activated configuration generation as the current generation.
+///
+/// The activation caller invokes this only after the toplevel activation
+/// script has crossed its atomic `/etc` swap point. It persists `state.json`
+/// and atomically retargets `current -> gen-N`.
+///
+/// # Errors
+///
+/// Returns an error when state persistence or the atomic symlink update fails.
+pub(crate) fn commit_current_generation_pub(
+    profile_path: &Path,
+    state: &mut ConfigGenerationState,
+    generation: u32,
+) -> Result<()> {
+    commit_current_generation(profile_path, state, generation)
+}
+
 /// Load system generation state from disk.
-fn load_generation_state(profile_path: &Path) -> Result<SystemGenerationState> {
+fn load_generation_state(profile_path: &Path) -> Result<ConfigGenerationState> {
+    recover_activation_intent(profile_path)?;
+    recover_generation_commit(profile_path)?;
     let state_path = profile_path.join(SYSTEM_STATE_FILE);
     if !state_path.exists() {
-        return Ok(SystemGenerationState {
+        return Ok(ConfigGenerationState {
             current: 0,
             next: 1,
             generations: Vec::new(),
@@ -953,18 +2093,183 @@ fn load_generation_state(profile_path: &Path) -> Result<SystemGenerationState> {
     }
     let content = std::fs::read_to_string(&state_path)
         .with_context(|| format!("reading {}", state_path.display()))?;
-    let state: SystemGenerationState = serde_json::from_str(&content)
-        .with_context(|| format!("parsing {}", state_path.display()))?;
-    Ok(state)
+    match serde_json::from_str(&content) {
+        Ok(state) => Ok(state),
+        Err(config_error) => migrate_legacy_generation_state(
+            profile_path,
+            Path::new(IMAGE_PROFILE_DIR),
+            &content,
+        )
+        .with_context(|| {
+            format!(
+                "parsing {} as config-generation state failed ({config_error}); authenticated legacy migration also failed",
+                state_path.display()
+            )
+        }),
+    }
+}
+
+fn migrate_legacy_generation_state(
+    profile_path: &Path,
+    image_profile: &Path,
+    content: &str,
+) -> Result<ConfigGenerationState> {
+    let legacy: LegacySystemGenerationState =
+        serde_json::from_str(content).context("parsing retired system-generation state")?;
+    let images = load_image_generation_state_pub(image_profile)
+        .context("legacy migration requires an authenticated image-generation index")?;
+    let mut generations = Vec::with_capacity(legacy.generations.len());
+    for old in legacy.generations {
+        let abi = old
+            .module_abi_pinned
+            .with_context(|| format!("legacy generation {} has no module ABI pin", old.number))?;
+        let base_lib_ref = old.base_lib_ref.with_context(|| {
+            format!(
+                "legacy generation {} has no base-library identity",
+                old.number
+            )
+        })?;
+        let matching = images
+            .generations
+            .iter()
+            .filter(|image| {
+                image.toplevel == old.toplevel
+                    && image.module_abi == abi
+                    && image.evaluator_ref == base_lib_ref
+                    && old
+                        .image_gen_parent
+                        .is_none_or(|parent| image.number == parent)
+            })
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            bail!(
+                "legacy generation {} does not authenticate to exactly one image generation",
+                old.number
+            );
+        }
+        let parent = matching[0];
+        let config_module_closure = old.config_module_closure.with_context(|| {
+            format!(
+                "legacy generation {} has no config module closure",
+                old.number
+            )
+        })?;
+        let config_module_paths = old
+            .config_module_paths
+            .unwrap_or_else(|| vec![config_module_closure.clone()]);
+        let config_module_packages = old.config_module_packages.with_context(|| {
+            format!(
+                "legacy generation {} has no authenticated config module package identities",
+                old.number
+            )
+        })?;
+        if config_module_paths.len() != config_module_packages.len() {
+            bail!(
+                "legacy generation {} has mismatched module and package identity counts",
+                old.number
+            );
+        }
+        let generation = ConfigGeneration {
+            number: old.number,
+            image_gen_parent: parent.number,
+            module_abi_pinned: abi,
+            manifest_hash: old.manifest_hash.with_context(|| {
+                format!("legacy generation {} has no manifest hash", old.number)
+            })?,
+            config_module_closure,
+            config_module_paths,
+            config_module_packages,
+            host_nix_ref: old.host_nix_ref.with_context(|| {
+                format!(
+                    "legacy generation {} has no host.nix content pin",
+                    old.number
+                )
+            })?,
+            host_nix_commit: old.host_nix_commit,
+            facts_hash: old
+                .facts_hash
+                .with_context(|| format!("legacy generation {} has no facts hash", old.number))?,
+            facts_ref: old.facts_ref.with_context(|| {
+                format!("legacy generation {} has no facts store path", old.number)
+            })?,
+            base_lib_ref,
+            evaluator_ref: old.evaluator_ref.with_context(|| {
+                format!("legacy generation {} has no evaluator identity", old.number)
+            })?,
+            created_at: old.created_at,
+        };
+        validate_generation_manifest(profile_path, &generation)?;
+        generations.push(generation);
+    }
+    if legacy.current != 0
+        && !generations
+            .iter()
+            .any(|generation| generation.number == legacy.current)
+    {
+        bail!(
+            "legacy state names missing current generation {}",
+            legacy.current
+        );
+    }
+    let migrated = ConfigGenerationState {
+        current: legacy.current,
+        next: legacy.next,
+        generations,
+    };
+    save_generation_state(profile_path, &migrated)?;
+    Ok(migrated)
+}
+
+fn load_generation_state_readonly(profile_path: &Path) -> Result<ConfigGenerationState> {
+    let state_path = profile_path.join(SYSTEM_STATE_FILE);
+    if !state_path.exists() {
+        return Ok(ConfigGenerationState {
+            current: 0,
+            next: 1,
+            generations: Vec::new(),
+        });
+    }
+    let content = std::fs::read_to_string(&state_path)
+        .with_context(|| format!("reading {}", state_path.display()))?;
+    serde_json::from_str(&content).with_context(|| format!("parsing {}", state_path.display()))
+}
+
+fn recover_activation_intent(profile_path: &Path) -> Result<()> {
+    let path = profile_path.join(ACTIVATION_INTENT);
+    if !path.is_file() {
+        return Ok(());
+    }
+    let intent: ActivationIntent = serde_json::from_slice(&std::fs::read(&path)?)
+        .with_context(|| format!("parsing activation intent {}", path.display()))?;
+    let live_marker = profile_path
+        .join(format!("gen-{}", intent.generation))
+        .join(format!(".etc-live-{}", intent.nonce));
+    if !live_marker.is_file() {
+        return Ok(());
+    }
+    if !intent
+        .state
+        .generations
+        .iter()
+        .any(|generation| generation.number == intent.generation)
+    {
+        bail!(
+            "activation intent references unknown generation {}",
+            intent.generation
+        );
+    }
+    let mut recovered = intent.state;
+    recovered.current = intent.generation;
+    publish_current_symlink(profile_path, intent.generation)?;
+    save_generation_state(profile_path, &recovered)?;
+    remove_file_durable(&path)
 }
 
 /// Save system generation state to disk.
-fn save_generation_state(profile_path: &Path, state: &SystemGenerationState) -> Result<()> {
+fn save_generation_state(profile_path: &Path, state: &ConfigGenerationState) -> Result<()> {
     let state_path = profile_path.join(SYSTEM_STATE_FILE);
-    let content = serde_json::to_string_pretty(state)?;
-    std::fs::write(&state_path, content)
-        .with_context(|| format!("writing {}", state_path.display()))?;
-    Ok(())
+    let content = serde_json::to_vec_pretty(state)?;
+    write_atomic_durable(&state_path, &content)
 }
 
 /// Mark `generation` as current: persist it in `state.json` and atomically
@@ -972,33 +2277,140 @@ fn save_generation_state(profile_path: &Path, state: &SystemGenerationState) -> 
 /// after the generation's activate script has succeeded.
 fn commit_current_generation(
     profile_path: &Path,
-    state: &mut SystemGenerationState,
+    state: &mut ConfigGenerationState,
     generation: u32,
 ) -> Result<()> {
-    state.current = generation;
-    save_generation_state(profile_path, state)?;
+    if !state
+        .generations
+        .iter()
+        .any(|record| record.number == generation)
+    {
+        bail!("cannot commit unknown system generation {generation}");
+    }
 
-    let current_link = profile_path.join("current");
-    let tmp_link = profile_path.join(".current.tmp");
-    let _ = std::fs::remove_file(&tmp_link);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(format!("gen-{generation}"), &tmp_link)?;
-    std::fs::rename(&tmp_link, &current_link)?;
+    let mut candidate = state.clone();
+    candidate.current = generation;
+    let journal = GenerationCommitJournal {
+        generation,
+        state: candidate.clone(),
+    };
+    let journal_path = profile_path.join(SYSTEM_COMMIT_JOURNAL);
+    write_atomic_durable(&journal_path, &serde_json::to_vec_pretty(&journal)?)?;
+    publish_current_symlink(profile_path, generation)?;
+    save_generation_state(profile_path, &candidate)?;
+    remove_commit_journal(profile_path)?;
+    clear_activation_intent_pub(profile_path)?;
+    *state = candidate;
     Ok(())
 }
 
-/// Get the current sysroot's store path, if any.
-fn current_sysroot_store_path() -> Result<Option<String>> {
-    let profile_path = ProfileScope::System.profile_path();
-    let state = load_generation_state(&profile_path)?;
-    if state.current == 0 {
-        return Ok(None);
+/// Finishes an interrupted current-generation publication before state is read.
+fn recover_generation_commit(profile_path: &Path) -> Result<()> {
+    let journal_path = profile_path.join(SYSTEM_COMMIT_JOURNAL);
+    if !journal_path.exists() {
+        return Ok(());
     }
-    Ok(state
-        .generations
-        .iter()
-        .find(|g| g.number == state.current)
-        .map(|g| g.toplevel.clone()))
+    let bytes = std::fs::read(&journal_path).with_context(|| {
+        format!(
+            "reading generation commit journal {}",
+            journal_path.display()
+        )
+    })?;
+    let journal: GenerationCommitJournal = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "parsing generation commit journal {}",
+            journal_path.display()
+        )
+    })?;
+    if journal.state.current != journal.generation
+        || !journal
+            .state
+            .generations
+            .iter()
+            .any(|record| record.number == journal.generation)
+    {
+        bail!(
+            "generation commit journal {} is internally inconsistent",
+            journal_path.display()
+        );
+    }
+    publish_current_symlink(profile_path, journal.generation)?;
+    save_generation_state(profile_path, &journal.state)?;
+    remove_commit_journal(profile_path)
+}
+
+fn publish_current_symlink(profile_path: &Path, generation: u32) -> Result<()> {
+    let current_link = profile_path.join("current");
+    let tmp_link = profile_path.join(format!(".current.tmp.{}", std::process::id()));
+    match std::fs::remove_file(&tmp_link) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("removing {}", tmp_link.display()));
+        }
+    }
+    std::os::unix::fs::symlink(format!("gen-{generation}"), &tmp_link)
+        .with_context(|| format!("creating {}", tmp_link.display()))?;
+    std::fs::rename(&tmp_link, &current_link).with_context(|| {
+        format!(
+            "publishing current generation link {} -> gen-{generation}",
+            current_link.display()
+        )
+    })?;
+    sync_directory(profile_path)
+}
+
+fn remove_commit_journal(profile_path: &Path) -> Result<()> {
+    let journal_path = profile_path.join(SYSTEM_COMMIT_JOURNAL);
+    match std::fs::remove_file(&journal_path) {
+        Ok(()) => sync_directory(profile_path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("removing {}", journal_path.display())),
+    }
+}
+
+fn remove_file_durable(path: &Path) -> Result<()> {
+    let parent = path.parent().context("durable file path has no parent")?;
+    match std::fs::remove_file(path) {
+        Ok(()) => sync_directory(parent),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+}
+
+fn write_atomic_durable(path: &Path, contents: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("{} has no UTF-8 file name", path.display()))?;
+    let temp = parent.join(format!(".{file_name}.tmp.{}", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp)
+        .with_context(|| format!("opening {}", temp.display()))?;
+    file.write_all(contents)
+        .with_context(|| format!("writing {}", temp.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing {}", temp.display()))?;
+    std::fs::rename(&temp, path).with_context(|| format!("publishing {}", path.display()))?;
+    sync_directory(parent)
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    let directory = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .with_context(|| format!("opening directory {} for sync", path.display()))?;
+    directory
+        .sync_all()
+        .with_context(|| format!("syncing directory {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1541,25 +2953,6 @@ fn print_diff(diff: &UnitDiff, printer: &Printer) {
 // Kernel / boot loader
 // ---------------------------------------------------------------------------
 
-/// Canonicalize a stored kernel path to the form [`resolve_kernel_path`]
-/// produces (the `kernel` symlink's target).
-///
-/// Generations seeded at first boot historically recorded the
-/// `<toplevel>/kernel` symlink itself rather than its target. Comparing
-/// that form against a resolved path reports a spurious kernel change on
-/// every upgrade or rollback involving the seeded generation — rewriting
-/// the boot loader needlessly and rendering the old version as the
-/// literal string "kernel". Resolving the symlink (when it still exists
-/// on disk) restores exact-string comparability; paths that cannot be
-/// resolved are returned unchanged.
-fn canonicalize_kernel_path(path: &Option<String>) -> Option<String> {
-    let p = path.as_deref()?;
-    match std::fs::read_link(p) {
-        Ok(target) => Some(target.to_string_lossy().to_string()),
-        Err(_) => Some(p.to_string()),
-    }
-}
-
 /// Resolve the kernel path from a toplevel store path.
 fn resolve_kernel_path(toplevel: &str) -> Option<String> {
     let kernel_link = PathBuf::from(toplevel).join("kernel");
@@ -1574,175 +2967,6 @@ fn resolve_kernel_path(toplevel: &str) -> Option<String> {
     } else {
         None
     }
-}
-
-/// Update the boot loader entry with a new kernel path.
-fn update_boot_loader(kernel_path: &str, toplevel: &str) -> Result<()> {
-    let initrd_path = PathBuf::from(toplevel).join("initrd");
-    let initrd = if initrd_path.exists() {
-        match std::fs::read_link(&initrd_path) {
-            Ok(target) => format!("{}/initrd", target.display()),
-            Err(_) => format!("{toplevel}/initrd/initrd"),
-        }
-    } else {
-        String::new()
-    };
-
-    let entry = format!(
-        "title   AOS\n\
-         linux   {kernel_path}/bzImage\n\
-         {}\
-         options root=/dev/sda2 console=ttyS0\n",
-        if initrd.is_empty() {
-            String::new()
-        } else {
-            format!("initrd  {initrd}\n")
-        },
-    );
-
-    // Only write if the boot loader directory exists.
-    let parent = Path::new(BOOT_LOADER_ENTRY)
-        .parent()
-        .context("BOOT_LOADER_ENTRY has no parent directory")?;
-    if parent.exists() {
-        std::fs::write(BOOT_LOADER_ENTRY, &entry)
-            .with_context(|| format!("updating {BOOT_LOADER_ENTRY}"))?;
-    }
-
-    Ok(())
-}
-
-/// Extract a human-readable kernel version from a store path.
-///
-/// Expects paths like `/nix/store/abc123-linux-6.12.1` and returns `6.12.1`.
-/// Falls back to the basename if no version pattern is found.
-fn extract_kernel_version(path: &Option<String>) -> String {
-    match path {
-        Some(p) => {
-            let base = p.rsplit('/').next().unwrap_or(p);
-            // Strip the Nix hash prefix (32 hash chars + '-').
-            // A valid store basename needs at least 33 chars (32 hash + dash).
-            let name = if base.len() >= 33 && base.as_bytes()[32] == b'-' {
-                &base[33..]
-            } else {
-                base
-            };
-            // Strip common prefixes like "linux-".
-            let version = name.strip_prefix("linux-").unwrap_or(name);
-            version.to_string()
-        }
-        None => "unknown".to_string(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Kernel upgrade orchestration
-// ---------------------------------------------------------------------------
-
-/// Handle kernel upgrade after activation, according to the chosen mode.
-///
-/// This is the central dispatch for all kernel upgrade strategies. It is called
-/// after the new generation has been activated (services diffed and restarted).
-async fn handle_kernel_upgrade(
-    old_kernel: &Option<String>,
-    new_kernel: &Option<String>,
-    new_toplevel: &str,
-    mode: KernelUpgradeMode,
-    drain: bool,
-    printer: &Printer,
-) -> Result<()> {
-    let kernel_changed = match (old_kernel, new_kernel) {
-        (Some(old), Some(new)) if !old.is_empty() && !new.is_empty() => old != new,
-        _ => false,
-    };
-
-    // Always update boot loader if kernel changed.
-    if kernel_changed {
-        let new_k = new_kernel.as_deref().unwrap_or("");
-        update_boot_loader(new_k, new_toplevel)?;
-    }
-
-    match mode {
-        KernelUpgradeMode::Advisory => {
-            if kernel_changed {
-                let old_ver = extract_kernel_version(old_kernel);
-                let new_ver = extract_kernel_version(new_kernel);
-                printer.warning(&format!("Kernel updated: {} -> {}", old_ver, new_ver,));
-                printer.plain("  Boot loader updated. Reboot required for kernel changes.");
-                printer.plain("  Use: apm upgrade --system --kexec  (fast, ~3s)");
-                printer.plain("  Or:  apm upgrade --system --reboot (full reboot)");
-            }
-        }
-        KernelUpgradeMode::Kexec => {
-            if kernel_changed {
-                if drain {
-                    drain_workloads(new_toplevel, printer).await?;
-                }
-                let new_ver = extract_kernel_version(new_kernel);
-                printer.plain(&format!("Loading new kernel {} via kexec...", new_ver));
-                kexec_kernel(new_toplevel).await?;
-                // kexec -e does not return on success.
-            } else {
-                printer.info("Kernel unchanged, kexec not needed.");
-            }
-        }
-        KernelUpgradeMode::Reboot => {
-            if drain {
-                drain_workloads(new_toplevel, printer).await?;
-            }
-            if kernel_changed {
-                let new_ver = extract_kernel_version(new_kernel);
-                printer.plain(&format!("Rebooting into new kernel {}...", new_ver));
-            } else {
-                printer.plain("Rebooting (kernel unchanged)...");
-            }
-            // Queue the reboot over D-Bus (`Manager.Reboot`) rather than
-            // shelling out to `systemctl reboot`. Constructed lazily, only on
-            // this arm. Returns once systemd has queued the transition; this
-            // process then exits or is torn down as systemd stops the system.
-            let client = SystemdClient::connect().await?;
-            client.reboot().await?;
-        }
-        KernelUpgradeMode::Live => {
-            if kernel_changed {
-                let new_ver = extract_kernel_version(new_kernel);
-                printer.plain(&format!(
-                    "Kernel {} staged for next reboot (current session unchanged).",
-                    new_ver,
-                ));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Load a new kernel via kexec and execute it.
-///
-/// The kernel and initrd are read from `<toplevel>/kernel` and
-/// `<toplevel>/initrd`. The current kernel command line is reused.
-async fn kexec_kernel(new_toplevel: &str) -> Result<()> {
-    let kernel = format!("{}/kernel", new_toplevel);
-    let initrd = format!("{}/initrd", new_toplevel);
-
-    // Verify kexec is available.
-    check_command_exists("kexec")?;
-
-    // Load new kernel.
-    let mut load_args = vec!["-l".to_string(), kernel, "--reuse-cmdline".to_string()];
-    if Path::new(&initrd).exists() {
-        load_args.push(format!("--initrd={}", initrd));
-    }
-    let load_refs: Vec<&str> = load_args.iter().map(|s| s.as_str()).collect();
-    run_command("kexec", &load_refs)?;
-
-    // Sync filesystems before switching.
-    run_command("sync", &[])?;
-
-    // Execute the loaded kernel. This does not return on success.
-    run_command("kexec", &["-e"])?;
-
-    Ok(())
 }
 
 /// Drain workloads before a disruptive kernel switch.
@@ -1784,19 +3008,6 @@ async fn drain_workloads(toplevel: &str, printer: &Printer) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Check that an external command exists on PATH.
-fn check_command_exists(name: &str) -> Result<()> {
-    let status = std::process::Command::new("which")
-        .arg(name)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    match status {
-        Ok(s) if s.success() => Ok(()),
-        _ => bail!("required command '{}' not found in PATH", name),
-    }
 }
 
 /// Run an external command, returning an error if it fails.
@@ -1901,7 +3112,15 @@ fn validate_sysroot_secure_boot_in(
 ) -> Result<()> {
     let signed_images: Vec<&crate::types::SysrootImageEntry> = images
         .iter()
-        .filter(|img| img.sb_signer_cert_sha256.is_some() || !img.sbat.is_empty())
+        .filter(|img| {
+            img.sb_signer_cert_sha256.is_some()
+                || !img.sbat.is_empty()
+                || img.ukis.iter().any(|uki| {
+                    uki.sb_signer_cert_sha256.is_some()
+                        || !uki.sbat.is_empty()
+                        || uki.expected_pcr11.is_some()
+                })
+        })
         .collect();
     if signed_images.is_empty() {
         // Unsigned/legacy sysroot: nothing to validate (dev path).
@@ -1943,6 +3162,12 @@ fn validate_image_secure_boot(
     catalog: &SbCertsToml,
     db_cert: Option<&Path>,
 ) -> Result<()> {
+    if !img.ukis.is_empty() {
+        for uki in &img.ukis {
+            validate_uki_secure_boot(img, uki, catalog, db_cert)?;
+        }
+        return Ok(());
+    }
     // 1. Signer cert must be active and not revoked.
     match &img.sb_signer_cert_sha256 {
         Some(cert) if catalog.accepts_signer(cert) => {}
@@ -1973,7 +3198,7 @@ fn validate_image_secure_boot(
 
     // 3. Defense in depth: re-verify the downloaded UKI against the db cert.
     if let Some(db_cert) = db_cert {
-        if let Some(uki) = find_uki_in_image(&img.store_path) {
+        if let Some(uki) = find_uki_in_image(&img.store_path)? {
             reverify_uki(&uki, db_cert).with_context(|| {
                 format!(
                     "re-verifying downloaded UKI for image '{}' against the \
@@ -1984,6 +3209,63 @@ fn validate_image_secure_boot(
         }
     }
 
+    Ok(())
+}
+
+fn validate_uki_secure_boot(
+    image: &crate::types::SysrootImageEntry,
+    uki: &SysrootUkiEntry,
+    catalog: &SbCertsToml,
+    db_cert: Option<&Path>,
+) -> Result<()> {
+    let cert = uki.sb_signer_cert_sha256.as_deref().with_context(|| {
+        format!(
+            "Secure Boot validation failed for image '{}' slot {:?}: no signer cert",
+            image.format, uki.slot
+        )
+    })?;
+    if !catalog.accepts_signer(cert) {
+        bail!(
+            "Secure Boot validation failed for image '{}' slot {:?}: signer cert {cert} is not active",
+            image.format,
+            uki.slot
+        );
+    }
+    if let Some((component, found, floor)) = catalog.first_below_floor(&uki.sbat) {
+        bail!(
+            "Secure Boot validation failed for image '{}' slot {:?}: SBAT component '{component}' generation {found} is below floor {floor}",
+            image.format,
+            uki.slot
+        );
+    }
+    let expected = uki.expected_pcr11.as_deref().with_context(|| {
+        format!(
+            "Secure Boot validation failed for image '{}' slot {:?}: no expected PCR-11",
+            image.format, uki.slot
+        )
+    })?;
+    let artifact = image_artifact_path(Path::new(&image.store_path), Some(&uki.path), "slot UKI")?;
+    if let Some(db_cert) = db_cert {
+        reverify_uki(&artifact, db_cert).with_context(|| {
+            format!(
+                "re-verifying downloaded UKI for image '{}' slot {:?}",
+                image.format, uki.slot
+            )
+        })?;
+    }
+    let actual = crate::registry_ops::extract_expected_pcr11(&artifact)?.with_context(|| {
+        format!(
+            "downloaded UKI for image '{}' slot {:?} has no calculable PCR-11",
+            image.format, uki.slot
+        )
+    })?;
+    if actual != expected {
+        bail!(
+            "Secure Boot validation failed for image '{}' slot {:?}: measured PCR-11 {actual} does not match catalog {expected}",
+            image.format,
+            uki.slot
+        );
+    }
     Ok(())
 }
 
@@ -2003,32 +3285,41 @@ fn sb_db_cert_pem(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
 }
 
 /// Find a UKI (`.efi` PE file) inside an imported image store path.
-fn find_uki_in_image(store_path: &str) -> Option<PathBuf> {
-    fn walk(dir: &Path) -> Option<PathBuf> {
-        let entries = std::fs::read_dir(dir).ok()?;
-        for entry in entries.flatten() {
+fn find_uki_in_image(store_path: &str) -> Result<Option<PathBuf>> {
+    fn walk(dir: &Path, found: &mut Vec<PathBuf>) -> Result<()> {
+        let mut entries = std::fs::read_dir(dir)
+            .with_context(|| format!("reading image artifact {}", dir.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
             let path = entry.path();
             if path.is_dir() {
-                if let Some(found) = walk(&path) {
-                    return Some(found);
-                }
+                walk(&path, found)?;
             } else if path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
             {
-                return Some(path);
+                found.push(path);
             }
         }
-        None
+        Ok(())
     }
     let root = Path::new(store_path);
     if root.is_file() {
-        return root
+        return Ok(root
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
-            .then(|| root.to_path_buf());
+            .then(|| root.to_path_buf()));
     }
-    walk(root)
+    let mut found = Vec::new();
+    walk(root, &mut found)?;
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        count => bail!(
+            "legacy image artifact {store_path} contains {count} UKIs; deterministic selection requires slot metadata"
+        ),
+    }
 }
 
 /// Re-verify a downloaded UKI's Authenticode signature against a db cert.
@@ -2251,6 +3542,7 @@ mod tests {
             sb_signer_cert_sha256: Some(signer.into()),
             sbat: sb_sbat(sbat),
             expected_pcr11: None,
+            ukis: Vec::new(),
             root_image: None,
             root_verity: None,
             root_hash: None,
@@ -2267,6 +3559,337 @@ mod tests {
             sbat_floor: sb_sbat(&[("aos", 1)]),
             ..SbCertsToml::default()
         }
+    }
+
+    fn running_identity_fixture() -> (TempDir, PathBuf, PathBuf, PathBuf, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let image_profile = tmp.path().join("image");
+        let toplevel = tmp.path().join("toplevel");
+        let toplevel_link = tmp.path().join("aos-toplevel");
+        let cmdline = tmp.path().join("cmdline");
+        std::fs::create_dir_all(image_profile.as_path()).unwrap();
+        std::fs::create_dir_all(toplevel.join("meta")).unwrap();
+        std::fs::write(toplevel.join("meta/module-abi"), "7").unwrap();
+        std::fs::write(toplevel.join("meta/baselib-digest"), "sha256:base").unwrap();
+        std::fs::write(
+            toplevel.join("meta/uki-path"),
+            "EFI/Linux/aos-server-1+3.efi",
+        )
+        .unwrap();
+        std::fs::write(toplevel.join("meta/package-name"), "server").unwrap();
+        std::fs::write(toplevel.join("meta/version"), "1").unwrap();
+        std::os::unix::fs::symlink("/nix/store/base-lib", toplevel.join("base-lib")).unwrap();
+        std::fs::write(
+            toplevel.join("os-release"),
+            "VERSION_ID=1\nAOS_MODULE_ABI=7\nAOS_BASELIB_DIGEST=sha256:base\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&toplevel, &toplevel_link).unwrap();
+        std::fs::write(
+            &cmdline,
+            "quiet root=/dev/disk/by-partlabel/root-a roothash=deadbeef\n",
+        )
+        .unwrap();
+        let state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: Some(1),
+            generations: vec![ImageGeneration {
+                number: 1,
+                slot: ImageSlot::A,
+                uki_path: "EFI/Linux/aos-server-1+3.efi".into(),
+                toplevel: toplevel.to_string_lossy().into_owned(),
+                package_name: "server".into(),
+                version: "1".into(),
+                registry: "test".into(),
+                kernel_path: None,
+                evaluator_ref: "/nix/store/base-lib".into(),
+                module_abi: 7,
+                baselib_digest: "sha256:base".into(),
+                root_verity_roothash: Some("deadbeef".into()),
+                expected_pcr11: Some("abcd".into()),
+                created_at: "2026-08-04T00:00:00Z".into(),
+            }],
+        };
+        std::fs::write(
+            image_profile.join("state.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let os_release = toplevel_link.join("os-release");
+        (tmp, image_profile, toplevel_link, os_release, cmdline)
+    }
+
+    #[test]
+    fn running_image_rejects_tampered_var_index_metadata() {
+        let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
+        let loaded = load_running_image_generation_from(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap();
+        assert_eq!(loaded.module_abi, 7);
+
+        let state_path = image_profile.join("state.json");
+        let mut state: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(&state_path).unwrap()).unwrap();
+        state.generations[0].uki_path = "EFI/Linux/attacker.efi".into();
+        std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let error = load_running_image_generation_from(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("immutable toplevel metadata"));
+    }
+
+    #[test]
+    fn running_image_rejects_tampered_roothash_and_slot() {
+        let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
+        std::fs::write(
+            &cmdline,
+            "root=/dev/disk/by-partlabel/root-b roothash=bad\n",
+        )
+        .unwrap();
+        let error = load_running_image_generation_from(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("roothash"));
+
+        std::fs::write(
+            &cmdline,
+            "root=/dev/mapper/root systemd.verity_root_data=/dev/disk/by-partlabel/root-b roothash=deadbeef\n",
+        )
+        .unwrap();
+        let error = load_running_image_generation_from(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("root slot"));
+    }
+
+    #[test]
+    fn inactive_slot_staging_does_not_mutate_running_slot() {
+        let tmp = TempDir::new().unwrap();
+        let boot = tmp.path().join("boot");
+        let image_store = tmp.path().join("image");
+        let root_a = tmp.path().join("root-a");
+        let root_b = tmp.path().join("root-b");
+        let hash_a = tmp.path().join("root-a-hash");
+        let hash_b = tmp.path().join("root-b-hash");
+        std::fs::create_dir_all(&image_store).unwrap();
+        std::fs::write(&root_a, vec![b'A'; 64]).unwrap();
+        std::fs::write(&root_b, vec![b'b'; 64]).unwrap();
+        std::fs::write(&hash_a, vec![b'H'; 64]).unwrap();
+        std::fs::write(&hash_b, vec![b'h'; 64]).unwrap();
+        std::fs::write(image_store.join("root.img"), b"new-root").unwrap();
+        std::fs::write(image_store.join("root.verity"), b"new-verity").unwrap();
+        std::fs::write(image_store.join("root.roothash"), b"deadbeef\n").unwrap();
+        std::fs::write(image_store.join("uki-a.efi"), b"uki-a").unwrap();
+        std::fs::write(image_store.join("uki-b.efi"), b"uki-b").unwrap();
+        let layout = ImageSlotLayout {
+            boot_root: &boot,
+            root_a: &root_a,
+            root_b: &root_b,
+            root_a_hash: &hash_a,
+            root_b_hash: &hash_b,
+        };
+        let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
+        image.sb_signer_cert_sha256 = None;
+        image.sbat.clear();
+        image.ukis = vec![
+            SysrootUkiEntry {
+                slot: UkiSlot::A,
+                path: "uki-a.efi".into(),
+                sb_signer_cert_sha256: Some(SIGNER_ACTIVE.into()),
+                sbat: sb_sbat(&[("aos", 2)]),
+                expected_pcr11: Some("pcr-a".into()),
+            },
+            SysrootUkiEntry {
+                slot: UkiSlot::B,
+                path: "uki-b.efi".into(),
+                sb_signer_cert_sha256: Some(SIGNER_ACTIVE.into()),
+                sbat: sb_sbat(&[("aos", 2)]),
+                expected_pcr11: Some("pcr-b".into()),
+            },
+        ];
+        image.root_image = Some("root.img".into());
+        image.root_verity = Some("root.verity".into());
+        image.root_hash = Some("deadbeef".into());
+
+        stage_slot_artifacts(
+            &layout,
+            ImageSlot::B,
+            &image_store,
+            &image,
+            "EFI/Linux/aos-next+3.efi",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&root_a).unwrap(), vec![b'A'; 64]);
+        assert_eq!(std::fs::read(&hash_a).unwrap(), vec![b'H'; 64]);
+        assert!(std::fs::read(&root_b).unwrap().starts_with(b"new-root"));
+        assert!(std::fs::read(&hash_b).unwrap().starts_with(b"new-verity"));
+        assert_eq!(
+            std::fs::read(boot.join("EFI/Linux/aos-next+3.efi")).unwrap(),
+            b"uki-b"
+        );
+    }
+
+    #[test]
+    fn replaced_slot_ukis_are_cleaned_only_after_new_entry_is_kept() {
+        let tmp = TempDir::new().unwrap();
+        let boot = tmp.path().join("boot");
+        let linux = boot.join("EFI/Linux");
+        let disabled = boot.join("EFI/.aos-disabled");
+        std::fs::create_dir_all(&linux).unwrap();
+        std::fs::create_dir_all(&disabled).unwrap();
+        for name in ["aos-old-1+3.efi", "aos-old-2.efi", "aos-new+3.efi"] {
+            std::fs::write(linux.join(name), name.as_bytes()).unwrap();
+        }
+        std::fs::write(disabled.join("image-gen-1-uki"), b"disabled").unwrap();
+        let generation = |number, uki_path: &str| ImageGeneration {
+            number,
+            slot: ImageSlot::B,
+            uki_path: format!("EFI/Linux/{uki_path}"),
+            toplevel: format!("/nix/store/top-{number}"),
+            package_name: "aos".into(),
+            version: number.to_string(),
+            registry: "core".into(),
+            kernel_path: None,
+            evaluator_ref: format!("/nix/store/base-{number}"),
+            module_abi: 1,
+            baselib_digest: format!("digest-{number}"),
+            root_verity_roothash: Some(format!("root-{number}")),
+            expected_pcr11: Some(format!("pcr-{number}")),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let state = ImageGenerationState {
+            running: 1,
+            default: 3,
+            pending: Some(3),
+            generations: vec![
+                generation(1, "aos-old-1+3.efi"),
+                generation(2, "aos-old-2+3.efi"),
+                generation(3, "aos-new+3.efi"),
+            ],
+        };
+        let root_a = tmp.path().join("root-a");
+        let root_b = tmp.path().join("root-b");
+        let hash_a = tmp.path().join("root-a-hash");
+        let hash_b = tmp.path().join("root-b-hash");
+        let layout = ImageSlotLayout {
+            boot_root: &boot,
+            root_a: &root_a,
+            root_b: &root_b,
+            root_a_hash: &hash_a,
+            root_b_hash: &hash_b,
+        };
+
+        cleanup_replaced_slot_ukis(&layout, &state, ImageSlot::B, "EFI/Linux/aos-new+3.efi")
+            .unwrap();
+
+        assert!(!linux.join("aos-old-1+3.efi").exists());
+        assert!(!linux.join("aos-old-2.efi").exists());
+        assert!(linux.join("aos-new+3.efi").is_file());
+        assert!(!disabled.exists());
+    }
+
+    #[test]
+    fn incomplete_slot_payload_fails_before_mutating_inactive_root() {
+        let tmp = TempDir::new().unwrap();
+        let boot = tmp.path().join("boot");
+        let image_store = tmp.path().join("image");
+        let root_a = tmp.path().join("root-a");
+        let root_b = tmp.path().join("root-b");
+        let hash_a = tmp.path().join("root-a-hash");
+        let hash_b = tmp.path().join("root-b-hash");
+        std::fs::create_dir_all(&image_store).unwrap();
+        for path in [&root_a, &root_b, &hash_a, &hash_b] {
+            std::fs::write(path, vec![b'x'; 64]).unwrap();
+        }
+        std::fs::write(image_store.join("root.img"), b"new-root").unwrap();
+        std::fs::write(image_store.join("root.verity"), b"new-verity").unwrap();
+        std::fs::write(image_store.join("uki-b.efi"), b"uki-b").unwrap();
+        let layout = ImageSlotLayout {
+            boot_root: &boot,
+            root_a: &root_a,
+            root_b: &root_b,
+            root_a_hash: &hash_a,
+            root_b_hash: &hash_b,
+        };
+        let mut image = signed_image(SIGNER_ACTIVE, &[("aos", 2)]);
+        image.sb_signer_cert_sha256 = None;
+        image.sbat.clear();
+        image.ukis = vec![
+            SysrootUkiEntry {
+                slot: UkiSlot::A,
+                path: "uki-a.efi".into(),
+                sb_signer_cert_sha256: Some(SIGNER_ACTIVE.into()),
+                sbat: sb_sbat(&[("aos", 2)]),
+                expected_pcr11: Some("pcr-a".into()),
+            },
+            SysrootUkiEntry {
+                slot: UkiSlot::B,
+                path: "uki-b.efi".into(),
+                sb_signer_cert_sha256: Some(SIGNER_ACTIVE.into()),
+                sbat: sb_sbat(&[("aos", 2)]),
+                expected_pcr11: Some("pcr-b".into()),
+            },
+        ];
+        image.root_image = Some("root.img".into());
+        image.root_verity = Some("root.verity".into());
+
+        let error = stage_slot_artifacts(
+            &layout,
+            ImageSlot::B,
+            &image_store,
+            &image,
+            "EFI/Linux/aos-next+3.efi",
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("incomplete"));
+        assert_eq!(std::fs::read(&root_b).unwrap(), vec![b'x'; 64]);
+        assert!(!boot.join("EFI/Linux/aos-next+3.efi").exists());
+    }
+
+    #[test]
+    fn evaluator_copy_up_is_physical_after_lower_disappears() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("source-store-path");
+        let upper = tmp.path().join("upper-store");
+        std::fs::create_dir_all(source.join("bin")).unwrap();
+        let executable = source.join("bin/aos-eval");
+        std::fs::write(&executable, b"evaluator").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o555)).unwrap();
+        std::os::unix::fs::symlink("aos-eval", source.join("bin/eval-link")).unwrap();
+
+        copy_store_tree_to_upper(&source, &upper).unwrap();
+        std::fs::remove_dir_all(&source).unwrap();
+
+        let retained = upper.join("source-store-path/bin/aos-eval");
+        assert_eq!(std::fs::read(&retained).unwrap(), b"evaluator");
+        assert_eq!(
+            std::fs::metadata(&retained).unwrap().permissions().mode() & 0o777,
+            0o555
+        );
+        assert_eq!(
+            std::fs::read_link(upper.join("source-store-path/bin/eval-link")).unwrap(),
+            PathBuf::from("aos-eval")
+        );
     }
 
     // --- Real-validator coverage (RFC-0006 phase 4 download-time gate) ---
@@ -2372,6 +3995,7 @@ mod tests {
             sb_signer_cert_sha256: None,
             sbat: vec![],
             expected_pcr11: None,
+            ukis: Vec::new(),
             root_image: None,
             root_verity: None,
             root_hash: None,
@@ -2397,51 +4021,37 @@ mod tests {
 
     #[test]
     fn generation_state_round_trip() {
-        let state = SystemGenerationState {
+        let generation = |number, created_at: &str| ConfigGeneration {
+            number,
+            image_gen_parent: 1,
+            module_abi_pinned: 1,
+            manifest_hash: format!("sha256:manifest-{number}"),
+            config_module_closure: format!("/nix/store/config-{number}"),
+            config_module_paths: vec![format!("/nix/store/config-{number}")],
+            config_module_packages: vec!["server".into()],
+            host_nix_ref: format!("/nix/store/host-{number}"),
+            host_nix_commit: None,
+            facts_hash: format!("sha256:facts-{number}"),
+            facts_ref: format!("/nix/store/facts-{number}"),
+            base_lib_ref: "/nix/store/base".into(),
+            evaluator_ref: "/nix/store/evaluator".into(),
+            created_at: created_at.into(),
+        };
+        let state = ConfigGenerationState {
             current: 2,
             next: 3,
             generations: vec![
-                SystemGeneration {
-                    number: 1,
-                    toplevel: "/nix/store/abc123-server-2026.03".into(),
-                    version: "2026.03".into(),
-                    package_name: "server".into(),
-                    registry: "aos-core".into(),
-                    created_at: "2026-03-01T00:00:00Z".into(),
-                    kernel_path: Some("/nix/store/kern1-linux-6.12".into()),
-                    image_gen_parent: None,
-                    module_abi_pinned: None,
-                    manifest_hash: None,
-                    config_module_closure: None,
-                    host_nix_ref: None,
-                    host_nix_commit: None,
-                    facts_hash: None,
-                },
-                SystemGeneration {
-                    number: 2,
-                    toplevel: "/nix/store/def456-server-2026.04".into(),
-                    version: "2026.04".into(),
-                    package_name: "server".into(),
-                    registry: "aos-core".into(),
-                    created_at: "2026-04-01T00:00:00Z".into(),
-                    kernel_path: Some("/nix/store/kern2-linux-6.13".into()),
-                    image_gen_parent: None,
-                    module_abi_pinned: None,
-                    manifest_hash: None,
-                    config_module_closure: None,
-                    host_nix_ref: None,
-                    host_nix_commit: None,
-                    facts_hash: None,
-                },
+                generation(1, "2026-03-01T00:00:00Z"),
+                generation(2, "2026-04-01T00:00:00Z"),
             ],
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
-        let parsed: SystemGenerationState = serde_json::from_str(&json).unwrap();
+        let parsed: ConfigGenerationState = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.current, 2);
         assert_eq!(parsed.next, 3);
         assert_eq!(parsed.generations.len(), 2);
-        assert_eq!(parsed.generations[1].version, "2026.04");
+        assert_eq!(parsed.generations[1].image_gen_parent, 1);
     }
 
     #[test]
@@ -2456,30 +4066,352 @@ mod tests {
     #[test]
     fn save_and_load_state() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let state = SystemGenerationState {
+        let state = ConfigGenerationState {
             current: 1,
             next: 2,
-            generations: vec![SystemGeneration {
+            generations: vec![ConfigGeneration {
                 number: 1,
-                toplevel: "/nix/store/abc-server".into(),
-                version: "1.0".into(),
-                package_name: "server".into(),
-                registry: "core".into(),
                 created_at: "2026-01-01T00:00:00Z".into(),
-                kernel_path: None,
-                image_gen_parent: None,
-                module_abi_pinned: None,
-                manifest_hash: None,
-                config_module_closure: None,
-                host_nix_ref: None,
+                image_gen_parent: 1,
+                module_abi_pinned: 1,
+                manifest_hash: "sha256:manifest".into(),
+                config_module_closure: "/nix/store/config".into(),
+                config_module_paths: vec!["/nix/store/config".into()],
+                config_module_packages: vec!["server".into()],
+                host_nix_ref: "/nix/store/host".into(),
                 host_nix_commit: None,
-                facts_hash: None,
+                facts_hash: "sha256:facts".into(),
+                facts_ref: "/nix/store/facts".into(),
+                base_lib_ref: "/nix/store/base".into(),
+                evaluator_ref: "/nix/store/evaluator".into(),
             }],
         };
         save_generation_state(tmp.path(), &state).unwrap();
         let loaded = load_generation_state(tmp.path()).unwrap();
         assert_eq!(loaded.current, 1);
         assert_eq!(loaded.generations.len(), 1);
+    }
+
+    #[test]
+    fn authenticated_legacy_state_migrates_to_config_only_shape() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("system");
+        let image_profile = root.path().join("image");
+        std::fs::create_dir_all(profile.join("gen-1")).unwrap();
+        std::fs::create_dir_all(&image_profile).unwrap();
+        let manifest_text = include_str!("../tests/fixtures/config_manifest/manifest.json");
+        let manifest: crate::config_eval::materialize::ConfigManifest =
+            serde_json::from_str(manifest_text).unwrap();
+        manifest.validate().unwrap();
+        std::fs::write(profile.join("gen-1/manifest.json"), manifest_text).unwrap();
+        let manifest_hash =
+            crate::graph_compile::reproject::hash_cjson(&serde_json::to_value(&manifest).unwrap());
+        let base = manifest.inputs.base_lib.store_path.clone();
+        let evaluator = manifest.inputs.evaluator.store_path.clone();
+        let modules = manifest.inputs.config_modules.store_paths.clone();
+        let packages = manifest.inputs.config_modules.package_names.clone();
+        let host = manifest.inputs.host_nix.store_path.clone();
+        let facts_hash = manifest.inputs.instance_facts.facts_hash.clone();
+        let facts_ref = manifest.inputs.instance_facts.store_path.clone();
+        let top = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-system";
+        let images = ImageGenerationState {
+            running: 4,
+            default: 4,
+            pending: None,
+            generations: vec![ImageGeneration {
+                number: 4,
+                slot: ImageSlot::A,
+                uki_path: "EFI/Linux/aos+3.efi".into(),
+                toplevel: top.into(),
+                package_name: "aos-system".into(),
+                version: "1".into(),
+                registry: "core".into(),
+                kernel_path: None,
+                evaluator_ref: base.clone(),
+                module_abi: manifest.module_abi,
+                baselib_digest: format!("sha256:{}", "a".repeat(64)),
+                root_verity_roothash: None,
+                expected_pcr11: None,
+                created_at: "2026-01-01T00:00:00Z".into(),
+            }],
+        };
+        std::fs::write(
+            image_profile.join(IMAGE_STATE_FILE),
+            serde_json::to_vec(&images).unwrap(),
+        )
+        .unwrap();
+        let legacy = serde_json::json!({
+            "current": 1,
+            "next": 2,
+            "generations": [{
+                "number": 1,
+                "toplevel": top,
+                "created_at": "2026-01-01T00:00:00Z",
+                "image_gen_parent": 4,
+                "module_abi_pinned": manifest.module_abi,
+                "manifest_hash": manifest_hash,
+                "config_module_closure": modules[0],
+                "config_module_paths": modules,
+                "config_module_packages": packages,
+                "host_nix_ref": host,
+                "facts_hash": facts_hash,
+                "facts_ref": facts_ref,
+                "base_lib_ref": base,
+                "evaluator_ref": evaluator
+            }]
+        });
+        let migrated = migrate_legacy_generation_state(
+            &profile,
+            &image_profile,
+            &serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(migrated.current, 1);
+        assert_eq!(migrated.generations[0].image_gen_parent, 4);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.join(SYSTEM_STATE_FILE)).unwrap())
+                .unwrap();
+        assert!(persisted["generations"][0].get("toplevel").is_none());
+        assert_eq!(persisted["generations"][0]["manifest_hash"], manifest_hash);
+    }
+
+    #[test]
+    fn incomplete_legacy_state_migration_fails_without_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("system");
+        let image_profile = root.path().join("image");
+        std::fs::create_dir_all(&profile).unwrap();
+        std::fs::create_dir_all(&image_profile).unwrap();
+        let legacy = r#"{"current":1,"next":2,"generations":[{"number":1,"toplevel":"/nix/store/missing","created_at":"2026-01-01T00:00:00Z"}]}"#;
+        std::fs::write(profile.join(SYSTEM_STATE_FILE), legacy).unwrap();
+        let error = migrate_legacy_generation_state(&profile, &image_profile, legacy).unwrap_err();
+        assert!(error.to_string().contains("image-generation index"));
+        assert_eq!(
+            std::fs::read_to_string(profile.join(SYSTEM_STATE_FILE)).unwrap(),
+            legacy
+        );
+    }
+
+    #[test]
+    fn commit_publishes_state_and_current_link_consistently() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = generation_state_for_commit();
+        save_generation_state(tmp.path(), &state).unwrap();
+
+        commit_current_generation(tmp.path(), &mut state, 2).unwrap();
+
+        let loaded = load_generation_state(tmp.path()).unwrap();
+        assert_eq!(loaded.current, 2);
+        assert_eq!(
+            std::fs::read_link(tmp.path().join("current")).unwrap(),
+            PathBuf::from("gen-2")
+        );
+        assert!(!tmp.path().join(SYSTEM_COMMIT_JOURNAL).exists());
+    }
+
+    #[test]
+    fn load_recovers_an_interrupted_generation_commit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = generation_state_for_commit();
+        save_generation_state(tmp.path(), &state).unwrap();
+        let mut candidate = state;
+        candidate.current = 2;
+        let journal = GenerationCommitJournal {
+            generation: 2,
+            state: candidate,
+        };
+        std::fs::write(
+            tmp.path().join(SYSTEM_COMMIT_JOURNAL),
+            serde_json::to_vec_pretty(&journal).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_generation_state(tmp.path()).unwrap();
+
+        assert_eq!(loaded.current, 2);
+        assert_eq!(
+            loaded.generations[1].config_module_paths,
+            [
+                "/nix/store/cfg-a-2".to_string(),
+                "/nix/store/cfg-b-2".to_string(),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_link(tmp.path().join("current")).unwrap(),
+            PathBuf::from("gen-2")
+        );
+        assert!(!tmp.path().join(SYSTEM_COMMIT_JOURNAL).exists());
+    }
+
+    #[test]
+    fn same_abi_config_rollback_uses_running_image_activator() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = generation_state_for_commit();
+        save_generation_state(tmp.path(), &state).unwrap();
+        let target = state.generations[1].clone();
+        let printer = Printer::new(0, true, false);
+
+        direct_reactivate_config_generation_with(
+            tmp.path(),
+            &mut state,
+            Path::new("/nix/store/test-generation-1"),
+            &target,
+            &printer,
+            |activate, number, _nonce| {
+                assert_eq!(activate, Path::new("/nix/store/test-generation-1/activate"));
+                assert_eq!(number, 2);
+                Ok(Some(0))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(state.current, 2);
+        assert_eq!(
+            std::fs::read_link(tmp.path().join("current")).unwrap(),
+            PathBuf::from("gen-2")
+        );
+    }
+
+    #[test]
+    fn activation_recovery_requires_the_exact_transaction_nonce() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = generation_state_for_commit();
+        std::fs::create_dir_all(tmp.path().join("gen-1")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("gen-2")).unwrap();
+        std::os::unix::fs::symlink("gen-1", tmp.path().join("current")).unwrap();
+        save_generation_state(tmp.path(), &state).unwrap();
+        let intent = ActivationIntent {
+            generation: 2,
+            nonce: "new-transaction".into(),
+            state: state.clone(),
+        };
+        std::fs::write(
+            tmp.path().join(ACTIVATION_INTENT),
+            serde_json::to_vec(&intent).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("gen-2/.etc-live-old-transaction"), b"2\n").unwrap();
+
+        let not_recovered = load_generation_state(tmp.path()).unwrap();
+        assert_eq!(not_recovered.current, 1);
+        assert_eq!(
+            std::fs::read_link(tmp.path().join("current")).unwrap(),
+            PathBuf::from("gen-1")
+        );
+
+        std::fs::write(
+            tmp.path().join("gen-2/.etc-live-new-transaction"),
+            b"2 new-transaction\n",
+        )
+        .unwrap();
+        let recovered = load_generation_state(tmp.path()).unwrap();
+        assert_eq!(recovered.current, 2);
+        assert!(!tmp.path().join(ACTIVATION_INTENT).exists());
+    }
+
+    #[test]
+    fn readonly_state_load_never_publishes_recovery_journals() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = generation_state_for_commit();
+        std::fs::create_dir_all(tmp.path().join("gen-2")).unwrap();
+        save_generation_state(tmp.path(), &state).unwrap();
+        let intent = ActivationIntent {
+            generation: 2,
+            nonce: "transaction".into(),
+            state,
+        };
+        std::fs::write(
+            tmp.path().join(ACTIVATION_INTENT),
+            serde_json::to_vec(&intent).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("gen-2/.etc-live-transaction"),
+            b"2 transaction\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_generation_state_readonly(tmp.path()).unwrap().current,
+            1
+        );
+        assert!(tmp.path().join(ACTIVATION_INTENT).exists());
+        assert!(!tmp.path().join("current").exists());
+    }
+
+    #[test]
+    fn image_selection_intent_survives_failure_and_retries_idempotently() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = ImageGenerationState {
+            running: 1,
+            default: 1,
+            pending: None,
+            generations: Vec::new(),
+        };
+        let error = select_image_default_with(tmp.path(), &mut state, 2, "aos-2+3.efi", |_| {
+            bail!("injected bootctl failure")
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("injected bootctl failure"));
+        assert_eq!(state.default, 1);
+        assert!(tmp.path().join(IMAGE_TRANSITION_INTENT).is_file());
+        assert!(!tmp.path().join(IMAGE_STATE_FILE).exists());
+
+        let mut selected = String::new();
+        select_image_default_with(tmp.path(), &mut state, 2, "aos-2+3.efi", |entry| {
+            selected = entry.to_string();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(selected, "aos-2+3.efi");
+        assert_eq!(state.default, 2);
+        assert_eq!(state.pending, Some(2));
+        assert!(!tmp.path().join(IMAGE_TRANSITION_INTENT).exists());
+    }
+
+    #[test]
+    fn counted_uki_resolution_follows_sd_boot_renames() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let linux = tmp.path().join("EFI/Linux");
+        std::fs::create_dir_all(&linux).unwrap();
+        std::fs::write(linux.join("aos-server-2+1-2.efi"), b"uki").unwrap();
+
+        assert_eq!(
+            resolve_installed_uki_entry(tmp.path(), "EFI/Linux/aos-server-2+3.efi").unwrap(),
+            "aos-server-2+1-2.efi"
+        );
+        std::fs::write(linux.join("aos-server-2.efi"), b"blessed").unwrap();
+        assert_eq!(
+            resolve_installed_uki_entry(tmp.path(), "EFI/Linux/aos-server-2+3.efi").unwrap(),
+            "aos-server-2.efi"
+        );
+    }
+
+    fn generation_state_for_commit() -> ConfigGenerationState {
+        let generation = |number| ConfigGeneration {
+            number,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            image_gen_parent: 1,
+            module_abi_pinned: 1,
+            manifest_hash: format!("sha256:{number}"),
+            config_module_closure: format!("/nix/store/cfg-{number}"),
+            config_module_paths: vec![
+                format!("/nix/store/cfg-a-{number}"),
+                format!("/nix/store/cfg-b-{number}"),
+            ],
+            config_module_packages: vec!["cfg-a".into(), "cfg-b".into()],
+            host_nix_ref: format!("/nix/store/host-{number}"),
+            host_nix_commit: None,
+            facts_hash: format!("sha256:facts-{number}"),
+            facts_ref: format!("/nix/store/facts-{number}"),
+            base_lib_ref: format!("/nix/store/base-{number}"),
+            evaluator_ref: format!("/nix/store/evaluator-{number}"),
+        };
+        ConfigGenerationState {
+            current: 1,
+            next: 3,
+            generations: vec![generation(1), generation(2)],
+        }
     }
 
     #[test]
@@ -2496,63 +4428,6 @@ mod tests {
         assert!(result.ends_with('Z'));
         assert_eq!(result.len(), 20);
         assert!(result.starts_with("20"));
-    }
-
-    #[test]
-    fn extract_kernel_version_from_store_path() {
-        // Nix hash is 32 chars, so basename is "01234567890123456789012345678901-linux-6.12.1"
-        // After stripping 33-char prefix (hash + '-'), we get "linux-6.12.1", then strip "linux-".
-        let path = Some("/nix/store/01234567890123456789012345678901-linux-6.12.1".to_string());
-        assert_eq!(extract_kernel_version(&path), "6.12.1");
-    }
-
-    #[test]
-    fn extract_kernel_version_short_path() {
-        let path = Some("linux-6.11.0".to_string());
-        assert_eq!(extract_kernel_version(&path), "6.11.0");
-    }
-
-    #[test]
-    fn extract_kernel_version_none() {
-        assert_eq!(extract_kernel_version(&None), "unknown");
-    }
-
-    #[test]
-    fn canonicalize_kernel_path_resolves_seeded_symlink_form() {
-        // A seeded generation records `<toplevel>/kernel` (the symlink),
-        // not its target. Canonicalizing must yield the target so it
-        // compares equal to what resolve_kernel_path stores.
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir
-            .path()
-            .join("01234567890123456789012345678901-linux-6.12.1");
-        std::fs::create_dir(&target).unwrap();
-        let link = dir.path().join("kernel");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        let seeded = Some(link.to_string_lossy().to_string());
-        assert_eq!(
-            canonicalize_kernel_path(&seeded),
-            Some(target.to_string_lossy().to_string())
-        );
-    }
-
-    #[test]
-    fn canonicalize_kernel_path_keeps_resolved_and_missing_paths() {
-        // Already-resolved paths (not symlinks) and paths that no longer
-        // exist pass through unchanged; None stays None.
-        let dir = tempfile::tempdir().unwrap();
-        let plain = dir.path().join("linux-6.12.1");
-        std::fs::create_dir(&plain).unwrap();
-        let plain_str = plain.to_string_lossy().to_string();
-        assert_eq!(
-            canonicalize_kernel_path(&Some(plain_str.clone())),
-            Some(plain_str)
-        );
-
-        let gone = "/nix/store/gcd-toplevel/kernel".to_string();
-        assert_eq!(canonicalize_kernel_path(&Some(gone.clone())), Some(gone));
-        assert_eq!(canonicalize_kernel_path(&None), None);
     }
 
     #[test]

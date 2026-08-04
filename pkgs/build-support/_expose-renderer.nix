@@ -18,6 +18,7 @@
   renderRole = import ../../lib/modules/systemd/render-role.nix {
     inherit lib pkgs systemdLib;
   };
+  exposeModule = import ./_expose-module.nix {inherit lib;};
 
   knownUnitSuffixes = [
     ".automount"
@@ -30,11 +31,11 @@
     ".timer"
   ];
 
-  packageNameType = "^[A-Za-z0-9][A-Za-z0-9+._=-]*$";
   configNameType = "^[A-Za-z0-9_.-]+$";
   configFieldType = "^[A-Za-z_][A-Za-z0-9_]*$";
   capabilityType = "^CAP_[A-Z0-9_]+$";
   capabilityRouteNameType = "^[A-Za-z0-9_.-]+$";
+  packageNameType = "^[A-Za-z0-9][A-Za-z0-9+._=-]*$";
   credentialNameType = "^[A-Za-z0-9_.-]+$";
   hostPathType = "^[A-Za-z0-9_./+=@-]+$";
   kernelModuleType = "^[A-Za-z0-9_-]+$";
@@ -100,7 +101,7 @@
       builtins.isString package
       && builtins.match packageNameType package != null
     )
-    "expose.requires contains invalid package name '${builtins.toString package}'"
+    "expose capability route contains invalid package name '${builtins.toString package}'"
     package;
 
   validateCapability = packageName: capability:
@@ -1055,6 +1056,15 @@
     "mkDerivation expose.units.${unitName} for package '${packageName}' uses a ${key} command whose executable is not an absolute path and cannot be resolved exactly by generated sandbox wrappers: ${text}"
     command;
 in rec {
+  # Pure normalized schema shared with the generated RFC-0011 companion.
+  # Credential build inputs are deliberately excluded; only signed manifest
+  # handles may enter config-module source bytes.
+  normalizeConfig = packageName: config: let
+    checked = validateConfig packageName config;
+  in {
+    inherit (checked) artifacts credentials;
+  };
+
   assertNoGlobalScanDirStorage = packageName: storageLinks: let
     violations =
       builtins.filter (
@@ -1073,18 +1083,24 @@ in rec {
     drv ? null,
     expose,
   }: let
+    # Type-check the complete authored surface with the same module engine used
+    # by RFC-0011 host evaluation.  Keep the original sparse attrset for the
+    # legacy renderer below: its omitted-vs-present distinctions are part of
+    # the signed RFC-0001 manifest contract (notably credential source fields).
+    typedExposeContract = builtins.deepSeq (exposeModule.eval expose) true;
     checkedExpose =
-      throwIfNot
-      (builtins.isAttrs expose)
-      "mkDerivation expose for package '${packageName}' must be an attrset"
-      expose;
+      builtins.seq typedExposeContract (
+        throwIfNot
+        (builtins.isAttrs expose)
+        "mkDerivation expose for package '${packageName}' must be an attrset"
+        expose
+      );
     allowedExposeKeys = [
       "target"
       "units"
       "kernel"
       "firewall"
       "images"
-      "requires"
       "permissions"
       "config"
       "provides"
@@ -1123,10 +1139,6 @@ in rec {
       (reservedCollisions == [])
       "mkDerivation expose.units for package '${packageName}' must not define synthesized units: ${builtins.concatStringsSep ", " reservedCollisions}"
       true;
-    requires =
-      builtins.map
-      validatePackageName
-      (validateList "expose.requires" (checkedExpose.requires or []));
     images =
       builtins.map
       validateImage
@@ -2236,7 +2248,7 @@ in rec {
 
     manifest = {
       expose = {
-        inherit target requires config provides uses;
+        inherit target config provides uses;
         images = manifestImages;
         units = manifestUnitNames;
       };

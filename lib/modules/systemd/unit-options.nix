@@ -105,11 +105,11 @@ in rec {
     };
   };
 
-  # `[Install]`-section directives. Both install models honour these
-  # via the renderer in `lib.nix`'s `commonUnitText`: stage 2 ALSO
+  # `[Install]`-section directives. Both static and runtime package units honor
+  # these via the renderer in `lib.nix`'s `commonUnitText`: stage 2 ALSO
   # populates `.wants` / `.requires` / `.upholds` via `generateUnits`'s
   # symlink farm (the `[Install]` lines are idempotent for it);
-  # ignition relies on these directives as the only path.
+  # runtime preset policy relies on these directives as its source of truth.
   commonInstallOptions = {
     requiredBy = mkOption {
       default = [];
@@ -150,7 +150,7 @@ in rec {
           which walks `[Install]` to create runtime symlinks in the
           tmpfs `/etc` upper. The `[Install]` lines are idempotent for
           stage 2 (whose symlinks already exist) but load-bearing for
-          Ignition-provisioned RFC-0001 package targets.
+          dynamically installed RFC-0001 package targets.
       '';
     };
 
@@ -161,10 +161,8 @@ in rec {
     };
   };
 
-  # Stage-2-only install machinery: the `/dev/null` mask trick and the
-  # auto-detected drop-in strategy. Ignition has different equivalents
-  # (`mask` field, explicit `dropins[]`) which live in the ignition
-  # library, not here.
+  # Stage-2 install machinery: the `/dev/null` mask trick and the
+  # auto-detected drop-in strategy.
   stage2InstallOptions =
     commonInstallOptions
     // {

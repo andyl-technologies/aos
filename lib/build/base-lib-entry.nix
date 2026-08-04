@@ -141,6 +141,7 @@ in {
             # service must continue to name this exact ABI-pinned base library,
             # not the build-time default or an operator value.
             aos.config.evalAtBoot.baseLib = ./.;
+            aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
           }
         ];
       pkgs = frozenPkgs;

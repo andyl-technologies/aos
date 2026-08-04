@@ -56,6 +56,7 @@ use aos_cache::AuthOptions;
 use aos_core::nar::info as narinfo;
 use aos_core::nix::aos_nix_env;
 use clap::ValueEnum as _;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -84,17 +85,19 @@ use crate::security::{
 };
 use crate::sshkey;
 use crate::types::{
-    AttestationMeta, BpfLsmPolicyMeta, CacheEntry, ConfigModuleMeta, ConfinementClass,
-    ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1,
-    FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1,
-    FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1, FEATURE_MAC_PROFILE_V1,
-    FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1,
-    PACKAGE_META_FORMAT, PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig,
-    RegistryUploadAuthConfig, SbatEntry, SigningKeySource, SigningKeySpec, package_name_bucket,
-    rfc0001_metadata_requires_provenance, validate_attestation_meta, validate_branch_name,
-    validate_channel_name, validate_config_module_meta, validate_expose_artifact_meta,
-    validate_expose_meta_for_package, validate_git_ref_name, validate_package_name,
-    validate_permissions_meta, validate_platform_name, validate_registry_name,
+    AttestationMeta, BpfLsmPolicyMeta, CacheEntry, ConfigModuleMeta, ConfigOptionDeclaration,
+    ConfigOutputMeta, ConfinementClass, ExposeArtifactMeta, ExposeMeta, FEATURE_ATTESTATION_V1,
+    FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1, FEATURE_CONFIG_V1,
+    FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
+    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_PERMISSIONS_V1, FEATURE_RELOAD_V1,
+    FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1, ModuleAbiCompat, OwnedRoot, PACKAGE_META_FORMAT,
+    PermissionsMeta, RegistryConfig, RegistryFile, RegistryRootConfig, RegistryUploadAuthConfig,
+    RootContribution, SbatEntry, SigningKeySource, SigningKeySpec, SysrootUkiEntry, UkiSlot,
+    package_name_bucket, rfc0001_metadata_requires_provenance, validate_attestation_meta,
+    validate_branch_name, validate_channel_name, validate_config_module_meta,
+    validate_config_output_meta, validate_expose_artifact_meta, validate_expose_meta_for_package,
+    validate_git_ref_name, validate_package_name, validate_permissions_meta,
+    validate_platform_name, validate_registry_name,
 };
 use crate::{
     BranchCommand, CacheCommand, CacheUploadAuthArgs, ChangeCommand, ChannelCommand, KeysCommand,
@@ -139,6 +142,36 @@ struct PublishMacProfileManifest {
     profile_path: Option<String>,
 }
 
+/// Builder-authored config-module claims copied into the trusted companion
+/// output. Publish treats these fields as assertions to cross-check against
+/// the module's mechanically derived interface, never as the authority for
+/// declarations or contribution paths.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishConfigModuleManifest {
+    schema: String,
+    module_abi_compat: ModuleAbiCompat,
+    #[serde(default)]
+    declares: Vec<String>,
+    #[serde(default)]
+    owns_roots: Vec<OwnedRoot>,
+    #[serde(default)]
+    contributes: Vec<RootContribution>,
+    #[serde(default)]
+    provides_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DerivedOptionDeclaration {
+    #[serde(rename = "pathStr")]
+    path_str: String,
+    #[serde(rename = "typeSig")]
+    type_sig: String,
+    #[serde(default)]
+    contributable: bool,
+}
+
 #[derive(Debug)]
 struct CompiledSelinuxProfile {
     module: Vec<u8>,
@@ -177,7 +210,10 @@ fn resolve_registry_name(config: &ApmConfig, registry: Option<&str>) -> Result<S
             }
         }
         if names.len() == 1 {
-            return Ok(names.into_iter().next().unwrap());
+            return names
+                .into_iter()
+                .next()
+                .context("single discovered registry name disappeared");
         }
         if names.len() > 1 {
             bail!(
@@ -1432,6 +1468,12 @@ description = ""
 /// provenance, so they must be published with `--key-id`; a raw `--key` has
 /// no stable roster id for the DSSE builder identity.
 ///
+/// `--config-module` publishes RFC-0011's config-only companion output.
+/// `--config-base-lib` is required with it and records the exact options
+/// library used by the restricted, no-IFD options-only evaluation. The signed
+/// provenance binds the payload, config output, base lib, and (when present)
+/// expose manifest in one statement.
+///
 /// # Errors
 ///
 /// Fails when the registry has no writable authoring clone, when the
@@ -1439,13 +1481,11 @@ description = ""
 /// name is not safe for package metadata, when `--image` and
 /// `--image-format` are not given in pairs, when the `nix path-info` /
 /// `nix-store` queries fail for the store path, when `--expose-manifest`
-/// cannot be parsed or validated, or when a file write, the commit, or the
+/// cannot be parsed or validated, when the config output references a
+/// derivation, when authored config metadata disagrees with the mechanically
+/// evaluated/scanned interface, or when a file write, the commit, or the
 /// object-store refresh fails.
 ///
-/// # Panics
-///
-/// Panics if an existing package TOML contains a `versions` array whose
-/// entries are not tables (cannot occur for files written by this tool).
 #[allow(clippy::too_many_arguments)]
 pub async fn publish(
     config: &ApmConfig,
@@ -1463,6 +1503,8 @@ pub async fn publish(
     image_paths: &[String],
     image_formats: &[String],
     expose_manifest_path: Option<&str>,
+    config_module_path: Option<&str>,
+    config_base_lib_path: Option<&str>,
     bless: bool,
     no_ca: bool,
     no_commit: bool,
@@ -1493,6 +1535,9 @@ pub async fn publish(
             image_paths.len(),
             image_formats.len()
         );
+    }
+    if config_module_path.is_some() != config_base_lib_path.is_some() {
+        bail!("--config-module and --config-base-lib must be specified together");
     }
 
     printer.step(1, 4, "Introspecting store path...");
@@ -1528,6 +1573,21 @@ pub async fn publish(
         .map(|s| s.to_string())
         .unwrap_or_else(default_platform);
     validate_platform_name(&platform)?;
+    let config_module_info = config_module_path
+        .map(introspect_store_path)
+        .transpose()
+        .context("introspecting config-module store path")?;
+    let config_base_lib_info = config_base_lib_path
+        .map(introspect_store_path)
+        .transpose()
+        .context("introspecting config base-lib")?;
+    let config_module = match (config_module_info.as_ref(), config_base_lib_info.as_ref()) {
+        (Some(output), Some(base_lib)) => Some(read_publish_config_module(
+            output, base_lib, pkg_name, &info.path,
+        )?),
+        (None, None) => None,
+        _ => bail!("--config-module and --config-base-lib must be specified together"),
+    };
     let expose_manifest = expose_manifest_path
         .map(|path| read_publish_expose_manifest(path, pkg_name))
         .transpose()?;
@@ -1537,7 +1597,7 @@ pub async fn publish(
     let expose_manifest_digest = expose_manifest_path
         .map(|path| read_publish_manifest_digest(Path::new(path)))
         .transpose()?;
-    let provenance_signer = if expose_manifest_path.is_some() {
+    let provenance_signer = if expose_manifest_path.is_some() || config_module.is_some() {
         Some(resolve_package_provenance_signer(
             &dir,
             &name,
@@ -1564,6 +1624,19 @@ pub async fn publish(
         String::new()
     };
 
+    let config_attestation = config_module
+        .as_ref()
+        .map(|module| {
+            publish_config_attestation_meta(
+                pkg_name,
+                pkg_version,
+                &platform,
+                &info,
+                module,
+                expose_manifest_digest.as_deref(),
+            )
+        })
+        .transpose()?;
     let new_content = build_package_toml(
         &content,
         pkg_name,
@@ -1581,22 +1654,43 @@ pub async fn publish(
         expose_manifest.as_ref(),
         expose_artifact_info.as_ref(),
         expose_manifest_digest.as_deref(),
+        config_module.as_ref(),
+        config_attestation.as_ref(),
     )?;
-    let provenance_artifact = match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
-        (Some(manifest), Some(manifest_digest)) => publish_provenance_artifact(
+    let provenance_artifact = if let (Some(module), Some(attestation)) =
+        (config_module.as_ref(), config_attestation.as_ref())
+    {
+        Some(publish_config_provenance_artifact(
             &name,
             pkg_name,
             pkg_version,
             &platform,
             &info,
             source_info.as_ref(),
-            manifest,
-            manifest_digest,
+            module,
+            expose_manifest_digest.as_deref(),
+            attestation,
             provenance_signer
                 .as_ref()
-                .context("provenance signer missing for exposed package")?,
-        )?,
-        _ => None,
+                .context("provenance signer missing for config-module package")?,
+        )?)
+    } else {
+        match (expose_manifest.as_ref(), expose_manifest_digest.as_deref()) {
+            (Some(manifest), Some(manifest_digest)) => publish_provenance_artifact(
+                &name,
+                pkg_name,
+                pkg_version,
+                &platform,
+                &info,
+                source_info.as_ref(),
+                manifest,
+                manifest_digest,
+                provenance_signer
+                    .as_ref()
+                    .context("provenance signer missing for exposed package")?,
+            )?,
+            _ => None,
+        }
     };
 
     std::fs::write(&toml_path, &new_content)?;
@@ -1627,6 +1721,20 @@ pub async fn publish(
                         artifact.path
                     )
                 })?,
+        )
+    } else {
+        None
+    };
+    let config_store_report = if let Some(output) = &config_module_info {
+        Some(
+            write_store_files(&dir, &output.path, content_addressed, bless, printer).with_context(
+                || {
+                    format!(
+                        "writing store/ realisation graph for config module {}",
+                        output.path
+                    )
+                },
+            )?,
         )
     } else {
         None
@@ -1663,6 +1771,12 @@ pub async fn publish(
     }
     if let Some(report) = &expose_store_report {
         printer.kv("Expose artifact graph", &report.summary());
+    }
+    if let Some(output) = &config_module_info {
+        printer.kv("Config module", &output.path);
+    }
+    if let Some(report) = &config_store_report {
+        printer.kv("Config module graph", &report.summary());
     }
     if let Some(artifact) = &provenance_artifact {
         printer.kv("Provenance", &artifact.path);
@@ -1742,6 +1856,7 @@ pub async fn publish(
                         "generation": item.generation,
                     })).collect::<Vec<_>>(),
                     "expected_pcr11": sb.expected_pcr11,
+                    "ukis": sb.ukis,
                 })
             })
             .collect::<Vec<_>>();
@@ -1844,6 +1959,8 @@ fn build_package_toml(
     expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact_info: Option<&StorePathInfo>,
     expose_manifest_digest: Option<&str>,
+    config_module: Option<&ConfigModuleMeta>,
+    config_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
     let desc = description.unwrap_or("No description");
     let lic = license.unwrap_or("unknown");
@@ -1854,7 +1971,7 @@ fn build_package_toml(
     let source_nar_hash = source_info
         .map(|source| source.nar_hash.as_str())
         .unwrap_or_default();
-    let platform_table = package_platform_table(
+    let mut platform_table = package_platform_table(
         name,
         version,
         platform,
@@ -1866,6 +1983,17 @@ fn build_package_toml(
         expose_artifact_info,
         expose_manifest_digest,
     )?;
+    if let Some(module) = config_module {
+        let table = platform_table
+            .as_table_mut()
+            .context("new package platform metadata is not a TOML table")?;
+        record_config_module_platform_fields(table, name, module)?;
+        record_attestation_platform_fields(
+            table,
+            config_attestation
+                .context("config-module package is missing its publish provenance attestation")?,
+        )?;
+    }
 
     if existing.is_empty() {
         let mut package = toml::map::Map::new();
@@ -1923,20 +2051,18 @@ fn build_package_toml(
             if let Some(idx) = existing_idx {
                 // Update existing version entry.
                 let ver_entry = &mut versions[idx];
-                if let Some(prev) = previous {
-                    ver_entry
-                        .as_table_mut()
-                        .unwrap()
-                        .insert("previous".into(), toml::Value::String(prev.to_string()));
-                }
-                let platforms = ver_entry
+                let ver_table = ver_entry
                     .as_table_mut()
-                    .unwrap()
+                    .context("existing package versions entry is not a TOML table")?;
+                if let Some(prev) = previous {
+                    ver_table.insert("previous".into(), toml::Value::String(prev.to_string()));
+                }
+                let platforms = ver_table
                     .entry("platforms")
                     .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
                 platforms
                     .as_table_mut()
-                    .unwrap()
+                    .context("existing package platforms metadata is not a TOML table")?
                     .insert(platform.to_string(), platform_table);
             } else {
                 // Add new version entry.
@@ -1961,10 +2087,13 @@ fn build_package_toml(
             platforms.insert(platform.to_string(), platform_table);
             ver_table.insert("platforms".into(), toml::Value::Table(platforms));
 
-            toml_val.as_table_mut().unwrap().insert(
-                "versions".into(),
-                toml::Value::Array(vec![toml::Value::Table(ver_table)]),
-            );
+            toml_val
+                .as_table_mut()
+                .context("existing package metadata root is not a TOML table")?
+                .insert(
+                    "versions".into(),
+                    toml::Value::Array(vec![toml::Value::Table(ver_table)]),
+                );
         }
 
         Ok(toml::to_string_pretty(&toml_val)?)
@@ -2001,6 +2130,475 @@ fn read_publish_manifest_digest(path: &Path) -> Result<String> {
     Ok(crate::package_attestation::package_manifest_digest_bytes(
         &bytes,
     ))
+}
+
+fn read_publish_config_module(
+    config_output: &StorePathInfo,
+    base_lib: &StorePathInfo,
+    package_name: &str,
+    runtime_output: &str,
+) -> Result<ConfigModuleMeta> {
+    let root = Path::new(&config_output.path);
+    let module_path = root.join("module.nix");
+    let manifest_path = root.join("config-meta.json");
+    for path in [&module_path, &manifest_path] {
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("reading config-module artifact {}", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!(
+                "config-module artifact {} must be a regular file, not a symlink",
+                path.display()
+            );
+        }
+    }
+    reject_config_derivation_references(&config_output.path)?;
+
+    let manifest_bytes =
+        fs::read(&manifest_path).with_context(|| format!("reading {}", manifest_path.display()))?;
+    let authored: PublishConfigModuleManifest = serde_json::from_slice(&manifest_bytes)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    if authored.schema != "aos.config-module-meta/v1" {
+        bail!(
+            "config-module artifact {} has unsupported metadata schema '{}'",
+            config_output.path,
+            authored.schema
+        );
+    }
+
+    let declarations = derive_config_option_declarations(
+        &config_output.path,
+        &base_lib.path,
+        package_name,
+        runtime_output,
+        &authored,
+    )?;
+    let mut declares = declarations
+        .iter()
+        .map(|declaration| declaration.path_str.clone())
+        .filter(|path| !path.starts_with("_module."))
+        .collect::<Vec<_>>();
+    declares.sort();
+    declares.dedup();
+    let mut declaration_schema = declarations
+        .iter()
+        .filter(|declaration| !declaration.path_str.starts_with("_module."))
+        .map(|declaration| ConfigOptionDeclaration {
+            path: declaration.path_str.clone(),
+            type_signature: declaration.type_sig.clone(),
+        })
+        .collect::<Vec<_>>();
+    declaration_schema.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut authored_declares = authored.declares.clone();
+    authored_declares.sort();
+    authored_declares.dedup();
+    if declares != authored_declares {
+        bail!(
+            "config-meta.json declaration claims do not match options-only evaluation for package '{package_name}': authored={authored_declares:?}, derived={declares:?}"
+        );
+    }
+
+    // Ownership is derived structurally: every declared non-private root is
+    // owned by this module. The authored manifest supplies only the ABI number
+    // for each mechanically discovered root.
+    let mut owned_by_name = authored
+        .owns_roots
+        .iter()
+        .map(|owned| (owned.root.as_str(), owned))
+        .collect::<BTreeMap<_, _>>();
+    let mut derived_owned_roots = declares
+        .iter()
+        .filter_map(|path| path.split('.').next())
+        .filter(|root| *root != package_name)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    derived_owned_roots.sort();
+    derived_owned_roots.dedup();
+    let mut owns_roots = Vec::with_capacity(derived_owned_roots.len());
+    for root in &derived_owned_roots {
+        let authored_root = owned_by_name.remove(root.as_str()).with_context(|| {
+            format!(
+                "config-meta.json does not supply interface_abi for derived owned root '{root}'"
+            )
+        })?;
+        let mut contributable = declarations
+            .iter()
+            .filter(|declaration| declaration.contributable)
+            .filter_map(|declaration| {
+                declaration
+                    .path_str
+                    .strip_prefix(&format!("{root}."))
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        contributable.sort();
+        contributable.dedup();
+        let mut authored_contributable = authored_root.contributable.clone();
+        authored_contributable.sort();
+        authored_contributable.dedup();
+        if contributable != authored_contributable {
+            bail!(
+                "config-meta.json contributable claims for root '{root}' do not match options-only evaluation: authored={authored_contributable:?}, derived={contributable:?}"
+            );
+        }
+        owns_roots.push(OwnedRoot {
+            root: root.clone(),
+            interface_abi: authored_root.interface_abi,
+            contributable,
+        });
+    }
+    if !owned_by_name.is_empty() {
+        let extras = owned_by_name.keys().copied().collect::<Vec<_>>();
+        bail!("config-meta.json claims roots not owned by evaluated declarations: {extras:?}");
+    }
+
+    let (contributes, provides_capabilities, requires) = scan_config_module_interface(
+        root,
+        package_name,
+        &derived_owned_roots,
+        &authored.contributes,
+    )?;
+    let mut authored_contributes = authored.contributes.clone();
+    normalize_contributions(&mut authored_contributes);
+    if contributes != authored_contributes {
+        bail!(
+            "config-meta.json contribution claims do not match the conservative module scan: authored={authored_contributes:?}, derived={contributes:?}; publish scanning requires explicit config.<path> assignments for foreign contributions"
+        );
+    }
+    let mut authored_capabilities = authored.provides_capabilities.clone();
+    authored_capabilities.sort();
+    authored_capabilities.dedup();
+    if provides_capabilities != authored_capabilities {
+        bail!(
+            "config-meta.json capability claims do not match the conservative module scan: authored={authored_capabilities:?}, derived={provides_capabilities:?}; publish scanning requires explicit config.system.capabilities.<token> assignments"
+        );
+    }
+
+    let module = ConfigModuleMeta {
+        config_output: ConfigOutputMeta {
+            store_path: config_output.path.clone(),
+            nar_hash: config_output.nar_hash.clone(),
+            nar_size: config_output.nar_size,
+            references: config_output.references.clone(),
+        },
+        evaluation_base_lib: Some(ConfigOutputMeta {
+            store_path: base_lib.path.clone(),
+            nar_hash: base_lib.nar_hash.clone(),
+            nar_size: base_lib.nar_size,
+            references: base_lib.references.clone(),
+        }),
+        module_abi_compat: authored.module_abi_compat,
+        declares,
+        declaration_schema,
+        requires,
+        owns_roots,
+        contributes,
+        provides_capabilities,
+    };
+    validate_config_output_meta(&module.config_output)?;
+    validate_config_module_meta(package_name, &module)?;
+    Ok(module)
+}
+
+fn reject_config_derivation_references(config_output: &str) -> Result<()> {
+    let output = nix_command("nix-store")
+        .args(["--query", "--references", config_output])
+        .output()
+        .with_context(|| format!("querying config-module references for {config_output}"))?;
+    if !output.status.success() {
+        bail!(
+            "nix-store --query --references failed for config module {config_output}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    if let Some(reference) = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find(|reference| !reference.trim().is_empty())
+    {
+        bail!(
+            "config module {config_output} must have an empty reference set, but references {reference}"
+        );
+    }
+    Ok(())
+}
+
+fn derive_config_option_declarations(
+    config_output: &str,
+    base_lib_path: &str,
+    package_name: &str,
+    runtime_output: &str,
+    authored: &PublishConfigModuleManifest,
+) -> Result<Vec<DerivedOptionDeclaration>> {
+    let owns = authored
+        .owns_roots
+        .iter()
+        .map(|owned| nix_publish_string(&owned.root))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let contributes = authored
+        .contributes
+        .iter()
+        .map(|contribution| {
+            let paths = contribution
+                .paths
+                .iter()
+                .map(|path| nix_publish_string(path))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{} = [ {paths} ];", nix_publish_string(&contribution.root))
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let expression = format!(
+        r#"let
+  base = import <aos-publish-base-lib>;
+  evaluated = base.lib.evalModules {{
+    modules = [];
+    packageModules = [ {{
+      name = {};
+      configRoot = <aos-publish-config-module>;
+      module = <aos-publish-config-module/module.nix>;
+      outputs = {{ self = {}; dependencies = {{}}; }};
+      authorization = {{ owns = [ {owns} ]; contributes = {{ {contributes} }}; }};
+    }} ];
+    inherit (base) lib;
+  }};
+in builtins.map (decl: {{ inherit (decl) pathStr typeSig contributable; }})
+  (base.lib.optionSurface evaluated)"#,
+        nix_publish_string(package_name),
+        nix_publish_string(runtime_output)
+    );
+    let base_search_path = format!("aos-publish-base-lib={base_lib_path}");
+    let module_search_path = format!("aos-publish-config-module={config_output}");
+    let evaluator = std::env::var_os("PATH")
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|directory| directory.join("nix-instantiate"))
+                .find(|candidate| candidate.is_file())
+        })
+        .context("cannot find nix-instantiate in the AOS command path")?;
+    let mut command = Command::new(evaluator);
+    command.env_clear();
+    let output = command
+        .args([
+            "--store",
+            "dummy://",
+            "--eval",
+            "--strict",
+            "--json",
+            "--option",
+            "restrict-eval",
+            "true",
+            "--option",
+            "allow-import-from-derivation",
+            "false",
+            "-I",
+            &base_search_path,
+            "-I",
+            &module_search_path,
+            "--expr",
+            &expression,
+        ])
+        .output()
+        .with_context(|| {
+            format!("running options-only config-module eval for package '{package_name}'")
+        })?;
+    if !output.status.success() {
+        bail!(
+            "options-only config-module eval failed for package '{package_name}': {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    serde_json::from_slice(&output.stdout).with_context(|| {
+        format!("parsing options-only config-module eval for package '{package_name}'")
+    })
+}
+
+fn nix_publish_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn normalize_contributions(contributions: &mut Vec<RootContribution>) {
+    for contribution in contributions.iter_mut() {
+        contribution.paths.sort();
+        contribution.paths.dedup();
+    }
+    contributions.sort_by(|left, right| left.root.cmp(&right.root));
+}
+
+fn scan_config_module_interface(
+    root: &Path,
+    package_name: &str,
+    owned_roots: &[String],
+    authored_contributions: &[RootContribution],
+) -> Result<(Vec<RootContribution>, Vec<String>, Vec<String>)> {
+    let access = Regex::new(r"(?:config|options)\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)")?;
+    let assignment = Regex::new(r"config\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+)\s*=")?;
+    let mut requires = Vec::new();
+    let mut writes = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("inspecting config-module source {}", path.display()))?;
+        if metadata.file_type().is_symlink() {
+            bail!(
+                "config-module source must not contain symlink {}",
+                path.display()
+            );
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(&path)
+                .with_context(|| format!("reading config-module directory {}", path.display()))?
+            {
+                pending.push(entry?.path());
+            }
+            continue;
+        }
+        if path.file_name().and_then(|name| name.to_str()) == Some("config-meta.json") {
+            continue;
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("nix") {
+            bail!(
+                "config-module source contains non-Nix helper {}",
+                path.display()
+            );
+        }
+        let source = fs::read_to_string(&path)
+            .with_context(|| format!("reading config-module source {}", path.display()))?;
+        let code = strip_nix_comments_and_strings(&source);
+        requires.extend(
+            access
+                .captures_iter(&code)
+                .map(|capture| capture[1].to_string()),
+        );
+        writes.extend(
+            assignment
+                .captures_iter(&code)
+                .map(|capture| capture[1].to_string()),
+        );
+    }
+    requires.sort();
+    requires.dedup();
+    writes.sort();
+    writes.dedup();
+
+    let owned = owned_roots
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let write_set = writes.iter().map(String::as_str).collect::<HashSet<_>>();
+    requires.retain(|path| {
+        let root = path.split_once('.').map_or(path.as_str(), |(root, _)| root);
+        root != package_name
+            && root != "assertions"
+            && root != "warnings"
+            && !owned.contains(root)
+            && !write_set.contains(path.as_str())
+    });
+    let mut contribution_map = BTreeMap::<String, Vec<String>>::new();
+    let mut provides_capabilities = Vec::new();
+    for path in writes {
+        if let Some(token) = path.strip_prefix("system.capabilities.") {
+            provides_capabilities.push(format!("system.capabilities.{token}"));
+            continue;
+        }
+        let Some((root, relative)) = path.split_once('.') else {
+            continue;
+        };
+        if matches!(root, "assertions" | "warnings") {
+            continue;
+        }
+        if root != package_name && !owned.contains(root) {
+            contribution_map
+                .entry(root.to_string())
+                .or_default()
+                .push(relative.to_string());
+        }
+    }
+    let contribution_abis = authored_contributions
+        .iter()
+        .map(|contribution| (contribution.root.as_str(), contribution.interface_abi))
+        .collect::<BTreeMap<_, _>>();
+    let mut contributes = contribution_map
+        .into_iter()
+        .map(|(root, paths)| {
+            let interface_abi = contribution_abis.get(root.as_str()).copied().with_context(|| {
+                format!(
+                    "foreign contribution to root '{root}' has no authenticated interface_abi; set contributes[].interfaceAbi to the owner's current interface ABI and republish"
+                )
+            })?;
+            Ok(RootContribution {
+                root,
+                interface_abi,
+                paths,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    normalize_contributions(&mut contributes);
+    provides_capabilities.sort();
+    provides_capabilities.dedup();
+    Ok((contributes, provides_capabilities, requires))
+}
+
+/// Blanks comments and string bodies while preserving byte positions/newlines.
+///
+/// Assignment discovery must not accept a claimed foreign write merely
+/// because `config.foo =` appears in documentation or a string literal.
+fn strip_nix_comments_and_strings(source: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum State {
+        Code,
+        Comment,
+        DoubleQuoted { escaped: bool },
+        Indented,
+    }
+
+    let bytes = source.as_bytes();
+    let mut output = String::with_capacity(source.len());
+    let mut state = State::Code;
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        match state {
+            State::Code if byte == b'#' => {
+                output.push(' ');
+                state = State::Comment;
+            }
+            State::Code if byte == b'"' => {
+                output.push(' ');
+                state = State::DoubleQuoted { escaped: false };
+            }
+            State::Code if byte == b'\'' && bytes.get(index + 1).copied() == Some(b'\'') => {
+                output.push_str("  ");
+                index += 1;
+                state = State::Indented;
+            }
+            State::Code => output.push(char::from(byte)),
+            State::Comment if byte == b'\n' => {
+                output.push('\n');
+                state = State::Code;
+            }
+            State::Comment => output.push(' '),
+            State::DoubleQuoted { escaped: false } if byte == b'"' => {
+                output.push(' ');
+                state = State::Code;
+            }
+            State::DoubleQuoted { escaped } => {
+                output.push(if byte == b'\n' { '\n' } else { ' ' });
+                state = State::DoubleQuoted {
+                    escaped: !escaped && byte == b'\\',
+                };
+            }
+            State::Indented if byte == b'\'' && bytes.get(index + 1).copied() == Some(b'\'') => {
+                output.push_str("  ");
+                index += 1;
+                state = State::Code;
+            }
+            State::Indented => output.push(if byte == b'\n' { '\n' } else { ' ' }),
+        }
+        index += 1;
+    }
+    output
 }
 
 fn validate_publish_mac_profile_manifest(
@@ -2411,6 +3009,8 @@ struct SbFacts {
     /// the `enter-initrd` boot phase (where `/var` is unsealed; see
     /// [`extract_expected_pcr11`]).
     expected_pcr11: Option<String>,
+    /// Deterministically identified per-slot facts for an A/B image payload.
+    ukis: Vec<SysrootUkiEntry>,
 }
 
 /// Locate the UKI (`.efi` PE/COFF executable) inside an image store path.
@@ -2419,32 +3019,52 @@ struct SbFacts {
 /// Returns the path to the first regular `.efi` file found (recursively),
 /// or `None` when the image carries no UKI (an unsigned/legacy image, for
 /// which no Secure Boot facts are recorded).
-fn find_uki_in_store_path(store_path: &str) -> Option<PathBuf> {
-    fn walk(dir: &Path) -> Option<PathBuf> {
-        let entries = fs::read_dir(dir).ok()?;
-        for entry in entries.flatten() {
+fn find_ukis_in_store_path(store_path: &str) -> Result<Vec<(Option<UkiSlot>, PathBuf)>> {
+    fn walk(dir: &Path, found: &mut Vec<PathBuf>) -> Result<()> {
+        let mut entries = fs::read_dir(dir)
+            .with_context(|| format!("reading image artifact {}", dir.display()))?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
             let path = entry.path();
             if path.is_dir() {
-                if let Some(found) = walk(&path) {
-                    return Some(found);
-                }
+                walk(&path, found)?;
             } else if path
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
             {
-                return Some(path);
+                found.push(path);
             }
         }
-        None
+        Ok(())
     }
     let root = Path::new(store_path);
     if root.is_file() {
-        return root
+        if root
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
-            .then(|| root.to_path_buf());
+        {
+            return Ok(vec![(None, root.to_path_buf())]);
+        }
+        return Ok(Vec::new());
     }
-    walk(root)
+    let a = root.join("uki-a.efi");
+    let b = root.join("uki-b.efi");
+    if a.is_file() || b.is_file() {
+        if !(a.is_file() && b.is_file()) {
+            bail!("A/B image artifact {store_path} must carry both uki-a.efi and uki-b.efi");
+        }
+        return Ok(vec![(Some(UkiSlot::A), a), (Some(UkiSlot::B), b)]);
+    }
+    let mut found = Vec::new();
+    walk(root, &mut found)?;
+    match found.len() {
+        0 => Ok(Vec::new()),
+        1 => Ok(vec![(None, found.remove(0))]),
+        count => bail!(
+            "image artifact {store_path} carries {count} UKIs but no deterministic uki-a.efi/uki-b.efi pair"
+        ),
+    }
 }
 
 /// Build a [`Command`] for an external Secure Boot helper (`sbverify`,
@@ -2997,7 +3617,7 @@ fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTe
 ///
 /// Returns an error if `objcopy` or `systemd-measure` is found but exits
 /// non-zero, or its output cannot be parsed into a PCR-11 digest.
-fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
+pub(crate) fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
     // Section name -> systemd-measure flag, in sd-stub measurement order.
     // (systemd-measure applies its own canonical order internally, so the
     // flag order here is not significant.)
@@ -3143,29 +3763,105 @@ fn sb_db_cert_path(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
 /// derived, or when `db_cert` is given and the signature does not verify
 /// against it.
 fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbFacts> {
-    let Some(uki) = find_uki_in_store_path(image_store_path) else {
+    let ukis = find_ukis_in_store_path(image_store_path)?;
+    if ukis.is_empty() {
         return Ok(SbFacts::default());
+    }
+    let is_ab = ukis.iter().all(|(slot, _)| slot.is_some());
+    let verity_ab = is_ab && Path::new(image_store_path).join("root.roothash").is_file();
+    let mut slot_facts = Vec::new();
+    let mut legacy = None;
+    for (slot, uki) in ukis {
+        let signer = extract_sb_signer_cert_sha256(&uki)?;
+        let (sbat, expected_pcr11) = if signer.is_some() {
+            (extract_sbat_entries(&uki)?, extract_expected_pcr11(&uki)?)
+        } else {
+            (Vec::new(), None)
+        };
+        if verity_ab {
+            validate_uki_slot_cmdline(&uki, slot.context("A/B UKI has no assigned slot")?)?;
+        }
+        if signer.is_some() {
+            if let Some(db_cert) = db_cert {
+                verify_uki_against_db_cert(&uki, db_cert).with_context(|| {
+                    format!(
+                        "refusing to catalog UKI {} whose signature does not verify against the declared db cert",
+                        uki.display()
+                    )
+                })?;
+            }
+            if is_ab && expected_pcr11.is_none() {
+                bail!(
+                    "signed A/B UKI {} has no calculable PCR-11 measurement",
+                    uki.display()
+                );
+            }
+        }
+        if let Some(slot) = slot {
+            let relative = uki
+                .strip_prefix(image_store_path)
+                .with_context(|| format!("deriving relative UKI path for {}", uki.display()))?
+                .to_string_lossy()
+                .trim_start_matches('/')
+                .to_string();
+            slot_facts.push(SysrootUkiEntry {
+                slot,
+                path: relative,
+                sb_signer_cert_sha256: signer,
+                sbat,
+                expected_pcr11,
+            });
+        } else {
+            legacy = Some((signer, sbat, expected_pcr11));
+        }
+    }
+    if let Some((signer_cert_sha256, sbat, expected_pcr11)) = legacy {
+        Ok(SbFacts {
+            signer_cert_sha256,
+            sbat,
+            expected_pcr11,
+            ukis: Vec::new(),
+        })
+    } else {
+        let signed_count = slot_facts
+            .iter()
+            .filter(|uki| uki.sb_signer_cert_sha256.is_some())
+            .count();
+        if signed_count != 0 && signed_count != slot_facts.len() {
+            bail!("A/B image must not mix signed and unsigned UKIs");
+        }
+        Ok(SbFacts {
+            signer_cert_sha256: None,
+            sbat: Vec::new(),
+            expected_pcr11: None,
+            ukis: slot_facts,
+        })
+    }
+}
+
+fn validate_uki_slot_cmdline(uki: &Path, slot: UkiSlot) -> Result<()> {
+    let section = dump_pe_section(uki, ".cmdline")?
+        .with_context(|| format!("A/B UKI {} has no measured .cmdline section", uki.display()))?;
+    let bytes = std::fs::read(section.path())?;
+    let cmdline = String::from_utf8(bytes)
+        .with_context(|| format!("UKI {} .cmdline is not UTF-8", uki.display()))?;
+    let cmdline = cmdline.trim_end_matches('\0');
+    let suffix = match slot {
+        UkiSlot::A => "a",
+        UkiSlot::B => "b",
     };
-
-    let signer = extract_sb_signer_cert_sha256(&uki)?;
-    // An image with no embedded signature carries no SB facts to catalog.
-    if signer.is_none() {
-        return Ok(SbFacts::default());
+    let data = format!("systemd.verity_root_data=/dev/disk/by-partlabel/root-{suffix}");
+    let hash = format!("systemd.verity_root_hash=/dev/disk/by-partlabel/root-{suffix}-hash");
+    if !cmdline.split_ascii_whitespace().any(|word| word == data)
+        || !cmdline.split_ascii_whitespace().any(|word| word == hash)
+    {
+        bail!(
+            "A/B UKI {} slot {:?} does not select its matching root and verity partitions",
+            uki.display(),
+            slot
+        );
     }
-
-    if let Some(db_cert) = db_cert {
-        verify_uki_against_db_cert(&uki, db_cert).with_context(|| {
-            "refusing to catalog a component whose signature does not verify \
-             against the declared db cert"
-                .to_string()
-        })?;
-    }
-
-    Ok(SbFacts {
-        signer_cert_sha256: signer,
-        sbat: extract_sbat_entries(&uki)?,
-        expected_pcr11: extract_expected_pcr11(&uki)?,
-    })
+    Ok(())
 }
 
 fn publish_attestation_meta(
@@ -3218,6 +3914,58 @@ fn publish_attestation_meta(
     };
     validate_attestation_meta(&meta)?;
     Ok(Some(meta))
+}
+
+fn publish_config_attestation_meta(
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+) -> Result<AttestationMeta> {
+    let root_digest = package_nar_root_digest(&info.nar_hash);
+    let binding_digest = config_publish_binding_digest(module, expose_manifest_digest)?;
+    let measurement = crate::package_attestation::package_measurement_digest(
+        name,
+        version,
+        &root_digest,
+        &binding_digest,
+    );
+    let meta = AttestationMeta {
+        root_digest: Some(root_digest),
+        root_hash: None,
+        root_hash_sig: None,
+        provenance: Some(publish_provenance_ref(name, platform, &measurement)?),
+        measurement: Some(measurement),
+    };
+    validate_attestation_meta(&meta)?;
+    Ok(meta)
+}
+
+fn config_publish_binding_digest(
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+) -> Result<String> {
+    let base_lib = module
+        .evaluation_base_lib
+        .as_ref()
+        .context("published config module is missing its evaluation base-lib binding")?;
+    let metadata = serde_json::to_vec(module)
+        .context("serializing derived config-module metadata for provenance binding")?;
+    Ok(format!(
+        "sha256:{}",
+        sha256_hex(
+            format!(
+                "config={}\nbase-lib={}\nmetadata=sha256:{}\nexpose={}\n",
+                module.config_output.nar_hash,
+                base_lib.nar_hash,
+                sha256_hex(&metadata),
+                expose_manifest_digest.unwrap_or("")
+            )
+            .as_bytes()
+        )
+    ))
 }
 
 fn package_nar_root_digest(nar_hash: &str) -> String {
@@ -3435,6 +4183,76 @@ fn publish_provenance_artifact(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn publish_config_provenance_artifact(
+    registry_name: &str,
+    name: &str,
+    version: &str,
+    platform: &str,
+    info: &StorePathInfo,
+    source_info: Option<&StorePathInfo>,
+    module: &ConfigModuleMeta,
+    expose_manifest_digest: Option<&str>,
+    attestation: &AttestationMeta,
+    signer: &PackageProvenanceSigner,
+) -> Result<PublishProvenanceArtifact> {
+    let provenance = attestation
+        .provenance
+        .clone()
+        .context("config-module attestation is missing its provenance reference")?;
+    let base_lib = module
+        .evaluation_base_lib
+        .as_ref()
+        .context("published config module is missing its evaluation base-lib binding")?;
+    let mut statement = publish_provenance_statement(
+        registry_name,
+        name,
+        version,
+        platform,
+        info,
+        source_info,
+        &config_publish_binding_digest(module, expose_manifest_digest)?,
+        attestation,
+        &signer.key_id,
+    )?;
+    let subjects = statement
+        .get_mut("subject")
+        .and_then(Value::as_array_mut)
+        .context("generated provenance statement has no subject array")?;
+    if let Some(expose_digest) = expose_manifest_digest {
+        subjects.push(serde_json::json!({
+            "name": format!("aos:expose-manifest:{name}:{version}:{platform}"),
+            "digest": provenance_digest_map(expose_digest),
+        }));
+    }
+    subjects.push(serde_json::json!({
+        "name": format!("aos:config-module:{name}:{version}:{platform}"),
+        "digest": provenance_digest_map(&module.config_output.nar_hash),
+    }));
+    subjects.push(serde_json::json!({
+        "name": format!("aos:config-base-lib:{name}:{version}:{platform}"),
+        "digest": provenance_digest_map(&base_lib.nar_hash),
+    }));
+    let dependencies = statement
+        .pointer_mut("/predicate/buildDefinition/resolvedDependencies")
+        .and_then(Value::as_array_mut)
+        .context("generated provenance statement has no resolvedDependencies array")?;
+    dependencies.push(serde_json::json!({
+        "uri": module.config_output.store_path,
+        "digest": provenance_digest_map(&module.config_output.nar_hash),
+    }));
+    dependencies.push(serde_json::json!({
+        "uri": base_lib.store_path,
+        "digest": provenance_digest_map(&base_lib.nar_hash),
+    }));
+    let jsonl = sign_statement_dsse_jsonl(&statement, &signer.key_id, &signer.key_path)?;
+    Ok(PublishProvenanceArtifact {
+        path: provenance,
+        jsonl,
+        attestation: attestation.clone(),
+    })
+}
+
 fn resolve_package_provenance_signer(
     dir: &Path,
     registry_name: &str,
@@ -3442,13 +4260,12 @@ fn resolve_package_provenance_signer(
     key_id: Option<&str>,
 ) -> Result<PackageProvenanceSigner> {
     let key_id = key_id.context(
-        "publishing RFC-0001 exposed package provenance requires --key-id so the DSSE builder \
+        "publishing privileged package provenance requires --key-id so the DSSE builder \
          identity is tied to keys.toml",
     )?;
     validate_roster_key_id(key_id)?;
-    let signing_key = signing_key.context(
-        "publishing RFC-0001 exposed package provenance requires a resolved signing key",
-    )?;
+    let signing_key = signing_key
+        .context("publishing privileged package provenance requires a resolved signing key")?;
     let roster = load_committed_roster(dir)?;
     if keys::is_revoked(&roster, key_id) {
         bail!("provenance signing key id '{key_id}' is revoked in keys.toml");
@@ -5134,10 +5951,32 @@ fn package_platform_table(
                 if let Some(pcr11) = &sb.expected_pcr11 {
                     entry.insert("expected_pcr11".into(), toml::Value::String(pcr11.clone()));
                 }
-                toml::Value::Table(entry)
+                if !sb.ukis.is_empty() {
+                    entry.insert(
+                        "ukis".into(),
+                        toml::Value::try_from(&sb.ukis)
+                            .context("serializing slot-specific UKI facts")?,
+                    );
+                }
+                Ok(toml::Value::Table(entry))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         table.insert("images".into(), toml::Value::Array(images));
+        if image_infos.iter().any(|(_, _, sb)| !sb.ukis.is_empty()) {
+            let feature = toml::Value::String(FEATURE_UKI_SLOTS_V1.to_string());
+            let features = table
+                .entry("requires-features")
+                .or_insert_with(|| toml::Value::Array(Vec::new()))
+                .as_array_mut()
+                .context("platform requires-features metadata is not an array")?;
+            if !features.contains(&feature) {
+                features.push(feature);
+            }
+            table.insert(
+                "min-format".into(),
+                toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+            );
+        }
     }
 
     if let Some(manifest) = expose_manifest {
@@ -5248,46 +6087,122 @@ fn package_platform_table(
     Ok(toml::Value::Table(table))
 }
 
-/// Records a `config_module` block in a package platform TOML table.
-///
-/// This is the publish-side data path / seam for the second `config` package
-/// output. It validates `module`, serializes it under
-/// the `config_module` key of `table`, and appends [`FEATURE_CONFIG_MODULE_V1`]
-/// to `required_features` so older clients fail closed. The caller is
-/// responsible for ensuring the platform table also carries the structural
-/// `references` gate and an attestation provenance reference (a config module is
-/// privileged metadata; see `validate_supported_package_meta_with`).
-///
-/// # Wiring TODO (later changeset)
-///
-/// The publish command does not yet expose a `--config-module-manifest` flag
-/// (analogous to `--expose-manifest`); when it does, it will derive the
-/// authoritative `declares` / `owns_roots` / `contributes` /
-/// `provides_capabilities` via an options-only eval of the module in isolation
-/// (the *populate path*, `module-system.md` §"Provides — derived, not
-/// declared"), build a [`ConfigModuleMeta`], and call this helper.
+/// Records a `config_module` block and its fail-closed format gates.
 ///
 /// # Errors
 ///
-/// Returns an error when `module` fails [`validate_config_module_meta`] or its
-/// TOML serialization fails.
-// Publish-side seam: exercised by tests and called once the publish command
-// grows a `--config-module-manifest` flag (see TODO above). Marked `allow` so
-// the unwired state does not warn in the non-test build.
-#[allow(dead_code)]
+/// Returns an error when the package name or `module` metadata is malformed,
+/// including when a declaration escapes the package's private, owned, and
+/// contributed roots, or when TOML serialization fails.
 pub(crate) fn record_config_module_platform_fields(
     table: &mut toml::map::Map<String, toml::Value>,
-    required_features: &mut Vec<toml::Value>,
+    package_name: &str,
     module: &ConfigModuleMeta,
 ) -> Result<()> {
-    validate_config_module_meta(module).context("validating config-module metadata for publish")?;
+    validate_config_module_meta(package_name, module)
+        .context("validating config-module metadata for publish")?;
     let feature = toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string());
+    let required_features_value = table
+        .entry("requires-features")
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let required_features = required_features_value
+        .as_array_mut()
+        .context("platform requires-features metadata is not an array")?;
     if !required_features.contains(&feature) {
-        required_features.push(feature);
+        required_features.push(feature.clone());
+    }
+    table.insert(
+        "min-format".into(),
+        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+    );
+    let references_value = table.entry("references").or_insert_with(|| {
+        let mut references = toml::map::Map::new();
+        references.insert("hashes".into(), toml::Value::Array(Vec::new()));
+        toml::Value::Table(references)
+    });
+    let references = references_value
+        .as_table_mut()
+        .context("platform references metadata is not a table")?;
+    references.insert(
+        "min-format".into(),
+        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
+    );
+    let reference_features_value = references
+        .entry("requires-features")
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let reference_features = reference_features_value
+        .as_array_mut()
+        .context("platform references requires-features metadata is not an array")?;
+    if !reference_features.contains(&feature) {
+        reference_features.push(feature);
     }
     table.insert(
         "config_module".into(),
         toml::Value::try_from(module).context("serializing config-module metadata")?,
+    );
+    Ok(())
+}
+
+fn record_attestation_platform_fields(
+    table: &mut toml::map::Map<String, toml::Value>,
+    attestation: &AttestationMeta,
+) -> Result<()> {
+    validate_attestation_meta(attestation)?;
+    let feature = toml::Value::String(FEATURE_ATTESTATION_V1.to_string());
+    for key in ["requires-features"] {
+        let features = table
+            .entry(key)
+            .or_insert_with(|| toml::Value::Array(Vec::new()))
+            .as_array_mut()
+            .with_context(|| format!("platform {key} metadata is not an array"))?;
+        if !features.contains(&feature) {
+            features.push(feature.clone());
+        }
+    }
+    let references = table
+        .get_mut("references")
+        .and_then(toml::Value::as_table_mut)
+        .context("config-module platform is missing structural references metadata")?;
+    let reference_features = references
+        .entry("requires-features")
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .context("platform references requires-features metadata is not an array")?;
+    if !reference_features.contains(&feature) {
+        reference_features.push(feature);
+    }
+    if let Some(root_digest) = &attestation.root_digest {
+        table.insert(
+            "root_digest".into(),
+            toml::Value::String(root_digest.clone()),
+        );
+    }
+    if let Some(root_hash) = &attestation.root_hash {
+        table.insert("root_hash".into(), toml::Value::String(root_hash.clone()));
+    }
+    if let Some(root_hash_sig) = &attestation.root_hash_sig {
+        table.insert(
+            "root_hash_sig".into(),
+            toml::Value::String(root_hash_sig.clone()),
+        );
+    }
+    table.insert(
+        "provenance".into(),
+        toml::Value::String(
+            attestation
+                .provenance
+                .clone()
+                .context("config-module attestation is missing provenance")?,
+        ),
+    );
+    table.insert(
+        "measurement".into(),
+        toml::Value::String(
+            attestation
+                .measurement
+                .clone()
+                .context("config-module attestation is missing measurement")?,
+        ),
     );
     Ok(())
 }
@@ -10737,6 +11652,8 @@ async fn publish_release_store_path(
         &publish_opts.image_paths,
         &publish_opts.image_formats,
         None,
+        None,
+        None,
         publish_opts.bless,
         false,
         false,
@@ -12075,8 +12992,11 @@ mod tests {
                 nar_size: 2048,
                 references: vec![],
             },
+            evaluation_base_lib: None,
             module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
             declares: vec!["firewall.allowedTCPPorts".to_string()],
+            declaration_schema: vec![],
+            requires: vec![],
             owns_roots: vec![OwnedRoot {
                 root: "firewall".to_string(),
                 interface_abi: 1,
@@ -12090,14 +13010,21 @@ mod tests {
     #[test]
     fn record_config_module_emits_table_and_feature() {
         let mut table = toml::map::Map::new();
-        let mut features = Vec::new();
-        record_config_module_platform_fields(&mut table, &mut features, &config_module_fixture())
+        record_config_module_platform_fields(&mut table, "firewall", &config_module_fixture())
             .expect("records config module");
         assert!(table.contains_key("config_module"));
+        let features = table
+            .get("requires-features")
+            .and_then(toml::Value::as_array)
+            .expect("feature array");
         assert!(features.contains(&toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string())));
         // Idempotent feature append.
-        record_config_module_platform_fields(&mut table, &mut features, &config_module_fixture())
+        record_config_module_platform_fields(&mut table, "firewall", &config_module_fixture())
             .expect("re-records");
+        let features = table
+            .get("requires-features")
+            .and_then(toml::Value::as_array)
+            .expect("feature array");
         assert_eq!(
             features
                 .iter()
@@ -12105,6 +13032,255 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn config_interface_scan_excludes_own_write_from_requires() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::write(
+            tmp.path().join("module.nix"),
+            "{ config, ... }: { config.web.enable = true; }\n",
+        )
+        .expect("write module");
+
+        let (contributes, capabilities, requires) =
+            scan_config_module_interface(tmp.path(), "web", &[], &[]).expect("scan module");
+
+        assert!(contributes.is_empty());
+        assert!(capabilities.is_empty());
+        assert!(requires.is_empty());
+    }
+
+    #[test]
+    fn config_interface_scan_separates_foreign_reads_writes_and_capabilities() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::write(
+            tmp.path().join("module.nix"),
+            "{ config, ... }: {\n  config.nginx.virtualHosts = {};\n  config.system.capabilities.dns = true;\n  config.web.port = config.redis.port;\n}\n",
+        )
+        .expect("write module");
+
+        let authored = vec![RootContribution {
+            root: "nginx".to_string(),
+            interface_abi: 1,
+            paths: vec!["virtualHosts".to_string()],
+        }];
+        let (contributes, capabilities, requires) =
+            scan_config_module_interface(tmp.path(), "web", &[], &authored).expect("scan module");
+
+        assert_eq!(
+            contributes,
+            vec![RootContribution {
+                root: "nginx".to_string(),
+                interface_abi: 1,
+                paths: vec!["virtualHosts".to_string()],
+            }]
+        );
+        assert_eq!(capabilities, vec!["system.capabilities.dns"]);
+        assert_eq!(requires, vec!["redis.port"]);
+    }
+
+    #[test]
+    fn config_interface_scan_does_not_trust_assignment_text_in_comments_or_strings() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::write(
+            tmp.path().join("module.nix"),
+            "{ ... }: {\n  # config.nginx.enable = true;\n  config.web.note = \"config.redis.enable = true\";\n}\n",
+        )
+        .expect("write module");
+
+        let (contributes, capabilities, _requires) =
+            scan_config_module_interface(tmp.path(), "web", &[], &[]).expect("scan module");
+
+        assert!(contributes.is_empty());
+        assert!(capabilities.is_empty());
+    }
+
+    #[test]
+    fn config_attestation_binds_config_base_lib_and_expose_independently() {
+        let payload = StorePathInfo {
+            path: "/nix/store/0000000000000000000000000000000a-web-1".to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1,
+            references: vec![],
+            closure_size: 1,
+        };
+        let mut module = config_module_fixture();
+        module.config_output.nar_hash =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        module.evaluation_base_lib = Some(ConfigOutputMeta {
+            store_path: "/nix/store/0000000000000000000000000000000c-base-lib".to_string(),
+            nar_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            nar_size: 1,
+            references: vec![],
+        });
+        let original = publish_config_attestation_meta(
+            "web",
+            "1",
+            "x86_64-linux",
+            &payload,
+            &module,
+            Some("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+        )
+        .expect("derive combined attestation");
+        let signer = test_provenance_signer();
+        let artifact = publish_config_provenance_artifact(
+            TEST_PROVENANCE_REGISTRY,
+            "web",
+            "1",
+            "x86_64-linux",
+            &payload,
+            None,
+            &module,
+            Some("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+            &original,
+            &signer.signer,
+        )
+        .expect("sign combined config provenance");
+        let statement = signed_provenance_statement(&artifact);
+        let subjects = statement["subject"].as_array().expect("subjects");
+        for (name, digest) in [
+            (
+                "aos:expose-manifest:web:1:x86_64-linux",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ),
+            (
+                "aos:config-module:web:1:x86_64-linux",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+            (
+                "aos:config-base-lib:web:1:x86_64-linux",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            ),
+        ] {
+            let subject = subjects
+                .iter()
+                .find(|subject| subject["name"].as_str() == Some(name))
+                .unwrap_or_else(|| panic!("missing signed subject {name}"));
+            assert_eq!(subject["digest"]["sha256"].as_str(), Some(digest));
+        }
+
+        module.config_output.nar_hash =
+            "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string();
+        let changed_config = publish_config_attestation_meta(
+            "web",
+            "1",
+            "x86_64-linux",
+            &payload,
+            &module,
+            Some("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+        )
+        .expect("derive config-tampered attestation");
+        assert_ne!(original.measurement, changed_config.measurement);
+
+        module.config_output.nar_hash =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        module
+            .evaluation_base_lib
+            .as_mut()
+            .expect("base lib")
+            .nar_hash =
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+        let changed_base = publish_config_attestation_meta(
+            "web",
+            "1",
+            "x86_64-linux",
+            &payload,
+            &module,
+            Some("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+        )
+        .expect("derive base-tampered attestation");
+        assert_ne!(original.measurement, changed_base.measurement);
+
+        let changed_expose = publish_config_attestation_meta(
+            "web",
+            "1",
+            "x86_64-linux",
+            &payload,
+            &config_module_fixture_with_base(),
+            Some("sha256:1111111111111111111111111111111111111111111111111111111111111111"),
+        )
+        .expect("derive expose-tampered attestation");
+        assert_ne!(original.measurement, changed_expose.measurement);
+    }
+
+    fn config_module_fixture_with_base() -> ConfigModuleMeta {
+        let mut module = config_module_fixture();
+        module.config_output.nar_hash =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        module.evaluation_base_lib = Some(ConfigOutputMeta {
+            store_path: "/nix/store/0000000000000000000000000000000c-base-lib".to_string(),
+            nar_hash: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_string(),
+            nar_size: 1,
+            references: vec![],
+        });
+        module
+    }
+
+    #[test]
+    fn build_package_toml_round_trips_config_output_hash_and_base_lib_binding() {
+        let info = StorePathInfo {
+            path: "/nix/store/0000000000000000000000000000000d-firewall-1".to_string(),
+            nar_hash: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_string(),
+            nar_size: 1024,
+            references: vec![],
+            closure_size: 1024,
+        };
+        let module = config_module_fixture_with_base();
+        let attestation =
+            publish_config_attestation_meta("firewall", "1", "x86_64-linux", &info, &module, None)
+                .expect("config attestation");
+        let content = build_package_toml(
+            "",
+            "firewall",
+            "1",
+            "x86_64-linux",
+            &info,
+            None,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            Some(&module),
+            Some(&attestation),
+        )
+        .expect("render config-module package metadata");
+
+        let parsed = crate::registry::parse::parse_package_toml(&content, "x86_64-linux")
+            .expect("parse package metadata")
+            .expect("matching platform");
+        let parsed_module = parsed.config_module.expect("config module metadata");
+        assert_eq!(
+            parsed_module.config_output.nar_hash,
+            module.config_output.nar_hash
+        );
+        assert_eq!(
+            parsed_module
+                .evaluation_base_lib
+                .expect("base-lib binding")
+                .nar_hash,
+            module
+                .evaluation_base_lib
+                .expect("fixture base-lib binding")
+                .nar_hash
+        );
+        assert!(
+            parsed
+                .requires_features
+                .iter()
+                .any(|feature| { feature == FEATURE_CONFIG_MODULE_V1 })
+        );
+        assert_eq!(parsed.attestation.provenance, attestation.provenance);
     }
 
     fn test_release_options(tmp: &TempDir) -> ReleaseTreeOptions {
@@ -12170,6 +13346,7 @@ mod tests {
                     sb_signer_cert_sha256: None,
                     sbat: Vec::new(),
                     expected_pcr11: None,
+                    ukis: Vec::new(),
                     root_image: Some("root.img".into()),
                     root_verity: Some("root.verity".into()),
                     root_hash: Some(root_hash.into()),
@@ -12233,6 +13410,35 @@ mod tests {
                    11:sha256=aaaa\n\
                    11:sha256=bbbb\n";
         assert_eq!(parse_pcr11(out).as_deref(), Some("aaaa"));
+    }
+
+    #[test]
+    fn uki_discovery_uses_explicit_ab_slot_names() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::write(temp.path().join("uki-b.efi"), b"b").unwrap();
+        std::fs::write(temp.path().join("uki-a.efi"), b"a").unwrap();
+        std::fs::write(temp.path().join("other.txt"), b"not a UKI").unwrap();
+
+        let found = find_ukis_in_store_path(temp.path().to_str().unwrap()).unwrap();
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].0, Some(UkiSlot::A));
+        assert_eq!(found[0].1.file_name().unwrap(), "uki-a.efi");
+        assert_eq!(found[1].0, Some(UkiSlot::B));
+        assert_eq!(found[1].1.file_name().unwrap(), "uki-b.efi");
+    }
+
+    #[test]
+    fn uki_discovery_rejects_ambiguous_or_partial_payloads() {
+        let partial = tempfile::TempDir::new().unwrap();
+        std::fs::write(partial.path().join("uki-a.efi"), b"a").unwrap();
+        let error = find_ukis_in_store_path(partial.path().to_str().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("both uki-a.efi and uki-b.efi"));
+
+        let ambiguous = tempfile::TempDir::new().unwrap();
+        std::fs::write(ambiguous.path().join("one.efi"), b"one").unwrap();
+        std::fs::write(ambiguous.path().join("two.efi"), b"two").unwrap();
+        let error = find_ukis_in_store_path(ambiguous.path().to_str().unwrap()).unwrap_err();
+        assert!(error.to_string().contains("deterministic"));
     }
 
     #[test]
@@ -13461,6 +14667,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         assert!(content.contains("name = \"curl\""));
@@ -13504,6 +14712,8 @@ mod tests {
             None,
             &[],
             Some(&source_info),
+            None,
+            None,
             None,
             None,
             None,
@@ -13861,6 +15071,8 @@ mod tests {
             Some(&manifest),
             Some(&artifact),
             Some(&manifest_digest),
+            None,
+            None,
         )
         .unwrap();
 
@@ -14053,6 +15265,8 @@ mod tests {
             Some(&manifest),
             Some(&artifact),
             Some(&manifest_digest),
+            None,
+            None,
         )
         .unwrap();
 
@@ -14116,6 +15330,8 @@ mod tests {
             &[],
             None,
             Some(&manifest),
+            None,
+            None,
             None,
             None,
         )
@@ -14184,6 +15400,8 @@ mod tests {
             Some(&manifest),
             Some(&artifact),
             Some(&manifest_digest),
+            None,
+            None,
         )
         .unwrap();
 
@@ -14301,6 +15519,8 @@ mod tests {
             Some(&manifest),
             Some(&artifact),
             Some(&manifest_digest),
+            None,
+            None,
         )
         .unwrap();
 
@@ -15996,6 +17216,8 @@ references = []
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         // Should contain both platforms.
@@ -16041,6 +17263,8 @@ references = []
             None,
             None,
             None,
+            None,
+            None,
         )
         .unwrap();
         assert!(content.contains("sysroot = true"));
@@ -16079,6 +17303,8 @@ references = []
             false,
             Some("0.9.0+build\"meta"),
             &[("raw\"image".to_string(), img_info, SbFacts::default())],
+            None,
+            None,
             None,
             None,
             None,

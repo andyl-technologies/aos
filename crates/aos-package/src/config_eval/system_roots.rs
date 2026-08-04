@@ -47,7 +47,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::types::{ConfigModuleMeta, ModuleAbiCompat};
+use crate::types::{ConfigModuleMeta, ModuleAbiCompat, OwnedRoot};
 
 /// A package configuration module resolved by name from registry metadata.
 ///
@@ -65,6 +65,8 @@ pub struct ResolvedConfigModule<'a> {
     pub version: &'a str,
     /// Target platform (e.g. `x86_64-linux`).
     pub platform: &'a str,
+    /// Authenticated runtime output for this exact package version/platform.
+    pub runtime_output: &'a str,
     /// The package's declared config-module interface.
     pub module: &'a ConfigModuleMeta,
 }
@@ -84,6 +86,43 @@ pub trait ConfigModuleResolver {
     /// Returns `package`'s config module, or `None` when the registry knows no
     /// such package or the package ships no config module.
     fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>>;
+
+    /// Returns an exact config module matching an authenticated installed or
+    /// transaction pin.
+    ///
+    /// Implementations should avoid silently upgrading `package` when either
+    /// pin is present. The default is suitable for fixtures and admits the
+    /// by-name result only when all supplied identities match.
+    fn config_module_exact(
+        &self,
+        package: &str,
+        version: Option<&str>,
+        runtime_output: Option<&str>,
+    ) -> Option<ResolvedConfigModule<'_>> {
+        let resolved = self.config_module(package)?;
+        if version.is_some_and(|want| want != resolved.version)
+            || runtime_output.is_some_and(|want| want != resolved.runtime_output)
+        {
+            return None;
+        }
+        Some(resolved)
+    }
+
+    /// Returns config modules for the exact current system-profile set.
+    ///
+    /// The default is empty because pure fixture resolvers have no profile.
+    fn installed_config_modules(&self) -> Vec<ResolvedConfigModule<'_>> {
+        Vec::new()
+    }
+
+    /// Returns roots authenticated as shared by the registry snapshot.
+    ///
+    /// This classification does not grant ownership. It only prevents the
+    /// structural private-root fallback from fetching a same-named package
+    /// when the local system has no owner.
+    fn known_shared_roots(&self) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
 }
 
 /// Ownership record for one shared root within a single system.
@@ -108,6 +147,10 @@ pub struct RootOwner {
     pub module_abi_compat: ModuleAbiCompat,
     /// The owner's `config` output store path, fetched when the root is needed.
     pub config_output: String,
+    /// Authenticated NAR hash of the config-only output.
+    pub config_nar_hash: String,
+    /// Authenticated uncompressed NAR size of the config-only output.
+    pub config_nar_size: u64,
     /// Owner-declared contributable sub-paths (relative to the root) that
     /// non-owner packages may write into.
     pub contributable: Vec<String>,
@@ -127,6 +170,8 @@ pub struct CapabilitySetter {
 pub struct SystemRoots {
     roots: BTreeMap<String, RootOwner>,
     capabilities: BTreeMap<String, Vec<CapabilitySetter>>,
+    known_shared_roots: BTreeSet<String>,
+    bundled_roots: BTreeSet<String>,
 }
 
 /// Why a `contributes` declaration is rejected while building [`SystemRoots`].
@@ -136,6 +181,13 @@ pub enum ContributableError {
     NoOwner,
     /// The contributed sub-path is outside the owner's `contributable` set.
     NotContributable,
+    /// The contributor was published against a different owner interface ABI.
+    InterfaceAbiMismatch {
+        /// ABI recorded by the contribution.
+        expected: u32,
+        /// ABI exported by the installed owner.
+        actual: u32,
+    },
 }
 
 /// A terminal failure while building a [`SystemRoots`] from the installed set.
@@ -216,6 +268,17 @@ impl std::fmt::Display for SystemRootsError {
                 "package '{contributor}' contributes '{root}.{path}' but '{path}' is not in \
                  the owner's contributable set"
             ),
+            SystemRootsError::Contributable {
+                contributor,
+                root,
+                path: _,
+                reason: ContributableError::InterfaceAbiMismatch { expected, actual },
+            } => write!(
+                f,
+                "package '{contributor}' contributes to root '{root}' against interface ABI \
+                 {expected}, but the installed owner exports interface ABI {actual}; republish \
+                 the contributor against the installed owner's interface"
+            ),
         }
     }
 }
@@ -228,6 +291,81 @@ fn ident(package: &str, version: &str) -> String {
 }
 
 impl SystemRoots {
+    /// Returns whether a concrete contribution lies within an owner-declared
+    /// extension point.
+    ///
+    /// Contribution surfaces name option subtrees, not just individual
+    /// leaves: opening `virtualHosts` authorizes `virtualHosts.example.enable`
+    /// while still keeping sibling paths such as `enable` owner-only.
+    fn contribution_is_within_surface(path: &str, allowed: &str) -> bool {
+        let mut concrete = path.split('.');
+        for segment in allowed.split('.') {
+            let Some(actual) = concrete.next() else {
+                return false;
+            };
+            if segment != "*" && segment != actual {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn validate_contributions(
+        &self,
+        module: ResolvedConfigModule<'_>,
+    ) -> Result<(), SystemRootsError> {
+        for contribution in &module.module.contributes {
+            let Some(owner) = self.roots.get(&contribution.root) else {
+                return Err(SystemRootsError::Contributable {
+                    contributor: ident(module.package, module.version),
+                    root: contribution.root.clone(),
+                    path: String::new(),
+                    reason: ContributableError::NoOwner,
+                });
+            };
+            if contribution.interface_abi != owner.interface_abi {
+                return Err(SystemRootsError::Contributable {
+                    contributor: ident(module.package, module.version),
+                    root: contribution.root.clone(),
+                    path: String::new(),
+                    reason: ContributableError::InterfaceAbiMismatch {
+                        expected: contribution.interface_abi,
+                        actual: owner.interface_abi,
+                    },
+                });
+            }
+            for path in &contribution.paths {
+                if !owner
+                    .contributable
+                    .iter()
+                    .any(|allowed| Self::contribution_is_within_surface(path, allowed))
+                {
+                    return Err(SystemRootsError::Contributable {
+                        contributor: ident(module.package, module.version),
+                        root: contribution.root.clone(),
+                        path: path.clone(),
+                        reason: ContributableError::NotContributable,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates one newly discovered module against the installed owners.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SystemRootsError::Contributable`] if the module claims a
+    /// foreign root with no installed owner or a path outside the owner's
+    /// authenticated contribution surface.
+    pub fn validate_discovered_module(
+        &self,
+        module: ResolvedConfigModule<'_>,
+    ) -> Result<(), SystemRootsError> {
+        self.validate_contributions(module)
+    }
+
     /// Builds the per-system root map by folding the installed set's config
     /// modules, enforcing the three build-time invariants (see module docs).
     ///
@@ -247,11 +385,52 @@ impl SystemRoots {
     pub fn build<'a>(
         modules: impl IntoIterator<Item = ResolvedConfigModule<'a>>,
     ) -> Result<Self, SystemRootsError> {
+        Self::build_with_context(modules, std::iter::empty(), std::iter::empty())
+    }
+
+    /// Builds the root map with image-bundled owners and shared-root
+    /// classifications supplied by the authenticated base library/registry.
+    ///
+    /// Bundled owners participate in exclusivity and contribution ABI/surface
+    /// validation, but are already present in the image and are never fetched
+    /// as packages by the option resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same integrity failures as [`Self::build`], including a
+    /// conflict between a bundled root and a package-owned root.
+    pub fn build_with_context<'a>(
+        modules: impl IntoIterator<Item = ResolvedConfigModule<'a>>,
+        bundled_roots: impl IntoIterator<Item = OwnedRoot>,
+        known_shared_roots: impl IntoIterator<Item = String>,
+    ) -> Result<Self, SystemRootsError> {
         let modules: Vec<ResolvedConfigModule<'a>> = modules.into_iter().collect();
         let installed_names: BTreeSet<&str> = modules.iter().map(|m| m.package).collect();
 
         let mut roots: BTreeMap<String, RootOwner> = BTreeMap::new();
         let mut capabilities: BTreeMap<String, Vec<CapabilitySetter>> = BTreeMap::new();
+        let mut bundled = BTreeSet::new();
+
+        for owned in bundled_roots {
+            bundled.insert(owned.root.clone());
+            roots.insert(
+                owned.root.clone(),
+                RootOwner {
+                    package: "@base-lib".to_string(),
+                    version: "image".to_string(),
+                    platform: "image".to_string(),
+                    interface_abi: owned.interface_abi,
+                    module_abi_compat: ModuleAbiCompat {
+                        min: 0,
+                        max: u32::MAX,
+                    },
+                    config_output: String::new(),
+                    config_nar_hash: String::new(),
+                    config_nar_size: 0,
+                    contributable: owned.contributable,
+                },
+            );
+        }
 
         // Pass 1: register owned roots (exclusivity) and capability setters.
         for m in &modules {
@@ -277,6 +456,8 @@ impl SystemRoots {
                         interface_abi: owned.interface_abi,
                         module_abi_compat: m.module.module_abi_compat,
                         config_output: m.module.config_output.store_path.clone(),
+                        config_nar_hash: m.module.config_output.nar_hash.clone(),
+                        config_nar_size: m.module.config_output.nar_size,
                         contributable: owned.contributable.clone(),
                     },
                 );
@@ -306,39 +487,41 @@ impl SystemRoots {
         // Pass 3: F3-B contributable check, authoritative at resolve time. Every
         // `contributes` root must have an owner, and every contributed sub-path
         // must lie within that owner's contributable set.
-        for m in &modules {
-            for contribution in &m.module.contributes {
-                let Some(owner) = roots.get(&contribution.root) else {
-                    return Err(SystemRootsError::Contributable {
-                        contributor: ident(m.package, m.version),
-                        root: contribution.root.clone(),
-                        path: String::new(),
-                        reason: ContributableError::NoOwner,
-                    });
-                };
-                for path in &contribution.paths {
-                    if !owner.contributable.iter().any(|c| c == path) {
-                        return Err(SystemRootsError::Contributable {
-                            contributor: ident(m.package, m.version),
-                            root: contribution.root.clone(),
-                            path: path.clone(),
-                            reason: ContributableError::NotContributable,
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(Self {
+        let result = Self {
+            known_shared_roots: known_shared_roots
+                .into_iter()
+                .chain(roots.keys().cloned())
+                .collect(),
             roots,
             capabilities,
-        })
+            bundled_roots: bundled,
+        };
+        for module in modules {
+            result.validate_contributions(module)?;
+        }
+        Ok(result)
     }
 
     /// Returns the owner of shared `root`, or `None` when no installed package
     /// owns it (the resolver then falls back to a structural by-name lookup).
     pub fn owner(&self, root: &str) -> Option<&RootOwner> {
         self.roots.get(root)
+    }
+
+    /// Returns whether `root` is classified as shared, even when this system
+    /// has no installed owner for it.
+    ///
+    /// The resolver treats such a root as terminal: shared-root ownership is a
+    /// local installed-set fact and must never be synthesized by structurally
+    /// fetching a same-named registry package.
+    pub fn is_known_shared_root(&self, root: &str) -> bool {
+        self.known_shared_roots.contains(root)
+    }
+
+    /// Returns whether `root` is owned by the image/base library rather than a
+    /// fetchable package config module.
+    pub fn is_bundled_root(&self, root: &str) -> bool {
+        self.bundled_roots.contains(root)
     }
 
     /// Returns the installed packages that set capability `token`.
@@ -383,8 +566,11 @@ mod tests {
                 nar_size: 1,
                 references: vec![],
             },
+            evaluation_base_lib: None,
             module_abi_compat: abi,
             declares: declares.iter().map(|s| s.to_string()).collect(),
+            declaration_schema: vec![],
+            requires: vec![],
             owns_roots: owns,
             contributes,
             provides_capabilities: caps.iter().map(|s| s.to_string()).collect(),
@@ -399,11 +585,20 @@ mod tests {
         }
     }
 
+    fn contribution(root: &str, interface_abi: u32, paths: &[&str]) -> RootContribution {
+        RootContribution {
+            root: root.to_string(),
+            interface_abi,
+            paths: paths.iter().map(|path| (*path).to_string()).collect(),
+        }
+    }
+
     fn resolved<'a>(package: &'a str, module: &'a ConfigModuleMeta) -> ResolvedConfigModule<'a> {
         ResolvedConfigModule {
             package,
             version: "1.0.0",
             platform: "x86_64-linux",
+            runtime_output: "/nix/store/hash-runtime",
             module,
         }
     }
@@ -504,6 +699,7 @@ mod tests {
             vec![],
             vec![RootContribution {
                 root: "nginx".to_string(),
+                interface_abi: 1,
                 paths: vec!["virtualHosts".to_string()],
             }],
             &[],
@@ -536,6 +732,7 @@ mod tests {
             vec![],
             vec![RootContribution {
                 root: "nginx".to_string(),
+                interface_abi: 1,
                 paths: vec!["upstreams".to_string()],
             }],
             &[],
@@ -567,6 +764,7 @@ mod tests {
             vec![],
             vec![RootContribution {
                 root: "nginx".to_string(),
+                interface_abi: 1,
                 paths: vec!["virtualHosts".to_string()],
             }],
             &[],
@@ -575,5 +773,138 @@ mod tests {
         let roots = SystemRoots::build([resolved("nginx", &owner), resolved("web", &contributor)])
             .expect("valid contribution");
         assert_eq!(roots.len(), 1);
+    }
+
+    #[test]
+    fn contribution_interface_abi_must_exactly_match_owner() {
+        let owner = module(
+            &[],
+            vec![OwnedRoot {
+                root: "nginx".to_string(),
+                interface_abi: 7,
+                contributable: vec!["virtualHosts.*".to_string()],
+            }],
+            vec![],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+        let equal = module(
+            &[],
+            vec![],
+            vec![contribution("nginx", 7, &["virtualHosts.example"])],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+        SystemRoots::build([resolved("nginx", &owner), resolved("web", &equal)])
+            .expect("equal ABI is admitted");
+
+        let mismatch = module(
+            &[],
+            vec![],
+            vec![contribution("nginx", 6, &["virtualHosts.example"])],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+        let error = SystemRoots::build([resolved("nginx", &owner), resolved("web", &mismatch)])
+            .expect_err("mismatched ABI must be rejected");
+        assert!(matches!(
+            error,
+            SystemRootsError::Contributable {
+                reason: ContributableError::InterfaceAbiMismatch {
+                    expected: 6,
+                    actual: 7
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn owner_abi_upgrade_requires_contributor_republish() {
+        let upgraded_owner = module(
+            &[],
+            vec![OwnedRoot {
+                root: "nginx".to_string(),
+                interface_abi: 2,
+                contributable: vec!["virtualHosts.*".to_string()],
+            }],
+            vec![],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+        let old_contributor = module(
+            &[],
+            vec![],
+            vec![contribution("nginx", 1, &["virtualHosts.example"])],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+
+        let error = SystemRoots::build([
+            resolved("nginx", &upgraded_owner),
+            resolved("web", &old_contributor),
+        ])
+        .expect_err("owner ABI upgrades invalidate old contributions");
+        assert!(error.to_string().contains("republish"), "{error}");
+    }
+
+    #[test]
+    fn wildcard_surface_matches_whole_segments_and_subtrees() {
+        assert!(SystemRoots::contribution_is_within_surface(
+            "virtualHosts.example.locations.api.proxyPass",
+            "virtualHosts.*.locations"
+        ));
+        assert!(!SystemRoots::contribution_is_within_surface(
+            "virtualHosts.example.tls.enable",
+            "virtualHosts.*.locations"
+        ));
+        assert!(!SystemRoots::contribution_is_within_surface(
+            "virtualHostsExtra.example.locations",
+            "virtualHosts.*.locations"
+        ));
+        assert!(!SystemRoots::contribution_is_within_surface(
+            "virtualHosts.exampleExtra.locations",
+            "virtualHosts.example.locations"
+        ));
+    }
+
+    #[test]
+    fn base_owned_root_authorizes_matching_package_contribution() {
+        let contributor = module(
+            &[],
+            vec![],
+            vec![contribution("networking", 3, &["interfaces.eth0.mtu"])],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+        let roots = SystemRoots::build_with_context(
+            [resolved("net-tuning", &contributor)],
+            [OwnedRoot {
+                root: "networking".to_string(),
+                interface_abi: 3,
+                contributable: vec!["interfaces.*".to_string()],
+            }],
+            std::iter::empty(),
+        )
+        .expect("base-owned contribution is locally authorized");
+
+        assert_eq!(
+            roots.owner("networking").expect("base owner").package,
+            "@base-lib"
+        );
+        assert!(roots.is_bundled_root("networking"));
+    }
+
+    #[test]
+    fn known_shared_root_can_be_ownerless_without_becoming_private() {
+        let roots = SystemRoots::build_with_context(
+            std::iter::empty(),
+            std::iter::empty(),
+            ["firewall".to_string()],
+        )
+        .expect("classification alone is valid");
+
+        assert!(roots.owner("firewall").is_none());
+        assert!(roots.is_known_shared_root("firewall"));
     }
 }

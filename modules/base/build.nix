@@ -9,16 +9,16 @@
 ##!
 ##! systemd unit / timer / socket / etc. definitions now live in
 ##! modules/systemd/system.nix under the typed `systemd.*` option tree.
-##! The toplevel build script below pulls them in as a single
-##! `ln -s ${config.system.build.systemdSystemUnits} $out/etc/systemd/system`
-##! line — the derivation behind `systemdSystemUnits` is assembled by
-##! the ported `generateUnits` function in lib/modules/systemd/lib.nix.
+##! The toplevel links `system.build.systemdSystemUnits`, a thin builder-side
+##! materialization of the systemd entries in `system.build.configManifest`.
 {
   config,
   pkgs,
   lib,
+  provenance,
   ...
 }: let
+  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
   # --- composefs / EROFS inputs (spec v12 §5.3) ---
   #
   # Mirror the upstream nixpkgs etc.nix derivation set:
@@ -261,17 +261,17 @@ in {
           The `aos.config-manifest/v1` value: a pure attrset (no
           derivations forced, no secrets) describing the rendered `/etc`
           tree, systemd reconcile actions, F2-A job-script texts, users,
-          presets, pinned store paths, the module ABI, and the eval-input
-          provenance placeholder. This is the data contract the on-host
+          presets, pinned store paths, the module ABI, and the five
+          content-addressed eval inputs. This is the data contract the on-host
           evaluator emits and the imperative materializer consumes
-          (architecture.md §"The manifest"). It is purely additive: the
-          existing `system.build.toplevel` derivation does not consume it
-          yet, so toplevel bytes are unchanged.
+          (architecture.md §"The manifest"). The builder-side systemd unit
+          directory is materialized from this value as the parity path for
+          on-host generation assembly.
 
-          P0 scope note: `etc`/`jobScripts`/`storePaths`/`module_abi` are
-          populated from the live config; `units` reconcile actions and
-          `inputs` provenance are P1 placeholders (the resolver and the
-          attestation pipeline fill them on-host).
+          The image-build value records the image base/evaluator, an empty
+          config-module closure, the empty host module, and default facts. The
+          on-host resolver replaces those inputs with the authenticated host,
+          facts, and resolved config-module closure.
         '';
       };
 
@@ -478,12 +478,16 @@ in {
                 ln -sfn ${config.system.build.kernel} $out/kernel
                 ln -sfn ${config.system.build.initrd} $out/initrd
                 ln -sfn ${config.system.build.activateScript} $out/activate
+                ln -sfn ${config.aos.config.evalAtBoot.baseLib} $out/base-lib
 
                 # `aos-seed-profiles.service` reads these on first boot
                 # to populate `state.json`. Plain text — `read_meta`
                 # in the service script strips the trailing newline.
                 printf '%s' "${config.aos.system.name}" > $out/meta/package-name
                 printf '%s' "${config.aos.system.version}" > $out/meta/version
+                printf '%s' "${toString config.aos.system.moduleAbi}" > $out/meta/module-abi
+                printf '%s' "sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}" > $out/meta/baselib-digest
+                printf '%s' "EFI/Linux/aos-${config.aos.system.name}-${config.aos.system.version}${lib.optionalString (config.aos.boot.bootCountingTries != null) "+${toString config.aos.boot.bootCountingTries}"}.efi" > $out/meta/uki-path
 
                 # Closure tracking: list every systemPackage as a
                 # /nix/store path so Nix's reference scanner pulls
@@ -531,103 +535,98 @@ in {
             -e "s|@bash@|${pkgs.bash}|g" \
             -e "s|@coreutils@|${pkgs.coreutils}|g" \
             -e "s|@util-linux@|${pkgs.util-linux}|g" \
+            -e "s|@erofs-utils@|${pkgs.erofs-utils}|g" \
             -e "s|@apm@|${pkgs.aos}|g" \
+            -e "s|@systemd@|${pkgs.systemd}|g" \
             ${./activate.sh.in} > "$out"
           chmod +x "$out"
         '';
 
     # --- aos.config-manifest/v1 (pure data) ----------------------------
     #
-    # Purely additive: assembled from the same pure render values the
-    # toplevel derivation is built from, but as host-portable data. Not
-    # consumed by `system.build.toplevel` (that path is unchanged), so it
-    # cannot affect the byte-identical toplevel output.
+    # The builder-side toplevel consumes these same systemd entries through the
+    # thin materializer in `lib/modules/systemd/lib.nix`; there is no parallel
+    # derivation-bearing unit assembly path.
     system.build.configManifest = let
-      unitBodies = config.system.build.systemdUnitBodies;
       jobScripts = config.system.build.systemdJobScripts;
 
       isOctal = m: builtins.match "[0-7]{3,4}" m != null;
 
       # `/etc` entries contributed by `environment.etc`, minus the
       # `systemd/system` directory (expanded per-unit below).
-      envEtc = builtins.listToAttrs (builtins.map (e:
-        lib.nameValuePair e.target (
-          if e.text != null
-          then {
-            kind = "text";
-            text = e.text;
-            mode =
-              if isOctal e.mode
-              then e.mode
-              else "0644";
-          }
-          else if isOctal e.mode
-          then {
-            # Octal-mode, store-sourced: content lives in the EROFS basedir;
-            # v1 manifest pins the source path (the materializer recovers
-            # mode/uid/gid from the metadata image). Documented limitation.
-            kind = "store-symlink";
-            target = builtins.toString e.source;
-          }
-          else {
-            kind = "store-symlink";
-            target = builtins.toString e.source;
-          }
-        ))
-      (builtins.filter (e: e.target != "systemd/system") etc'));
+      renderEtc = e:
+        if e.text != null
+        then {
+          kind = "text";
+          text = e.text;
+          mode =
+            if isOctal e.mode
+            then e.mode
+            else "0644";
+        }
+        else if isOctal e.mode
+        then {
+          # Octal-mode, store-sourced: content lives in the EROFS basedir;
+          # v1 manifest pins the source path (the materializer recovers
+          # mode/uid/gid from the metadata image). Documented limitation.
+          kind = "store-symlink";
+          target = builtins.toString e.source;
+        }
+        else {
+          kind = "store-symlink";
+          target = builtins.toString e.source;
+        };
+      artifactOwner = path: name: let
+        owners = provenance.dependencyOwnersOfAttr path name;
+      in
+        if builtins.length owners == 1
+        then builtins.head owners
+        else if owners == []
+        then "@base"
+        else throw "config manifest artifact ${builtins.concatStringsSep "." path}.${name} depends on multiple owners: ${lib.concatStringsSep ", " owners}";
+      envEtcRecords = lib.concatLists (lib.mapAttrsToList (name: e:
+        lib.optional (e.enable && e.target != "systemd/system") {
+          path = e.target;
+          value = renderEtc e;
+          owner = artifactOwner ["environment" "etc"] name;
+        })
+      config.environment.etc);
+      envEtcTargets = builtins.map (record: record.path) envEtcRecords;
+      pathsOverlap = left: right:
+        left == right
+        || lib.hasPrefix "${left}/" right
+        || lib.hasPrefix "${right}/" left;
+      duplicateEnvEtcTargets =
+        builtins.filter
+        (target: builtins.length (builtins.filter (candidate: pathsOverlap target candidate) envEtcTargets) > 1)
+        (lib.unique envEtcTargets);
+      envEtc =
+        if duplicateEnvEtcTargets != []
+        then throw "environment.etc entries collide at final /etc target(s): ${lib.concatStringsSep ", " duplicateEnvEtcTargets}"
+        else
+          builtins.listToAttrs (builtins.map (record:
+            lib.nameValuePair record.path record.value)
+          envEtcRecords);
+      envEtcOwnership = builtins.listToAttrs (builtins.map (record:
+        lib.nameValuePair record.path record.owner)
+      envEtcRecords);
+      systemdEtcOwnership =
+        systemdLib.unitsToOwnership
+        config.system.build.systemdUnitBodies
+        config.system.build.systemdUnitOwners;
 
-      # `/etc/systemd/system/<unit>` text entries plus the install-symlink
-      # farm (.wants/.requires/.upholds + aliases) that `generateUnits`
-      # materializes — mirrored here as pure data.
-      unitTextEntries = lib.concatLists (lib.mapAttrsToList (unitName: u:
-        if u.enable && u.text != null
-        then [
-          (lib.nameValuePair "systemd/system/${unitName}" {
-            kind = "text";
-            text = u.text;
-            mode = "0644";
-          })
-        ]
-        else if !u.enable
-        then [
-          (lib.nameValuePair "systemd/system/${unitName}" {
-            kind = "symlink";
-            target = "/dev/null";
-          })
-        ]
-        else [])
-      unitBodies);
-
-      installSymlinks = lib.concatLists (lib.mapAttrsToList (unitName: u:
-        builtins.map (a:
-          lib.nameValuePair "systemd/system/${a}" {
-            kind = "symlink";
-            target = unitName;
-          })
-        u.aliases
-        ++ builtins.map (w:
-          lib.nameValuePair "systemd/system/${w}.wants/${unitName}" {
-            kind = "symlink";
-            target = "../${unitName}";
-          })
-        u.wantedBy
-        ++ builtins.map (r:
-          lib.nameValuePair "systemd/system/${r}.requires/${unitName}" {
-            kind = "symlink";
-            target = "../${unitName}";
-          })
-        u.requiredBy
-        ++ builtins.map (h:
-          lib.nameValuePair "systemd/system/${h}.upholds/${unitName}" {
-            kind = "symlink";
-            target = "../${unitName}";
-          })
-        u.upheldBy)
-      unitBodies);
-
+      etcCollisions =
+        builtins.filter
+        (target:
+          builtins.any
+          (systemdTarget: pathsOverlap target systemdTarget)
+          (builtins.attrNames config.system.build.systemdEtcEntries))
+        (builtins.attrNames envEtc);
       etc =
-        envEtc
-        // builtins.listToAttrs (unitTextEntries ++ installSymlinks);
+        if etcCollisions != []
+        then throw "environment.etc and systemd entries collide at final /etc target(s): ${lib.concatStringsSep ", " etcCollisions}"
+        else envEtc // config.system.build.systemdEtcEntries;
+      etcOwnership = envEtcOwnership // systemdEtcOwnership;
 
       # Users from `aos.users.*` (best-effort; `or` fallbacks keep this
       # robust if the users module isn't imported by a given variant).
@@ -642,33 +641,183 @@ in {
         description = u.description or "";
         supplementaryGroups = u.extraGroups or [];
       }) (config.aos.users.users or {});
+      userDependencyOwners = user: let
+        userOwners = provenance.dependencyOwnersOfAttr ["aos" "users" "users"] user.name;
+        groupNames = lib.unique ([user.group] ++ user.supplementaryGroups);
+        groupOwners = lib.concatLists (builtins.map
+          (group: provenance.dependencyOwnersOfAttr ["aos" "users" "groups"] group)
+          groupNames);
+      in
+        lib.unique (userOwners ++ groupOwners);
+      userOwnership = builtins.listToAttrs (builtins.map (user: let
+        owners = userDependencyOwners user;
+      in
+        if builtins.length owners == 1
+        then lib.nameValuePair user.name (builtins.head owners)
+        else throw "config manifest user ${user.name} depends on multiple owners (including referenced groups): ${lib.concatStringsSep ", " owners}")
+      users);
 
       # Presets parsed from the image preset rules ("<policy> <unit>").
-      presets = builtins.filter (p: p != null) (builtins.map (rule: let
+      presetRecords = builtins.filter (p: p != null) (builtins.map (rule: let
         parts = lib.splitString " " rule;
+        owner = provenance.ownerOfListString ["systemd" "systemPresetRules"] rule;
+        source =
+          if owner == "@base"
+          then "image"
+          else if owner == "@host"
+          then "host.nix"
+          else owner;
       in
         if builtins.length parts >= 2
         then {
-          unit = builtins.elemAt parts 1;
-          policy = builtins.head parts;
-          source = "image";
+          value = {
+            unit = builtins.elemAt parts 1;
+            policy = builtins.head parts;
+            inherit source;
+          };
+          inherit owner;
         }
         else null)
       (config.systemd.systemPresetRules or []));
+      presets = builtins.map (record: record.value) presetRecords;
+      presetOwnership = builtins.listToAttrs (builtins.map (record:
+        lib.nameValuePair "${record.value.unit}:${record.value.source}" record.owner)
+      presetRecords);
 
+      pathString = value: builtins.unsafeDiscardStringContext (builtins.toString value);
+      storeRoot = target: let
+        parts = lib.splitString "/" target;
+      in
+        if builtins.length parts >= 4 && builtins.elemAt parts 1 == "nix" && builtins.elemAt parts 2 == "store"
+        then "/nix/store/${builtins.elemAt parts 3}"
+        else throw "config manifest store-symlink target is outside /nix/store: ${target}";
+      packageStoreRecords =
+        builtins.map (package: let
+          path = pathString package;
+        in {
+          inherit path;
+          owner = provenance.ownerOfListString ["environment" "systemPackages"] path;
+        })
+        config.environment.systemPackages;
+      etcStoreRecords = builtins.map (record: {
+        path = storeRoot record.value.target;
+        inherit (record) owner;
+      }) (builtins.filter (record: record.value.kind == "store-symlink") envEtcRecords);
+      storeRecords = packageStoreRecords ++ etcStoreRecords;
       storePaths =
         builtins.sort (a: b: a < b)
-        (lib.unique (builtins.map builtins.toString config.environment.systemPackages));
-    in {
+        (lib.unique (builtins.map (record: record.path) storeRecords));
+      storeOwner = path: let
+        owners =
+          lib.unique (builtins.map (record: record.owner)
+            (builtins.filter (record: record.path == path) storeRecords));
+      in
+        if builtins.length owners == 1
+        then builtins.head owners
+        else throw "config manifest store path ${path} has multiple owners: ${lib.concatStringsSep ", " owners}";
+      storeOwnership = builtins.listToAttrs (builtins.map (path:
+        lib.nameValuePair path (storeOwner path))
+      storePaths);
+      unitOwnership = config.system.build.systemdUnitOwners;
+      jobScriptOwner = key: let
+        matchingUnits =
+          builtins.filter
+          (unit: lib.hasPrefix "${unit}:" key)
+          (builtins.attrNames unitOwnership);
+      in
+        if builtins.length matchingUnits == 1
+        then unitOwnership.${builtins.head matchingUnits}
+        else throw "config manifest job-script key ${key} does not identify exactly one unit";
+      jobScriptOwnership = lib.mapAttrs (key: _: jobScriptOwner key) jobScripts;
+      hashIdentity = value: "sha256:${builtins.hashString "sha256" value}";
+      baseLibPath = pathString config.aos.config.evalAtBoot.baseLib;
+      evaluatorPath = pathString pkgs.aos;
+      evaluatorStoreHash =
+        "sha256:"
+        + builtins.convertHash {
+          hash = builtins.substring 0 32 (baseNameOf evaluatorPath);
+          # A Nix store-path component is exactly 20 bytes. `convertHash`
+          # needs an algorithm solely to select that width; the RFC wire label
+          # remains `sha256:` for the store identity field.
+          hashAlgo = "sha1";
+          toHashFormat = "base16";
+        };
+      emptyHost = builtins.toFile "aos-empty-host.nix" "{}";
+      emptyHostPath = pathString emptyHost;
+      defaultFacts = builtins.toJSON (config.host.facts or {});
+      defaultFactsFile = builtins.toFile "aos-default-instance-facts.json" defaultFacts;
+      ownership = {
+        etc = etcOwnership;
+        units = unitOwnership;
+        jobScripts = jobScriptOwnership;
+        users = userOwnership;
+        presets = presetOwnership;
+        storePaths = storeOwnership;
+      };
+      exposeProjectionBindings = builtins.listToAttrs (lib.concatMap (package:
+        if builtins.hasAttr package config
+          && config.${package} ? _aosExposeConfigProjection
+        then [
+          (lib.nameValuePair package config.${package}._aosExposeConfigProjection)
+        ]
+        else [])
+      provenance.packageNames);
+    in ({
       schema = "aos.config-manifest/v1";
       inherit etc users presets storePaths;
       jobScripts = jobScripts;
-      # Per-unit reconcile actions are resolved on-host (P1); empty here.
-      units = {};
+      units = config.system.build.systemdUnitActions;
       module_abi = config.aos.system.moduleAbi or 1;
-      # The five content-addressed eval inputs are computed on-host by the
-      # resolver/attestation pipeline (build-spec §inputs); P0 placeholder.
-      inputs = {};
+      inputs = {
+        base_lib = {
+          store_path = baseLibPath;
+          abi_hash = config.aos.config.evalAtBoot.baseLibAbiHash;
+          module_abi = config.aos.system.moduleAbi or 1;
+        };
+        evaluator = {
+          store_path = evaluatorPath;
+          store_hash = evaluatorStoreHash;
+        };
+        config_modules = {
+          closure_hash = hashIdentity "[]";
+          count = 0;
+          store_paths = [];
+          nar_hashes = [];
+          package_names = [];
+          module_abi_compat = [];
+        };
+        host_nix = {
+          content_hash = hashIdentity "{}";
+          trust_mode = "image";
+          platform = "image";
+          signer_key = null;
+          store_path = emptyHostPath;
+        };
+        instance_facts = {
+          facts_hash = hashIdentity defaultFacts;
+          platform = "image";
+          store_path = pathString defaultFactsFile;
+        };
+      };
+      packages = [];
+      packageOutputs = {};
+      graph.edges = {};
+      config = builtins.mapAttrs (_: binding: binding.desired) exposeProjectionBindings;
+      credentials = builtins.mapAttrs (_: binding: binding.credentials) exposeProjectionBindings;
+      inherit ownership;
+    }
+    // lib.optionalAttrs (exposeProjectionBindings != {}) {
+      configProjectionBindings = builtins.mapAttrs (_: binding:
+        builtins.removeAttrs binding ["desired" "credentials"])
+      exposeProjectionBindings;
+    });
+
+    # Route builder-side systemd assembly through the emitted manifest. The
+    # systemd module's equivalent default exists only so its standalone test
+    # does not need to import this full base-build module.
+    system.build.systemdMaterializationData = {
+      etc = config.system.build.configManifest.etc;
+      jobScripts = config.system.build.configManifest.jobScripts;
     };
 
     system.build.kernel = pkgs.linux;

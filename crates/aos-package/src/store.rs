@@ -414,6 +414,88 @@ pub fn baselib_retention_set(
     keep
 }
 
+/// Reconciles production image-scoped base-library roots with RFC-0011's
+/// retention floor.
+///
+/// Every recorded image is first rooted, then roots outside the A/B resident
+/// set, retained config-generation pins, and one-prior-distinct-ABI floor are
+/// removed. The operation never downloads a missing base library.
+///
+/// # Errors
+///
+/// Returns an error when a required retained store path is absent or a root
+/// cannot be created or removed.
+pub fn reconcile_baselib_gc_roots(
+    image_profile: &Path,
+    images: &crate::types::ImageGenerationState,
+    configs: &crate::types::ConfigGenerationState,
+) -> Result<()> {
+    let running = images
+        .running_generation()
+        .context("image state has no running generation")?;
+    let candidates = images
+        .generations
+        .iter()
+        .map(|image| image.module_abi)
+        .collect::<Vec<_>>();
+    // The durable default/pending pointers do not, by themselves, describe
+    // everything resident on the two-slot ESP.  Preserve the newest recorded
+    // image in each A/B slot as well as the running/default/pending images.
+    // This keeps both rollback slots evaluable even after the default pointer
+    // moves to the alternate slot.
+    let newest_a = images
+        .generations
+        .iter()
+        .filter(|image| image.slot == crate::types::ImageSlot::A)
+        .map(|image| image.number)
+        .max();
+    let newest_b = images
+        .generations
+        .iter()
+        .filter(|image| image.slot == crate::types::ImageSlot::B)
+        .map(|image| image.number)
+        .max();
+    let esp = images
+        .generations
+        .iter()
+        .filter(|image| {
+            image.number == images.running
+                || image.number == images.default
+                || Some(image.number) == images.pending
+                || Some(image.number) == newest_a
+                || Some(image.number) == newest_b
+        })
+        .map(|image| image.module_abi)
+        .collect::<std::collections::BTreeSet<_>>();
+    let pinned = configs
+        .generations
+        .iter()
+        .map(|generation| generation.module_abi_pinned)
+        .collect::<std::collections::BTreeSet<_>>();
+    let keep = baselib_retention_set(&candidates, &esp, &pinned, running.module_abi);
+    for image in &images.generations {
+        if !Path::new(&image.evaluator_ref).exists() {
+            if keep.contains(&image.module_abi) {
+                bail!(
+                    "retained image generation {} base library is unavailable: {}",
+                    image.number,
+                    image.evaluator_ref
+                );
+            }
+            continue;
+        }
+        let dir = image_profile.join(format!("image-gen-{}", image.number));
+        let link = dir.join("baselib").join(image.module_abi.to_string());
+        if keep.contains(&image.module_abi) {
+            create_baselib_gc_root(&dir, image.module_abi, &image.evaluator_ref)?;
+        } else if link.exists() || link.symlink_metadata().is_ok() {
+            std::fs::remove_file(&link)
+                .with_context(|| format!("removing obsolete base-lib root {}", link.display()))?;
+        }
+    }
+    Ok(())
+}
+
 /// Write a `<hash> -> <store path>` symlink farm under `dir`, creating `dir`.
 ///
 /// Shared by the `cfg/` and `cfgsrc/` root writers. Each input is an absolute

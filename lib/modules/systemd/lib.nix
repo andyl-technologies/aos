@@ -1139,9 +1139,9 @@ in rec {
   # `[Install]` section is redundant-but-safe in that case (systemd's
   # preset/enable mechanism is idempotent if the symlinks already
   # exist). RFC-0001 package targets rely on this section as the
-  # preset path: an Ignition-written preset file names the target, and
-  # the every-boot `aos-preset.service` walks `[Install]` to create the
-  # runtime symlink in the tmpfs /etc upper.
+  # runtime preset path: the evaluated manifest names the target, and the
+  # every-boot `aos-preset.service` walks `[Install]` to create the runtime
+  # symlink in the tmpfs /etc upper.
   commonUnitText = def: bodyLines: let
     install =
       optionalString (def.aliases != []) "Alias=${concatStringsSep " " def.aliases}\n"

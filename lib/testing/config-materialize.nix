@@ -13,7 +13,7 @@
   pkgs,
   lib,
 }: let
-  aos = import ../../. {};
+  aos = import ../../. {system = pkgs.stdenv.buildPlatform.system;};
 
   system = aos.mkSystem [../../systems/server.nix];
 
@@ -29,24 +29,34 @@ in
     pname = "config-materialize-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.aos pkgs.coreutils pkgs.grep pkgs.findutils];
+    buildDeps = [pkgs.aos pkgs.coreutils pkgs.grep pkgs.findutils pkgs.erofs-utils];
     phases = [
       {
         name = "check";
         script = ''
           set -eu
           mkdir -p "$out"
-          etc_root="$(${pkgs.coreutils}/bin/mktemp -d)/etc"
-
-          echo "==> materializing the server configManifest" | tee "$out/result"
-          ${pkgs.aos}/bin/apm __materialize \
-            --manifest ${manifestFile} \
-            --etc-root "$etc_root"
+          generation="$(${pkgs.coreutils}/bin/mktemp -d)/gen-1"
+          mkdir -p "$generation"
 
           fail() {
             echo "FAIL: $1" >&2
             exit 1
           }
+
+          echo "==> materializing the server configManifest" | tee "$out/result"
+          ${pkgs.aos}/bin/apm __materialize \
+            --manifest ${manifestFile} \
+            --generation-dir "$generation" \
+            --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
+            --fsck-erofs ${pkgs.erofs-utils}/bin/fsck.erofs
+
+          lower="$generation/config-lower"
+          etc_root="$lower/etc-tree"
+          [ -f "$lower/etc.erofs" ] || fail "content-addressed EROFS lower was not published"
+          [ -f "$lower/metadata.json" ] || fail "lower integrity metadata was not published"
+          ${pkgs.erofs-utils}/bin/fsck.erofs "$lower/etc.erofs" >/dev/null \
+            || fail "published EROFS image failed fsck"
 
           # A `text` entry lands as a real file with content (registries are
           # always present on the server variant).
@@ -88,9 +98,30 @@ in
           [ -n "$js" ] || fail "no job script file materialized"
           [ -x "$js" ] || fail "materialized job script is not executable"
 
+          # A byte-identical retry validates and reuses the immutable artifact.
+          before="$(${pkgs.coreutils}/bin/sha256sum "$lower/etc.erofs")"
+          ${pkgs.aos}/bin/apm __materialize \
+            --manifest ${manifestFile} \
+            --generation-dir "$generation" \
+            --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
+            --fsck-erofs ${pkgs.erofs-utils}/bin/fsck.erofs
+          after="$(${pkgs.coreutils}/bin/sha256sum "$lower/etc.erofs")"
+          [ "$before" = "$after" ] || fail "idempotent reuse changed the EROFS lower"
+
+          # Tampering is detected before an existing generation can be reused.
+          ${pkgs.coreutils}/bin/printf x >> "$lower/etc.erofs"
+          if ${pkgs.aos}/bin/apm __materialize \
+            --manifest ${manifestFile} \
+            --generation-dir "$generation" \
+            --mkfs-erofs ${pkgs.erofs-utils}/bin/mkfs.erofs \
+            --fsck-erofs ${pkgs.erofs-utils}/bin/fsck.erofs; then
+            fail "tampered EROFS lower was accepted"
+          fi
+
           echo "  text entry + mode: OK" | tee -a "$out/result"
           echo "  store-symlink + relative install symlink: OK" | tee -a "$out/result"
           echo "  job-script materialization + placeholder rewrite: OK" | tee -a "$out/result"
+          echo "  atomic EROFS publication + reuse/tamper validation: OK" | tee -a "$out/result"
         '';
       }
     ];

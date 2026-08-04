@@ -1809,6 +1809,7 @@ mod tests {
             signing: Some(SigningConfig {
                 required: true,
                 public_key: Some("core:Ed25519:base64key".to_string()),
+                root_owner_signers: Vec::new(),
             }),
         }
     }

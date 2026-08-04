@@ -43,6 +43,45 @@
     inherit pkgs lib;
   };
 
+  # RFC-0011 binds a base library to the complete option schema it exposes,
+  # not to the incidental store path that contains it.  `_optionDecls` is an
+  # options-only projection: reading it never forces a `config` value or a
+  # derivation.  Attribute names are already returned in sorted order by the
+  # module engine; sort explicitly here so this remains a set identity if the
+  # engine's representation changes.
+  optionSchema = builtins.sort (a: b: builtins.head a < builtins.head b) (
+    builtins.map (decl: [decl.pathStr decl.typeSig]) realEval._optionDecls
+  );
+  moduleAbi = realEval.config.aos.system.moduleAbi;
+  abiHash = "sha256:${builtins.hashString "sha256" (builtins.toJSON {
+    abi = moduleAbi;
+    schema = optionSchema;
+  })}";
+
+  # Root ownership shipped by the image is local system state, just like
+  # package-owned roots derived from the exact installed profile. Every root
+  # declared by the bundled base/system modules is already present and must
+  # never trigger a structural package fetch. Contributable paths retain the
+  # module engine's curated markers; interface ABI follows the image module ABI
+  # until a root-specific image ABI is introduced.
+  bundledRootNames = builtins.sort builtins.lessThan (lib.unique (
+    builtins.map (declaration: builtins.head declaration.path) realEval._optionDecls
+  ));
+  bundledRoots = builtins.map (root: {
+    inherit root;
+    interface_abi = moduleAbi;
+    contributable = builtins.sort builtins.lessThan (
+      builtins.map
+      (declaration: lib.concatStringsSep "." (builtins.tail declaration.path))
+      (builtins.filter
+        (declaration:
+          declaration.contributable
+          && builtins.head declaration.path == root
+          && builtins.length declaration.path > 1)
+        realEval._optionDecls)
+    );
+  }) bundledRootNames;
+
   # logical-name -> stage-1 store path, for every registered (non-frozen)
   # artifact source. `"${drv}"` forces the artifact to its built path; context
   # is discarded so the JSON is a plain string map.
@@ -74,7 +113,7 @@
   systemModulesFile = builtins.toFile "system-modules.nix" systemModulesNix;
 in
   pkgs.runCommand "aos-base-lib-${systemName}" {
-    passthru = {inherit frozenArtifacts;};
+    passthru = {inherit frozenArtifacts optionSchema moduleAbi abiHash;};
   } ''
     mkdir -p "$out"
 
@@ -90,10 +129,15 @@ in
 
     ${pkgs.sed}/bin/sed \
       -e "s|@system@|${system}|g" \
+      -e "s|@abiHash@|${abiHash}|g" \
       ${./base-lib-entry.nix} > "$out/default.nix"
     cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
     cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
     cp ${systemModulesFile} "$out/system-modules.nix"
 
     echo ${lib.escapeShellArg systemName} > "$out/system-name"
+    echo ${lib.escapeShellArg abiHash} > "$out/abi-hash"
+    echo ${toString moduleAbi} > "$out/module-abi"
+    cp ${builtins.toFile "option-schema.json" (builtins.toJSON optionSchema)} "$out/option-schema.json"
+    cp ${builtins.toFile "system-roots.json" (builtins.toJSON bundledRoots)} "$out/system-roots.json"
   ''

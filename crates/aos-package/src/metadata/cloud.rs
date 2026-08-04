@@ -7,43 +7,10 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 
-use super::fetcher::{Facts, PlatformFetcher, UserData};
+use super::fetcher::{Facts, PlatformFetcher, StaticNetwork, UserData};
 use super::http::MetadataHttp;
 
 const LINK_LOCAL_BASE: &str = "http://169.254.169.254";
-
-/// A detected network metadata platform without a native fetch contract.
-///
-/// Failing acquisition is safer than silently selecting the image-baked
-/// configuration when the control plane may have supplied provisioning data.
-pub struct UnsupportedCloudFetcher {
-    platform_id: &'static str,
-}
-
-impl UnsupportedCloudFetcher {
-    /// Create a fail-closed fetcher for a detected platform.
-    pub fn new(platform_id: &'static str) -> Self {
-        Self { platform_id }
-    }
-}
-
-#[async_trait::async_trait]
-impl PlatformFetcher for UnsupportedCloudFetcher {
-    fn platform_id(&self) -> &'static str {
-        self.platform_id
-    }
-
-    async fn fetch_user_data(&self, _http: &dyn MetadataHttp) -> Result<Option<UserData>> {
-        anyhow::bail!(
-            "metadata platform '{}' has no native provisioning fetcher",
-            self.platform_id
-        )
-    }
-
-    async fn fetch_facts(&self, _http: &dyn MetadataHttp) -> Result<Facts> {
-        Ok(Facts::default())
-    }
-}
 
 /// A local platform with no standardized metadata channel.
 pub struct NoMetadataFetcher {
@@ -102,6 +69,23 @@ async fn optional_text(
         return Ok(None);
     }
     Ok(response.into_ok_string())
+}
+
+async fn optional_lines(
+    http: &dyn MetadataHttp,
+    url: &str,
+    headers: &[(&str, &str)],
+) -> Result<Vec<String>> {
+    Ok(optional_text(http, url, headers)
+        .await?
+        .map(|body| {
+            body.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default())
 }
 
 /// Google Compute Engine metadata fetcher.
@@ -210,10 +194,39 @@ impl PlatformFetcher for DigitalOceanFetcher {
 
     async fn fetch_facts(&self, http: &dyn MetadataHttp) -> Result<Facts> {
         let base = format!("{LINK_LOCAL_BASE}/metadata/v1");
+        let interface = format!("{base}/interfaces/public/0");
+        let address = optional_text(http, &format!("{interface}/ipv4/address"), &[]).await?;
+        let netmask = optional_text(http, &format!("{interface}/ipv4/netmask"), &[]).await?;
+        let gateway = optional_text(http, &format!("{interface}/ipv4/gateway"), &[]).await?;
+        let anchor_address =
+            optional_text(http, &format!("{interface}/anchor_ipv4/address"), &[]).await?;
+        let anchor_netmask =
+            optional_text(http, &format!("{interface}/anchor_ipv4/netmask"), &[]).await?;
+        let mac = optional_text(http, &format!("{interface}/mac"), &[]).await?;
+        let dns = optional_lines(http, &format!("{base}/dns/nameservers"), &[]).await?;
+
+        let mut network = StaticNetwork {
+            mac: mac.map(|value| value.to_lowercase()),
+            gateway,
+            dns,
+            ..StaticNetwork::default()
+        };
+        if let Some(address) = address {
+            network
+                .addresses
+                .push(with_netmask(&address, netmask.as_deref()));
+        }
+        if let Some(address) = anchor_address {
+            network
+                .addresses
+                .push(with_netmask(&address, anchor_netmask.as_deref()));
+        }
+
         Ok(Facts {
             hostname: optional_text(http, &format!("{base}/hostname"), &[]).await?,
             instance_id: optional_text(http, &format!("{base}/id"), &[]).await?,
             region: optional_text(http, &format!("{base}/region"), &[]).await?,
+            network: network.is_seedable().then_some(network),
             ..Default::default()
         })
     }
@@ -254,10 +267,30 @@ impl PlatformFetcher for OpenStackImdsFetcher {
             uuid: Option<String>,
         }
         let meta: Meta = serde_json::from_slice(&body).context("parsing OpenStack metadata")?;
+        let network = http
+            .get(
+                &format!("{LINK_LOCAL_BASE}/openstack/latest/network_data.json"),
+                &[],
+            )
+            .await
+            .context("fetching OpenStack network data")?
+            .into_ok_body()
+            .map(|body| super::staticnet::parse_openstack_network_data(&body))
+            .transpose()?;
         Ok(Facts {
             hostname: meta.hostname,
             instance_id: meta.uuid,
+            network: network.filter(StaticNetwork::is_seedable),
             ..Default::default()
         })
+    }
+}
+
+fn with_netmask(address: &str, netmask: Option<&str>) -> String {
+    match netmask {
+        Some(netmask) if !address.contains('/') => {
+            format!("{address}/{}", super::staticnet::netmask_to_prefix(netmask))
+        }
+        _ => address.to_string(),
     }
 }

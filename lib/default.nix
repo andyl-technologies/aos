@@ -255,8 +255,7 @@
       # Structured-config format helpers. Each factory takes `{ lib,
       # pkgs, … }` at call time and returns `{ type; generate; }`.
       # See `lib/formats/` (aggregated via `lib/formats/default.nix`)
-      # for the individual factories: `json.nix`, `yaml.nix`,
-      # `toml.nix`, `ignition.nix`.
+      # for the individual factories: `json.nix`, `yaml.nix`, and `toml.nix`.
       inherit formats;
 
       # Re-export submodules for direct access when needed

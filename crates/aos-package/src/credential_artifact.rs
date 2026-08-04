@@ -47,6 +47,145 @@ impl CredentialReconciliation {
     }
 }
 
+/// Resolves evaluator-produced opaque credential references through the
+/// production desired/system-credential materialization path.
+///
+/// All bytes are placed before the returned reconciliation is applied. The
+/// caller applies it after the configuration switch so every changed consumer
+/// is restarted at most once, after all credential files are ready.
+///
+/// # Errors
+///
+/// Returns an error for plaintext-shaped manifest values, unsupported
+/// resolvers, missing desired/system credential bytes, unsafe destinations,
+/// failed TPM2 encryption, or failed atomic writes. Resolution fails closed
+/// before any consuming unit is restarted.
+pub(crate) fn reconcile_secret_refs(
+    settings: &ApmSettings,
+    root: &Path,
+    manifest_credentials: &BTreeMap<String, serde_json::Value>,
+) -> Result<CredentialReconciliation> {
+    let desired_path = rooted_absolute_path(root, Path::new(crate::desired::DEFAULT_DESIRED_PATH))?;
+    let desired = if desired_path.is_file() {
+        crate::desired::load_desired_credentials(&desired_path)?
+    } else {
+        DesiredPackageCredentials::new()
+    };
+    let mut changed = false;
+    let mut restart_units = BTreeSet::new();
+
+    for (package, value) in manifest_credentials {
+        let handles = value.as_object().with_context(|| {
+            format!("credential handles for package '{package}' must be an object")
+        })?;
+        for (name, value) in handles {
+            let reference: crate::secret_ref::SecretRef = serde_json::from_value(value.clone())
+                .with_context(|| format!("parsing secretRef '{package}.{name}'"))?;
+            if reference.name != *name {
+                bail!("secretRef '{package}.{name}' changes its credential name");
+            }
+            reference.validate_reference()?;
+            let kind = reference.resolver_kind()?;
+            if kind == crate::secret_ref::ResolverKind::Tpm2Credstore {
+                validate_existing_sealed_reference(root, package, &reference)?;
+                continue;
+            }
+            if matches!(
+                kind,
+                crate::secret_ref::ResolverKind::Vault | crate::secret_ref::ResolverKind::AwsSm
+            ) {
+                bail!("secretRef '{package}.{name}' selects an unavailable resolver");
+            }
+            let source = reference.source.as_deref().with_context(|| {
+                format!("secretRef '{package}.{name}' does not declare a credstore source")
+            })?;
+            let meta = CredentialMeta::from(&reference);
+            validate_provisionable_source(package, &meta, source)?;
+            let value = match kind {
+                crate::secret_ref::ResolverKind::DesiredToml => desired
+                    .get(package)
+                    .and_then(|credentials| credentials.get(name))
+                    .with_context(|| {
+                        format!(
+                            "secretRef '{package}.{name}' has no value in {}",
+                            desired_path.display()
+                        )
+                    })?
+                    .clone(),
+                crate::secret_ref::ResolverKind::SystemCredential => {
+                    let system_credential = reference.resolver_handle().unwrap_or(name);
+                    DesiredCredentialValue::Source(crate::desired::DesiredCredentialSource {
+                        system_credential: system_credential.to_string(),
+                    })
+                }
+                crate::secret_ref::ResolverKind::Tpm2Credstore
+                | crate::secret_ref::ResolverKind::Vault
+                | crate::secret_ref::ResolverKind::AwsSm => {
+                    bail!("secretRef '{package}.{name}' selected an invalid materializing resolver")
+                }
+            };
+            let plaintext = desired_credential_plaintext(root, package, name, &value)?;
+            let bytes = if reference.encrypted {
+                encrypt_desired_credential(settings, root, &meta, &plaintext)?
+            } else {
+                plaintext
+            };
+            if write_credential_source(root, source, &bytes)
+                .with_context(|| format!("writing secretRef '{package}.{name}'"))?
+            {
+                changed = true;
+                restart_units.extend(reference.units);
+            }
+        }
+    }
+
+    Ok(CredentialReconciliation {
+        changed,
+        restart_units,
+    })
+}
+
+fn validate_existing_sealed_reference(
+    root: &Path,
+    package: &str,
+    reference: &crate::secret_ref::SecretRef,
+) -> Result<()> {
+    if reference.ciphertext.is_some() {
+        return Ok(());
+    }
+    let source = reference.source.as_deref().with_context(|| {
+        format!(
+            "TPM2 credstore secretRef '{}.{}' has neither source nor package-authored ciphertext",
+            package, reference.name
+        )
+    })?;
+    let path = rooted_absolute_path(root, Path::new(source))?;
+    let metadata = std::fs::symlink_metadata(&path).with_context(|| {
+        format!(
+            "reading TPM2 credstore secretRef '{}.{}' from {}",
+            package,
+            reference.name,
+            path.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::metadata(&path)
+            .with_context(|| format!("following sealed credential {}", path.display()))?;
+        if !target.is_file() {
+            bail!(
+                "sealed credential source is not a regular file: {}",
+                path.display()
+            );
+        }
+    } else if !metadata.is_file() {
+        bail!(
+            "sealed credential source is not a regular file: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Validate desired credentials against the final package set without writing.
 ///
 /// `installed` is the current explicit profile metadata, and `resolved_roots`
@@ -692,7 +831,7 @@ fn run_systemctl(args: &[&str], action: &str) -> Result<()> {
     Ok(())
 }
 
-fn aos_root_path() -> PathBuf {
+pub(crate) fn aos_root_path() -> PathBuf {
     match std::env::var("AOS_ROOT") {
         Ok(value) if !value.is_empty() => {
             let path = PathBuf::from(value);
@@ -862,6 +1001,49 @@ mod tests {
             0o700
         );
         assert!(restart.contains("web.service"));
+    }
+
+    #[test]
+    fn manifest_secret_ref_resolves_before_one_reconciliation() {
+        let tmp = TempDir::new().unwrap();
+        let desired_path = tmp.path().join("etc/aos/packages.d/desired.toml");
+        std::fs::create_dir_all(desired_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &desired_path,
+            "[credentials.web]\nplain-token = \"rotated-value\"\n",
+        )
+        .unwrap();
+        let manifest = BTreeMap::from([(
+            "web".to_string(),
+            serde_json::json!({
+                "plain-token": {
+                    "name": "plain-token",
+                    "source": "/etc/credstore/web/plain-token",
+                    "encrypted": false,
+                    "units": ["web.service"],
+                    "ref": "desired-toml"
+                }
+            }),
+        )]);
+
+        let reconciliation =
+            reconcile_secret_refs(&ApmSettings::default(), tmp.path(), &manifest).unwrap();
+        assert!(reconciliation.changed());
+        for path in [
+            "etc/credstore/web/plain-token",
+            "var/etc/credstore/web/plain-token",
+        ] {
+            let path = tmp.path().join(path);
+            assert_eq!(std::fs::read(&path).unwrap(), b"rotated-value");
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert_eq!(
+            reconciliation.restart_units,
+            BTreeSet::from(["web.service".to_string()])
+        );
     }
 
     #[test]

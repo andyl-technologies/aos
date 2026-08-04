@@ -34,6 +34,7 @@
     pkgs.coreutils
     pkgs.bash
     pkgs.jq
+    pkgs.tpm2-tools
   ];
   bootPath = lib.concatStringsSep ":" [
     (lib.makeBinPath bootTools)
@@ -137,10 +138,10 @@
     #                                              entries (metacopy)
     #   upperdir = /run/etc/upper-<gen>/dir      — runtime writes (tmpfs-backed)
     #
-    # The active toplevel is read at runtime by
-    # `readlink /sysroot/var/lib/profiles/system/current/toplevel`;
-    # baking `${config.system.build.toplevel}` here would create an
-    # initrd→toplevel→initrd cycle (the toplevel ships the initrd).
+    # The immutable toplevel of the image that actually booted is read from
+    # `/sysroot/aos-toplevel`. The config-generation pointer is deliberately
+    # not used for the bottom lower: after an A/B transition it may still name
+    # a child of the previous image until first-boot re-evaluation commits.
     "etc-overlay-setup" = {
       description = "Set Up /etc Overlay Filesystem";
       wantedBy = ["initrd-fs.target"];
@@ -182,7 +183,7 @@
         # (initrd→toplevel→initrd cycle). nix-overlay-setup mounts
         # /sysroot/nix as the merged overlay, so /sysroot$toplevel
         # resolves through that.
-        toplevel=$(readlink /sysroot/var/lib/profiles/system/current/toplevel)
+        toplevel=$(readlink /sysroot/aos-toplevel)
         gen=$AOS_PROFILE_GEN
         # Per-gen mountpoints live under the initrd's own /run/etc
         # (the tmpfs that run-etc-setup.service mounted before
@@ -327,6 +328,7 @@
       script = ''
         set -euo pipefail
         profile_dir=/sysroot/var/lib/profiles/system
+        image_dir=/sysroot/var/lib/profiles/image
 
         # The seed pointer is a symlink the rootfs builder writes at
         # /aos-toplevel -> /nix/store/<hash>-toplevel. readlink
@@ -342,47 +344,321 @@
             || printf 'unknown'
         }
 
-        if [ ! -e "$profile_dir/state.json" ]; then
-          mkdir -p "$profile_dir/gen-1"
-          ln -sfn "$toplevel" "$profile_dir/gen-1/toplevel"
-          ln -sfn gen-1 "$profile_dir/current"
-          # kernel_path must be the `kernel` symlink's TARGET — the
-          # same form apm's resolve_kernel_path stores for installed
-          # generations (crates/aos-package/src/sysroot.rs). Recording
-          # the symlink itself made every upgrade/rollback against the
-          # seeded gen report a spurious kernel change ("Kernel
-          # updated: 6.18.33 -> kernel") and rewrite the boot loader.
-          kern=$(readlink "/sysroot$toplevel/kernel" 2>/dev/null || true)
-          [ -n "$kern" ] || kern="$toplevel/kernel"
-          # `registry: "seed"` is a sentinel for the gen baked into
-          # the image (no apm install). The apm follow-up may
-          # special-case it or migrate the schema to Option<String>;
-          # until then the sentinel keeps the file parseable by
-          # today's apm (which types `registry` as String,
-          # non-optional, at crates/aos-package/src/types.rs:622).
+        fail_image_identity() {
+          echo "aos-seed-profiles: $*" >&2
+          exit 1
+        }
+
+        read_os_release() {
+          wanted=$1
+          source=$2
+          found=0
+          result=
+          while IFS= read -r line; do
+            case "$line" in
+              "$wanted="*)
+                found=$((found + 1))
+                result=''${line#*=}
+                result=''${result#\"}
+                result=''${result%\"}
+                ;;
+            esac
+          done < "$source"
+          [ "$found" -eq 1 ] || return 1
+          printf '%s' "$result"
+        }
+
+        read_cmdline_value() {
+          wanted=$1
+          found=0
+          result=
+          for word in $(cat /proc/cmdline); do
+            case "$word" in
+              "$wanted="*)
+                found=$((found + 1))
+                result=''${word#*=}
+                ;;
+            esac
+          done
+          [ "$found" -le 1 ] || return 1
+          printf '%s' "$result"
+        }
+
+        read_pcr11() {
+          output=$(tpm2_pcrread sha256:11 2>/dev/null) || return 1
+          for word in $output; do
+            case "$word" in
+              0x*)
+                value=''${word#0x}
+                [ "''${#value}" -eq 64 ] || continue
+                printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+                return 0
+                ;;
+            esac
+          done
+          return 1
+        }
+
+        abi=$(read_meta module-abi)
+        baselib_digest=$(read_meta baselib-digest)
+        base_lib=$(readlink "/sysroot$toplevel/base-lib")
+        uki_path=$(read_meta uki-path)
+        kern=$(readlink "/sysroot$toplevel/kernel" 2>/dev/null || true)
+        [ -n "$kern" ] || kern="$toplevel/kernel"
+        now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        case "$toplevel" in
+          /nix/store/*) ;;
+          *) fail_image_identity "immutable toplevel has unsafe target $toplevel" ;;
+        esac
+        case "$base_lib" in
+          /nix/store/*) ;;
+          *) fail_image_identity "immutable base-lib has unsafe target $base_lib" ;;
+        esac
+        case "$uki_path" in
+          EFI/Linux/*.efi) ;;
+          *) fail_image_identity "immutable image records unsafe UKI path $uki_path" ;;
+        esac
+        os_release=$(readlink "/sysroot$toplevel/os-release") \
+          || fail_image_identity "immutable toplevel has no os-release"
+        case "$os_release" in
+          /nix/store/*) ;;
+          *) fail_image_identity "immutable os-release has unsafe target $os_release" ;;
+        esac
+        os_abi=$(read_os_release AOS_MODULE_ABI "/sysroot$os_release") \
+          || fail_image_identity "immutable os-release has no unique module ABI"
+        os_digest=$(read_os_release AOS_BASELIB_DIGEST "/sysroot$os_release") \
+          || fail_image_identity "immutable os-release has no unique base-lib digest"
+        os_version=$(read_os_release VERSION_ID "/sysroot$os_release") \
+          || fail_image_identity "immutable os-release has no unique version"
+        [ "$abi" = "$os_abi" ] \
+          || fail_image_identity "toplevel metadata disagrees with measured module ABI"
+        [ "$baselib_digest" = "$os_digest" ] \
+          || fail_image_identity "toplevel metadata disagrees with measured base-lib digest"
+        [ "$(read_meta version)" = "$os_version" ] \
+          || fail_image_identity "toplevel metadata disagrees with measured version"
+
+        root_hash=$(read_cmdline_value roothash) \
+          || fail_image_identity "kernel command line has ambiguous roothash"
+        root_device=$(read_cmdline_value root) \
+          || fail_image_identity "kernel command line has ambiguous root device"
+        verity_data=$(read_cmdline_value systemd.verity_root_data) \
+          || fail_image_identity "kernel command line has ambiguous verity data device"
+        slot_device=$verity_data
+        [ -n "$slot_device" ] || slot_device=$root_device
+        case "$slot_device" in
+          /dev/disk/by-partlabel/root-a) boot_slot=A ;;
+          /dev/disk/by-partlabel/root-b) boot_slot=B ;;
+          *) fail_image_identity "kernel command line does not identify root-a or root-b" ;;
+        esac
+        pcr11=
+        if measured=$(read_pcr11); then
+          pcr11=$measured
+        fi
+
+        # `/aos-toplevel` is baked into the booted immutable root. Reconcile
+        # the userspace image index to that identity before stage 2; the
+        # currently selected config generation is never used as authority.
+        mkdir -p "$image_dir"
+        publish_image_state() {
+          source=$1
+          ${pkgs.coreutils}/bin/sync -f "$source"
+          mv "$source" "$image_dir/state.json"
+          ${pkgs.coreutils}/bin/sync -f "$image_dir"
+        }
+
+        if [ ! -e "$image_dir/state.json" ]; then
           ${pkgs.jq}/bin/jq -n \
-            --arg pn  "$(read_meta package-name)" \
+            --arg pn "$(read_meta package-name)" \
             --arg ver "$(read_meta version)" \
             --arg top "$toplevel" \
             --arg kern "$kern" \
-            --arg now "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{
-               current: 1,
-               next: 2,
-               generations: [{
-                 number: 1,
-                 toplevel: $top,
-                 package_name: $pn,
-                 version: $ver,
-                 registry: "seed",
-                 created_at: $now,
-                 kernel_path: $kern
-               }]
-             }' > "$profile_dir/state.json"
+            --arg base "$base_lib" \
+            --arg digest "$baselib_digest" \
+            --arg now "$now" \
+            --arg uki "$uki_path" \
+            --arg slot "$boot_slot" \
+            --arg root_hash "$root_hash" \
+            --arg pcr11 "$pcr11" \
+            --argjson abi "$abi" \
+            '{ running: 1, default: 1, pending: 1,
+               generations: [({ number: 1, slot: $slot, uki_path: $uki,
+                 toplevel: $top, package_name: $pn, version: $ver,
+                 registry: "seed", kernel_path: $kern,
+                 evaluator_ref: $base, module_abi: $abi,
+                 baselib_digest: $digest, created_at: $now }
+                 + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
+                 + (if $pcr11 == "" then {} else {expected_pcr11: $pcr11} end))] }' \
+            > "$image_dir/.state.json.new"
+          publish_image_state "$image_dir/.state.json.new"
+          existing=1
+        else
+          existing=$(${pkgs.jq}/bin/jq --arg top "$toplevel" \
+            '[.generations[] | select(.toplevel == $top) | .number][0] // 0' \
+            "$image_dir/state.json")
+          if [ "$existing" -eq 0 ]; then
+            next=$(${pkgs.jq}/bin/jq '[.generations[].number] | max + 1' "$image_dir/state.json")
+            ${pkgs.jq}/bin/jq \
+              --arg pn "$(read_meta package-name)" --arg ver "$(read_meta version)" \
+              --arg top "$toplevel" --arg kern "$kern" --arg base "$base_lib" \
+              --arg digest "$baselib_digest" --arg now "$now" \
+              --arg uki "$uki_path" --arg slot "$boot_slot" \
+              --arg root_hash "$root_hash" --arg pcr11 "$pcr11" \
+              --argjson abi "$abi" --argjson next "$next" \
+              '.generations += [({ number: $next,
+                 slot: $slot,
+                 uki_path: $uki, toplevel: $top, package_name: $pn,
+                 version: $ver, registry: "seed", kernel_path: $kern,
+                 evaluator_ref: $base, module_abi: $abi,
+                 baselib_digest: $digest, created_at: $now }
+                 + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
+                 + (if $pcr11 == "" then {} else {expected_pcr11: $pcr11} end))]
+               | .running = $next' \
+              "$image_dir/state.json" > "$image_dir/.state.json.new"
+            publish_image_state "$image_dir/.state.json.new"
+            existing=$next
+          else
+            top_count=$(${pkgs.jq}/bin/jq --arg top "$toplevel" \
+              '[.generations[] | select(.toplevel == $top)] | length' \
+              "$image_dir/state.json")
+            matching=$(${pkgs.jq}/bin/jq \
+              --arg top "$toplevel" --arg pn "$(read_meta package-name)" \
+              --arg ver "$(read_meta version)" --arg kern "$kern" \
+              --arg base "$base_lib" --arg digest "$baselib_digest" \
+              --arg uki "$uki_path" --arg slot "$boot_slot" \
+              --arg root_hash "$root_hash" --arg pcr11 "$pcr11" \
+              --argjson abi "$abi" \
+              '[.generations[] | select(
+                 .toplevel == $top and .package_name == $pn and .version == $ver
+                 and .kernel_path == $kern and .evaluator_ref == $base
+                 and .module_abi == $abi and .baselib_digest == $digest
+                 and .uki_path == $uki and .slot == $slot
+                 and ((.root_verity_roothash // "") == $root_hash)
+                 and ((.expected_pcr11 == null and $pcr11 == "")
+                      or (.expected_pcr11 != null and $pcr11 != ""
+                          and (.expected_pcr11 | ascii_downcase) == $pcr11))
+               )] | length' "$image_dir/state.json")
+            [ "$top_count" -eq 1 ] && [ "$matching" -eq 1 ] \
+              || fail_image_identity "persisted image record disagrees with the booted immutable image"
+            ${pkgs.jq}/bin/jq --argjson running "$existing" \
+              '.running = $running' \
+              "$image_dir/state.json" > "$image_dir/.state.json.new"
+            publish_image_state "$image_dir/.state.json.new"
+          fi
+        fi
+        mkdir -p "$image_dir/image-gen-$existing/baselib"
+        ln -sfn "$base_lib" "$image_dir/image-gen-$existing/baselib/$abi"
+
+        # One-shot legacy migration. Every bundled record must both carry the
+        # complete config-generation input/output binding and authenticate its
+        # retired toplevel fields through mutually agreeing immutable metadata,
+        # os-release, base-lib, and image-index fields. Migration is all-or-
+        # nothing; incomplete records leave the original state untouched.
+        if [ -e "$profile_dir/state.json" ]; then
+          cp "$profile_dir/state.json" "$profile_dir/.state.json.migrate"
+          has_legacy=$(${pkgs.jq}/bin/jq '[.generations[] | has("toplevel")] | any' \
+            "$profile_dir/.state.json.migrate")
+          migration_failed=0
+          for index in $(${pkgs.jq}/bin/jq -r \
+            '.generations | to_entries[] | select(.value | has("toplevel")) | .key' \
+            "$profile_dir/.state.json.migrate"); do
+            legacy_top=$(${pkgs.jq}/bin/jq -r --argjson index "$index" \
+              '.generations[$index].toplevel' "$profile_dir/.state.json.migrate")
+            case "$legacy_top" in
+              /nix/store/*) ;;
+              *)
+                echo "aos-seed-profiles: legacy generation $index has unsafe toplevel" >&2
+                migration_failed=1
+                continue
+                ;;
+            esac
+            legacy_abi=$(tr -d '\n' < "/sysroot$legacy_top/meta/module-abi" 2>/dev/null || true)
+            legacy_digest=$(tr -d '\n' < "/sysroot$legacy_top/meta/baselib-digest" 2>/dev/null || true)
+            legacy_base=$(readlink "/sysroot$legacy_top/base-lib" 2>/dev/null || true)
+            legacy_osrel=$(readlink "/sysroot$legacy_top/os-release" 2>/dev/null || true)
+            [ -n "$legacy_abi" ] || { migration_failed=1; continue; }
+            case "$legacy_abi" in *[!0-9]*) migration_failed=1; continue ;; esac
+            case "$legacy_base" in /nix/store/*) ;; *) migration_failed=1; continue ;; esac
+            case "$legacy_osrel" in /nix/store/*) ;; *) migration_failed=1; continue ;; esac
+            legacy_os_abi=$(read_os_release AOS_MODULE_ABI "/sysroot$legacy_osrel" 2>/dev/null || true)
+            legacy_os_digest=$(read_os_release AOS_BASELIB_DIGEST "/sysroot$legacy_osrel" 2>/dev/null || true)
+            [ "$legacy_abi" = "$legacy_os_abi" ] || { migration_failed=1; continue; }
+            [ -n "$legacy_digest" ] && [ "$legacy_digest" = "$legacy_os_digest" ] \
+              || { migration_failed=1; continue; }
+
+            legacy_matches=$(${pkgs.jq}/bin/jq \
+              --arg top "$legacy_top" --arg base "$legacy_base" \
+              --arg digest "$legacy_digest" --argjson abi "$legacy_abi" \
+              '[.generations[] | select(.toplevel == $top
+                 and .evaluator_ref == $base and .module_abi == $abi
+                 and .baselib_digest == $digest)] | length' \
+              "$image_dir/state.json")
+            [ "$legacy_matches" -eq 1 ] || { migration_failed=1; continue; }
+            legacy_parent=$(${pkgs.jq}/bin/jq -r \
+              --arg top "$legacy_top" --arg base "$legacy_base" \
+              --arg digest "$legacy_digest" --argjson abi "$legacy_abi" \
+              '.generations[] | select(.toplevel == $top
+                 and .evaluator_ref == $base and .module_abi == $abi
+                 and .baselib_digest == $digest) | .number' \
+              "$image_dir/state.json")
+            ${pkgs.jq}/bin/jq --argjson index "$index" \
+              --argjson abi "$legacy_abi" --argjson parent "$legacy_parent" \
+              --arg base "$legacy_base" \
+              '.generations[$index].module_abi_pinned = $abi
+               | .generations[$index].image_gen_parent = $parent
+               | .generations[$index].base_lib_ref = $base' \
+              "$profile_dir/.state.json.migrate" > "$profile_dir/.state.json.next"
+            mv "$profile_dir/.state.json.next" "$profile_dir/.state.json.migrate"
+          done
+          complete=$(${pkgs.jq}/bin/jq '
+            all(.generations[];
+              (.image_gen_parent | type) == "number"
+              and (.module_abi_pinned | type) == "number"
+              and (.manifest_hash | type) == "string" and (.manifest_hash | length) > 0
+              and (.config_module_closure | type) == "string" and (.config_module_closure | length) > 0
+              and (.config_module_paths | type) == "array"
+              and (.config_module_packages | type) == "array"
+              and (.host_nix_ref | type) == "string" and (.host_nix_ref | length) > 0
+              and (.facts_hash | type) == "string" and (.facts_hash | length) > 0
+              and (.facts_ref | type) == "string" and (.facts_ref | length) > 0
+              and (.base_lib_ref | type) == "string" and (.base_lib_ref | length) > 0
+              and (.evaluator_ref | type) == "string" and (.evaluator_ref | length) > 0))' \
+            "$profile_dir/.state.json.migrate")
+          if [ "$has_legacy" = true ] && { [ "$migration_failed" -ne 0 ] || [ "$complete" != true ]; }; then
+            rm -f "$profile_dir/.state.json.migrate"
+            echo "aos-seed-profiles: legacy system state cannot be authenticated as complete config generations" >&2
+            exit 1
+          fi
+          if [ "$has_legacy" = true ]; then
+            ${pkgs.jq}/bin/jq '
+              .generations |= map({
+                number, image_gen_parent, module_abi_pinned, manifest_hash,
+                config_module_closure, config_module_paths,
+                config_module_packages, host_nix_ref, host_nix_commit,
+                facts_hash, facts_ref, base_lib_ref, evaluator_ref, created_at
+              })' "$profile_dir/.state.json.migrate" \
+              > "$profile_dir/.state.json.next"
+            mv "$profile_dir/.state.json.next" "$profile_dir/.state.json.migrate"
+            ${pkgs.coreutils}/bin/sync -f "$profile_dir/.state.json.migrate"
+            mv "$profile_dir/.state.json.migrate" "$profile_dir/state.json"
+            ${pkgs.coreutils}/bin/sync -f "$profile_dir"
+          else
+            rm -f "$profile_dir/.state.json.migrate"
+          fi
         fi
 
-        link=$(readlink "$profile_dir/current")
+        if [ ! -e "$profile_dir/state.json" ]; then
+          # A baked image is an image-generation, not an empty synthetic
+          # config-generation. The first successful on-host evaluation creates
+          # config-gen 1 with all authenticated input/output bindings present.
+          ${pkgs.jq}/bin/jq -n \
+            '{current: 0, next: 1, generations: []}' \
+            > "$profile_dir/state.json"
+        fi
+
+        link=$(readlink "$profile_dir/current" 2>/dev/null || true)
         GEN=''${link#gen-}
+        [ -n "$GEN" ] || GEN=0
         printf 'AOS_PROFILE_GEN=%s\n' "$GEN" > /run/aos-profile-gen.env
       '';
     };
@@ -477,16 +753,21 @@ in {
     # picks these up via `system.build.systemdInitrdUnits`.
     boot.initrd.systemd.services = neutralBootServices;
 
-    # DHCP on every physical NIC in the initrd. Kind=!* excludes virtual
-    # links (bridges/bonds/etc.); matching only physical ether devices
-    # mirrors the stage-2 80-dhcp.network and nixpkgs' default. Brought up
-    # only when the network gate fires (cloud platforms).
+    # DHCP on every physical NIC in the initrd. IPv4 link-local addressing is
+    # the DHCP-less metadata bootstrap: it provides an on-link source address
+    # and route to 169.254.169.254 so the agent can learn the provider's real
+    # static address. Kind=!* excludes virtual links (bridges/bonds/etc.).
+    # Brought up only when the network gate fires (cloud platforms).
     boot.initrd.systemd.network."80-dhcp" = {
       matchConfig = {
         Type = "ether";
         Kind = "!*";
       };
-      networkConfig.DHCP = "yes";
+      networkConfig = {
+        DHCP = "yes";
+        LinkLocalAddressing = "ipv4";
+        IPv4LLRoute = true;
+      };
     };
   };
 }

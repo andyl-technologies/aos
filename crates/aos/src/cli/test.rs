@@ -34,7 +34,7 @@ pub enum TestCmd {
         interactive: bool,
         /// SSH public key authorized for root login when --interactive
         /// is set. Typically `"$(ssh-add -L | head -1)"`. The key is
-        /// baked into each per-machine metadata ISO via ignition; the
+        /// baked into each per-machine metadata ISO as host configuration; the
         /// per-machine disk image is content-addressed independently
         /// of the key, so changing the key only rebuilds tiny ISOs.
         #[arg(long, requires = "interactive")]

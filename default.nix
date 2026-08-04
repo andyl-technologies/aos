@@ -54,7 +54,10 @@
 
   # Assemble the in-image, eval-only base library for every
   # system. See `lib/build/base-lib.nix`.
-  mkBaseLib = import ./lib/build/base-lib.nix {inherit lib pkgs;};
+  mkBaseLib = import ./lib/build/base-lib.nix {
+    inherit lib pkgs;
+    system = hostPlatform.system;
+  };
 
   # Build a system from a system definition module (or list of modules).
   #
@@ -86,6 +89,10 @@
       if builtins.isAttrs args && args ? operatorModules
       then args.operatorModules
       else [];
+    packageModules =
+      if builtins.isAttrs args && args ? packageModules
+      then args.packageModules
+      else [];
     systemModules = builtins.filter builtins.isPath moduleList;
     baseLib = mkBaseLib {
       baseModules = modules;
@@ -96,8 +103,15 @@
       modules =
         modules
         ++ moduleList
-        ++ [{aos.config.evalAtBoot.baseLib = baseLib;}];
-      inherit pkgs lib specialArgs operatorModules;
+        ++ [
+          {
+            aos.config.evalAtBoot = {
+              inherit baseLib;
+              baseLibAbiHash = baseLib.passthru.abiHash;
+            };
+          }
+        ];
+      inherit pkgs lib specialArgs operatorModules packageModules;
     };
 
   # Auto-discover system definitions from ./systems/*.nix
@@ -974,6 +988,8 @@ in {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
     };
+    # The pure evaluator checks and the all-variant toplevel characterization
+    # are one hard gate: rendering changes cannot bypass byte-parity review.
     eval = pkgs.mkDerivation {
       pname = "aos-eval-and-characterization-checks";
       version = "0";
@@ -1023,7 +1039,19 @@ in {
     # Off-host config-eval preflight and flat-to-module parity gates.
     # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
     config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
+    config-manifest = import ./lib/testing/config-manifest.nix {
+      inherit pkgs lib;
+      system = discoverSystems.server;
+    };
+    rfc-0011-provenance = import ./lib/testing/rfc-0011-provenance.nix {
+      inherit pkgs mkSystem;
+      serverModule = ./systems/server.nix;
+    };
+    rfc-0011-two-axis-gen = import ./lib/testing/rfc-0011-two-axis-gen.nix {inherit pkgs lib;};
+    rfc-0011-cfgsrc-gc = import ./lib/testing/rfc-0011-cfgsrc-gc.nix {inherit pkgs lib;};
+    rfc-0011-image-rollback = import ./lib/testing/rfc-0011-image-rollback.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
+    rfc-0011-materialize = config-materialize;
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
@@ -1043,7 +1071,10 @@ in {
         phases = [
           {
             name = "check";
-            script = "mkdir -p $out; echo PASS > $out/result";
+            script = ''
+              mkdir -p $out
+              echo PASS > $out/result
+            '';
           }
         ];
       };
@@ -1067,7 +1098,10 @@ in {
         ];
       };
     in
-      check // {inherit variants regenerate;};
+      check
+      // {
+        inherit variants regenerate;
+      };
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
     package-expose = import ./lib/testing/package-expose.nix {
