@@ -7,6 +7,22 @@ use crate::model::RngDecision;
 use crate::scheduler::EventDiagnosticPayload;
 
 #[test]
+fn backend_poll_boundary_moves_only_console_observations_forward() {
+    let node = NodeId {
+        name: String::from("vm-a"),
+    };
+    let boundary = VirtualTime { ticks: 10 };
+    let console =
+        ObservableEvent::console_output(VirtualTime { ticks: 5 }, node.clone(), b"ready".to_vec())
+            .normalize_backend_poll_boundary(boundary);
+    let coverage = ObservableEvent::coverage_block(Icount { retired: 5 }, node, 0x4010, 4)
+        .normalize_backend_poll_boundary(boundary);
+
+    assert_eq!(console.at(), boundary);
+    assert_eq!(coverage.at(), VirtualTime { ticks: 5 });
+}
+
+#[test]
 fn causal_projection_comparison_ignores_observational_entries() {
     let causal = SchedulerEventLogEntry::with_payload_for_test(
         0,

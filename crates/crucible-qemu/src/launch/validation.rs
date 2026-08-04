@@ -4,7 +4,8 @@ use thiserror::Error;
 
 use super::{
     DEFAULT_ACCEL, DiskImageMode, GuestBackingStateMode, GuestCoreContentMode, InputPolicy,
-    MAX_ICOUNT_SHIFT, MAX_RR_SWITCH_QUANTUM, MachineResetMode, entropy::GUEST_ENTROPY_RNG_ID,
+    MAX_ICOUNT_SHIFT, MAX_RR_SWITCH_QUANTUM, MachineResetMode, QEMU_CONSOLE_CHARDEV_ID,
+    QEMU_CONSOLE_SOCKET_FILE_NAME, entropy::GUEST_ENTROPY_RNG_ID,
 };
 
 mod values;
@@ -578,6 +579,7 @@ fn validate_pre_spawn_cpu(cpu_model: &str) -> Result<(), QemuPreSpawnLaunchValid
 }
 
 fn reject_kvm_and_host_sources(args: &[String]) -> Result<(), QemuPreSpawnLaunchValidationError> {
+    let internal_output_chardevs = internal_output_chardev_ids(args);
     for (index, argument) in args.iter().enumerate() {
         let lower = argument.to_ascii_lowercase();
         if lower == "-enable-kvm" || lower == "--enable-kvm" {
@@ -597,7 +599,7 @@ fn reject_kvm_and_host_sources(args: &[String]) -> Result<(), QemuPreSpawnLaunch
         }
 
         let value = args.get(index + 1).map(String::as_str);
-        reject_option_host_source(argument, value)?;
+        reject_option_host_source(argument, value, &internal_output_chardevs)?;
     }
     Ok(())
 }
@@ -605,6 +607,7 @@ fn reject_kvm_and_host_sources(args: &[String]) -> Result<(), QemuPreSpawnLaunch
 fn reject_option_host_source(
     option: &str,
     value: Option<&str>,
+    internal_output_chardevs: &[String],
 ) -> Result<(), QemuPreSpawnLaunchValidationError> {
     let (option, value, display_argument) =
         if let Some((inline_option, inline_value)) = option.split_once('=') {
@@ -620,7 +623,10 @@ fn reject_option_host_source(
             validate_disabled_network_option(&lower_value, display_argument)
         }
         "-chardev" => validate_internal_chardev_option(&lower_value, display_argument),
-        "-serial" | "-parallel" | "-monitor" => {
+        "-serial" => {
+            validate_serial_frontend(&lower_value, display_argument, internal_output_chardevs)
+        }
+        "-parallel" | "-monitor" => {
             validate_disabled_character_frontend(&lower_value, display_argument)
         }
         "-usbdevice" => Err(host_source_argument(
@@ -647,6 +653,59 @@ fn reject_option_host_source(
         ),
         _ => Ok(()),
     }
+}
+
+fn internal_output_chardev_ids(args: &[String]) -> Vec<String> {
+    args.iter()
+        .enumerate()
+        .filter_map(|(index, argument)| {
+            let (option, value) = argument
+                .split_once('=')
+                .map_or((argument.as_str(), None), |(option, value)| {
+                    (option, Some(value))
+                });
+            if !option.eq_ignore_ascii_case("-chardev") {
+                return None;
+            }
+            let value = value.or_else(|| args.get(index + 1).map(String::as_str))?;
+            let mut fields = value.split(',');
+            let model = fields.next()?;
+            let internal_ringbuf = model.eq_ignore_ascii_case("ringbuf");
+            let console_socket = value.eq_ignore_ascii_case(&format!(
+                "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
+            ));
+            if !internal_ringbuf && !console_socket {
+                return None;
+            }
+            fields.find_map(|field| {
+                field
+                    .split_once('=')
+                    .filter(|(key, id)| key.eq_ignore_ascii_case("id") && !id.is_empty())
+                    .map(|(_key, id)| id.to_ascii_lowercase())
+            })
+        })
+        .collect()
+}
+
+fn validate_serial_frontend(
+    value: &str,
+    display_argument: String,
+    internal_output_chardevs: &[String],
+) -> Result<(), QemuPreSpawnLaunchValidationError> {
+    if value.trim() == "none" {
+        return Ok(());
+    }
+    if let Some(id) = value.strip_prefix("chardev:")
+        && internal_output_chardevs
+            .iter()
+            .any(|candidate| candidate == id)
+    {
+        return Ok(());
+    }
+    Err(host_source_argument(
+        display_argument,
+        "host-backed character frontend input",
+    ))
 }
 
 fn validate_disabled_network_option(
@@ -699,6 +758,13 @@ fn validate_internal_chardev_option(
 ) -> Result<(), QemuPreSpawnLaunchValidationError> {
     match option_model(value) {
         "null" | "ringbuf" => Ok(()),
+        "socket"
+            if value.eq_ignore_ascii_case(&format!(
+                "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
+            )) =>
+        {
+            Ok(())
+        }
         _ => Err(host_source_argument(
             display_argument,
             "host-backed character-device input",

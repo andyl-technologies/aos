@@ -215,6 +215,14 @@ impl ObservableEvent {
         self.at
     }
 
+    /// Moves a polled console observation forward to its unified scheduler boundary.
+    pub(crate) fn normalize_backend_poll_boundary(mut self, boundary: VirtualTime) -> Self {
+        if matches!(&self.payload, ObservableEventPayload::ConsoleOutput { .. }) {
+            self.at = self.at.max(boundary);
+        }
+        self
+    }
+
     /// Returns the typed observable payload.
     #[must_use]
     pub fn payload(&self) -> &ObservableEventPayload {

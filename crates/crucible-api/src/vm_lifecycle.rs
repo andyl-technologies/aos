@@ -18,13 +18,14 @@ use crate::vm_resume::{
     ProductionPluginSwitch, ProductionRootImageFormat, launch_production_live_node,
 };
 use crucible::{
-    Action, BackendQuantumLoop, ConditionEvaluationPass, ConditionLeaf, Configuration,
-    ControlOperation, Decision, EventFirings, EventGraph, EventGraphState, FingerprintSample,
-    GdbAttachInfo, GdbListen, NodeId, QuantumLoop, QuantumOutcome, QuantumRequest,
-    QuantumTerminalVerdict, RestartPolicy, ScenarioDef, ScenarioDefForm, SchedulerError,
-    SchedulerEventLogAppend, SchedulerEventLogEntry, SchedulerLivenessScenario,
-    SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend, SingleScheduler,
-    VirtualTime, World,
+    Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, ConditionEvaluationPass,
+    ConditionLeaf, Configuration, ControlOperation, Decision, EventFirings, EventGraph,
+    EventGraphState, FingerprintSample, GdbAttachInfo, GdbListen, HostAssertionEvaluator,
+    HostAssertionOutcome, HostAssertionOutcomeKind, NodeId, ObservableEvent, QuantumLoop,
+    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RestartPolicy, ScenarioDef,
+    ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
+    SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
+    SingleScheduler, VirtualTime, World,
 };
 
 use crate::LifecycleApiError;
@@ -269,6 +270,8 @@ pub struct ProductionVmLifecycleLoop {
     trigger_graph: EventGraph,
     trigger_state: EventGraphState,
     trigger_world: World,
+    assertion_evaluator: HostAssertionEvaluator,
+    assertion_oracle: BlackBoxHostOracle,
     terminal_verdict: Option<QuantumTerminalVerdict>,
     branch: Option<ProductionVmBranchConfig>,
     launch_configs: BTreeMap<NodeId, ProductionLiveNodeStepGateConfig>,
@@ -447,6 +450,7 @@ pub fn build_production_vm_lifecycle_loop(
         .with_coverage(config.coverage)
         .with_queue_capacity(PRODUCTION_QUEUE_CAPACITY)
         .with_completion_timeout(config.completion_timeout)
+        .with_console_capture()
         .with_second_run_host_load(false);
         if !source.world().links().is_empty() {
             launch = launch.with_shmem_network_mac(crucible::deterministic_node_mac_string(&vm.id));
@@ -560,6 +564,9 @@ pub fn build_production_vm_lifecycle_loop(
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),
+        assertion_evaluator: HostAssertionEvaluator::new(source.properties())
+            .with_world_white_box_policies(source.world()),
+        assertion_oracle: BlackBoxHostOracle,
         terminal_verdict: None,
         branch: config.branch.clone(),
         launch_configs,
