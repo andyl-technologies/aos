@@ -349,6 +349,18 @@ in
           qemu_shmem_header_hash=${shmemHeaderHash}
           qemu_build_id=${qemuBuildIdentity}
           QEMU_BUILD_IDENTITY
+
+          mkdir -p "$out/share/licenses/${pname}"
+          install -m 644 COPYING "$out/share/licenses/${pname}/COPYING"
+          install -m 644 LICENSE "$out/share/licenses/${pname}/LICENSE"
+          cat > "$out/share/licenses/${pname}/AOS-MODIFICATIONS" <<'MODIFICATIONS'
+          AOS package: ${pname}
+          Upstream version: ${version}
+          Modified QEMU: ${if applyCruciblePatches then "yes" else "no"}
+          Ordered patch count: ${toString patchCount}
+          Patch series identity: ${patchSeriesHash}
+          Corresponding source package: qemu-crucible-source
+          MODIFICATIONS
         '';
       }
     ];

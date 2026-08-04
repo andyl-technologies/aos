@@ -4,6 +4,9 @@
   version,
   src,
   cargoDepsHash,
+  controllerPackage ? null,
+  pluginPackage ? null,
+  qemuSourcePackage ? null,
 }: let
   packages = import ./_packages.nix;
   crateRoot = ../../../crates;
@@ -39,6 +42,12 @@
       packages);
   mismatchedPackageVersions = builtins.filter (package: packageVersions.${package} != version) packages;
   qemuPassthru = qemuPackage.passthru or qemuPackage;
+  componentPath = package:
+    if package == null
+    then "unavailable"
+    else if builtins.isAttrs package && !(package ? outPath)
+    then "metadata-probe"
+    else toString package;
   qemuSeries = qemuPassthru.series;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
   guestHostProtocolVersion =
@@ -98,6 +107,39 @@
       deterministicBaseDate = qemuSeries.deterministicBaseDate;
       deterministicPatchDate = qemuSeries.deterministicPatchDate;
     };
+    components = {
+      controller = {
+        package = "crucible-controller";
+        path = componentPath controllerPackage;
+        license = "Apache-2.0";
+        boundary = "separate-process-controller";
+      };
+      qemu = {
+        package = "qemu-crucible";
+        path = componentPath qemuPackage;
+        license = "GPL-2.0-only";
+        boundary = "qemu-process";
+      };
+      plugin = {
+        package = "crucible-qemu-plugin";
+        path = componentPath pluginPackage;
+        license = "GPL-2.0-only";
+        boundary = "loaded-into-qemu-process";
+      };
+      correspondingSource = {
+        package = "qemu-crucible-source";
+        path = componentPath qemuSourcePackage;
+        licenses = ["Apache-2.0" "MIT" "GPL-2.0-only"];
+        scope = ["qemu-crucible" "crucible-qemu-plugin"];
+        qemuBuildId = qemuPassthru.qemuBuildIdentity;
+      };
+    };
+    licensing = {
+      aggregate = true;
+      licenses = ["Apache-2.0" "GPL-2.0-only"];
+      processBoundary = "unix-socket-control+memfd-shared-memory-data";
+      sharedMemoryRole = "versioned-process-to-process-protocol";
+    };
     abi = {
       shmem = {
         version = shmemAbiVersion;
@@ -148,6 +190,20 @@
     qemu_patch_branch_bundle_hash=${manifest.qemu.patchBranchBundleHash}
     qemu_patch_branch_material_hash=${manifest.qemu.patchBranchMaterialHash}
     qemu_build_id=${manifest.qemu.buildId}
+    controller_package=crucible-controller
+    controller_path=${manifest.components.controller.path}
+    controller_license=Apache-2.0
+    qemu_path=${manifest.components.qemu.path}
+    qemu_license=GPL-2.0-only
+    plugin_package=crucible-qemu-plugin
+    plugin_path=${manifest.components.plugin.path}
+    plugin_license=GPL-2.0-only
+    qemu_corresponding_source_package=qemu-crucible-source
+    qemu_corresponding_source_path=${manifest.components.correspondingSource.path}
+    qemu_corresponding_source_build_id=${manifest.components.correspondingSource.qemuBuildId}
+    corresponding_source_scope=qemu-crucible,crucible-qemu-plugin
+    aggregate_licenses=Apache-2.0,GPL-2.0-only
+    process_boundary=unix-socket-control+memfd-shared-memory-data
     shmem_abi_version=${shmemAbiVersion}
     shmem_abi=${shmemAbi}
     shmem_generated_header_hash=${manifest.abi.shmem.generatedHeaderHash}

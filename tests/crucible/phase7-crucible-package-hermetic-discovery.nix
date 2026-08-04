@@ -45,16 +45,16 @@
         needle = "crucible-qemu-plugin";
       }
       {
-        label = "matched QEMU/plugin runtime closure";
-        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
+        label = "suite runtime closure keeps controller and QEMU-side outputs separate";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
       }
       {
-        label = "compile-time AOS QEMU hint";
-        needle = "CRUCIBLE_AOS_QEMU = \"" + "$" + "{qemu-crucible}/bin/qemu-system-x86_64\";";
+        label = "runtime QEMU wrapper configuration";
+        needle = "CRUCIBLE_QEMU:=";
       }
       {
-        label = "compile-time AOS plugin hint";
-        needle = "CRUCIBLE_AOS_PLUGIN = \"" + "$" + "{crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so\";";
+        label = "runtime plugin wrapper configuration";
+        needle = "CRUCIBLE_PLUGIN:=";
       }
       {
         label = "QEMU package build-info field";
@@ -73,8 +73,8 @@
         needle = "plugin_path=" + "$" + "{crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so";
       }
       {
-        label = "discovery hint build-info field";
-        needle = "discovery_hint=compile-time-aos-package-set";
+        label = "runtime wrapper discovery hint build-info field";
+        needle = "discovery_hint=runtime-environment-wrapper";
       }
     ]
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
@@ -198,7 +198,7 @@
       }
       {
         label = "output smoke checks discovery hint metadata";
-        needle = "grep -q '^discovery_hint=compile-time-aos-package-set$'";
+        needle = "grep -q '^discovery_hint=runtime-environment-wrapper$'";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -233,7 +233,7 @@ in
             printf '%s\n' 'package=crucible'
             printf '%s\n' 'qemu_package=qemu-crucible'
             printf '%s\n' 'plugin_package=crucible-qemu-plugin'
-            printf '%s\n' 'discovery_hint=compile-time-aos-package-set'
+            printf '%s\n' 'discovery_hint=runtime-environment-wrapper'
             printf '%s\n' 'behavior_gate=checks.crucible.phase5.cliHermeticDiscovery'
             printf '%s\n' 'output_smoke=checks.crucible.phase1.aosWorkspaceBuild'
             printf '%s\n' 'host_path_fallback=false'

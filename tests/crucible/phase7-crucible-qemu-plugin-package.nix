@@ -138,16 +138,16 @@
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
       {
-        label = "CLI package carries matched QEMU/plugin runtime deps";
-        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
+        label = "suite carries the separate controller and matched QEMU/plugin runtime deps";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
       }
       {
-        label = "CLI package pins AOS QEMU hint";
-        needle = "CRUCIBLE_AOS_QEMU = \"" + "$" + "{qemu-crucible}/bin/qemu-system-x86_64\";";
+        label = "suite wrapper configures QEMU at runtime";
+        needle = "CRUCIBLE_QEMU:=";
       }
       {
-        label = "CLI package pins AOS plugin hint";
-        needle = "CRUCIBLE_AOS_PLUGIN = \"" + "$" + "{crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so\";";
+        label = "suite wrapper configures the plugin at runtime";
+        needle = "CRUCIBLE_PLUGIN:=";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-aos-workspace-build.nix" workspaceBuildCheck [
