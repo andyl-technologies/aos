@@ -13,11 +13,8 @@ development.
 
 ## Projects
 
-- **AOS** builds the operating system, package graph, system images, and the
-  `aos` repository CLI.
-- **[Package registries](docs/users/registry/)** distribute signed package
-  catalogs and binary caches. `apr` publishes packages, releases, and staged
-  rollouts; `apm` verifies registries and manages installed packages.
+- **[AOS](docs/users/aos/)** builds the operating system, package graph, system
+  images, and the `aos` repository CLI.
 - **[AOS Hub](docs/users/aos-hub/)** hosts package registries and binary caches.
   It runs as a native service or as a Cloudflare Worker and exposes a web
   console, HTTP API, and the registry and cache protocols used by `apr`, `apm`,
