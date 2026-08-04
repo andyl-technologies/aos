@@ -7,7 +7,9 @@ Its bootstrap toolchain, userspace, packages, system images, and tests are built
 from source in this repository without nixpkgs dependencies.
 
 AOS uses read-only system images, systemd, and a Nix module system.
-Machine-specific policy is supplied as literal `host.nix`.
+System policy is built from modules in `systems/`. A literal `host.nix`
+supplies first-boot storage policy; broader runtime activation is still under
+development.
 
 ## Projects
 
@@ -22,10 +24,18 @@ Machine-specific policy is supplied as literal `host.nix`.
 
 ## Build a server image
 
-Building AOS requires Nix with flakes enabled and a Linux builder.
+Building AOS images requires Nix with flakes enabled and an `x86_64-linux`
+caller or remote builder. On an x86 Linux host:
 
 ```sh
 nix build .#server-image-qcow2
+```
+
+From another system using an x86 Linux remote builder, select that package set
+explicitly:
+
+```sh
+nix build .#packages.x86_64-linux.server-image-qcow2
 ```
 
 The result is available at `result/aos-aos.qcow2`. The flake also exposes
@@ -89,10 +99,16 @@ VM and fleet checks require a Linux builder with KVM.
 
 ## Documentation
 
+- [Install and operate AOS](docs/users/aos/), including a
+  [first-boot tutorial](docs/users/aos/quickstart.md) and the
+  [`host.nix` guide](docs/users/aos/host-nix.md)
 - [AOS Hub operations](docs/users/aos-hub/), including a
   [local quickstart](docs/users/aos-hub/quickstart.md)
+- [Package registry operations](docs/users/registry/), including a
+  [signed local quickstart](docs/users/registry/quickstart.md), hosting,
+  staged rollouts, and key rotation
 - [Crucible operations](docs/users/crucible/), including the
   [Nginx and Curl quickstart](docs/users/crucible/quickstart.md)
-- [Package registry reference](docs/registry/)
+- [Registry architecture and implementation notes](docs/registry/)
 
 AOS is licensed under the [Apache License 2.0](LICENSE).
