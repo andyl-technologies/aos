@@ -24,6 +24,9 @@
 //! - [`binding`] — storage-binding kinds ([`BindingKind`](binding::BindingKind))
 //!   and the per-runtime capability model ([`RuntimeKind`](binding::RuntimeKind))
 //!   that gates which kinds the serving runtime accepts.
+//! - [`delivery`] — raw request-path normalization, reserved namespace
+//!   classification, deterministic route matching, capability classification,
+//!   and versioned partition selection shared by both serving runtimes.
 //! - [`url_guard`] — the pure SSRF guards (global-IP predicate, network-origin
 //!   URL check, HTTP surface-path validator, traversal-safe path join) shared
 //!   by the native hub's `fetch` hardening and the Worker's egress policy.
@@ -66,6 +69,7 @@ pub mod crawl;
 pub mod db;
 pub mod dialect;
 pub mod directory;
+pub mod delivery;
 pub mod domain;
 pub mod email;
 pub mod ephemeral;
