@@ -88,7 +88,7 @@ in
           grep -Fxq 'server_workload=nginx' "$report"
           grep -Fxq 'client_workload=curl' "$report"
           grep -Fxq 'http_status=200' "$report"
-          grep -Eq '^response_delivery_ticks=[1-9][0-9]*$' "$report"
+          grep -Fxq 'assertion=curl-receives-http-200:satisfied' "$report"
           grep -Eq '^final_configuration=[0-9a-f]{64}$' "$report"
 
           cli_report="$TMPDIR/nginx-curl-http-200.cli.jsonl"

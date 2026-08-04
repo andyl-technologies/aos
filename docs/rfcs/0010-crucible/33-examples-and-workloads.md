@@ -95,8 +95,11 @@ at **quiescence**. No faults.
 **Any kernel.** The server is an unmodified HTTP daemon image; the client is an
 unmodified image whose init runs a request loop (see Part B, `WL`). Crucible
 never enters either guest. Readiness is the server's own startup banner on the
-serial console (`ConsoleMatch`); completion is the client's last successful
-response observed on the wire (`NetworkMatch`) plus `Quiescent`.
+serial console (`ConsoleMatch`); completion is the client application's own
+success result on the serial console (`ConsoleMatch`) plus `Quiescent`. This
+remains valid when the application protocol is encrypted: wire observations may
+diagnose connectivity, but they are not evidence that the client accepted a
+response.
 
 Serializable form (06 §6.1):
 
@@ -147,11 +150,11 @@ predicate = { not = { node_state = { node = "client", state = "crashed" } } }
 [[properties.assertion]]
 name = "all-requests-succeed"
 kind = "eventually"
-# trigger: the client has started issuing requests (first request observed)
-trigger  = { once = { network_match = { link = "client--server", predicate = "http_request" } } }
-# property: the client observed exactly `count` successful responses, then exited 0
+# trigger: the client reports that its request loop started
+trigger  = { once = { console_match = { node = "client", regex = "CLIENT_STARTED" } } }
+# property: the client reports exactly `count` successful responses, then exits 0
 property = { all_of = [
-  { network_match = { link = "client--server", predicate = "http_200_count >= 100" } },
+  { console_match = { node = "client", regex = "CLIENT_RESULT requests=100 successful=100 failed=0" } },
   { node_state = { node = "client", state = "exited" } },
 ] }
 deadline = "60s"
@@ -160,7 +163,7 @@ deadline = "60s"
 [[event]]
 id = "pass-on-quiescence"
 trigger = { all_of = [
-  { node_state = { node = "client", state = "exited" } },
+  { assertion_state = { name = "all-requests-succeed", state = "satisfied" } },
   { quiescent = {} },
 ] }
 action  = { pass = {} }
@@ -185,16 +188,17 @@ let scenario = ScenarioBuilder::new()
     .properties(Properties::builder()
         .always("no-crashes", Predicate::not(Condition::node_state("client", NodeLifecycle::Crashed)))
         .eventually("all-requests-succeed",
-            /* trigger  */ Condition::network_match(link("client","server"), frame::http_request()).once(),
+            /* trigger  */ Condition::console_match("client", regex("CLIENT_STARTED")).once(),
             /* property */ Condition::all_of([
-                Condition::network_match(link("client","server"), frame::http_200_count_ge(100)),
+                Condition::console_match("client",
+                    regex("CLIENT_RESULT requests=100 successful=100 failed=0")),
                 Condition::node_state("client", NodeLifecycle::Exited),
             ]),
             /* deadline */ secs(60)))
     .plan(EventGraph::builder()
         .event("pass-on-quiescence")
             .when(Condition::all_of([
-                Condition::node_state("client", NodeLifecycle::Exited),
+                Condition::assertion_state("all-requests-succeed", AssertionPhase::Satisfied),
                 Condition::quiescent(),
             ]))
             .action(Action::pass())

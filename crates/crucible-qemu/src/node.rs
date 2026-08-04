@@ -6,7 +6,9 @@
 //! keeping per-quantum timing and frame traffic on the shared-memory channel.
 
 use std::any::Any;
+use std::io::Read as _;
 use std::net::SocketAddr;
+use std::os::unix::net::UnixStream;
 use std::process::Child;
 use std::time::Duration;
 
@@ -454,6 +456,12 @@ impl QemuNodeChannels {
     }
 }
 
+/// Reader for QEMU's output-only per-node console stream.
+struct QemuConsoleObservation {
+    node: NodeId,
+    output: UnixStream,
+}
+
 /// Host-side wrapper exposing one QEMU child as a synchronous scheduler node.
 pub struct QemuNode {
     child: QemuNodeChild,
@@ -464,10 +472,13 @@ pub struct QemuNode {
     crash_detector: QemuCrashDetector,
     host_io_runtime: Box<dyn QemuHostIoRuntime>,
     last_observed_time: VirtualTime,
+    // Console polling proves availability only at the scheduler-requested boundary.
+    console_observation_boundary: VirtualTime,
     gdbstub: Option<QemuGdbstubChannelConfig>,
     active_gdbstub: Option<QemuGdbstubProxyServer>,
     pending_preemption: Option<crucible::PreemptionDecision>,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
+    console_observation: Option<QemuConsoleObservation>,
 }
 
 impl QemuNode {
@@ -490,11 +501,31 @@ impl QemuNode {
             crash_detector,
             host_io_runtime: Box::new(host_io_runtime),
             last_observed_time: VirtualTime::default(),
+            console_observation_boundary: VirtualTime::default(),
             gdbstub: None,
             active_gdbstub: None,
             pending_preemption: None,
             pending_network_outputs: Vec::new(),
+            console_observation: None,
         }
+    }
+
+    /// Returns this node with output-only console bytes exposed as observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when the QEMU console stream cannot be
+    /// configured for non-blocking boundary reads.
+    pub fn with_console_observation(
+        mut self,
+        node: NodeId,
+        output: UnixStream,
+    ) -> Result<Self, QemuNodeChannelError> {
+        output.set_nonblocking(true).map_err(|error| {
+            QemuNodeChannelError::new("configure QEMU console stream", error.to_string())
+        })?;
+        self.console_observation = Some(QemuConsoleObservation { node, output });
+        Ok(self)
     }
 
     /// Attaches a configured mediated gdbstub channel to this node wrapper.
@@ -972,16 +1003,45 @@ impl SimulationBackend for QemuNode {
         let outcome = self
             .finish_advance_report(icount_ceiling, report)
             .map_err(BackendError::from)?;
+        self.console_observation_boundary = ceiling;
         Ok(StepObservation::from_advance_outcome(ceiling, outcome))
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
-        self.channels
+        let mut events = self
+            .channels
             .shmem_hot_path
             .drain_observable_events()
             .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source).into()
-            })
+                BackendError::from(QemuNodeError::from_channel(
+                    QemuNodeChannelPlane::ShmemHotPath,
+                    source,
+                ))
+            })?;
+        if let Some(console) = self.console_observation.as_mut() {
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match console.output.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => {
+                        return Err(BackendError::Rejected {
+                            message: format!("read QEMU console output: {error}"),
+                        });
+                    }
+                }
+            }
+            if !bytes.is_empty() {
+                events.push(ObservableEvent::console_output(
+                    self.console_observation_boundary,
+                    console.node.clone(),
+                    bytes,
+                ));
+            }
+        }
+        Ok(events)
     }
 
     // crucible-lint: allow host-nondeterminism-state -- the scheduler validates every returned conjecture before append.
@@ -1747,6 +1807,29 @@ mod tests {
         assert!(node.child_reaped());
         SimulationBackend::shutdown(&mut node)?;
         assert!(node.child_reaped());
+        Ok(())
+    }
+
+    #[test]
+    fn qemu_node_stamps_polled_console_at_the_scheduler_boundary() -> Result<(), Box<dyn Error>> {
+        let log = shared_log();
+        let (mut console_writer, console_reader) = UnixStream::pair()?;
+        std::io::Write::write_all(&mut console_writer, b"guest output")?;
+        let mut node = scripted_node_with_options(
+            log,
+            ScriptedNodeOptions::default(),
+            [QemuAsyncWaitOutcome::Completed],
+        )?
+        .with_console_observation(node_id("vm-a"), console_reader)?;
+
+        let boundary = VirtualTime { ticks: 97 };
+        SimulationBackend::step_to(&mut node, boundary)?;
+        node.last_observed_time = VirtualTime { ticks: 3 };
+        let observations = SimulationBackend::drain_observable_events(&mut node)?;
+
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].at(), boundary);
+        SimulationBackend::shutdown(&mut node)?;
         Ok(())
     }
 

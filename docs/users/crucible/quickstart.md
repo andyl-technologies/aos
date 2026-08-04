@@ -3,7 +3,8 @@
 This tutorial builds a custom two-VM world and runs it through Crucible's live
 QEMU lifecycle. One guest runs Nginx, another runs Curl, and all traffic crosses
 a deterministic link owned by Crucible. The scenario passes only after the
-scheduler observes a request followed by an HTTP 200 response.
+Curl guest reports that it received an HTTP 200 response and the scenario's
+guest-console assertion becomes satisfied.
 
 Run every command from the repository root on an `x86_64-linux` host. QEMU uses
 deterministic software translation, so KVM is not required.
@@ -24,7 +25,8 @@ The separate guest image contains AOS-built Nginx, Curl, and networking tools.
 It has no Crucible agent or instrumentation; its init selects the preinstalled
 Nginx or Curl role from ordinary kernel boot arguments. Crucible launches the
 image as supplied, puts each node's writes in a disposable overlay, and observes
-network traffic from the host instead of modifying the base image.
+its ordinary serial output through an output-only host connection instead of
+modifying the base image or injecting commands into the guest.
 
 Verify the image before the run:
 
@@ -50,8 +52,9 @@ define:
 - an `nginx` VM at `10.0.0.2` and a `curl` VM at `10.0.0.3`;
 - a deterministic link between the two nodes;
 - an assertion that neither node crashes;
-- an eventual-response assertion triggered by the HTTP request; and
-- a terminal event that passes after `GET /` and `HTTP/1.1 200` cross the link.
+- a guest-console assertion that matches the Curl workload's
+  `CURL_STATUS=200` result; and
+- a terminal event that passes only after that assertion becomes satisfied.
 
 Build it in the repository development environment:
 
@@ -106,11 +109,14 @@ CRUCIBLE_KERNEL_CMDLINE="console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init
 ```
 
 A successful run exits with status `0`, and its JSONL contains a passing
-`final_outcome`. The scenario can pass only after Crucible delivers frames
-containing the HTTP request and response across the modeled link.
+`final_outcome`. The scenario can pass only after the Curl guest emits
+`CURL_STATUS=200`, Crucible records that console observation at a deterministic
+scheduler boundary, and the assertion evaluator publishes its satisfied state.
 
-The check is deliberately black-box: it matches bytes in delivered Ethernet
-frames rather than parsing HTTP or relying on Crucible-specific guest software.
+The check does not inspect plaintext Ethernet payloads. It uses ordinary guest
+console output as the application-level result, so the same assertion pattern
+also works when the request and response travel over HTTPS. No Crucible agent is
+required in the guest, and the host side of the console connection is read-only.
 
 Verify that the supplied base image is still byte-for-byte identical:
 

@@ -87,7 +87,7 @@ shape-line|crates/crucible-qemu/src/async_driver.rs|882
 shape-line|crates/crucible-qemu/src/determinism_boundary.rs|1566
 shape-line|crates/crucible-qemu/src/gdbstub_proxy.rs|672
 shape-line|crates/crucible-qemu/src/launch.rs|1560
-shape-line|crates/crucible-qemu/src/launch/validation.rs|863
+shape-line|crates/crucible-qemu/src/launch/validation.rs|877
 shape-line|crates/crucible-qemu/src/live_coverage_gate.rs|845
 shape-line|crates/crucible-qemu/src/live_coverage_gate/trace.rs|701
 shape-line|crates/crucible-qemu/src/live_plugin_quantum_gate.rs|815
@@ -170,7 +170,7 @@ shape-line|crates/crucible/src/sim_backend.rs|2283
 shape-line|crates/crucible/src/tests/model_core.rs|3120
 shape-line|crates/crucible/src/tests/world_validation.rs|3492
 shape-line|crates/crucible/src/trigger/assertions.rs|2276
-shape-line|crates/crucible/src/trigger/conditions.rs|1812
+shape-line|crates/crucible/src/trigger/conditions.rs|1817
 shape-line|crates/crucible/src/trigger/evaluation.rs|1371
 shape-line|crates/crucible/src/trigger/event_graph.rs|2147
 shape-line|crates/crucible/src/trigger/evidence.rs|2074
