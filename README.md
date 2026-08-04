@@ -1,12 +1,11 @@
-# AOS // ANDYL OS
+# `AOS // ANDYL OS`
 
 [![Status: early preview](https://img.shields.io/badge/status-early%20preview-orange)](#project-status)
 [![License: Apache-2.0](https://img.shields.io/github/license/andyl-technologies/aos)](LICENSE)
 
-AOS is an immutable Linux distribution for headless servers and edge systems.
-It installs from a golden x86-64 UEFI system image, takes machine policy from
-`host.nix`, and uses systemd and `apm` for day-to-day operation. Nix is part of
-the release machinery, not the normal installation path.
+EARLY PREVIEW
+
+AOS is an immutable Linux distribution for headless servers and edge systems. Its bootstrap toolchain, userspace, packages, system images, and tests are built from source in this repository without nixpkgs dependencies.
 
 ## Get started
 
@@ -19,12 +18,7 @@ the release machinery, not the normal installation path.
    [upgrades](docs/users/aos/upgrades.md), and use the
    [recovery guide](docs/users/aos/recovery.md) when needed.
 
-AOS is still an early preview. A public system image is not available yet, and
-general runtime `host.nix` activation is incomplete. Today `host.nix` controls
-first-boot storage; networking, users, access, and services still need
-release-time integration. Check the
-[support-status matrix](docs/users/aos/support-status.md) before planning a
-deployment.
+Check the [support-status matrix](docs/users/aos/support-status.md) before planning a deployment.
 
 ## Projects
 
