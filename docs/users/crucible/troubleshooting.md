@@ -140,7 +140,7 @@ stdout capture. Generate and retain the original with `--format jsonl --trace`.
 
 ## Exit `64`: command-line usage
 
-Use subcommand help rather than RFC command sketches:
+Use subcommand help for exact current syntax:
 
 ```sh
 ./result/bin/crucible <command> --help

@@ -7,8 +7,9 @@ records the decisions needed to reproduce and explore an execution.
 
 Crucible is currently an experimental developer tool. The local packaged-QEMU
 path is the primary supported operating mode. Remote execution, distributed
-campaigns, and some debugging workflows are still narrower than the design in
-RFC-0010; this guide calls those differences out explicitly.
+campaigns, and some debugging workflows have narrower implementations than
+their command surfaces suggest; this guide calls those differences out
+explicitly.
 
 ## The model
 
@@ -138,8 +139,7 @@ The usual progression is:
 
 ## Stability and source of truth
 
-RFC-0010 defines Crucible's intended architecture and invariants, but it also
-contains historical implementation notes and target-state examples. For current
+Crucible is experimental, and its command surfaces may evolve. For current
 command syntax, `crucible --help`, `crucible <command> --help`, and the Rust CLI
-implementation are authoritative. This guide describes current behavior and
-labels target-state behavior rather than silently promising it.
+implementation are authoritative. This guide describes shipped behavior and
+labels incomplete surfaces rather than silently promising future functionality.
