@@ -44,10 +44,15 @@ the topology and plan are otherwise unchanged.
 
 ## Authoring surfaces
 
-The Rust `ScenarioBuilder` is the code-first authoring surface. Use it when a
-scenario is generated, composed from templates, or checked into a Rust test.
-Once built, `ScenarioDefForm::to_canonical_toml` produces the exchange form
-accepted by the CLI.
+Use the Rust model API when a scenario is generated, composed from templates,
+or checked into a Rust test. Construct a `World`, `Plan`, and `Properties`, then
+pass them to `ScenarioDefForm::from_components`. Its `to_canonical_toml` method
+produces the exchange form accepted by the CLI. The
+[Nginx/Curl tutorial](quickstart.md) provides a complete generator.
+
+`ScenarioBuilder` is useful when code only needs an immutable `ScenarioDef`
+identity. Its `build` method does not retain the full form needed for TOML
+serialization, so file generators should use `ScenarioDefForm` directly.
 
 Canonical TOML is the CLI and storage format. Its top-level sections are:
 

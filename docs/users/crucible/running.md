@@ -19,7 +19,7 @@ before it makes examples easier to scan.
 | `--format <jsonl|json|table|markdown>` | Override terminal-aware trace or report rendering. |
 | `--trace <path>` | Also write the canonical event log to a file. |
 | `--artifact-dir <path>` | Select the failure/savepoint artifact directory. Default: `./.crucible`. |
-| `-v`, `-vv` | Increase diagnostic verbosity. |
+| `-v`, `-vv` | Reserved for diagnostic verbosity. |
 | `-q`, `--quiet` | Suppress non-essential standard output. |
 
 `markdown` is valid for triage reports, not canonical event-log traces.

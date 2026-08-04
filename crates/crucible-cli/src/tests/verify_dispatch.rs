@@ -1024,6 +1024,8 @@ pub(super) fn cli_determinism_ergonomics_emits_trace_and_failure_artifact_from_o
         artifact_dir.to_str().unwrap_or("."),
         "--trace",
         trace.to_str().unwrap_or("."),
+        "--format",
+        "jsonl",
         "run",
         TEST_SCENARIO,
     ]);
