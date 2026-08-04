@@ -19,8 +19,8 @@ development.
   It runs as a native service or as a Cloudflare Worker and exposes a web
   console, HTTP API, and the registry and cache protocols used by `apr`, `apm`,
   Git, and Nix.
-- **[Crucible](docs/users/crucible/)** runs repeatable black-box network tests
-  against unmodified guests using QEMU-backed execution.
+- **[Crucible](docs/users/crucible/)** provides deterministic state-space
+  exploration and debugging for unmodified QEMU guests.
 
 ## Build a server image
 

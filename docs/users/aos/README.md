@@ -37,8 +37,18 @@ multicall binary, so `aos package` is equivalent to `apm` and
   a real UEFI/KVM guest with SSH access and first-boot storage provisioning.
 - [Install an image](installation.md) covers image formats, disk sizing,
   metadata transports, and deployment checks.
+- [Deploy AOS in production](deployment.md) covers release artifacts, image
+  qualification, platform import, bare metal, and fleet promotion.
 - [Customize AOS](configuration.md) separates build-time system modules from
   the narrower `host.nix` surface that is active today.
+- [Configure networking](networking.md) covers DHCP, static addressing, DNS,
+  diagnostics, and current advanced-networking limits.
+- [Operate an AOS host](operations.md) covers services, logs, storage,
+  packages, monitoring, and maintenance.
+- [Recover an AOS host](recovery.md) covers first boot, activation, packages,
+  disk pressure, Hub state, and reimaging decisions.
+- [AOS support status](support-status.md) lists implemented and incomplete
+  operational surfaces.
 - [Secure an AOS host](security.md) covers the security presets, remote access,
   firewall, audit policy, trust roots, and verified-boot boundary.
 - [Manage secrets on AOS](secrets.md) defines safe build-time and runtime
