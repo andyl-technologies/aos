@@ -134,6 +134,10 @@ For deeper work:
   resolution.
 - [Running Crucible](running.md) is the command reference for backend discovery,
   seeds, terminal conditions, output, and exit codes.
+- [CI](ci.md) shows a bounded, reproducible pipeline with retained failure
+  artifacts.
+- [Reference](reference.md) summarizes commands and the canonical scenario
+  schema.
 - [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
   `replay`, `save`, `resume`, and `fork`.
 - [Exploration](exploration.md) covers bounded search, fuzzing, and triage.

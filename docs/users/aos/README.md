@@ -43,6 +43,8 @@ multicall binary, so `aos package` is equivalent to `apm` and
   firewall, audit policy, trust roots, and verified-boot boundary.
 - [Manage secrets on AOS](secrets.md) defines safe build-time and runtime
   handling, rotation, and incident response.
+- [Package an application for AOS](package-authoring.md) follows a service from
+  its derivation through image inclusion, registry publication, and upgrade.
 - [Understand and operate `host.nix`](host-nix.md) covers its complete
   lifecycle, trust policy, storage schema, examples, drift, and diagnostics.
 - [Use the repository CLI](cli.md) covers the `aos` development command,
