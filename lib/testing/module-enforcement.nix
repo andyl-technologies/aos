@@ -159,6 +159,27 @@
   f3bSurfaceIsVirtualHosts = f3bSurfacePaths == ["nginx.virtualHosts"];
   # the marker did not change the merged value
   f3bValueUnperturbed = f3bEval.config.nginx.enable == true;
+  f3bBoolTypeSig =
+    (builtins.head (builtins.filter (d: d.pathStr == "nginx.enable") f3bEval._optionDecls)).typeSig;
+
+  packageDiagnosticsEval = lib.evalModules {
+    modules = [({lib, ...}: {
+      options.assertions = lib.mkOption {type = lib.types.listOf lib.types.attrs; default = [];};
+      options.warnings = lib.mkOption {type = lib.types.listOf lib.types.str; default = [];};
+    })];
+    packageModules = [{
+      name = "diagnostic-fixture";
+      authorization = {owns = []; contributes = {};};
+      module.config = {
+        assertions = [{assertion = true; message = "package assertion";}];
+        warnings = ["package warning"];
+      };
+    }];
+    lib = lib;
+  };
+  packageEngineDiagnosticsAccepted =
+    builtins.length packageDiagnosticsEval.config.assertions == 1
+    && packageDiagnosticsEval.config.warnings == ["package warning"];
 
   # --- Operator priority-75 band --------------------------------------
   #
@@ -567,6 +588,88 @@
   pkgRootNameInjected = pkgRootEval.config.redis.rootName == "redis";
   pkgRootConfigurable = pkgRootEval.config.redis.enable == true;
 
+  # --- Authenticated package import roots -----------------------------
+  confinedPackageImport =
+    (lib.evalModules {
+      modules = [];
+      packageModules = [{
+        name = "import-fixture";
+        authorization = {owns = ["importConfinement"]; contributes = {};};
+        configRoot = ./fixtures/package-import-confined;
+        module = ./fixtures/package-import-confined/module.nix;
+        outputs = {
+          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
+          dependencies = {};
+        };
+      }];
+      lib = lib;
+    }).config.importConfinement.value
+    == "confined";
+  escapedPackageImportRejected = !(builtins.tryEval (builtins.deepSeq (
+      (lib.evalModules {
+      modules = [];
+      packageModules = [{
+        name = "import-fixture";
+        authorization = {owns = ["importConfinement"]; contributes = {};};
+        configRoot = ./fixtures/package-import-escaped;
+        module = ./fixtures/package-import-escaped/module.nix;
+        outputs = {
+          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
+          dependencies = {};
+        };
+      }];
+      lib = lib;
+      }).config.importConfinement.value
+    ) true)).success;
+  evaluatedPackageImportRejected = !(builtins.tryEval (builtins.deepSeq (
+      (lib.evalModules {
+      modules = [];
+      packageModules = [{
+        name = "import-fixture";
+        authorization = {owns = ["importConfinement"]; contributes = {};};
+        configRoot = ./fixtures/package-import-evaluated;
+        module = ./fixtures/package-import-evaluated/module.nix;
+        outputs = {
+          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
+          dependencies = {};
+        };
+      }];
+      lib = lib;
+      }).config.importConfinement.value
+    ) true)).success;
+  lexicalStringPackageImportRejected = !(builtins.tryEval (builtins.deepSeq (
+      (lib.evalModules {
+      modules = [];
+      packageModules = [{
+        name = "import-fixture";
+        authorization = {owns = ["importConfinement"]; contributes = {};};
+        configRoot = ./fixtures/package-import-string-escape;
+        module = ./fixtures/package-import-string-escape/module.nix;
+        outputs = {
+          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-import-fixture";
+          dependencies = {};
+        };
+      }];
+      lib = lib;
+      }).config.importConfinement.value
+    ) true)).success;
+  unlistedPackageOutputRejected = !(
+    (lib.evalModules {
+      modules = [];
+      packageModules = [{
+        name = "output-fixture";
+        authorization = {owns = ["outputConfinement"]; contributes = {};};
+        configRoot = ./fixtures/package-output-unlisted;
+        module = ./fixtures/package-output-unlisted/module.nix;
+        outputs = {
+          self = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-output-fixture";
+          dependencies.allowed = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-allowed";
+        };
+      }];
+      lib = lib;
+    }).config.outputConfinement.hasForbidden
+  );
+
   # --- Eval-time assertions for the test itself -----------------------
   evalAssertions = builtins.foldl' (result: check:
     lib.throwIfNot check.ok check.message result)
@@ -578,7 +681,8 @@
     {ok = enableDefaultsFalse == false; message = "mkEnableOption default";}
     {ok = packageOptDefaultName == "coreutils"; message = "mkPackageOption default";}
     {ok = pathInStoreAccepts && pathInStoreRejectsHost && pathInStoreRejectsRelative && pathInStoreRejectsNumber; message = "pathInStore validation";}
-    {ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed; message = "contributable surface";}
+    {ok = f3bSurfaceIsVirtualHosts && f3bValueUnperturbed && f3bBoolTypeSig == "boolean"; message = "contributable typed surface";}
+    {ok = packageEngineDiagnosticsAccepted; message = "package module engine diagnostics";}
     {ok = operatorWins && noOperatorNoLift && forceBeatsOperator; message = "operator priority bands";}
     {ok = forgedProvenanceRejected; message = "reserved provenance stamp";}
     {ok = resolverPackageOwner; message = "resolver package owner";}
@@ -594,6 +698,8 @@
     {ok = hostImportedOwner && hostImportedNestedValue && hostImportKeepsNormalPriority; message = "host import ownership and priority";}
     {ok = uniqEnumAgrees && uniqEnumRejectsConflict && uniqEnumRejectsBadValue; message = "uniqEnum semantics";}
     {ok = pkgRootNameInjected && pkgRootConfigurable; message = "package root mount";}
+    {ok = confinedPackageImport && escapedPackageImportRejected && evaluatedPackageImportRejected && lexicalStringPackageImportRejected; message = "authenticated package import-root confinement";}
+    {ok = unlistedPackageOutputRejected; message = "authenticated package output-map confinement";}
   ];
 in
   pkgs.mkDerivation {

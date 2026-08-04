@@ -221,8 +221,8 @@ in
               mkdir -p rootfs/run rootfs/var rootfs/sysroot
               mkdir -p rootfs/var/{log,lib,tmp}
               # /run/etc is an empty mountpoint — run-etc-setup.service
-              # mounts a tmpfs there early in stage-1 so ignition-files
-              # and etc-overlay-setup can stage per-gen state under it.
+              # mounts a tmpfs there early in stage-1 so the metadata/config
+              # pipeline and etc-overlay-setup can stage per-gen state under it.
               mkdir -p rootfs/run/etc
               # /boot + /var are mountpoints that modules/base/filesystems.nix
               # writes into /etc/fstab (ESP → /boot, var partition → /var).

@@ -240,6 +240,39 @@ pub struct SbatEntry {
     pub generation: u32,
 }
 
+/// Stable A/B slot named by a UKI carried in a sysroot image artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UkiSlot {
+    /// The UKI whose measured command line selects `root-a`.
+    A,
+    /// The UKI whose measured command line selects `root-b`.
+    B,
+}
+
+/// Slot-specific Secure Boot and measured-boot facts for one UKI.
+///
+/// A/B UKIs have different measured command lines because each names a
+/// different root and verity partition. Consequently their PCR-11 values are
+/// distinct even when they carry identical kernel, initrd, and root bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SysrootUkiEntry {
+    /// Root slot selected by this UKI's measured command line.
+    pub slot: UkiSlot,
+    /// Relative path to the UKI inside the image store artifact.
+    pub path: String,
+    /// Lowercase hex SHA-256 of the Authenticode signer leaf certificate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sb_signer_cert_sha256: Option<String>,
+    /// SBAT component/generation pairs read from this UKI's `.sbat` section.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sbat: Vec<SbatEntry>,
+    /// Predicted PCR-11 for this exact UKI's measured PE sections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_pcr11: Option<String>,
+}
+
 /// A pre-compiled image entry within a platform entry.
 ///
 /// The trailing Secure Boot fields (RFC-0006) are populated only for signed
@@ -264,6 +297,9 @@ pub struct ImageEntry {
     /// Predicted PCR-11 for the image's UKI, when measured.
     #[serde(default)]
     pub expected_pcr11: Option<String>,
+    /// Slot-specific UKI facts for an A/B image payload.
+    #[serde(default)]
+    pub ukis: Vec<SysrootUkiEntry>,
     /// Relative path inside `store_path` to the root filesystem image.
     #[serde(default)]
     pub root_image: Option<String>,
@@ -337,6 +373,12 @@ pub struct SysrootImageEntry {
     /// `None` when `systemd-measure` was unavailable at publish time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_pcr11: Option<String>,
+    /// Slot-specific UKI paths and measured-boot facts for A/B updates.
+    ///
+    /// This is empty for legacy single-UKI images. New A/B image publishers
+    /// record exactly one `a` and one `b` entry and consumers select by slot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ukis: Vec<SysrootUkiEntry>,
     /// Relative path inside [`SysrootImageEntry::store_path`] to the root
     /// filesystem image consumed by `RootImage=`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1236,12 +1278,10 @@ pub struct ConfigOutputMeta {
     /// Store-path hashes of the `config` output's *direct* references.
     ///
     /// The enforced invariant is **no `.drv`** (see `validate_config_output_meta`):
-    /// the config module is config-only and must not pull a derivation into the
-    /// eval. Note that Nix's reference scanner *will* record any binary store path
-    /// the module text names as a reference, so this list is generally non-empty
-    /// and may include `out`-closure paths; those binaries are additionally pinned
-    /// by the manifest's `store_paths`. The no-`.drv` rule is the load-bearing
-    /// part, not the absence of binary references.
+    /// the config module is config-only and must not pull store objects into
+    /// evaluation. Trusted companion outputs have an empty reference set;
+    /// runtime output strings are injected separately from authenticated
+    /// resolution metadata.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<String>,
 }
@@ -1258,6 +1298,12 @@ pub struct ConfigOutputMeta {
 pub struct ConfigModuleMeta {
     /// The `config` output store metadata.
     pub config_output: ConfigOutputMeta,
+    /// Exact base library used for the publish-time options-only evaluation.
+    ///
+    /// New publishers always populate this binding. It remains optional so
+    /// registries produced before the binding was introduced stay readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evaluation_base_lib: Option<ConfigOutputMeta>,
     /// Base-lib ABI range this module is compatible with (inclusive).
     pub module_abi_compat: ModuleAbiCompat,
     /// Option paths this module *declares* (its `provides`), computed by an
@@ -1265,6 +1311,17 @@ pub struct ConfigModuleMeta {
     /// registry inverted-index keys for this `package@version`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declares: Vec<String>,
+    /// Sorted option declaration paths paired with their stable type
+    /// descriptions from the options-only evaluation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub declaration_schema: Vec<ConfigOptionDeclaration>,
+    /// Conservative option accesses found by the publish-time Nix-source scan.
+    ///
+    /// These paths pre-close the resolver working set. They are an
+    /// over-approximation only; error-driven resolve/eval remains the backstop
+    /// for computed attribute access that cannot be represented statically.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires: Vec<String>,
     /// Shared roots this module declares exclusive ownership of (e.g.
     /// `firewall`, `nginx`). Each carries its own interface ABI.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1277,6 +1334,16 @@ pub struct ConfigModuleMeta {
     /// e.g. `system.capabilities.dns-resolver`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provides_capabilities: Vec<String>,
+}
+
+/// One mechanically derived option declaration in a config module's schema.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigOptionDeclaration {
+    /// Full dotted option path.
+    pub path: String,
+    /// Stable type description exported by the module engine.
+    pub type_signature: String,
 }
 
 /// Inclusive base-lib ABI compatibility range for a config module.
@@ -1317,12 +1384,92 @@ pub struct OwnedRoot {
 }
 
 /// A foreign-root contribution declared by a non-owner package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RootContribution {
     /// The shared root being contributed into, e.g. `nginx`.
     pub root: String,
+    /// Exact interface ABI expected from the installed owner of `root`.
+    ///
+    /// Contributions are capabilities issued against a particular owner
+    /// interface. They are never admitted across an owner ABI upgrade without
+    /// being republished against the new ABI.
+    pub interface_abi: u32,
     /// Sub-paths (relative to `root`) this package writes; each MUST be within
     /// the owner's `contributable` set, checked at resolve.
     pub paths: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for RootContribution {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct WireContribution {
+            root: String,
+            #[serde(default)]
+            interface_abi: Option<u32>,
+            paths: Vec<String>,
+        }
+
+        let wire = WireContribution::deserialize(deserializer)?;
+        let interface_abi = wire.interface_abi.ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "legacy contribution metadata for root '{}' has no interface_abi; republish the package with contributes[].interfaceAbi set to the owner's interface ABI",
+                wire.root
+            ))
+        })?;
+        Ok(Self {
+            root: wire.root,
+            interface_abi,
+            paths: wire.paths,
+        })
+    }
+}
+
+#[cfg(test)]
+mod config_module_compat_tests {
+    use super::ConfigModuleMeta;
+
+    #[test]
+    fn legacy_config_module_metadata_defaults_new_publish_bindings() {
+        let legacy = serde_json::json!({
+            "config_output": {
+                "store_path": "/nix/store/0000000000000000000000000000000a-web-config",
+                "nar_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "nar_size": 1
+            },
+            "module_abi_compat": { "min": 1, "max": 1 },
+            "declares": ["web.enable"],
+            "owns_roots": [],
+            "contributes": [],
+            "provides_capabilities": []
+        });
+
+        let parsed: ConfigModuleMeta =
+            serde_json::from_value(legacy).expect("legacy config-module metadata parses");
+
+        assert!(parsed.requires.is_empty());
+        assert!(parsed.declaration_schema.is_empty());
+        assert!(parsed.evaluation_base_lib.is_none());
+    }
+
+    #[test]
+    fn legacy_nonempty_contribution_requires_explicit_migration() {
+        let legacy = serde_json::json!({
+            "root": "nginx",
+            "paths": ["virtualHosts.example"]
+        });
+
+        let error = serde_json::from_value::<super::RootContribution>(legacy)
+            .expect_err("legacy contribution must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("legacy contribution metadata"),
+            "{message}"
+        );
+        assert!(message.contains("interface_abi"), "{message}");
+        assert!(message.contains("republish"), "{message}");
+    }
 }

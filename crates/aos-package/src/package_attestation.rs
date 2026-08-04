@@ -48,6 +48,7 @@ const QUOTE_PCR_SELECTION: &str = "sha256:7,11,12,15";
 const PCR_BASELINE_EVENT_TYPE: &str = "aos-pcr-baseline";
 const PACKAGE_EVENT_TYPE: &str = "aos-package";
 const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
+const GENERATION_EVENT_TYPE: &str = "aos-generation-attestation";
 
 /// Measures the activated exposed package set into PCR 15.
 ///
@@ -62,6 +63,58 @@ const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
 /// events, the event log cannot be written, or live PCR extension fails.
 pub(crate) fn measure_activated_packages(root: &Path, installed: &[InstalledMeta]) -> Result<()> {
     measure_activated_packages_inner(root, installed, root == Path::new("/"), None)
+}
+
+/// Measures a canonical generation-attestation record into the shared AOS
+/// application-PCR event stream.
+///
+/// Returns `false` without mutating PCR 15 when the live system has no TPM.
+/// The canonical record is still appended to the CEL so TPM-less systems keep
+/// inspectable evidence. A TPM-backed failure rolls that append back.
+///
+/// # Errors
+///
+/// Returns an error if the event log cannot be updated or PCR 15 extension
+/// fails through the AOS-built systemd helper.
+pub(crate) fn measure_generation_attestation(
+    root: &Path,
+    generation_id: &str,
+    canonical_record: &[u8],
+) -> Result<bool> {
+    let word = String::from_utf8(canonical_record.to_vec())
+        .context("generation attestation canonical JSON is not UTF-8")?;
+    let event = MeasurementEvent {
+        event_type: GENERATION_EVENT_TYPE,
+        digest: format!("sha256:{}", digest_for_word(&word)),
+        word,
+        extends_pcr: true,
+        pcr_value: None,
+        package: None,
+        package_count: None,
+        generation_id: Some(generation_id.to_string()),
+    };
+    let live_root = root == Path::new("/");
+    let has_tpm = live_root && tpm2_tcti()?.is_some();
+    let append = append_event_log(root, std::slice::from_ref(&event))?;
+    if !has_tpm {
+        return Ok(false);
+    }
+    let pcrextend = trusted_systemd_pcrextend_path()?;
+    if let Err(error) = extend_pcr15(&pcrextend, std::slice::from_ref(&event)) {
+        rollback_event_log_append(&append)
+            .context("rolling back generation attestation event after PCR failure")?;
+        return Err(error);
+    }
+    Ok(true)
+}
+
+/// Returns whether the trusted TPM transport can address a local TPM.
+///
+/// # Errors
+///
+/// Returns an error when an explicitly configured TPM transport is invalid.
+pub(crate) fn tpm_available() -> Result<bool> {
+    Ok(tpm2_tcti()?.is_some())
 }
 
 fn measure_activated_packages_inner(
@@ -116,6 +169,7 @@ struct MeasurementEvent {
     pcr_value: Option<String>,
     package: Option<MeasuredPackage>,
     package_count: Option<usize>,
+    generation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +210,8 @@ struct EventLogRecord<'a> {
     manifest_digest: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation_id: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -205,6 +261,7 @@ struct OwnedEventLogRecord {
     root_digest: Option<String>,
     manifest_digest: Option<String>,
     package_count: Option<usize>,
+    generation_id: Option<String>,
 }
 
 /// Result of replaying and validating the package attestation event log.
@@ -216,6 +273,8 @@ pub(crate) struct PackageEventLogVerification {
     pub package_count: usize,
     /// Package tuples in the latest completed package-set measurement.
     pub current_packages: Vec<VerifiedPackageMeasurement>,
+    /// Canonical record hashes keyed by generation identifier.
+    pub generation_attestations: BTreeMap<String, String>,
 }
 
 /// One package tuple validated from the latest measured package set.
@@ -541,6 +600,7 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
     let mut current_packages: Vec<VerifiedPackageMeasurement> = Vec::new();
     let mut saw_baseline = false;
     let mut saw_package_set = false;
+    let mut generation_attestations = BTreeMap::new();
 
     for (index, line) in event_log.lines().enumerate() {
         if line.trim().is_empty() {
@@ -635,6 +695,46 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
                     current_packages = std::mem::take(&mut pending_current_packages);
                 }
             }
+            GENERATION_EVENT_TYPE => {
+                extend_replayed_pcr(&mut pcr, &recorded_digest)?;
+                let generation_id = record.generation_id.as_deref().with_context(|| {
+                    format!(
+                        "generation attestation event on line {} is missing generation_id",
+                        index + 1
+                    )
+                })?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&record.event).with_context(|| {
+                        format!("parsing generation attestation event on line {}", index + 1)
+                    })?;
+                if value.get("schema").and_then(serde_json::Value::as_str)
+                    != Some("aos.gen-attestation/v1")
+                    || value
+                        .get("generation_id")
+                        .and_then(serde_json::Value::as_str)
+                        != Some(generation_id)
+                {
+                    bail!(
+                        "generation attestation event on line {} has inconsistent identity",
+                        index + 1
+                    );
+                }
+                if value.get("quote").and_then(serde_json::Value::as_str) != Some("") {
+                    bail!(
+                        "generation attestation event on line {} includes its quote in the measured record",
+                        index + 1
+                    );
+                }
+                if generation_attestations
+                    .insert(
+                        generation_id.to_string(),
+                        format!("sha256:{recorded_digest}"),
+                    )
+                    .is_some()
+                {
+                    bail!("generation {generation_id} is measured more than once");
+                }
+            }
             _ => bail!(
                 "package event log line {} has unsupported event_type '{}'",
                 index + 1,
@@ -643,8 +743,8 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
         }
     }
 
-    if !saw_package_set {
-        bail!("package event log contains no package-set event");
+    if !saw_package_set && generation_attestations.is_empty() {
+        bail!("package event log contains no package-set event or generation attestation");
     }
     if expected_baseline_pcr15.is_some() && !saw_baseline {
         bail!("expected baseline PCR 15 was supplied but the event log has no PCR baseline event");
@@ -665,6 +765,7 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
         pcr15,
         package_count,
         current_packages,
+        generation_attestations,
     })
 }
 
@@ -998,6 +1099,7 @@ fn package_event(package: MeasuredPackage) -> Result<MeasurementEvent> {
         pcr_value: None,
         package: Some(package),
         package_count: None,
+        generation_id: None,
     })
 }
 
@@ -1023,6 +1125,7 @@ fn package_set_event(package_events: &[MeasurementEvent]) -> MeasurementEvent {
         pcr_value: None,
         package: None,
         package_count: Some(package_events.len()),
+        generation_id: None,
     }
 }
 
@@ -1038,6 +1141,7 @@ fn pcr_baseline_event(pcr15: &str) -> MeasurementEvent {
         pcr_value: Some(pcr15),
         package: None,
         package_count: None,
+        generation_id: None,
     }
 }
 
@@ -1715,6 +1819,7 @@ fn event_log_line_from_tcg_event(
         root_digest: root_digest.as_deref(),
         manifest_digest: manifest_digest.as_deref(),
         package_count,
+        generation_id: None,
     };
     serde_json::to_string(&record).context("serializing decoded TCG package event")
 }
@@ -2047,6 +2152,7 @@ fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<St
         root_digest: package.map(|package| package.root_digest.as_str()),
         manifest_digest: package.map(|package| package.manifest_digest.as_str()),
         package_count: event.package_count,
+        generation_id: event.generation_id.as_deref(),
     };
     serde_json::to_string(&record).context("serializing package measurement event")
 }
@@ -2355,6 +2461,7 @@ mod tests {
                         sb_signer_cert_sha256: None,
                         sbat: Vec::new(),
                         expected_pcr11: None,
+                        ukis: Vec::new(),
                         root_image: Some("root.img".into()),
                         root_verity: Some("root.verity".into()),
                         root_hash: Some(
@@ -2825,6 +2932,38 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(sequence_numbers, [1, 2]);
+    }
+
+    #[test]
+    fn generation_attestation_event_is_replayable_and_identity_bound() {
+        let tmp = TempDir::new().expect("tempdir");
+        let record = serde_json::json!({
+            "schema": "aos.gen-attestation/v1",
+            "generation_id": "sha256:generation",
+            "manifest_hash": "sha256:manifest",
+            "inputs": {},
+            "eval_mode": "pure-eval",
+            "quote_status": "quoted",
+            "quote": ""
+        });
+        let canonical = crate::graph_compile::reproject::canonical_json(&record);
+        assert!(
+            !measure_generation_attestation(tmp.path(), "sha256:generation", canonical.as_bytes())
+                .expect("measure fixture")
+        );
+        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("event log");
+        let digest = Sha256::digest(canonical.as_bytes());
+        let mut pcr_hasher = Sha256::new();
+        pcr_hasher.update([0_u8; 32]);
+        pcr_hasher.update(digest);
+        let expected_pcr = hex::encode(pcr_hasher.finalize());
+        let verified =
+            verify_package_event_log_against_measurement_catalog(&log, &expected_pcr, None, &[])
+                .expect("verify generation event");
+        assert_eq!(
+            verified.generation_attestations.get("sha256:generation"),
+            Some(&format!("sha256:{}", hex::encode(digest)))
+        );
     }
 
     #[test]

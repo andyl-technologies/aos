@@ -74,17 +74,18 @@ in {
     ## `bootctl set-default` (apm, at runtime), NOT the `default aos-*.efi`
     ## lexically-highest glob, which remains only the first-install fallback.
     ##
-    ## `null` (the default) keeps the un-suffixed name and the legacy glob.
+    ## The default of three attempts enables automatic fallback on every image.
+    ## `null` is retained only as an explicit compatibility escape hatch.
     bootCountingTries = lib.mkOption {
       type = lib.types.nullOr lib.types.int;
-      default = null;
+      default = 3;
       description = ''
         sd-boot boot-counting tries suffix for durable image rollback. When
         set to N, the ESP UKI is named
         `aos-<name>-<version>+N.efi`; sd-boot assesses the boot and demotes a
         UKI that fails to start, falling back to the other A/B slot. Durable
-        rollback is `bootctl set-default`, not the lexical glob. `null` keeps
-        the un-suffixed filename and the glob-only selection.
+        rollback is `bootctl set-default`, not the lexical glob. Set `null`
+        only for compatibility with boot managers that lack boot counting.
       '';
     };
 

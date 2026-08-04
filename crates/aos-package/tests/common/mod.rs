@@ -377,6 +377,7 @@ key = "{}"
             signing: Some(SigningConfig {
                 required: false,
                 public_key: None,
+                root_owner_signers: Vec::new(),
             }),
         }
     }
@@ -402,6 +403,7 @@ key = "{}"
             signing: Some(SigningConfig {
                 required: true,
                 public_key: Some(self.trusted_key().to_string()),
+                root_owner_signers: Vec::new(),
             }),
         }
     }

@@ -128,11 +128,6 @@ clap_complete = "4"
 # Package manager
 toml = "0.8"
 semver = "1"
-# YAML parsing for the `aos metadata` agent: NoCloud `meta-data` /
-# `network-config` and cloud-config-shaped facts documents. JSON (serde_json)
-# and TOML (toml) cover everything else; YAML is the one format with no
-# existing crate in the lock.
-serde_yaml = "0.9"
 # Git access for the apm/apr registry. libgit2 (vendored, built with
 # -DEXPERIMENTAL_SHA256=ON via unstable-sha256) drives local object/ref
 # operations and the git://+ssh:// smart transports; the registry's static

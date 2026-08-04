@@ -174,8 +174,8 @@ pub async fn run(
             upgrade_closures.push((closure.registry_name, closure.closure));
         }
     }
-    super::install::verify_package_provenance_entries_from_cache(
-        &config.cache_path(),
+    super::install::verify_package_provenance_entries_from_cache_with_policy(
+        config,
         upgrade_closures
             .iter()
             .flat_map(|(registry_name, closure)| {
@@ -1175,6 +1175,7 @@ mod tests {
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),
             expected_pcr11: None,
+            ukis: Vec::new(),
             root_image: None,
             root_verity: None,
             root_hash: None,

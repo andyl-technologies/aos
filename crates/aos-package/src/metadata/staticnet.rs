@@ -19,7 +19,7 @@
 //! is written only when [`StaticNetwork::is_seedable`] holds; the operator's
 //! declared network in `host.nix` supersedes it at the first `/etc` swap.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use super::fetcher::StaticNetwork;
@@ -30,8 +30,9 @@ pub const SEED_FILENAME: &str = "10-aos-seed.network";
 /// Render a [`StaticNetwork`] into a systemd-networkd `.network` unit.
 ///
 /// Produces a deterministic `[Match]`/`[Network]` document. When `mac` is set
-/// it becomes `MACAddress=`; otherwise the `[Match]` section is omitted and the
-/// unit matches the first managed link by file ordering.
+/// it becomes `MACAddress=`; otherwise `interface_name` becomes `Name=`. A
+/// seed without either selector is rejected: platform metadata must never
+/// create an unqualified match-all networkd unit.
 ///
 /// ```text
 /// # 10-aos-seed.network — substrate-fact static seed (DHCP-less cloud).
@@ -52,12 +53,29 @@ fn ini_safe(s: &str) -> String {
     s.chars().filter(|c| !c.is_control()).collect()
 }
 
-pub fn render_networkd(net: &StaticNetwork) -> String {
+/// # Errors
+///
+/// Returns an error when the network lacks an address or deterministic link
+/// selector.
+pub fn render_networkd(net: &StaticNetwork) -> Result<String> {
+    if !net.is_seedable() {
+        bail!("static network seed requires an address and a MAC or interface name");
+    }
     let mut out = String::new();
     out.push_str("# 10-aos-seed.network — substrate-fact static seed (DHCP-less cloud).\n");
-    if let Some(mac) = &net.mac {
-        out.push_str("[Match]\n");
+    out.push_str("[Match]\n");
+    if let Some(mac) = net
+        .mac
+        .as_deref()
+        .filter(|value| super::fetcher::is_canonical_mac(value))
+    {
         out.push_str(&format!("MACAddress={}\n", ini_safe(mac)));
+    } else if let Some(name) = net
+        .interface_name
+        .as_deref()
+        .filter(|value| super::fetcher::is_exact_interface_name(value))
+    {
+        out.push_str(&format!("Name={}\n", ini_safe(name)));
     }
     out.push_str("[Network]\n");
     for addr in &net.addresses {
@@ -69,7 +87,7 @@ pub fn render_networkd(net: &StaticNetwork) -> String {
     for dns in &net.dns {
         out.push_str(&format!("DNS={}\n", ini_safe(dns)));
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +110,8 @@ struct OsLink {
     id: Option<String>,
     #[serde(default)]
     ethernet_mac_address: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,12 +163,14 @@ pub fn parse_openstack_network_data(bytes: &[u8]) -> Result<StaticNetwork> {
     if let Some(network) = data.networks.first() {
         // Resolve the MAC by joining the network's link id to links[].id.
         if let Some(link_id) = &network.link {
-            net.mac = data
+            let link = data
                 .links
                 .iter()
-                .find(|l| l.id.as_deref() == Some(link_id.as_str()))
+                .find(|l| l.id.as_deref() == Some(link_id.as_str()));
+            net.mac = link
                 .and_then(|l| l.ethernet_mac_address.clone())
                 .map(|m| m.to_lowercase());
+            net.interface_name = link.and_then(|l| l.name.clone());
         }
         // Fall back to the sole link's MAC.
         if net.mac.is_none() {
@@ -157,6 +179,9 @@ pub fn parse_openstack_network_data(bytes: &[u8]) -> Result<StaticNetwork> {
                 .first()
                 .and_then(|l| l.ethernet_mac_address.clone())
                 .map(|m| m.to_lowercase());
+        }
+        if net.interface_name.is_none() && data.links.len() == 1 {
+            net.interface_name = data.links.first().and_then(|l| l.name.clone());
         }
 
         if let Some(ip) = &network.ip_address {
@@ -190,7 +215,7 @@ pub fn parse_openstack_network_data(bytes: &[u8]) -> Result<StaticNetwork> {
 ///
 /// A value that already looks like a prefix (`24`) is returned as-is. Falls
 /// back to `32` for an unparseable mask.
-fn netmask_to_prefix(mask: &str) -> u32 {
+pub(super) fn netmask_to_prefix(mask: &str) -> u32 {
     if let Ok(p) = mask.parse::<u32>()
         && p <= 32
     {
@@ -208,45 +233,6 @@ fn netmask_to_prefix(mask: &str) -> u32 {
 // NoCloud netplan network-config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Deserialize)]
-struct NetplanRoot {
-    #[serde(default)]
-    network: Option<NetplanNetwork>,
-    // netplan v1 nests under `network:`; some emitters put ethernets at top.
-    #[serde(default)]
-    ethernets: Option<std::collections::BTreeMap<String, NetplanEthernet>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NetplanNetwork {
-    #[serde(default)]
-    ethernets: std::collections::BTreeMap<String, NetplanEthernet>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NetplanEthernet {
-    #[serde(default)]
-    addresses: Vec<String>,
-    #[serde(default)]
-    gateway4: Option<String>,
-    #[serde(default)]
-    nameservers: Option<NetplanNameservers>,
-    #[serde(default, rename = "match")]
-    match_on: Option<NetplanMatch>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NetplanNameservers {
-    #[serde(default)]
-    addresses: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NetplanMatch {
-    #[serde(default)]
-    macaddress: Option<String>,
-}
-
 /// Parse a NoCloud netplan `network-config` (v1/v2 YAML) into a
 /// [`StaticNetwork`].
 ///
@@ -258,24 +244,5 @@ struct NetplanMatch {
 ///
 /// Returns `Err` when `bytes` is not valid YAML of the expected shape.
 pub fn parse_netplan_network_config(bytes: &[u8]) -> Result<StaticNetwork> {
-    let root: NetplanRoot =
-        serde_yaml::from_slice(bytes).context("parsing NoCloud network-config (netplan YAML)")?;
-
-    let ethernets = root
-        .network
-        .map(|n| n.ethernets)
-        .or(root.ethernets)
-        .unwrap_or_default();
-
-    let mut net = StaticNetwork::default();
-    if let Some((_, eth)) = ethernets.into_iter().next() {
-        net.addresses = eth.addresses;
-        net.gateway = eth.gateway4;
-        net.dns = eth.nameservers.map(|n| n.addresses).unwrap_or_default();
-        net.mac = eth
-            .match_on
-            .and_then(|m| m.macaddress)
-            .map(|m| m.to_lowercase());
-    }
-    Ok(net)
+    super::yaml::parse_netplan(bytes).context("parsing NoCloud network-config (netplan YAML)")
 }

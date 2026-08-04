@@ -17,14 +17,11 @@
     pkgs = self;
   };
 
-  # Turn a package-authored `configModule`
-  # arg into the package's second `config` output (a pure-data store path
-  # carrying `module.nix` + a declared-interface manifest). Wired into
-  # mkDerivation below the same way `expose` is.
-  configModuleRenderer = import ./build-support/_config-module-renderer.nix {
-    inherit lib;
-    pkgs = self;
-  };
+  # Turn a package-authored `configModule` arg into the package's logical
+  # `config` output (a pure-data store path carrying `module.nix` plus a
+  # declared-interface manifest). A fixed companion derivation builds it so
+  # package-authored phases cannot skip or mutate its validation boundary.
+  configModuleRenderer = import ./build-support/_config-module-renderer.nix {inherit lib;};
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -47,24 +44,205 @@
       if args ? expose
       then {expose = renderedExpose;}
       else {};
-    renderedConfigModule =
-      if args ? configModule
+    hasGeneratedExposeConfig = args ? expose;
+    generatedExposeDeclares = [
+      "${packageName}._aosExposeConfigProjection"
+      "${packageName}.config"
+      "${packageName}.credentials"
+    ];
+    generatedExposeConfigFile =
+      if hasGeneratedExposeConfig
       then
-        configModuleRenderer.render {
-          inherit packageName;
-          configModule = args.configModule;
+        builtins.toFile "expose-config-${packageName}.json" (builtins.toJSON {
+          package = packageName;
+          config = exposeRenderer.normalizeConfig packageName (args.expose.config or {});
+        })
+      else null;
+    generatedConfigSource =
+      if hasGeneratedExposeConfig
+      then
+        rawMkDerivation {
+          pname = "${packageName}-generated-config-source";
+          version = args.version or "0";
+          src = null;
+          phases = [{
+            name = "install";
+            script = ''
+              mkdir -p "$out"
+              cp ${./build-support/_generated-expose-config-module.nix} "$out/module.nix"
+              cp ${generatedExposeConfigFile} "$out/expose-config.json"
+            '';
+          }];
+          preferLocalBuild = true;
+          allowSubstitutes = false;
         }
       else null;
+    authoredConfigModule = args.configModule or null;
+    preparedAuthoredConfigModule =
+      if authoredConfigModule != null
+      then
+        configModuleRenderer.prepare {
+          inherit packageName;
+          configModule = authoredConfigModule;
+        }
+      else null;
+    authoredConfigMeta =
+      if preparedAuthoredConfigModule != null
+      then builtins.fromJSON preparedAuthoredConfigModule.metaJson
+      else null;
+    composedModuleFile = builtins.toFile "composed-config-module-${packageName}.nix" ''
+      { ... }: {
+        imports = [
+          ./authored/module.nix
+          ./generated/module.nix
+        ];
+      }
+    '';
+    composedConfigSource =
+      if authoredConfigModule != null && hasGeneratedExposeConfig
+      then
+        rawMkDerivation {
+          pname = "${packageName}-composed-config-source";
+          version = args.version or "0";
+          src = null;
+          phases = [{
+            name = "install";
+            script = ''
+              mkdir -p "$out/authored" "$out/generated"
+              cp -R ${preparedAuthoredConfigModule.src}/. "$out/authored/"
+              cp -R ${generatedConfigSource}/. "$out/generated/"
+              cp ${composedModuleFile} "$out/module.nix"
+            '';
+          }];
+          preferLocalBuild = true;
+          allowSubstitutes = false;
+        }
+      else null;
+    effectiveConfigModule =
+      if authoredConfigModule != null
+      then authoredConfigModule
+      else if hasGeneratedExposeConfig
+      then {
+        src = generatedConfigSource;
+        moduleAbiCompat = {min = 1; max = 1;};
+        declares = generatedExposeDeclares;
+      }
+      else null;
+    hasConfigModule = effectiveConfigModule != null;
+    preparedConfigModule =
+      if authoredConfigModule != null && hasGeneratedExposeConfig
+      then {
+        src = composedConfigSource;
+        metaJson = builtins.toJSON (authoredConfigMeta // {
+          declares = lib.unique (authoredConfigMeta.declares ++ generatedExposeDeclares);
+        });
+      }
+      else if hasGeneratedExposeConfig
+      then {
+        src = generatedConfigSource;
+        metaJson = builtins.toJSON {
+          schema = "aos.config-module-meta/v1";
+          module_abi_compat = {min = 1; max = 1;};
+          declares = effectiveConfigModule.declares;
+          owns_roots = [];
+          contributes = [];
+          provides_capabilities = [];
+        };
+      }
+      else if hasConfigModule
+      then preparedAuthoredConfigModule
+      else null;
+    configModuleMetaFile =
+      if hasConfigModule
+      then builtins.toFile "config-meta-${packageName}.json" preparedConfigModule.metaJson
+      else null;
+    existingOutputs = args.outputs or ["out"];
+    configStoreDir = args.storeDir or "/nix/store";
+    configArtifact =
+      if hasConfigModule
+      then
+        lib.throwIfNot
+        (!(builtins.elem "config" existingOutputs))
+        "mkDerivation configModule for package '${packageName}' reserves the 'config' output name"
+        (rawMkDerivation {
+          pname = "${packageName}-config";
+          version = args.version or "0";
+          src = preparedConfigModule.src;
+          outputs = ["config"];
+          buildDeps = [self.nix];
+          phases = [
+            {
+              name = "install";
+              script = ''
+                ${stdenv.coreutils}/bin/env -i TMPDIR=/build \
+                  ${stdenv.bash}/bin/bash --noprofile --norc -euo pipefail -c ${
+                  lib.escapeShellArg ''
+                    output=$1
+                    source=$2
+                    authored_meta=$(${stdenv.findutils}/bin/find "$source" -name config-meta.json -print -quit)
+                    if [[ -n "$authored_meta" ]]; then
+                      echo "config module for '${packageName}' must not author config-meta.json" >&2
+                      exit 1
+                    fi
+
+                    ${stdenv.coreutils}/bin/mkdir -p "$output"
+                    ${stdenv.coreutils}/bin/cp -R "$source/." "$output/"
+                    ${stdenv.coreutils}/bin/chmod -R u+w "$output"
+                    ${stdenv.coreutils}/bin/cp "${configModuleMetaFile}" "$output/config-meta.json"
+
+                    invalid_entry=$(${stdenv.findutils}/bin/find "$output" ! -type d ! -type f -print -quit)
+                    if [[ -n "$invalid_entry" ]]; then
+                      echo "config module for '${packageName}' contains a non-regular entry: $invalid_entry" >&2
+                      exit 1
+                    fi
+                    if [[ ! -f "$output/module.nix" ]]; then
+                      echo "config module for '${packageName}' must contain a regular module.nix" >&2
+                      exit 1
+                    fi
+                    invalid_helper=$(${stdenv.findutils}/bin/find "$output" -type f ! -name '*.nix' ! -path "$output/config-meta.json" ! -path "$output/expose-config.json" -print -quit)
+                    if [[ -n "$invalid_helper" ]]; then
+                      echo "config module for '${packageName}' contains a non-Nix helper: $invalid_helper" >&2
+                      exit 1
+                    fi
+                    if ! ${stdenv.diffutils}/bin/cmp -s "${configModuleMetaFile}" "$output/config-meta.json"; then
+                      echo "config module for '${packageName}' did not retain the generated metadata bytes" >&2
+                      exit 1
+                    fi
+                    ${stdenv.findutils}/bin/find "$output" -type f -name '*.nix' \
+                      -exec ${self.nix}/bin/nix-instantiate --store dummy:// --parse {} \; >/dev/null
+                      # Reject direct store literals and builtins.storeDir. The
+                      # evaluated manifest validator is the semantic boundary for
+                      # paths assembled by otherwise ordinary Nix expressions.
+                      if ${stdenv.grep}/bin/grep -R -n -F "${configStoreDir}/" "$output" \
+                        || ${stdenv.grep}/bin/grep -R -n -E 'builtins\.storeDir' "$output"; then
+                      echo "config module for '${packageName}' contains a Nix store-path construction" >&2
+                      exit 1
+                    fi
+                  ''
+                } _ "$config" "$src"
+              '';
+            }
+          ];
+          outputChecks.config.allowedReferences = [];
+          preferLocalBuild = true;
+          allowSubstitutes = false;
+        })
+      else null;
     configModuleAttrs =
-      if args ? configModule
-      then {configModule = renderedConfigModule;}
+      if hasConfigModule
+      then {
+        config = configArtifact;
+        configModule = configArtifact;
+      }
       else {};
     lowerArgs =
       # `configModule` is an mkDerivation-level arg consumed here, not passed
       # down to the raw builder (mirrors how `expose` is handled).
       (builtins.removeAttrs args ["configModule"])
       // {
-        buildDeps = (args.buildDeps or []) ++ [self.nuke-references];
+        buildDeps =
+          (args.buildDeps or [])
+          ++ [self.nuke-references];
         passthru = (args.passthru or {}) // exposeAttrs // configModuleAttrs;
       }
       // exposeAttrs;
@@ -85,6 +263,7 @@
       else null;
     result =
       drv
+      // configModuleAttrs
       // (
         if args ? expose
         then {

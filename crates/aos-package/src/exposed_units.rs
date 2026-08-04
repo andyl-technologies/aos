@@ -3758,6 +3758,7 @@ mod tests {
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),
             expected_pcr11: None,
+            ukis: Vec::new(),
             root_image: Some("root.img".to_string()),
             root_verity: Some("root.verity".to_string()),
             root_hash: Some(
@@ -3977,6 +3978,7 @@ mod tests {
                 sb_signer_cert_sha256: None,
                 sbat: Vec::new(),
                 expected_pcr11: None,
+                ukis: Vec::new(),
                 root_image: None,
                 root_verity: None,
                 root_hash: None,

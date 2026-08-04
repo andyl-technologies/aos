@@ -7,7 +7,7 @@
 # AOS port differs from upstream: when an entry's `source` is a
 # directory and `mode == "symlink"`, the script recurses into the
 # source tree and emits one composefs entry per path. The recursion
-# is what allows another lower (e.g. ignition's per-generation writes)
+# is what allows another lower (e.g. the evaluated per-generation writes)
 # to merge files into the same directory at runtime: overlayfs can
 # only merge two directory inodes, not a directory and a symlink. The
 # canonical caller is `environment.etc."systemd/system".source =

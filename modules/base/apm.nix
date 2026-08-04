@@ -22,11 +22,41 @@
   credentialNameRegex = "[A-Za-z0-9_.-]+";
   credentialNameType = lib.types.strMatching credentialNameRegex;
   desiredConfigType = lib.types.attrsOf (lib.types.attrsOf (lib.types.attrsOf toml.type));
-  desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
+  secretRefType = lib.types.submodule ({name, ...}: {
+    config._module.strict = true;
+    options = {
+      name = lib.mkOption {
+        type = credentialNameType;
+        default = name;
+        readOnly = true;
+        description = "The systemd credential handle.";
+      };
+      source = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "The credstore destination path; never credential bytes.";
+      };
+      encrypted = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "Whether the material at the destination is systemd-encrypted.";
+      };
+      units = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [];
+        description = "Service units that consume the credential.";
+      };
+      ref = lib.mkOption {
+        type = lib.types.strMatching "(tpm2-credstore|desired-toml|system-credential)(:[A-Za-z0-9_.-]+)?";
+        description = "The opaque credential resolver reference.";
+      };
+    };
+  });
+  desiredCredentialsType = lib.types.attrsOf (lib.types.attrsOf secretRefType);
   desiredSystemCredentialsType = lib.types.attrsOf (lib.types.attrsOf credentialNameType);
 
 
-  systemCredentialEntries =
+  desiredSystemCredentialValues =
     lib.mapAttrs
     (_package: credentials:
       lib.mapAttrs
@@ -35,15 +65,14 @@
       })
       credentials)
     cfg.systemCredentials;
-  desiredCredentials = lib.recursiveUpdate cfg.credentials systemCredentialEntries;
   credentialPackages =
     lib.unique ((builtins.attrNames cfg.credentials) ++ (builtins.attrNames cfg.systemCredentials));
   credentialConflicts =
     lib.concatMap (
       package: let
-        plaintextNames = builtins.attrNames (cfg.credentials.${package} or {});
+        referenceNames = builtins.attrNames (cfg.credentials.${package} or {});
         systemNames = builtins.attrNames (cfg.systemCredentials.${package} or {});
-        overlaps = builtins.filter (name: builtins.elem name systemNames) plaintextNames;
+        overlaps = builtins.filter (name: builtins.elem name systemNames) referenceNames;
       in
         builtins.map (name: "${package}.${name}") overlaps
     )
@@ -62,8 +91,8 @@
     // lib.optionalAttrs (cfg.config != {}) {
       config = cfg.config;
     }
-    // lib.optionalAttrs (desiredCredentials != {}) {
-      credentials = desiredCredentials;
+    // lib.optionalAttrs (desiredSystemCredentialValues != {}) {
+      credentials = desiredSystemCredentialValues;
     });
 
   registries = config.aos.apm.registries;
@@ -137,10 +166,10 @@ in {
       type = desiredCredentialsType;
       default = {};
       description = ''
-        Package-scoped credential plaintext to render under
-        `credentials.<package>` in `desired.toml` for first-boot
-        provisioning into signed package-declared systemd credstore
-        sources.
+        Package-scoped opaque credential references. Each reference contains
+        only a handle, credstore destination, encryption policy, consuming
+        units, and resolver discriminator. There is deliberately no plaintext
+        `value` or `text` constructor.
       '';
     };
 
@@ -148,10 +177,10 @@ in {
       type = desiredSystemCredentialsType;
       default = {};
       description = ''
-        Package-scoped system credential references to render under
-        `credentials.<package>` in `desired.toml`. `apm` reads plaintext from
-        `/run/credentials/@system/<name>` at first boot instead of embedding it
-        in the desired file.
+        Convenience mapping for platform system credentials. It projects to
+        the same opaque reference schema as `credentials`, while the baked
+        first-boot desired file tells `apm` to read bytes from
+        `/run/credentials/@system/<name>` instead of embedding them.
       '';
     };
 

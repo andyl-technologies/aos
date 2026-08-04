@@ -225,7 +225,7 @@ async fn run_inner(
     } else {
         filter_missing(&store_paths).await?
     };
-    verify_install_provenance_from_cache(&config.cache_path(), &closures)?;
+    verify_install_provenance_from_cache_with_policy(config, &closures)?;
 
     if !reinstall
         && missing.is_empty()
@@ -854,11 +854,12 @@ fn verify_secondary_artifact_downloads(
     Ok(())
 }
 
+#[cfg(test)]
 fn verify_install_provenance_from_cache(
     registry_cache_root: &Path,
     closures: &[ResolvedClosure],
 ) -> Result<usize> {
-    verify_package_provenance_entries_from_cache(
+    verify_package_provenance_entries_from_cache_inner(
         registry_cache_root,
         closures.iter().flat_map(|closure| {
             closure
@@ -866,12 +867,54 @@ fn verify_install_provenance_from_cache(
                 .iter()
                 .map(|meta| (closure.registry_name.as_str(), meta))
         }),
+        &HashMap::new(),
     )
 }
 
-pub(crate) fn verify_package_provenance_entries_from_cache<'a>(
+fn verify_install_provenance_from_cache_with_policy(
+    config: &ApmConfig,
+    closures: &[ResolvedClosure],
+) -> Result<usize> {
+    let policies = root_owner_signer_policies(config);
+    verify_package_provenance_entries_from_cache_inner(
+        &config.cache_path(),
+        closures.iter().flat_map(|closure| {
+            closure
+                .closure
+                .iter()
+                .map(|meta| (closure.registry_name.as_str(), meta))
+        }),
+        &policies,
+    )
+}
+
+pub(crate) fn verify_package_provenance_entries_from_cache_with_policy<'a>(
+    config: &ApmConfig,
+    entries: impl IntoIterator<Item = (&'a str, &'a PackageMeta)>,
+) -> Result<usize> {
+    let policies = root_owner_signer_policies(config);
+    verify_package_provenance_entries_from_cache_inner(&config.cache_path(), entries, &policies)
+}
+
+fn root_owner_signer_policies(config: &ApmConfig) -> HashMap<String, HashSet<String>> {
+    config
+        .registries
+        .iter()
+        .map(|(registry, _)| {
+            let signers = registry
+                .signing
+                .as_ref()
+                .map(|signing| signing.root_owner_signers.iter().cloned().collect())
+                .unwrap_or_default();
+            (registry.name.clone(), signers)
+        })
+        .collect()
+}
+
+fn verify_package_provenance_entries_from_cache_inner<'a>(
     registry_cache_root: &Path,
     entries: impl IntoIterator<Item = (&'a str, &'a PackageMeta)>,
+    root_owner_signers: &HashMap<String, HashSet<String>>,
 ) -> Result<usize> {
     let mut verified = 0;
     let mut transparency_logs = HashMap::<String, String>::new();
@@ -929,10 +972,36 @@ pub(crate) fn verify_package_provenance_entries_from_cache<'a>(
             sequence,
         )
         .with_context(|| format!("verifying provenance key lifetime for {}", path.display()))?;
+        enforce_root_owner_signer(meta, registry_name, &key_id, root_owner_signers)?;
         verified += 1;
     }
 
     Ok(verified)
+}
+
+fn enforce_root_owner_signer(
+    meta: &PackageMeta,
+    registry_name: &str,
+    authenticated_signer: &str,
+    root_owner_signers: &HashMap<String, HashSet<String>>,
+) -> Result<()> {
+    if meta
+        .config_module
+        .as_ref()
+        .is_some_and(|module| !module.owns_roots.is_empty())
+        && !root_owner_signers
+            .get(registry_name)
+            .is_some_and(|allowed| allowed.contains(authenticated_signer))
+    {
+        anyhow::bail!(
+            "package '{}@{}' claims shared-root ownership, but authenticated provenance signer '{}' is not in registry '{}' operator allowlist [registry.signing].root_owner_signers",
+            meta.name,
+            meta.version,
+            authenticated_signer,
+            registry_name
+        );
+    }
+    Ok(())
 }
 
 fn read_provenance_artifact(
@@ -1835,7 +1904,10 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::profile::Generation;
-    use crate::types::{AttestationMeta, ExposeArtifactMeta, ExposeMeta, SysrootImageEntry};
+    use crate::types::{
+        AttestationMeta, ConfigModuleMeta, ConfigOutputMeta, ExposeArtifactMeta, ExposeMeta,
+        ModuleAbiCompat, OwnedRoot, SysrootImageEntry,
+    };
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
 
@@ -1906,6 +1978,58 @@ mod tests {
             bpf_lsm: None,
             attestation: Default::default(),
         }
+    }
+
+    fn add_owned_root(meta: &mut PackageMeta, root: &str) {
+        meta.config_module = Some(ConfigModuleMeta {
+            config_output: ConfigOutputMeta {
+                store_path: "/nix/store/0000000000000000000000000000000a-config".to_string(),
+                nar_hash: "sha256:test".to_string(),
+                nar_size: 1,
+                references: Vec::new(),
+            },
+            evaluation_base_lib: None,
+            module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
+            declares: Vec::new(),
+            declaration_schema: Vec::new(),
+            requires: Vec::new(),
+            owns_roots: vec![OwnedRoot {
+                root: root.to_string(),
+                interface_abi: 1,
+                contributable: Vec::new(),
+            }],
+            contributes: Vec::new(),
+            provides_capabilities: Vec::new(),
+        });
+    }
+
+    #[test]
+    fn root_owner_requires_authenticated_signer_in_operator_allowlist() {
+        let mut meta = sample_package("firewall", "1.0.0", "/var/lib/store/root-firewall");
+        add_owned_root(&mut meta, "firewall");
+
+        let mut policies = HashMap::new();
+        policies.insert(
+            "test-reg".to_string(),
+            HashSet::from(["release".to_string()]),
+        );
+        let error = enforce_root_owner_signer(&meta, "test-reg", "builder", &policies)
+            .expect_err("non-allowlisted signer must not grant root ownership");
+        assert!(error.to_string().contains("operator allowlist"), "{error}");
+
+        policies
+            .get_mut("test-reg")
+            .expect("test policy")
+            .insert("builder".to_string());
+        enforce_root_owner_signer(&meta, "test-reg", "builder", &policies)
+            .expect("allowlisted authenticated signer grants ownership");
+    }
+
+    #[test]
+    fn packages_without_root_claims_preserve_compatibility_without_allowlist() {
+        let meta = sample_package("curl", "1.0.0", "/var/lib/store/root-curl");
+        enforce_root_owner_signer(&meta, "test-reg", "builder", &HashMap::new())
+            .expect("ordinary packages do not require the privileged signer allowlist");
     }
 
     fn sample_installed(name: &str, version: &str, store_path: &str) -> InstalledMeta {
@@ -1997,6 +2121,7 @@ mod tests {
             sb_signer_cert_sha256: None,
             sbat: Vec::new(),
             expected_pcr11: None,
+            ukis: Vec::new(),
             root_image: None,
             root_verity: None,
             root_hash: None,

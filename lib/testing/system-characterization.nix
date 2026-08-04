@@ -41,6 +41,13 @@
   goldensDir = ../../tests/fixtures/system-characterization-goldens + "/${variant}";
 
   systemdUnits = system.config.system.build.systemdSystemUnits;
+  configManifest = system.config.system.build.configManifest;
+  manifestSystemdPaths = builtins.map
+    (path: lib.removePrefix "systemd/system/" path)
+    (builtins.attrNames (lib.filterAttrs
+      (path: _entry: lib.hasPrefix "systemd/system/" path)
+      configManifest.etc));
+  manifestSystemdPathsText = lib.concatStringsSep "\n" manifestSystemdPaths + "\n";
   etcDump = system.config.system.build.etcDump;
   activateScript = system.config.system.build.activateScript;
   osRelease = system.config.environment.etc."os-release".source;
@@ -190,6 +197,21 @@
           write_text(os.path.join(out_dir, "activate-script.sh"), read_text(args.activate))
 
 
+      def assert_manifest_unit_paths(args):
+          """Assert that the builder-side unit tree is exactly manifest-derived."""
+          expected = set(read_text(args.manifest_paths).splitlines())
+          actual = set()
+          for dirpath, _dirnames, filenames in os.walk(args.units):
+              for name in filenames:
+                  actual.add(os.path.relpath(os.path.join(dirpath, name), args.units))
+          if actual != expected:
+              missing = sorted(expected - actual)
+              extra = sorted(actual - expected)
+              sys.stderr.write("systemd manifest/materializer path mismatch\n")
+              sys.stderr.write("missing: %r\nextra: %r\n" % (missing, extra))
+              sys.exit(1)
+
+
       def self_test():
           """Prove the comparator collapses both job-script path forms.
 
@@ -273,12 +295,14 @@
           parser.add_argument("--etc-dump", required=True)
           parser.add_argument("--os-release", required=True)
           parser.add_argument("--activate", required=True)
+          parser.add_argument("--manifest-paths", required=True)
           parser.add_argument("--out", required=True)
           parser.add_argument("--mode", required=True, choices=["check", "generate"])
           parser.add_argument("--goldens", required=True)
           args = parser.parse_args()
 
           self_test()
+          assert_manifest_unit_paths(args)
           build_snapshot(args, args.out)
           if args.mode == "check":
               compare(args.out, args.goldens)
@@ -302,6 +326,9 @@
       # into the build closure so the normalizer can read the script bodies.
       buildDeps = [systemdUnits pkgs.python3];
 
+      expectedManifestPaths = manifestSystemdPathsText;
+      passAsFile = ["expectedManifestPaths"];
+
       phases = [
         {
           name = "characterize";
@@ -315,6 +342,7 @@
               --etc-dump "${etcDump}" \
               --os-release "${osRelease}" \
               --activate "${activateScript}" \
+              --manifest-paths "$expectedManifestPathsPath" \
               --out "$snap" \
               --mode "${mode}" \
               --goldens "${goldensDir}"

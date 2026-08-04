@@ -9,6 +9,219 @@
   packagesWithExpose,
 }: let
   pkg = pkgs.expose-smoke;
+  configModulePackage = pkgs.config-module-smoke;
+  configModuleOutput = configModulePackage.config;
+  composedConfigModulePackage = pkgs.mkDerivation {
+    pname = "composed-config-smoke";
+    version = "0";
+    src = null;
+    phases = [{
+      name = "install";
+      script = ''
+        mkdir -p "$out"
+        printf payload > "$out/payload"
+      '';
+    }];
+    configModule = {
+      src = ../../pkgs/tests/_config-module-smoke;
+      declares = [
+        "configModuleSmoke.command"
+        "configModuleSmoke.enable"
+        "configModuleSmoke.privateMessage"
+      ];
+      ownsRoots = [{root = "configModuleSmoke";}];
+    };
+    expose = {};
+  };
+  configModulePayloadBaseline = pkgs.mkDerivation {
+    pname = "config-module-smoke";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/share/config-module-smoke"
+          printf '%s\n' payload > "$out/share/config-module-smoke/payload.txt"
+        '';
+      }
+    ];
+  };
+  evaluatedConfigModule = lib.evalModules {
+    modules = [
+      {config.configModuleSmoke.enable = true;}
+    ];
+    packageModules = [{
+      name = "config-module-smoke";
+      authorization = {
+        owns = ["configModuleSmoke"];
+        contributes = {};
+      };
+      configRoot = ../../pkgs/tests/_config-module-smoke;
+      module = ../../pkgs/tests/_config-module-smoke/module.nix;
+      outputs = {
+        self = "${configModulePackage}";
+        dependencies.bash = "${pkgs.bash}";
+      };
+    }];
+  };
+  configModuleEvalContract =
+    lib.throwIfNot
+    evaluatedConfigModule.config.configModuleSmoke.enable
+    "RFC-0011 config module fixture must evaluate through lib.evalModules"
+    (lib.throwIfNot
+      (evaluatedConfigModule.config.configModuleSmoke.command == "${pkgs.bash}/bin/bash")
+      "RFC-0011 config modules must resolve dependency output strings through evaluator injection"
+      (lib.throwIfNot
+        (evaluatedConfigModule.config.configModuleSmoke.privateMessage
+          == "configModuleSmoke.enable remains evaluable")
+        "RFC-0011 config module fixture must import and use its private helper"
+        true));
+  configModuleContract =
+    lib.throwIfNot
+    (configModuleOutput.outputName == "config")
+    "RFC-0011 config module fixture must expose the named config output"
+    (lib.throwIfNot
+      (configModuleOutput.outPath != configModulePackage.outPath)
+      "RFC-0011 config output must be separate from the package payload output"
+      (lib.throwIfNot
+        (configModulePackage.configModule.outPath == configModuleOutput.outPath)
+        "RFC-0011 configModule compatibility alias must identify pkg.config"
+        (lib.throwIfNot
+          (configModulePackage.passthru.configModule.outPath == configModuleOutput.outPath)
+          "RFC-0011 passthru.configModule compatibility alias must identify pkg.config"
+          (lib.throwIfNot
+            (!(builtins.elem "config" configModulePackage.outputs))
+            "RFC-0011 companion config artifact must not alter payload derivation outputs"
+            (lib.throwIfNot
+              (configModulePackage.drvPath == configModulePayloadBaseline.drvPath)
+              "RFC-0011 configModule must not alter the payload derivation contract"
+              true)))));
+  phaseExitPackage = pkgs.mkDerivation {
+    pname = "config-module-phase-exit";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "authored-exit";
+        script = ''
+          mkdir -p "$out"
+          printf payload > "$out/payload"
+          exit 0
+        '';
+      }
+    ];
+    configModule = {
+      src = ../../pkgs/tests/_config-module-smoke;
+      declares = ["configModuleSmoke.enable"];
+      ownsRoots = [{root = "configModuleSmoke";}];
+    };
+  };
+  exitTrapPackage = pkgs.mkDerivation {
+    pname = "config-module-exit-trap";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''
+          trap 'if [ -n "''${config:-}" ]; then chmod -R u+w "$config"; ln -sf /etc/passwd "$config/module.nix"; fi' EXIT
+          mkdir -p "$out"
+          printf payload > "$out/payload"
+        '';
+      }
+    ];
+    configModule = {
+      src = ../../pkgs/tests/_config-module-smoke;
+      declares = ["configModuleSmoke.enable"];
+      ownsRoots = [{root = "configModuleSmoke";}];
+    };
+  };
+  foreignDeclareRejected =
+    !(builtins.tryEval ((pkgs.mkDerivation {
+      pname = "config-module-foreign-declare";
+      version = "0";
+      src = null;
+      phases = [];
+      configModule = {
+        src = ../../pkgs/tests/_config-module-smoke;
+        declares = ["foreign.enable"];
+        ownsRoots = [{root = "configModuleSmoke";}];
+      };
+    }).config.outPath)).success;
+  privateDeclareAccepted =
+    (builtins.tryEval ((pkgs.mkDerivation {
+      pname = "private-root";
+      version = "0";
+      src = null;
+      phases = [];
+      configModule = {
+        src = ../../pkgs/tests/_config-module-smoke;
+        declares = ["private-root.enable"];
+      };
+    }).config.outPath)).success;
+  contributionSiblingRejected =
+    !(builtins.tryEval ((pkgs.mkDerivation {
+      pname = "contribution-sibling";
+      version = "0";
+      src = null;
+      phases = [];
+      configModule = {
+        src = ../../pkgs/tests/_config-module-smoke;
+        declares = ["nginx.enable"];
+        contributes = [{
+          root = "nginx";
+          interfaceAbi = 1;
+          paths = ["virtualHosts"];
+        }];
+      };
+    }).config.outPath)).success;
+  contributionDescendantAccepted =
+    (builtins.tryEval ((pkgs.mkDerivation {
+      pname = "contribution-descendant";
+      version = "0";
+      src = null;
+      phases = [];
+      configModule = {
+        src = ../../pkgs/tests/_config-module-smoke;
+        declares = ["nginx.virtualHosts.demo.enable"];
+        contributes = [{
+          root = "nginx";
+          interfaceAbi = 1;
+          paths = ["virtualHosts"];
+        }];
+      };
+    }).config.outPath)).success;
+  typedExposeRejects = field: expose:
+    lib.throwIfNot
+    (!(builtins.tryEval (builtins.deepSeq (pkg.overrideAttrs (_: {inherit expose;})).expose true)).success)
+    "RFC-0011 typed expose module accepted invalid ${field}"
+    true;
+  typedFirewallRejected = typedExposeRejects "firewall" {
+    firewall.allowedTCP = "443";
+  };
+  typedKernelRejected = typedExposeRejects "kernel" {
+    kernel.modules = "br_netfilter";
+  };
+  typedUnitsRejected = typedExposeRejects "units" {
+    units."bad.service" = "not-an-attrset";
+  };
+  typedArtifactsRejected = typedExposeRejects "config.artifacts" {
+    config.artifacts = [{
+      name = "bad";
+      path = "/etc/aos/packages/expose-smoke/bad.env";
+      optional = "TOKEN";
+    }];
+  };
+  typedPermissionsRejected = typedExposeRejects "permissions" {
+    permissions."tcp-bind" = "443";
+  };
+  typedCredentialsRejected = typedExposeRejects "credentials" {
+    config.credentials = [{
+      name = "bad";
+      encrypted = "yes";
+    }];
+  };
   minimal = pkgs.mkDerivation {
     pname = "expose-minimal";
     version = "0";
@@ -738,7 +951,6 @@
         };
       };
       permissions.network = "private";
-      requires = [];
     };
   });
   reservedCollision = builtins.tryEval (
@@ -746,7 +958,6 @@
       expose = {
         units."aos-pkg-expose-smoke-firewall.service" = {};
         permissions.network = "private";
-        requires = [];
       };
     }))
     .expose
@@ -767,7 +978,6 @@
           };
         };
         permissions.network = "private";
-        requires = [];
       };
     }))
     .expose
@@ -787,7 +997,6 @@
           };
         };
         permissions.network = "private";
-        requires = [];
       };
     }))
     .expose
@@ -812,7 +1021,6 @@
         permissions = {
           network = "private";
         };
-        requires = [];
       };
     }))
     .expose
@@ -832,7 +1040,6 @@
           };
         };
         permissions.network = "private";
-        requires = [];
       };
     }))
     .expose
@@ -852,7 +1059,6 @@
           };
         };
         permissions.network = "private";
-        requires = [];
       };
     }))
     .expose
@@ -872,7 +1078,6 @@
           };
         };
         permissions.network = "private";
-        requires = [];
       };
     }))
     .expose
@@ -898,7 +1103,6 @@
         };
       };
       permissions.network = "private";
-      requires = [];
     };
   });
   landlockExecResetEval = builtins.tryEval landlockExecReset.expose.outPath;
@@ -913,7 +1117,6 @@
         permissions = {
           network = "private";
         };
-        requires = [];
       };
     }))
     .expose
@@ -930,7 +1133,6 @@
         permissions = {
           network = "private";
         };
-        requires = [];
       };
     }))
     .expose
@@ -950,7 +1152,6 @@
         permissions = {
           network = "private";
         };
-        requires = [];
       };
     }))
     .expose
@@ -974,7 +1175,6 @@
           network = "private";
           kernel-modules = [];
         };
-        requires = [];
       };
     }))
     .expose
@@ -996,7 +1196,6 @@
           host-paths = [];
         };
         prepareHostPathDirectories = ["/srv/expose-smoke-rw"];
-        requires = [];
       };
     }))
     .expose
@@ -1023,7 +1222,6 @@
           ];
         };
         prepareHostPathDirectories = ["/srv/expose-smoke-ro"];
-        requires = [];
       };
     }))
     .expose
@@ -1049,7 +1247,6 @@
             }
           ];
         };
-        requires = [];
       };
     }))
     .expose
@@ -1075,7 +1272,6 @@
             }
           ];
         };
-        requires = [];
       };
     }))
     .expose
@@ -1099,7 +1295,6 @@
       permissions = {
         network = "private";
       };
-      requires = [];
     };
   });
   rootUserWithoutPrivilege = builtins.tryEval (
@@ -1113,7 +1308,6 @@
         permissions = {
           network = "private";
         };
-        requires = [];
       };
     }))
     .expose
@@ -1134,7 +1328,6 @@
         permissions = {
           network = "private";
         };
-        requires = [];
       };
     }))
     .expose
@@ -1155,7 +1348,6 @@
         permissions = {
           network = "private";
         };
-        requires = [];
       };
     }))
     .expose
@@ -1176,7 +1368,6 @@
         permissions = {
           network = "private";
         };
-        requires = [];
       };
     }))
     .expose
@@ -1198,7 +1389,6 @@
         network = "private";
         kernel-modules = ["br_netfilter"];
       };
-      requires = [];
     };
   });
   hostPathWithoutPrepare = pkg.overrideAttrs (_: {
@@ -1218,7 +1408,6 @@
           }
         ];
       };
-      requires = [];
     };
   });
   privateOutbound = pkg.overrideAttrs (_: {
@@ -1235,7 +1424,6 @@
         tcp-bind = [8000];
         tcp-connect = [443];
       };
-      requires = [];
     };
   });
   withHoles = pkg.overrideAttrs (_: {
@@ -1251,7 +1439,6 @@
         network = "private";
         capabilities = ["CAP_NET_BIND_SERVICE"];
       };
-      requires = [];
     };
   });
   unconfined = pkg.overrideAttrs (_: {
@@ -1274,7 +1461,6 @@
         ];
         privileged-users = true;
       };
-      requires = [];
     };
   });
   privilegedSyscalls = pkg.overrideAttrs (_: {
@@ -1290,7 +1476,6 @@
         network = "private";
         syscalls = "privileged";
       };
-      requires = [];
     };
   });
   regexNamePrivateOutbound = pkg.overrideAttrs (_: {
@@ -1303,7 +1488,6 @@
         };
       };
       permissions.network = "private-outbound";
-      requires = [];
     };
   });
 in
@@ -1314,6 +1498,27 @@ in
 
     payload = pkg;
     exposePath = pkg.expose;
+    generatedExposeConfigOutput = pkg.config;
+    inherit configModuleContract configModuleEvalContract configModuleOutput;
+    configModulePayload = configModulePackage;
+    configModuleAlias = configModulePackage.configModule;
+    composedConfigModuleOutput = composedConfigModulePackage.config;
+    inherit
+      phaseExitPackage
+      exitTrapPackage
+      foreignDeclareRejected
+      privateDeclareAccepted
+      contributionSiblingRejected
+      contributionDescendantAccepted
+      typedFirewallRejected
+      typedKernelRejected
+      typedUnitsRejected
+      typedArtifactsRejected
+      typedPermissionsRejected
+      typedCredentialsRejected
+      ;
+    phaseExitConfig = phaseExitPackage.config;
+    exitTrapConfig = exitTrapPackage.config;
     exposeConfinement = builtins.toJSON pkg.expose.passthru.confinement;
     minimalPayload = minimal;
     minimalExposePath = minimal.expose;
@@ -1405,6 +1610,55 @@ in
         name = "check";
         script = ''
           set -eu
+
+          : "$configModuleContract"
+          : "$configModuleEvalContract"
+          : "$foreignDeclareRejected"
+          : "$privateDeclareAccepted"
+          : "$contributionSiblingRejected"
+          : "$contributionDescendantAccepted"
+          : "$typedFirewallRejected"
+          : "$typedKernelRejected"
+          : "$typedUnitsRejected"
+          : "$typedArtifactsRejected"
+          : "$typedPermissionsRejected"
+          : "$typedCredentialsRejected"
+          test "$configModuleOutput" != "$configModulePayload"
+          test "$configModuleAlias" = "$configModuleOutput"
+          test -f "$configModuleOutput/module.nix"
+          test -f "$configModuleOutput/private.nix"
+          test -f "$configModuleOutput/config-meta.json"
+          test -f "$phaseExitPackage/payload"
+          test -f "$phaseExitConfig/module.nix"
+          test -f "$exitTrapPackage/payload"
+          test -f "$exitTrapConfig/module.nix"
+          test ! -L "$exitTrapConfig/module.nix"
+          grep -q 'aos.config-module-meta/v1' "$configModuleOutput/config-meta.json"
+          grep -q 'configModuleSmoke.enable' "$configModuleOutput/config-meta.json"
+          if grep -R -n -F "$NIX_STORE_DIR/" "$configModuleOutput"; then
+            echo "RFC-0011 config output contains a Nix store-path literal" >&2
+            exit 1
+          fi
+          test -f "$composedConfigModuleOutput/module.nix"
+          test -f "$composedConfigModuleOutput/authored/module.nix"
+          test -f "$composedConfigModuleOutput/authored/private.nix"
+          test -f "$composedConfigModuleOutput/generated/module.nix"
+          test -f "$composedConfigModuleOutput/generated/expose-config.json"
+          grep -q 'configModuleSmoke.enable' "$composedConfigModuleOutput/config-meta.json"
+          grep -q 'composed-config-smoke._aosExposeConfigProjection' "$composedConfigModuleOutput/config-meta.json"
+          grep -q './authored/module.nix' "$composedConfigModuleOutput/module.nix"
+          grep -q './generated/module.nix' "$composedConfigModuleOutput/module.nix"
+          test "$generatedExposeConfigOutput" != "$payload"
+          test -f "$generatedExposeConfigOutput/module.nix"
+          test -f "$generatedExposeConfigOutput/expose-config.json"
+          test -f "$generatedExposeConfigOutput/config-meta.json"
+          grep -q 'aos.expose-config-binding/v1' "$generatedExposeConfigOutput/module.nix"
+          grep -q 'expose-smoke._aosExposeConfigProjection' "$generatedExposeConfigOutput/config-meta.json"
+          grep -q '"package":"expose-smoke"' "$generatedExposeConfigOutput/expose-config.json"
+          if grep -R -n -F "$NIX_STORE_DIR/" "$generatedExposeConfigOutput"; then
+            echo "RFC-0011 generated expose config output contains a Nix store-path literal" >&2
+            exit 1
+          fi
 
           unit="$exposePath/units/expose-smoke.service"
           target="$exposePath/units/aos-pkg-expose-smoke.target"

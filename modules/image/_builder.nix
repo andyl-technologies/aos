@@ -35,6 +35,13 @@
 }: let
   # Kernel command line parameters from the evaluated config.
   kernelParams = lib.concatStringsSep " " system.config.aos.boot.kernelParams;
+  # Each UKI names its own immutable root slot. The root hash bytes are shared
+  # because both slots receive the exact same reproducible root image; only the
+  # DPS data/hash device hints differ.
+  kernelParamsB = builtins.replaceStrings
+    ["/dev/disk/by-partlabel/root-a-hash" "/dev/disk/by-partlabel/root-a"]
+    ["/dev/disk/by-partlabel/root-b-hash" "/dev/disk/by-partlabel/root-b"]
+    kernelParams;
 
   version = system.config.aos.system.version;
 
@@ -115,11 +122,12 @@
         else null;
     });
 
-  uki = pkgs.aos-uki {
-    inherit name version;
+  mkUki = slotName: cmdline:
+    pkgs.aos-uki {
+    name = "${name}-slot-${slotName}";
+    inherit version cmdline;
     kernel = system.config.system.build.kernel;
     initrd = system.config.system.build.initrd;
-    cmdline = kernelParams;
     # The toplevel now ships a top-level `os-release` symlink (named-
     # output layout from spec v12 §1); the previous `etc/os-release`
     # path is gone along with the rest of `${toplevel}/etc/`.
@@ -149,6 +157,13 @@
       then "${rootfs}/root.roothash"
       else null;
   };
+
+  ukiA = mkUki "a" kernelParams;
+  ukiB = mkUki "b" kernelParamsB;
+  # Preserve the public passthru as the slot-A/first-install UKI.
+  uki = ukiA;
+  ukiAStoreFilename = "aos-${name}-slot-a-${version}.efi";
+  ukiBStoreFilename = "aos-${name}-slot-b-${version}.efi";
 
   ukiFilename = "aos-${name}-${version}.efi";
 
@@ -183,7 +198,8 @@
 
       ROOT_IMG = "${rootfs}/root.img";
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
-      UKI_PATH = "${uki}/${ukiFilename}";
+      UKI_PATH = "${ukiA}/${ukiAStoreFilename}";
+      UKI_B_PATH = "${ukiB}/${ukiBStoreFilename}";
       SDBOOT_DIR = "${pkgs.systemd}/lib/systemd/boot/efi";
 
       # Secure Boot signing inputs (empty unless enabled). The UKI is
@@ -296,21 +312,27 @@
             ''}
             # 1 MiB (2048 sectors) at the start for GPT header + alignment,
             # plus 1 MiB at the end for the backup GPT header.
-            disk_sectors=$(( root_start_sector + root_sectors + hash_sectors + 2048 ))
+            root_b_start_sector=$(( hash_start_sector + hash_sectors ))
+            hash_b_start_sector=$(( root_b_start_sector + root_sectors ))
+            disk_sectors=$(( hash_b_start_sector + hash_sectors + 2048 ))
             disk_bytes=$(( disk_sectors * 512 ))
             echo "==> Assembling $(( disk_bytes / 1048576 )) MiB GPT image"
             truncate -s "$disk_bytes" image.raw
 
             # Partition 1 is the ESP (type GUID C12A7328-…); partition 2
-            # is the root A slot; partition 3 (verity only) is its dm-verity
-            # hash tree. Root B, swap, and /var are carved out of the trailing
-            # unallocated space by systemd-repart on first boot.
+            # is the root A slot, followed by its optional verity tree, then an
+            # equally-sized empty root B slot and optional B verity tree. Swap
+            # and /var are carved from the trailing unallocated space by
+            # systemd-repart on first boot.
             sfdisk image.raw <<PTABLE
             label: gpt
             size=$esp_sectors, type=${espGuid}, name="ESP"
             size=$root_sectors, type=${rootGuid}, name="root-a"${lib.optionalString verityEnabled ''
 
               size=$hash_sectors, type=${verityGuid}, name="root-a-hash"''}
+            size=$root_sectors, type=${rootGuid}, name="root-b"${lib.optionalString verityEnabled ''
+
+              size=$hash_sectors, type=${verityGuid}, name="root-b-hash"''}
             PTABLE
 
             echo "    Writing ESP at sector ${toString espStartSector}"
@@ -333,6 +355,17 @@
           script = ''
             mkdir -p $out
             mv image.raw $out/aos-${name}.img
+            # OTA payloads: the imported raw-image store path is also the
+            # authenticated source for inactive-slot staging. These files are
+            # copied to block devices/ESP without parsing the enclosing GPT.
+            mv root.img $out/root.img
+            cp "$UKI_PATH" $out/uki-a.efi
+            cp "$UKI_B_PATH" $out/uki-b.efi
+            ${lib.optionalString verityEnabled ''
+              cp "$VERITY_IMG" $out/root.verity
+              cp "$ROOT_HASH_FILE" $out/root.roothash
+              cp "$ROOT_HASH_SIG_FILE" $out/root.roothash.p7s
+            ''}
 
             # Image metadata for downstream tooling (sysupdate later).
             root_size_bytes=$(cat root-size-bytes)
@@ -354,7 +387,9 @@
               "partitions": [
                 { "number": 1, "label": "ESP", "type": "esp", "filesystem": "vfat", "sizeMiB": $esp_size_mib },
                 { "number": 2, "label": "root-a", "type": "root", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
-                              { "number": 3, "label": "root-a-hash", "type": "verity", "filesystem": "dm-verity", "sizeMiB": $hash_size_mib }''}
+                              { "number": 3, "label": "root-a-hash", "type": "verity", "filesystem": "dm-verity", "sizeMiB": $hash_size_mib }''},
+                { "number": ${if verityEnabled then "4" else "3"}, "label": "root-b", "type": "root", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
+                              { "number": 5, "label": "root-b-hash", "type": "verity", "filesystem": "dm-verity", "sizeMiB": $hash_size_mib }''}
               ],
               "esp": {
                 "uki": "EFI/Linux/${espUkiFilename}",
@@ -371,10 +406,12 @@
       # non-verity image derivation's environment — and hash — is unchanged.
       VERITY_IMG = "${rootfs}/root.verity";
       VERITY_SIZE_FILE = "${rootfs}/root-verity-size-bytes";
+      ROOT_HASH_FILE = "${rootfs}/root.roothash";
+      ROOT_HASH_SIG_FILE = "${rootfs}/root.roothash.p7s";
     });
 in
   # Expose the assembled UKI (the exact `.efi` written to the ESP) as a
   # passthru attribute so callers can publish or measure it directly
   # (RFC-0006 phase 4: `apr publish --image <uki>` derives Secure Boot
   # facts from this signed binary).
-  imageDrv // {inherit uki;}
+  imageDrv // {inherit uki ukiA ukiB;}
