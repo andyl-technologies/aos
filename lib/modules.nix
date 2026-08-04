@@ -267,18 +267,19 @@
   # ---------------------------------------------------------------------------
   # Internal: collect option declarations from a module result
   # ---------------------------------------------------------------------------
-  collectOptions = prefix: optionTree:
+  collectOptions = prefix: optionTree: file: provenance: authorization:
     if isOption optionTree
     then [
       {
         path = prefix;
         option = optionTree;
+        inherit file provenance authorization;
       }
     ]
     else if builtins.isAttrs optionTree
     then
       builtins.concatLists (
-        builtins.map (name: collectOptions (prefix ++ [name]) optionTree.${name}) (
+        builtins.map (name: collectOptions (prefix ++ [name]) optionTree.${name} file provenance authorization) (
           builtins.attrNames optionTree
         )
       )
@@ -316,16 +317,16 @@
   # ---------------------------------------------------------------------------
   #
   # `provenance` is the engine-stamped, resolver-supplied origin marker for
-  # the module this def came from (`null` for ordinary modules, `"operator"`
-  # for a host.nix module the resolver passed via `operatorModules`). It is
+  # the module this def came from (`@base`, `@host`, or `package:<name>`).
+  # The host stamp is assigned only through resolver `operatorModules`. It is
   # threaded onto every emitted def UNCHANGED — exactly like `file` — and is
   # read ONLY at the priority-assignment step (phase 4) to lift operator defs
   # to the reserved tier-75 band. It is deliberately NOT derived from any
   # module-supplied attribute (`_file` / a module-body `_provenance`), so it
   # cannot be forged by a package (review M-forgeable-file).
-  collectDefsAtPath = path: config: file: provenance:
+  collectDefsAtPath = path: config: file: provenance: authorization:
     if isMkMerge config
-    then builtins.concatLists (builtins.map (v: collectDefsAtPath path v file provenance) config._values)
+    then builtins.concatLists (builtins.map (v: collectDefsAtPath path v file provenance authorization) config._values)
     else if isMkIf config
     then
       builtins.map (
@@ -337,11 +338,11 @@
               then d.condition && config._condition
               else config._condition;
           }
-      ) (collectDefsAtPath path config._value file provenance)
+      ) (collectDefsAtPath path config._value file provenance authorization)
     else if builtins.length path == 0
     then [
       {
-        inherit file provenance;
+        inherit file provenance authorization;
         value = config;
       }
     ]
@@ -351,7 +352,7 @@
       rest = builtins.genList (i: builtins.elemAt path (i + 1)) (builtins.length path - 1);
     in
       if builtins.hasAttr key config
-      then collectDefsAtPath rest config.${key} file provenance
+      then collectDefsAtPath rest config.${key} file provenance authorization
       else []
     else [];
 
@@ -547,12 +548,19 @@
           _module = (rawConfig._module or {}) // topLevelModuleMeta;
         };
 
-    result = {
-      options = evaluated.options or {};
-      config = finalModuleConfig;
-      _file = file;
-      imports = evaluated.imports or [];
-    };
+    result =
+      if builtins.isAttrs evaluated
+      && (
+        evaluated ? _provenance
+        || (evaluated ? config && builtins.isAttrs evaluated.config && evaluated.config ? _provenance)
+      )
+      then throw "Module ${file} sets reserved attribute `_provenance`; provenance is resolver-controlled"
+      else {
+        options = evaluated.options or {};
+        config = finalModuleConfig;
+        _file = file;
+        imports = evaluated.imports or [];
+      };
   in
     result;
 
@@ -575,7 +583,7 @@
     # `operatorModules` contains modules the
     # RESOLVER has authenticated as operator-provenance (the verified
     # `host.nix` store path). Every def these modules contribute is stamped
-    # with `_provenance = "operator"` and lifted to the reserved priority-75
+    # with engine provenance `@host` and lifted to the reserved priority-75
     # band (between `mkForce` and normal package contributions) at the
     # priority-assignment step, so the operator deterministically beats any
     # package contribution regardless of module order. Provenance is keyed to
@@ -588,6 +596,17 @@
     # behaviour is byte-identical to before this primitive. CS5 wires the
     # resolver to populate this from the verified host.nix path.
     operatorModules ? [],
+    # Config modules fetched from authenticated package outputs. Each record is
+    # `{ name; module; authorization = { owns; contributes; }; }`; every field
+    # is resolver supplied from authenticated package metadata. Definitions
+    # from the module and its imports are stamped `package:<name>` for artifact
+    # ownership and checked against that exact authorization before merging.
+    packageModules ? [],
+    # Nested submodule evaluation retains resolver provenance for priority and
+    # ownership, but the outer evaluation already validates the same authored
+    # config at its full absolute option path. Re-checking a nested relative
+    # path would lose that prefix and reject valid writes.
+    enforcePackageAuthorization ? true,
   }: let
     moduleLib =
       if lib == {}
@@ -664,40 +683,414 @@
         config._module.args = extraArgs // specialArgs;
       };
 
-      # `collectModules provenance mods` recursively evaluates `mods`,
-      # stamping each DIRECT member with the given `_provenance`. Imported
-      # children are always collected with `null` provenance, so operator
-      # provenance is confined to the exact modules the resolver supplied and
-      # never leaks through an `imports` edge (review M-forgeable-file). The
-      # `evaled // { _provenance = provenance; }` overwrite is what makes the
-      # marker non-forgeable: any `_provenance` a module sets in its own body
-      # is discarded here, and `collectDefsAtPath` later reads only this
-      # engine-stamped value, never a module-body attribute.
-      collectModules = provenance: mods:
+      # `collectModules provenance propagateToImports mods` recursively
+      # evaluates modules and stamps each result with resolver-controlled
+      # provenance. Package imports retain their authenticated package owner;
+      # host imports fall back to `@base`, preventing an operator module from
+      # laundering an arbitrary import into tier 75. Module-authored
+      # `_provenance` is rejected by `evalModule` before this point.
+      visibleConfigFor = provenance: authorization:
+        if !strings.hasPrefix "package:" provenance
+        then finalConfig
+        else let
+          package = strings.removePrefix "package:" provenance;
+          allowedRoots =
+            [package]
+            ++ authorization.owns
+            ++ builtins.attrNames authorization.contributes;
+          foreignPackageRoots = builtins.filter
+            (root: !builtins.elem root allowedRoots)
+            packageOwnedRoots;
+        in
+          finalConfig
+          // builtins.listToAttrs (builtins.map
+            (root:
+              attrsets.nameValuePair root (throw
+                "evalModules: package '${package}' reads undeclared package root '${root}'"))
+            foreignPackageRoots);
+
+      collectModules = provenance: authorization: propagateToImports: mods:
         builtins.concatLists (
           builtins.map (
             mod: let
               evaled =
                 evalModule {
-                  config = finalConfig;
+                  config = visibleConfigFor provenance authorization;
                   options = optionsTree;
                   pkgs = pkgs;
                   lib = moduleLib;
-                  extraArgs = extraArgs // specialArgs;
+                  extraArgs = extraArgs // specialArgs // {provenance = provenanceQueries;};
                 }
                 mod;
             in
-              collectModules null evaled.imports ++ [(evaled // {_provenance = provenance;})]
+              collectModules
+              (
+                if propagateToImports
+                then provenance
+                else if provenance == "@host" || provenance == "@host-import"
+                then "@host-import"
+                else "@base"
+              )
+              (if propagateToImports then authorization else null)
+              propagateToImports
+              evaled.imports
+              ++ [(evaled // {
+                _provenance = provenance;
+                _authorization = authorization;
+              })]
           )
           mods
         );
 
-      # Ordinary modules carry `null` provenance; operator (host.nix) modules
-      # carry `"operator"`. Appended last so their tier-75 defs also win any
+      validAuthorization = auth:
+        builtins.isAttrs auth
+        && builtins.attrNames auth == ["contributes" "owns"]
+        && builtins.isList auth.owns
+        && builtins.all (root: builtins.isString root && builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" root != null) auth.owns
+        && builtins.isAttrs auth.contributes
+        && builtins.all (paths:
+          builtins.isList paths
+          && builtins.all (path:
+            builtins.isString path
+            && path != ""
+            && builtins.match "[a-zA-Z0-9][a-zA-Z0-9_.-]*" path != null)
+          paths)
+        (builtins.attrValues auth.contributes);
+
+      validatedPackageModules = builtins.map (record:
+        if !builtins.isAttrs record || builtins.attrNames record != ["authorization" "module" "name"]
+        then throw "evalModules: packageModules entries must contain exactly authorization, module, and name"
+        else if !builtins.isString record.name || builtins.match "[a-z0-9][a-z0-9._+-]*" record.name == null
+        then throw "evalModules: invalid resolver-supplied package provenance name"
+        else if !validAuthorization record.authorization
+        then throw "evalModules: invalid resolver-supplied authorization for package '${record.name}'"
+        else record)
+      packageModules;
+
+      packageOwnedRoots = lists.unique (builtins.concatLists (builtins.map
+        (record: [record.name] ++ record.authorization.owns)
+        validatedPackageModules));
+
+      evaluatedPackageModules = builtins.concatLists (builtins.map (record:
+        collectModules "package:${record.name}" record.authorization true [record.module])
+      validatedPackageModules);
+
+      # Image modules carry `@base`; operator (host.nix) modules carry
+      # `@host`. Appended last so their tier-75 defs also win any
       # `lastValue` tie at equal priority, matching "the operator overrides".
       evaluatedModules =
-        collectModules null ([internalModule] ++ modules)
-        ++ collectModules "operator" operatorModules;
+        collectModules "@base" null false ([internalModule] ++ modules)
+        ++ evaluatedPackageModules
+        ++ collectModules "@host" null false operatorModules;
+
+      # Enumerate the concrete leaf paths actually authored by each package
+      # module. The authenticated metadata is only an authorization claim; it
+      # is never accepted as proof that the module stayed within that claim.
+      # Imports retain the parent's resolver stamp and authorization, and a
+      # forged `_file` is deliberately irrelevant.
+      configLeafPaths = path: value:
+        if isMkIf value
+        then
+          if value._condition
+          then configLeafPaths path value._value
+          else []
+        else if isMkMerge value
+        then builtins.concatLists (builtins.map (configLeafPaths path) value._values)
+        else if isOverride value || isOrder value
+        then configLeafPaths path value._value
+        else if builtins.isAttrs value
+        then builtins.concatLists (builtins.map
+          (name: configLeafPaths (path ++ [name]) value.${name})
+          (builtins.attrNames value))
+        else [path];
+
+      pathHasPrefix = prefix: path:
+        builtins.length prefix <= builtins.length path
+        && builtins.all
+        (i: builtins.elemAt prefix i == builtins.elemAt path i)
+        (builtins.genList (i: i) (builtins.length prefix));
+
+      authorizePackagePath = module: path: let
+        package = strings.removePrefix "package:" module._provenance;
+        root =
+          if path == []
+          then ""
+          else builtins.head path;
+        relative =
+          if builtins.length path <= 1
+          then []
+          else builtins.genList
+            (i: builtins.elemAt path (i + 1))
+            (builtins.length path - 1);
+        owns = [package] ++ module._authorization.owns;
+        contributed = module._authorization.contributes.${root} or [];
+        allowedContribution = builtins.any
+          (declared: pathHasPrefix (strings.splitString "." declared) relative)
+          contributed;
+        foreignEnable =
+          relative != []
+          && builtins.elemAt relative (builtins.length relative - 1) == "enable";
+        pathStr = builtins.concatStringsSep "." path;
+      in
+        if builtins.elem root owns
+        then true
+        else if foreignEnable
+        then throw "evalModules: package '${package}' may not write foreign enable path '${pathStr}'"
+        else if allowedContribution
+        then true
+        else throw "evalModules: package '${package}' writes unauthorized path '${pathStr}'";
+
+      packageAuthorizationCheck =
+        if !enforcePackageAuthorization
+        then true
+        else builtins.foldl'
+        (checked: module:
+          if !strings.hasPrefix "package:" (module._provenance or "")
+          then checked
+          else builtins.foldl'
+            (inner: path: builtins.seq inner (authorizePackagePath module path))
+            checked
+            (configLeafPaths [] module.config))
+        true
+        evaluatedModules;
+
+      authorizePackageDeclaration = decl: let
+        package = strings.removePrefix "package:" decl.provenance;
+        root =
+          if decl.path == []
+          then ""
+          else builtins.head decl.path;
+        owns = [package] ++ decl.authorization.owns;
+      in
+        if builtins.elem root owns
+        then true
+        else throw "evalModules: package '${package}' declares unauthorized foreign option '${builtins.concatStringsSep "." decl.path}'";
+
+      packageDeclarationCheck = builtins.foldl'
+        (checked: decl:
+          if strings.hasPrefix "package:" (decl.provenance or "")
+          then builtins.seq checked (authorizePackageDeclaration decl)
+          else checked)
+        true
+        allOptionDecls;
+
+      ownerForProvenance = provenance:
+        if provenance == null || provenance == "@base"
+        then "@base"
+        else if provenance == "@host" || provenance == "@host-import"
+        then "@host"
+        else if strings.hasPrefix "package:" provenance
+        then strings.removePrefix "package:" provenance
+        else throw "evalModules: invalid engine provenance stamp '${provenance}'";
+
+      defaultDependencyOwners = lists.unique (builtins.map
+        (decl: ownerForProvenance decl.provenance)
+        (builtins.filter
+          (decl:
+            (decl.provenance or "@base") != "@base"
+            && !(isNoDefault decl.option.default))
+          allOptionDecls));
+      # Nix does not expose general config-read tracing. Preserve the one
+      # dependency edge phase 4 can identify exactly: a value supplied by an
+      # option declaration's synthetic default. A tiny, owner-specific store
+      # context is invisible to the option type and serialized value, but is
+      # retained when another definition directly projects that default into
+      # an artifact. Ownership queries peel the marker back into its
+      # authenticated declaration owner.
+      defaultDependencyMarkers = builtins.listToAttrs (builtins.map (owner: let
+        marker = builtins.toFile
+          "aos-option-default-${builtins.substring 0 16 (builtins.hashString "sha256" owner)}"
+          owner;
+      in
+        attrsets.nameValuePair
+          (builtins.unsafeDiscardStringContext (builtins.toString marker))
+          owner)
+      defaultDependencyOwners);
+      tagDefaultDependency = provenance: value: let
+        owner = ownerForProvenance provenance;
+        markerPaths = builtins.attrNames (attrsets.filterAttrs (_: candidate: candidate == owner) defaultDependencyMarkers);
+        markerContext = builtins.listToAttrs (builtins.map
+          (marker: attrsets.nameValuePair marker {path = true;})
+          markerPaths);
+        tag = current:
+          if markerPaths == []
+          then current
+          else if builtins.isString current
+          then builtins.appendContext current markerContext
+          else if builtins.isList current
+          then builtins.map tag current
+          else if builtins.isAttrs current && !((current.type or null) == "derivation")
+          then builtins.mapAttrs (name: child:
+            if name == "_module"
+            then child
+            else tag child)
+          current
+          else current;
+      in
+        tag value;
+      dependencyOwnersForValue = value: let
+        collect = current:
+          if builtins.isString current
+          then builtins.map
+            (marker: defaultDependencyMarkers.${marker})
+            (builtins.filter
+              (marker: builtins.hasAttr marker defaultDependencyMarkers)
+              (builtins.attrNames (builtins.getContext current)))
+          else if builtins.isList current
+          then builtins.concatLists (builtins.map collect current)
+          else if builtins.isAttrs current && !((current.type or null) == "derivation")
+          then builtins.concatLists (builtins.map
+            (name:
+              if name == "_module"
+              then []
+              else collect current.${name})
+            (builtins.attrNames current))
+          else [];
+      in
+        lists.unique (collect value);
+
+      peelOwnedDef = file: provenance: condition: priority: value:
+        if isOverride value
+        then peelOwnedDef file provenance condition value._priority value._value
+        else if isMkIf value
+        then peelOwnedDef file provenance (condition && value._condition) priority value._value
+        else if isMkMerge value
+        then builtins.concatLists (builtins.map
+          (v: peelOwnedDef file provenance condition priority v)
+          value._values)
+        else if isOrder value
+        then peelOwnedDef file provenance condition priority value._value
+        else [{inherit file provenance condition priority value;}];
+
+      chooseOwner = description: defs: let
+        active = builtins.filter (d: d.condition) defs;
+        minPriority = builtins.foldl'
+          (acc: d: if d.priority < acc then d.priority else acc)
+          9999
+          active;
+        winners = builtins.filter (d: d.priority == minPriority) active;
+        owners = lists.unique (builtins.concatLists (builtins.map (d: let
+          source = ownerForProvenance d.provenance;
+          dependencies = dependencyOwnersForValue d.value;
+        in
+          if dependencies != [] && builtins.elem source ["@base" "@host"]
+          then dependencies
+          else [source] ++ dependencies)
+        winners));
+      in
+        if owners == []
+        then "@base"
+        else if builtins.length owners == 1
+        then builtins.head owners
+        else throw "evalModules: artifact '${description}' has definitions from multiple owners: ${builtins.concatStringsSep ", " owners}";
+
+      optionDefs = path: let
+        key = builtins.concatStringsSep "." path;
+      in
+        if !(optionMap ? ${key})
+        then throw "evalModules: provenance query names undeclared option '${key}'"
+        else configForOption optionMap.${key};
+
+      defBasePriority = d:
+        if isOverride d.value
+        then d.value._priority
+        else if (d.provenance or "@base") == "@host"
+        then 75
+        else 100;
+
+      # Resolver-only ownership queries passed to modules as the `provenance`
+      # argument. These inspect engine-stamped definition records, never
+      # `_file` or module-authored metadata.
+      peelOrderValue = value:
+        if isOrder value
+        then peelOrderValue value._value
+        else value;
+      provenanceQueries = {
+        ownerOfOption = path: let
+          defs = builtins.concatLists (builtins.map (d:
+            peelOwnedDef d.file (d.provenance or "@base") true (defBasePriority d) d.value)
+          (optionDefs path));
+        in
+          chooseOwner (builtins.concatStringsSep "." path) defs;
+
+        ownerOfAttr = path: name: let
+          defs = builtins.concatLists (builtins.map (d:
+            builtins.concatLists (builtins.map (outer:
+              if builtins.isAttrs outer.value && builtins.hasAttr name outer.value
+              then peelOwnedDef outer.file outer.provenance outer.condition outer.priority outer.value.${name}
+              else [])
+            (peelOwnedDef d.file (d.provenance or "@base") true (defBasePriority d) d.value)))
+          (optionDefs path));
+        in
+          chooseOwner "${builtins.concatStringsSep "." path}.${name}" defs;
+
+        # Returns every active authenticated owner whose definition contributes
+        # to one dynamic attribute, independent of merge priority. Artifact
+        # renderers use this to reject a unit or /etc leaf whose bytes depend
+        # on more than one package: degraded projection cannot safely retain a
+        # mixed-source artifact after dropping one of its dependencies.
+        dependencyOwnersOfAttr = path: name: let
+          defs = builtins.concatLists (builtins.map (d:
+            builtins.concatLists (builtins.map (outer:
+              if builtins.isAttrs outer.value && builtins.hasAttr name outer.value
+              then peelOwnedDef outer.file outer.provenance outer.condition outer.priority outer.value.${name}
+              else [])
+            (peelOwnedDef d.file (d.provenance or "@base") true (defBasePriority d) d.value)))
+          (optionDefs path));
+        in
+          lists.unique (builtins.concatLists (builtins.map (d: let
+            source = ownerForProvenance d.provenance;
+            dependencies = dependencyOwnersForValue d.value;
+          in
+            if dependencies != [] && builtins.elem source ["@base" "@host"]
+            then dependencies
+            else [source] ++ dependencies)
+          (builtins.filter (d: d.condition) defs)));
+
+        # Resolver-stamped source records for collision checks. Values are not
+        # exposed, so callers cannot accidentally build an alternate merge
+        # path; file is diagnostic-only and owner remains engine-controlled.
+        definitionsOfAttr = path: name: let
+          defs = builtins.concatLists (builtins.map (d:
+            builtins.concatLists (builtins.map (outer:
+              if builtins.isAttrs outer.value && builtins.hasAttr name outer.value
+              then peelOwnedDef outer.file outer.provenance outer.condition outer.priority outer.value.${name}
+              else [])
+            (peelOwnedDef d.file (d.provenance or "@base") true (defBasePriority d) d.value)))
+          (optionDefs path));
+        in
+          builtins.map (d: {
+            inherit (d) file priority;
+            owner = ownerForProvenance d.provenance;
+          }) (builtins.filter (d: d.condition) defs);
+
+        ownerOfListString = path: wanted: let
+          defs = builtins.concatLists (builtins.map (d:
+            builtins.map (value: value // {value = wanted;})
+            (builtins.filter
+              (value: builtins.isList value.value && builtins.any
+                (item: builtins.toString (peelOrderValue item) == wanted)
+                value.value)
+              (peelOwnedDef d.file (d.provenance or "@base") true (defBasePriority d) d.value)))
+          (optionDefs path));
+        in
+          chooseOwner "${builtins.concatStringsSep "." path} item ${wanted}" defs;
+
+        ownerOfListAttr = path: field: wanted: let
+          defs = builtins.concatLists (builtins.map (d:
+            builtins.map (value: value // {value = wanted;})
+            (builtins.filter
+              (value: builtins.isList value.value && builtins.any
+                (item: let normalized = peelOrderValue item; in
+                  builtins.isAttrs normalized
+                  && normalized ? ${field}
+                  && normalized.${field} == wanted)
+                value.value)
+              (peelOwnedDef d.file (d.provenance or "@base") true (defBasePriority d) d.value)))
+          (optionDefs path));
+        in
+          chooseOwner "${builtins.concatStringsSep "." path} item ${field}=${wanted}" defs;
+      };
 
       # Nested options tree, built from mergedOptions and fed back to
       # module functions via evalModule's `options` arg. This is the
@@ -709,7 +1102,9 @@
 
       # --- Phase 2: Collect all option declarations ---
       allOptionDecls = builtins.concatLists (
-        builtins.map (m: collectOptions [] m.options) evaluatedModules
+        builtins.map (m:
+          collectOptions [] m.options m._file (m._provenance or "@base") (m._authorization or null))
+        evaluatedModules
       );
 
       optionMap =
@@ -724,7 +1119,7 @@
       # --- Phase 3: Collect config definitions for each option ---
       configForOption = decl:
         builtins.concatLists (
-          builtins.map (m: collectDefsAtPath decl.path m.config m._file (m._provenance or null)) evaluatedModules
+          builtins.map (m: collectDefsAtPath decl.path m.config m._file (m._provenance or null) (m._authorization or null)) evaluatedModules
         );
 
       # --- Phase 4: Merge config values for each option ---
@@ -768,7 +1163,7 @@
                     d
                     // {
                       _priority =
-                        if (d.provenance or null) == "operator"
+                        if (d.provenance or null) == "@host"
                         then 75
                         else 100;
                     }
@@ -787,7 +1182,10 @@
               unwrappedDefs;
 
             # Keep only definitions at the winning priority
-            priorityFilteredDefs = builtins.filter (d: d._priority == minPriority) unwrappedDefs;
+            priorityFilteredDefs =
+              if optType.mergeProvenanceByKey or false
+              then unwrappedDefs
+              else builtins.filter (d: d._priority == minPriority) unwrappedDefs;
 
             # Enforce `readOnly`. Matches nixpkgs' behaviour at
             # `lib/modules.nix:1132-1144`: a read-only option may have
@@ -817,7 +1215,11 @@
                   optType.merge decl.path [
                     {
                       file = "<option-default:${pathStr}>";
-                      value = decl.option.default;
+                      provenance = decl.provenance or "@base";
+                      authorization = decl.authorization or null;
+                      value = tagDefaultDependency
+                        (decl.provenance or "@base")
+                        decl.option.default;
                     }
                   ]
                 else throw "The option '${pathStr}' is used but has no definition and no default value."
@@ -896,7 +1298,7 @@
       freeformType = finalConfig._module.freeformType or null;
       isStrict = finalConfig._module.strict or false;
 
-      configWithFreeform =
+      configWithFreeform = builtins.seq packageDeclarationCheck (builtins.seq packageAuthorizationCheck (
         if freeformType == null && !isStrict
         then finalConfig
         else let
@@ -1005,7 +1407,8 @@
               ${formatted}
 
               Because `_module.strict = true` on this evaluation, undeclared options are not allowed. Declare the option, or set `_module.freeformType` to a type that accepts these values.
-            '';
+            ''
+      ));
     in {
       config = configWithFreeform;
       # Exposed as the nested options tree (matching nixpkgs'
@@ -1029,7 +1432,7 @@
       in
         evalModules ({
             modules = modules ++ extraModules;
-            inherit pkgs lib extraArgs specialArgs operatorModules;
+            inherit pkgs lib extraArgs specialArgs operatorModules packageModules enforcePackageAuthorization;
           }
           // builtins.removeAttrs args ["modules"]);
 
@@ -1050,6 +1453,7 @@
           path = decl.path;
           pathStr = key;
           contributable = decl.option.contributable or false;
+          owner = ownerForProvenance (decl.provenance or "@base");
         }
       ) (builtins.attrNames optionMap);
 
