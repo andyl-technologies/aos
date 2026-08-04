@@ -1,3 +1,68 @@
+diff --git a/block/file-posix.c b/block/file-posix.c
+--- a/block/file-posix.c
++++ b/block/file-posix.c
+@@ -23,6 +23,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "system/cpu-timers.h"
+ #include "qapi/error.h"
+ #include "qemu/cutils.h"
+ #include "qemu/error-report.h"
+@@ -2417,6 +2418,15 @@ out:
+ 
+ static int coroutine_fn raw_thread_pool_submit(ThreadPoolFunc func, void *arg)
+ {
++    /*
++     * QEMU's icount mode owns logical time.  Run regular file I/O at the
++     * request's submission icount so a host thread-pool completion cannot race
++     * repeated logical-time bottom halves or strand an unmodified guest.
++     * Non-icount accelerators retain QEMU's normal asynchronous thread pool.
++     */
++    if (icount_enabled()) {
++        return func(arg);
++    }
+     return thread_pool_submit_co(func, arg);
+ }
+ 
+diff --git a/hw/block/virtio-blk.c b/hw/block/virtio-blk.c
+--- a/hw/block/virtio-blk.c
++++ b/hw/block/virtio-blk.c
+@@ -12,6 +12,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "system/cpu-timers.h"
+ #include "qemu/defer-call.h"
+ #include "qapi/error.h"
+ #include "qemu/iov.h"
+@@ -255,6 +256,26 @@ static inline void submit_requests(VirtIOBlock *s, MultiReqBuffer *mrb,
+         flags |= BDRV_REQ_REGISTERED_BUF;
+     }
+ 
++    /*
++     * A regular virtio-blk guest must observe completion before sim+icount
++     * can publish an idle boundary.  Keep the entire file-backed request on
++     * the deterministic vCPU path instead of deferring its AIO callback to a
++     * host-timed bottom half.
++     */
++    if (icount_enabled()) {
++        int ret;
++
++        if (is_write) {
++            ret = blk_pwritev(blk, sector_num << BDRV_SECTOR_BITS,
++                              qiov->size, qiov, flags);
++        } else {
++            ret = blk_preadv(blk, sector_num << BDRV_SECTOR_BITS,
++                             qiov->size, qiov, flags);
++        }
++        virtio_blk_rw_complete(mrb->reqs[start], ret);
++        return;
++    }
++
+     if (is_write) {
+         blk_aio_pwritev(blk, sector_num << BDRV_SECTOR_BITS, qiov,
+                         flags, virtio_blk_rw_complete,
 diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
 --- a/hw/virtio/virtio.c
 +++ b/hw/virtio/virtio.c
@@ -10,27 +75,30 @@ diff --git a/hw/virtio/virtio.c b/hw/virtio/virtio.c
  #include "qapi/error.h"
  #include "qapi/qapi-commands-virtio.h"
  #include "trace.h"
-@@ -2498,7 +2500,22 @@ void virtio_queue_notify(VirtIODevice *vdev, int n)
+@@ -2498,7 +2500,25 @@ void virtio_queue_notify(VirtIODevice *vdev, int n)
      }
  
      trace_virtio_queue_notify(vdev, vq - vdev->vq, vq);
 -    if (vq->host_notifier_enabled) {
 +    /*
-+     * virtio-9p enables a host notifier even when the accelerator cannot use
-+     * ioeventfd.  Under Crucible sim that notifier defers the initial request
++     * virtio-9p and virtio-blk enable host notifiers even when the accelerator
++     * cannot use ioeventfd.  Under Crucible sim those notifiers defer a request
 +     * kick to the main loop, which cannot run while the vCPU owns the
-+     * deterministic quantum.  The guest then blocks forever before the raw 9p
-+     * request reaches SLOT_9P_IO.
++     * deterministic quantum.  The guest can then block forever before a raw 9p
++     * request reaches SLOT_9P_IO or an ordinary file-backed disk request is
++     * submitted.
 +     *
-+     * Dispatch only the sim+icount 9p kick through the ordinary inline device
-+     * handler.  The shmem 9p path still defers completion to its deterministic
-+     * delivery icount.  Block I/O and every non-sim launch retain their existing
-+     * notifier behavior.
++     * Dispatch sim+icount 9p and block kicks through their ordinary inline
++     * device handlers.  Their completion paths remain unchanged: shmem devices
++     * still complete at their deterministic delivery icount, while a standard
++     * file-backed virtio-blk device completes through QEMU's AIO context.  Every
++     * non-sim launch retains its existing notifier behavior.
 +     */
 +    if (vq->host_notifier_enabled &&
 +        !(icount_enabled() &&
 +          strcmp(current_accel_name(), "sim") == 0 &&
-+          vdev->device_id == VIRTIO_ID_9P)) {
++          (vdev->device_id == VIRTIO_ID_9P ||
++           vdev->device_id == VIRTIO_ID_BLOCK))) {
          event_notifier_set(&vq->host_notifier);
      } else if (vq->handle_output) {
          vq->handle_output(vdev, vq);

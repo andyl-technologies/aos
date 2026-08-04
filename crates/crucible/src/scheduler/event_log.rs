@@ -66,6 +66,26 @@ pub trait QuantumLoop {
         Ok(at)
     }
 
+    /// Projects one guest network emission onto the shared scheduler timeline.
+    ///
+    /// Live adapters use this projection to retain frames produced beyond the
+    /// conservative frontier until their source-local emission coordinate is
+    /// globally committed. Pure and legacy loops use the raw instruction count
+    /// as their virtual-time coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when `at` cannot be represented on the
+    /// scheduler timeline for `node`.
+    fn backend_network_output_time(
+        &self,
+        node: &NodeId,
+        at: Icount,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let _ = node;
+        Ok(VirtualTime { ticks: at.retired })
+    }
+
     /// Samples a deterministic execution fingerprint for `node`.
     ///
     /// Backends that do not own concrete VM state use the default unsupported

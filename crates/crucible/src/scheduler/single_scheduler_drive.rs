@@ -1812,6 +1812,8 @@ impl SingleScheduler {
         at: SimInstant,
         emit_boundary: bool,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let evaluation_at =
+            VirtualTime { ticks: at.nanos }.max(self.event_log.condition_prefix().point().at());
         let mut payloads = Vec::with_capacity(resolved_events.len() + decisions.len());
         let preemption_times = preemption_event_times(preemptions);
 
@@ -1820,6 +1822,33 @@ impl SingleScheduler {
                 event.key.virtual_time(),
                 SchedulerEventLogPayload::ResolvedHappening(event.clone()),
             ));
+            if let ScheduledEventPayload::BackendInput(input) = &event.payload
+                && let Some(link) = self
+                    .world_network_links
+                    .values()
+                    .find(|runtime| &runtime.scheduler_node == event.key.producer())
+                    .map(|runtime| {
+                        runtime
+                            .legacy_id
+                            .clone()
+                            .unwrap_or_else(|| runtime.canonical_id.clone())
+                    })
+            {
+                // The resolved happening retains the link's exact delivery
+                // time. Its black-box observation becomes visible at this
+                // monotone evaluation boundary so a node-local RUN ahead of
+                // the conservative frontier cannot make condition time move
+                // backwards.
+                let observation = ObservableEvent::network_delivered(
+                    evaluation_at,
+                    Some(link),
+                    input.payload.clone(),
+                );
+                payloads.push((
+                    observation.at(),
+                    SchedulerEventLogPayload::Observable(observation.payload().clone()),
+                ));
+            }
         }
         for decision in decisions {
             payloads.push((
@@ -1843,7 +1872,7 @@ impl SingleScheduler {
             let sequence = self.event_log.next_sequence(entries.len())?;
             entries.push(scheduler_event_log_entry(
                 sequence,
-                VirtualTime { ticks: at.nanos },
+                evaluation_at,
                 SchedulerEventLogPayload::EvaluationBoundary(
                     SchedulerEvaluationBoundaryKind::Quantum,
                 ),
