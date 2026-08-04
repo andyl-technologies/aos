@@ -14,7 +14,7 @@ flake outputs:
 | `image-raw` | Raw GPT disk | Bare metal, custom image pipelines, QEMU |
 | `image-qcow2` | QCOW2 | QEMU/KVM, OpenStack, Proxmox |
 | `image-vmdk` | VMDK | VMware and vSphere |
-| `image-vhd` | Dynamic VHD | Azure and Hyper-V |
+| `image-vhd` | Dynamic VHD | Hyper-V and VHD-based conversion pipelines |
 
 For the stock server variant:
 
@@ -26,9 +26,16 @@ nix build .#server-image-qcow2
 The raw result contains `aos-aos.img` and `image-info.json`. Converted results
 contain the corresponding `aos-aos.qcow2`, `.vmdk`, or `.vhd` file.
 
-The flake supports `x86_64-linux` and `aarch64-linux`. Building requires a
-Linux machine or remote Linux builder. UEFI firmware is required to boot the
-image; do not pass a separate kernel or initrd.
+The current bootable image workflow is supported on `x86_64-linux`. The short
+flake commands above assume an `x86_64-linux` caller. From another system with
+an x86 Linux remote builder, select the package set explicitly:
+
+```sh
+nix build .#packages.x86_64-linux.server-image-qcow2
+```
+
+UEFI firmware is required to boot the image; do not pass a separate kernel or
+initrd.
 
 ## Size the target
 
@@ -39,7 +46,9 @@ first-boot state:
 - `swap`: 2 GiB by default;
 - `/var`: 4 GiB minimum and grows to consume remaining space.
 
-Allow at least 6 GiB beyond the image itself. The fleet tests use 16 GiB disks.
+Allow more than 6 GiB beyond the image itself: the fixed provisioning marker
+and partition alignment need space in addition to the 2 GiB swap and 4 GiB
+`/var` minimum. The fleet tests use 16 GiB disks.
 If a raw file is enlarged before boot, relocate its backup GPT header after
 resizing:
 
@@ -150,7 +159,8 @@ After the system reaches `multi-user.target`:
 ```sh
 systemctl is-system-running
 systemctl --failed
-findmnt / /var
+findmnt /
+findmnt /var
 cat /etc/os-release
 cat /var/lib/aos-provisioning/audit.json
 ```

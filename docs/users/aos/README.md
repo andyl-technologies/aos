@@ -15,7 +15,7 @@ updates are not complete. These guides call out that boundary where it matters.
 | --- | --- | --- |
 | System image | Modules under `systems/`, built with Nix | Immutable root and UEFI image |
 | First-boot storage | Literal `host.nix` supplied through metadata | Committed once; later changes are drift |
-| User packages | `apm install`, `upgrade`, `remove`, and `rollback` | Per-user profile generations under `/var/lib/profiles/per-user` |
+| User packages | `apm install`, `upgrade`, `remove`, and `rollback` after account storage is provisioned | Per-user profile generations under `/var/lib/profiles/per-user` |
 | Runtime system packages | `apm install --system --from DESIRED.toml` | Machine-wide package generations under `/var/lib/profiles/system-packages` |
 | OS userspace | `apm upgrade --system` and `apm rollback --system` | Sysroot generations under `/var/lib/profiles/system` |
 
@@ -50,6 +50,6 @@ multicall binary, so `aos package` is equivalent to `apm` and
 - [Troubleshoot a host](troubleshooting.md) maps boot, provisioning, package,
   and generation failures to the relevant state and logs.
 
-Registry producers should continue with the
-[package registry documentation](../../registry/). Hub operators should use
-the [AOS Hub guide](../aos-hub/).
+Registry producers should continue with
+[Operate an AOS package registry](../registry/). Hub operators should use the
+[AOS Hub guide](../aos-hub/).

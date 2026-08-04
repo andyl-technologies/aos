@@ -183,8 +183,8 @@ from `/etc/ssh/authorized_keys/%u`.
 ```
 
 The SSH module adds its configured port to the firewall. Keep the key file in
-the image until runtime cloud-key activation is implemented; cloud metadata
-keys are currently recorded as facts but are not installed.
+the image until runtime cloud-key activation is implemented. Keys collected by
+a metadata fetcher are currently recorded as facts but are not installed.
 
 For a non-root operator account, declare both the group and user, then write the
 matching authorized-key file:
@@ -431,7 +431,7 @@ Partition fields are:
 | `label` | GPT partition label; defaults to the attribute name |
 | `type` | `linux-generic`, `swap`, or an allowed raw GPT type GUID |
 | `sizeMin` | Positive integer with optional uppercase `K`, `M`, `G`, `T`, or `P` suffix |
-| `sizeMax` | Optional maximum; `null` is unbounded |
+| `sizeMax` | Optional maximum; with `grow = true`, `null` is unbounded, otherwise AOS fixes the partition at `sizeMin` |
 | `weight` | Relative share of unallocated space |
 | `format` | `ext4`, `vfat`, `swap`, or `null` |
 | `uuid` | Optional deterministic partition UUID |
@@ -440,10 +440,12 @@ Partition fields are:
 | `priority` | Deterministic placement order |
 
 The complete plan is committed on the first successful provisioning boot.
-Subsequent boots compare the requested plan with the recorded plan and report
-differences as drift. AOS does not currently expose a factory-reset command or
-an automatic recovery command for an interrupted provisioning marker. Reimage
-the host when its committed storage layout must change.
+Subsequent boots dry-run the requested layout against the committed on-disk
+layout and report pending partition work as drift. The recorded initial plan is
+durable audit evidence; it is not the input to that comparison. AOS does not
+currently expose a factory-reset command or an automatic recovery command for
+an interrupted provisioning marker. Reimage the host when its committed
+storage layout must change.
 
 See [Understand and operate `host.nix`](host-nix.md) for delivery channels,
 signed input, the boot lifecycle, additional storage recipes, drift behavior,
