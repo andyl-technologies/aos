@@ -12,12 +12,12 @@ Build the package:
 nix build .#pkg-aos-hub
 ```
 
-Create the initial instance owner before starting the service. Run this as the
-same account that will own the Hub state:
+Create the initial instance owner before starting the service. For a standalone
+deployment, use a state directory owned by the account running the Hub:
 
 ```sh
 printf '%s\n' "$ROOT_PASSWORD" | \
-  ./result/bin/aos-hub --root /var/lib/aos-hub init \
+  ./result/bin/aos-hub --root ./hub-state init \
     --root-email ops@example.com \
     --root-password-stdin
 ```
@@ -29,7 +29,7 @@ Do not put passwords directly on the command line.
 Start the server:
 
 ```sh
-./result/bin/aos-hub --root /var/lib/aos-hub serve \
+./result/bin/aos-hub --root ./hub-state serve \
   --listen 127.0.0.1:8420 \
   --external-url https://hub.example.com
 ```
@@ -67,7 +67,7 @@ SQLite has one writer:
 ```sh
 systemctl stop aos-hub.service
 printf '%s\n' "$ROOT_PASSWORD" | \
-  runuser -u aos-hub -- \
+  systemd-run --pipe --wait --collect --uid=aos-hub --gid=aos-hub \
     aos-hub --root /var/lib/aos-hub init \
       --root-email ops@example.com \
       --root-password-stdin
@@ -94,7 +94,7 @@ Stop the Hub and back up the complete state root. It contains:
 - `/var/lib/aos-hub/hub.db` and any SQLite WAL files;
 - `/var/lib/aos-hub/secret.key`, used to seal stored credentials and hosted
   signing-key material;
-- every local filesystem storage binding used by a registry or cache.
+- local filesystem storage bindings placed beneath the state root.
 
 The secret key is created with mode `0600` on first production use. It may also
 be supplied from a protected file through `AOS_HUB_SECRET_KEY_FILE`. Losing it

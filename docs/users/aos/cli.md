@@ -22,7 +22,8 @@ nix build .#aos
 ./result/bin/apr --help
 ```
 
-Flake outputs exist for `x86_64-linux` and `aarch64-linux`.
+The current repository CLI and bootable-image workflow is supported on
+`x86_64-linux`.
 
 ## Work in a repository checkout
 
@@ -100,7 +101,7 @@ aos prefetch --all
 VM and fleet layers need a Linux host with KVM. `aos prefetch --update` edits
 package source hashes; inspect its diff before committing.
 
-`aos fmt` uses the repository's packaged Alejandra formatter.
+`aos fmt` uses its embedded Alejandra formatter.
 
 ## Choose output for people or automation
 
@@ -153,6 +154,6 @@ OS generation activation can fail after the new generation is live. See
 [Upgrade and roll back a host](upgrades.md#interpret-activation-results) before
 automating system upgrades.
 
-Continue with [Manage packages](packages.md) for `apm`, or the
-[package registry documentation](../../registry/) for producer-side `apr`
+Continue with [Manage packages](packages.md) for `apm`, or
+[Operate an AOS package registry](../registry/) for producer-side `apr`
 workflows.

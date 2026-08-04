@@ -8,18 +8,19 @@ a normal user install global.
 ## Configure a trusted registry
 
 Obtain the registry's Ed25519 trust key over an independent trusted channel,
-then add and synchronize the registry:
+then add and synchronize it in the system scope used by supported host
+operations:
 
 ```sh
-apm registry add https://packages.example.com/index \
+apm registry --system add https://packages.example.com/index \
   --name acme \
   --trust-key 'acme:Ed25519:BASE64_KEY'
 
-apm update --registry acme
-apm search nginx --registry acme
-apm show nginx --registry acme
-apm info nginx --permissions
-apm policy nginx
+apm update --system --registry acme
+apm search nginx --system --registry acme
+apm show nginx --system --registry acme
+apm info nginx --system --permissions
+apm policy nginx --system
 ```
 
 Signature verification fails closed by default. `--no-verify` exists for local
@@ -35,23 +36,22 @@ Registry configuration is layered:
 | `~/.config/apm` | Per-user overlay with highest precedence |
 
 Use `apm registry --system ...` for machine-wide changes. A registry seeded in
-`/etc/apm` can be disabled at runtime, but removing it requires rebuilding the
-image seed.
+`/etc/apm` can be disabled at runtime. To remove its effective definition, a
+trusted host configuration can materialize an empty higher-precedence
+`registries.d/<name>.toml` during generation activation; rebuilding without the
+seed is the other option.
 
-User and system scopes load different writable configuration. Before using the
-same registry for machine-wide packages or OS generations, add it to system
-scope unless the image already seeds it:
-
-```sh
-apm registry --system add https://packages.example.com/index \
-  --name acme \
-  --trust-key 'acme:Ed25519:BASE64_KEY'
-apm update --system --registry acme
-```
+User and system scopes load different writable configuration. A user-scope
+registry does not configure machine-wide packages or OS generations.
 
 ## Manage user packages
 
-User scope is the default; there is no `--user` flag.
+User scope is the default; there is no `--user` flag. Stock images do not yet
+provision writable per-user APM configuration, a per-user profile directory, or
+unprivileged Nix-store mutation. The commands in this section require an
+account whose writable XDG directories and
+`/var/lib/profiles/per-user/$USER` have been provisioned by the operator. Use
+the system-scope desired-package workflow on a stock host.
 
 ```sh
 apm install nginx --registry acme --dry-run
@@ -187,7 +187,7 @@ owned by the active OS. `--ignore-sysroot-lock` bypasses that protection and is
 for targeted recovery, not routine package management. Prefer a specific
 package name over the `all` form when a recovery procedure requires it.
 
-## State and cache paths
+## Default state and cache paths
 
 | State | User scope | System scope |
 | --- | --- | --- |
@@ -199,3 +199,7 @@ package name over the `all` form when a recovery procedure requires it.
 
 Use `apm --json ...` when consuming package results in automation. Normal
 human-facing output is not a stable machine interface.
+
+User XDG paths honor the corresponding `XDG_*` variables. Test and recovery
+environments can also redirect roots with `AOS_ROOT`, `AOS_PROFILE_ROOT`, and
+the documented system-config override.

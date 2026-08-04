@@ -46,7 +46,7 @@ free space on first boot.
 
 ## 2. Define first-boot storage
 
-Create `host.nix` next to the repository:
+Create `host.nix` in the repository root:
 
 ```nix
 {
@@ -95,10 +95,11 @@ cp result-aos-edk2/FV/OVMF_VARS.fd aos-demo-OVMF_VARS.fd
 chmod u+w aos-demo-OVMF_VARS.fd
 ```
 
-The stock storage policy needs at least 6 GiB of free space after `root-a`: a
-fixed 2 GiB swap partition and a `/var` partition with a 4 GiB minimum. This
-tutorial asks for 1 GiB of swap and at least 8 GiB for `/var`, so 16 GiB leaves
-comfortable room for the image and its state partitions.
+The stock storage policy needs more than 6 GiB of free space after `root-a`: a
+fixed 2 GiB swap partition, a `/var` partition with a 4 GiB minimum, the
+provisioning marker, and alignment. This tutorial asks for 1 GiB of swap and at
+least 8 GiB for `/var`, so 16 GiB leaves comfortable room for the image and its
+state partitions.
 
 ## 4. Boot the guest
 
@@ -138,7 +139,8 @@ Inside the guest:
 cat /etc/os-release
 systemctl is-system-running
 systemctl --failed
-findmnt / /var
+findmnt /
+findmnt /var
 lsblk -o NAME,SIZE,FSTYPE,PARTLABEL,MOUNTPOINTS
 cat /var/lib/aos-provisioning/audit.json
 ```
@@ -163,4 +165,5 @@ The VM artifacts are disposable:
 ```sh
 rm -r aos-demo-metadata
 rm aos-demo-metadata.iso aos-demo.img aos-demo-OVMF_VARS.fd
+rm host.nix
 ```

@@ -43,9 +43,9 @@ for a staged rollout.
 
 ## Apply an upgrade
 
-The unqualified command activates the userspace generation and reports whether
-the kernel differs. It does not provide a durable kernel/UKI update for the
-stock image:
+The unqualified command is supported when the candidate keeps the current
+kernel and UKI. It does not provide a durable kernel/UKI update for the stock
+image:
 
 ```sh
 apm upgrade --system
@@ -55,15 +55,19 @@ Activation modes are:
 
 | Mode | Behavior |
 | --- | --- |
-| no mode flag | Activate userspace and advise when the kernel differs |
+| no mode flag | Activate userspace; for a changed kernel, attempt the incomplete boot-entry update before advising |
 | `--live` | Invoke the incomplete legacy boot-entry handler; unsupported for durable stock-image kernel upgrades |
 | `--reboot` | Activate, then request a full reboot through the incomplete kernel-update path |
 | `--kexec` | Activate, then hot-load the new kernel through the incomplete kernel-update path |
 | `--drain` | Drain workloads before `--reboot` or `--kexec` |
 
-Because durable kernel handling is not ready, do not use `--reboot`, `--kexec`,
-or `--live` to deploy a changed kernel in production. For a userspace-only
-release, the unqualified command is the clear operating default.
+Because durable kernel handling is not ready, do not use any mode to deploy a
+changed kernel in production. Even with no mode flag, APM commits the new
+generation and then attempts to update the boot entry. On the stock read-only
+EFI System Partition that step can exit `1` before the advisory is printed,
+while the new userspace generation remains current. The same boundary applies
+when rolling back across kernels. For a userspace-only release, the unqualified
+command is the clear operating default.
 
 System upgrade does not prompt for confirmation. Automation and runbooks should
 always execute and review the dry run first.
@@ -96,9 +100,12 @@ those internal statuses to its ordinary success or error exit:
 | `1`–`3` | `1` | Failure occurred before the `/etc` swap | Previous generation remains live; inspect the reported phase |
 | `4` | `1` | `/etc` swap was incomplete | Treat state as indeterminate and recover from console |
 
-A generic APM exit `1` does not reveal which activation phase failed. Read the
-error text, then check the generation pointer and `/etc/os-release` before
-taking a second action.
+A generic APM exit `1` does not reveal where the operation failed. Resolution,
+download, verification, or import can fail before activation; kernel or reboot
+handling can fail after the generation is committed. The table applies when
+the activation script reports one of its numbered phases. Read the direct error
+first, then check the generation pointer and `/etc/os-release` before taking a
+second action.
 
 ## Roll back
 
@@ -153,7 +160,7 @@ These profiles advance independently:
 Rolling back the OS does not select an earlier user profile. Conversely, a user
 package rollback does not change `/etc` or the sysroot.
 
-There is no supported command to prune old sysroot generations today.
-`apm clean --generations` operates on package profiles, and
-`aos gc --list-generations` refers to an unrelated Nix profile. Keep enough
-space under `/var` for the rollout and its rollback generation.
+There is no supported command to prune old sysroot or system-package
+generations today. `apm clean --generations` only targets the invoking user's
+profile, and `aos gc --list-generations` refers to an unrelated Nix profile.
+Keep enough space under `/var` for the rollout and its rollback generation.

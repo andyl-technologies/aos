@@ -80,10 +80,13 @@ journalctl -b -u aos-eval.service
 test -s /run/aos/manifest.json
 ```
 
-The current implementation does not activate the general runtime manifest.
-Hostname, networking, users, SSH keys, services, and desired packages may
-appear in a valid manifest without changing the live host. Bake those settings
-into a system variant as described in [Customize AOS](configuration.md).
+Boot-time evaluation alone does not immediately apply general host fields.
+Hostname, networking, users, SSH keys, and services may appear in a valid
+manifest without changing the live host. A later sysroot generation switch can
+materialize that manifest into the candidate `/etc`, and package graph
+compilation can act on its package set. Bake required boot policy into a system
+variant as described in [Customize AOS](configuration.md), and review the
+manifest before a later generation activation.
 
 Storage is the exception: it is projected and committed in the initrd before
 the full manifest exists. See the [`host.nix` guide](host-nix.md) for the exact
@@ -115,7 +118,9 @@ configured.
 
 ## A package is installed but its command is missing
 
-User package executables are not added to the default `PATH`. Inspect the
+User package executables are not added to the default `PATH`. Stock images also
+do not provision unprivileged writable user profiles; this procedure assumes
+the operator has created the account's XDG and profile storage. Inspect the
 profile and invoke the binary directly:
 
 ```sh
@@ -143,8 +148,9 @@ apm registry --system list
 apm update --system --registry NAME
 ```
 
-These commands inspect the system scope. Omit `--system` when diagnosing the
-current user's registry and package profile instead.
+These commands inspect the system scope. Omit `--system` only when diagnosing
+an account with a separately provisioned writable user registry and package
+profile.
 
 Registry seeds are under `/etc/apm`; persistent machine-wide overrides and
 trust pins are under `/var/lib/apm`. User overrides are under `~/.config/apm`.
@@ -163,10 +169,12 @@ cat /etc/os-release
 systemctl --failed
 ```
 
-APM returns `1` for several activation failures. Its message distinguishes a
-pre-swap failure, an incomplete `/etc` swap, and a live-but-degraded generation;
-stale mount cleanup is a warning on an otherwise successful command. The full
-status mapping and rollback procedure are in
+Follow the direct error first. Resolution, download, verification, or import
+can fail before activation, and changed-kernel or reboot handling can fail after
+the generation commit. When the activation script reports a phase, its message
+distinguishes a pre-swap failure, an incomplete `/etc` swap, and a
+live-but-degraded generation; stale mount cleanup is a warning on an otherwise
+successful command. The full status mapping and rollback procedure are in
 [Upgrade and roll back a host](upgrades.md#interpret-activation-results).
 
 Capture the current boot journal before rollback:
@@ -197,10 +205,11 @@ Relevant persistent trees include:
 /var/log/journal
 ```
 
-Do not delete profile generations or provisioning state by hand. APM exposes
-cleaning for package profiles, but not for sysroot generations. If old sysroots
-are the material consumer, preserve rollback capacity and expand or reimage the
-host until a supported pruning command is available.
+Do not delete profile generations or provisioning state by hand.
+`apm clean --generations` only cleans the invoking user's package profile; no
+supported command prunes system-package or sysroot generations. If those
+profiles are the material consumer, preserve rollback capacity and expand or
+reimage the host until a supported pruning command is available.
 
 ## Report an issue
 

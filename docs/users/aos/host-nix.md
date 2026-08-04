@@ -72,6 +72,9 @@ Offline media is checked before DMI-based cloud detection.
 | AWS | Native user-data as literal Nix or a pointer document | Pointer `sig_url` only |
 | GCP, Azure, DigitalOcean, OpenStack | Native user-data as literal Nix | Not available through native metadata |
 
+Native metadata fetchers for Hetzner, Vultr, Scaleway, and Oracle Cloud are not
+implemented. On those platforms, use an offline metadata or config drive.
+
 Create an AOS metadata ISO from the repository's own package:
 
 ```sh
@@ -155,10 +158,11 @@ OpenSSH writes the armored detached signature to `host.nix.sig`. Transport both
 files without changing `host.nix`; whitespace changes after signing invalidate
 the signature.
 
-Signed mode fails closed on first boot if the image has no matching trust key,
-the signature is missing, or verification fails. After a host has been
-successfully provisioned, an unavailable or unauthorized new input is ignored
-and the previous active configuration is retained.
+When first boot receives a `host.nix`, signed mode fails closed if the image has
+no matching trust key, the signature is missing, or verification fails. With no
+operator input, AOS still provisions the image's fallback storage defaults.
+After a host has been successfully provisioned, an unavailable or unauthorized
+new input is ignored and the previous active configuration is retained.
 
 ## Use the storage schema
 
@@ -259,9 +263,10 @@ device. Disable growth on `/var` before assigning it elsewhere:
 }
 ```
 
-AOS preflights all referenced devices before changing any partition table. If a
-device is absent or an explicit path is unstable, provisioning stops before
-the plan is committed.
+AOS preflights all referenced devices before changing any partition table.
+Provisioning stops if a referenced device is absent or does not use the required
+`/dev/disk/by-id/...` form. Choose an identifier that remains stable across
+boots.
 
 ### Use deterministic UUIDs
 
@@ -288,10 +293,16 @@ the storage source and plan.
 
 On later boots:
 
-- the same valid plan is reported as `coherent`;
-- changed or invalid storage intent is reported as `divergent` and not applied;
+- `coherent` means every dry-run entry was unchanged;
+- `divergent` means source validation failed or the dry run found pending work
+  or an error;
+- `unavailable` means no valid current plan was available;
 - missing current metadata does not erase the committed operator plan;
 - a detected interrupted `pending` marker is not replayed automatically.
+
+A changed input can remain coherent if it describes the same final partition
+table. AOS reports on the resulting disk plan, not whether the source text
+changed.
 
 AOS has no public factory-reset or pending-marker recovery command today. Back
 up persistent data and reimage the disk to apply a different committed layout.
