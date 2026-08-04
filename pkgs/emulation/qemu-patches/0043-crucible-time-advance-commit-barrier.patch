@@ -25,7 +25,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
 diff --git a/plugins/api-system.c b/plugins/api-system.c
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -214,10 +214,14 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
+@@ -212,10 +212,14 @@ static void qemu_plugin_time_advance_complete_bh(void *opaque)
      int64_t target = qatomic_read(&qemu_plugin_time_advance_target);
  
      (void)opaque;

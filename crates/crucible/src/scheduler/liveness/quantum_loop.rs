@@ -46,6 +46,16 @@ impl QuantumLoop for SingleScheduler {
         })
     }
 
+    fn backend_network_output_time(
+        &self,
+        node: &NodeId,
+        at: Icount,
+    ) -> Result<VirtualTime, SchedulerError> {
+        Ok(VirtualTime {
+            ticks: self.vm_delivery_time_for_icount(node, at)?.nanos,
+        })
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,
@@ -75,6 +85,7 @@ impl QuantumLoop for SingleScheduler {
         &mut self,
         at: VirtualTime,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let at = at.max(self.event_log.condition_prefix().point().at());
         self.append_evaluation_boundary(at, SchedulerEvaluationBoundaryKind::Quantum)
     }
 
@@ -83,6 +94,7 @@ impl QuantumLoop for SingleScheduler {
         events: Vec<ObservableEvent>,
         at: VirtualTime,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let at = at.max(self.event_log.condition_prefix().point().at());
         self.append_observations_at_boundary(events, at, SchedulerEvaluationBoundaryKind::Quantum)
     }
 
@@ -131,9 +143,12 @@ impl QuantumLoop for SingleScheduler {
         let configuration = recorder.into_configuration();
         let recorded = configuration.schedule.decisions()[original_len..].to_vec();
         let at = SimInstant {
-            nanos: self.frontier.ticks,
+            nanos: self
+                .frontier
+                .max(self.event_log.condition_prefix().point().at())
+                .ticks,
         };
-        let append = self.emit_quantum_event_log(&[], &recorded, &[], at, false)?;
+        let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
         self.configuration = configuration.clone();
         Ok((recorded, configuration, append))
     }
@@ -165,20 +180,13 @@ impl QuantumLoop for SingleScheduler {
                     &right.payload,
                 ))
         });
+        let admission_boundary = self
+            .frontier
+            .max(self.event_log.condition_prefix().point().at());
         let mut recorded = Vec::new();
         for output in outputs {
             let source_index = self.vm_node_index(&output.source)?;
             let source_counter = self.nodes[source_index].counter.ticks;
-            let source_boundary = VirtualTime {
-                ticks: self
-                    .node_time_for_counter(
-                        &self.nodes[source_index],
-                        NodeCounter {
-                            ticks: source_counter,
-                        },
-                    )?
-                    .nanos,
-            };
             if output.emit_icount.retired > source_counter {
                 return Err(SchedulerError::BoundaryViolation {
                     message: format!(
@@ -256,10 +264,9 @@ impl QuantumLoop for SingleScheduler {
                         Decision::FaultFires(mut fault) => {
                             // The frame retains its exact guest TX icount for
                             // link delivery arithmetic. The probabilistic link
-                            // choice is made only when the host regains control
-                            // and admits the drained TX batch, so its causal log
-                            // point is this completed scheduler boundary.
-                            fault.at = source_boundary;
+                            // choice becomes causal when the shared frontier
+                            // admits the buffered TX batch.
+                            fault.at = admission_boundary;
                             Decision::FaultFires(fault)
                         }
                         other => other,
@@ -274,7 +281,7 @@ impl QuantumLoop for SingleScheduler {
                                 .into_iter()
                                 .map(|decision| match decision {
                                     Decision::FaultFires(mut fault) => {
-                                        fault.at = source_boundary;
+                                        fault.at = admission_boundary;
                                         Decision::FaultFires(fault)
                                     }
                                     other => other,
@@ -284,7 +291,7 @@ impl QuantumLoop for SingleScheduler {
                         .collect::<Vec<_>>();
                     self.search_frontiers.push(SearchRuntimeFrontier {
                         configuration: branch_configuration,
-                        at: source_boundary,
+                        at: admission_boundary,
                         choices: SearchFrontierChoices::from_decision_sequences(projected_choices),
                     });
                 }
@@ -299,9 +306,9 @@ impl QuantumLoop for SingleScheduler {
         }
         let configuration = self.step_quantum(&recorded);
         let at = SimInstant {
-            nanos: self.frontier.ticks,
+            nanos: admission_boundary.ticks,
         };
-        let append = self.emit_quantum_event_log(&[], &recorded, &[], at, false)?;
+        let append = self.emit_quantum_event_log(&[], &recorded, &[], at, true)?;
         self.configuration = configuration.clone();
         Ok((recorded, configuration, append))
     }

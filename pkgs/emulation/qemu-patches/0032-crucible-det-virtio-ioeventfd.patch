@@ -10,7 +10,7 @@ diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
  
  #include "exec/memop.h"
  #include "standard-headers/linux/virtio_pci.h"
-@@ -313,6 +315,34 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
+@@ -313,6 +315,35 @@ static bool virtio_pci_ioeventfd_enabled(DeviceState *d)
  {
      VirtIOPCIProxy *proxy = to_virtio_pci_proxy(d);
  
@@ -26,18 +26,19 @@ diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
 +     * deterministic icount; synchronous completion without ioeventfd is
 +     * ordinary QEMU device behaviour.  No QEMU record/replay (RFC-0010 NG-6).
 +     *
-+     * Scope this to virtio-rng only.  virtio-rng's entropy completion has no
-+     * other deterministic anchor -- its delivery icount is the leak S6 hits --
-+     * whereas virtio-blk/9p completions are already pinned by the crucible
-+     * blk/9p shmem substrate (patches 0015-0019), which is built assuming the
-+     * stock async kick dispatch.  Forcing those devices synchronous here would
-+     * double-synchronize a kick path they rely on being async and perturb their
-+     * throttled-IO idle timing for no determinism gain, so leave them stock.
++     * Scope this ioctl-level policy to virtio-rng and virtio-blk.  virtio-rng's
++     * entropy completion has no other deterministic anchor -- its delivery
++     * icount is the leak S6 hits.  A standard file-backed virtio-blk guest must
++     * enter the generic notification path before patch 0040 can dispatch its
++     * request inline; otherwise the vCPU can park before QEMU submits the AIO.
++     * Both devices preserve their existing completion paths.
 +     */
 +    if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0) {
 +        VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);
 +
-+        if (vdev != NULL && vdev->device_id == VIRTIO_ID_RNG) {
++        if (vdev != NULL &&
++            (vdev->device_id == VIRTIO_ID_RNG ||
++             vdev->device_id == VIRTIO_ID_BLOCK)) {
 +            return false;
 +        }
 +    }
@@ -45,7 +46,7 @@ diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
      return (proxy->flags & VIRTIO_PCI_FLAG_USE_IOEVENTFD) != 0;
  }
  
-@@ -2630,4 +2660,3 @@ static void virtio_pci_register_types(void)
+@@ -2630,4 +2661,3 @@ static void virtio_pci_register_types(void)
  }
  
  type_init(virtio_pci_register_types)

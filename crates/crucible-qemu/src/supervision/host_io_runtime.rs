@@ -82,6 +82,9 @@ impl QemuLiveHostIoRuntime {
     /// the start of each advance await, which is required to rouse a vCPU parked in
     /// its between-quanta idle wait (the node's shared-memory `start_quantum` futex
     /// wake alone does not, exactly as the M1 scheduler signals it per quantum).
+    /// A pending advance also re-signals after an unchanged-icount poll so QEMU's
+    /// main loop dispatches ordinary asynchronous device completion while the
+    /// vCPU is parked.
     ///
     /// # Errors
     ///
@@ -183,7 +186,12 @@ impl QemuLiveHostIoRuntime {
         self.repoll_advance_completion(timeout)
     }
 
-    /// Polls for a quantum boundary after the one-shot plugin wake was sent.
+    /// Polls for a quantum boundary after the initial plugin wake was sent.
+    ///
+    /// When two successive pending observations have the same icount, the vCPU
+    /// may be parked behind host AIO. Re-signalling the plugin wake cycles QEMU's
+    /// main loop without perturbing a guest that is actively retiring
+    /// instructions.
     fn repoll_advance_completion(
         &mut self,
         _timeout: Duration,
@@ -198,6 +206,7 @@ impl QemuLiveHostIoRuntime {
             return Ok(QemuAsyncWaitOutcome::TimedOut);
         }
         let attempts = bounded_poll_attempts(remaining, self.poll_interval);
+        let mut previous_icount = None;
         for attempt in 0..attempts {
             let snapshot = self
                 .region
@@ -218,6 +227,10 @@ impl QemuLiveHostIoRuntime {
                     if snapshot.status == STATUS_DONE {
                         return Ok(QemuAsyncWaitOutcome::Completed);
                     }
+                    if previous_icount == Some(snapshot.current_icount) {
+                        self.signal_wake()?;
+                    }
+                    previous_icount = Some(snapshot.current_icount);
                 }
             }
             if attempt + 1 < attempts {
@@ -231,6 +244,8 @@ impl QemuLiveHostIoRuntime {
     ///
     /// Drains newly arrived requests and delivers responses due at the guest's
     /// current icount, then records the observation into the shared diagnostics.
+    /// Any request or response transition signals the plugin wake fd so QEMU's
+    /// parked block coroutine observes the updated rings and device deadline.
     /// This is a no-op when no block servicer is attached.
     fn service_block_io(
         &mut self,
@@ -251,6 +266,9 @@ impl QemuLiveHostIoRuntime {
             snapshot.idle_wake_icount,
             &serviced,
         );
+        if serviced.processed > 0 || serviced.delivered > 0 {
+            self.signal_wake()?;
+        }
         Ok(())
     }
 }

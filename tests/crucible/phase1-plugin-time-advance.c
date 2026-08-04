@@ -431,13 +431,13 @@ test_callback_safe_handoff_and_normal_bh_completion(void)
 }
 
 static bool
-test_backward_advance_reports_completion_failure(void)
+test_already_reached_advance_is_idempotent(void)
 {
   unsigned int callbacks = 0;
 
   reset_observable_state();
-  /* icount-derived virtual clock already at 2000; advancing to 1999 is
-   * backwards and must fail closed without moving the clock or running timers. */
+  /* The clock may pass a queued target before its bottom half runs. Treat that
+   * stale target as already satisfied, without rewinding virtual time. */
   retired_icount = 2000;
   if (qemu_plugin_register_time_advance_cb(record_completion, &callbacks) != 0 ||
       qemu_plugin_advance_time_ns(1999) != 0) {
@@ -446,9 +446,9 @@ test_backward_advance_reports_completion_failure(void)
   run_normal_main_loop_bottom_halves();
   run_normal_main_loop_bottom_halves();
   run_normal_main_loop_bottom_halves();
-  return callbacks == 1 && completion_status == -ERANGE &&
+  return callbacks == 1 && completion_status == 0 &&
          completion_target == 1999 && icount_get() == 2000 &&
-         clock_advance_calls == 0 && run_timers_calls == 0 && notify_calls == 0;
+         clock_advance_calls == 0 && run_timers_calls == 1 && notify_calls == 1;
 }
 
 static bool
@@ -515,8 +515,8 @@ main(void)
     fprintf(stderr, "callback-safe main-loop BH handoff failed\n");
     return 1;
   }
-  if (!test_backward_advance_reports_completion_failure()) {
-    fprintf(stderr, "backward advance did not fail at completion\n");
+  if (!test_already_reached_advance_is_idempotent()) {
+    fprintf(stderr, "already-reached advance was not idempotent\n");
     return 1;
   }
   if (!test_invalid_and_unregistered_requests_fail_before_queue()) {
@@ -540,7 +540,7 @@ main(void)
   puts("callback_reconfiguration_while_pending_rejected=true");
   puts("pending_predicate_tracks_completion_barrier=true");
   puts("negative_target_rejected_before_queue=true");
-  puts("backward_target_reports_completion_failure=true");
+  puts("already_reached_target_is_idempotent=true");
   puts("queued_main_loop_worker_runs_virtual_timers=true");
   puts("icount_bias_advance_converges_where_qtest_set_hangs=true");
   puts("completion_uses_normal_main_loop_bh=true");
