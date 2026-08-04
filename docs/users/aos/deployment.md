@@ -159,4 +159,3 @@ record. Stop on unexplained drift.
 Reimage hosts when a release changes the kernel or UKI. The current APM system
 upgrade path is production-safe only for userspace releases whose boot
 artifacts remain unchanged.
-

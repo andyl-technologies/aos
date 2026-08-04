@@ -146,4 +146,3 @@ journalctl -b -u systemd-networkd.service -u systemd-resolved.service
 Compare the observed interface name with the system variant. If a static unit
 matches no link, correct the variant and rebuild the image; runtime
 `host.nix` does not currently activate general network changes.
-
