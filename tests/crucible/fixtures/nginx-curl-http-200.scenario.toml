@@ -1,0 +1,130 @@
+[scenario]
+id = "blake3:40a0436aabd31597d39ea646335e1f23a521f5c2462c2970540605e0ced3c739"
+seed = "0x0002000000000000000000000000000000000000000000000000000000000000"
+app_random_draw_cap = 10
+
+[world]
+id = "blake3:e1a19ef5be2b888a2c3e88d0e290195fe46c9f30414456a344aca4675b80515c"
+
+[[world.node]]
+id = "curl"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 address=10.0.0.3 target=10.0.0.2:8080 count=1 crucible.workload=httpget"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:6b47734dc79f62cb0344bec3181b2a67e352763da9b74480936079ddcac354a0"
+root_image = "blake3:c755f2191448ff0253c65775bb0768aeae2a7afbb40642f5c8e8a7d24dd919c2"
+white_box = "disabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[[world.node]]
+id = "nginx"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 address=10.0.0.2 port=8080 crucible.workload=httpd"
+smp_vcpus = 1
+icount_shift = 7
+kernel = "blake3:6b47734dc79f62cb0344bec3181b2a67e352763da9b74480936079ddcac354a0"
+root_image = "blake3:c755f2191448ff0253c65775bb0768aeae2a7afbb40642f5c8e8a7d24dd919c2"
+white_box = "disabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[[world.link]]
+endpoint_a = "curl"
+endpoint_b = "nginx"
+latency_nanos = 1048576000
+jitter_nanos = 0
+loss_millionths = 0
+
+[plan]
+id = "blake3:e918e132500810eb6491700bfe9c305716a28333d1fab892cda065658f4687f9"
+kind = "event_graph"
+
+[[plan.event]]
+id = "pass-on-http-200"
+policy = "once"
+
+[plan.event.trigger]
+kind = "all_of"
+
+[[plan.event.trigger.predicates]]
+kind = "once"
+
+[plan.event.trigger.predicates.predicate]
+kind = "network_match"
+link = "curl--nginx"
+
+[plan.event.trigger.predicates.predicate.predicate]
+kind = "contains"
+needle_hex = "474554202f"
+
+[[plan.event.trigger.predicates]]
+kind = "network_match"
+link = "curl--nginx"
+
+[plan.event.trigger.predicates.predicate]
+kind = "contains"
+needle_hex = "485454502f312e3120323030"
+
+[plan.event.action]
+kind = "pass"
+
+[properties]
+id = "blake3:ea0b9a86a832f7a09480bdbd9df83aa10df269508af49616682bad4af13e4157"
+
+[[properties.assertion]]
+id = "curl-receives-http-200"
+message = "Curl receives an HTTP 200 response from Nginx"
+
+[properties.assertion.property]
+kind = "eventually"
+deadline_ticks = 600000000000
+
+[properties.assertion.property.trigger]
+kind = "once"
+
+[properties.assertion.property.trigger.predicate]
+kind = "network_match"
+link = "curl--nginx"
+
+[properties.assertion.property.trigger.predicate.predicate]
+kind = "contains"
+needle_hex = "474554202f"
+
+[properties.assertion.property.property]
+kind = "network_match"
+link = "curl--nginx"
+
+[properties.assertion.property.property.predicate]
+kind = "contains"
+needle_hex = "485454502f312e3120323030"
+
+[[properties.assertion]]
+id = "no-crashes"
+message = "Nginx and Curl must not crash"
+
+[properties.assertion.property]
+kind = "always"
+
+[properties.assertion.property.predicate]
+kind = "not"
+
+[properties.assertion.property.predicate.predicate]
+kind = "any_of"
+
+[[properties.assertion.property.predicate.predicate.predicates]]
+kind = "node_state"
+node = "curl"
+state = "crashed"
+
+[[properties.assertion.property.predicate.predicate.predicates]]
+kind = "node_state"
+node = "nginx"
+state = "crashed"

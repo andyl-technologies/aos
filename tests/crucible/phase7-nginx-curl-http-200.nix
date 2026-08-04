@@ -1,0 +1,104 @@
+{
+  pkgs,
+  lib,
+  attrPath ? "checks.crucible.phase7.nginxCurlHttp200",
+}: let
+  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  cargoDeps = pkgs.fetchCargoDeps {
+    src = crucibleSrc;
+    sourceRoot = "source/crates";
+    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+  };
+  guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
+  scenario = ./fixtures/nginx-curl-http-200.scenario.toml;
+in
+  pkgs.mkDerivation {
+    pname = "crucible-phase7-nginx-curl-http-200";
+    version = "0";
+    src = crucibleSrc;
+
+    buildDeps = [
+      pkgs.coreutils
+      pkgs.crucible-qemu-plugin
+      pkgs.diffutils
+      pkgs.grep
+      pkgs.qemu-crucible
+      pkgs.rust
+      pkgs.sed
+      guest
+    ];
+
+    phases = [
+      {
+        name = "unpack";
+        script = ''
+          cp -R "$src" source
+          chmod -R u+w source
+          cd source
+        '';
+      }
+      {
+        name = "configure";
+        script = ''
+          export CARGO_HOME="$TMPDIR/cargo"
+          mkdir -p "$CARGO_HOME" .cargo
+          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+              > .cargo/config.toml
+          else
+            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
+              > .cargo/config.toml
+          fi
+        '';
+      }
+      {
+        name = "run-nginx-curl-http-200";
+        script = ''
+          set -eu
+          cargo build \
+            --frozen \
+            --offline \
+            --target-dir "$TMPDIR/nginx-curl-target" \
+            --manifest-path crates/Cargo.toml \
+            -p crucible-api \
+            --example crucible-nginx-curl-http-200
+
+          runner="$TMPDIR/nginx-curl-target/debug/examples/crucible-nginx-curl-http-200"
+          "$runner" --emit-scenario > "$TMPDIR/generated.scenario.toml"
+          diff -u ${scenario} "$TMPDIR/generated.scenario.toml"
+
+          vmlinuz=$(ls ${pkgs.linux}/boot/vmlinuz-* | head -1)
+          test -n "$vmlinuz"
+          report="$TMPDIR/nginx-curl-http-200.result"
+          timeout -k 30 1500 \
+            "$runner" \
+            ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+            ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+            "$vmlinuz" \
+            ${guest}/root.ext4 \
+            ${scenario} \
+            > "$report"
+
+          cat "$report"
+          grep -Fxq PASS "$report"
+          grep -Fxq 'scenario=nginx-curl-http-200' "$report"
+          grep -Fxq 'backend=production-qemu-lifecycle' "$report"
+          grep -Fxq 'topology=two-vm-hostless-world-link' "$report"
+          grep -Fxq 'server_workload=nginx' "$report"
+          grep -Fxq 'client_workload=curl' "$report"
+          grep -Fxq 'http_status=200' "$report"
+          grep -Eq '^response_delivery_ticks=[1-9][0-9]*$' "$report"
+          grep -Eq '^final_configuration=[0-9a-f]{64}$' "$report"
+
+          mkdir -p "$out"
+          cp "$report" "$out/result"
+          cp ${scenario} "$out/nginx-curl-http-200.scenario.toml"
+          {
+            printf 'check=%s\n' '${attrPath}'
+            printf 'validation=guest-curl-observed-http-200-from-guest-nginx\n'
+            printf 'network=crucible-hostless-world-link\n'
+          } >> "$out/result"
+        '';
+      }
+    ];
+  }

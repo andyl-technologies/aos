@@ -52,6 +52,28 @@ impl SchedulerLivenessScenario {
                     ticks: initial_ticks,
                 },
             );
+            // A production QEMU node begins with a running vCPU. Seed that
+            // concrete activity explicitly: the static liveness model must not
+            // park an unmodified live guest merely because no modeled local
+            // timer or network horizon is currently armed.
+            let vcpu_count = u32::from(node.smp_vcpus);
+            scenario
+                .vcpu_idle_snapshots
+                .push(SchedulerNodeVcpuIdleSnapshot {
+                    node: SchedulerNodeId {
+                        node: node.id.clone(),
+                        kind: SchedulingNodeKind::Vm,
+                    },
+                    vcpu_count,
+                    vcpus: (0..vcpu_count)
+                        .map(|index| SchedulerVcpuIdleState {
+                            vcpu: VcpuId { index },
+                            halted: false,
+                            next_deadline: None,
+                            pending_input: false,
+                        })
+                        .collect(),
+                });
         }
         scenario.with_world(world)
     }

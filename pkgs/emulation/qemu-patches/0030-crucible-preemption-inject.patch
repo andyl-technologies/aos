@@ -400,7 +400,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -307,6 +308,17 @@ void qemu_plugin_wake_notifier_remove(Notifier *notifier)
+@@ -305,6 +306,17 @@ void qemu_plugin_wake_notifier_remove(Notifier *notifier)
      notifier_remove(notifier);
  }
  
