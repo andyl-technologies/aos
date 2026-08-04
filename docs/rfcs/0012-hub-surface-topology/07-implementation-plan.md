@@ -63,24 +63,53 @@ generation-checked writer; promotion cannot produce two Hub writers; a read
 failure on the observed-authority placement is visible without silently moving
 authority; and the runtime reports which placement served the object.
 
-## Phase 2: domains and delivery routes
+## Phase 2: domains, endpoints, and delivery routes
 
-- [ ] Normalize hostname lifecycle into `domains`.
-- [ ] Add delivery routes, canonical routes, and storage gateways.
+- [ ] Normalize DNS lifecycle into `domains`; model revisioned, observed
+      `network_boundaries`; and migrate every client URL into a typed
+      immutable-identity `delivery_endpoint` with explicit scheme,
+      DNS/IPv4/IPv6 host, effective port, and pinned endpoint/boundary
+      revisions.
+- [ ] Provision the non-deletable instance public-boundary singleton and
+      eagerly materialize its exact instance-default organization grants.
+- [ ] Add delivery routes, permanent privacy-minimized URL reservations,
+      canonical routes, storage gateways, and append-only route audit events.
 - [ ] Migrate registry/cache frontends to routes and binding frontends to
-      gateways plus materialized derived routes.
-- [ ] Implement one longest-prefix route matcher in shared core.
+      gateways plus explicit reviewed direct routes for supported old URLs.
+- [ ] Implement one raw-request-target parser and segment-boundary
+      longest-prefix matcher in shared core, with fixed native/Worker vectors
+      for scheme/authority/port, DNS and IP normalization, IDNA, percent
+      encoding, Unicode, realms, and reserved control namespaces.
 - [ ] Implement Hub proxy, Hub-authorized redirect, and direct route records.
+- [ ] Implement immutable placement-policy and gateway revisions with
+      same-surface/scope composite foreign keys and closed route-target unions.
+- [ ] Run proxy and redirect through one exact-presence/publication-head
+      selector; implement the typed failure taxonomy and forbid mid-response
+      failover.
+- [ ] Conform native and Worker HTTP handling for ranges, conditions, cache
+      headers, sanitized origin failures, `307`, and `421` direct-route misses.
 - [ ] Implement route access policies and visibility revalidation.
+- [ ] Implement the durable route-replacement workflow: create/probe/enable the
+      successor, commit and re-index signed-stack changes, move canonical
+      audiences, then disable/delete the predecessor; resume idempotently after
+      a crash at every boundary.
 - [ ] Add capability probes for Git and Nix-cache semantics.
 - [ ] Import every still-supported URL as an ordinary route and require signed
       config migration for every URL that will not exist after cutover.
-- [ ] Ship the Delivery Web UI, `aos hub route/domain/gateway` commands, and
-      `TopologyService`/`DomainService`/`RouteService` methods together.
+- [ ] Ship the Delivery Web UI, `aos hub
+      {domain,network-boundary,endpoint,gateway,route}` commands, and
+      `DomainService`/`NetworkBoundaryService`/`DeliveryService`/
+      `RouteService` methods together.
 
 **Done when:** a public registry and cache are simultaneously usable through a
 Hub URL, direct CDN URL, and alternate direct origin/gateway URL; byte/range/
-conditional semantics pass the same conformance suite on every route.
+conditional semantics pass the same conformance suite on every route; direct
+requests that reach Hub return `421`; and no cross-surface/scope or invalid
+mode/target tuple is representable. DNS, IPv4, IPv6, default/custom-port, and
+explicit protected-HTTP fixtures round-trip to one canonical endpoint origin.
+Public and private boundary fixtures round-trip stable typed identity, desired
+default plus per-revision verification/lifecycle, trusted-ingress configuration, grants, and
+fail-closed degraded state through Web, CLI, API, native, and Worker paths.
 
 ## Phase 3: private route authentication
 
@@ -88,6 +117,10 @@ conditional semantics pass the same conformance suite on every route.
       the shared route authorization boundary.
 - [ ] Add scoped origin-read credentials and secret-free route explanations.
 - [ ] Add external-provider and private-network access-policy records.
+- [ ] Accept ingress identity/access class only from mutually authenticated,
+      configured ingress and strip client-supplied forwarding assertions.
+- [ ] Permit private-network redirects only when the presigned origin enforces
+      the same named boundary.
 - [ ] Validate client compatibility before producing setup snippets.
 - [ ] Test presigned redirect TTL, no-store behavior, path confinement, and
       revocation boundaries.
@@ -151,14 +184,16 @@ unconfirmed bytes as reclaimed.
       publication across required placements.
 - [ ] Implement NAR-first/narinfo-last cache replication.
 - [ ] Implement complete-replica health and repair.
-- [ ] Implement one stable hash-partition rule and proxy-only shard routing.
+- [ ] Implement normative `hash_range_v1` vectors and proxy-only shard routing.
 - [ ] Implement release population targets and required/best-effort gates.
 - [ ] Integrate coverage validation with population and mirror-stack health.
 
 **Done when:** complete replicas may serve directly; a missing replica object
-is repaired; shards are never exposed as complete endpoints; and a required
-population target can gate release announcement without exposing partial
-state.
+is repaired; native/Worker fixed vectors choose the same two-shard bucket and
+replica order; overlap/uncovered-range validation fails closed; mutable
+pointers never select shards; shards are never exposed as complete endpoints;
+and a required population target can gate release announcement without
+exposing partial state.
 
 ## Phase 7: unify the settings Web UI
 
@@ -239,7 +274,7 @@ source and generated artifacts:
 | --- | --- |
 | `caches` system-of-record table / generic managed `Cache` messages | `binary_caches` / `BinaryCache` |
 | `frontends` / `FrontendRecord` | `delivery_routes` / `DeliveryRoute` |
-| binding-targeted frontend | `StorageGateway` plus explicit materialized routes |
+| binding-targeted frontend | `StorageGateway` plus explicit user-owned routes |
 | resource `advertise_storage_frontend` toggle | removed |
 | `cache_registry_links` / `CacheRegistryLink` | separate retention and population records; signed stack remains registry content |
 | `cache_gc_roots`, `CacheGcRoot`, pin/unpin root RPC shapes | manual retention roots, lease history, and provenance-bearing root reasons |
@@ -333,16 +368,48 @@ storage, and Worker D1/R2 where the runtime supports the binding.
   relying on no-change row counts; and
 - SQLite, D1, PostgreSQL, and MySQL pass the same single-statement CAS and
   fault-injection fixtures.
+- placement-policy builder mutations and publication CAS `build_version` on
+  native transactions and D1 atomic batches; the shared stale-builder fixture
+  proves no mutation can land after publication.
 
 ### Route cases
 
 - Hub proxy, Hub redirect, public direct CDN, direct backend;
 - external-auth and private-network declarations;
-- several base paths on one domain and longest-prefix match;
+- several base paths on one delivery endpoint and longest-prefix match;
+- omitted and explicit `/` route/gateway path defaults produce identical plans
+  and derived URLs;
 - Git/Nix-cache path and header conformance;
 - range requests and conditional requests;
 - canonical change without disabling old route;
-- domain change requires an explicit new route and impact plan;
+- any route endpoint/target/access/capability update increments the
+  configuration generation, invalidates old probe/access/direct evidence, and
+  withholds healthy/canonical advertisement until exact-generation reprobe;
+- endpoint origin or network-realm change requires a replacement endpoint and
+  an impact-planned route/gateway move;
+- explicit same-boundary revision movement creates a new endpoint generation,
+  enumerates grants/routes/gateways/defaults, and rejects stale apply;
+- gateway-generation grant/revoke and explicitly confirmed grant carry-forward
+  preserve exact consumer-scope authorization;
+- endpoint-generation grant/revoke and explicitly confirmed grant
+  carry-forward preserve exact consumer-scope authorization and stale apply
+  fails;
+- storage-binding exact grant/revoke gates placements, gateways, and defaults;
+  cross-scope and nonexistent bindings fail structurally on every backend;
+- binding, boundary, endpoint-generation, and gateway-generation grant-pin
+  acquisition versus revoke CAS has one winner on native databases and D1;
+  revoke rejects nonzero pins, preserves history, and regrant increments the
+  grant generation so an old pin can never revive;
+- stale/mismatched boundary revisions, degraded protection, trusted-ingress
+  spoofing and verification, public versus protected cleartext, exact boundary
+  grant/revoke, endpoint-generation moves, and local `AccessClass` fail closed
+  identically in native/Worker and every database fixture;
+- overlap rollout keeps old and new exact consumers eligible; `retiring`
+  rejects new serving-pin acquisition while preserving verified old pins;
+  serving-pin acquisition and retire CAS yield one winner on native databases
+  and D1; nonzero serving pins block
+  final retirement; coordinated mode persists its acknowledged fail-closed
+  window and crash-resumes without accepting the wrong revision;
 - native/Worker authorization parity.
 
 ### Interface cases
@@ -354,6 +421,20 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 - stable `--json` golden output for every new command family;
 - long operations have CLI watch and Web UI status parity;
 - signed consumer changes report pending versus applied accurately;
+- managed signed-stack projections reject dangling/cross-cache/partial
+  cache-route pairs and configuration digest mismatches;
+- a rendered-URL change creates, probes, and enables a replacement before its
+  signed-stack commit/re-index, then moves canonical selection and disables and
+  deletes the predecessor; crash-resume works after every transition, both URLs
+  serve during overlap, disable/delete is blocked while the old route remains
+  signed, and deletion leaves only the URL reservation plus redacted audit;
+- URL reservation creation versus key rotation has one winner, recomputes the
+  candidate under every retained key version, rejects reuse across rotations,
+  and fails closed on key loss until backup restore on native databases and D1;
+- URL reservation vectors allow the same private IP/path in two distinct
+  NetworkBoundary identity fingerprints but deny reuse of that IP/path in one
+  boundary; deleting/recreating an identical typed boundary spec still denies
+  reuse because its stable fingerprint is unchanged;
 - each instance, organization, registry, and cache scope root renders Overview
   and activates the first navbar item;
 - grouped navbar order is stable for every scope and permission class;
@@ -379,6 +460,10 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 - auth failure never falls back to a broader route/placement;
 - external route never mislabeled as Hub-authenticated;
 - public registry cannot publish an unreadable cache route.
+- credential-bearing HTTP, private redirect, and local classification reject
+  unknown, stale, mismatched, or degraded boundary observation;
+- client-supplied trusted-ingress assertions never establish identity or local
+  access, while the exact configured mTLS/assertion revision does;
 
 ### GC cases
 
@@ -390,6 +475,8 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 - release snapshot source/tag verification, exact row count, canonical metadata
   digest, one-time complete pointer, and terminal header/child immutability;
 - exact and semver selectors;
+- recent-release stable ordering/tie vectors, count bounds, prerelease flags,
+  and canonical RFC-owned SemVer requirement grammar match native/Worker;
 - multiple root reasons for one store hash;
 - several registries sharing one cache;
 - one registry contributing independently to several caches;

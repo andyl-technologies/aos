@@ -38,26 +38,31 @@
 | **Storage binding** | Credentials and capabilities for an object-store origin |
 | **Placement** | A surface's data at one binding and prefix |
 | **Write authority** | Per-surface desired and observed selection of the placement that accepts Hub writes |
-| **Domain** | Verified hostname and TLS/access-provider lifecycle |
-| **Delivery route** | Domain + base path mapped to a surface and delivery mode |
-| **Endpoint** | The concrete URL produced by a delivery route |
-| **Storage gateway** | Reusable direct mapping from a domain/base path to a binding |
+| **Domain** | Verified DNS name and certificate lifecycle |
+| **Network boundary** | Stable network realm with revisioned desired protection/trusted-ingress posture and exact observed verification |
+| **Delivery endpoint** | Typed client origin: scheme, DNS/IP host, port, and ingress/network realm |
+| **Delivery route** | Delivery endpoint + base path mapped to a surface and mode |
+| **Route URL** | Concrete URL derived from an endpoint origin and route base path |
+| **Storage gateway** | Reusable direct mapping from an endpoint/base path to a binding |
 | **Consumer cache stack** | Signed registry policy telling clients which substituters to try |
 | **Retention subscription** | Policy selecting registry artifacts that root a cache's GC graph |
 | **Population target** | Policy causing a producer/release workflow to upload to a cache |
 | **Root reason** | Provenance-bearing reason one cache store hash cannot be collected |
 
-Use **route** for the configured mapping and **endpoint** for its resulting
-URL. Avoid the unqualified words “link,” “frontend,” and “advertise” in new
+Use **endpoint** for the typed client origin, **route** for the configured
+mapping, and **route URL** for their rendered result. Avoid the unqualified
+words “link,” “frontend,” and “advertise” in new
 interfaces; they each hide more than one effect in the current model.
 
 ## Load-bearing invariants
 
 ### Identity is not location
 
-A surface id and canonical Hub URL survive changes to storage bindings,
-prefixes, domains, CDNs, and active placements. No consumer relationship is
-identified by comparing its current URL string.
+A surface id and logical identity survive changes to storage bindings,
+prefixes, domains, CDNs, routes, and active placements. A deliberately retained
+Hub-owned route can preserve one canonical URL across backend moves; replacing
+its endpoint intentionally changes that audience's selected URL. No consumer
+relationship is identified by comparing its current URL string.
 
 ### Placement is not publication
 
@@ -104,7 +109,8 @@ route. Machine-path equivalence is mandatory; control-plane equivalence is not.
 A Hub proxy may authenticate a client and then use private origin credentials.
 A direct route relies on its CDN, gateway, or network to enforce the declared
 access posture. The Hub does not label an external route private without a
-configured and probed enforcement mechanism.
+configured enforcement mechanism and an explicit verified, probed, or
+declared-only trust status.
 
 ### Complete endpoints never expose partial data silently
 

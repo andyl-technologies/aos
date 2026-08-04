@@ -146,11 +146,67 @@ revisions coexist. Immediate `ON DELETE/UPDATE RESTRICT` foreign keys prevent a
 Hub-managed revision from disappearing under a concurrent promotion; external
 invalidation blocks writes without moving authority.
 
+### D21: route resolution is canonical and shared
+
+Native Hub and Worker classify control paths first, then use one hostname/path
+normalizer, segment-boundary longest match, typed route result, capability and
+authorization checks, immutable policy selector, and exact presence/publication
+predicate. Encoded separators and ambiguous paths are rejected. A direct route
+that reaches Hub is not silently proxied.
+
+### D22: the initial placement selectors are deterministic
+
+The supported immutable policy revisions are ordered failover, trusted-access-
+class local-then-remote, and `hash_range_v1`. The shard selector is domain-
+separated SHA-256 over canonical immutable object identity with a 16-bit
+big-endian bucket. Each range is stored once with an ordered replica group;
+distinct ranges cannot overlap, and uncovered ranges require a complete
+fallback. Shards do not serve mutable pointers.
+Latency-preferred selection is not shipped without a separate observation and
+anti-flapping design.
+
+### D23: direct delivery is one reconciled concrete mapping
+
+A direct route pins one complete placement through one immutable, reconciled
+storage-gateway revision. Its external component enforces access; it does not
+perform AOS placement selection. Mixed direct and Hub paths on one endpoint origin
+require declared layer-7 ingress. Hub-authorized redirects run the complete
+authorization and eligibility pipeline before minting a short-lived,
+path-specific capability.
+
+### D24: client URL origins are typed delivery endpoints
+
+`Domain` remains DNS-name ownership/certificate lifecycle. `DeliveryEndpoint`
+owns scheme, DNS or canonical IP host, effective port, ingress/network realm,
+and observed listener/TLS posture. Routes and gateway revisions reference an
+endpoint; they do not store opaque URLs or overload Domain with IP literals.
+Instance endpoint grants make shared Hub origins available to organizations
+without transferring ownership. Plain HTTP is explicit and never carries Hub
+or origin secrets over unprotected cleartext.
+
+### D25: network boundaries are revisioned security resources
+
+`NetworkBoundary` has immutable scoped realm identity derived from a typed
+public, provider-resource, stable allowlist-resource, or trusted-listener
+specification. Its immutable desired revisions pin protected-transport
+requirements, trusted-ingress verification references, probe location, and
+source-allowlist CIDR membership. Reconciliation records verification per
+exact revision, allowing overlapping active revisions during consumer moves.
+Endpoints pin an exact boundary and
+revision, and cross-scope use requires exact materialized grants. Unknown,
+stale, mismatched, or degraded observation fails closed for credential-bearing
+HTTP, local access classification, and private redirect eligibility. A CLI or
+Web form cannot assert protection as an endpoint-local flag.
+The public realm is the deployment-provisioned, instance-owned,
+non-revisable `instance:public@1` singleton with eagerly materialized exact
+organization grants; public endpoint creation still references it explicitly.
+
 ## Rejected conflations
 
 - Storage binding endpoint as consumer URL.
 - Physical bucket equality as logical binding identity.
 - Binding frontend inheritance as invisible route creation.
+- Domain name as a full URL, listener, access policy, or IP-literal container.
 - A direct route as proof that a private resource is protected.
 - Cache publication as a flag on a GC relationship.
 - Retention as proof that bytes are present.
@@ -173,37 +229,31 @@ conditional-write capabilities, fencing, quorum, and conflict semantics remain
 open and require a separate authorization before widening the `single_writer`
 mode constraint.
 
-### O2: initial shard function
-
-The first shard rule should be portable and immutable, likely a fixed prefix of
-the store hash with a versioned rule id. The exact hash/range encoding is chosen
-during Phase 6 and becomes persistent data; changing it requires resharding.
-
-### O3: canonical Hub proxy versus redirect default
+### O2: canonical Hub proxy versus redirect default
 
 Public canonical endpoints may proxy, redirect, or select based on object size.
 The choice affects cost, observability, and cache behavior but not identity.
 Benchmarks in Phase 2 choose the default; private routes retain policy control.
 
-### O4: external access-provider verification depth
+### O3: external access-provider verification depth
 
 Some providers expose APIs the Hub can verify; a private VPN may offer only an
 operator assertion and an in-network probe. The UI must distinguish verified,
 probed, and declared-only states. Exact provider adapters are incremental.
 
-### O5: canonical managed identity in portable registry config
+### O4: canonical managed identity in portable registry config
 
 The required wire value remains a URL. A future optional stable cache-id hint
 could improve imports and mirrors, but clients must not require Hub-specific
 identity metadata to use a standard Nix cache.
 
-### O6: release snapshot storage growth
+### O5: release snapshot storage growth
 
 Artifact rows may be deduplicated by commit/tree digest or stored as compact
 content-addressed artifact sets. The logical contract is immutable release to
 artifact mapping; physical database optimization is implementation work.
 
-### O7: default recent-release count
+### O6: default recent-release count
 
 This RFC recommends five for new subscriptions, subject to observed closure
 sizes and operator feedback. The selector and UI must remain explicit so this

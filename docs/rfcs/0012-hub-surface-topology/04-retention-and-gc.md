@@ -68,9 +68,9 @@ Selectors are composable union terms:
 RetentionSelector
   current_catalog
   channel_targets { channels = all | names }
-  recent_releases { count }
+  recent_releases { count, include_prereleases = false }
   releases { exact tags }
-  semver { requirement }
+  semver { requirement, include_prereleases = false }
   all_releases
 ```
 
@@ -84,6 +84,46 @@ union latest 5 verified releases
 
 The count is editable per subscription. Organizations may define a different
 default, and archival caches may select all releases.
+
+`recent_releases.count` is an integer from 1 through 100. It considers only
+verified releases with a complete artifact snapshot and a valid SemVer 2.0.0
+version. Unless `include_prereleases` is true, a version with a prerelease
+component is excluded. Eligible releases sort by this stable tuple:
+
+```text
+tagged_at DESC,
+SemVer precedence DESC,
+canonical SemVer UTF-8 bytes ASC,
+verified tag OID bytes ASC,
+stable release id bytes ASC
+```
+
+`tagged_at` is the immutable verified tag timestamp recorded by the registry
+indexer. Re-index time and snapshot completion time never participate. Exact
+tag selectors remain the way to retain a non-SemVer release tag.
+
+SemVer requirements use one RFC-owned grammar rather than host-library
+shorthand:
+
+```text
+requirement = OWS conjunction *( OWS "||" OWS conjunction ) OWS
+conjunction = comparator *( OWS "," OWS comparator )
+comparator  = ( ">=" | "<=" | "=" | ">" | "<" ) version
+version     = SemVer-2.0.0-version-without-build-metadata
+OWS         = *( SP | HTAB )
+```
+
+Tokens use longest-match lexing. Leading/trailing OWS is accepted and removed
+by canonicalization. Caret, tilde, wildcard, partial, implicit-equality, hyphen-range, and bare-space
+conjunction syntax are rejected. Parsing enforces SemVer 2.0.0 numeric and
+identifier rules. Canonicalization normalizes whitespace away, renders numeric
+identifiers without leading zeroes, deduplicates comparators, sorts comparators
+within each conjunction by `(operator, canonical version bytes)`, sorts
+conjunctions by their canonical bytes, and joins with `,` and `||`. With
+`include_prereleases = false`, candidates containing a prerelease component are
+filtered before evaluation. With it true, all candidates use ordinary SemVer
+precedence. Native and Worker store the canonical expression and selector flag
+in the refresh digest and share the same parser and ordering vectors.
 
 `current_catalog` deliberately preserves the current safe behavior: every
 package-output and image store path still published at the registry's current
@@ -272,7 +312,7 @@ Placement policy decides where a logically live object must be present:
 
 - The placement derived as primary from observed write authority, and every
   complete replica placement, retain every logically live object.
-- Shards retain live objects selected by their partition rule.
+- Shards retain live objects selected by their `hash_range_v1` interval.
 - Archive placements follow their own archival replication policy.
 - A complete placement may not evict a logically live object merely to satisfy
   a local byte cap; it becomes over-cap or loses its complete designation.

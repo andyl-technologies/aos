@@ -89,31 +89,54 @@ placement or binding revision.
 
 Add an organization/instance-level Domains page:
 
-| Hostname | DNS | TLS | Access provider | Routes | Probe state |
+| Hostname | Ownership | DNS | Certificate | Endpoints |
+| --- | --- | --- | --- | --- |
+
+Domain lifecycle includes DNS-name ownership verification, DNS target, and
+certificate issuance. It does not pretend an IP literal is a domain or own
+listeners, access providers, and routes.
+
+### Delivery endpoints
+
+Add the sibling client-origin inventory:
+
+| Origin | Host kind | Ingress/network | Listener/TLS | Consumer scopes | Routes | Probe |
+| --- | --- | --- | --- | --- | --- | --- |
+
+Endpoint state distinguishes **desired** listener/TLS configuration from
+**observed** deployment. Origins are rendered from typed scheme, DNS/IPv4/IPv6
+host, effective port, and network boundary rather than stored URL text.
+Provider adapters reconcile what they can; an externally managed or in-VPN
+endpoint remains **declared**, not healthy, until an authorized probe confirms
+it. Cleartext posture is always visible. Worker deployment uses the complete
+managed Hub-endpoint set, while direct endpoints resolve to their declared
+CDN/gateway instead of the Worker.
+
+### Network boundaries
+
+Add a sibling inventory for network realms and trusted ingress:
+
+| Boundary | Kind | Default revision | Active/retiring | Consumers | Last probe |
 | --- | --- | --- | --- | --- | --- |
 
-Domain lifecycle includes ownership verification, DNS target, certificate
-state, Worker/native deployment state, external provider declaration, and all
-base-path routes. This makes globally unique domain/path ownership visible
-before collisions occur.
-
-Domain state distinguishes **desired** configuration from **observed**
-deployment. Adding a route does not by itself prove that DNS, TLS, a Worker
-custom-domain binding, a native reverse-proxy mapping, or a CDN origin rewrite
-exists. Provider adapters reconcile what they can; externally managed domains
-remain pending until probes confirm the declared route. Worker deployment uses
-the complete managed Hub-domain set, while direct domains resolve to their
-declared CDN/gateway instead of the Worker.
+Boundary detail separates stable identity from immutable protection revisions.
+It owns trusted mTLS/assertion posture, protected-transport requirements,
+consumer grants, per-revision verification, overlap/coordinated activation,
+consumer move plans, and retirement. Endpoint forms select an
+verified revision; they cannot assert protection themselves. Unknown,
+mismatched, or degraded observations display the concrete fail-closed effects.
 
 ## Route editor
 
 The route editor proceeds in explicit stages:
 
-1. Select or verify a domain.
-2. Choose base path and target surface.
+1. Select or create a typed delivery endpoint from the full client origin.
+2. Choose a Hub-route base path and target surface; direct mode instead shows
+   the path derived from gateway client base plus placement prefix.
 3. Choose delivery mode.
 4. Choose client access policy.
-5. Select a placement or placement policy.
+5. Select a complete placement, immutable placement-policy revision, or—for
+   direct mode—complete placement plus reconciled gateway revision.
 6. Select protocol capabilities.
 7. Probe and preview exact URLs/path rewrites.
 8. Enable and optionally make canonical.
@@ -135,7 +158,8 @@ object path, it renders:
 
 ```text
 https://hub.example/acme/cache/abc.narinfo
-  domain: hub.example (TLS active)
+  endpoint: https://hub.example:443 (DNS; Hub listener/TLS active)
+  endpoint grant: instance default -> org:acme
   route: /acme/cache -> cache acme/cache
   mode: Hub proxy
   client access: AOS bearer token required

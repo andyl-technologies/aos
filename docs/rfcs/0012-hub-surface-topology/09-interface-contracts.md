@@ -46,8 +46,10 @@ reference.
 | --- | --- | --- |
 | Storage bindings and defaults | `storage-binding`, `{org,instance} topology-defaults` | `StorageBindingService` |
 | Storage, replicas, and write authority | `placement`, `placement-policy`, `placement-equivalence` | `TopologyService` |
-| Domains | `domain` | `DomainService` domain methods |
-| Storage gateways | `gateway` | `DomainService` gateway methods |
+| DNS domains | `domain` | `DomainService` |
+| Network boundaries | `network-boundary` | `NetworkBoundaryService` |
+| Delivery endpoints | `endpoint` | `DeliveryService` endpoint methods |
+| Storage gateways | `gateway` | `DeliveryService` gateway methods |
 | Delivery | `route` | `RouteService` |
 | Consumer cache stack | `registry cache-stack` | `CacheIntegrationService` consumer methods |
 | Retention subscriptions | `cache retention` | `CacheIntegrationService` retention methods |
@@ -101,6 +103,7 @@ The exact grouped labels and ordering are specified in
 /-/orgs/new
 
 /-/org/{org}
+/-/org/{org}/identity-and-access
 /-/org/{org}/projects
 /-/org/{org}/projects/new
 /-/org/{org}/registries
@@ -111,6 +114,10 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/storage-bindings/new
 /-/org/{org}/domains
 /-/org/{org}/domains/new
+/-/org/{org}/network-boundaries
+/-/org/{org}/network-boundaries/new
+/-/org/{org}/delivery-endpoints
+/-/org/{org}/delivery-endpoints/new
 /-/org/{org}/storage-gateways
 /-/org/{org}/storage-gateways/new
 /-/org/{org}/topology-defaults
@@ -165,7 +172,13 @@ The exact grouped labels and ordering are specified in
 /-/instance/branding
 /-/instance/storage-bindings
 /-/instance/domains
+/-/instance/domains/new
+/-/instance/network-boundaries
+/-/instance/network-boundaries/new
+/-/instance/delivery-endpoints
+/-/instance/delivery-endpoints/new
 /-/instance/storage-gateways
+/-/instance/storage-gateways/new
 /-/instance/topology-defaults
 /-/instance/operations
 ```
@@ -185,7 +198,7 @@ The hard-cutover route mapping is:
 | organization `/audit` | `/audit-log` |
 | organization `/settings` redirect | deleted; use the organization root Overview |
 | organization `/bindings/{id}` | `/storage-bindings/{id}` |
-| organization binding frontend section | `/storage-gateways` and materialized surface delivery routes |
+| organization binding frontend section | `/storage-gateways` and explicit surface delivery routes |
 | registry `/settings` General page | registry `/settings` Overview and `/settings/access` |
 | registry `/settings/storage` | `/settings/placements` |
 | registry `/settings/serving` | `/settings/delivery` and `/settings/upstream-mirror` |
@@ -251,13 +264,14 @@ cannot be bypassed by editing either placement.
 
 The route table and editor specified in
 [`06-console-and-operations.md`](06-console-and-operations.md) are normative.
-Actions are add, edit, probe, explain, enable, disable, make canonical, and
-remove. Direct gateway-derived routes display their gateway and placement;
-they are not hidden as inherited state.
+Actions are add, edit, replace, probe, explain, enable, disable, make canonical,
+and remove. Direct gateway-backed routes display their gateway and placement.
+They are user-owned resources: gateway reconciliation never creates or edits
+them, and gateway preview only drafts explicit RouteService plans.
 
-Changing domain, access provider, surface visibility, placement policy, or
-canonical status opens an impact review showing affected setup snippets,
-signed cache entries, routes, and client compatibility.
+Changing endpoint, route access provider, surface visibility, placement
+policy, or canonical status opens an impact review showing affected setup
+snippets, signed cache entries, routes, and client compatibility.
 
 ### Binary-cache integrations
 
@@ -366,7 +380,7 @@ aos hub placement show <surface-ref> <placement>
 aos hub placement add <surface-ref> --binding <name> --prefix <prefix>
   [--kind complete|shard|archive]
   [--desired-state active|offline] [--read enabled|disabled]
-  [--read-order <ordinal>] [--partition-rule <json>]
+  [--read-order <ordinal>] [--hash-range <start>-<end>]
 aos hub placement update <surface-ref> <placement>
   [--desired-state active|offline] [--read enabled|disabled]
   [--read-order <ordinal>] --if-version <version>
@@ -383,10 +397,20 @@ aos hub placement-equivalence list <surface-ref>
 aos hub placement-equivalence confirm <placement-a> <placement-b>
 aos hub placement-equivalence remove <equivalence>
 
-aos hub placement-policy show <surface-ref>
-aos hub placement-policy set <surface-ref>
+aos hub placement-policy list <surface-ref>
+aos hub placement-policy show <surface-ref> <policy> [--revision <revision>]
+aos hub placement-policy create <surface-ref> <policy>
   --kind ordered-failover --member <placement> ...
-aos hub placement-policy test <surface-ref> --path <machine-path>
+aos hub placement-policy revise <surface-ref> <policy>
+  --kind local-then-remote --local-boundary <boundary>@<revision>
+  --local <placement> ... --remote <placement> ...
+  [--allow-remote-fallback]
+aos hub placement-policy revise <surface-ref> <policy>
+  --kind hash-partition
+  --range <start>-<end>=<placement>[,<replica>...] ...
+  [--complete-fallback <placement> ...]
+aos hub placement-policy test <surface-ref> <policy> --revision <revision>
+  --object <canonical-object-ref> [--access-class local|remote]
 ```
 
 `placement add` never grants write authority or changes canonical routes by
@@ -401,11 +425,18 @@ rather than requiring an unrelated placement mutation.
 
 Create defaults are `--kind complete`, `--desired-state active`,
 `--read enabled`, and `--read-order 0`; archive defaults to read disabled and
-rejects explicit read enablement. `--partition-rule` is required for `shard`
-and rejected otherwise. `draining` is owned by `placement drain`, not generic
-create/update. Binding, prefix, kind, and partition rule are immutable in
+rejects explicit read enablement. `--hash-range` is required for `shard` and
+rejected otherwise; its bounds are the typed half-open `HashRangeV1` bucket
+interval `[start, end)` with `0 <= start < end <= 65536`, not JSON. Bounds use
+unsigned 32-bit integers. `draining` is owned by `placement drain`, not generic
+create/update. Binding, prefix, kind, and hash range are immutable in
 `placement update`; changing them uses add/replicate/promote/drain. Web forms
 and API messages use the same defaults and update field set.
+
+Local-then-remote policy messages pin a typed `NetworkBoundaryRevisionRef`.
+Plans display the stable boundary identity, exact revision, verification state,
+and digest input; apply rejects a stale or unverified revision. Published
+policy meaning never follows a boundary's moving desired pointer.
 
 `placement promotion cancel` is plan/apply, not deletion of pending metadata.
 It restores desired and observed authority to the previously observed writer
@@ -420,64 +451,241 @@ not a claim about an arbitrary object: `surface explain --path` evaluates the
 normative policy/shard/presence/publication predicate. No CLI flag sets role,
 write enablement, or write order.
 
-### Storage bindings, defaults, domains, gateways, and delivery routes
+Placement-policy create/revise always produces a new immutable revision and
+prints its content digest. Existing routes and population targets remain pinned
+until separately planned updates move them. Test resolves a canonical logical
+object to its stored partition key and prints the normative digest, bucket,
+replica group, fallback decisions, and typed failure contract.
+
+### Storage bindings, defaults, domains, endpoints, gateways, and routes
 
 ```text
+aos hub org update <org> --display-name <name>
+
 aos hub storage-binding list [--org <org>]
 aos hub storage-binding show <binding-ref>
-aos hub storage-binding create --org <org> ...
-aos hub storage-binding update <binding-ref> ...
-aos hub storage-binding credential set <binding-ref> --purpose <purpose> ...
-aos hub storage-binding credential rotate <binding-ref> --purpose <purpose>
-aos hub storage-binding credential validate <binding-ref> [--purpose <purpose>]
+aos hub storage-binding create --org <org> --name <name>
+  --kind local-fs --root <absolute-path>
+aos hub storage-binding create --org <org> --name <name>
+  --kind s3|r2 --bucket <bucket> [--prefix <object-prefix>]
+  --endpoint <https-origin> --region <signing-region>
+  --access public|private
+aos hub storage-binding update <binding-ref>
+  [--endpoint <https-origin>] [--region <signing-region>]
+  [--access public|private]
+aos hub storage-binding credential set <binding-ref>
+  --purpose read|write|delete|list|presign --credential-ref <secret-ref>
+aos hub storage-binding credential rotate <binding-ref>
+  --purpose read|write|delete|list|presign
+  --from-generation <generation> --credential-ref <secret-ref>
+aos hub storage-binding credential validate <binding-ref>
+  [--purpose read|write|delete|list|presign]
 aos hub storage-binding write-revision list <binding-ref>
 aos hub storage-binding write-revision show <binding-ref> <revision>
 aos hub storage-binding write-revision reconcile <binding-ref> <revision>
+aos hub storage-binding grant <binding-ref> --consumer-scope <scope>
+aos hub storage-binding revoke <binding-ref> --consumer-scope <scope>
 aos hub storage-binding delete <binding-ref>
 
 aos hub org topology-defaults show <org>
 aos hub org topology-defaults set <org>
-  [--storage-binding <binding>] [--domain <domain>] [--gateway <gateway>]
+  [--storage-binding <binding>] [--domain <domain>]
+  [--endpoint <endpoint>] [--gateway <gateway>]
 aos hub org topology-defaults clear <org>
-  [--storage-binding] [--domain] [--gateway]
+  [--storage-binding] [--domain] [--endpoint] [--gateway]
 aos hub instance topology-defaults show
 aos hub instance topology-defaults set
-  [--domain <domain>] [--gateway <gateway>]
-aos hub instance topology-defaults clear [--domain] [--gateway]
+  [--domain <domain>] [--endpoint <endpoint>] [--gateway <gateway>]
+aos hub instance topology-defaults clear
+  [--domain] [--endpoint] [--gateway]
 
 aos hub domain list [--org <org>]
 aos hub domain show <hostname>
 aos hub domain add <hostname> [--org <org>]
-aos hub domain update <hostname> ...
-aos hub domain dns configure <hostname> ...
-aos hub domain tls configure <hostname> ...
-aos hub domain access configure <hostname> ...
+aos hub domain dns configure <hostname>
+  --mode hub-managed --provider <provider> --zone-id <provider-zone-id>
+  [--record-ttl <seconds>]
+aos hub domain dns configure <hostname>
+  --mode external --expected-target <canonical-dns-name>
+aos hub domain certificate configure <hostname> --mode hub-managed
+aos hub domain certificate configure <hostname>
+  --mode external --certificate-ref <secret-ref>
 aos hub domain verify <hostname>
 aos hub domain status <hostname>
 aos hub domain reconcile <hostname>
 aos hub domain remove <hostname>
 
+aos hub network-boundary list [--org <org>]
+aos hub network-boundary show <boundary>
+aos hub network-boundary add <name> --kind vpn|vpc|tunnel [--org <org>]
+  --provider <provider> --provider-account <account-or-tenant>
+  --resource-id <globally-qualified-provider-resource-id>
+aos hub network-boundary add <name> --kind source-allowlist [--org <org>]
+  --allowlist-id <stable-owner-scoped-logical-id>
+aos hub network-boundary add <name> --kind trusted-ingress [--org <org>]
+  --provider <provider> --provider-account <account-or-tenant>
+  --listener-id <globally-qualified-provider-listener-id>
+aos hub network-boundary revise <boundary>
+  [--protected-transport required|not-required]
+  [--trusted-ingress none]
+  [--trusted-ingress mtls --ca-secret-ref <ref> [--client-san <name> ...]]
+  [--trusted-ingress signed-assertion --issuer <issuer> --audience <audience>
+    --verification-key-secret-ref <ref>]
+  [--cidr <canonical-cidr> [--cidr <canonical-cidr> ...] | --clear-cidrs]
+  [--probe-location <location-ref> | --clear-probe-location]
+aos hub network-boundary grant <boundary> --consumer-scope <scope>
+aos hub network-boundary revoke <boundary> --consumer-scope <scope>
+aos hub network-boundary revision list <boundary>
+aos hub network-boundary revision show <boundary>@<revision>
+aos hub network-boundary revision probe <boundary>@<revision>
+aos hub network-boundary revision reconcile <boundary>@<revision>
+aos hub network-boundary revision activate <boundary>@<revision>
+  --mode overlap|coordinated --default-for-new-plans yes|no
+aos hub network-boundary revision retire <boundary>@<revision>
+aos hub network-boundary status <boundary>
+aos hub network-boundary remove <boundary>
+
+aos hub endpoint list [--org <org>]
+aos hub endpoint show <endpoint>
+aos hub endpoint add <https://host[:port]> [--org <org>]
+  --network-boundary <boundary> --ingress hub|external|layer7
+aos hub endpoint add <http://host[:port]> [--org <org>]
+  --acknowledge-cleartext --network-boundary <boundary>
+  --ingress hub|external|layer7
+aos hub endpoint update <endpoint>
+  [--ingress hub|external|layer7]
+  [--boundary-revision <revision>]
+  [--listener-provider hub-native|hub-worker|external|layer7]
+  [--listener-resource-id <stable-provider-id>]
+  [--tls-provider hub-managed|external --certificate-ref <ref>]
+  [--probe-location <location-ref> | --clear-probe-location]
+aos hub endpoint grant <endpoint> --consumer-scope <scope>
+aos hub endpoint revoke <endpoint> --consumer-scope <scope>
+aos hub endpoint status|probe|reconcile <endpoint>
+aos hub endpoint remove <endpoint>
+
 aos hub gateway list --binding <binding>
 aos hub gateway show <gateway>
-aos hub gateway add --binding <binding> --domain <hostname>
-  [--base-path <path>] [--origin-path <path>] --access <policy>
-aos hub gateway update <gateway> ...
+aos hub gateway add --binding <binding> --endpoint <endpoint>
+  [--client-base-path <path>] [--origin-prefix <path>]
+  --access public|external-provider|private-network
+  [<access-policy-options>]
+aos hub gateway update <gateway>
+  [--endpoint-generation <generation>]
+  [--client-base-path <path>] [--origin-prefix <path>]
+  [--access public|external-provider|private-network
+    [<access-policy-options>]]
+aos hub gateway grant <gateway>@<generation> --consumer-scope <scope>
+aos hub gateway revoke <gateway>@<generation> --consumer-scope <scope>
 aos hub gateway preview <gateway>
 aos hub gateway reconcile <gateway>
 aos hub gateway enable|disable <gateway>
 aos hub gateway remove <gateway>
 
 aos hub route list <surface-ref>
-aos hub route add <surface-ref> --domain <hostname> [--base-path <path>]
-  --mode hub-proxy|hub-redirect|direct --access <policy>
-  (--placement <name> | --placement-policy <name>)
+aos hub route add <surface-ref> --endpoint <endpoint> [--base-path <path>]
+  --mode hub-proxy|hub-redirect
+  --access public|hub-auth|external-provider|private-network
+  [<access-policy-options>]
+  (--placement <complete> | --placement-policy <name>@<revision>)
   [--serves git] [--serves cache] [--serves web]
-aos hub route update <route> ...
+aos hub route add <surface-ref> --endpoint <endpoint>
+  --mode direct --placement <complete>
+  --gateway <gateway>@<generation>
+  [--serves git] [--serves cache] [--serves web]
+aos hub route update <route>
+  [--mode hub-proxy|hub-redirect|direct]
+  [--endpoint-generation <generation>]
+  [--placement <complete> | --placement-policy <name>@<revision>]
+  [--gateway <gateway>@<generation>]
+  [--access public|hub-auth|external-provider|private-network
+    [<access-policy-options>]]
+  [--serves git] [--serves cache] [--serves web]
+aos hub route replace <route> --endpoint <endpoint> [--base-path <path>]
+  --mode hub-proxy|hub-redirect
+  --access public|hub-auth|external-provider|private-network
+  [<access-policy-options>]
+  (--placement <complete> | --placement-policy <name>@<revision>)
+  [--serves git] [--serves cache] [--serves web]
+aos hub route replace <route> --endpoint <endpoint>
+  --mode direct --placement <complete>
+  --gateway <gateway>@<generation>
+  [--serves git] [--serves cache] [--serves web]
 aos hub route probe <route>
 aos hub route explain <route> [--path <machine-path>]
 aos hub route enable|disable|remove <route>
 aos hub route canonical <route> --audience git|cache|web
 ```
+
+Endpoint and gateway refs resolve to exact immutable generations in every
+plan; apply rejects a changed desired generation. A direct route has no
+independent base-path option: its path is derived as
+`join_segments(gateway.client_base_path, placement.prefix)` and shown in the
+plan. Endpoint origin/realm fields are absent from `endpoint update`; replacing
+them uses create plus the affected route/gateway move plan.
+
+Omitted Hub-route `--base-path`, gateway `--client-base-path`, and gateway
+`--origin-prefix` each default to canonical `/` in CLI, API, and Web forms.
+Plans always print the resolved values before collision checks or direct-route
+composition; omission and explicit `/` are byte-for-byte equivalent fixtures.
+Topology-default endpoint and gateway refs similarly resolve to exact granted
+desired generations in the plan. Apply rejects pointer or grant changes, and a
+later endpoint/gateway revision does not silently retarget the default.
+
+Boundary create accepts exactly one typed identity variant. `public` has no
+identity options and is the deployment-provisioned, instance-owned,
+non-deletable `instance:public` singleton; create/remove reject that kind.
+Update also rejects it; probe/reconcile refresh only its fixed revision-1
+observation. Endpoint plans show and pin `instance:public@1` explicitly.
+VPN/VPC/tunnel and trusted-ingress identities use provider, provider
+account/tenant, plus a globally qualified resource/listener id; source
+allowlists use an owner-scoped stable logical id. Sorted canonical CIDR membership is revisioned
+configuration. The service derives the immutable identity fingerprint from
+that typed value and never accepts a digest. Trusted verification material is
+passed by secret reference and responses expose only redacted references.
+Every endpoint create requires an exact boundary reference and owner-scope
+grant and an explicit ingress kind; there is no implicit public-boundary or
+ingress selection in CLI, API, or Web.
+
+Revision/update commands use patch semantics for scalar fields: omission keeps
+the current value, and at least one field must be supplied. Repeated collection
+flags replace the complete normalized collection; their paired `--clear-*`
+flag is the only way to select an empty/null value and is mutually exclusive
+with the repeated setter. In particular, boundary `--cidr` replaces all CIDRs,
+`--client-san` replaces all SANs, route `--serves` replaces the complete
+non-empty capability set, and probe-location clear is explicit. A trusted
+ingress kind change supplies its complete required kind-specific fields.
+
+`<access-policy-options>` is the kind-specific suffix in the following closed,
+kind-discriminated grammar (the command's displayed `--access` flag is not
+repeated):
+
+```text
+--access public
+--access hub-auth
+  [--hub-principal <principal-kind>:<principal-name> ...]
+  [--hub-client-class <client-class> ...]
+--access external-provider
+  --external-provider-kind <provider-kind>
+  --external-provider-resource-id <stable-provider-resource-id>
+  --external-provider-revision <observed-provider-revision>
+  --external-client-mechanism <mechanism>=<verification-secret-ref> ...
+  [--external-client-class <client-class> ...]
+--access private-network
+  --access-boundary <boundary>@<revision>
+```
+
+`mechanism` is one of `bearer-token`, `signed-cookie`, `signed-header`, or
+`mtls`. Repeating principal, client-class, and mechanism flags forms a sorted,
+deduplicated set; an empty `hub-auth` set means any authenticated principal.
+`public` rejects every kind-specific field. `hub-auth` rejects external and
+boundary fields. `external-provider` requires at least one mechanism and
+rejects Hub and boundary fields. `private-network` rejects Hub and external
+fields. Gateways reject `hub-auth`. A direct route accepts no access-policy
+input: it copies the selected immutable gateway generation's complete policy
+and digest and displays both in the plan. Updating a direct route to a different
+gateway generation derives the replacement policy the same way. Hub-route
+access flags are rejected whenever the final mode is direct.
 
 `storage-binding create` is organization-only. The deployment-provisioned
 binding is addressed as `instance:default`; supported endpoint/credential
@@ -488,11 +696,20 @@ Repeated `--serves` flags build a capability set. Access-provider-specific
 options use namespaced forms rather than a generic secret JSON argument. Secret
 values are read from files/stdin or credential stores and are never echoed.
 
+Endpoint input is parsed into typed scheme, DNS/IPv4/IPv6 host, effective port,
+and network boundary; the URL string is never stored. IPv6 zone ids, userinfo,
+query, and fragment are rejected. Route and gateway commands reference an
+existing endpoint and never create one implicitly. Default ports are omitted
+only when rendering the canonical origin.
+
 ### Upstream registry mirror
 
 ```text
 aos hub registry mirror show <registry>
-aos hub registry mirror set <registry> --source <url> ...
+aos hub registry mirror set <registry> --source <https-url>
+  [--refspec <git-refspec>] [--auth-secret-ref <secret-ref>]
+  [--interval <duration>]
+  [--signature-policy required|optional|disabled]
 aos hub registry mirror remove <registry>
 aos hub registry mirror sync <registry>
 ```
@@ -523,9 +740,9 @@ aos hub cache retention list <cache>
 aos hub cache retention set <cache> --registry <registry>
   [--current-catalog]
   [--channel <name> ... | --all-channel-targets]
-  [--recent-releases <count>]
+  [--recent-releases <count> [--recent-include-prereleases]]
   [--release <tag> ...]
-  [--semver <requirement>]
+  [--semver <requirement> [--semver-include-prereleases]]
   [--all-releases]
   [--removal-grace <duration>]
 aos hub cache retention remove <cache> --registry <registry>
@@ -566,7 +783,14 @@ aos hub cache coverage repair <cache> [--registry <registry>]
 ### Garbage collection and eviction
 
 ```text
-aos hub cache gc policy show|set <cache> ...
+aos hub cache gc policy show <cache>
+aos hub cache gc policy set <cache>
+  --unreferenced-grace <duration>
+  [--soft-max-bytes <bytes> | --clear-soft-max-bytes]
+  [--soft-max-objects <count> | --clear-soft-max-objects]
+  --schedule <cron-expression> --deletion-concurrency <count>
+  --retry-initial <duration> --retry-max <duration>
+  --retry-max-attempts <count> --tombstone-retention <duration>
 aos hub cache gc plan create <cache>
 aos hub cache gc plan show <cache> <plan-id>
 aos hub cache gc first-sweep plan-acknowledgement <cache> --gc-plan-id <id>
@@ -606,8 +830,10 @@ aos hub cache integration show <cache> --registry <registry>
 aos hub cache integrate <cache> --registry <registry>
   [--use-for-clients]
   [--retain-current-catalog] [--retain-channel <name> ...]
-  [--retain-recent-releases <count>] [--retain-release <tag> ...]
-  [--retain-semver <requirement>] [--retain-all-releases]
+  [--retain-recent-releases <count> [--recent-include-prereleases]]
+  [--retain-release <tag> ...]
+  [--retain-semver <requirement> [--semver-include-prereleases]]
+  [--retain-all-releases]
   [--populate required|best-effort]
   [--population-trigger release|manual|continuous]
 ```
@@ -672,10 +898,21 @@ resource versions and stable ids. Secret-bearing write fields are write-only.
 
 The public contract defines typed `Placement`, `PlacementObservation`,
 `SurfaceWriteAuthority`, `PlacementAuthorityStatus`, `PlacementPolicy`,
-`PlacementEquivalence`, `ObjectPresence`, `PlacementImpact`, `StorageBinding`,
+`PlacementPolicyRevision`, `PlacementPolicyReplicaGroup`, `HashRangeV1`,
+`AccessClass`, `PolicyFailureContract`, `PlacementEquivalence`,
+`ObjectPresence`, `PlacementImpact`, `StorageBinding`,
 `StorageBindingCapabilities`, `StorageBindingHealth`, `Domain`,
 `DomainDesiredState`, `DomainObservedState`, `DnsConfiguration`,
-`TlsConfiguration`, `DomainAccessConfiguration`, `StorageGateway`,
+`CertificateConfiguration`, `DeliveryEndpoint`, `EndpointHost`,
+`EndpointDesiredState`, `EndpointObservedState`, `NetworkBoundary`,
+`NetworkBoundaryIdentity`, `NetworkBoundaryRevision`,
+`NetworkBoundaryRevisionRef`, `NetworkBoundaryRevisionLifecycle`,
+`NetworkBoundaryObservation`, `TrustedIngressConfiguration`,
+`DeliveryAccessPolicy`, `ExternalProviderPolicy`, `TlsConfiguration`,
+`ConsumerScopeGrant`, `StorageGateway`, `PlacementDeliveryManifest`,
+`DeliveryRoute`, `DeliveryRouteTarget`, `RouteCapabilities`, `CanonicalRoute`,
+`DeliveryRouteObservation`, `DirectDeliveryRouteEvidence`,
+`DeliveryRouteAccessObservation`,
 `GatewayRoutePreview`, `InstanceTopologyDefaults`,
 `OrganizationTopologyDefaults`, `ManualRetentionRoot`, `RetentionLease`,
 `RootReason`, `RetentionImpact`, `CacheGcGeneration`, `CacheGcPlan`,
@@ -683,6 +920,15 @@ The public contract defines typed `Placement`, `PlacementObservation`,
 messages. Provider and storage credentials
 are represented by purpose-scoped credential references, not opaque public JSON
 or readable secret values.
+
+`ConsumerScopeGrant` is the one shared grant wire type: resource kind and
+stable id, optional exact generation (required for endpoint/gateway and absent
+for binding/boundary), consumer scope, grant generation/kind, `active|revoked`
+state, grant and optional revoke actor/timestamps, live-pin count/impact
+summary, and resource version. Closed validation rejects a resource generation
+on stable-grant resources or its omission on revision-grant resources. JSON
+goldens cover initial active, blocked revoke with pins, revoked tombstone, and
+later active regrant with an incremented grant generation.
 
 GC operational state is not implied by public cache visibility. Authorized
 cache readers may inspect summaries and retention explanations; actor identity
@@ -696,6 +942,20 @@ caches retain root `iam.admin` administration. Owner and Admin roles receive
 the three cache-management verbs by default; lower roles receive no destructive
 GC verb, and service-account lease authority is granted explicitly rather than
 inferred from cache read access.
+
+### OrganizationService
+
+```text
+ListOrganizations
+GetOrganization
+PlanCreateOrganization / CreateOrganization
+PlanUpdateOrganization / UpdateOrganization
+PlanDeleteOrganization / DeleteOrganization
+```
+
+Organization slug, stable id, and owner scope are immutable after creation.
+Update owns display name and other non-identity profile metadata only; member,
+SSO, infrastructure, and deletion mutations remain on their dedicated owners.
 
 ### TopologyService
 
@@ -719,9 +979,13 @@ ReplicatePlacement
 RepairPlacement
 ListObjectPresence
 
+ListPlacementPolicies
 GetPlacementPolicy
-PlanSetPlacementPolicy / SetPlacementPolicy
-TestPlacementPolicy
+ListPlacementPolicyRevisions
+GetPlacementPolicyRevision
+PlanCreatePlacementPolicy / CreatePlacementPolicy
+PlanRevisePlacementPolicy / RevisePlacementPolicy
+TestPlacementPolicyRevision
 
 ListPlacementEquivalences
 PlanConfirmPlacementEquivalence / ConfirmPlacementEquivalence
@@ -733,11 +997,28 @@ effects use `PlacementImpact` to include route eligibility, desired/observed
 write-authority generations, replication bytes, fencing/reconciliation, and
 signed-config impact without mutating any of those resources implicitly.
 
+Placement-policy create/revise accepts typed ordered groups,
+local-boundary/access-class groups, or `HashRangeV1` ranges and complete
+fallbacks. Revisions are immutable and return a content digest plus fixed
+selector-vector results. Routes and population targets reference a revision id,
+not the mutable current-revision pointer. There is no Set method that edits
+members beneath a live route.
+
+`HashRangeV1` conformance repeats the normative selector vectors used by every
+generated client and runtime:
+
+| 32-byte `partition_key` | selector digest | bucket |
+| --- | --- | ---: |
+| all `00` | `c84df95b5544ccded87876f4a24fc63445f48af7dcddac6af26f2a7a7742abda` | 51277 |
+| bytes `00` through `1f` | `5266775ea5f5297e717cfd66abe696828282822c7793ad0d5c5ab0b0fc5f0cbc` | 21094 |
+| all `ff` | `5de6f7beb4067b866bc9835b476fd57f583f208dd247679ef8098bfd65aa4b01` | 24038 |
+
 `CreatePlacement` contains binding, prefix, kind, initial desired state, desired
-read selection/order, and a shard rule where required, with the CLI defaults
-above applied by every interface. `UpdatePlacement` contains only desired
-state, read selection/order, and expected resource version; binding, prefix,
-kind, shard rule, authority, and observation are not generic update fields.
+read selection/order, and a typed shard hash range where required, with the CLI
+defaults above applied by every interface. `UpdatePlacement` contains only
+desired state, read selection/order, and expected resource version; binding,
+prefix, kind, shard hash range, authority, and observation are not generic
+update fields.
 Response messages additionally contain observed state/completeness, coarse
 desired read posture, and derived role/effective selection. Request-relative
 effective reads use the complete predicate in `05-data-model-and-api.md`.
@@ -767,6 +1048,8 @@ PlanUpdateStorageBinding / UpdateStorageBinding
 PlanSetStorageBindingCredential / SetStorageBindingCredential
 PlanRotateStorageBindingCredential / RotateStorageBindingCredential
 ValidateStorageBindingCredential
+PlanGrantStorageBindingScope / GrantStorageBindingScope
+PlanRevokeStorageBindingScope / RevokeStorageBindingScope
 ListStorageBindingWriteRevisions
 GetStorageBindingWriteRevision
 ReconcileStorageBindingWriteRevision
@@ -782,6 +1065,10 @@ PlanSetOrganizationTopologyDefaults / SetOrganizationTopologyDefaults
 `StorageBindingRef` is a oneof of the instance default or an organization
 binding reference. Capability and health records contain no credentials.
 Changing defaults does not mutate existing placements, routes, or gateways.
+Binding grant/revoke is dual-scope plan/apply. Stable binding refs resolve to
+one exact binding; apply rejects changed dependencies and cannot revoke while a
+placement, gateway, or topology default holds an exact active grant pin. Revoke
+leaves the durable grant tombstone and appends its lifecycle event.
 A write-credential/capability rotation creates and validates an immutable
 revision, returns an authority fan-out plan, and keeps the old revision usable
 until all pins move. Revision responses expose credential references and
@@ -796,20 +1083,86 @@ authorities write-blocked.
 ListDomains
 GetDomain
 PlanCreateDomain / CreateDomain
-PlanUpdateDomain / UpdateDomain
 PlanConfigureDomainDns / ConfigureDomainDns
-PlanConfigureDomainTls / ConfigureDomainTls
-PlanConfigureDomainAccess / ConfigureDomainAccess
+PlanConfigureDomainCertificate / ConfigureDomainCertificate
 GetDomainVerification
 GetDomainStatus
 VerifyDomain
 ReconcileDomain
 PlanDeleteDomain / DeleteDomain
+```
+
+Domain responses report DNS-name ownership, DNS state, and certificate
+issuance. They do not represent an IP address, listener, route access policy,
+or full client origin. Hostname and owner scope are immutable, and there is no
+generic update: DNS and certificate posture use their dedicated methods. A
+hostname change uses replacement domain and endpoint plans.
+
+### NetworkBoundaryService
+
+```text
+ListNetworkBoundaries
+GetNetworkBoundary
+PlanCreateNetworkBoundary / CreateNetworkBoundary
+ListNetworkBoundaryRevisions
+GetNetworkBoundaryRevision
+PlanReviseNetworkBoundary / ReviseNetworkBoundary
+ProbeNetworkBoundaryRevision
+ReconcileNetworkBoundaryRevision
+PlanActivateNetworkBoundaryRevision / ActivateNetworkBoundaryRevision
+PlanRetireNetworkBoundaryRevision / RetireNetworkBoundaryRevision
+PlanGrantNetworkBoundaryScope / GrantNetworkBoundaryScope
+PlanRevokeNetworkBoundaryScope / RevokeNetworkBoundaryScope
+PlanDeleteNetworkBoundary / DeleteNetworkBoundary
+```
+
+Boundary responses expose stable realm identity, the desired default immutable
+revision, all per-revision verification/enforcement observations and lifecycle
+states, probe provenance, consumer counts/versions, and authorized consumer
+scopes. They never expose
+private keys or assertion secrets. Unknown or mismatched observation is not a
+protected boundary. Read uses `network_boundary.read`; revision, probe, and
+reconcile actions use `network_boundary.manage`; cross-scope grants
+additionally require `network_boundary.grant` in both owner and consumer
+scopes. Instance administrators hold these permissions for instance
+boundaries.
+The deployment-provisioned public singleton is returned by list/get but create,
+identity update, transfer, and delete reject it. Its instance-default grant is
+eagerly projected to exact organization scope rows.
+`ReviseNetworkBoundary` creates `staged` revision content and does not move the
+default pointer, activate, or invalidate any older revision. Probe/reconcile
+targets `<boundary>@<revision>`. Activate's required
+`default_for_new_plans` choice controls a versioned default-pointer CAS.
+Activate and
+retire are plan/apply; overlap mode verifies and activates alongside older
+revisions, while coordinated mode returns the complete consumer move and
+acknowledged fail-closed window. Retire CASes the lifecycle
+`consumer_version` and zero serving-pin count. IAM and audit distinguish revise,
+verify, activate, coordinated move, and retire.
+The first retire apply transitions `active -> retiring`, increments the version,
+and rejects new serving-pin acquisition while existing verified pins remain eligible. A
+later apply completes `retiring -> retired` only at zero serving pins; CLI and Web show
+the remaining consumers and offer their move plans.
+
+### DeliveryService
+
+```text
+ListDeliveryEndpoints
+GetDeliveryEndpoint
+PlanCreateDeliveryEndpoint / CreateDeliveryEndpoint
+PlanUpdateDeliveryEndpoint / UpdateDeliveryEndpoint
+PlanGrantDeliveryEndpointScope / GrantDeliveryEndpointScope
+PlanRevokeDeliveryEndpointScope / RevokeDeliveryEndpointScope
+ProbeDeliveryEndpoint
+ReconcileDeliveryEndpoint
+PlanDeleteDeliveryEndpoint / DeleteDeliveryEndpoint
 
 ListStorageGateways
 GetStorageGateway
 PlanCreateStorageGateway / CreateStorageGateway
 PlanUpdateStorageGateway / UpdateStorageGateway
+PlanGrantStorageGatewayScope / GrantStorageGatewayScope
+PlanRevokeStorageGatewayScope / RevokeStorageGatewayScope
 PreviewGatewayRoutes
 ReconcileStorageGateway
 PlanEnableStorageGateway / EnableStorageGateway
@@ -817,8 +1170,31 @@ PlanDisableStorageGateway / DisableStorageGateway
 PlanDeleteStorageGateway / DeleteStorageGateway
 ```
 
-Domain responses separately report desired DNS/TLS/access configuration and
-observed provider/probe state.
+Endpoint responses report the typed origin, ingress/network realm, desired
+listener/TLS posture, observed listener/TLS/probe state, and authorized consumer
+scopes. Update creates a new endpoint generation and cannot change scheme,
+host, port, or boundary identity; those changes require a replacement endpoint
+and an impact-planned route/gateway move. Gateway responses pin immutable
+endpoint and gateway revisions.
+Endpoint grant/revoke resolves the stable endpoint ref to its exact desired
+generation in the plan; apply rejects a generation change. Endpoint update
+lists affected routes and grants, and carries forward only explicitly confirmed
+exact active grant generations/pins before route movement. These operations require
+`delivery_endpoint.grant` in both owner and consumer scopes; no old-generation
+grant acts as a wildcard.
+`endpoint update --boundary-revision` may select only an immutable revision of
+the endpoint's existing boundary. Its plan pins the old/new boundary and
+endpoint generations and enumerates grants, routes, gateway revisions, and
+topology defaults. Apply rejects changed per-revision observation/lifecycle,
+consumer version, or any input version; it never follows the boundary default
+pointer implicitly.
+Gateway grants pin the exact immutable generation. A gateway update plan lists
+all existing grants and affected routes; apply creates explicitly confirmed
+replacement-generation grants before moving routes. It never treats an old
+generation grant as a wildcard. Revoke preserves the durable tombstone and
+requires zero live pins. Grant/revoke requires `storage_gateway.grant`
+in both owner and consumer scopes; instance administrators hold it for
+instance gateways.
 
 ### RouteService
 
@@ -827,6 +1203,7 @@ ListRoutes
 GetRoute
 PlanCreateRoute / CreateRoute
 PlanUpdateRoute / UpdateRoute
+PlanReplaceRoute / ReplaceRoute
 PlanEnableRoute / EnableRoute
 PlanDisableRoute / DisableRoute
 PlanDeleteRoute / DeleteRoute
@@ -835,10 +1212,30 @@ ProbeRoute
 ExplainRoute
 ```
 
-Route messages use typed `DeliveryMode`, `AccessPolicy`, `RouteCapabilities`,
-and `RouteTarget` fields. `ExplainRoute` includes authorization and selection
-decisions but redacts credentials and private-resource details unavailable to
-the caller.
+Route messages use typed `DeliveryEndpointRef`, `DeliveryMode`, `DeliveryAccessPolicy`,
+`RouteCapabilities`, and `RouteTarget` fields. `RouteTarget` is a closed union:
+`HubPlacement`, `HubPolicyRevision`, or
+`DirectGatewayPlacement { placement_id, gateway_id, gateway_generation }`.
+The API cannot express direct-plus-policy or Hub-plus-gateway combinations.
+Both pinned-placement variants require a complete placement; shards are
+reachable only through a validated policy revision. `ExplainRoute` includes
+normalized authority and path, capability, authorization, publication-head
+snapshot, selector vector, presence decision, and sanitized failover
+classification, but redacts credentials and private-resource details
+unavailable to the caller.
+
+`ReplaceRoute` accepts the same closed route specification as `CreateRoute`
+plus the old route id. It creates a distinct route/configuration in disabled,
+non-canonical state with a new immutable URL reservation and appends the
+old/new relation to the audit log; it never mutates the old route. Its impact
+plan returns the required probe, enable, signed-stack change/re-index, canonical
+move, disable, and delete sequence. `UpdateRoute`
+rejects a changed endpoint identity, base path, or direct derived path; a mode
+or target change is an update only when the final rendered URL is byte-identical.
+`DisableRoute` and `DeleteRoute` reject every current signed-stack reference;
+`DeleteRoute` physically deletes the unreferenced live route/configuration rows
+while retaining its privacy-minimized URL reservation and append-only audit
+event. The signed registry commit remains signed history.
 
 ### RegistryMirrorService
 
@@ -954,6 +1351,26 @@ placement.promotion.requested
 placement.promotion.completed
 placement.promotion.failed
 placement.drained
+storage_binding.scope.granted
+storage_binding.scope.revoked
+network_boundary.revision.reconciled
+network_boundary.revision.probe.changed
+network_boundary.revision.created
+network_boundary.revision.activated
+network_boundary.revision.retiring
+network_boundary.revision.retired
+network_boundary.coordinated_move.started
+network_boundary.coordinated_move.completed
+network_boundary.scope.granted
+network_boundary.scope.revoked
+delivery_endpoint.reconciled
+delivery_endpoint.probe.changed
+delivery_endpoint.scope.granted
+delivery_endpoint.scope.revoked
+delivery_endpoint.grants.carried_forward
+storage_gateway.scope.granted
+storage_gateway.scope.revoked
+storage_gateway.grants.carried_forward
 route.probe.changed
 route.canonical.changed
 retention.subscription.plan.created
@@ -1004,8 +1421,16 @@ and result but exclude credentials and high-cardinality object data.
   documented immediate method.
 - Every new `aos hub` command is a thin client of that API and has a `--json`
   golden test.
-- Web UI, CLI, and API use the same names for placements, routes, consumer
-  cache stacks, retention subscriptions, population targets, and root reasons.
+- Web UI, CLI, and API use the same names for DNS domains, network boundaries,
+  delivery endpoints,
+  placements, routes, consumer cache stacks, retention subscriptions,
+  population targets, and root reasons.
+- DNS, IPv4, IPv6, default/custom-port, and protected-HTTP endpoint fixtures
+  round-trip to one typed origin in Web UI, CLI, API, native, and Worker; no
+  interface persists an opaque URL.
+- Route target and endpoint/gateway grant fixtures prove that shared instance
+  infrastructure is usable by granted organizations while cross-surface and
+  ungranted cross-organization targets are structurally rejected.
 - Web UI, CLI, API, native routing, and Worker routing derive the same primary,
   promotion-pending, and effective-write state from one authority projection;
   mutation inputs contain none of those derived fields.
