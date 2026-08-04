@@ -10,14 +10,13 @@ use crucible::{
     VirtualTime,
 };
 use crucible_api::{
-    ControlClient, ControlClientError, CreateSessionRequest, CreateSessionSource,
-    DestroySessionRequest, HelloRequest, InProcessLifecycleClient,
-    LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError, LifecycleControlPlane,
-    LifecycleLoopFactory, ListScenariosResponse, QuiescentLifecycleLoop,
+    ControlClient, CreateSessionRequest, CreateSessionSource, DestroySessionRequest, HelloRequest,
+    InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY, LifecycleApiError,
+    LifecycleControlPlane, LifecycleLoopFactory, ListScenariosResponse, QuiescentLifecycleLoop,
     RPC_OPEN_SET_PAYLOAD_KINDS, RPC_PROTOCOL_VERSION, ResumeSessionRequest, ScenarioCatalogEntry,
     SendRequest,
 };
-use crucible_session::{LiveStateKind, SessionCommand};
+use crucible_session::{LiveStateKind, OutcomeKind, SessionCommand};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -280,7 +279,7 @@ async fn create_session_propagates_backend_factory_failure_without_side_effects(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn streaming_command_reports_actor_backend_failure_instead_of_closed_mailbox() {
+async fn autonomous_actor_failure_publishes_terminal_crash_without_another_command() {
     let mut control_plane = LifecycleControlPlane::new(
         "crucible-lifecycle-test-server",
         vec![catalog_entry()],
@@ -305,22 +304,29 @@ async fn streaming_command_reports_actor_backend_failure_instead_of_closed_mailb
             panic!("Continue should be accepted before the loop fails: {error}")
         });
 
-    tokio::task::yield_now().await;
-    let error = control_plane
-        .send_streaming_command(SendRequest::new(created.session, 2, SessionCommand::Pause))
-        .await
-        .expect_err("the next command should join and expose the failed actor");
+    let mut crashed = None;
+    for _ in 0..LIFECYCLE_SESSION_MAILBOX_CAPACITY {
+        let sessions = control_plane.list_sessions();
+        let summary = sessions
+            .sessions
+            .iter()
+            .find(|summary| summary.session == created.session)
+            .unwrap_or_else(|| panic!("created session should remain registered"));
+        if summary.state == LiveStateKind::Stopped {
+            crashed = Some(summary.clone());
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let crashed = crashed.unwrap_or_else(|| panic!("actor failure should publish terminal state"));
+    assert_eq!(crashed.outcome, Some(OutcomeKind::Crashed));
+    assert!(crashed.terminal_savepoint.is_some());
 
-    assert_eq!(
-        error,
-        ControlClientError::Lifecycle {
-            source: LifecycleApiError::ActorFailed {
-                message: String::from(
-                    "scheduler failed under session control: synthetic backend quantum failure"
-                ),
-            },
-        },
-    );
+    let destroyed = control_plane
+        .destroy_session(DestroySessionRequest::new(created.session))
+        .await
+        .unwrap_or_else(|error| panic!("terminal crashed session should be destroyable: {error}"));
+    assert!(destroyed.stopped);
     assert_eq!(control_plane.session_count(), 0);
 }
 

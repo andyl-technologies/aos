@@ -19,6 +19,7 @@ in
 
     buildDeps = [
       pkgs.coreutils
+      pkgs.crucible
       pkgs.crucible-qemu-plugin
       pkgs.diffutils
       pkgs.grep
@@ -90,8 +91,24 @@ in
           grep -Eq '^response_delivery_ticks=[1-9][0-9]*$' "$report"
           grep -Eq '^final_configuration=[0-9a-f]{64}$' "$report"
 
+          cli_report="$TMPDIR/nginx-curl-http-200.cli.jsonl"
+          CRUCIBLE_KERNEL="$vmlinuz" \
+          CRUCIBLE_ROOT_IMAGE=${guest}/root.ext4 \
+          CRUCIBLE_KERNEL_CMDLINE='console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init' \
+            timeout -k 30 1500 \
+            ${pkgs.crucible}/bin/crucible \
+            --backend qemu \
+            --seed 0x200 \
+            --format jsonl \
+            run ${scenario} \
+            --max-quanta 10000 \
+            > "$cli_report"
+          grep -F '"kind":"final_outcome"' "$cli_report" \
+            | grep -Fq 'status=passed exit_code=0'
+
           mkdir -p "$out"
           cp "$report" "$out/result"
+          cp "$cli_report" "$out/cli.jsonl"
           cp ${scenario} "$out/nginx-curl-http-200.scenario.toml"
           {
             printf 'check=%s\n' '${attrPath}'

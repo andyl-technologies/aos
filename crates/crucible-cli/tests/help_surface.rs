@@ -47,7 +47,7 @@ fn cli_help_process_outputs_top_level_surface() -> Result<(), Box<dyn Error>> {
         "crucible-qemu-plugin cdylib (12, 26). Else discovered",
         "Content-addressed store root (06, 07). Else default",
         "--format <jsonl|json|table|markdown>",
-        "Trace/report render format. Default: jsonl",
+        "Trace/report render format. Default: table on a terminal, otherwise jsonl",
         "Write the event-log stream here. Default: stdout",
         "--artifact-dir <path>",
         "Where failure artifacts are written. Default: ./.crucible",
@@ -108,7 +108,7 @@ fn cli_production_selftest_help_excludes_test_double_options() -> Result<(), Box
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout)?;
     assert!(stdout.contains("Run the packaged determinism gates"));
-    assert!(stdout.contains("--with-qemu"));
+    assert!(!stdout.contains("--with-qemu"));
     assert!(!stdout.contains("double"));
     assert!(!stdout.contains("--corpus"));
 
@@ -181,7 +181,7 @@ fn cli_help_process_outputs_every_normative_subcommand_surface() -> Result<(), B
     for (subcommand, expected) in [
         ("run", "--until <quiescence|virtual-time|property|stopped>"),
         ("verify", "--compare <a> <b>"),
-        ("selftest", "--with-qemu"),
+        ("selftest", "--gates <list>"),
         ("save", "--at <virtual-time|quiescence|property|marker>"),
         ("resume", "<SAVEPOINT>"),
         ("fork", "--override <decision=value>"),

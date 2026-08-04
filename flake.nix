@@ -74,6 +74,9 @@
         {
           default = aos.pkgs.aos;
           aos = aos.pkgs.aos;
+          crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
+            pkgs = aos.pkgs;
+          };
         }
         // systemPackages aos
         // pkgPackages aos

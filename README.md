@@ -17,6 +17,11 @@ As a guiding principle, every AOS binary has a clear and reproducible provenance
 - Runtime managed by **systemd**
 - Package management built with **Nix**
 
+## Documentation
+
+User guides, including the [Crucible operations guide](docs/users/crucible/),
+live under [`docs/users/`](docs/users/).
+
 ## Install
 
 <details>
