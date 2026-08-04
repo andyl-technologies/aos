@@ -30,11 +30,16 @@ fn main() {
     // `default` is a message-container attribute. Applying it to every type
     // also reaches generated oneof enums, where serde rejects it.
     config.message_attribute(".", "#[serde(default)]");
-    // Proto oneofs are fields in generated Rust, but canonical proto JSON
-    // exposes the selected alternative directly inside its message. Flatten
-    // `SurfaceRef.target` so the wire shape is
-    // `{ "registrySlug": "acme/main" }`, not a Rust-internal `target` wrapper.
-    config.field_attribute(".aos.hub.v1.SurfaceRef.target", "#[serde(flatten)]");
+    // `prost-build` applies a oneof field attribute to both the generated
+    // message field and the oneof variants. `serde(flatten)` is valid only on
+    // the former, so attaching it with `field_attribute` makes the generated
+    // enum fail to compile. Delegate just this message to the crate's custom
+    // adapter instead. It preserves the proto oneof in Rust while emitting and
+    // accepting canonical flat JSON such as `{ "registrySlug": "acme/main" }`.
+    config.message_attribute(
+        ".aos.hub.v1.SurfaceRef",
+        "#[serde(from = \"crate::SurfaceRefJson\", into = \"crate::SurfaceRefJson\")]",
+    );
 
     config
         .compile_protos(&[&proto], &[proto_root])

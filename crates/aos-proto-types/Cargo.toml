@@ -10,3 +10,6 @@ serde = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

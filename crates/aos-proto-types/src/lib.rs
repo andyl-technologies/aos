@@ -34,6 +34,39 @@
 
 #![allow(clippy::all)]
 
+/// Canonical JSON adapter for the generated [`SurfaceRef`] oneof.
+///
+/// The empty variant represents an unset proto oneof. The three payload
+/// structs deny unknown fields so JSON containing both oneof alternatives is
+/// rejected instead of silently choosing whichever untagged variant happens
+/// to deserialize first.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub(crate) enum SurfaceRefJson {
+    Registry(RegistrySurfaceRefJson),
+    Cache(CacheSurfaceRefJson),
+    Empty(EmptySurfaceRefJson),
+}
+
+/// JSON payload for the registry alternative of [`SurfaceRefJson`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RegistrySurfaceRefJson {
+    registry_slug: String,
+}
+
+/// JSON payload for the binary-cache alternative of [`SurfaceRefJson`].
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CacheSurfaceRefJson {
+    cache_slug: String,
+}
+
+/// JSON payload for an unset [`SurfaceRef`] oneof.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EmptySurfaceRefJson {}
+
 /// The generated `aos.hub.v1` message structs.
 ///
 /// `prost-build` emits one file per proto package; this is the
@@ -44,3 +77,81 @@ pub mod hub_v1 {
 }
 
 pub use hub_v1::*;
+
+impl From<SurfaceRefJson> for SurfaceRef {
+    fn from(value: SurfaceRefJson) -> Self {
+        let target = match value {
+            SurfaceRefJson::Registry(value) => {
+                Some(surface_ref::Target::RegistrySlug(value.registry_slug))
+            }
+            SurfaceRefJson::Cache(value) => Some(surface_ref::Target::CacheSlug(value.cache_slug)),
+            SurfaceRefJson::Empty(_) => None,
+        };
+        Self { target }
+    }
+}
+
+impl From<SurfaceRef> for SurfaceRefJson {
+    fn from(value: SurfaceRef) -> Self {
+        match value.target {
+            Some(surface_ref::Target::RegistrySlug(registry_slug)) => {
+                Self::Registry(RegistrySurfaceRefJson { registry_slug })
+            }
+            Some(surface_ref::Target::CacheSlug(cache_slug)) => {
+                Self::Cache(CacheSurfaceRefJson { cache_slug })
+            }
+            None => Self::Empty(EmptySurfaceRefJson::default()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{surface_ref, SurfaceRef};
+
+    #[test]
+    fn surface_ref_uses_canonical_flat_json_for_each_oneof_alternative() {
+        for (surface, expected) in [
+            (
+                SurfaceRef {
+                    target: Some(surface_ref::Target::RegistrySlug("acme/main".into())),
+                },
+                serde_json::json!({ "registrySlug": "acme/main" }),
+            ),
+            (
+                SurfaceRef {
+                    target: Some(surface_ref::Target::CacheSlug("acme/shared".into())),
+                },
+                serde_json::json!({ "cacheSlug": "acme/shared" }),
+            ),
+            (SurfaceRef { target: None }, serde_json::json!({})),
+        ] {
+            let json = serde_json::to_value(&surface).unwrap();
+            assert_eq!(json, expected);
+            assert_eq!(serde_json::from_value::<SurfaceRef>(json).unwrap(), surface);
+        }
+    }
+
+    #[test]
+    fn surface_ref_rejects_wrapped_ambiguous_and_unknown_json() {
+        for invalid in [
+            serde_json::json!({ "target": { "registrySlug": "acme/main" } }),
+            serde_json::json!({
+                "registrySlug": "acme/main",
+                "cacheSlug": "acme/shared"
+            }),
+            serde_json::json!({ "registry_slug": "acme/main" }),
+            serde_json::json!({ "unknown": "acme/main" }),
+        ] {
+            assert!(serde_json::from_value::<SurfaceRef>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn generated_surface_ref_uses_the_custom_adapter_without_flatten() {
+        let generated = include_str!(concat!(env!("OUT_DIR"), "/aos.hub.v1.rs"));
+        assert!(generated
+            .contains("serde(from = \"crate::SurfaceRefJson\", into = \"crate::SurfaceRefJson\")"));
+        assert!(!generated.contains("serde(flatten)"));
+    }
+}
