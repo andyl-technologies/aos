@@ -1,98 +1,62 @@
 # `AOS // ANDYL OS`
 
-**EARLY PREVIEW**
+[![Status: early preview](https://img.shields.io/badge/status-early%20preview-orange)](#project-status)
+[![License: Apache-2.0](https://img.shields.io/github/license/andyl-technologies/aos)](LICENSE)
 
-AOS is an immutable Linux distribution for headless servers and edge systems.
-Its bootstrap toolchain, userspace, packages, system images, and tests are built
-from source in this repository without nixpkgs dependencies.
+AOS is an immutable Linux distribution for headless servers and edge systems. Its bootstrap toolchain, userspace, packages, system images, and tests are built from source in this repository without nixpkgs dependencies.
 
-AOS uses read-only system images, systemd, and a Nix module system.
-Machine-specific policy is supplied as literal `host.nix`.
+## Get started
+
+1. [Install the AOS image](docs/users/aos/installation.md) on a machine or
+   import it into a hypervisor.
+2. [Configure the host](docs/users/aos/host-nix.md) with first-boot
+   `host.nix` policy.
+3. [Install and manage packages](docs/users/aos/packages.md) with `apm`.
+4. [Operate the host](docs/users/aos/operations.md), apply
+   [upgrades](docs/users/aos/upgrades.md), and use the
+   [recovery guide](docs/users/aos/recovery.md) when needed.
+
+Check the [support-status matrix](docs/users/aos/support-status.md) before planning a deployment.
 
 ## Projects
 
-- **AOS** builds the operating system, package graph, system images, and the
-  `aos` repository CLI.
+- **[AOS](https://github.com/andyl-technologies/aos/blob/master/docs/users/aos/README.md)**
+  is the operating system, package manager, and host operating model.
 - **[AOS Hub](docs/users/aos-hub/)** hosts package registries and binary caches.
   It runs as a native service or as a Cloudflare Worker and exposes a web
   console, HTTP API, and the registry and cache protocols used by `apr`, `apm`,
-  Git, and Nix.
-- **[Crucible](docs/users/crucible/)** runs repeatable black-box network tests
-  against unmodified guests using QEMU-backed execution.
-
-## Build a server image
-
-Building AOS requires Nix with flakes enabled and a Linux builder.
-
-```sh
-nix build .#server-image-qcow2
-```
-
-The result is available at `result/aos-aos.qcow2`. The flake also exposes
-`server-image-raw`, `server-image-vmdk`, and `server-image-vhd` for other
-deployment targets.
-
-Build an individual package with its `pkg-` attribute:
-
-```sh
-nix build .#pkg-zlib
-nix build .#pkg-aos-hub
-nix build .#pkg-crucible
-```
-
-## Use the repository CLI
-
-The `aos` command builds packages, inspects the package graph, runs checks, and
-browses the repository's generated reference. Run the packaged command through
-the flake:
-
-```sh
-nix run . -- describe
-nix run . -- show zlib
-nix run . -- test eval
-```
-
-Use `nix run . -- --help` for the complete command list.
-
-## Work on the Rust code
-
-For an incremental build, compile in the development environment and run the
-resulting binary directly:
-
-```sh
-nix develop -c cargo build --manifest-path crates/Cargo.toml --bin aos
-crates/target/debug/aos --help
-```
-
-The development environment supplies the AOS-built dependencies and embeds the
-required OpenSSL runtime path. Build the `apm` or `apr` binary instead when
-working on the package-manager or registry command surface.
-
-Useful checks include:
-
-```sh
-nix-build -A checks.eval
-crates/target/debug/aos fmt --check
-crates/target/debug/aos test eval
-```
-
-VM and fleet checks require a Linux builder with KVM.
-
-## Source map
-
-| Path | Contents |
-| --- | --- |
-| [`stdenv/`](stdenv/) and [`pkgs/`](pkgs/) | Bootstrap chain, toolchain, and package graph |
-| [`lib/`](lib/), [`modules/`](modules/), and [`systems/`](systems/) | Module framework and image variants |
-| [`crates/`](crates/) | AOS tools, registry services, and Crucible |
-| [`tests/`](tests/) | Evaluation, build, VM, fleet, and integration coverage |
+  Git, and Nix. It is also the planned distribution point for AOS system
+  images.
+- **[Crucible](docs/users/crucible/)** provides deterministic state-space
+  exploration and debugging for unmodified QEMU guests.
 
 ## Documentation
 
-- [AOS Hub operations](docs/users/aos-hub/), including a
-  [local quickstart](docs/users/aos-hub/quickstart.md)
-- [Crucible operations](docs/users/crucible/), including the
-  [Nginx and Curl quickstart](docs/users/crucible/quickstart.md)
-- [Package registry reference](docs/registry/)
+- [AOS user documentation](docs/users/aos/) covers installation,
+  configuration, packages, security, upgrades, operations, and recovery.
+- [AOS Hub documentation](docs/users/aos-hub/) covers its web, API, CLI,
+  native, and Cloudflare deployments.
+- [Registry operator documentation](docs/users/registry/) covers hosting,
+  signing, publishing, staged rollouts, and incident response.
+- [Crucible documentation](docs/users/crucible/) covers deterministic
+  exploration, reproduction, debugging, and CI.
+- [Maintainer documentation](docs/maintainers/) covers source builds, image
+  production, repository development, and tests.
+
+## Contributing
+
+Bug reports and feature proposals are welcome in
+[GitHub Issues](https://github.com/andyl-technologies/aos/issues). Before
+changing packages, images, or build tooling, read the
+[maintainer guide](docs/maintainers/). AOS is built hermetically from source;
+new dependencies must be added to the AOS package graph rather than imported
+from nixpkgs.
+
+## Project status
+
+AOS is under active development. Interfaces and disk formats may change before
+the first stable release. Public installation images, a production
+external-signing workflow, durable kernel updates, and complete runtime
+`host.nix` activation are not available yet.
 
 AOS is licensed under the [Apache License 2.0](LICENSE).
