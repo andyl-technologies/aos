@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crucible::{
     AdvanceOutcome, BasicBlockCoverageConfig, ExecutionFingerprint, Icount, NodeId, SchedulerError,
@@ -692,10 +692,9 @@ pub(super) fn build_live_node(
     let console_observation = config
         .console_capture
         .then(|| {
-            connect_console_observation(
-                &run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME),
-                config.completion_timeout,
-            )
+            // QEMU realizes chardevs before the plugin publishes its setup ACK,
+            // so a missing socket here is a launch failure rather than a race.
+            UnixStream::connect(run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME))
         })
         .transpose()
         .map_err(|source| {
@@ -758,29 +757,6 @@ pub(super) fn build_live_node(
         QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
     })?;
     Ok(node)
-}
-
-fn connect_console_observation(path: &Path, timeout: Duration) -> std::io::Result<UnixStream> {
-    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "console connection timeout overflow",
-        )
-    })?;
-    loop {
-        match UnixStream::connect(path) {
-            Ok(stream) => return Ok(stream),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-                ) && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(1));
-            }
-            Err(error) => return Err(error),
-        }
-    }
 }
 
 #[path = "node_step_gate/support.rs"]

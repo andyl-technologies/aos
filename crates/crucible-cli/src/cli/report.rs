@@ -3,6 +3,25 @@
 use super::*;
 
 type OptionalHashPair = (Option<crucible::ContentHash>, Option<crucible::ContentHash>);
+
+impl Cli {
+    pub(super) fn output_format(&self) -> OutputFormat {
+        resolve_output_format(self.format, io::stdout().is_terminal())
+    }
+}
+
+/// Selects the explicit format or a terminal-appropriate default.
+pub(super) fn resolve_output_format(
+    explicit: Option<OutputFormat>,
+    stdout_is_terminal: bool,
+) -> OutputFormat {
+    match explicit {
+        Some(format) => format,
+        None if stdout_is_terminal => OutputFormat::Table,
+        None => OutputFormat::Jsonl,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TriageRunReport {
     pub(super) plan: TriageInvocationPlan,

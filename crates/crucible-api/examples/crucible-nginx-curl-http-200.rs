@@ -16,7 +16,7 @@ use crucible_api::{
 };
 
 const MAX_QUANTA: u64 = 10_000;
-const QUANTUM_BUDGET: u64 = 4_000_000_000;
+const QUANTUM_BUDGET: u64 = MAX_QUANTA;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RunEvidence {

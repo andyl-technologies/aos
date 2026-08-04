@@ -150,6 +150,19 @@ pub(super) fn is_recoverable_command_rejection(
     }
 }
 
+/// Distinguishes engine-driven failures from rejected operator commands.
+fn is_autonomous_actor_error(error: &SessionError) -> bool {
+    matches!(
+        error,
+        SessionError::Scheduler(_)
+            | SessionError::EventLogOffsetRegression { .. }
+            | SessionError::EventLogOffsetMismatch { .. }
+            | SessionError::BreakpointConditionPrefix { .. }
+            | SessionError::UnsupportedBreakpointAction { .. }
+            | SessionError::UnsupportedBreakpointFault { .. }
+    )
+}
+
 pub(super) fn is_recoverable_engine_rejection(error: &EngineError) -> bool {
     matches!(
         error,
@@ -532,6 +545,12 @@ impl<L> SessionActor<L> {
         self.reproduction_log
             .sync_from_boundary_log(self.engine.boundary_control_log());
     }
+
+    fn terminalize_actor_error(&mut self, error: &SessionError) {
+        self.engine.stop_after_actor_crash(error.to_string());
+        self.sync_reproduction_log();
+        self.publish_live_snapshot();
+    }
 }
 
 pub(super) fn split_acknowledged_command(
@@ -577,9 +596,8 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`SessionError::ChannelClosed`] if the mailbox closes before a
-    /// terminal state. Returns other [`SessionError`] variants if a command,
-    /// model operation, or scheduler quantum fails.
+    /// Autonomous execution failures become a terminal crashed outcome. Returns
+    /// an error when command processing fails or terminal command service fails.
     pub async fn run(mut self) -> Result<SessionRunReport, SessionError> {
         loop {
             if matches!(self.engine.state(), EngineState::Stopped { .. }) {
@@ -590,7 +608,13 @@ where
                 }
                 return Ok(self.report());
             }
-            self.run_once().await?;
+            if let Err(error) = self.run_once().await {
+                if is_autonomous_actor_error(&error) {
+                    self.terminalize_actor_error(&error);
+                } else {
+                    return Err(error);
+                }
+            }
         }
     }
 
@@ -605,7 +629,13 @@ where
                     .await?;
                 return Ok(self.report());
             }
-            self.run_once_without_spawning_forks().await?;
+            if let Err(error) = self.run_once_without_spawning_forks().await {
+                if is_autonomous_actor_error(&error) {
+                    self.terminalize_actor_error(&error);
+                } else {
+                    return Err(error);
+                }
+            }
         }
     }
 
