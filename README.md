@@ -3,8 +3,6 @@
 [![Status: early preview](https://img.shields.io/badge/status-early%20preview-orange)](#project-status)
 [![License: Apache-2.0](https://img.shields.io/github/license/andyl-technologies/aos)](LICENSE)
 
-EARLY PREVIEW
-
 AOS is an immutable Linux distribution for headless servers and edge systems. Its bootstrap toolchain, userspace, packages, system images, and tests are built from source in this repository without nixpkgs dependencies.
 
 ## Get started
