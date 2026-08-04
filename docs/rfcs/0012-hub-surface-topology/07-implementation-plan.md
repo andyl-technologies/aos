@@ -115,21 +115,35 @@ created and removed, with no operation changing either of the other two.
 ## Phase 5: release artifact snapshots and GC provenance
 
 - [ ] Index artifact sets from every verified release tag commit.
+- [ ] Persist an immutable release-artifact snapshot header and manifest digest
+      atomically with its artifact rows; distinguish a complete empty set from
+      an unindexed or failed release and preserve every prior complete snapshot.
 - [ ] Resolve every channel partition to a release artifact set.
 - [ ] Add selector evaluation and transactional root-reason refresh.
 - [ ] Preserve old successful reasons on index/refresh failure.
 - [ ] Move release-count/channel policy from cache-global state to each
       retention subscription.
 - [ ] Add logical GC tombstones and per-placement deletion jobs.
+- [ ] Normalize cache-object reference edges and the store-hash -> narinfo ->
+      shared-NAR mapping; remove cache-global physical refcounts.
+- [ ] Add immutable root/mark generations, first-unreferenced time, complete
+      coverage gates, and versioned relational GC candidate/action manifests.
+- [ ] Apply a reviewed GC plan with one portable CAS over root, graph,
+      inventory, policy, topology, candidate, and conflicting-work inputs.
+- [ ] Delete narinfo before a placement-scoped zero-refcount NAR; implement
+      idempotent retry/backoff, version/ETag checks, and audited abandonment
+      without false reclaimed-byte accounting.
 - [ ] Split logical GC from placement eviction.
-- [ ] Add explain/dry-run/quota-contributor UI and APIs.
+- [ ] Add explain/immutable-plan/quota-contributor UI and APIs.
 - [ ] Delete ambiguous CLI GC/link commands and ship only the plan-first
       commands specified by `09-interface-contracts.md`.
 
 **Done when:** tests prove that current catalog artifacts, every active channel
 partition target, and the configured number of recent releases remain present
 across GC; removing one shared-cache subscription cannot collect another
-registry's closure.
+registry's closure; concurrent root/population/inventory change stales the old
+plan; and partial placement deletion never loses presence evidence or reports
+unconfirmed bytes as reclaimed.
 
 ## Phase 6: replication, shards, and population
 
@@ -228,6 +242,22 @@ source and generated artifacts:
 | binding-targeted frontend | `StorageGateway` plus explicit materialized routes |
 | resource `advertise_storage_frontend` toggle | removed |
 | `cache_registry_links` / `CacheRegistryLink` | separate retention and population records; signed stack remains registry content |
+| `cache_gc_roots`, `CacheGcRoot`, pin/unpin root RPC shapes | manual retention roots, lease history, and provenance-bearing root reasons |
+| synchronous `RunCacheGc { dry_run }` / DB-first `sweep_cache` | immutable `PlanCacheGc` plus guarded asynchronous `RunCacheGc(plan_id)` |
+| cache-global binding/prefix `nar_refcount` and single cache writer | explicit narinfo/NAR surface objects and placement-scoped deletion actions |
+| `cache_gc_runs` aggregate-only rows | topology operation plus versioned GC plan, object, action, and job records |
+| `cache_gc_policy.keep_release_versions` / `keep_channel_frontier` | typed per-subscription retention selectors |
+| authoritative `cache_objects.refs` JSON | normalized `cache_object_references` edges |
+| `cache_usage.used_bytes` / `object_count` authority | derived logical and per-placement inventory/accounting projections |
+| `cache_objects.uploaded_at` as GC age | informational `published_at`; eligibility begins at `unreferenced_since` |
+| cache-row `last_accessed_at` authority | advisory access observations with source/freshness; eviction ordering only |
+| RPCs `LinkCache`, `UnlinkCache`, `ListCacheLinks` | signed consumer-stack and independent retention/population services |
+| messages `LinkCacheRequest`, `LinkCacheResponse`, `UnlinkCacheRequest`, `UnlinkCacheResponse`, `ListCacheLinksRequest`, `ListCacheLinksResponse`, `CacheLink` | removed with no compatibility messages |
+| RPCs `PinCachePath`, `UnpinCachePath`, `ListCacheRoots` | manual-root/lease plan methods and provenance-bearing root reads |
+| messages `PinCachePathRequest`, `PinCachePathResponse`, `UnpinCachePathRequest`, `UnpinCachePathResponse`, `ListCacheRootsRequest`, `ListCacheRootsResponse`, `CacheRoot` | removed with no compatibility messages |
+| old `RunCacheGcRequest`, `RunCacheGcResponse`, `CacheGcPolicyMsg`, and aggregate `CacheGcRun` shapes | typed immutable GC plan, operation, candidate, placement-action, and deletion-job messages |
+| `HubCacheCmd::{ChangeStorage,Link,Unlink}` | placement workflow, consumer cache stack, and independent retention/population commands |
+| server `CacheCommand::{Link,Unlink,Links,GcPolicy,Pin,Renew,Unpin,Roots,Gc,GcRuns}` | final plan-first cache integration, root/lease, GC plan/run/job command families |
 | `advertised_caches` and URL-string reconciliation | `registry_cache_stack_entries` with stable managed ids |
 | generic `consumer_priority` | stack order, placement member order, or Nix priority as distinct fields |
 | placement `role`, `write_enabled`, `write_order`, and primary-discriminator columns | placement `kind` plus per-surface desired/observed write authority; role and effective write state are derived |
@@ -355,13 +385,48 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 - all current catalog versions, not only newest;
 - current and partially rolled-out channel targets;
 - latest-N verified release snapshots;
+- immutable release-commit artifact sets despite later catalog change;
+- complete zero-artifact snapshots versus missing/failed snapshots;
+- release snapshot source/tag verification, exact row count, canonical metadata
+  digest, one-time complete pointer, and terminal header/child immutability;
 - exact and semver selectors;
 - multiple root reasons for one store hash;
 - several registries sharing one cache;
+- one registry contributing independently to several caches;
+- a standalone cache with no registry-derived roots;
 - root-refresh failure preserves previous roots;
+- refresh retirement grace preserves parent generations;
+- refresh staging is unreachable; stale parent pointer, selector/source
+  revision, reason count, provenance, subscription version, or cache epoch
+  cannot advance `current_refresh_id`;
+- only the current unsuperseded/unrevoked lease head is active; renewal,
+  revocation, expiry cutoff, and root deletion have deterministic races;
+- cycles, diamond closures, shared NARs, and missing root/reference metadata;
+- first absent mark starts `unreferenced_since`, repeated absence preserves it,
+  and a new root or lease clears it;
+- root refresh, manual pin/unpin, lease renewal/revocation near expiry,
+  registry source advance, upload, population, reference replacement, scan,
+  placement change, and
+  concurrent double-apply each stale an older incompatible plan;
+- every competing root/graph/inventory/topology/fence mutation and GC apply
+  claims the same epoch row; native transactions and D1 atomic batches choose
+  the same single winner and roll back partial tombstone/job creation;
 - logical deletion across partial backend failure;
+- complete replicas, shards, archives, partial tiers, and off-policy observed
+  copies receive the correct logical-deletion action set;
+- narinfo deletion precedes NAR deletion at every placement, with differing
+  per-placement shared-NAR refcounts;
+- abandoned narinfo leaves dependent NAR blocked; global active-job uniqueness,
+  exact-match reuse, and success/abandon byte sums cannot double count;
+- backend timeout/5xx, credential revocation, ETag mismatch, not-found after a
+  worker crash, DB failure after backend delete, retry exhaustion, and audited
+  abandonment are idempotent and account bytes correctly;
 - rooted closure over cap remains intact;
-- direct-route missing access telemetry changes only eviction order.
+- direct-route missing access telemetry changes only eviction order;
+- plan actor/scope/expiry/confirmation mismatch rejects; public anonymous
+  readers cannot inspect root actors or deletion jobs; and
+- native/Worker plus SQLite, D1, PostgreSQL, and MySQL fixtures produce the
+  same guarded-apply and job-transition outcomes.
 
 ## Cutover and rollback
 
@@ -381,3 +446,10 @@ Rollback is full restoration of the verified pre-cutover database backup and
 old deployment artifacts while writes remain quiesced. The new runtime does
 not contain a legacy read mode. Destructive GC stays disabled until the new
 root and presence models pass their post-cutover safety gates.
+
+The steady-state repository also contains no legacy cache-link/root tables,
+single-placement cache writer, binding/prefix NAR refcount, DB-first sweep,
+synchronous dry-run branch, old GC protobuf/messages/routes, old CLI variants,
+or `/links`, `/pins`, `/gc`, pin, link, or unlink Web handlers. The preflight
+transformer may read those inputs only before the maintenance cutover and is
+then removed.

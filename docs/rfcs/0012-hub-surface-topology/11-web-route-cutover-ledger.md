@@ -80,6 +80,35 @@ selected registry's signed cache-stack workflow. Retention and population use
 their cache/registry subresource ids. The Integrations matrix itself has no
 generic mutation action.
 
+The final cache retention and GC route families are resource-specific:
+
+| Final method and path | Owner |
+| --- | --- |
+| `GET B/retention` | subscriptions, manual roots, leases, and root reasons inventory |
+| `GET B/retention/subscriptions/{registry}` | one subscription and refresh-generation history |
+| `POST B/retention/subscriptions/{registry}/plan-set` / `POST B/retention/subscriptions/{registry}/set` | subscription plan/apply |
+| `POST B/retention/subscriptions/{registry}/plan-delete` / `POST B/retention/subscriptions/{registry}/delete` | subscription removal plan/apply |
+| `POST B/retention/subscriptions/{registry}/refresh` | idempotent refresh operation |
+| `GET B/retention/manual-roots/new` | manual-root creation form |
+| `POST B/retention/manual-roots/plan` / `POST B/retention/manual-roots` | manual-root plan/apply |
+| `POST B/retention/manual-roots/{root}/delete/plan` / `POST B/retention/manual-roots/{root}/delete` | manual-root removal plan/apply |
+| `POST B/retention/manual-roots/{root}/leases/plan` / `POST B/retention/manual-roots/{root}/leases` | immutable lease renewal plan/apply |
+| `POST B/retention/leases/{lease}/revoke/plan` / `POST B/retention/leases/{lease}/revoke` | lease revocation plan/apply |
+| `GET B/garbage-collection` | policy, safety gates, and plan creation |
+| `POST B/garbage-collection/policy/plan-set` / `POST B/garbage-collection/policy/set` | GC-policy plan/apply |
+| `POST B/garbage-collection/plans` | create immutable mark and GC plan |
+| `GET B/garbage-collection/plans/{plan}` | semantic candidate/action review |
+| `POST B/garbage-collection/first-sweep/plan-acknowledgement` | plan a durable acknowledgement against one valid GC plan |
+| `POST B/garbage-collection/first-sweep/acknowledge` | apply the confirmation-bound acknowledgement; stales the reviewed GC plan |
+| `POST B/garbage-collection/plans/{plan}/run` | guarded logical apply; returns operation |
+| `GET B/garbage-collection/runs/{operation}` | logical and per-placement progress |
+| `GET B/garbage-collection/runs/{operation}/jobs/{job}` | one deletion action and retry history |
+| `POST B/garbage-collection/runs/{operation}/jobs/{job}/retry` | idempotent retry |
+| `POST B/garbage-collection/runs/{operation}/jobs/{job}/plan-abandon` / `POST B/garbage-collection/runs/{operation}/jobs/{job}/abandon` | reviewed leaked-presence abandonment |
+
+There is no final POST that means both plan and run, no `dry_run` compatibility
+parameter, and no form that recomputes candidates when applying a plan.
+
 ## Registry routes
 
 Let `R = /{registry}/-/settings`.
@@ -135,3 +164,8 @@ rejects old route fragments and active keys outside historical RFC prose and
 the ephemeral cutover artifact. Any route discovered during implementation but
 missing from this ledger blocks cutover until its explicit final disposition is
 added.
+
+The route manifest additionally rejects legacy cache GC/link handlers and
+actions named `link`, `unlink`, `pins`, `pin/add`, `pin/remove`, or the
+overloaded `gc` POST. Native and Worker manifests must expose the same final
+retention, plan, run, job, retry, and abandonment method/path pairs.
