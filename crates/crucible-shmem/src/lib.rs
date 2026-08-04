@@ -1,11 +1,17 @@
-//! `crucible-shmem` owns the shared-memory ABI.
+//! SPDX-License-Identifier: MIT OR Apache-2.0
+//! `crucible-shmem` implements the public shared-memory process ABI.
 //!
 //! Spec index: RFC-0010 files 13.
 //!
-//! This L1 crate is the single source of truth for the `#[repr(C)]` region
-//! layout, per-node clocks, status words, and SPSC frame queues described by
-//! its indexed RFC-0010 file. It is an unsafe-boundary crate because future
-//! implementations map shared memory and expose layout-checked accessors.
+//! This permissively dual-licensed L1 crate is the Rust implementation of the
+//! versioned, independently implementable process ABI declared by
+//! `interface/crucible-shmem-abi.toml`. The generated C header is a peer view
+//! of that public contract, not a QEMU-internal FFI surface. The mapped region
+//! contains only fixed-width values, byte arrays, offsets, and shared atomics;
+//! it never contains native pointers, callback tables, or QEMU-private types.
+//! Keeping this transport process-shaped preserves the zero-syscall steady
+//! state while allowing Apache-licensed hosts and GPL QEMU-side code to
+//! implement the same protocol independently.
 //!
 //! Module map: the crate root owns the initial frame-entry layout, the
 //! delivery-icount contract, the Lamport SPSC frame queue, and the per-node
@@ -15,6 +21,10 @@
 //! Unsafe boundary discipline: mmap, pointer, and atomic details stay private;
 //! public callers use safe typed region accessors and safe SPSC push/pop
 //! wrappers that uphold alignment, lifetime, and ordering invariants.
+//!
+//! License boundary: code linked into QEMU belongs in the GPL-2.0-only
+//! `crucible-qemu-plugin` crate. This crate MUST remain usable without QEMU
+//! headers, symbols, or implementation-private structures.
 //!
 //! Frame-entry wire layout:
 //!

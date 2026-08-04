@@ -839,6 +839,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase0  phase0:blockers                    (S1/S2/S4/S3 plus S11 for G-10)
   phase0  gate:harness-lint                  (every PR, always on)
   phase1  gate:harness-lint                  (first phase exit gate)
+  phase1  gate:license-boundary               (component and process boundary)
   phase1  gate:layer0-determinism            (L0 core)
   phase1  gate:content-address               (store)
   phase1  gate:replay-oracle                 (double-backed replay)

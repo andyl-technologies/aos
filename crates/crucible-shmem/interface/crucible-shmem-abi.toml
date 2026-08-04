@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# This manifest is the machine-readable identity and policy for the public
+# process ABI. Numeric layouts remain frozen by the committed golden fixture
+# and generated C/Rust layout assertions.
+
+[interface]
+name = "crucible-shmem"
+kind = "process-shared-memory"
+license = "MIT OR Apache-2.0"
+abi_version = 5
+magic_ascii = "CRUCSHM1"
+target = "x86_64-unknown-linux-gnu"
+byte_order = "little"
+independently_implementable = true
+
+[transport]
+control_plane = "versioned-unix-socket"
+data_plane = "shared-memory"
+steady_state_syscalls_required = false
+wakeup = "futex-or-eventfd-when-parked"
+
+[representation]
+allowed = [
+  "fixed-width-integer",
+  "fixed-size-byte-array",
+  "region-relative-byte-offset",
+  "shared-atomic-integer",
+]
+forbidden = [
+  "native-pointer",
+  "function-pointer",
+  "callback-table",
+  "qemu-private-structure",
+  "rust-native-enum-layout",
+  "compiler-dependent-bitfield",
+]
+
+[conformance]
+c_header = "../include/crucible_shmem_abi.h"
+rust_version = "../src/abi_version.in"
+golden_fixture = "../tests/fixtures/shmem_abi_golden.fixture"
+header_generator = "../src/abi_header.rs"
