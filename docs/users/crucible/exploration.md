@@ -132,5 +132,5 @@ The repository contains a shared DAG-store implementation and extensive fleet
 campaign invariants, but the installed `crucible-fleet-store` binary currently
 exposes a conformance `probe` rather than a complete campaign administration
 CLI. Operate distributed campaigns through repository checks and internal
-orchestration for now; do not infer a stable public workflow from RFC-0010's
-target architecture.
+orchestration for now; do not infer a stable public workflow from the lower-level
+libraries or conformance checks.

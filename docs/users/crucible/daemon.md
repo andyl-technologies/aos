@@ -81,8 +81,8 @@ the higher-level registry services elsewhere in AOS.
 
 ## Intended evolution
 
-RFC-0010 targets local/remote equivalence: the daemon should host the same
-session actor and production backend as local execution, differing only in
-transport. That is not yet the shipped behavior. Remove this experimental
-warning only after `serve` constructs the production QEMU lifecycle and a live
-conformance test proves canonical-output equivalence.
+Local and remote execution require equivalent session actors and production
+backends if they are to differ only in transport. That is not yet the shipped
+behavior. Remove this experimental warning only after `serve` constructs the
+production QEMU lifecycle and a live conformance test proves canonical-output
+equivalence.
