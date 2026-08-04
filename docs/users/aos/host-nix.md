@@ -75,13 +75,12 @@ Offline media is checked before DMI-based cloud detection.
 Native metadata fetchers for Hetzner, Vultr, Scaleway, and Oracle Cloud are not
 implemented. On those platforms, use an offline metadata or config drive.
 
-Create an AOS metadata ISO from the repository's own package:
+Create an AOS metadata ISO with `xorriso` on the deployment workstation:
 
 ```sh
-nix-build -A pkgs.libisoburn -o result-aos-libisoburn
 mkdir -p metadata
 cp host.nix metadata/host.nix
-./result-aos-libisoburn/bin/xorriso -as mkisofs \
+xorriso -as mkisofs \
   -V aos-metadata \
   -o metadata.iso \
   metadata

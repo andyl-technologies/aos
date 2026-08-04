@@ -1,48 +1,24 @@
 # Deploy AOS in production
 
-AOS produces complete UEFI disk images. A production deployment promotes an
-immutable image through build, boot, application, and recovery gates before it
-is imported or written to a target.
+A production deployment promotes the published AOS golden image through boot,
+application, and recovery gates before importing or writing it to a target.
 
 This guide describes the common workflow. Platform-specific image import,
 network, and disk-writing commands remain the responsibility of the deployment
 system because they can replace infrastructure and data.
 
-## Build a named system variant
+## Pin the release artifact
 
-Keep deployment policy in a reviewed file under `systems/`:
+Download the image format published for the target and verify its release
+checksum or signature. Record the release, image checksum, and
+`image-info.json`; do not identify an image only by a mutable object-storage
+name.
 
-```nix
-# systems/acme-server.nix
-{...}: {
-  imports = [./server.nix];
-
-  aos.roles.server.enable = true;
-  aos.networking.hostName = "acme-server";
-  aos.security.level = "standard";
-}
-```
-
-Evaluate the system, then build the format used by the target:
-
-```sh
-git add systems/acme-server.nix
-nix-build -A systems.acme-server.build.toplevel
-nix build .#acme-server-image-raw
-nix build .#acme-server-image-qcow2
-```
-
-The current bootable-image workflow targets `x86_64-linux`. From another
-system, use an x86 Linux remote builder and select the package set explicitly:
-
-```sh
-nix build \
-  .#packages.x86_64-linux.acme-server-image-qcow2
-```
-
-Record the source commit, system attribute, output store path, image checksum,
-and `image-info.json` with the release. Do not identify an image only by a
-mutable object-storage name.
+The public golden image is not yet distributed during the current early
+preview. AOS Hub is the planned image catalog and download path. Release
+integrators producing the image today should use the
+[maintainer guide](../../maintainers/) and hand the resulting immutable
+artifact to this deployment workflow.
 
 ## Size the target before first boot
 
@@ -53,12 +29,11 @@ the built image; fleet tests use a 16 GiB disk.
 When enlarging a raw image, relocate its backup GPT header before first boot:
 
 ```sh
-cp result/aos-aos.img acme-server.img
+cp /path/to/downloaded-aos.img acme-server.img
 chmod u+w acme-server.img
 truncate -s 16G acme-server.img
 
-nix-build -A pkgs.gptfdisk -o result-aos-gptfdisk
-./result-aos-gptfdisk/sbin/sgdisk -e acme-server.img
+sgdisk -e acme-server.img
 ```
 
 Increasing only the virtual disk's visible size is not sufficient when the
@@ -82,15 +57,16 @@ user-data channel. Use signed trust only with a transport that also carries the
 detached signature.
 
 Networking, users, access, services, and packages required to reach the host
-must be built into the system variant. General runtime `host.nix` activation is
-not complete.
+must currently be included in the golden image by its release integrator.
+General runtime `host.nix` activation is not complete.
 
 ## Gate the image in a VM
 
 Before importing an image, boot the exact artifact under UEFI with a writable
-copy, the intended metadata, and a representative network. The
-[build-and-boot tutorial](quickstart.md) supplies the AOS-built QEMU, OVMF,
-metadata ISO, and complete command line.
+copy, the intended metadata, and a representative network. Maintainers can use
+the [source-build tutorial](../../maintainers/source-build-quickstart.md) to
+qualify the image-production path; deployment gates must test the published
+artifact itself.
 
 The gate should verify:
 
