@@ -2219,10 +2219,10 @@ async fn placement_overview_rows(
             name: placement.name,
             binding_name,
             prefix: placement.prefix,
-            role: placement.role,
+            role: placement.derived_role,
             state: placement.state,
-            read_enabled: placement.read_enabled,
-            write_enabled: placement.write_enabled,
+            read_enabled: placement.effective_read_enabled,
+            write_enabled: placement.effective_write_enabled,
         });
     }
     Ok(rows)

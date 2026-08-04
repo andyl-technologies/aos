@@ -43,19 +43,23 @@ use aos_proto_types::{
     DeletePlacementRequest, DeletePlacementResponse, DeleteWebhookRequest, DrainPlacementRequest,
     DrainPlacementResponse, GetChannelRequest, GetChannelResponse, GetInstanceSettingsRequest,
     GetInstanceSettingsResponse, GetPackageRequest, GetPackageResponse, GetPlacementRequest,
-    GetPlacementResponse, GetRegistryRequest, GetRegistryResponse, GitCommit, GitDiffRequest,
-    GitDiffResponse, GitLogRequest, GitLogResponse, InstanceSettings, LinkCacheRequest,
-    LinkCacheResponse, ListAuditRequest, ListAuditResponse, ListBindingsRequest,
-    ListBindingsResponse, ListChangeRequestsRequest, ListChangeRequestsResponse,
-    ListChangesetsRequest, ListChangesetsResponse, ListChannelsRequest, ListChannelsResponse,
-    ListOrgsRequest, ListOrgsResponse, ListPackagesRequest, ListPackagesResponse,
-    ListPlacementsRequest, ListPlacementsResponse, ListProjectsRequest, ListProjectsResponse,
-    ListRegistriesRequest, ListRegistriesResponse, ListReleasesRequest, ListReleasesResponse,
-    ListWebhooksRequest, ListWebhooksResponse, MintUploadCredentialsRequest,
-    MintUploadCredentialsResponse, Org, Package, PackageSummary, Placement, Project, Registry,
-    Release, RevertChangesetRequest, RevertChangesetResponse, SurfaceRef, UnlinkCacheRequest,
-    UnlinkCacheResponse, UpdateInstanceSettingsRequest, UpdateInstanceSettingsResponse,
-    UpdatePlacementRequest, UpdatePlacementResponse, Webhook,
+    GetPlacementResponse, GetRegistryRequest, GetRegistryResponse, GetWriteAuthorityRequest,
+    GetWriteAuthorityResponse, GitCommit, GitDiffRequest, GitDiffResponse, GitLogRequest,
+    GitLogResponse, InstanceSettings, LinkCacheRequest, LinkCacheResponse, ListAuditRequest,
+    ListAuditResponse, ListBindingsRequest, ListBindingsResponse, ListChangeRequestsRequest,
+    ListChangeRequestsResponse, ListChangesetsRequest, ListChangesetsResponse, ListChannelsRequest,
+    ListChannelsResponse, ListOrgsRequest, ListOrgsResponse, ListPackagesRequest,
+    ListPackagesResponse, ListPlacementsRequest, ListPlacementsResponse, ListProjectsRequest,
+    ListProjectsResponse, ListRegistriesRequest, ListRegistriesResponse, ListReleasesRequest,
+    ListReleasesResponse, ListWebhooksRequest, ListWebhooksResponse, MintUploadCredentialsRequest,
+    MintUploadCredentialsResponse, Org, Package, PackageSummary, Placement, PlacementHashRange,
+    PlacementPromotionPlan, PlanPromotePlacementRequest, PlanPromotePlacementResponse,
+    PlanRemoveWriteAuthorityRequest, PlanRemoveWriteAuthorityResponse, Project,
+    PromotePlacementRequest, PromotePlacementResponse, ReconcileWriteAuthorityRequest,
+    ReconcileWriteAuthorityResponse, Registry, Release, RemoveWriteAuthorityRequest,
+    RemoveWriteAuthorityResponse, RevertChangesetRequest, RevertChangesetResponse, SurfaceRef,
+    SurfaceWriteAuthority, UnlinkCacheRequest, UnlinkCacheResponse, UpdateInstanceSettingsRequest,
+    UpdateInstanceSettingsResponse, UpdatePlacementRequest, UpdatePlacementResponse, Webhook,
 };
 
 use crate::client::validate_base_url;
@@ -132,10 +136,8 @@ pub enum HubSurfaceRef {
 
 /// Explicit fields for creating one registry or binary-cache placement.
 ///
-/// `role` supports `primary`, `replica`, and `archive`. Shards remain private
-/// to the backend until their partition rule has a typed public contract. The
-/// server owns observed lifecycle fields and initializes them to
-/// `provisioning`/`unknown`.
+/// Creation never grants write authority. The server owns observations and
+/// initializes them to `provisioning`/`unknown`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreatePlacementInput {
     /// Stable placement name within the surface.
@@ -144,34 +146,33 @@ pub struct CreatePlacementInput {
     pub storage_binding_name: String,
     /// Binding-relative object prefix.
     pub prefix: String,
-    /// Placement role: `primary`, `replica`, or `archive`.
-    pub role: String,
-    /// Whether read selection may use the placement.
-    pub read_enabled: bool,
-    /// Whether write selection may use the placement.
-    pub write_enabled: bool,
+    /// Placement kind: `complete`, `shard`, or `archive`.
+    pub kind: String,
+    /// Desired lifecycle: `active` or `offline`.
+    pub desired_state: String,
+    /// Whether read policy selection may use the placement.
+    pub desired_read_enabled: bool,
     /// Lower values are preferred for reads.
     pub read_order: i64,
-    /// Lower values are preferred for writes.
-    pub write_order: i64,
+    /// Half-open 16-bit shard range; required exactly for a shard.
+    pub hash_range: Option<(u32, u32)>,
+    /// Whether the writer contract requires conditional object writes.
+    pub requires_conditional_writes: bool,
 }
 
 /// Explicit desired selection fields for a version-checked placement update.
 ///
-/// Read-disable transitions use the drain workflow, write-authority changes
-/// await atomic promotion, and observed lifecycle fields are not client-settable.
+/// Observations and write authority are not generic placement fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdatePlacementInput {
     /// Opaque resource version returned by a preceding placement read.
     pub expected_resource_version: String,
-    /// Whether read selection may use the placement.
-    pub read_enabled: bool,
-    /// Whether write selection may use the placement.
-    pub write_enabled: bool,
+    /// Desired lifecycle: `active` or `offline`.
+    pub desired_state: String,
+    /// Whether read policy selection may use the placement.
+    pub desired_read_enabled: bool,
     /// Lower values are preferred for reads.
     pub read_order: i64,
-    /// Lower values are preferred for writes.
-    pub write_order: i64,
 }
 
 impl HubSurfaceRef {
@@ -438,11 +439,14 @@ impl HubClient {
                     name: input.name.clone(),
                     storage_binding_name: input.storage_binding_name.clone(),
                     prefix: input.prefix.clone(),
-                    role: input.role.clone(),
-                    read_enabled: Some(input.read_enabled),
-                    write_enabled: Some(input.write_enabled),
+                    kind: input.kind.clone(),
+                    desired_state: input.desired_state.clone(),
+                    desired_read_enabled: Some(input.desired_read_enabled),
                     read_order: Some(input.read_order),
-                    write_order: Some(input.write_order),
+                    hash_range: input
+                        .hash_range
+                        .map(|(start, end)| PlacementHashRange { start, end }),
+                    requires_conditional_writes: input.requires_conditional_writes,
                 },
             )
             .await
@@ -470,10 +474,9 @@ impl HubClient {
                     surface: Some(surface.to_message()),
                     name: name.to_string(),
                     expected_resource_version: input.expected_resource_version.clone(),
-                    read_enabled: Some(input.read_enabled),
-                    write_enabled: Some(input.write_enabled),
+                    desired_state: input.desired_state.clone(),
+                    desired_read_enabled: Some(input.desired_read_enabled),
                     read_order: Some(input.read_order),
-                    write_order: Some(input.write_order),
                 },
             )
             .await
@@ -482,13 +485,179 @@ impl HubClient {
             .context("the hub returned UpdatePlacement without a placement")
     }
 
-    /// Plans or applies a non-primary placement drain under a CAS.
+    /// Fetches the desired and observed writer for a surface.
+    ///
+    /// A successful `None` means the surface is explicitly read-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the hub is unreachable or the RPC fails.
+    pub async fn get_write_authority(
+        &self,
+        surface: &HubSurfaceRef,
+    ) -> Result<Option<SurfaceWriteAuthority>> {
+        let response: GetWriteAuthorityResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/GetWriteAuthority",
+                &GetWriteAuthorityRequest {
+                    surface: Some(surface.to_message()),
+                },
+            )
+            .await
+            .with_context(|| format!("fetching write authority for '{surface}'"))?;
+        Ok(response.authority)
+    }
+
+    /// Creates an immutable impact plan for initial authority or promotion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the candidate is ineligible, authority is already
+    /// reconciling, or transport/protocol handling fails.
+    pub async fn plan_promote_placement(
+        &self,
+        surface: &HubSurfaceRef,
+        candidate_name: &str,
+    ) -> Result<PlacementPromotionPlan> {
+        let response: PlanPromotePlacementResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/PlanPromotePlacement",
+                &PlanPromotePlacementRequest {
+                    surface: Some(surface.to_message()),
+                    candidate_placement_name: candidate_name.to_string(),
+                },
+            )
+            .await
+            .with_context(|| {
+                format!("planning promotion of placement '{candidate_name}' on '{surface}'")
+            })?;
+        response
+            .plan
+            .context("the hub returned PlanPromotePlacement without a plan")
+    }
+
+    /// Applies one immutable placement-promotion plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the plan is stale, expired, consumed, belongs to
+    /// another actor/surface, or transport/protocol handling fails.
+    pub async fn promote_placement(
+        &self,
+        surface: &HubSurfaceRef,
+        plan_id: &str,
+    ) -> Result<SurfaceWriteAuthority> {
+        let response: PromotePlacementResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/PromotePlacement",
+                &PromotePlacementRequest {
+                    surface: Some(surface.to_message()),
+                    plan_id: plan_id.to_string(),
+                },
+            )
+            .await
+            .with_context(|| format!("applying placement promotion plan '{plan_id}'"))?;
+        response
+            .authority
+            .context("the hub returned PromotePlacement without authority")
+    }
+
+    /// Records a service-account controller result for one desired generation.
+    ///
+    /// `state` is `ready` or `failed`; `error` is required exactly for a failed
+    /// result. The authority resource version and generation prevent stale
+    /// retries from observing a newer promotion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale authority, invalid state/error fields, lost
+    /// candidate eligibility, or transport/protocol failure.
+    pub async fn reconcile_write_authority(
+        &self,
+        surface: &HubSurfaceRef,
+        expected_resource_version: &str,
+        desired_generation: i64,
+        state: &str,
+        error: Option<&str>,
+    ) -> Result<SurfaceWriteAuthority> {
+        let response: ReconcileWriteAuthorityResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/ReconcileWriteAuthority",
+                &ReconcileWriteAuthorityRequest {
+                    surface: Some(surface.to_message()),
+                    expected_resource_version: expected_resource_version.to_string(),
+                    desired_generation,
+                    state: state.to_string(),
+                    error: error.unwrap_or_default().to_string(),
+                },
+            )
+            .await
+            .with_context(|| {
+                format!("reconciling write authority generation {desired_generation}")
+            })?;
+        response
+            .authority
+            .context("the hub returned ReconcileWriteAuthority without authority")
+    }
+
+    /// Creates an immutable plan to make a surface explicitly read-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless authority is fully reconciled, or when the RPC
+    /// transport fails.
+    pub async fn plan_remove_write_authority(
+        &self,
+        surface: &HubSurfaceRef,
+    ) -> Result<aos_proto_types::RemoveWriteAuthorityPlan> {
+        let response: PlanRemoveWriteAuthorityResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/PlanRemoveWriteAuthority",
+                &PlanRemoveWriteAuthorityRequest {
+                    surface: Some(surface.to_message()),
+                },
+            )
+            .await
+            .with_context(|| format!("planning read-only transition for '{surface}'"))?;
+        response
+            .plan
+            .context("the hub returned PlanRemoveWriteAuthority without a plan")
+    }
+
+    /// Applies one immutable read-only transition plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the plan is stale, expired, or consumed, or when
+    /// transport/protocol handling fails.
+    pub async fn remove_write_authority(
+        &self,
+        surface: &HubSurfaceRef,
+        plan_id: &str,
+    ) -> Result<()> {
+        let response: RemoveWriteAuthorityResponse = self
+            .call(
+                "aos.hub.v1.TopologyService/RemoveWriteAuthority",
+                &RemoveWriteAuthorityRequest {
+                    surface: Some(surface.to_message()),
+                    plan_id: plan_id.to_string(),
+                },
+            )
+            .await
+            .with_context(|| format!("applying read-only transition plan '{plan_id}'"))?;
+        if !response.removed {
+            anyhow::bail!("the hub did not remove write authority");
+        }
+        Ok(())
+    }
+
+    /// Plans or applies a non-authority placement drain under a CAS.
     ///
     /// Apply revalidates the version and route pins before mutating.
     ///
     /// # Errors
     ///
-    /// Returns an error for a primary placement, stale resource version,
+    /// Returns an error for an authority-owned placement, stale resource version,
     /// insufficient authority, or a transport/protocol failure.
     pub async fn drain_placement(
         &self,
@@ -1382,24 +1551,27 @@ mod tests {
     }
 
     #[test]
-    fn placement_mutations_serialize_explicit_false_and_camel_case_fields() {
+    fn placement_mutations_serialize_normalized_specs_and_camel_case_fields() {
         let surface = Some(HubSurfaceRef::Cache("nix".to_string()).to_message());
         let create = serde_json::to_value(CreatePlacementRequest {
             surface: surface.clone(),
             name: "replica".to_string(),
             storage_binding_name: "origin".to_string(),
             prefix: "cache/replica".to_string(),
-            role: "replica".to_string(),
-            read_enabled: Some(true),
-            write_enabled: Some(false),
+            kind: "complete".to_string(),
+            desired_state: "active".to_string(),
+            desired_read_enabled: Some(true),
             read_order: Some(10),
-            write_order: Some(20),
+            hash_range: None,
+            requires_conditional_writes: false,
         })
         .unwrap();
         assert_eq!(create["surface"]["cacheSlug"], "nix");
         assert_eq!(create["storageBindingName"], "origin");
-        assert_eq!(create["writeEnabled"], false);
-        assert_eq!(create["writeOrder"], 20);
+        assert_eq!(create["kind"], "complete");
+        assert_eq!(create["desiredReadEnabled"], true);
+        assert!(create.get("writeEnabled").is_none());
+        assert!(create.get("writeOrder").is_none());
         assert!(create.get("storage_binding_name").is_none());
         assert!(create.get("state").is_none());
         assert!(create.get("completeness").is_none());
@@ -1408,14 +1580,14 @@ mod tests {
             surface,
             name: "replica".to_string(),
             expected_resource_version: "7".to_string(),
-            read_enabled: Some(true),
-            write_enabled: Some(false),
+            desired_state: "active".to_string(),
+            desired_read_enabled: Some(true),
             read_order: Some(30),
-            write_order: Some(30),
         })
         .unwrap();
         assert_eq!(update["expectedResourceVersion"], "7");
-        assert_eq!(update["readEnabled"], true);
+        assert_eq!(update["desiredReadEnabled"], true);
+        assert!(update.get("writeEnabled").is_none());
         assert!(update.get("state").is_none());
         assert!(update.get("completeness").is_none());
     }

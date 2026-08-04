@@ -405,21 +405,27 @@ pub enum HubPlacementCmd {
         /// Binding-relative object prefix
         #[arg(long)]
         prefix: String,
-        /// Placement role: primary, replica, or archive
-        #[arg(long, value_parser = ["primary", "replica", "archive"])]
-        role: String,
-        /// Explicitly enable or disable read selection
-        #[arg(long, action = clap::ArgAction::Set, required = true)]
-        read_enabled: bool,
-        /// Explicitly enable or disable write selection
-        #[arg(long, action = clap::ArgAction::Set, required = true)]
-        write_enabled: bool,
+        /// Placement kind: complete, shard, or archive
+        #[arg(long, value_parser = ["complete", "shard", "archive"], default_value = "complete")]
+        kind: String,
+        /// Initial desired lifecycle: active or offline
+        #[arg(long, value_parser = ["active", "offline"], default_value = "active")]
+        desired_state: String,
+        /// Enable or disable desired reads (defaults off for archive, on otherwise)
+        #[arg(long, action = clap::ArgAction::Set)]
+        desired_read_enabled: Option<bool>,
         /// Read-selection priority (lower is preferred)
-        #[arg(long)]
+        #[arg(long, default_value_t = 0)]
         read_order: i64,
-        /// Write-selection priority (lower is preferred)
+        /// Inclusive first bucket for a shard's 16-bit hash range
+        #[arg(long, requires = "hash_range_end")]
+        hash_range_start: Option<u32>,
+        /// Exclusive last bucket for a shard's 16-bit hash range
+        #[arg(long, requires = "hash_range_start")]
+        hash_range_end: Option<u32>,
+        /// Require conditional object writes when this placement is promoted
         #[arg(long)]
-        write_order: i64,
+        requires_conditional_writes: bool,
     },
     /// Replace desired selection fields under an optimistic-concurrency check
     Update {
@@ -436,18 +442,15 @@ pub enum HubPlacementCmd {
         /// Opaque resource version returned by list or show
         #[arg(long)]
         expected_resource_version: String,
-        /// Desired read selection; use placement drain to disable an active read
+        /// Desired lifecycle: active or offline
+        #[arg(long, value_parser = ["active", "offline"])]
+        desired_state: String,
+        /// Desired read selection
         #[arg(long, action = clap::ArgAction::Set, required = true)]
-        read_enabled: bool,
-        /// Current write selection; authority changes require future promotion
-        #[arg(long, action = clap::ArgAction::Set, required = true)]
-        write_enabled: bool,
+        desired_read_enabled: bool,
         /// Read-selection priority (lower is preferred)
         #[arg(long)]
         read_order: i64,
-        /// Write-selection priority (lower is preferred)
-        #[arg(long)]
-        write_order: i64,
     },
     /// Plan a safe drain; pass --apply to perform it
     Drain {
@@ -723,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn placement_create_requires_explicit_selection_booleans() {
+    fn placement_create_accepts_normalized_desired_spec() {
         let cli = Cli::try_parse_from([
             "aos",
             "hub",
@@ -737,15 +740,11 @@ mod tests {
             "west",
             "--prefix",
             "registries/main",
-            "--role",
-            "replica",
-            "--read-enabled",
+            "--kind",
+            "complete",
+            "--desired-read-enabled",
             "true",
-            "--write-enabled",
-            "false",
             "--read-order",
-            "20",
-            "--write-order",
             "20",
         ])
         .unwrap();
@@ -757,16 +756,16 @@ mod tests {
                             HubPlacementCmd::Create {
                                 surface,
                                 name,
-                                read_enabled,
-                                write_enabled,
+                                kind,
+                                desired_read_enabled,
                                 ..
                             },
                     },
             } => {
                 assert_eq!(surface, "registry:andyl/main");
                 assert_eq!(name, "replica-west");
-                assert!(read_enabled);
-                assert!(!write_enabled);
+                assert_eq!(kind, "complete");
+                assert_eq!(desired_read_enabled, Some(true));
             }
             _ => panic!("unexpected command shape"),
         }

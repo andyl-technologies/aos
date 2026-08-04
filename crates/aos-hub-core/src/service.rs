@@ -59,6 +59,42 @@ const MAX_PAGE_SIZE: u32 = 1000;
 /// to one registry; it lives only long enough for a producer to drive a publish.
 pub const UPLOAD_CREDENTIAL_TTL_SECS: i64 = 3600;
 
+/// Lifetime of an immutable topology impact plan (15 minutes).
+const TOPOLOGY_PLAN_TTL_SECS: i64 = 15 * 60;
+
+/// Maximum stored controller diagnostic size.
+const RECONCILIATION_ERROR_MAX_BYTES: usize = 4 * 1024;
+
+/// Stored preconditions for one placement write-authority promotion.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct PlacementPromotionPlanInput {
+    registry_id: Option<i64>,
+    cache_id: Option<i64>,
+    candidate_placement_id: i64,
+    candidate_placement_name: String,
+    candidate_resource_version: i64,
+    candidate_write_spec_version: i64,
+    candidate_binding_write_revision: i64,
+    authority_incarnation_id: String,
+    authority_id: Option<i64>,
+    authority_resource_version: Option<i64>,
+    authority_desired_generation: Option<i64>,
+    observed_placement_id: Option<i64>,
+    observed_placement_name: Option<String>,
+}
+
+/// Stored preconditions for making a surface explicitly read-only.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RemoveWriteAuthorityPlanInput {
+    registry_id: Option<i64>,
+    cache_id: Option<i64>,
+    authority_id: i64,
+    authority_incarnation_id: String,
+    authority_resource_version: i64,
+    observed_generation: i64,
+    observed_placement_name: String,
+}
+
 /// A registry-hub method failure, tagged with a Connect error code.
 ///
 /// Mirrors the subset of `connectrpc::ErrorCode` the hub uses. The transport
@@ -2192,6 +2228,14 @@ impl RpcService {
         value.ok_or_else(|| RpcError::invalid(format!("{name} must be specified")))
     }
 
+    /// Returns the database-id tuple for a typed surface.
+    fn topology_surface_ids(surface: SurfaceTarget) -> (Option<i64>, Option<i64>) {
+        match surface {
+            SurfaceTarget::Registry(id) => (Some(id), None),
+            SurfaceTarget::BinaryCache(id) => (None, Some(id)),
+        }
+    }
+
     /// Maps typed placement-create failures without parsing SQL-driver text.
     fn placement_create_error(error: anyhow::Error) -> RpcError {
         let Some(failure) = crate::db::surface_placement_create_failure(&error) else {
@@ -2207,6 +2251,14 @@ impl RpcService {
             crate::db::SurfacePlacementCreateFailureKind::Conflict => {
                 RpcError::FailedPrecondition(failure.public_message().to_string())
             }
+        }
+    }
+
+    /// Maps typed authority preconditions while preserving infrastructure failures.
+    fn authority_mutation_error(error: anyhow::Error) -> RpcError {
+        match crate::db::surface_write_authority_mutation_failure(&error) {
+            Some(failure) => RpcError::FailedPrecondition(failure.public_message().to_string()),
+            None => RpcError::internal(error),
         }
     }
 
@@ -2278,20 +2330,107 @@ impl RpcService {
                     placement.storage_binding_id
                 ))
             })?;
+        let hash_range = match (placement.hash_range_start, placement.hash_range_end) {
+            (Some(start), Some(end)) => Some(pb::PlacementHashRange {
+                start: u32::try_from(start).map_err(RpcError::internal)?,
+                end: u32::try_from(end).map_err(RpcError::internal)?,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(RpcError::internal(anyhow::anyhow!(
+                    "placement '{}' has an incomplete hash range",
+                    placement.name
+                )))
+            }
+        };
+        let desired_writer = placement.authority_desired_placement_id == Some(placement.id);
+        let observed_writer = placement.authority_observed_placement_id == Some(placement.id);
         Ok(pb::Placement {
             name: placement.name,
             storage_binding_name: binding.name,
             prefix: placement.prefix,
-            role: placement.role,
-            state: placement.state,
-            completeness: placement.completeness,
-            read_enabled: placement.read_enabled,
-            write_enabled: placement.write_enabled,
-            read_order: placement.read_order,
-            write_order: placement.write_order,
+            spec: Some(pb::PlacementSpec {
+                kind: placement.kind,
+                desired_state: placement.desired_state,
+                desired_read_enabled: placement.desired_read_enabled,
+                read_order: placement.read_order,
+                write_spec_version: placement.write_spec_version,
+                requires_conditional_writes: placement.requires_conditional_writes,
+                hash_range,
+            }),
+            observation: Some(pb::PlacementObservation {
+                state: placement.state,
+                completeness: placement.completeness,
+                observed_at: placement.observed_at.unwrap_or_default(),
+                observation_version: placement
+                    .observation_version
+                    .map(|version| version.to_string())
+                    .unwrap_or_default(),
+                mutable_publication_id: placement.mutable_publication_id.unwrap_or_default(),
+                pending_publication_id: placement
+                    .watermark_pending_publication_id
+                    .unwrap_or_default(),
+                watermark_resource_version: placement
+                    .watermark_resource_version
+                    .map(|version| version.to_string())
+                    .unwrap_or_default(),
+            }),
+            status: Some(pb::PlacementStatus {
+                derived_role: placement.derived_role,
+                desired_writer,
+                observed_writer,
+                promotion_pending: desired_writer
+                    && placement.authority_desired_generation
+                        != placement.authority_observed_generation,
+                effective_read_enabled: placement.effective_read_enabled,
+                effective_write_enabled: placement.effective_write_enabled,
+            }),
             created_at: placement.created_at,
             updated_at: placement.updated_at,
             resource_version: placement.resource_version.to_string(),
+        })
+    }
+
+    /// Builds the public desired/observed authority view using placement names.
+    async fn write_authority_message(
+        &self,
+        authority: crate::db::SurfaceWriteAuthorityRecord,
+    ) -> Result<pb::SurfaceWriteAuthority, RpcError> {
+        let desired = self
+            .db
+            .surface_placement(authority.desired_placement_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("desired writer is missing")))?;
+        let observed_placement_name = match authority.observed_placement_id {
+            Some(id) => {
+                self.db
+                    .surface_placement(id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| {
+                        RpcError::internal(anyhow::anyhow!("observed writer is missing"))
+                    })?
+                    .name
+            }
+            None => String::new(),
+        };
+        Ok(pb::SurfaceWriteAuthority {
+            mode: authority.mode,
+            desired_placement_name: desired.name,
+            observed_placement_name,
+            desired_write_spec_version: authority.desired_write_spec_version,
+            observed_write_spec_version: authority.observed_write_spec_version.unwrap_or_default(),
+            desired_binding_write_revision: authority.desired_binding_write_revision,
+            observed_binding_write_revision: authority
+                .observed_binding_write_revision
+                .unwrap_or_default(),
+            desired_generation: authority.desired_generation,
+            observed_generation: authority.observed_generation.unwrap_or_default(),
+            reconciliation_state: authority.reconciliation_state,
+            reconciliation_error: authority.reconciliation_error.unwrap_or_default(),
+            resource_version: authority.resource_version.to_string(),
+            incarnation_id: authority.incarnation_id,
         })
     }
 
@@ -2363,15 +2502,15 @@ impl RpcService {
     ///
     /// Until IAM gains a dedicated topology verb, this requires the stronger
     /// [`Permission::StorageManage`] permission on the owning organization (or
-    /// root [`Permission::IamAdmin`] for an org-less surface). Shards are not
-    /// accepted until their partition rule has a typed public representation.
+    /// root [`Permission::IamAdmin`] for an org-less surface). Shards use a
+    /// typed half-open range in the fixed 16-bit partition space.
     ///
     /// # Errors
     ///
     /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
     /// an unknown surface or binding, [`RpcError::InvalidArgument`] for invalid
     /// placement fields, [`RpcError::AlreadyExists`] for a name collision,
-    /// [`RpcError::FailedPrecondition`] for a physical-location or primary
+    /// [`RpcError::FailedPrecondition`] for a physical-location
     /// conflict, and [`RpcError::Internal`] for an unclassified database error.
     pub async fn create_placement(
         &self,
@@ -2382,33 +2521,59 @@ impl RpcService {
         if req.name.is_empty() {
             return Err(RpcError::invalid("placement name must not be empty"));
         }
-        if req.role == "shard" {
+        let desired_read_enabled =
+            Self::required_placement_field(req.desired_read_enabled, "desiredReadEnabled")?;
+        let read_order = Self::required_placement_field(req.read_order, "readOrder")?;
+        if !matches!(req.kind.as_str(), "complete" | "shard" | "archive") {
             return Err(RpcError::invalid(
-                "shard placements require a future typed partition-rule API",
+                "kind must be complete, shard, or archive",
             ));
         }
-        let read_enabled = Self::required_placement_field(req.read_enabled, "readEnabled")?;
-        let write_enabled = Self::required_placement_field(req.write_enabled, "writeEnabled")?;
-        let read_order = Self::required_placement_field(req.read_order, "readOrder")?;
-        let write_order = Self::required_placement_field(req.write_order, "writeOrder")?;
+        if !matches!(req.desired_state.as_str(), "active" | "offline") {
+            return Err(RpcError::invalid(
+                "desiredState must be active or offline at creation",
+            ));
+        }
+        if req.kind == "archive" && desired_read_enabled {
+            return Err(RpcError::invalid(
+                "archive placements cannot be read-enabled",
+            ));
+        }
+        let hash_range = match (req.kind.as_str(), req.hash_range) {
+            ("shard", Some(range)) if range.start < range.end && range.end <= 65_536 => {
+                Some(crate::db::SurfacePlacementHashRange {
+                    start: i64::from(range.start),
+                    end: i64::from(range.end),
+                })
+            }
+            ("shard", _) => {
+                return Err(RpcError::invalid(
+                    "shard placements require a non-empty 16-bit hashRange",
+                ))
+            }
+            (_, None) => None,
+            (_, Some(_)) => {
+                return Err(RpcError::invalid(
+                    "hashRange is valid only for shard placements",
+                ))
+            }
+        };
         let binding_id = self
             .topology_binding_id(org_id, &req.storage_binding_name)
             .await?;
         let placement = self
             .db
-            .create_surface_placement(&crate::db::NewSurfacePlacement {
+            .create_surface_placement(&crate::db::NewSurfacePlacementSpec {
                 surface,
                 name: req.name,
                 storage_binding_id: binding_id,
                 prefix: req.prefix,
-                role: req.role,
-                state: "provisioning".to_string(),
-                completeness: "unknown".to_string(),
-                partition_rule_json: None,
-                read_enabled,
-                write_enabled,
+                kind: req.kind,
+                desired_state: req.desired_state,
+                hash_range,
+                desired_read_enabled,
                 read_order,
-                write_order,
+                requires_conditional_writes: req.requires_conditional_writes,
             })
             .await
             .map_err(Self::placement_create_error)?;
@@ -2419,10 +2584,9 @@ impl RpcService {
 
     /// `TopologyService.UpdatePlacement` — replaces desired selection fields.
     ///
-    /// Observed state and completeness, role, binding, prefix, and any internal
-    /// shard rule remain unchanged. Disabling read selection must use the drain
-    /// workflow; changing write authority awaits atomic promotion. The database
-    /// state machine validates the resulting record and performs the CAS.
+    /// Observations, binding, prefix, kind, shard range, and write authority
+    /// remain unchanged. The database state machine validates desired lifecycle
+    /// and read selection, then performs the CAS.
     ///
     /// # Errors
     ///
@@ -2438,47 +2602,26 @@ impl RpcService {
         let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
         let current = self.topology_placement(surface, &req.name).await?;
         let expected = Self::expected_placement_version(&req.expected_resource_version, &current)?;
-        let read_enabled = Self::required_placement_field(req.read_enabled, "readEnabled")?;
-        let write_enabled = Self::required_placement_field(req.write_enabled, "writeEnabled")?;
+        let desired_read_enabled =
+            Self::required_placement_field(req.desired_read_enabled, "desiredReadEnabled")?;
         let read_order = Self::required_placement_field(req.read_order, "readOrder")?;
-        let write_order = Self::required_placement_field(req.write_order, "writeOrder")?;
-        if write_enabled != current.write_enabled {
-            return Err(RpcError::FailedPrecondition(
-                "write authority changes require atomic placement promotion".to_string(),
-            ));
+        if !matches!(req.desired_state.as_str(), "active" | "offline") {
+            return Err(RpcError::invalid("desiredState must be active or offline"));
         }
-        if current.role == "archive" && read_enabled {
+        if current.kind == "archive" && desired_read_enabled {
             return Err(RpcError::invalid(
                 "archive placements cannot be read-enabled",
-            ));
-        }
-        if current.read_enabled && !read_enabled {
-            return Err(RpcError::FailedPrecondition(
-                "disabling read selection requires DrainPlacement".to_string(),
-            ));
-        }
-        if !current.read_enabled
-            && read_enabled
-            && matches!(current.state.as_str(), "draining" | "offline")
-        {
-            return Err(RpcError::FailedPrecondition(
-                "a draining or offline placement cannot be re-enabled by UpdatePlacement"
-                    .to_string(),
             ));
         }
         let update = self
             .db
             .update_surface_placement(
                 current.id,
-                &crate::db::UpdateSurfacePlacement {
+                &crate::db::UpdateSurfacePlacementSpec {
                     expected_version: expected,
-                    state: current.state.clone(),
-                    completeness: current.completeness.clone(),
-                    partition_rule_json: current.partition_rule_json.clone(),
-                    read_enabled,
-                    write_enabled,
+                    desired_state: req.desired_state,
+                    desired_read_enabled,
                     read_order,
-                    write_order,
                 },
             )
             .await;
@@ -2516,18 +2659,795 @@ impl RpcService {
         })
     }
 
+    /// `TopologyService.GetWriteAuthority` — reads desired and observed authority.
+    ///
+    /// An absent authority is a valid, explicitly read-only surface and is
+    /// returned as an absent response field rather than a not-found error.
+    ///
+    /// # Errors
+    ///
+    /// Returns control-plane authorization errors or
+    /// [`RpcError::Internal`] when the authority projection is inconsistent.
+    pub async fn get_write_authority(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetWriteAuthorityRequest,
+    ) -> Result<pb::GetWriteAuthorityResponse, RpcError> {
+        let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
+        let authority = self
+            .db
+            .surface_write_authority(surface)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::GetWriteAuthorityResponse {
+            authority: match authority {
+                Some(authority) => Some(self.write_authority_message(authority).await?),
+                None => None,
+            },
+        })
+    }
+
+    /// `TopologyService.PlanPromotePlacement` — stores immutable promotion preconditions.
+    ///
+    /// Planning is read-only with respect to placement and authority resources.
+    /// It resolves the binding's current validated write revision and rejects a
+    /// candidate whose desired or observed state cannot own writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
+    /// an unknown candidate, and [`RpcError::FailedPrecondition`] when the
+    /// candidate or current authority is not promotable.
+    pub async fn plan_promote_placement(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanPromotePlacementRequest,
+    ) -> Result<pb::PlanPromotePlacementResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
+        let candidate = self
+            .topology_placement(surface, &req.candidate_placement_name)
+            .await?;
+        if candidate.kind != "complete"
+            || candidate.desired_state != "active"
+            || candidate.state != "ready"
+            || candidate.completeness != "complete"
+        {
+            return Err(RpcError::FailedPrecondition(
+                "the candidate must be a ready, complete, active complete placement".to_string(),
+            ));
+        }
+        let write_state = self
+            .db
+            .storage_binding_write_state(candidate.storage_binding_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "the candidate binding has no write-revision state".to_string(),
+                )
+            })?;
+        let binding_revision = write_state.current_write_revision.ok_or_else(|| {
+            RpcError::FailedPrecondition(
+                "the candidate binding has no current write revision".to_string(),
+            )
+        })?;
+        let observation = self
+            .db
+            .storage_binding_write_observation(candidate.storage_binding_id, binding_revision)
+            .await
+            .map_err(RpcError::internal)?;
+        if !observation.is_some_and(|observation| observation.state == "valid") {
+            return Err(RpcError::FailedPrecondition(
+                "the candidate binding's current write revision is not valid".to_string(),
+            ));
+        }
+        let revision = self
+            .db
+            .storage_binding_write_revision(candidate.storage_binding_id, binding_revision)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "the candidate binding's current write revision is missing".to_string(),
+                )
+            })?;
+        if !revision.writes_supported {
+            return Err(RpcError::FailedPrecondition(
+                "the candidate binding's current revision does not support writes".to_string(),
+            ));
+        }
+        if candidate.requires_conditional_writes && !revision.conditional_writes_supported {
+            return Err(RpcError::FailedPrecondition(
+                "the candidate requires conditional writes but its binding revision does not support them"
+                    .to_string(),
+            ));
+        }
+        let authority = self
+            .db
+            .surface_write_authority(surface)
+            .await
+            .map_err(RpcError::internal)?;
+        let (
+            authority_incarnation_id,
+            authority_id,
+            authority_resource_version,
+            authority_desired_generation,
+            observed_placement_id,
+            observed_name,
+        ) = match authority {
+            Some(authority) => {
+                if authority.reconciliation_state != "ready"
+                    || authority.observed_placement_id != Some(authority.desired_placement_id)
+                    || authority.observed_generation != Some(authority.desired_generation)
+                {
+                    return Err(RpcError::FailedPrecondition(
+                            "the current write authority must finish reconciling before another promotion"
+                                .to_string(),
+                        ));
+                }
+                let observed_id = authority.observed_placement_id.ok_or_else(|| {
+                    RpcError::FailedPrecondition(
+                        "the current write authority has no observed writer".to_string(),
+                    )
+                })?;
+                let observed = self
+                    .db
+                    .surface_placement(observed_id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| {
+                        RpcError::internal(anyhow::anyhow!("observed writer is missing"))
+                    })?;
+                (
+                    authority.incarnation_id,
+                    Some(authority.id),
+                    Some(authority.resource_version),
+                    Some(authority.desired_generation),
+                    Some(observed_id),
+                    Some(observed.name),
+                )
+            }
+            None => (
+                uuid::Uuid::new_v4().to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
+        let (registry_id, cache_id) = Self::topology_surface_ids(surface);
+        let input = PlacementPromotionPlanInput {
+            registry_id,
+            cache_id,
+            candidate_placement_id: candidate.id,
+            candidate_placement_name: candidate.name.clone(),
+            candidate_resource_version: candidate.resource_version,
+            candidate_write_spec_version: candidate.write_spec_version,
+            candidate_binding_write_revision: binding_revision,
+            authority_incarnation_id: authority_incarnation_id.clone(),
+            authority_id,
+            authority_resource_version,
+            authority_desired_generation,
+            observed_placement_id,
+            observed_placement_name: observed_name.clone(),
+        };
+        let effects = if authority_id.is_some() {
+            vec![
+                "fence Hub writes while desired authority reconciles".to_string(),
+                format!("request '{}' as the single writer", candidate.name),
+                "preserve the observed writer until reconciliation confirms the new generation"
+                    .to_string(),
+            ]
+        } else {
+            vec![
+                format!(
+                    "establish '{}' as the initial single writer",
+                    candidate.name
+                ),
+                "activate the already validated placement and binding-write tuple".to_string(),
+            ]
+        };
+        let plan_id = uuid::Uuid::new_v4().to_string();
+        let expires_at = clock::now_unix_secs() + TOPOLOGY_PLAN_TTL_SECS;
+        self.db
+            .create_topology_plan(&crate::db::NewTopologyPlan {
+                plan_id: plan_id.clone(),
+                plan_kind: "promote_placement".to_string(),
+                actor_kind: claims.owner_kind,
+                actor_id: Some(claims.owner_id),
+                actor_label: claims.sub,
+                scope: format!(
+                    "topology:{}:{}",
+                    if registry_id.is_some() {
+                        "registry"
+                    } else {
+                        "cache"
+                    },
+                    registry_id.or(cache_id).unwrap_or_default()
+                ),
+                input_versions_json: serde_json::to_string(&input).map_err(RpcError::internal)?,
+                effects_json: serde_json::to_string(&effects).map_err(RpcError::internal)?,
+                warnings_json: "[]".to_string(),
+                confirmation_hash: None,
+                expires_at,
+            })
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::PlanPromotePlacementResponse {
+            plan: Some(pb::PlacementPromotionPlan {
+                plan_id,
+                candidate_placement_name: candidate.name,
+                authority_resource_version: authority_resource_version
+                    .map(|version| version.to_string())
+                    .unwrap_or_default(),
+                observed_placement_name: observed_name.unwrap_or_default(),
+                candidate_write_spec_version: candidate.write_spec_version,
+                candidate_binding_write_revision: binding_revision,
+                creates_initial_authority: authority_id.is_none(),
+                effects,
+                expires_at,
+                authority_incarnation_id,
+            }),
+        })
+    }
+
+    /// `TopologyService.PromotePlacement` — applies one immutable promotion plan.
+    ///
+    /// Existing authority moves through the portable single-row authority CAS.
+    /// An authority-free surface uses the guarded initial-authority insert.
+    /// Existing authority changes fence writes until the desired generation is
+    /// observed. Initial authority creation synchronously establishes a ready
+    /// tuple because both the placement and immutable binding revision were
+    /// already observed valid before planning.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
+    /// an unknown plan, and [`RpcError::FailedPrecondition`] for an expired,
+    /// consumed, cross-surface, stale, or no-longer-eligible plan.
+    pub async fn promote_placement(
+        &self,
+        auth: Option<&str>,
+        req: pb::PromotePlacementRequest,
+    ) -> Result<pb::PromotePlacementResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
+        let plan = self
+            .db
+            .topology_plan(&req.plan_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("topology plan"))?;
+        let now = clock::now_unix_secs();
+        if plan.plan_kind != "promote_placement"
+            || plan.actor_kind != claims.owner_kind
+            || plan.actor_id != Some(claims.owner_id)
+        {
+            return Err(RpcError::FailedPrecondition(
+                "the promotion plan belongs to another operation or actor".to_string(),
+            ));
+        }
+        let input: PlacementPromotionPlanInput =
+            serde_json::from_str(&plan.input_versions_json).map_err(RpcError::internal)?;
+        if (input.registry_id, input.cache_id) != Self::topology_surface_ids(surface) {
+            return Err(RpcError::FailedPrecondition(
+                "the promotion plan belongs to another surface".to_string(),
+            ));
+        }
+        let expected_desired_generation = input
+            .authority_desired_generation
+            .map_or(1, |generation| generation + 1);
+        if let Some(authority) = self
+            .db
+            .surface_write_authority(surface)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let exact_outcome = authority.incarnation_id == input.authority_incarnation_id
+                && authority.desired_placement_id == input.candidate_placement_id
+                && authority.desired_write_spec_version == input.candidate_write_spec_version
+                && authority.desired_binding_write_revision
+                    == input.candidate_binding_write_revision
+                && authority.desired_generation == expected_desired_generation;
+            if exact_outcome {
+                self.db
+                    .mark_topology_plan_applied(&plan.plan_id, now)
+                    .await
+                    .map_err(RpcError::internal)?;
+                return Ok(pb::PromotePlacementResponse {
+                    authority: Some(self.write_authority_message(authority).await?),
+                });
+            }
+        }
+        if plan.applied_at.is_some() || plan.expires_at < now {
+            return Err(RpcError::FailedPrecondition(
+                "the promotion plan is expired or consumed".to_string(),
+            ));
+        }
+        self.db
+            .bind_surface_placement_write_capability(
+                input.candidate_placement_id,
+                input.candidate_binding_write_revision,
+            )
+            .await
+            .map_err(Self::authority_mutation_error)?;
+        let authority = match (
+            input.authority_id,
+            input.authority_resource_version,
+            input.observed_placement_id,
+        ) {
+            (Some(authority_id), Some(authority_version), Some(observed_id)) => {
+                self.db
+                    .request_surface_write_promotion(
+                        authority_id,
+                        &input.authority_incarnation_id,
+                        authority_version,
+                        observed_id,
+                        input.candidate_placement_id,
+                        input.candidate_write_spec_version,
+                        input.candidate_binding_write_revision,
+                    )
+                    .await
+            }
+            (None, None, None) => {
+                self.db
+                    .create_surface_write_authority(
+                        surface,
+                        &input.authority_incarnation_id,
+                        input.candidate_placement_id,
+                        input.candidate_resource_version,
+                        input.candidate_write_spec_version,
+                        input.candidate_binding_write_revision,
+                    )
+                    .await
+            }
+            _ => {
+                return Err(RpcError::internal(anyhow::anyhow!(
+                    "promotion plan has an inconsistent authority tuple"
+                )))
+            }
+        }
+        .map_err(Self::authority_mutation_error)?;
+        if !self
+            .db
+            .mark_topology_plan_applied(&plan.plan_id, now)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::internal(anyhow::anyhow!(
+                "applied promotion plan could not be marked consumed"
+            )));
+        }
+        if let Err(error) = self
+            .db
+            .record_audit(
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                "topology.placement.promote",
+                &plan.scope,
+                None,
+                None,
+                None,
+                Some(&input.candidate_placement_name),
+            )
+            .await
+        {
+            tracing::warn!(error = %format!("{error:#}"), "recording placement promotion audit");
+        }
+        Ok(pb::PromotePlacementResponse {
+            authority: Some(self.write_authority_message(authority).await?),
+        })
+    }
+
+    /// `TopologyService.ReconcileWriteAuthority` — observes one desired generation.
+    ///
+    /// The generation and authority resource version fence a controller retry
+    /// from confirming or failing a newer promotion. A ready observation also
+    /// revalidates every placement and immutable binding-capability prerequisite.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
+    /// an authority-free surface, [`RpcError::InvalidArgument`] for malformed
+    /// state/error fields, or [`RpcError::FailedPrecondition`] for stale or
+    /// no-longer-eligible authority.
+    pub async fn reconcile_write_authority(
+        &self,
+        auth: Option<&str>,
+        req: pb::ReconcileWriteAuthorityRequest,
+    ) -> Result<pb::ReconcileWriteAuthorityResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let (surface, org_id) = self.writable_topology_surface(auth, req.surface).await?;
+        if claims.owner_kind != PrincipalKind::ServiceAccount.as_str() {
+            return Err(RpcError::PermissionDenied(
+                "write-authority reconciliation requires a service-account controller".to_string(),
+            ));
+        }
+        let reconcile_scope = match org_id {
+            Some(org_id) => {
+                let org = self
+                    .db
+                    .org_by_id(org_id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::not_found("org"))?;
+                Scope::parse(&org.slug)
+            }
+            None => Scope::root(),
+        };
+        self.require_permission(&claims, Permission::TopologyReconcile, &reconcile_scope)
+            .await?;
+        let authority = self
+            .db
+            .surface_write_authority(surface)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("write authority"))?;
+        let expected_version = req.expected_resource_version.parse::<i64>().map_err(|_| {
+            RpcError::invalid("expectedResourceVersion must be a positive opaque version")
+        })?;
+        if expected_version <= 0 {
+            return Err(RpcError::invalid(
+                "expectedResourceVersion must be a positive opaque version",
+            ));
+        }
+        if req.desired_generation <= 0 || req.desired_generation != authority.desired_generation {
+            return Err(RpcError::FailedPrecondition(
+                "write-authority desired generation is stale".to_string(),
+            ));
+        }
+        if req.state == "failed" {
+            if req.error.trim().is_empty() {
+                return Err(RpcError::invalid(
+                    "a non-whitespace error is required when reconciliation state is failed",
+                ));
+            }
+            if req.error.len() > RECONCILIATION_ERROR_MAX_BYTES {
+                return Err(RpcError::invalid(
+                    "reconciliation error must not exceed 4096 UTF-8 bytes",
+                ));
+            }
+        } else if !req.error.is_empty() {
+            return Err(RpcError::invalid(
+                "error is allowed only when reconciliation state is failed",
+            ));
+        }
+        let already_reconciled = match req.state.as_str() {
+            "ready" => {
+                authority.reconciliation_state == "ready"
+                    && authority.observed_generation == Some(req.desired_generation)
+                    && authority.observed_placement_id == Some(authority.desired_placement_id)
+                    && authority.observed_write_spec_version
+                        == Some(authority.desired_write_spec_version)
+                    && authority.observed_binding_write_revision
+                        == Some(authority.desired_binding_write_revision)
+            }
+            "failed" => {
+                authority.reconciliation_state == "failed"
+                    && authority.reconciliation_error.as_deref() == Some(req.error.as_str())
+            }
+            _ => false,
+        };
+        if already_reconciled {
+            return Ok(pb::ReconcileWriteAuthorityResponse {
+                authority: Some(self.write_authority_message(authority).await?),
+            });
+        }
+        if expected_version != authority.resource_version {
+            return Err(RpcError::FailedPrecondition(
+                "write-authority resource version is stale".to_string(),
+            ));
+        }
+        let reconciled = match req.state.as_str() {
+            "ready" => {
+                self.db
+                    .confirm_surface_write_authority(
+                        authority.id,
+                        expected_version,
+                        req.desired_generation,
+                    )
+                    .await
+            }
+            "failed" => {
+                self.db
+                    .fail_surface_write_authority(
+                        authority.id,
+                        expected_version,
+                        req.desired_generation,
+                        &req.error,
+                    )
+                    .await
+            }
+            _ => {
+                return Err(RpcError::invalid(
+                    "reconciliation state must be ready or failed",
+                ))
+            }
+        }
+        .map_err(Self::authority_mutation_error)?;
+        let detail = format!("generation={} state={}", req.desired_generation, req.state);
+        if let Err(error) = self
+            .db
+            .record_audit(
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                "topology.write_authority.reconcile",
+                &format!(
+                    "topology:{}:{}",
+                    if authority.registry_id.is_some() {
+                        "registry"
+                    } else {
+                        "cache"
+                    },
+                    authority
+                        .registry_id
+                        .or(authority.cache_id)
+                        .unwrap_or_default()
+                ),
+                None,
+                None,
+                None,
+                Some(&detail),
+            )
+            .await
+        {
+            tracing::warn!(error = %format!("{error:#}"), "recording write-authority reconciliation audit");
+        }
+        Ok(pb::ReconcileWriteAuthorityResponse {
+            authority: Some(self.write_authority_message(reconciled).await?),
+        })
+    }
+
+    /// `TopologyService.PlanRemoveWriteAuthority` — plans an explicit read-only transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors or
+    /// [`RpcError::FailedPrecondition`] unless authority is fully reconciled.
+    pub async fn plan_remove_write_authority(
+        &self,
+        auth: Option<&str>,
+        req: pb::PlanRemoveWriteAuthorityRequest,
+    ) -> Result<pb::PlanRemoveWriteAuthorityResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
+        let authority = self
+            .db
+            .surface_write_authority(surface)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("the surface is already read-only".to_string())
+            })?;
+        let observed_id = authority.observed_placement_id.ok_or_else(|| {
+            RpcError::FailedPrecondition("write authority is not fully reconciled".to_string())
+        })?;
+        let observed_generation = authority.observed_generation.ok_or_else(|| {
+            RpcError::FailedPrecondition("write authority is not fully reconciled".to_string())
+        })?;
+        if authority.reconciliation_state != "ready"
+            || authority.desired_placement_id != observed_id
+            || authority.desired_generation != observed_generation
+        {
+            return Err(RpcError::FailedPrecondition(
+                "write authority is not fully reconciled".to_string(),
+            ));
+        }
+        let observed_name = self
+            .db
+            .surface_placement(observed_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::internal(anyhow::anyhow!("observed writer is missing")))?
+            .name;
+        let (registry_id, cache_id) = Self::topology_surface_ids(surface);
+        let input = RemoveWriteAuthorityPlanInput {
+            registry_id,
+            cache_id,
+            authority_id: authority.id,
+            authority_incarnation_id: authority.incarnation_id.clone(),
+            authority_resource_version: authority.resource_version,
+            observed_generation,
+            observed_placement_name: observed_name.clone(),
+        };
+        let effects = vec![
+            "remove desired and observed write authority".to_string(),
+            "leave every placement and readable object intact".to_string(),
+            "make all Hub writes fail closed until a new promotion".to_string(),
+        ];
+        let plan_id = uuid::Uuid::new_v4().to_string();
+        let expires_at = clock::now_unix_secs() + TOPOLOGY_PLAN_TTL_SECS;
+        self.db
+            .create_topology_plan(&crate::db::NewTopologyPlan {
+                plan_id: plan_id.clone(),
+                plan_kind: "remove_write_authority".to_string(),
+                actor_kind: claims.owner_kind,
+                actor_id: Some(claims.owner_id),
+                actor_label: claims.sub,
+                scope: format!(
+                    "topology:{}:{}",
+                    if registry_id.is_some() {
+                        "registry"
+                    } else {
+                        "cache"
+                    },
+                    registry_id.or(cache_id).unwrap_or_default()
+                ),
+                input_versions_json: serde_json::to_string(&input).map_err(RpcError::internal)?,
+                effects_json: serde_json::to_string(&effects).map_err(RpcError::internal)?,
+                warnings_json: "[]".to_string(),
+                confirmation_hash: None,
+                expires_at,
+            })
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::PlanRemoveWriteAuthorityResponse {
+            plan: Some(pb::RemoveWriteAuthorityPlan {
+                plan_id,
+                authority_resource_version: authority.resource_version.to_string(),
+                observed_generation,
+                observed_placement_name: observed_name,
+                effects,
+                expires_at,
+                authority_incarnation_id: authority.incarnation_id,
+            }),
+        })
+    }
+
+    /// `TopologyService.RemoveWriteAuthority` — consumes a read-only transition plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
+    /// an unknown plan, or [`RpcError::FailedPrecondition`] for stale plan data.
+    pub async fn remove_write_authority(
+        &self,
+        auth: Option<&str>,
+        req: pb::RemoveWriteAuthorityRequest,
+    ) -> Result<pb::RemoveWriteAuthorityResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
+        let plan = self
+            .db
+            .topology_plan(&req.plan_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("topology plan"))?;
+        let now = clock::now_unix_secs();
+        if plan.plan_kind != "remove_write_authority"
+            || plan.actor_kind != claims.owner_kind
+            || plan.actor_id != Some(claims.owner_id)
+        {
+            return Err(RpcError::FailedPrecondition(
+                "the read-only plan belongs to another operation or actor".to_string(),
+            ));
+        }
+        let input: RemoveWriteAuthorityPlanInput =
+            serde_json::from_str(&plan.input_versions_json).map_err(RpcError::internal)?;
+        if (input.registry_id, input.cache_id) != Self::topology_surface_ids(surface) {
+            return Err(RpcError::FailedPrecondition(
+                "the read-only plan belongs to another surface".to_string(),
+            ));
+        }
+        match self
+            .db
+            .surface_write_authority(surface)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            None => {
+                self.db
+                    .mark_topology_plan_applied(&plan.plan_id, now)
+                    .await
+                    .map_err(RpcError::internal)?;
+                return Ok(pb::RemoveWriteAuthorityResponse { removed: true });
+            }
+            Some(authority) if authority.incarnation_id != input.authority_incarnation_id => {
+                self.db
+                    .mark_topology_plan_applied(&plan.plan_id, now)
+                    .await
+                    .map_err(RpcError::internal)?;
+                return Err(RpcError::FailedPrecondition(
+                    "the surface gained a newer write authority after this read-only plan"
+                        .to_string(),
+                ));
+            }
+            Some(_) => {}
+        }
+        if plan.applied_at.is_some() || plan.expires_at < now {
+            return Err(RpcError::FailedPrecondition(
+                "the read-only plan is expired or consumed".to_string(),
+            ));
+        }
+        let removed = self
+            .db
+            .remove_surface_write_authority(
+                input.authority_id,
+                &input.authority_incarnation_id,
+                input.authority_resource_version,
+                input.observed_generation,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        if !removed {
+            match self
+                .db
+                .surface_write_authority(surface)
+                .await
+                .map_err(RpcError::internal)?
+            {
+                None => {
+                    self.db
+                        .mark_topology_plan_applied(&plan.plan_id, now)
+                        .await
+                        .map_err(RpcError::internal)?;
+                    return Ok(pb::RemoveWriteAuthorityResponse { removed: true });
+                }
+                Some(authority) if authority.incarnation_id != input.authority_incarnation_id => {
+                    self.db
+                        .mark_topology_plan_applied(&plan.plan_id, now)
+                        .await
+                        .map_err(RpcError::internal)?;
+                    return Err(RpcError::FailedPrecondition(
+                        "the surface gained a newer write authority after this read-only plan"
+                            .to_string(),
+                    ));
+                }
+                Some(_) => {
+                    return Err(RpcError::FailedPrecondition(
+                        "the read-only plan is stale or authority is no longer reconciled"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
+        if !self
+            .db
+            .mark_topology_plan_applied(&plan.plan_id, now)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::internal(anyhow::anyhow!(
+                "applied read-only plan could not be marked consumed"
+            )));
+        }
+        if let Err(error) = self
+            .db
+            .record_audit(
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                "topology.write_authority.remove",
+                &plan.scope,
+                None,
+                None,
+                None,
+                Some(&input.observed_placement_name),
+            )
+            .await
+        {
+            tracing::warn!(error = %format!("{error:#}"), "recording write-authority removal audit");
+        }
+        Ok(pb::RemoveWriteAuthorityResponse { removed: true })
+    }
+
     /// `TopologyService.DrainPlacement` — plans or applies a safe drain.
     ///
     /// Applying revalidates the CAS and route pins, preserves completeness and
-    /// ordering, then transitions a non-primary placement to `draining` and
-    /// disables selection. A primary cannot be drained until a future atomic
-    /// promotion API moves write authority elsewhere.
+    /// ordering, then transitions a non-authority placement to `draining` and
+    /// disables desired read selection. Desired or observed writers cannot be
+    /// drained until authority moves elsewhere.
     ///
     /// # Errors
     ///
     /// Returns authentication/authorization errors, [`RpcError::NotFound`] for
     /// an unknown placement, [`RpcError::InvalidArgument`] for a malformed
-    /// version, and [`RpcError::FailedPrecondition`] for a primary or stale CAS.
+    /// version, and [`RpcError::FailedPrecondition`] for an authority-owned or
+    /// stale placement.
     pub async fn drain_placement(
         &self,
         auth: Option<&str>,
@@ -2536,9 +3456,12 @@ impl RpcService {
         let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
         let current = self.topology_placement(surface, &req.name).await?;
         let expected = Self::expected_placement_version(&req.expected_resource_version, &current)?;
-        if current.role == "primary" {
+        if current.authority_desired_placement_id == Some(current.id)
+            || current.authority_observed_placement_id == Some(current.id)
+        {
             return Err(RpcError::FailedPrecondition(
-                "a primary placement cannot drain before write authority is promoted".to_string(),
+                "an authority-owned placement cannot drain before write authority moves"
+                    .to_string(),
             ));
         }
         let blockers = self
@@ -2556,7 +3479,7 @@ impl RpcService {
             effects: vec![
                 "transition state to draining".to_string(),
                 "disable read selection".to_string(),
-                "disable write selection".to_string(),
+                "preserve surface write authority on another placement".to_string(),
             ],
         };
         if !req.apply {
@@ -2578,15 +3501,11 @@ impl RpcService {
             .db
             .update_surface_placement(
                 current.id,
-                &crate::db::UpdateSurfacePlacement {
+                &crate::db::UpdateSurfacePlacementSpec {
                     expected_version: expected,
-                    state: "draining".to_string(),
-                    completeness: current.completeness.clone(),
-                    partition_rule_json: current.partition_rule_json.clone(),
-                    read_enabled: false,
-                    write_enabled: false,
+                    desired_state: "draining".to_string(),
+                    desired_read_enabled: false,
                     read_order: current.read_order,
-                    write_order: current.write_order,
                 },
             )
             .await;
@@ -2629,7 +3548,7 @@ impl RpcService {
     /// `TopologyService.DeletePlacement` — plans or applies metadata deletion.
     ///
     /// The backing objects are deliberately left intact. Plan and apply reject
-    /// primary placements and placements referenced by routes, policies,
+    /// authority-owned placements and placements referenced by routes, policies,
     /// object inventory, publications, jobs, or operations. Apply revalidates
     /// those references and the CAS immediately before the guarded delete.
     ///
@@ -2647,9 +3566,11 @@ impl RpcService {
         let (surface, _) = self.writable_topology_surface(auth, req.surface).await?;
         let current = self.topology_placement(surface, &req.name).await?;
         let expected = Self::expected_placement_version(&req.expected_resource_version, &current)?;
-        if current.role == "primary" {
+        if current.authority_desired_placement_id == Some(current.id)
+            || current.authority_observed_placement_id == Some(current.id)
+        {
             return Err(RpcError::FailedPrecondition(
-                "a primary placement cannot be deleted".to_string(),
+                "an authority-owned placement cannot be deleted".to_string(),
             ));
         }
         let blockers = self
@@ -7186,6 +8107,13 @@ mod placement_mutation_tests {
     #[test]
     fn unclassified_create_failures_remain_internal() {
         let error = RpcService::placement_create_error(anyhow::anyhow!("database unavailable"));
+        assert!(matches!(error, RpcError::Internal));
+        assert_eq!(error.message(), "internal error");
+    }
+
+    #[test]
+    fn unclassified_authority_failures_remain_internal() {
+        let error = RpcService::authority_mutation_error(anyhow::anyhow!("database unavailable"));
         assert!(matches!(error, RpcError::Internal));
         assert_eq!(error.message(), "internal error");
     }

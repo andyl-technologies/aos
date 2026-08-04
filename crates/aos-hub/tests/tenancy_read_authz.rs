@@ -20,8 +20,9 @@ use std::sync::Arc;
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
-    ChannelSummary, Database, IndexSnapshot, NewDeliveryRoute, NewDomain, NewSurfacePlacement,
-    RoutePlacementSelector, SurfaceTarget, TokenAuth, UpdateSurfacePlacement,
+    ChannelSummary, Database, IndexSnapshot, NewDeliveryRoute, NewDomain,
+    NewStorageBindingWriteRevision, NewSurfacePlacementSpec, RoutePlacementSelector, SurfaceTarget,
+    TokenAuth,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
@@ -150,7 +151,7 @@ fn is_denied(status: StatusCode) -> bool {
     )
 }
 
-/// Creates one ready primary placement for a registry or binary cache.
+/// Creates one ready complete placement for a registry or binary cache.
 async fn seed_placement(
     db: &Database,
     surface: SurfaceTarget,
@@ -158,22 +159,24 @@ async fn seed_placement(
     name: &str,
     prefix: &str,
 ) {
-    db.create_surface_placement(&NewSurfacePlacement {
-        surface,
-        name: name.to_string(),
-        storage_binding_id: binding_id,
-        prefix: prefix.to_string(),
-        role: "primary".to_string(),
-        state: "ready".to_string(),
-        completeness: "complete".to_string(),
-        partition_rule_json: None,
-        read_enabled: true,
-        write_enabled: true,
-        read_order: 0,
-        write_order: 0,
-    })
-    .await
-    .unwrap();
+    let placement = db
+        .create_surface_placement(&NewSurfacePlacementSpec {
+            surface,
+            name: name.to_string(),
+            storage_binding_id: binding_id,
+            prefix: prefix.to_string(),
+            kind: "complete".to_string(),
+            desired_state: "active".to_string(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await
+        .unwrap();
+    db.observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await
+        .unwrap();
 }
 
 // -- H-2: package / channel / registry read gating --------------------------
@@ -369,8 +372,14 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
     let placement = &resp["placements"][0];
     assert_eq!(placement["name"], "primary");
     assert_eq!(placement["storageBindingName"], "origin");
-    assert_eq!(placement["readEnabled"], true);
-    assert_eq!(placement["writeEnabled"], true);
+    assert_eq!(placement["spec"]["kind"], "complete");
+    assert_eq!(placement["spec"]["desiredState"], "active");
+    assert_eq!(placement["spec"]["desiredReadEnabled"], true);
+    assert_eq!(placement["observation"]["state"], "ready");
+    assert_eq!(placement["observation"]["completeness"], "complete");
+    assert_eq!(placement["status"]["derivedRole"], "replica");
+    assert_eq!(placement["status"]["effectiveReadEnabled"], true);
+    assert_eq!(placement["status"]["effectiveWriteEnabled"], false);
     assert!(placement["resourceVersion"].is_string());
     assert!(placement.get("id").is_none());
     assert!(placement.get("storageBindingId").is_none());
@@ -419,10 +428,30 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
     .await;
     assert_eq!(status, StatusCode::OK, "member placement read: {resp}");
     assert_eq!(resp["placement"]["prefix"], "registry/private");
+
+    let authority_request = serde_json::json!({
+        "surface": { "registrySlug": "topology/public" }
+    });
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/GetWriteAuthority",
+        authority_request.clone(),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = rpc(
+        &app,
+        "TopologyService/GetWriteAuthority",
+        authority_request,
+        Some(&member),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
-async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
+async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db
         .create_org("placement-owner", "Placement Owner")
@@ -471,16 +500,6 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
         "registry/private",
     )
     .await;
-    let primary_version = db
-        .list_surface_placements(SurfaceTarget::Registry(registry))
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|placement| placement.name == "primary")
-        .unwrap()
-        .resource_version
-        .to_string();
-
     db.grant_membership("user", 50, "placement-owner", "admin")
         .await
         .unwrap();
@@ -501,18 +520,192 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
         .await
         .unwrap();
     let viewer = bearer(Principal::user(52), "placement-owner", &[Permission::Read]);
+    let controller_id = db
+        .create_service_account(org, "topology-controller")
+        .await
+        .unwrap();
+    db.grant_membership("service_account", controller_id, "placement-owner", "admin")
+        .await
+        .unwrap();
+    let controller = bearer(
+        Principal::service_account(controller_id),
+        "placement-owner",
+        &[Permission::StorageManage, Permission::TopologyReconcile],
+    );
+    let binding_revision = db
+        .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+            storage_binding_id: binding,
+            write_credential_version_ref: "secret://placement-owner/origin/v1".to_string(),
+            writes_supported: true,
+            conditional_writes_supported: true,
+            revision_fingerprint: "placement-owner-origin-v1".to_string(),
+            capability_fingerprint: "object-write-v1".to_string(),
+        })
+        .await
+        .unwrap();
+    db.observe_storage_binding_write_revision(
+        binding,
+        binding_revision.revision,
+        "valid",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let binding_state = db
+        .storage_binding_write_state(binding)
+        .await
+        .unwrap()
+        .unwrap();
+    db.set_current_storage_binding_write_revision(
+        binding,
+        binding_revision.revision,
+        binding_state.resource_version,
+    )
+    .await
+    .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
+
+    let no_writes = db
+        .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+            storage_binding_id: binding,
+            write_credential_version_ref: "secret://placement-owner/origin/no-writes".to_string(),
+            writes_supported: false,
+            conditional_writes_supported: false,
+            revision_fingerprint: "placement-owner-origin-no-writes".to_string(),
+            capability_fingerprint: "read-only".to_string(),
+        })
+        .await
+        .unwrap();
+    db.observe_storage_binding_write_revision(binding, no_writes.revision, "valid", None, None)
+        .await
+        .unwrap();
+    let write_state = db
+        .storage_binding_write_state(binding)
+        .await
+        .unwrap()
+        .unwrap();
+    let write_state = db
+        .set_current_storage_binding_write_revision(
+            binding,
+            no_writes.revision,
+            write_state.resource_version,
+        )
+        .await
+        .unwrap();
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/PlanPromotePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "candidatePlacementName": "primary"
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "no writes: {resp}");
+
+    let ordinary_only = db
+        .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+            storage_binding_id: binding,
+            write_credential_version_ref: "secret://placement-owner/origin/ordinary".to_string(),
+            writes_supported: true,
+            conditional_writes_supported: false,
+            revision_fingerprint: "placement-owner-origin-ordinary".to_string(),
+            capability_fingerprint: "ordinary-writes".to_string(),
+        })
+        .await
+        .unwrap();
+    db.observe_storage_binding_write_revision(binding, ordinary_only.revision, "valid", None, None)
+        .await
+        .unwrap();
+    let write_state = db
+        .set_current_storage_binding_write_revision(
+            binding,
+            ordinary_only.revision,
+            write_state.resource_version,
+        )
+        .await
+        .unwrap();
+    let conditional = db
+        .create_surface_placement(&NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry),
+            name: "conditional".to_string(),
+            storage_binding_id: binding,
+            prefix: "registry/conditional".to_string(),
+            kind: "complete".to_string(),
+            desired_state: "active".to_string(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 30,
+            requires_conditional_writes: true,
+        })
+        .await
+        .unwrap();
+    db.observe_surface_placement(conditional.id, "ready", "complete", 1)
+        .await
+        .unwrap();
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/PlanPromotePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "candidatePlacementName": "conditional"
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PRECONDITION_FAILED,
+        "conditional writes: {resp}"
+    );
+    db.set_current_storage_binding_write_revision(
+        binding,
+        binding_revision.revision,
+        write_state.resource_version,
+    )
+    .await
+    .unwrap();
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/PlanPromotePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "candidatePlacementName": "primary"
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "plan initial authority: {resp}");
+    assert_eq!(resp["plan"]["createsInitialAuthority"], true);
+    let initial_plan_id = resp["plan"]["planId"].as_str().unwrap();
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/PromotePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "planId": initial_plan_id
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create initial authority: {resp}");
+    assert_eq!(resp["authority"]["desiredPlacementName"], "primary");
+    assert_eq!(resp["authority"]["observedPlacementName"], "primary");
+    assert_eq!(resp["authority"]["reconciliationState"], "ready");
 
     let create = serde_json::json!({
         "surface": { "registrySlug": "placement-owner/private" },
         "name": "replica-west",
         "storageBindingName": "origin",
         "prefix": "registry/private-west",
-        "role": "replica",
-        "readEnabled": true,
-        "writeEnabled": false,
+        "kind": "complete",
+        "desiredState": "active",
+        "desiredReadEnabled": true,
         "readOrder": 20,
-        "writeOrder": 20
+        "requiresConditionalWrites": false
     });
     let (status, _) = rpc(
         &app,
@@ -549,10 +742,13 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
     assert_eq!(status, StatusCode::OK, "create placement: {resp}");
     let created = &resp["placement"];
     assert_eq!(created["storageBindingName"], "origin");
-    assert_eq!(created["readEnabled"], true);
-    assert_eq!(created["writeEnabled"], false);
-    assert_eq!(created["state"], "provisioning");
-    assert_eq!(created["completeness"], "unknown");
+    assert_eq!(created["spec"]["kind"], "complete");
+    assert_eq!(created["spec"]["desiredState"], "active");
+    assert_eq!(created["spec"]["desiredReadEnabled"], true);
+    assert_eq!(created["status"]["effectiveReadEnabled"], false);
+    assert_eq!(created["status"]["effectiveWriteEnabled"], false);
+    assert_eq!(created["observation"]["state"], "provisioning");
+    assert_eq!(created["observation"]["completeness"], "unknown");
     assert!(created.get("id").is_none());
     assert!(created.get("storageBindingId").is_none());
     assert!(created.get("partitionRuleJson").is_none());
@@ -575,11 +771,11 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
             "name": "same-location",
             "storageBindingName": "origin",
             "prefix": "registry/private-west",
-            "role": "replica",
-            "readEnabled": true,
-            "writeEnabled": false,
+            "kind": "complete",
+            "desiredState": "active",
+            "desiredReadEnabled": true,
             "readOrder": 20,
-            "writeOrder": 20
+            "requiresConditionalWrites": false
         }),
         Some(&owner_admin),
     )
@@ -594,38 +790,15 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
         &app,
         "TopologyService/CreatePlacement",
         serde_json::json!({
-            "surface": { "registrySlug": "placement-owner/private" },
-            "name": "second-primary",
-            "storageBindingName": "origin",
-            "prefix": "registry/second-primary",
-            "role": "primary",
-            "readEnabled": true,
-            "writeEnabled": true,
-            "readOrder": 0,
-            "writeOrder": 0
-        }),
-        Some(&owner_admin),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::PRECONDITION_FAILED,
-        "primary conflict: {resp}"
-    );
-
-    let (status, resp) = rpc(
-        &app,
-        "TopologyService/CreatePlacement",
-        serde_json::json!({
             "surface": { "cacheSlug": "private-cache-write" },
             "name": "cache-replica",
             "storageBindingName": "origin",
             "prefix": "cache/private-replica",
-            "role": "replica",
-            "readEnabled": true,
-            "writeEnabled": false,
+            "kind": "complete",
+            "desiredState": "active",
+            "desiredReadEnabled": true,
             "readOrder": 20,
-            "writeOrder": 20
+            "requiresConditionalWrites": false
         }),
         Some(&owner_admin),
     )
@@ -641,11 +814,11 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
             "name": "cold-archive",
             "storageBindingName": "origin",
             "prefix": "registry/cold-archive",
-            "role": "archive",
-            "readEnabled": false,
-            "writeEnabled": false,
+            "kind": "archive",
+            "desiredState": "active",
+            "desiredReadEnabled": false,
             "readOrder": 100,
-            "writeOrder": 100
+            "requiresConditionalWrites": false
         }),
         Some(&owner_admin),
     )
@@ -662,10 +835,9 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
             "surface": { "registrySlug": "placement-owner/private" },
             "name": "cold-archive",
             "expectedResourceVersion": archive_version,
-            "readEnabled": true,
-            "writeEnabled": false,
-            "readOrder": 100,
-            "writeOrder": 100
+            "desiredState": "active",
+            "desiredReadEnabled": true,
+            "readOrder": 100
         }),
         Some(&owner_admin),
     )
@@ -677,50 +849,14 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
     );
     assert_eq!(resp["message"], "archive placements cannot be read-enabled");
 
-    let (status, resp) = rpc(
-        &app,
-        "TopologyService/DrainPlacement",
-        serde_json::json!({
-            "surface": { "registrySlug": "placement-owner/private" },
-            "name": "primary",
-            "expectedResourceVersion": primary_version.clone(),
-            "apply": false
-        }),
-        Some(&owner_admin),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::PRECONDITION_FAILED,
-        "primary drain must fail closed: {resp}"
-    );
-    let (status, resp) = rpc(
-        &app,
-        "TopologyService/DeletePlacement",
-        serde_json::json!({
-            "surface": { "registrySlug": "placement-owner/private" },
-            "name": "primary",
-            "expectedResourceVersion": primary_version,
-            "apply": false
-        }),
-        Some(&owner_admin),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::PRECONDITION_FAILED,
-        "primary delete must fail closed: {resp}"
-    );
-
     let update = |expected: &str| {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "name": "replica-west",
             "expectedResourceVersion": expected,
-            "readEnabled": true,
-            "writeEnabled": false,
-            "readOrder": 30,
-            "writeOrder": 30
+            "desiredState": "active",
+            "desiredReadEnabled": true,
+            "readOrder": 30
         })
     };
     let (status, resp) = rpc(
@@ -732,36 +868,6 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
     .await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED, "stale CAS: {resp}");
 
-    let mut disable_without_drain = update(&version);
-    disable_without_drain["readEnabled"] = serde_json::json!(false);
-    let (status, resp) = rpc(
-        &app,
-        "TopologyService/UpdatePlacement",
-        disable_without_drain,
-        Some(&owner_admin),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::PRECONDITION_FAILED,
-        "read disable must use drain: {resp}"
-    );
-
-    let mut promote_without_cas = update(&version);
-    promote_without_cas["writeEnabled"] = serde_json::json!(true);
-    let (status, resp) = rpc(
-        &app,
-        "TopologyService/UpdatePlacement",
-        promote_without_cas,
-        Some(&owner_admin),
-    )
-    .await;
-    assert_eq!(
-        status,
-        StatusCode::PRECONDITION_FAILED,
-        "write enable must use atomic promotion: {resp}"
-    );
-
     let (status, resp) = rpc(
         &app,
         "TopologyService/UpdatePlacement",
@@ -770,8 +876,10 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "update placement: {resp}");
-    assert_eq!(resp["placement"]["state"], "provisioning");
-    assert_eq!(resp["placement"]["completeness"], "unknown");
+    assert_eq!(resp["placement"]["spec"]["desiredState"], "active");
+    assert_eq!(resp["placement"]["spec"]["readOrder"], 30);
+    assert_eq!(resp["placement"]["observation"]["state"], "provisioning");
+    assert_eq!(resp["placement"]["observation"]["completeness"], "unknown");
     // Simulate the scanner recording readiness; observed lifecycle fields are
     // intentionally not client-settable through UpdatePlacement.
     let current = db
@@ -782,22 +890,178 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
         .find(|placement| placement.name == "replica-west")
         .unwrap();
     let observed = db
-        .update_surface_placement(
-            current.id,
-            &UpdateSurfacePlacement {
-                expected_version: current.resource_version,
-                state: "ready".to_string(),
-                completeness: "complete".to_string(),
-                partition_rule_json: current.partition_rule_json,
-                read_enabled: current.read_enabled,
-                write_enabled: current.write_enabled,
-                read_order: current.read_order,
-                write_order: current.write_order,
-            },
-        )
+        .observe_surface_placement(current.id, "ready", "complete", 1)
         .await
         .unwrap();
     let updated_version = observed.resource_version.to_string();
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/PlanPromotePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "candidatePlacementName": "replica-west"
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "plan promotion: {resp}");
+    assert_eq!(resp["plan"]["createsInitialAuthority"], false);
+    assert_eq!(resp["plan"]["observedPlacementName"], "primary");
+    let promotion_plan_id = resp["plan"]["planId"].as_str().unwrap();
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/PromotePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "planId": promotion_plan_id
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "apply promotion: {resp}");
+    assert_eq!(resp["authority"]["desiredPlacementName"], "replica-west");
+    assert_eq!(resp["authority"]["observedPlacementName"], "primary");
+    assert_eq!(resp["authority"]["reconciliationState"], "pending");
+    let promoted_incarnation = resp["authority"]["incarnationId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, replay) = rpc(
+        &app,
+        "TopologyService/PromotePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "planId": promotion_plan_id
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "replay promotion: {replay}");
+    assert_eq!(replay["authority"]["incarnationId"], promoted_incarnation);
+    assert_eq!(
+        replay["authority"]["desiredGeneration"],
+        resp["authority"]["desiredGeneration"]
+    );
+    let authority_version = resp["authority"]["resourceVersion"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let desired_generation = resp["authority"]["desiredGeneration"].as_i64().unwrap();
+    let reconciliation = serde_json::json!({
+        "surface": { "registrySlug": "placement-owner/private" },
+        "expectedResourceVersion": authority_version.clone(),
+        "desiredGeneration": desired_generation,
+        "state": "ready"
+    });
+    for error in ["   ".to_string(), "x".repeat(4097)] {
+        let (status, resp) = rpc(
+            &app,
+            "TopologyService/ReconcileWriteAuthority",
+            serde_json::json!({
+                "surface": { "registrySlug": "placement-owner/private" },
+                "expectedResourceVersion": authority_version.clone(),
+                "desiredGeneration": desired_generation,
+                "state": "failed",
+                "error": error
+            }),
+            Some(&controller),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "invalid controller diagnostic: {resp}"
+        );
+    }
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/ReconcileWriteAuthority",
+        reconciliation.clone(),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "human admin must not assert controller evidence: {resp}"
+    );
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/ReconcileWriteAuthority",
+        reconciliation.clone(),
+        Some(&controller),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reconcile promotion: {resp}");
+    assert_eq!(resp["authority"]["observedPlacementName"], "replica-west");
+    assert_eq!(resp["authority"]["reconciliationState"], "ready");
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/ReconcileWriteAuthority",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "expectedResourceVersion": authority_version,
+            "desiredGeneration": desired_generation,
+            "state": "ready"
+        }),
+        Some(&controller),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "retry reconciliation: {resp}");
+    assert_eq!(resp["authority"]["reconciliationState"], "ready");
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/PlanRemoveWriteAuthority",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" }
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "plan read-only transition: {resp}");
+    let read_only_plan_id = resp["plan"]["planId"].as_str().unwrap();
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/RemoveWriteAuthority",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "planId": read_only_plan_id
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "apply read-only transition: {resp}");
+    assert_eq!(resp["removed"], true);
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/RemoveWriteAuthority",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "planId": read_only_plan_id
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "replay read-only transition: {resp}"
+    );
+    assert_eq!(resp["removed"], true);
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/GetWriteAuthority",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" }
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "get read-only authority: {resp}");
+    assert!(resp["authority"].is_null());
+
     let domain = db
         .create_domain(&NewDomain {
             org_id: Some(org),
@@ -869,7 +1133,7 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
     .await;
     assert_eq!(status, StatusCode::OK, "drain plan: {resp}");
     assert_eq!(resp["applied"], false);
-    assert_eq!(resp["placement"]["state"], "ready");
+    assert_eq!(resp["placement"]["observation"]["state"], "ready");
     assert_eq!(resp["plan"]["currentResourceVersion"], updated_version);
 
     let (status, resp) = rpc(
@@ -881,8 +1145,8 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
     .await;
     assert_eq!(status, StatusCode::OK, "drain apply: {resp}");
     assert_eq!(resp["applied"], true);
-    assert_eq!(resp["placement"]["state"], "draining");
-    assert_eq!(resp["placement"]["readEnabled"], false);
+    assert_eq!(resp["placement"]["spec"]["desiredState"], "draining");
+    assert_eq!(resp["placement"]["spec"]["desiredReadEnabled"], false);
     let drained_version = resp["placement"]["resourceVersion"]
         .as_str()
         .unwrap()
@@ -955,13 +1219,13 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
         "name": "shard-a",
         "storageBindingName": "origin",
         "prefix": "registry/shard-a",
-        "role": "shard",
-        "readEnabled": true,
-        "writeEnabled": false,
+        "kind": "shard",
+        "desiredState": "active",
+        "desiredReadEnabled": true,
         "readOrder": 40,
-        "writeOrder": 40
+        "requiresConditionalWrites": false
     });
-    let (status, _) = rpc(
+    let (status, resp) = rpc(
         &app,
         "TopologyService/CreatePlacement",
         shard,
@@ -969,6 +1233,57 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        resp["message"],
+        "shard placements require a non-empty 16-bit hashRange"
+    );
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "shard-invalid-range",
+            "storageBindingName": "origin",
+            "prefix": "registry/shard-invalid-range",
+            "kind": "shard",
+            "desiredState": "active",
+            "desiredReadEnabled": true,
+            "readOrder": 40,
+            "hashRange": { "start": 4096, "end": 4096 },
+            "requiresConditionalWrites": false
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        resp["message"],
+        "shard placements require a non-empty 16-bit hashRange"
+    );
+
+    let (status, resp) = rpc(
+        &app,
+        "TopologyService/CreatePlacement",
+        serde_json::json!({
+            "surface": { "registrySlug": "placement-owner/private" },
+            "name": "shard-valid-range",
+            "storageBindingName": "origin",
+            "prefix": "registry/shard-valid-range",
+            "kind": "shard",
+            "desiredState": "active",
+            "desiredReadEnabled": true,
+            "readOrder": 40,
+            "hashRange": { "start": 0, "end": 32768 },
+            "requiresConditionalWrites": false
+        }),
+        Some(&owner_admin),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create typed shard: {resp}");
+    assert_eq!(resp["placement"]["spec"]["kind"], "shard");
+    assert_eq!(resp["placement"]["spec"]["hashRange"]["start"], 0);
+    assert_eq!(resp["placement"]["spec"]["hashRange"]["end"], 32768);
 
     let (status, _) = rpc(
         &app,
@@ -978,10 +1293,10 @@ async fn topology_mutations_enforce_storage_authority_cas_and_plan_apply() {
             "name": "missing-read-flag",
             "storageBindingName": "origin",
             "prefix": "registry/missing-read-flag",
-            "role": "replica",
-            "writeEnabled": false,
+            "kind": "complete",
+            "desiredState": "active",
             "readOrder": 50,
-            "writeOrder": 50
+            "requiresConditionalWrites": false
         }),
         Some(&owner_admin),
     )
