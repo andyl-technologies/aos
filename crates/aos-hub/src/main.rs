@@ -35,18 +35,12 @@ struct Cli {
     #[arg(long, global = true)]
     root: Option<PathBuf>,
 
-    /// Which deployment's database to operate on:
-    ///   local            the native sqlite file under --root (default)
-    ///   d1:<name>        a live Cloudflare D1 database, via bundled wrangler
-    ///   d1-local:<name>  the local miniflare D1 engine (for testing)
-    /// The same admin commands run against whichever backend is selected.
+    /// Database backend for local operator commands (only `local` is supported).
+    /// Cloudflare deployments are administered through the web/API surface.
     #[arg(long, global = true, default_value = "local")]
     target: String,
 
-    /// At-rest sealing key (hex/base64 or any string) for commands that store
-    /// sealed secrets (idp/hosted-key/channel) against a non-local --target.
-    /// Falls back to the HUB_SEAL_KEY environment variable. Ignored for --target
-    /// local (which uses the on-disk instance key).
+    /// Reserved at-rest sealing-key override. Local commands use the instance key.
     #[arg(long, global = true)]
     seal_key: Option<String>,
 
@@ -174,12 +168,7 @@ enum Command {
         #[command(subcommand)]
         command: FrontendCommand,
     },
-    /// Apply database migrations and (optionally) bootstrap the root admin.
-    ///
-    /// Provider-neutral: runs against whichever backend `--target` selects (the
-    /// local sqlite file or a live Cloudflare D1). This is the single, unified
-    /// schema-init path for every deployment — there is no public HTTP init
-    /// endpoint.
+    /// Apply native database migrations and optionally bootstrap the root admin.
     Init {
         /// Bootstrap (create or update) this root admin email, if given.
         #[arg(long)]
@@ -191,11 +180,7 @@ enum Command {
         #[arg(long)]
         root_password_stdin: bool,
     },
-    /// Reset (or create) a root admin's password.
-    ///
-    /// Provider-neutral over `--target`: runs the same `Database` user/password
-    /// code the native `user set-password` runs, against the local file or live
-    /// D1.
+    /// Reset (or create) a native deployment's root admin password.
     ResetRoot {
         /// The root admin email.
         #[arg(long)]
@@ -231,16 +216,13 @@ enum SchemaCommand {
 /// future providers (e.g. Fastly Compute) behind the same `worker` commands.
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum Provider {
-    /// Cloudflare Workers (D1 + R2 + KV), via the bundled `wrangler`.
+    /// Cloudflare Workers (Durable Object SQLite, R2, and KV).
     Cloudflare,
 }
 
 #[derive(Subcommand)]
 enum WorkerCommand {
-    /// Provision provider resources, deploy the Worker, and set its secrets.
-    ///
-    /// Provider-specific only: it does **not** migrate the database — run
-    /// `init --target d1:<name>` for that (or use `worker install`).
+    /// Provision resources, deploy the Worker, and preserve or set its secrets.
     Deploy(WorkerArgs),
     /// Provision the provider resources only (no deploy).
     Provision(WorkerArgs),
@@ -299,9 +281,7 @@ struct WorkerArgs {
     /// The hosting provider.
     #[arg(long, value_enum, default_value_t = Provider::Cloudflare)]
     provider: Provider,
-    /// The Worker name. Also the default stem for the provisioned resource names
-    /// (D1 database, R2 bucket, KV namespace), so one `--name` namespaces a whole
-    /// install — important because those names are unique per Cloudflare account.
+    /// The Worker name and default stem for provisioned resource names.
     #[arg(long, default_value = "aos-hub")]
     name: String,
     /// The R2 bucket holding the registry surfaces (default: `<name>-surfaces`).

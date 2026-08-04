@@ -45,7 +45,7 @@ in
     # gained `hmac` for the phase-4 webhook HMAC signatures).
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-k0mK+JO/PJNV2L/hzIpiT/ALzsRVQqir8dU3f99452Q=";
+      hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
