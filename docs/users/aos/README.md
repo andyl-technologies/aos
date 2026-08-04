@@ -49,6 +49,10 @@ multicall binary, so `aos package` is equivalent to `apm` and
   disk pressure, Hub state, and reimaging decisions.
 - [AOS support status](support-status.md) lists implemented and incomplete
   operational surfaces.
+- [Secure an AOS host](security.md) covers the security presets, remote access,
+  firewall, audit policy, trust roots, and verified-boot boundary.
+- [Manage secrets on AOS](secrets.md) defines safe build-time and runtime
+  handling, rotation, and incident response.
 - [Package an application for AOS](package-authoring.md) follows a service from
   its derivation through image inclusion, registry publication, and upgrade.
 - [Understand and operate `host.nix`](host-nix.md) covers its complete
