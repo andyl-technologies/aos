@@ -95,9 +95,11 @@ quiescent development lifecycle rather than production QEMU.
 
 ## Exit `2`: timeout
 
-The run reached `--max-virtual-time` or `--max-quanta`. A timeout is not a
-property violation. Decide whether the budget is the intended assertion or only
-a safety bound, then increase it or select a different terminal condition.
+The run reached `--max-virtual-time`, `--max-quanta`, or a fixed local-QEMU
+lifecycle bound. A timeout is not a property violation. Decide whether the
+budget is the intended assertion or only a safety bound, then increase the
+user-configurable budget or select a different terminal condition. Raising
+`--max-quanta` does not raise the fixed 40-billion-instruction per-node ceiling.
 
 Check duration syntax: only positive integral `ticks`, `ns`, `us`, `ms`, and `s`
 values are accepted.

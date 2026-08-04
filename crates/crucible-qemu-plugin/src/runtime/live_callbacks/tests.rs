@@ -26,6 +26,8 @@ static TEST_RX_SEND_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_FLUSH_COUNT: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_LAST_LEN: AtomicU64 = AtomicU64::new(0);
 static TEST_RX_SEND_STATUS: AtomicU64 = AtomicU64::new(0);
+static TEST_REENTRANT_RX_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
+    AtomicPtr::new(std::ptr::null_mut());
 
 extern "C" fn test_clock_deadline_ns() -> i64 {
     TEST_CLOCK_DEADLINE_NS.get()
@@ -781,6 +783,21 @@ extern "C" fn test_net_send(payload: *const u8, payload_len: usize) -> std::os::
 extern "C" fn test_net_flush() -> std::os::raw::c_int {
     TEST_RX_FLUSH_COUNT.fetch_add(1, Ordering::SeqCst);
     0
+}
+
+extern "C" fn test_reentrant_net_flush() -> std::os::raw::c_int {
+    let state = TEST_REENTRANT_RX_STATE.load(Ordering::Acquire);
+    if state.is_null() {
+        return 1;
+    }
+    crucible_qemu_plugin_live_publish_icount_cb(0, state.cast());
+    let payload = b"flush-tx";
+    let status =
+        crucible_qemu_plugin_live_network_tx_cb(payload.as_ptr(), payload.len(), state.cast());
+    if status != 0 {
+        return status;
+    }
+    test_net_flush()
 }
 
 extern "C" fn test_queue_idle_advance(target_virtual_ns: i64) -> std::os::raw::c_int {
