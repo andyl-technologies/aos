@@ -1,0 +1,65 @@
+[Unit]
+After=network-online.target nix-overlay-setup.service aos-config-seed.service aos-seed-profiles.service aos-host-config-restore.service
+Before=aos-install-baked-packages.service aos-graph-compile.service multi-user.target
+ConditionPathExists=/run/aos-metadata/host.nix
+Description=Evaluate host configuration to a converged manifest
+Requires=aos-host-config-restore.service
+Wants=network-online.target
+
+[Service]
+Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/sbin"
+ExecStart=<<aos-job-script>>
+#!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
+set -e
+
+set -u
+mkdir -p /run/aos-eval /run/aos
+# Confirm that /run still contains the exact host bytes accepted by the
+# initrd authorization step, then stage them into the hardened eval
+# root. The trust decision itself precedes systemd-repart.
+/nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/aos metadata verify-binding
+cp -f "/run/aos-metadata/host.nix" /run/aos-eval/host.nix
+
+# Prefer the image's recorded module_abi; fall back to the option.
+module_abi="1"
+if [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  if [ -n "${AOS_MODULE_ABI:-}" ]; then
+    module_abi="$AOS_MODULE_ABI"
+  fi
+fi
+
+desired_arg=""
+if [ -r "/etc/aos/packages.d/desired.toml" ]; then
+  desired_arg="--desired /etc/aos/packages.d/desired.toml"
+fi
+
+# Failure-safe: on any error apm __eval writes no manifest and exits
+# non-zero; SuccessExitStatus keeps the boot green either way.
+/nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/apm __eval \
+  --host-nix /run/aos-eval/host.nix \
+  --base-lib "/nix/store/i043m73jas92brarhbdk70xrrbz2gxv5-aos-base-lib-server-verity" \
+  --module-abi "$module_abi" \
+  --out "/run/aos/manifest.json" \
+  --eval-root /run/aos-eval \
+  $desired_arg || exit 1
+<<aos-job-script-end>>
+MemoryHigh=1536M
+MemoryMax=2G
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/aos
+ReadWritePaths=/run/aos-eval
+RemainAfterExit=true
+RuntimeDirectory=aos
+RuntimeDirectory=aos-eval
+SuccessExitStatus=0 1
+TasksMax=4096
+TimeoutStartSec=120s
+Type=oneshot
+
+[Install]
+WantedBy=multi-user.target

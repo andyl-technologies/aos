@@ -1,0 +1,5 @@
+[Unit]
+After=aos-config-render.target
+Description=AOS on-host config applied
+Wants=aos-config-render.target aos-fetch.target
+
