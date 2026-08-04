@@ -43,7 +43,6 @@ Pass either a host and port or a complete endpoint:
 ```sh
 ./result/bin/crucible \
   --daemon 127.0.0.1:9000 \
-  --format table \
   run scenario.toml
 ```
 

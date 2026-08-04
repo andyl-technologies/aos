@@ -16,7 +16,7 @@ before it makes examples easier to scan.
 | `--qemu <path>` | Select a patched QEMU binary explicitly. |
 | `--plugin <path>` | Select the matching Crucible QEMU plugin explicitly. |
 | `--store <path>` | Select the local content-addressed DAG store. |
-| `--format <jsonl|json|table|markdown>` | Select trace or report rendering. Default: `jsonl`. |
+| `--format <jsonl|json|table|markdown>` | Override terminal-aware trace or report rendering. |
 | `--trace <path>` | Also write the canonical event log to a file. |
 | `--artifact-dir <path>` | Select the failure/savepoint artifact directory. Default: `./.crucible`. |
 | `-v`, `-vv` | Increase diagnostic verbosity. |
@@ -37,9 +37,7 @@ patched build, reads the installed build marker, reads the plugin's ELF marker,
 and verifies build identity and shared-memory ABI compatibility before running.
 
 `--backend auto` does not mean "use anything available." In a production build
-it resolves to the validated QEMU backend or fails with status `4`. The
-in-process `double` backend exists only in tests or binaries compiled with the
-explicit `test-double` feature.
+it resolves to the validated QEMU backend or fails with status `4`.
 
 ## Seed resolution
 
@@ -56,7 +54,6 @@ Pin seeds in CI and in any command transcript intended for reproduction:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   --seed 0x9f86d081884c7d65 \
   run scenario.toml
 ```
@@ -83,7 +80,6 @@ No suffix means ticks. Fractional durations are not accepted.
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   run scenario.toml \
   --until virtual-time \
   --max-virtual-time 30s \
@@ -100,9 +96,13 @@ you need an exported `.crucible-savepoint` handle at a chosen boundary.
 
 ## Output formats
 
-The default `jsonl` format emits one canonical event entry per line and ends
-with a `final_outcome` entry. `json` emits the same entries as one document.
-`table` emits the human-oriented summaries used in this guide.
+Without `--format`, Crucible selects `table` when standard output is a terminal
+and `jsonl` when output is redirected or piped. JSONL emits one canonical event
+entry per line and ends with a `final_outcome` entry. `json` emits the same
+entries as one document. `table` emits human-oriented summaries.
+
+An explicit `--format` always wins. Use one in scripts whose output contract
+must not depend on their execution environment.
 
 `--trace` does not select a separate diagnostic trace. It writes the same
 canonical event-log rendering selected by `--format`:
@@ -171,22 +171,19 @@ gate:qemu-inert
 Run the default live subset with:
 
 ```sh
-./result/bin/crucible --format table selftest --with-qemu
+./result/bin/crucible selftest
 ```
 
-To select gates explicitly, pass a comma-separated list and retain
-`--with-qemu`:
+To select gates explicitly, pass a comma-separated list:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   selftest \
-  --with-qemu \
   --gates gate:single-vm-fingerprint,gate:qemu-inert
 ```
 
-Other canonical gates are exercised by repository checks or test-double builds;
-they are not all runnable from the packaged production CLI.
+Other gates are exercised by repository checks; they are not all runnable from
+the packaged production CLI.
 
 ## Shell completions
 

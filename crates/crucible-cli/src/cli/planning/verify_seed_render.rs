@@ -566,7 +566,9 @@ pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
 /// Returns [`CliError`] when the command and requested output format are an
 /// unsupported combination.
 pub(crate) fn validate_canonical_trace_format(cli: &Cli) -> Result<(), CliError> {
-    if cli.format == OutputFormat::Markdown && subcommand_uses_canonical_event_trace(&cli.command) {
+    if cli.output_format() == OutputFormat::Markdown
+        && subcommand_uses_canonical_event_trace(&cli.command)
+    {
         return Err(usage_error(
             "--format markdown is reserved for triage reports, not canonical event-log traces",
         ));

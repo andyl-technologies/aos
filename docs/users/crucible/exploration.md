@@ -10,7 +10,6 @@ schedule space; otherwise search results mix system behavior with harness drift.
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   --seed 0x2a \
   search scenario.toml \
   --strategy bfs \
@@ -52,7 +51,6 @@ basic-block coverage back into later selection:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   --seed 0x2a \
   fuzz builtin:fault-campaign \
   --runs 100 \
