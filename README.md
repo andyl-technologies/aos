@@ -9,6 +9,17 @@ from source in this repository without nixpkgs dependencies.
 AOS uses read-only system images, systemd, and a Nix module system.
 Machine-specific policy is supplied as literal `host.nix`.
 
+## Projects
+
+- **AOS** builds the operating system, package graph, system images, and the
+  `aos` repository CLI.
+- **[AOS Hub](docs/users/aos-hub/)** hosts package registries and binary caches.
+  It runs as a native service or as a Cloudflare Worker and exposes a web
+  console, HTTP API, and the registry and cache protocols used by `apr`, `apm`,
+  Git, and Nix.
+- **[Crucible](docs/users/crucible/)** runs repeatable black-box network tests
+  against unmodified guests using QEMU-backed execution.
+
 ## Build a server image
 
 Building AOS requires Nix with flakes enabled and a Linux builder.
@@ -25,6 +36,8 @@ Build an individual package with its `pkg-` attribute:
 
 ```sh
 nix build .#pkg-zlib
+nix build .#pkg-aos-hub
+nix build .#pkg-crucible
 ```
 
 ## Use the repository CLI
@@ -76,8 +89,10 @@ VM and fleet checks require a Linux builder with KVM.
 
 ## Documentation
 
-- [User guides](docs/users/), including the [Crucible operations guide](docs/users/crucible/)
+- [AOS Hub operations](docs/users/aos-hub/), including a
+  [local quickstart](docs/users/aos-hub/quickstart.md)
+- [Crucible operations](docs/users/crucible/), including the
+  [Nginx and Curl quickstart](docs/users/crucible/quickstart.md)
 - [Package registry reference](docs/registry/)
-- [RFCs and design history](docs/rfcs/)
 
 AOS is licensed under the [Apache License 2.0](LICENSE).
