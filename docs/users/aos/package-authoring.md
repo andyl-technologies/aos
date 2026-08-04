@@ -184,7 +184,12 @@ version command, library link, protocol response, or VM behavior can be tested
 directly. A successful build proves that the output was produced; it does not
 by itself prove that the service is healthy.
 
-## Bake the service into an image
+## Integrate the service into a release image
+
+This is a release-maintainer workflow. Users of a published AOS image should
+install the package from a registry with `apm` instead. See
+[Build and customize release images](../../maintainers/system-images.md) for
+the image build and validation process.
 
 Register the package in a system variant:
 
@@ -205,12 +210,8 @@ Register the package in a system variant:
 `preset = true` enables its package target when AOS seeds the initial system
 package profile. A preset package must also be bundled.
 
-Build the image:
-
-```sh
-git add systems/acme-server.nix
-nix build .#acme-server-image-qcow2
-```
+Build and validate the image as described in the release-image maintainer
+guide linked above.
 
 After boot, inspect both the APM state and the service:
 

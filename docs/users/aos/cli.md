@@ -1,4 +1,8 @@
-# Use the AOS command-line tools
+# Maintainer reference: Use the AOS command-line tools
+
+This reference covers the repository and release-engineering command surface.
+Host users normally use [`apm`](packages.md) for package and generation
+operations and do not need a source checkout or Nix.
 
 The AOS package installs one multicall binary under three names. The name used
 to invoke it selects the command surface.
@@ -10,16 +14,11 @@ to invoke it selects the command surface.
 | `apr` | `aos package registry` | Registry authoring and publication |
 
 On AOS, all three commands are installed in the base system. From a repository
-checkout, run `aos` through the flake or build the package:
+checkout, run `aos` through the flake:
 
 ```sh
 nix run . -- describe
 nix run . -- test eval
-
-nix build .#aos
-./result/bin/aos --help
-./result/bin/apm --help
-./result/bin/apr --help
 ```
 
 The current repository CLI and bootable-image workflow is supported on
@@ -65,15 +64,10 @@ aos doc
 `aos build zlib` builds `pkgs.zlib`; it does not install a package on the
 running host. Use `apm install zlib` for that operation.
 
-System variants currently use Nix directly:
-
-```sh
-nix build .#server-image-qcow2
-nix-build -A systems.server.build.toplevel
-```
-
-Do not use `aos system build`, `aos system image`, or `aos system eval` with the
-current tree. Those commands still target an older attribute layout and are
+System image production currently uses Nix directly. See
+[Build and customize release images](../../maintainers/system-images.md). Do
+not use `aos system build`, `aos system image`, or `aos system eval` with the
+current tree; those commands still target an older attribute layout and are
 not covered by the current system tests.
 
 ## Run checks and maintenance commands
