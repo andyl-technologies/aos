@@ -25,6 +25,7 @@
 {
   lib,
   pkgs,
+  system,
 }: {
   ## The auto-discovered base module list (`import ./modules`).
   baseModules,
@@ -87,7 +88,9 @@ in
     cp -rL --no-preserve=mode ${../../systems} "$out/systems"
     cp -rL --no-preserve=mode ${../../pkgs} "$out/pkgs"
 
-    cp ${./base-lib-entry.nix} "$out/default.nix"
+    ${pkgs.sed}/bin/sed \
+      -e "s|@system@|${system}|g" \
+      ${./base-lib-entry.nix} > "$out/default.nix"
     cp ${frozenPkgsFile} "$out/frozen-pkgs.json"
     cp ${frozenArtifactsFile} "$out/frozen-artifacts.json"
     cp ${systemModulesFile} "$out/system-modules.nix"

@@ -11,7 +11,7 @@
 ##!     hostModule = import <verified-host.nix>;
 ##!     system = baseLib.evalHostConfig {
 ##!       operatorModules = [ hostModule ];
-##!       configModules   = [ (import <pkg>/module.nix) … ];
+##!       packageModules  = [ { name = "pkg"; module = import <pkg>/module.nix; } … ];
 ##!     };
 ##!   in { manifest = system.config.system.build.configManifest; }
 ##! ```
@@ -26,10 +26,9 @@
 let
   # `import <base-lib>` returns this attrset directly (NOT a function), so the
   # on-host entry expression is simply `baseLib = import <store-path>;`. The
-  # target system is read from `builtins.currentSystem` — correct on-host (the
-  # box runs the image it was built for) and permitted under `restrict-eval`
-  # (only `--pure-eval`, which this evaluator does not use, would forbid it).
-  system = builtins.currentSystem;
+  # The target system is frozen into the base library at image build time.
+  # Stage 2 must not consult the evaluator host's ambient currentSystem.
+  system = "@system@";
 
   # `bash = null`: the on-host eval never invokes a builder (frozen pkgs), so
   # the derivation-building helpers in `lib` that would use bash are never
@@ -58,7 +57,7 @@ let
 
   # The bundled base module set + the image's system-variant modules. These are
   # exactly the modules the image was built from (minus the registry config
-  # packages, which arrive at stage-2 as `configModules`).
+  # packages, which arrive at stage-2 as authenticated `packageModules`).
   baseModules = import ./modules;
   systemModules = import ./system-modules.nix;
 in {
@@ -120,19 +119,21 @@ in {
   ## Evaluate a host configuration on-host into a config manifest.
   ##
   ## `operatorModules` is the verified leaf `host.nix` (CS4 operator-provenance
-  ## seam — its bare defs win at the reserved priority-75 band). `configModules`
-  ## are the per-package config-only modules fetched from the registry. Returns
+  ## seam — its bare defs win at the reserved priority-75 band). `packageModules`
+  ## are resolver-owned `{ name; module; }` records for config-only outputs
+  ## fetched from the registry. Returns
   ## the full `evalModules` result; the caller forces
   ## `config.system.build.configManifest`.
   evalHostConfig = {
     operatorModules ? [],
-    configModules ? [],
+    packageModules ? [],
+    factsModules ? [],
   }:
     lib.evalModules {
       modules =
         baseModules
         ++ systemModules
-        ++ configModules
+        ++ factsModules
         ++ [
           {
             aos.config.frozenArtifacts = frozenArtifacts;
@@ -143,6 +144,6 @@ in {
           }
         ];
       pkgs = frozenPkgs;
-      inherit lib operatorModules;
+      inherit lib operatorModules packageModules;
     };
 }
