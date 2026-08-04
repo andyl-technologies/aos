@@ -1,0 +1,164 @@
+# Recover an AOS host
+
+Recovery starts by identifying which layer changed: firmware and boot image,
+first-boot storage, immutable userspace generation, APM package generation, or
+mutable application state under `/var`.
+
+Keep console access, the deployed image digest, the accepted `host.nix`,
+registry trust anchors, and application backups outside the host.
+
+## Collect state before changing it
+
+From a working console or rescue environment, capture what is available:
+
+```sh
+cat /etc/os-release
+cat /proc/cmdline
+systemctl --failed
+journalctl -b -p warning
+findmnt /
+findmnt /var
+lsblk -o NAME,SIZE,FSTYPE,PARTLABEL,PARTUUID,MOUNTPOINTS
+readlink /var/lib/profiles/system/current
+apm rollback --system --list
+cat /var/lib/aos-provisioning/audit.json
+```
+
+Do not rerun provisioning or delete generation pointers before preserving this
+evidence. The first error often distinguishes an input failure from a later
+service failure.
+
+## Recover from a failed first boot
+
+Inspect the provisioning chain:
+
+```sh
+systemctl status \
+  aos-metadata-detect.service \
+  aos-metadata-fetch.service \
+  aos-metadata-authorize.service \
+  aos-provisioning-eval.service \
+  aos-repart.service
+journalctl -b \
+  -u aos-metadata-detect.service \
+  -u aos-metadata-fetch.service \
+  -u aos-metadata-authorize.service \
+  -u aos-provisioning-eval.service \
+  -u aos-repart.service
+```
+
+Verify the metadata label and payload, trust mode, detached signature, target
+disk identifiers, and available unallocated space. Storage policy is committed
+once. After a successful commit, a changed `host.nix` is drift rather than an
+instruction to repartition the machine.
+
+If the layout is wrong, preserve required data from `/var`, correct the image
+or metadata, and reprovision a replacement disk. Do not edit the recorded plan
+to make it agree with an unintended layout.
+
+## Recover a failed userspace activation
+
+An APM error can occur before activation, during `/etc` replacement, after the
+new generation is committed, or while handling boot artifacts. First determine
+the active pointer and reported activation phase:
+
+```sh
+readlink /var/lib/profiles/system/current
+cat /etc/os-release
+apm rollback --system --list
+systemctl --failed
+```
+
+Preview rollback, then switch to the intended generation:
+
+```sh
+apm rollback --system --dry-run
+apm rollback --system
+```
+
+Rollback across different kernels has the same incomplete boot-entry boundary
+as upgrade. If the kernel or UKI changed, recover by reimaging the known-good
+release rather than relying on the current boot-artifact handler.
+
+If activation status indicates an incomplete `/etc` swap, treat the system as
+indeterminate. Use console access, preserve `/var`, and restore a known-good
+image or generation according to a procedure tested for that release.
+
+## Recover an application package
+
+Inspect installed package generations and the package target. This example
+uses the `acme-agent` package from the [configuration guide](configuration.md);
+replace it with the affected package and unit:
+
+```sh
+apm list --installed --system
+systemctl status aos-pkg-acme-agent.target
+systemctl status acme-agent.service
+journalctl -u acme-agent.service -b
+```
+
+The current CLI has no supported rollback command for the machine-wide runtime
+package profile: `apm rollback --system` rolls back the OS sysroot. Restore a
+known-good image or follow a release-specific recovery procedure that has been
+tested before the incident. Do not move a registry channel backward; registry
+consumers enforce a monotonic release floor. Stop the rollout and publish a
+higher corrected release.
+
+## Recover from a full `/var`
+
+Find the consumer before deleting anything:
+
+```sh
+df -h /var
+du -x -h -d 2 /var | sort -h
+journalctl --disk-usage
+```
+
+The journal has configured retention and size limits; vacuuming it may recover
+space during an incident:
+
+```sh
+journalctl --vacuum-size=250M
+```
+
+Use application-specific cleanup for application state and AOS Hub storage.
+`apm clean --generations` only cleans the invoking user's package profile.
+There is no supported command to prune system-package or sysroot generations.
+Do not remove their directories or current links by hand.
+
+When no supported cleanup can restore a safe margin, preserve application
+state and reimage onto a correctly sized disk.
+
+## Recover AOS Hub state
+
+Stop the Hub before copying its native state. Restore `hub.db`, SQLite WAL
+files, `secret.key`, local storage bindings, external binding data, and service
+configuration from one consistent recovery point. A database without the
+matching sealing key cannot read sealed credentials or hosted keys.
+
+After restoration:
+
+```sh
+systemctl start aos-hub.service
+curl -fsS http://127.0.0.1:8420/healthz
+systemctl status aos-hub.service
+journalctl -u aos-hub.service -b
+```
+
+See [Deploy the native AOS Hub](../aos-hub/native.md) for backup and restore
+details.
+
+## Decide when to reimage
+
+Reimage when:
+
+- firmware, GPT, the EFI System Partition, kernel, UKI, or immutable root is
+  damaged or does not match the intended release;
+- first-boot storage was committed incorrectly;
+- recovery would require manual edits to immutable system content;
+- system generations consume space that cannot be pruned safely;
+- host trust or identity can no longer be established.
+
+An immutable system makes replacement a normal recovery tool. The critical
+precondition is that application state, trust material, and deployment inputs
+are recoverable independently of the machine.
