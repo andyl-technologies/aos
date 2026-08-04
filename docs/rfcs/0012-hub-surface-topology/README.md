@@ -29,7 +29,8 @@ conflate:
 
 1. A **surface** is the stable logical identity and protocol namespace.
 2. A **placement** stores some or all of a surface on one storage binding and
-   prefix. A surface may have several placements from the start.
+   prefix. A surface may have several placements from the start; a separate
+   per-surface authority record selects and reconciles its single writer.
 3. A **delivery route** maps a domain and base path to a surface, either
    directly, through AOS Hub, or through an externally protected network or
    gateway. Every valid route implements the same machine-path protocol.
@@ -55,6 +56,8 @@ The resulting topology is:
 
  Registry or binary-cache logical surface
                  |
+                 +---- write authority ---- desired/observed placement generation
+                 |
                  +---- placement A ---- storage binding A + prefix
                  +---- placement B ---- storage binding B + prefix
                  +---- placement C ---- storage binding C + prefix
@@ -69,7 +72,7 @@ The resulting topology is:
 | File | Contents |
 | --- | --- |
 | [`00-goals-and-invariants.md`](00-goals-and-invariants.md) | Scope, terminology, and load-bearing invariants |
-| [`01-domain-model.md`](01-domain-model.md) | Surfaces, placements, bindings, domains, routes, and object presence |
+| [`01-domain-model.md`](01-domain-model.md) | Surfaces, placements, write authority, bindings, domains, routes, and object presence |
 | [`02-delivery-and-auth.md`](02-delivery-and-auth.md) | Simultaneous HTTP paths, direct/CDN/Hub modes, routing, and private access |
 | [`03-registry-cache-relations.md`](03-registry-cache-relations.md) | Standalone/shared caches, signed consumer stacks, retention, population, and coverage |
 | [`04-retention-and-gc.md`](04-retention-and-gc.md) | Release artifact snapshots, selectors, root provenance, and multi-placement GC |

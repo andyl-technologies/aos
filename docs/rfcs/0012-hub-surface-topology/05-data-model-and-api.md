@@ -8,27 +8,174 @@ This file defines resource responsibilities and schema. The normative
 Connect-JSON service/message and CLI mapping is in
 [`09-interface-contracts.md`](09-interface-contracts.md).
 
-## Placement records
+## Binding-write capability and placement records
 
 ```sql
+storage_binding_write_revisions(
+  storage_binding_id,
+  revision,
+  write_credential_version_ref,
+  writes_supported,
+  conditional_writes_supported,
+  revision_fingerprint,
+  capability_fingerprint,
+  created_at,
+  PRIMARY KEY(storage_binding_id, revision),
+  UNIQUE(storage_binding_id, revision_fingerprint),
+  FOREIGN KEY (storage_binding_id)
+    REFERENCES storage_bindings(id)
+      ON DELETE CASCADE ON UPDATE RESTRICT
+)
+
+storage_binding_write_state(
+  storage_binding_id PRIMARY KEY,
+  current_write_revision NULL,
+  resource_version,
+  updated_at,
+  FOREIGN KEY (storage_binding_id)
+    REFERENCES storage_bindings(id)
+      ON DELETE CASCADE ON UPDATE RESTRICT,
+  FOREIGN KEY (storage_binding_id, current_write_revision)
+    REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
+)
+
+storage_binding_write_observations(
+  storage_binding_id,
+  revision,
+  state,                -- unknown | validating | valid | invalid
+  validated_at NULL,
+  error NULL,
+  observation_version,
+  PRIMARY KEY(storage_binding_id, revision),
+  FOREIGN KEY (storage_binding_id, revision)
+    REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+      ON DELETE CASCADE ON UPDATE RESTRICT
+)
+
 surface_placements(
   id,
   registry_id NULL,
   cache_id NULL,
+  name,
   storage_binding_id,
   prefix,
-  role,                 -- primary | replica | shard | archive
-  state,                -- provisioning | syncing | ready | degraded | draining | offline
-  completeness,         -- complete | partial | unknown
+  kind,                 -- complete | shard | archive
+  desired_state,        -- active | draining | offline
   partition_rule_json NULL,
-  read_enabled,
-  write_enabled,
+  desired_read_enabled,
   read_order,
-  write_order,
+  write_spec_version,
+  resource_version,
   created_at,
   updated_at,
   CHECK exactly_one(registry_id, cache_id),
+  CHECK shard_iff_partition_rule(kind, partition_rule_json),
+  CHECK archive_is_not_read_selected(kind, desired_read_enabled),
+  CHECK write_spec_version > 0,
+  UNIQUE(registry_id, name),
+  UNIQUE(cache_id, name),
+  UNIQUE(id, registry_id),
+  UNIQUE(id, cache_id),
+  UNIQUE(id, registry_id, write_spec_version),
+  UNIQUE(id, cache_id, write_spec_version),
+  UNIQUE(id, storage_binding_id, write_spec_version),
   UNIQUE(storage_binding_id, prefix)
+)
+
+surface_placement_write_capabilities(
+  placement_id,
+  placement_write_spec_version,
+  storage_binding_id,
+  binding_write_revision,
+  created_at,
+  PRIMARY KEY(placement_id, placement_write_spec_version,
+              binding_write_revision),
+  FOREIGN KEY (placement_id, storage_binding_id,
+               placement_write_spec_version)
+    REFERENCES surface_placements(id, storage_binding_id, write_spec_version)
+      ON DELETE CASCADE ON UPDATE RESTRICT,
+  FOREIGN KEY (storage_binding_id, binding_write_revision)
+    REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
+)
+
+surface_placement_observations(
+  placement_id PRIMARY KEY
+    REFERENCES surface_placements(id)
+      ON DELETE CASCADE ON UPDATE RESTRICT,
+  state,                -- provisioning | syncing | ready | degraded | offline
+  completeness,         -- complete | partial | unknown
+  observed_at,
+  observation_version
+)
+
+registry_placement_publication_watermarks(
+  placement_id,
+  registry_id,
+  mutable_publication_id,
+  observed_at,
+  PRIMARY KEY(placement_id),
+  FOREIGN KEY (placement_id, registry_id)
+    REFERENCES surface_placements(id, registry_id)
+      ON DELETE CASCADE ON UPDATE RESTRICT,
+  FOREIGN KEY (mutable_publication_id, registry_id)
+    REFERENCES registry_publications(publication_id, registry_id)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
+)
+
+surface_write_authorities(
+  id PRIMARY KEY,
+  registry_id NULL,
+  cache_id NULL,
+  mode,                 -- single_writer
+  desired_placement_id,
+  desired_write_spec_version,
+  desired_binding_write_revision,
+  desired_generation,
+  observed_placement_id NULL,
+  observed_write_spec_version NULL,
+  observed_binding_write_revision NULL,
+  observed_generation,
+  reconciliation_state, -- pending | ready | failed
+  reconciliation_error NULL,
+  resource_version,
+  created_at,
+  updated_at,
+  CHECK exactly_one(registry_id, cache_id),
+  CHECK mode = 'single_writer',
+  CHECK observed_authority_reference_is_all_set_or_null,
+  CHECK authority_generations_are_consistent,
+  CHECK desired_generation > 0,
+  CHECK observed_generation >= 0,
+  UNIQUE(registry_id),
+  UNIQUE(cache_id),
+  FOREIGN KEY (desired_placement_id, registry_id,
+               desired_write_spec_version)
+    REFERENCES surface_placements(id, registry_id, write_spec_version)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY (desired_placement_id, cache_id,
+               desired_write_spec_version)
+    REFERENCES surface_placements(id, cache_id, write_spec_version)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY (observed_placement_id, registry_id,
+               observed_write_spec_version)
+    REFERENCES surface_placements(id, registry_id, write_spec_version)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY (observed_placement_id, cache_id,
+               observed_write_spec_version)
+    REFERENCES surface_placements(id, cache_id, write_spec_version)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY (desired_placement_id, desired_write_spec_version,
+               desired_binding_write_revision)
+    REFERENCES surface_placement_write_capabilities(
+      placement_id, placement_write_spec_version, binding_write_revision)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY (observed_placement_id, observed_write_spec_version,
+               observed_binding_write_revision)
+    REFERENCES surface_placement_write_capabilities(
+      placement_id, placement_write_spec_version, binding_write_revision)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
 )
 
 placement_policies(
@@ -71,9 +218,251 @@ must belong to the same surface and resolve the same object keys/content; the
 create path never infers equivalence from similar endpoint/bucket strings.
 
 Existing `registry.storage_binding_id/prefix` and
-`cache.storage_binding_id/prefix` migrate into one primary placement each.
-The cutover migration then removes the old fields before the new runtime
+`cache.storage_binding_id/prefix` migrate into one complete placement and
+observation each. A surface receives a ready single-writer authority only when
+preflight proves that its legacy destination was intended to be writable, the
+exact credential/capability revision validates, and there is one unambiguous
+writer. An explicitly read-only surface remains authority-free. A declared
+writable surface whose capability cannot be proven, or any surface with
+ambiguous writer evidence, aborts cutover rather than being downgraded or
+guessed. The migration then removes the old fields before the new runtime
 starts; production code never dual-reads both representations.
+
+### Binding write revisions and rotation
+
+`storage_binding_write_revisions` are immutable declarations. Credential
+rotation, revocation replacement, or a write/conditional-write capability
+change creates a new revision and observation; only a validated revision may
+become `current_write_revision`. The current pointer is a default for new plans,
+not authority over existing writers. A provider-side revocation changes the
+revision observation to `invalid`, immediately making every authority pinned
+to it effectively write-blocked without inventing a replacement.
+
+`revision_fingerprint` hashes the stable binding id, credential-version
+reference, and canonical declared-capability encoding. It is unique within the
+binding and prevents duplicate insertion of the same complete revision.
+`capability_fingerprint` hashes only the canonical capability declaration and
+is deliberately non-unique: it groups equivalent revisions for comparison but
+does not collapse a new credential version into the old revision.
+
+`surface_placement_write_capabilities` pins a topology write-spec version to a
+binding revision. Several rows may coexist for the same placement/spec during
+rotation. Desired and observed authority each reference one exact row, so the
+same placement can move between binding revisions through the ordinary
+authority generation CAS while its binding, prefix, kind, and lifecycle remain
+unchanged.
+
+A binding-write change returns a fan-out plan listing every desired/observed
+authority on that binding and every placement missing a mapping to the new
+revision. Apply creates mappings, reconciles authority rows independently, and
+keeps the old revision usable until all pins move. Partial fan-out is explicit
+and resumable: surfaces already moved use the new revision while the remainder
+continue using the old validated one. After the current pointer and all
+authority pins leave an old revision, obsolete placement-capability mappings
+are deleted, then its observation/revision may be deleted and its credential
+revoked. Immediate `ON DELETE RESTRICT` foreign keys serialize mapping/revision
+deletion against concurrent promotion; no check-then-delete race may retire a
+revision that a winning authority CAS just pinned.
+
+### Observation ownership
+
+Generic placement health/completeness belongs to
+`surface_placement_observations`, whose placement foreign key cascades on
+placement deletion. It contains no registry-only publication id. Registry
+mutable-pointer progress belongs to
+`registry_placement_publication_watermarks`; its non-null `registry_id` is the
+discriminator, and its two composite foreign keys prove both that the
+placement belongs to that registry and that the publication belongs to the
+same registry. Placement deletion cascades the watermark. Publication deletion
+is restricted until no watermark references it. Primary keys and referenced
+identity/version columns never update.
+
+All authority, placement-write-capability, binding-revision, and publication
+foreign keys are immediate/non-deferrable on every supported backend.
+Authority-to-placement and authority-to-capability actions are explicitly `ON
+DELETE RESTRICT ON UPDATE RESTRICT`; placement-owned observations and
+capability mappings cascade only when the already-unreferenced placement is
+deleted. Correctness never depends on deferred constraint checking or cascade
+order that differs between SQLite/D1, PostgreSQL, and MySQL.
+
+### Authority constraints and derived fields
+
+The four same-surface authority foreign keys above are branch-specific
+composite keys. For a registry authority, for example,
+`(desired_placement_id, registry_id, desired_write_spec_version)` references
+`surface_placements(id, registry_id, write_spec_version)` while the cache
+branch is null and therefore ignored under ordinary SQL `MATCH SIMPLE`; cache
+authorities use the inverse pair. The observed reference uses the same shape.
+This enforces same-surface authority and pins writer-critical placement state
+without a polymorphic surface table. The capability foreign keys additionally
+pin the exact binding write revision. Deleting a surface explicitly removes
+authority before its placements so an interrupted workflow leaves a safe
+read-only surface instead of silently cascading away authority.
+
+The observed id, write-spec version, and binding revision are either all null
+or all present. Observed generation never exceeds desired generation. `ready`
+requires equal
+desired/observed placement, write-spec version, binding revision, and
+generation; `pending` and `failed` require the desired generation to be newer.
+These checks make an impossible reconciliation state fail at the storage
+boundary rather than only in one runtime's validation code.
+
+`role`, `write_enabled`, and `write_order` are not stored placement columns and
+are not accepted by mutation messages. Read responses derive role as follows:
+
+- the observed authority placement is `primary`, even when degraded;
+- another `complete` placement is `replica`;
+- `shard` and `archive` follow placement kind; and
+- a desired placement that is not yet observed carries a separate
+  `promotion_pending` authority status rather than becoming a second primary.
+
+Effective write eligibility is true only when the placement is the observed
+authority, desired and observed generations match, reconciliation is `ready`,
+the placement specification is active and complete, and its observation is
+ready and complete. The observed placement-write-capability mapping must match
+the authority's binding revision, that immutable revision must declare every
+write capability required by the surface/payload, and its live observation
+must be `valid`. Observation or credential failure does not move authority; it
+makes effective writes fail closed. Responses expose desired and observed
+authority ids, binding revisions, generations, and effective fields so callers
+never infer pending or write-blocked state from role strings.
+
+### Effective read eligibility
+
+Read eligibility is request-relative, not a stored placement boolean. For a
+route, resolved placement policy, object key, and selected registry publication
+generation, `effective_read(placement, request)` is true exactly when all
+applicable predicates hold:
+
+1. `desired_state = active` and `desired_read_enabled = true`;
+2. placement observation is `ready` or `degraded` and is not stale under the
+   route's health policy;
+3. kind is not `archive`;
+4. a complete placement is observed complete for its declared whole-surface
+   scope; a shard is observed complete for its declared partition, is selected
+   by the route's explicit hash-partition policy, and its stable partition rule
+   matches the requested key;
+5. the route pins this placement or its resolved policy contains it, and the
+   placement satisfies every route protocol capability;
+6. the requested immutable object/payload has `present` object-presence state
+   on the placement; missing, corrupt, copying, deleting, or unknown presence
+   is ineligible;
+7. for a registry mutable pointer, immutable presence is ready and the
+   placement's same-registry publication watermark equals the publication id
+   selected for this request; and
+8. the binding can furnish the required read capability and scoped credential.
+
+A shard can therefore be healthy for its partition without being presented as
+a complete endpoint. A degraded placement may remain eligible only while all
+object/publication predicates for the particular request are proven; unknown
+evidence does not become a speculative read. The placement inventory may show
+the coarser desired read-selection posture, but route selection and
+`ExplainSurfaceRequest` use this complete formula in native and Worker paths.
+
+### Atomic promotion
+
+`PlanPromotePlacement` records the authority version, current observed
+placement, candidate write-spec version, and candidate binding-write revision.
+`PromotePlacement` applies only that plan. Its core mutation is one conditional
+`UPDATE` of `surface_write_authorities` that:
+
+1. matches the expected authority version and current writer;
+2. rejects an authority whose previous desired generation is still pending;
+3. uses a correlated candidate lookup to require the planned placement and
+   write-spec version, same surface, `complete` kind, active desired state,
+   ready/complete observation, and usable binding write capability; and
+4. advances desired generation, resource version, and reconciliation state.
+
+The portable statement has this shape; numbered parameters are illustrative
+and the correlated surface predicate expands to the registry/cache XOR:
+
+```sql
+UPDATE surface_write_authorities
+SET desired_placement_id = ?1,
+    desired_write_spec_version = ?2,
+    desired_binding_write_revision = ?3,
+    desired_generation = desired_generation + 1,
+    reconciliation_state = 'pending',
+    reconciliation_error = NULL,
+    resource_version = resource_version + 1,
+    updated_at = ?4
+WHERE id = ?5
+  AND resource_version = ?6
+  AND observed_placement_id = ?7
+  AND desired_generation = observed_generation
+  AND EXISTS (
+    SELECT 1
+    FROM surface_placements AS p
+    JOIN surface_placement_observations AS o ON o.placement_id = p.id
+    JOIN surface_placement_write_capabilities AS pc
+      ON pc.placement_id = p.id
+     AND pc.placement_write_spec_version = p.write_spec_version
+    JOIN storage_binding_write_revisions AS br
+      ON br.storage_binding_id = pc.storage_binding_id
+     AND br.revision = pc.binding_write_revision
+    JOIN storage_binding_write_observations AS bo
+      ON bo.storage_binding_id = br.storage_binding_id
+     AND bo.revision = br.revision
+    WHERE p.id = ?1
+      AND p.write_spec_version = ?2
+      AND pc.binding_write_revision = ?3
+      AND ((surface_write_authorities.registry_id IS NOT NULL
+            AND p.registry_id = surface_write_authorities.registry_id)
+        OR (surface_write_authorities.cache_id IS NOT NULL
+            AND p.cache_id = surface_write_authorities.cache_id))
+      AND p.kind = 'complete'
+      AND p.desired_state = 'active'
+      AND o.state = 'ready'
+      AND o.completeness = 'complete'
+      AND br.writes_supported = 1
+      AND bo.state = 'valid'
+  );
+```
+
+When Hub routing and fencing can switch synchronously, the same statement also
+advances the observed placement and generation. When reconciliation is
+external, a second single-row authority CAS advances the observed half only
+for the exact desired generation after fencing and routing succeed. The
+generation mismatch keeps Hub writes closed between those statements. A crash
+therefore leaves an explicit resumable pending state, never contradictory
+placement roles.
+
+Checking and pinning `write_spec_version` is required. Without the composite
+foreign key, PostgreSQL or MySQL could commit a promotion and a concurrent
+drain because they update different rows.
+If drain wins, promotion's pinned version is stale; if promotion wins, the
+writer-critical version cannot advance until authority moves. Health and other
+observations remain independently writable.
+
+The CAS is one prepared statement in SQLite and D1 as well as native database
+backends. It does not depend on interactive transactions, partial unique
+indexes, triggers, multi-table updates, `UPDATE ... RETURNING`, or
+backend-specific upsert behavior. It always increments versions, avoiding
+MySQL no-change affected-row ambiguity. On a non-one affected count, the
+service rereads authoritative rows to classify a stale, missing, ineligible,
+or already-applied request without parsing backend SQL errors.
+
+Creating a placement never grants write authority. A new surface may safely
+remain read-only until an `INSERT ... SELECT` creates initial authority from a
+version-matched eligible placement and a validated immutable binding-write
+revision. Drain and deletion reject both desired and observed authority
+placements, including both sides of a pending promotion. Observed health or
+binding capability may still degrade or become invalid while authority is
+pinned; effective writes then fail closed.
+
+The public promote workflow owns both cases. Its plan records that authority
+is absent and apply uses guarded `INSERT ... SELECT` for the first writer, or
+records the current authority and uses the `UPDATE` above. A uniqueness race
+on initial creation is classified by rereading the authority; it never falls
+back to an unchecked update.
+
+The baseline constrains `mode` to `single_writer`. A future multi-writer mode
+adds immutable `surface_write_policy_revisions` and
+`surface_write_policy_members`; the authority row then selects desired and
+observed policy revisions with the same generation/CAS contract. It must define
+payload eligibility, conditional-write support, fencing, and conflict behavior
+before widening the mode constraint. It never reintroduces per-placement write
+booleans or write order.
 
 ## Domains and delivery routes
 
@@ -353,7 +742,8 @@ names are normative in `09-interface-contracts.md`.
 ### Placements
 
 - `CreatePlacement`, `UpdatePlacement`, `PromotePlacement`, `DrainPlacement`,
-  `CancelPlacementDrain`, `DeletePlacement`
+  `CancelPlacementPromotion`, `CancelPlacementDrain`, `DeletePlacement`
+- `GetWriteAuthority`, `ReconcileWriteAuthority`
 - `ListPlacements`, `GetPlacement`, `ScanPlacement`
 - `GetPlacementPolicy`, `SetPlacementPolicy`, `TestPlacementPolicy`
 - `ReplicatePlacement`, `RepairPlacement`, `ListObjectPresence`
@@ -362,7 +752,12 @@ names are normative in `09-interface-contracts.md`.
 
 Creating or moving a placement never silently changes a delivery route or
 signed consumer stack. An impact endpoint reports affected routes and
-integrations before apply.
+integrations before apply. Creation accepts placement kind and desired read
+state, never primary role or write enablement. Promotion is the only ordinary
+operation that changes desired write authority; reconciliation is idempotent
+and generation guarded. Cancellation is a reviewed, generation-guarded
+reconciliation back to the still-observed writer; it never clears a pending
+row without proving the candidate is fenced and the observed writer is ready.
 
 ### Domains and routes
 
@@ -384,13 +779,17 @@ disclosing secrets.
 - `CreateStorageBinding`, `UpdateStorageBinding`, `DeleteStorageBinding`
 - `SetStorageBindingCredential`, `RotateStorageBindingCredential`,
   `ValidateStorageBindingCredential`
+- `ListStorageBindingWriteRevisions`, `GetStorageBindingWriteRevision`,
+  `ReconcileStorageBindingWriteRevision`
 - `GetInstanceDefaultStorageBinding`
 - `GetInstanceTopologyDefaults`, `SetInstanceTopologyDefaults`
 - `GetOrganizationTopologyDefaults`, `SetOrganizationTopologyDefaults`
 
-The public binding record exposes capabilities and health, never credential
-material. Default changes have their own impact plan and affect only future
-workflows unless the operator separately plans changes to existing resources.
+The public binding record exposes capabilities, immutable revision references,
+and health, never credential material. Rotation plans include authority fan-out
+and explicit old-revision retirement. Default changes have their own impact
+plan and affect only future workflows unless the operator separately plans
+changes to existing resources.
 
 ### Cache integrations
 
@@ -426,7 +825,10 @@ Mutations that cross records use a plan/apply shape:
 4. enqueue replication/probe/index work after the control-plane transaction.
 
 Examples include surface visibility changes, domain access changes, placement
-drains, canonical route changes, and enabling destructive GC.
+drains, write-authority promotion, canonical route changes, and enabling
+destructive GC. Promotion itself has a stricter portable rule: its authority
+change is one compare-and-swap statement, not an interactive transaction that
+Worker D1 cannot reproduce.
 
 ## Complete cutover
 
@@ -435,11 +837,19 @@ drains, canonical route changes, and enabling destructive GC.
 - Every committed registry `[caches]` URL is checked before cutover. If its URL
   will change, the signed change is merged before switching traffic.
 - The schema migration creates placements, domains, gateways, routes,
-  integrations, and root reasons, validates them, and drops the old topology
-  tables/columns in the same maintenance operation.
+  observations, proven binding-write revisions, applicable write authorities,
+  integrations, and root reasons; validates them; and drops the old topology
+  tables/columns in the same maintenance operation. Explicitly read-only
+  surfaces remain authority-free. A declared writable surface without one
+  unambiguous validated legacy writer, or any physical-location collision,
+  aborts the cutover.
 - Native and Worker binaries start only against the new schema and route
   index. They contain no legacy read/write branch.
 - Old API messages, methods, UI handlers, CLI variants, and help text are
   removed rather than deprecated in place.
 - Fresh installations use a squashed new Hub schema baseline. The one-shot
   cutover artifact is not part of the steady-state runtime.
+- Provisional development migrations that stored primary/write fields are
+  rewritten before merge rather than followed by compatibility migrations.
+  Branch-local databases that ran an unreleased shape are reset; production
+  never learns to read both authority models.

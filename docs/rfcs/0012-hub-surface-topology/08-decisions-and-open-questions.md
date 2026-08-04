@@ -9,8 +9,11 @@ machinery without collapsing their payload models.
 
 ### D2: multiple placements ship in the first topology implementation
 
-Placement roles and object presence are first-class. The migration creates one
-primary placement for every existing surface before adding replicas or shards.
+Placement kind, desired lifecycle, observed condition, and object presence are
+first-class. The migration creates one complete placement for every existing
+surface and a separate single-writer authority only for each proven writable,
+validated, unambiguous legacy surface before adding more complete placements,
+shards, or archives.
 
 ### D3: routes and placements are different layers
 
@@ -72,7 +75,9 @@ Implementation may be developed in phases, but there is no production
 dual-read period. The cutover transforms all data under maintenance, drops the
 old schema, and deploys Web UI, CLI, API, native, and Worker together. Rollback
 restores the pre-cutover database and deployment; it is not a permanent legacy
-mode in the new runtime.
+mode in the new runtime. Only an explicitly writable legacy surface with one
+validated, unambiguous destination receives authority; explicitly read-only
+surfaces remain authority-free and unproven declared writability aborts.
 
 ### D14: the public API becomes `aos.hub.v1`
 
@@ -102,6 +107,45 @@ scope root. Pages own one primary mutation domain; inventories, creation,
 topology, policy, operations, and danger are not combined merely to reduce
 route count.
 
+### D18: write authority is one per-surface resource
+
+Placements do not store primary role, write enablement, write order, or nullable
+primary-discriminator columns. One authority row records desired and observed
+placement revisions and generations. Primary role and effective write
+eligibility are read projections. Promotion is a compare-and-swap on that one
+row, guarded by authority, current-writer, and candidate versions; no API or
+runtime swaps flags between placement rows.
+
+Desired authority may reconcile synchronously or through an explicit pending
+generation. Generation disagreement and uncertain candidate health fail Hub
+writes closed. Writer-critical placement revisions are pinned by same-surface
+composite foreign keys so concurrent drain, delete, or kind changes cannot
+commit around promotion on any supported database.
+
+### D19: placement intent and observation are separate records
+
+Placement kind, desired lifecycle, and desired read selection are operator
+intent. Readiness, completeness, health, and publication progress are observed
+state and remain writable while authority is pinned. A degraded primary stays
+the authority until an explicit promotion; health never silently elects a
+writer.
+
+Generic placement observation owns health/completeness and cascades with its
+placement. Registry mutable-publication watermark is a separate registry-only
+record with same-registry composite foreign keys. Effective read eligibility
+is request-relative and requires desired selection, observed health/coverage,
+policy or shard membership, object presence, and publication watermark.
+
+### D20: binding write capability is immutable, versioned, and pinned
+
+Each binding write/credential capability is an immutable revision with a
+separate validation observation. A placement topology write-spec maps to one or
+more binding revisions, and desired/observed authority pin one exact mapping.
+Rotation fans out authority CAS operations while old and new validated
+revisions coexist. Immediate `ON DELETE/UPDATE RESTRICT` foreign keys prevent a
+Hub-managed revision from disappearing under a concurrent promotion; external
+invalidation blocks writes without moving authority.
+
 ## Rejected conflations
 
 - Storage binding endpoint as consumer URL.
@@ -113,15 +157,21 @@ route count.
 - Population as proof of coverage.
 - URL string equality as managed-cache identity.
 - A complete replica and a partial shard as the same placement role.
+- Primary role or write enablement as independently mutable placement fields.
+- Desired lifecycle and observed placement health as one state column.
 - Logical cache GC and local tier eviction as one operation.
 
 ## Bounded open questions
 
-### O1: one primary or controlled multi-writer?
+### O1: controlled multi-writer policy details
 
-The baseline is one primary writer plus replicas. A future multi-writer policy
-requires per-payload conflict analysis and conditional-write support. The
-schema does not prevent adding it, but this RFC does not authorize it.
+The locked baseline is one desired/observed writer authority plus any number of
+complete replicas. A future controlled multi-writer mode uses immutable
+write-policy revisions and explicit members selected by the authority row; it
+does not restore placement write booleans or write order. Payload eligibility,
+conditional-write capabilities, fencing, quorum, and conflict semantics remain
+open and require a separate authorization before widening the `single_writer`
+mode constraint.
 
 ### O2: initial shard function
 

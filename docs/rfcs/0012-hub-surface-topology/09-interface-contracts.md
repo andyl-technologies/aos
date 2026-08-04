@@ -19,6 +19,12 @@ same resources and operations. They must not invent separate meanings for
 6. Every read command and list endpoint has stable machine-readable output.
 7. Destructive operations require an explicit plan/apply or confirmation
    token; `--yes` is valid only after the plan is printed or supplied by id.
+8. Placement mutation inputs use kind, lifecycle, and read selection. Primary
+   role and effective write eligibility are derived responses; only promotion
+   changes desired write authority.
+9. Desired and observed authority, placement state, and generations are shown
+   separately. Interfaces never present a pending promotion as two primaries
+   or silently elect a writer from health.
 
 ## Resource references
 
@@ -39,7 +45,7 @@ reference.
 | Settings owner | CLI family | API owner |
 | --- | --- | --- |
 | Storage bindings and defaults | `storage-binding`, `{org,instance} topology-defaults` | `StorageBindingService` |
-| Storage & replicas | `placement`, `placement-policy`, `placement-equivalence` | `TopologyService` |
+| Storage, replicas, and write authority | `placement`, `placement-policy`, `placement-equivalence` | `TopologyService` |
 | Domains | `domain` | `DomainService` domain methods |
 | Storage gateways | `gateway` | `DomainService` gateway methods |
 | Delivery | `route` | `RouteService` |
@@ -201,14 +207,23 @@ mutations redirect to a stable operation or resource URL.
 
 ### Storage & replicas
 
-The page shows placement cards/table plus placement-policy order. Supported
-actions are:
+The page shows placement cards/table, placement-policy order, and a separate
+Write authority panel. That panel names the desired and observed placement,
+their generations, reconciliation state/error, and whether writes currently
+fail closed. The observed authority sorts first; a different desired candidate
+is labeled Promotion pending rather than Primary. Placement forms never expose
+editable primary, write-enabled, or write-order controls.
+
+Supported actions are:
 
 - add a placement;
 - scan or rescan presence;
 - seed/replicate from an existing placement;
 - repair missing/corrupt objects;
-- change read/write order;
+- change read-policy order;
+- review and promote a ready complete placement through the Write authority
+  panel;
+- retry or review cancellation of a pending/failed promotion;
 - begin drain;
 - cancel drain; and
 - remove a fully drained placement.
@@ -218,12 +233,15 @@ actions are:
 1. create destination placement;
 2. copy and verify;
 3. update applicable placement policies;
-4. optionally promote destination to primary;
+4. optionally promote write authority to the destination;
 5. drain the source; and
 6. remove the source later.
 
 The workflow never presents a binding change as an instantaneous pointer swap
-when bytes or routes still depend on the old placement.
+when bytes or routes still depend on the old placement. Promotion apply uses
+the authority, current-writer, and candidate versions captured by its impact
+plan. A pending promotion links to its operation/reconciliation state and
+cannot be bypassed by editing either placement.
 
 ### Delivery
 
@@ -337,12 +355,17 @@ explanation and has identical JSON fields.
 aos hub placement list <surface-ref>
 aos hub placement show <surface-ref> <placement>
 aos hub placement add <surface-ref> --binding <name> --prefix <prefix>
-  --role primary|replica|shard|archive
-aos hub placement update <surface-ref> <placement> ...
+  [--kind complete|shard|archive]
+  [--desired-state active|offline] [--read enabled|disabled]
+  [--read-order <ordinal>] [--partition-rule <json>]
+aos hub placement update <surface-ref> <placement>
+  [--desired-state active|offline] [--read enabled|disabled]
+  [--read-order <ordinal>] --if-version <version>
 aos hub placement scan <surface-ref> <placement>
 aos hub placement replicate <surface-ref> --from <placement> --to <placement>
 aos hub placement repair <surface-ref> <placement> [--from <placement>]
 aos hub placement promote <surface-ref> <placement>
+aos hub placement promotion cancel <surface-ref>
 aos hub placement drain <surface-ref> <placement>
 aos hub placement drain cancel <surface-ref> <placement>
 aos hub placement remove <surface-ref> <placement>
@@ -357,9 +380,36 @@ aos hub placement-policy set <surface-ref>
 aos hub placement-policy test <surface-ref> --path <machine-path>
 ```
 
-`placement add` never changes canonical routes by itself. `promote` returns an
-impact plan covering writes and mutable pointers. Replicate/scan/repair/drain
-return operation ids.
+`placement add` never grants write authority or changes canonical routes by
+itself. A newly created surface may remain safely read-only until initial
+authority is created from a ready complete placement. `promote` returns an
+impact plan covering writes, fencing/reconciliation, and mutable pointers. Its
+plan records the authority version, expected current placement, and candidate
+write-spec and binding-write revisions; apply rejects if any is stale or no
+longer valid. Replicate/scan/repair/drain return operation ids. When the surface
+has no authority, the same command plans guarded initial authority creation
+rather than requiring an unrelated placement mutation.
+
+Create defaults are `--kind complete`, `--desired-state active`,
+`--read enabled`, and `--read-order 0`; archive defaults to read disabled and
+rejects explicit read enablement. `--partition-rule` is required for `shard`
+and rejected otherwise. `draining` is owned by `placement drain`, not generic
+create/update. Binding, prefix, kind, and partition rule are immutable in
+`placement update`; changing them uses add/replicate/promote/drain. Web forms
+and API messages use the same defaults and update field set.
+
+`placement promotion cancel` is plan/apply, not deletion of pending metadata.
+It restores desired and observed authority to the previously observed writer
+only after reconciliation proves the candidate is fenced and the old writer
+is eligible. It advances the authority generation and rejects stale plans.
+
+`placement list`, `placement show`, and `surface topology` report placement
+kind and desired/observed state, plus derived role and effective read/write
+eligibility. They report desired/observed authority placements and generations
+and pinned binding-write revisions explicitly. Placement-level read posture is
+not a claim about an arbitrary object: `surface explain --path` evaluates the
+normative policy/shard/presence/publication predicate. No CLI flag sets role,
+write enablement, or write order.
 
 ### Storage bindings, defaults, domains, gateways, and delivery routes
 
@@ -371,6 +421,9 @@ aos hub storage-binding update <binding-ref> ...
 aos hub storage-binding credential set <binding-ref> --purpose <purpose> ...
 aos hub storage-binding credential rotate <binding-ref> --purpose <purpose>
 aos hub storage-binding credential validate <binding-ref> [--purpose <purpose>]
+aos hub storage-binding write-revision list <binding-ref>
+aos hub storage-binding write-revision show <binding-ref> <revision>
+aos hub storage-binding write-revision reconcile <binding-ref> <revision>
 aos hub storage-binding delete <binding-ref>
 
 aos hub org topology-defaults show <org>
@@ -584,7 +637,8 @@ resource existence outside the caller's scope.
 List methods use cursor pagination and deterministic ordering. Responses carry
 resource versions and stable ids. Secret-bearing write fields are write-only.
 
-The public contract defines typed `Placement`, `PlacementPolicy`,
+The public contract defines typed `Placement`, `PlacementObservation`,
+`SurfaceWriteAuthority`, `PlacementAuthorityStatus`, `PlacementPolicy`,
 `PlacementEquivalence`, `ObjectPresence`, `PlacementImpact`, `StorageBinding`,
 `StorageBindingCapabilities`, `StorageBindingHealth`, `Domain`,
 `DomainDesiredState`, `DomainObservedState`, `DnsConfiguration`,
@@ -600,12 +654,15 @@ or readable secret values.
 ```text
 GetSurfaceTopology
 ExplainSurfaceRequest
+GetWriteAuthority
+ReconcileWriteAuthority
 
 ListPlacements
 GetPlacement
 PlanCreatePlacement / CreatePlacement
 PlanUpdatePlacement / UpdatePlacement
 PlanPromotePlacement / PromotePlacement
+PlanCancelPlacementPromotion / CancelPlacementPromotion
 PlanDrainPlacement / DrainPlacement
 PlanCancelPlacementDrain / CancelPlacementDrain
 PlanDeletePlacement / DeletePlacement
@@ -624,9 +681,33 @@ PlanDeletePlacementEquivalence / DeletePlacementEquivalence
 ```
 
 Scan, replicate, repair, and drain return `OperationRef`. Placement plan
-effects use `PlacementImpact` to include route eligibility, write-primary
-changes, replication bytes, and signed-config impact without mutating any of
-those resources implicitly.
+effects use `PlacementImpact` to include route eligibility, desired/observed
+write-authority generations, replication bytes, fencing/reconciliation, and
+signed-config impact without mutating any of those resources implicitly.
+
+`CreatePlacement` contains binding, prefix, kind, initial desired state, desired
+read selection/order, and a shard rule where required, with the CLI defaults
+above applied by every interface. `UpdatePlacement` contains only desired
+state, read selection/order, and expected resource version; binding, prefix,
+kind, shard rule, authority, and observation are not generic update fields.
+Response messages additionally contain observed state/completeness, coarse
+desired read posture, and derived role/effective selection. Request-relative
+effective reads use the complete predicate in `05-data-model-and-api.md`.
+`SurfaceWriteAuthority` contains desired and observed placement references,
+write-spec and binding-write revisions, generations, reconciliation
+state/error, mode, and resource version. No request message accepts primary
+role, `write_enabled`, or write order.
+
+`PlanPromotePlacement` resolves and returns the expected authority version,
+current observed placement, candidate write-spec and binding-write revisions,
+candidate eligibility, and semantic effects. `PromotePlacement` requires the
+plan id and those exact preconditions. Its core apply is one authority-row CAS
+on every backend. If external reconciliation is required, it returns `OperationRef` and
+`ReconcileWriteAuthority` may advance only the matching desired generation;
+the method is idempotent and never rewrites a newer promotion.
+`CancelPlacementPromotion` follows the same authority-row CAS and generation
+rules after its fencing preconditions have reconciled; an operator can also
+retry the associated operation without creating a new desired generation.
 
 ### StorageBindingService
 
@@ -638,6 +719,9 @@ PlanUpdateStorageBinding / UpdateStorageBinding
 PlanSetStorageBindingCredential / SetStorageBindingCredential
 PlanRotateStorageBindingCredential / RotateStorageBindingCredential
 ValidateStorageBindingCredential
+ListStorageBindingWriteRevisions
+GetStorageBindingWriteRevision
+ReconcileStorageBindingWriteRevision
 PlanDeleteStorageBinding / DeleteStorageBinding
 
 GetInstanceDefaultStorageBinding
@@ -650,6 +734,13 @@ PlanSetOrganizationTopologyDefaults / SetOrganizationTopologyDefaults
 `StorageBindingRef` is a oneof of the instance default or an organization
 binding reference. Capability and health records contain no credentials.
 Changing defaults does not mutate existing placements, routes, or gateways.
+A write-credential/capability rotation creates and validates an immutable
+revision, returns an authority fan-out plan, and keeps the old revision usable
+until all pins move. Revision responses expose credential references and
+revision/capability fingerprints, never secret material. Equal capability
+fingerprints do not suppress a revision whose credential-version reference
+changed. Provider invalidation is observed separately and makes affected
+authorities write-blocked.
 
 ### DomainService
 
@@ -799,6 +890,9 @@ stable resource ids:
 ```text
 placement.scan.completed
 placement.replication.completed
+placement.promotion.requested
+placement.promotion.completed
+placement.promotion.failed
 placement.drained
 route.probe.changed
 route.canonical.changed
@@ -819,6 +913,9 @@ Web UI and CLI operation views consume the same event/status model.
   golden test.
 - Web UI, CLI, and API use the same names for placements, routes, consumer
   cache stacks, retention subscriptions, population targets, and root reasons.
+- Web UI, CLI, API, native routing, and Worker routing derive the same primary,
+  promotion-pending, and effective-write state from one authority projection;
+  mutation inputs contain none of those derived fields.
 - Native and Worker API fixtures produce identical status codes and response
   bodies for authorization and validation cases.
 - Old commands, Web UI paths, protobuf descriptors, and Connect-JSON routes are
