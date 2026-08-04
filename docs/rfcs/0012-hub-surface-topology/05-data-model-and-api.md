@@ -11,9 +11,86 @@ Connect-JSON service/message and CLI mapping is in
 ## Binding-write capability and placement records
 
 ```sql
+storage_bindings(
+  id,
+  org_id NULL,
+  owner_scope_key,       -- instance | org:<stable-id>
+  name,
+  kind,                  -- local_fs | s3 | r2
+  local_root_path NULL,
+  object_bucket NULL,
+  object_prefix NULL,
+  endpoint_scheme NULL,  -- https
+  endpoint_host_kind NULL, -- dns | ipv4 | ipv6
+  endpoint_host_bytes NULL,
+  endpoint_port NULL,
+  signing_region NULL,
+  access_mode NULL,      -- public | private; object stores only
+  resource_version,
+  created_at,
+  updated_at,
+  UNIQUE(id, owner_scope_key),
+  UNIQUE(org_id, name),
+  CHECK valid_storage_binding_kind_shape,
+  CHECK(kind = 'local_fs' OR endpoint_scheme = 'https')
+)
+
+storage_binding_credential_revisions(
+  storage_binding_id,
+  purpose,               -- read | write | delete | list | presign
+  generation,
+  secret_version_ref,
+  validation_state,      -- unknown | validating | valid | invalid | retired
+  validated_at NULL,
+  validation_error NULL,
+  credential_fingerprint,
+  created_by,
+  created_at,
+  PRIMARY KEY(storage_binding_id, purpose, generation),
+  UNIQUE(storage_binding_id, purpose, secret_version_ref),
+  CHECK(generation > 0),
+  FOREIGN KEY(storage_binding_id) REFERENCES storage_bindings(id)
+    ON DELETE CASCADE ON UPDATE RESTRICT
+)
+
+storage_binding_credential_heads(
+  storage_binding_id,
+  purpose,
+  current_generation,
+  resource_version,
+  updated_at,
+  PRIMARY KEY(storage_binding_id, purpose),
+  FOREIGN KEY(storage_binding_id, purpose, current_generation)
+    REFERENCES storage_binding_credential_revisions(
+      storage_binding_id, purpose, generation)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
+)
+
+storage_binding_consumer_scopes(
+  storage_binding_id,
+  consumer_scope_key,
+  grant_generation,
+  grant_kind,            -- owner | instance_default | explicit
+  state,                 -- active | revoked
+  granted_by,
+  granted_at,
+  revoked_by NULL,
+  revoked_at NULL,
+  resource_version,
+  PRIMARY KEY(storage_binding_id, consumer_scope_key),
+  UNIQUE(storage_binding_id, consumer_scope_key, grant_generation, state),
+  CHECK(grant_generation > 0),
+  CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
+     OR (state = 'revoked' AND revoked_by IS NOT NULL
+         AND revoked_at IS NOT NULL)),
+  FOREIGN KEY(storage_binding_id) REFERENCES storage_bindings(id)
+)
+
 storage_binding_write_revisions(
   storage_binding_id,
   revision,
+  write_credential_purpose,  -- always write
+  write_credential_generation,
   write_credential_version_ref,
   writes_supported,
   conditional_writes_supported,
@@ -22,6 +99,12 @@ storage_binding_write_revisions(
   created_at,
   PRIMARY KEY(storage_binding_id, revision),
   UNIQUE(storage_binding_id, revision_fingerprint),
+  CHECK(write_credential_purpose = 'write'),
+  FOREIGN KEY(storage_binding_id, write_credential_purpose,
+              write_credential_generation)
+    REFERENCES storage_binding_credential_revisions(
+      storage_binding_id, purpose, generation)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
   FOREIGN KEY (storage_binding_id)
     REFERENCES storage_bindings(id)
       ON DELETE CASCADE ON UPDATE RESTRICT
@@ -57,12 +140,14 @@ surface_placements(
   id,
   registry_id NULL,
   cache_id NULL,
+  consumer_scope_key,
   name,
   storage_binding_id,
   prefix,
   kind,                 -- complete | shard | archive
   desired_state,        -- active | draining | offline
-  partition_rule_json NULL,
+  hash_range_start NULL,
+  hash_range_end NULL,
   desired_read_enabled,
   read_order,
   write_spec_version,
@@ -70,17 +155,32 @@ surface_placements(
   created_at,
   updated_at,
   CHECK exactly_one(registry_id, cache_id),
-  CHECK shard_iff_partition_rule(kind, partition_rule_json),
+  CHECK shard_iff_hash_range_v1(kind, hash_range_start, hash_range_end),
+  CHECK valid_half_open_hash_range(hash_range_start, hash_range_end),
   CHECK archive_is_not_read_selected(kind, desired_read_enabled),
   CHECK write_spec_version > 0,
   UNIQUE(registry_id, name),
   UNIQUE(cache_id, name),
   UNIQUE(id, registry_id),
   UNIQUE(id, cache_id),
+  UNIQUE(id, kind),
+  UNIQUE(id, registry_id, kind),
+  UNIQUE(id, cache_id, kind),
+  UNIQUE(id, registry_id, kind, hash_range_start, hash_range_end),
+  UNIQUE(id, cache_id, kind, hash_range_start, hash_range_end),
+  UNIQUE(id, storage_binding_id),
+  UNIQUE(id, storage_binding_id, prefix),
   UNIQUE(id, registry_id, write_spec_version),
   UNIQUE(id, cache_id, write_spec_version),
   UNIQUE(id, storage_binding_id, write_spec_version),
-  UNIQUE(storage_binding_id, prefix)
+  UNIQUE(storage_binding_id, prefix),
+  FOREIGN KEY(registry_id, consumer_scope_key)
+    REFERENCES registries(id, scope_key),
+  FOREIGN KEY(cache_id, consumer_scope_key)
+    REFERENCES binary_caches(id, scope_key),
+  FOREIGN KEY(storage_binding_id, consumer_scope_key)
+    REFERENCES storage_binding_consumer_scopes(
+      storage_binding_id, consumer_scope_key)
 )
 
 surface_placement_write_capabilities(
@@ -182,17 +282,174 @@ placement_policies(
   id,
   registry_id NULL,
   cache_id NULL,
-  kind,                 -- ordered_failover | latency_preferred | hash_partition
-  config_json,
-  CHECK exactly_one(registry_id, cache_id)
+  name,
+  current_revision_id NULL,
+  current_revision_state NULL,
+  resource_version,
+  CHECK exactly_one(registry_id, cache_id),
+  CHECK ((current_revision_id IS NULL AND current_revision_state IS NULL)
+      OR (current_revision_id IS NOT NULL
+          AND current_revision_state = 'published')),
+  UNIQUE(registry_id, name),
+  UNIQUE(cache_id, name),
+  UNIQUE(id, registry_id),
+  UNIQUE(id, cache_id),
+  FOREIGN KEY(current_revision_id, id, registry_id, current_revision_state)
+    REFERENCES placement_policy_revisions(
+      id, policy_id, registry_id, state),
+  FOREIGN KEY(current_revision_id, id, cache_id, current_revision_state)
+    REFERENCES placement_policy_revisions(id, policy_id, cache_id, state)
 )
 
-placement_policy_members(
+placement_policy_revisions(
+  id,
   policy_id,
+  registry_id NULL,
+  cache_id NULL,
+  consumer_scope_key,
+  revision,
+  kind,                 -- ordered_failover | local_then_remote | hash_partition
+  local_boundary_id NULL,
+  local_boundary_revision NULL,
+  allow_remote_fallback NULL,
+  hash_rule NULL,       -- hash_range_v1
+  state,                -- building | published | failed
+  expected_group_count,
+  expected_member_count,
+  build_version,
+  content_digest NULL,
+  created_by,
+  created_at,
+  published_at NULL,
+  error NULL,
+  CHECK exactly_one(registry_id, cache_id),
+  CHECK fields_match_policy_kind,
+  CHECK ((state = 'building' AND content_digest IS NULL
+          AND published_at IS NULL AND error IS NULL)
+      OR (state = 'published' AND content_digest IS NOT NULL
+          AND published_at IS NOT NULL AND error IS NULL)
+      OR (state = 'failed' AND published_at IS NULL AND error IS NOT NULL)),
+  UNIQUE(policy_id, revision),
+  UNIQUE(id, policy_id, registry_id),
+  UNIQUE(id, policy_id, cache_id),
+  UNIQUE(id, policy_id, registry_id, state),
+  UNIQUE(id, policy_id, cache_id, state),
+  UNIQUE(id, registry_id),
+  UNIQUE(id, cache_id),
+  UNIQUE(id, registry_id, kind),
+  UNIQUE(id, cache_id, kind),
+  UNIQUE(id, registry_id, state),
+  UNIQUE(id, cache_id, state),
+  FOREIGN KEY(policy_id, registry_id)
+    REFERENCES placement_policies(id, registry_id),
+  FOREIGN KEY(policy_id, cache_id)
+    REFERENCES placement_policies(id, cache_id),
+  FOREIGN KEY(registry_id, consumer_scope_key)
+    REFERENCES registries(id, scope_key),
+  FOREIGN KEY(cache_id, consumer_scope_key)
+    REFERENCES binary_caches(id, scope_key),
+  FOREIGN KEY(local_boundary_id, local_boundary_revision)
+    REFERENCES network_boundary_revisions(boundary_id, revision),
+  FOREIGN KEY(local_boundary_id, consumer_scope_key)
+    REFERENCES network_boundary_consumer_scopes(
+      boundary_id, consumer_scope_key)
+)
+
+placement_policy_replica_groups(
+  policy_revision_id,
+  registry_id NULL,
+  cache_id NULL,
+  group_id,
+  group_order,
+  policy_kind,
+  purpose,              -- ordered | local | remote | hash_range | complete_fallback
+  range_start NULL,     -- inclusive u32 start in 0..65535, hash_range only
+  range_end NULL,       -- exclusive u32 end in 1..65536, hash_range only
+  PRIMARY KEY(policy_revision_id, group_id),
+  UNIQUE(policy_revision_id, group_order),
+  UNIQUE(policy_revision_id, group_id, registry_id),
+  UNIQUE(policy_revision_id, group_id, cache_id),
+  UNIQUE(policy_revision_id, group_id, registry_id, policy_kind, purpose),
+  UNIQUE(policy_revision_id, group_id, cache_id, policy_kind, purpose),
+  UNIQUE(policy_revision_id, group_id, registry_id, policy_kind, purpose,
+         range_start, range_end),
+  UNIQUE(policy_revision_id, group_id, cache_id, policy_kind, purpose,
+         range_start, range_end),
+  CHECK exactly_one(registry_id, cache_id),
+  CHECK valid_group_shape,
+  FOREIGN KEY(policy_revision_id, registry_id, policy_kind)
+    REFERENCES placement_policy_revisions(id, registry_id, kind),
+  FOREIGN KEY(policy_revision_id, cache_id, policy_kind)
+    REFERENCES placement_policy_revisions(id, cache_id, kind)
+)
+
+placement_policy_complete_members(
+  policy_revision_id,
+  group_id,
+  registry_id NULL,
+  cache_id NULL,
+  policy_kind,
+  group_purpose,
   placement_id,
+  placement_kind,       -- complete
   member_order,
-  required,
-  PRIMARY KEY(policy_id, placement_id)
+  PRIMARY KEY(policy_revision_id, group_id, placement_id),
+  UNIQUE(policy_revision_id, group_id, member_order),
+  UNIQUE(policy_revision_id, placement_id),
+  CHECK exactly_one(registry_id, cache_id),
+  CHECK placement_kind = 'complete',
+  CHECK valid_complete_group_member(policy_kind, group_purpose),
+  FOREIGN KEY(policy_revision_id, group_id, registry_id, policy_kind,
+              group_purpose)
+    REFERENCES placement_policy_replica_groups(
+      policy_revision_id, group_id, registry_id, policy_kind, purpose),
+  FOREIGN KEY(policy_revision_id, group_id, cache_id, policy_kind,
+              group_purpose)
+    REFERENCES placement_policy_replica_groups(
+      policy_revision_id, group_id, cache_id, policy_kind, purpose),
+  FOREIGN KEY(placement_id, registry_id, placement_kind)
+    REFERENCES surface_placements(id, registry_id, kind),
+  FOREIGN KEY(placement_id, cache_id, placement_kind)
+    REFERENCES surface_placements(id, cache_id, kind)
+)
+
+placement_policy_shard_members(
+  policy_revision_id,
+  group_id,
+  registry_id NULL,
+  cache_id NULL,
+  policy_kind,          -- hash_partition
+  group_purpose,        -- hash_range
+  range_start,
+  range_end,
+  placement_id,
+  placement_kind,       -- shard
+  member_order,
+  PRIMARY KEY(policy_revision_id, group_id, placement_id),
+  UNIQUE(policy_revision_id, group_id, member_order),
+  UNIQUE(policy_revision_id, placement_id),
+  CHECK exactly_one(registry_id, cache_id),
+  CHECK policy_kind = 'hash_partition',
+  CHECK group_purpose = 'hash_range',
+  CHECK placement_kind = 'shard',
+  FOREIGN KEY(policy_revision_id, group_id, registry_id, policy_kind,
+              group_purpose, range_start, range_end)
+    REFERENCES placement_policy_replica_groups(
+      policy_revision_id, group_id, registry_id, policy_kind, purpose,
+      range_start, range_end),
+  FOREIGN KEY(policy_revision_id, group_id, cache_id, policy_kind,
+              group_purpose, range_start, range_end)
+    REFERENCES placement_policy_replica_groups(
+      policy_revision_id, group_id, cache_id, policy_kind, purpose,
+      range_start, range_end),
+  FOREIGN KEY(placement_id, registry_id, placement_kind,
+              range_start, range_end)
+    REFERENCES surface_placements(
+      id, registry_id, kind, hash_range_start, hash_range_end),
+  FOREIGN KEY(placement_id, cache_id, placement_kind,
+              range_start, range_end)
+    REFERENCES surface_placements(
+      id, cache_id, kind, hash_range_start, hash_range_end)
 )
 
 placement_equivalences(
@@ -210,6 +467,55 @@ placement_equivalences(
   UNIQUE(placement_a_id, placement_b_id)
 )
 ```
+
+`valid_storage_binding_kind_shape` is a closed union. `local_fs` requires one
+canonical absolute `local_root_path` and requires every object-store field and
+credential head to be absent. `s3` and `r2` require bucket, canonical prefix
+(empty means the bucket root), typed HTTPS endpoint origin, effective port,
+signing region, and access mode, and require `local_root_path` to be null.
+`public` object-store bindings have no credential heads and no write revision;
+`private` bindings become usable for an operation only after its exact
+purpose-specific credential revision validates. Bucket, prefix, kind, owner,
+and name are immutable storage identity; changing them creates a replacement
+binding and moves placements/gateways through impact plans. Update may change
+only object endpoint, signing region, or access mode. Moving to `public`
+requires zero credential/write pins and retires heads in the same plan.
+
+Credential `set` is valid only when that purpose has no head and creates
+generation one. Credential `rotate` requires the expected current generation
+and creates its successor; it never overwrites secret references. `write` or
+`presign` changes also create and validate the corresponding immutable
+binding-write revision before authority can move. Secret values never enter the
+database or API—only secret-store version references and redacted fingerprints
+do.
+
+Policy revisions and all group/member rows are immutable. Ordered failover has
+one `ordered` group. Local-then-remote has one group per configured access class
+and stores the exact trusted boundary revision plus remote-fallback choice on
+the revision and in its content digest.
+Hash partition uses `hash_range_v1`, one replica group per non-overlapping
+range, and optional ordered `complete_fallback` groups. Validation requires
+complete bucket coverage or a complete fallback, permits replicas only inside
+one identical range group, and checks placement kind and same-surface ownership
+through the composite keys above. Routes and population targets pin an exact
+revision; publishing a new current revision never changes an existing target.
+Revision construction is permitted only in `building`. Every group or member
+mutation first locks the revision row on transactional databases, verifies
+`state = building` and the caller's expected `build_version`, performs exactly
+one mutation, and increments `build_version` in the same transaction. The D1
+implementation performs the equivalent guarded mutation and increment in one
+atomic batch. A final native transaction or D1 atomic batch verifies exact
+group/member counts, range coverage, content digest, all kind/range keys, and
+the unchanged policy and build versions; its publication update is a CAS on
+`state = building` and that exact `build_version`. It then marks the revision
+`published` and optionally advances the policy current pointer. A stale builder
+therefore cannot append to or alter published content on any backend.
+Route and population foreign keys carry `state = published`, so a partial or
+failed revision is structurally untargetable. Published revisions and their
+groups/members are immutable.
+Every revision/group/member and route target foreign key is immediate
+`ON UPDATE RESTRICT ON DELETE RESTRICT`; deletion workflows first move or
+remove dependents under their resource-version plans.
 
 Placement equivalence handles the rare case where two logical placement
 records intentionally address the same physical bytes. Confirmation records
@@ -334,14 +640,19 @@ route, resolved placement policy, object key, and selected registry publication
 generation, `effective_read(placement, request)` is true exactly when all
 applicable predicates hold:
 
+For a mutable registry request, the selected generation is a snapshot of the
+surface's committed publication head taken before placement selection. The same
+id is retained through every failover attempt; selection never reads candidate
+heads independently.
+
 1. `desired_state = active` and `desired_read_enabled = true`;
 2. placement observation is `ready` or `degraded` and is not stale under the
    route's health policy;
 3. kind is not `archive`;
 4. a complete placement is observed complete for its declared whole-surface
    scope; a shard is observed complete for its declared partition, is selected
-   by the route's explicit hash-partition policy, and its stable partition rule
-   matches the requested key;
+   by the route's explicit hash-partition policy, and its typed
+   `hash_range_v1` interval contains the stored partition key's bucket;
 5. the route pins this placement or its resolved policy contains it, and the
    placement satisfies every route protocol capability;
 6. the requested immutable object/payload has `present` object-presence state
@@ -464,35 +775,310 @@ payload eligibility, conditional-write support, fencing, and conflict behavior
 before widening the mode constraint. It never reintroduces per-placement write
 booleans or write order.
 
-## Domains and delivery routes
+## Domains, delivery endpoints, and routes
+
+`registries` and `binary_caches` each expose a non-null canonical `scope_key`
+(`instance` or `org:<stable-id>`) and `UNIQUE(id, scope_key)`. DNS domains,
+typed delivery endpoints, and gateways retain their owner scope, while endpoint
+and gateway grant rows enumerate consumer scopes allowed to create routes.
+Instance-owned Hub infrastructure may grant named organizations. An
+`instance_default` grant is eagerly materialized as one exact consumer-scope
+row for every existing organization and by the organization-creation
+transaction for each new organization; request authorization never interprets
+a wildcard. Organization-owned infrastructure grants its owner by default
+and another organization only through a separately authorized
+cross-organization plan. Absence of an active grant generation and its required
+live target pin is structural denial.
+
+Grant identity is durable history, not a deletable authorization fact. Binding
+and boundary grants key stable resources; endpoint and gateway grants key exact
+generations. The current row transitions by resource-version CAS; every
+transition appends an immutable `consumer_scope_grant_events` row. Initial
+grant is generation 1/`active`. Revoke keeps that generation and transitions to
+`revoked` only at zero pins. Regrant increments `grant_generation`, returns to
+`active`, updates `granted_by/at`, clears the current row's revoke fields, and
+never makes the older revoked generation usable again; the immutable events
+retain every prior cycle.
+
+Immutable configuration history may reference the stable grant identity as
+provenance. Live placements, listeners, routes, gateways, and defaults acquire
+the corresponding typed scope-grant pin with the exact current grant
+generation in the same transaction/batch as becoming eligible. Each pin
+composite-FKs to that generation and `state = active`; revocation therefore has
+one winner against pin acquisition and cannot update the grant state until its
+impact plan releases every live pin. A revoked historical row never authorizes
+use, and an active grant without the matching live target pin is not evidence
+that a target is serving. Attach/enable/create-default/activate transitions
+acquire pins; detach/disable/move/delete transitions release them atomically.
 
 ```sql
 domains(
   id,
   org_id NULL,
+  owner_scope_key,       -- instance | org:<stable-id>
   hostname UNIQUE,
   dns_provider,
   dns_state,
-  tls_provider,
-  tls_state,
-  access_provider_json,
+  certificate_provider,
+  certificate_state,
   verified_at NULL,
   created_at,
-  updated_at
+  updated_at,
+  UNIQUE(id, owner_scope_key)
+)
+
+network_boundaries(
+  id,
+  org_id NULL,
+  owner_scope_key,
+  name,
+  kind,                  -- public | vpn | vpc | tunnel | source_allowlist |
+                         -- trusted_ingress
+  identity_spec_json,    -- canonical closed, non-secret typed identity
+  identity_fingerprint,
+  default_revision NULL,
+  default_revision_state NULL,
+  resource_version,
+  created_at,
+  updated_at,
+  CHECK valid_boundary_identity_shape(kind, identity_spec_json),
+  CHECK((default_revision IS NULL AND default_revision_state IS NULL)
+     OR (default_revision IS NOT NULL
+         AND default_revision_state = 'active')),
+  CHECK(kind <> 'public' OR
+        (id = 'instance:public' AND owner_scope_key = 'instance'
+         AND org_id IS NULL)),
+  UNIQUE(owner_scope_key, name),
+  UNIQUE(identity_fingerprint),
+  UNIQUE(id, owner_scope_key),
+  FOREIGN KEY(id, default_revision, default_revision_state)
+    REFERENCES network_boundary_revision_lifecycle(
+      boundary_id, revision, state)
+)
+
+network_boundary_revisions(
+  boundary_id,
+  revision,
+  protected_transport_required,
+  trusted_ingress_kind,  -- none | mtls | signed_assertion
+  trusted_ingress_configuration,
+  source_allowlist_cidrs NULL,
+  probe_location_configuration,
+  content_digest,
+  created_by,
+  created_at,
+  PRIMARY KEY(boundary_id, revision),
+  UNIQUE(boundary_id, revision, protected_transport_required,
+         trusted_ingress_kind),
+  FOREIGN KEY(boundary_id) REFERENCES network_boundaries(id)
+)
+
+network_boundary_observations(
+  boundary_id,
+  revision,
+  state,                 -- unknown | declared | probing | verified | degraded |
+                         -- failed
+  protected_transport_observed,
+  trusted_ingress_observed,
+  observed_at,
+  error NULL,
+  PRIMARY KEY(boundary_id, revision),
+  FOREIGN KEY(boundary_id, revision)
+    REFERENCES network_boundary_revisions(boundary_id, revision)
+)
+
+network_boundary_revision_lifecycle(
+  boundary_id,
+  revision,
+  state,                 -- staged | active | retiring | retired
+  activation_mode,       -- overlap | coordinated | system
+  consumer_version,
+  activated_at NULL,
+  retired_at NULL,
+  resource_version,
+  PRIMARY KEY(boundary_id, revision),
+  UNIQUE(boundary_id, revision, state),
+  FOREIGN KEY(boundary_id, revision)
+    REFERENCES network_boundary_revisions(boundary_id, revision)
+)
+
+network_boundary_serving_pins(
+  pin_id PRIMARY KEY,
+  boundary_id,
+  revision,
+  consumer_scope_key,
+  grant_generation,
+  grant_state,           -- active
+  usage_kind,            -- endpoint_listener | route_endpoint |
+                         -- route_access | route_local_policy |
+                         -- gateway_endpoint | gateway_access |
+                         -- topology_default
+  target_kind,           -- endpoint | route | gateway | topology_default
+  target_stable_id,
+  target_generation_key, -- 0 for stable target, positive exact generation
+  target_configuration_digest,
+  acquired_by,
+  acquired_at,
+  resource_version,
+  UNIQUE(boundary_id, revision, usage_kind, target_kind, target_stable_id,
+         target_generation_key, target_configuration_digest),
+  CHECK valid_boundary_serving_pin_shape,
+  CHECK(grant_state = 'active'),
+  FOREIGN KEY(boundary_id, revision)
+    REFERENCES network_boundary_revisions(boundary_id, revision),
+  FOREIGN KEY(boundary_id, consumer_scope_key, grant_generation, grant_state)
+    REFERENCES network_boundary_consumer_scopes(
+      boundary_id, consumer_scope_key, grant_generation, state)
+)
+
+network_boundary_consumer_scopes(
+  boundary_id,
+  consumer_scope_key,
+  grant_generation,
+  grant_kind,            -- owner | instance_default | explicit
+  state,                 -- active | revoked
+  granted_by,
+  granted_at,
+  revoked_by NULL,
+  revoked_at NULL,
+  resource_version,
+  PRIMARY KEY(boundary_id, consumer_scope_key),
+  UNIQUE(boundary_id, consumer_scope_key, grant_generation, state),
+  CHECK(grant_generation > 0),
+  CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
+     OR (state = 'revoked' AND revoked_by IS NOT NULL
+         AND revoked_at IS NOT NULL)),
+  FOREIGN KEY(boundary_id) REFERENCES network_boundaries(id)
+)
+
+delivery_endpoints(
+  id,
+  org_id NULL,
+  owner_scope_key,
+  scheme,                -- https | http
+  domain_id NULL,
+  ipv4_bytes NULL,
+  ipv6_bytes NULL,
+  effective_port,
+  network_boundary_id,
+  cleartext_acknowledged_at NULL,
+  desired_generation NULL,
+  endpoint_identity_digest UNIQUE,
+  resource_version,
+  created_at,
+  updated_at,
+  CHECK exactly_one(domain_id, ipv4_bytes, ipv6_bytes),
+  CHECK canonical_ip_lengths_and_no_mapped_v6,
+  CHECK valid_scheme_port_and_cleartext_posture,
+  UNIQUE(id, owner_scope_key),
+  UNIQUE(id, network_boundary_id),
+  FOREIGN KEY(domain_id, owner_scope_key)
+    REFERENCES domains(id, owner_scope_key),
+  FOREIGN KEY(network_boundary_id, owner_scope_key)
+    REFERENCES network_boundary_consumer_scopes(
+      boundary_id, consumer_scope_key),
+  FOREIGN KEY(id, desired_generation)
+    REFERENCES delivery_endpoint_revisions(endpoint_id, generation)
+)
+
+delivery_endpoint_revisions(
+  endpoint_id,
+  generation,
+  network_boundary_id,
+  boundary_revision,
+  ingress_kind,          -- hub | external | layer7
+  listener_configuration,
+  tls_configuration,
+  probe_configuration,
+  content_digest,
+  created_by,
+  created_at,
+  PRIMARY KEY(endpoint_id, generation),
+  UNIQUE(endpoint_id, generation, ingress_kind),
+  UNIQUE(endpoint_id, generation, network_boundary_id, boundary_revision),
+  FOREIGN KEY(endpoint_id, network_boundary_id)
+    REFERENCES delivery_endpoints(id, network_boundary_id),
+  FOREIGN KEY(network_boundary_id, boundary_revision)
+    REFERENCES network_boundary_revisions(boundary_id, revision)
+)
+
+delivery_endpoint_observations(
+  endpoint_id PRIMARY KEY,
+  observed_generation NULL,
+  boundary_id,
+  boundary_revision NULL,
+  state,                 -- unknown | declared | probing | healthy | degraded |
+                         -- failed
+  listener_observed,
+  tls_observed,
+  observed_at,
+  error NULL,
+  CHECK((observed_generation IS NULL AND boundary_revision IS NULL
+         AND state = 'unknown')
+     OR (observed_generation IS NOT NULL AND boundary_revision IS NOT NULL)),
+  FOREIGN KEY(endpoint_id, boundary_id)
+    REFERENCES delivery_endpoints(id, network_boundary_id),
+  FOREIGN KEY(endpoint_id, observed_generation, boundary_id,
+              boundary_revision)
+    REFERENCES delivery_endpoint_revisions(
+      endpoint_id, generation, network_boundary_id, boundary_revision)
+)
+
+delivery_endpoint_route_scopes(
+  endpoint_id,
+  endpoint_generation,
+  consumer_scope_key,
+  grant_generation,
+  grant_kind,            -- owner | instance_default | explicit
+  state,                 -- active | revoked
+  granted_by,
+  granted_at,
+  revoked_by NULL,
+  revoked_at NULL,
+  resource_version,
+  PRIMARY KEY(endpoint_id, endpoint_generation, consumer_scope_key),
+  UNIQUE(endpoint_id, endpoint_generation, consumer_scope_key,
+         grant_generation, state),
+  CHECK(grant_generation > 0),
+  CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
+     OR (state = 'revoked' AND revoked_by IS NOT NULL
+         AND revoked_at IS NOT NULL)),
+  FOREIGN KEY(endpoint_id, endpoint_generation)
+    REFERENCES delivery_endpoint_revisions(endpoint_id, generation)
 )
 
 delivery_routes(
   id,
-  domain_id,
+  url_reservation_id,
+  configuration_generation NULL,
+  configuration_digest NULL,
+  resource_version,
+  endpoint_id,
+  endpoint_generation,
+  endpoint_ingress_kind,
+  consumer_scope_key,
   storage_gateway_id NULL,
   gateway_generation NULL,
+  target_storage_binding_id NULL,
+  gateway_client_base_path NULL,
+  target_placement_prefix NULL,
   base_path,
   registry_id NULL,
   cache_id NULL,
   mode,                  -- hub_proxy | hub_redirect | direct
+  access_policy_kind,    -- public | hub_auth | external_provider |
+                         -- private_network
+  access_boundary_id NULL,
+  access_boundary_revision NULL,
+  external_provider_kind NULL,
+  external_provider_resource_id NULL,
+  external_provider_revision NULL,
   access_policy_json,
+  access_policy_digest,
   placement_id NULL,
-  placement_policy_id NULL,
+  target_placement_kind NULL,
+  placement_policy_revision_id NULL,
+  placement_policy_revision_state NULL,
   serves_git,
   serves_cache,
   serves_web,
@@ -500,41 +1086,754 @@ delivery_routes(
   created_at,
   updated_at,
   CHECK exactly_one(registry_id, cache_id),
-  CHECK exactly_one(placement_id, placement_policy_id),
-  UNIQUE(domain_id, base_path)
+  CHECK((configuration_generation IS NULL AND configuration_digest IS NULL
+         AND enabled = false)
+     OR (configuration_generation IS NOT NULL
+         AND configuration_digest IS NOT NULL)),
+  CHECK valid_closed_access_policy_shape,
+  CHECK ((mode = 'direct'
+          AND endpoint_ingress_kind IN ('external', 'layer7')
+          AND placement_id IS NOT NULL
+          AND target_placement_kind = 'complete'
+          AND placement_policy_revision_id IS NULL
+          AND placement_policy_revision_state IS NULL
+          AND storage_gateway_id IS NOT NULL
+          AND gateway_generation IS NOT NULL
+          AND target_storage_binding_id IS NOT NULL
+          AND gateway_client_base_path IS NOT NULL
+          AND target_placement_prefix IS NOT NULL
+          AND base_path = join_segments(gateway_client_base_path,
+                                        target_placement_prefix))
+      OR (mode IN ('hub_proxy', 'hub_redirect')
+          AND endpoint_ingress_kind IN ('hub', 'layer7')
+          AND exactly_one(placement_id, placement_policy_revision_id)
+          AND ((placement_id IS NULL AND target_placement_kind IS NULL)
+            OR (placement_id IS NOT NULL
+                AND target_placement_kind = 'complete'))
+          AND ((placement_policy_revision_id IS NULL
+                AND placement_policy_revision_state IS NULL)
+            OR (placement_policy_revision_id IS NOT NULL
+                AND placement_policy_revision_state = 'published'))
+          AND storage_gateway_id IS NULL
+          AND gateway_generation IS NULL
+          AND target_storage_binding_id IS NULL
+          AND gateway_client_base_path IS NULL
+          AND target_placement_prefix IS NULL)),
+  UNIQUE(endpoint_id, base_path),
+  UNIQUE(id, registry_id),
+  UNIQUE(id, cache_id),
+  UNIQUE(id, registry_id, configuration_generation, configuration_digest),
+  UNIQUE(id, cache_id, configuration_generation, configuration_digest),
+  UNIQUE(id, access_policy_digest),
+  UNIQUE(id, configuration_generation, configuration_digest,
+         access_policy_digest),
+  UNIQUE(id, registry_id, endpoint_id, endpoint_generation, placement_id,
+         storage_gateway_id, gateway_generation),
+  UNIQUE(id, cache_id, endpoint_id, endpoint_generation, placement_id,
+         storage_gateway_id, gateway_generation),
+  FOREIGN KEY(endpoint_id, endpoint_generation, consumer_scope_key)
+    REFERENCES delivery_endpoint_route_scopes(
+      endpoint_id, endpoint_generation, consumer_scope_key),
+  FOREIGN KEY(endpoint_id, endpoint_generation, endpoint_ingress_kind)
+    REFERENCES delivery_endpoint_revisions(
+      endpoint_id, generation, ingress_kind),
+  FOREIGN KEY(access_boundary_id, access_boundary_revision)
+    REFERENCES network_boundary_revisions(boundary_id, revision),
+  FOREIGN KEY(access_boundary_id, consumer_scope_key)
+    REFERENCES network_boundary_consumer_scopes(
+      boundary_id, consumer_scope_key),
+  FOREIGN KEY(registry_id, consumer_scope_key)
+    REFERENCES registries(id, scope_key),
+  FOREIGN KEY(cache_id, consumer_scope_key)
+    REFERENCES binary_caches(id, scope_key),
+  FOREIGN KEY(id, registry_id, configuration_generation,
+              configuration_digest)
+    REFERENCES delivery_route_configurations(
+      delivery_route_id, registry_id, configuration_generation,
+      configuration_digest),
+  FOREIGN KEY(id, cache_id, configuration_generation,
+              configuration_digest)
+    REFERENCES delivery_route_configurations(
+      delivery_route_id, cache_id, configuration_generation,
+      configuration_digest),
+  FOREIGN KEY(placement_id, registry_id)
+    REFERENCES surface_placements(id, registry_id),
+  FOREIGN KEY(placement_id, cache_id)
+    REFERENCES surface_placements(id, cache_id),
+  FOREIGN KEY(placement_id, target_placement_kind)
+    REFERENCES surface_placements(id, kind),
+  FOREIGN KEY(placement_policy_revision_id, registry_id,
+              placement_policy_revision_state)
+    REFERENCES placement_policy_revisions(id, registry_id, state),
+  FOREIGN KEY(placement_policy_revision_id, cache_id,
+              placement_policy_revision_state)
+    REFERENCES placement_policy_revisions(id, cache_id, state),
+  FOREIGN KEY(placement_id, target_storage_binding_id)
+    REFERENCES surface_placements(id, storage_binding_id),
+  FOREIGN KEY(placement_id, target_storage_binding_id,
+              target_placement_prefix)
+    REFERENCES surface_placements(id, storage_binding_id, prefix),
+  FOREIGN KEY(storage_gateway_id, gateway_generation, endpoint_id,
+              endpoint_generation, target_storage_binding_id,
+              gateway_client_base_path, access_policy_digest)
+    REFERENCES storage_gateway_revisions(
+      gateway_id, generation, endpoint_id, endpoint_generation,
+      storage_binding_id, client_base_path, access_policy_digest),
+  FOREIGN KEY(storage_gateway_id, gateway_generation, consumer_scope_key)
+    REFERENCES storage_gateway_revision_route_scopes(
+      gateway_id, generation, consumer_scope_key),
+  FOREIGN KEY(url_reservation_id)
+    REFERENCES delivery_route_url_reservations(id)
+)
+
+delivery_route_url_reservations(
+  id PRIMARY KEY,
+  digest_scheme,         -- hmac_sha256_v1
+  reservation_key_version,
+  reservation_digest,   -- fixed 32 bytes
+  created_at,
+  UNIQUE(reservation_key_version, reservation_digest),
+  CHECK(octet_length(reservation_digest) = 32)
+  -- Deliberately no plaintext URL, host, path, owner/surface identifier, actor,
+  -- or FK to live topology rows.
+)
+
+delivery_route_configurations(
+  delivery_route_id,
+  registry_id NULL,
+  cache_id NULL,
+  configuration_generation,
+  configuration_digest,
+  canonical_rendered_url,
+  canonical_configuration_json,
+  created_by,
+  created_at,
+  PRIMARY KEY(delivery_route_id, configuration_generation),
+  UNIQUE(delivery_route_id, registry_id, configuration_generation,
+         configuration_digest),
+  UNIQUE(delivery_route_id, cache_id, configuration_generation,
+         configuration_digest),
+  CHECK exactly_one(registry_id, cache_id),
+  FOREIGN KEY(delivery_route_id, registry_id)
+    REFERENCES delivery_routes(id, registry_id)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(delivery_route_id, cache_id)
+    REFERENCES delivery_routes(id, cache_id)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
 )
 
 canonical_routes(
+  id,
   registry_id NULL,
   cache_id NULL,
   audience,              -- git | nix_cache | web
   delivery_route_id,
   CHECK exactly_one(registry_id, cache_id),
   UNIQUE(registry_id, audience),
-  UNIQUE(cache_id, audience)
+  UNIQUE(cache_id, audience),
+  FOREIGN KEY(delivery_route_id, registry_id)
+    REFERENCES delivery_routes(id, registry_id),
+  FOREIGN KEY(delivery_route_id, cache_id)
+    REFERENCES delivery_routes(id, cache_id)
+)
+
+cache_inventory_generations(
+  cache_id,
+  generation,
+  state,                 -- building | published | failed
+  content_digest NULL,
+  published_at NULL,
+  created_at,
+  PRIMARY KEY(cache_id, generation),
+  UNIQUE(generation, cache_id),
+  CHECK valid_immutable_inventory_generation_state
+)
+
+placement_delivery_manifests(
+  manifest_id,
+  placement_id,
+  registry_id NULL,
+  cache_id NULL,
+  kind,                  -- registry_publication | cache_inventory
+  registry_publication_id NULL,
+  cache_inventory_generation NULL,
+  content_digest,
+  published_at,
+  PRIMARY KEY(manifest_id),
+  UNIQUE(manifest_id, placement_id, registry_id),
+  UNIQUE(manifest_id, placement_id, cache_id),
+  CHECK exactly_one(registry_id, cache_id),
+  CHECK manifest_kind_fields_match_surface,
+  FOREIGN KEY(placement_id, registry_id)
+    REFERENCES surface_placements(id, registry_id),
+  FOREIGN KEY(placement_id, cache_id)
+    REFERENCES surface_placements(id, cache_id),
+  FOREIGN KEY(registry_publication_id, registry_id)
+    REFERENCES registry_publications(publication_id, registry_id),
+  FOREIGN KEY(cache_inventory_generation, cache_id)
+    REFERENCES cache_inventory_generations(generation, cache_id)
+)
+
+placement_delivery_manifest_heads(
+  placement_id PRIMARY KEY,
+  registry_id NULL,
+  cache_id NULL,
+  manifest_id,
+  resource_version,
+  updated_at,
+  CHECK exactly_one(registry_id, cache_id),
+  CHECK manifest_head_fields_match_surface,
+  FOREIGN KEY(manifest_id, placement_id, registry_id)
+    REFERENCES placement_delivery_manifests(
+      manifest_id, placement_id, registry_id),
+  FOREIGN KEY(manifest_id, placement_id, cache_id)
+    REFERENCES placement_delivery_manifests(
+      manifest_id, placement_id, cache_id)
+)
+
+delivery_route_observations(
+  delivery_route_id PRIMARY KEY,
+  registry_id NULL,
+  cache_id NULL,
+  configuration_generation,
+  configuration_digest,
+  state,                 -- unknown | probing | healthy | degraded |
+                         -- unreachable | declared
+  observed_at,
+  error NULL,
+  CHECK exactly_one(registry_id, cache_id),
+  UNIQUE(delivery_route_id, registry_id),
+  UNIQUE(delivery_route_id, cache_id),
+  FOREIGN KEY(delivery_route_id, registry_id, configuration_generation,
+              configuration_digest)
+    REFERENCES delivery_routes(
+      id, registry_id, configuration_generation, configuration_digest)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(delivery_route_id, cache_id, configuration_generation,
+              configuration_digest)
+    REFERENCES delivery_routes(
+      id, cache_id, configuration_generation, configuration_digest)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
+)
+
+direct_delivery_route_evidence(
+  delivery_route_id PRIMARY KEY,
+  registry_id NULL,
+  cache_id NULL,
+  endpoint_id,
+  endpoint_generation,
+  placement_id,
+  storage_gateway_id,
+  gateway_generation,
+  publication_manifest_id,
+  observed_at,
+  CHECK exactly_one(registry_id, cache_id),
+  FOREIGN KEY(delivery_route_id, registry_id)
+    REFERENCES delivery_route_observations(delivery_route_id, registry_id)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(delivery_route_id, cache_id)
+    REFERENCES delivery_route_observations(delivery_route_id, cache_id)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(delivery_route_id, registry_id, endpoint_id,
+              endpoint_generation, placement_id,
+              storage_gateway_id, gateway_generation)
+    REFERENCES delivery_routes(
+      id, registry_id, endpoint_id, endpoint_generation, placement_id,
+      storage_gateway_id, gateway_generation)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(delivery_route_id, cache_id, endpoint_id,
+              endpoint_generation, placement_id,
+              storage_gateway_id, gateway_generation)
+    REFERENCES delivery_routes(
+      id, cache_id, endpoint_id, endpoint_generation, placement_id,
+      storage_gateway_id, gateway_generation)
+      ON DELETE RESTRICT ON UPDATE RESTRICT,
+  FOREIGN KEY(publication_manifest_id, placement_id, registry_id)
+    REFERENCES placement_delivery_manifests(
+      manifest_id, placement_id, registry_id),
+  FOREIGN KEY(publication_manifest_id, placement_id, cache_id)
+    REFERENCES placement_delivery_manifests(
+      manifest_id, placement_id, cache_id)
+)
+
+delivery_route_access_observations(
+  delivery_route_id PRIMARY KEY,
+  configuration_generation,
+  configuration_digest,
+  access_policy_digest,
+  state,                 -- unknown | probing | verified | degraded | failed
+  observed_at,
+  error NULL,
+  FOREIGN KEY(delivery_route_id, configuration_generation,
+              configuration_digest, access_policy_digest)
+    REFERENCES delivery_routes(
+      id, configuration_generation, configuration_digest,
+      access_policy_digest)
+      ON DELETE RESTRICT ON UPDATE RESTRICT
 )
 ```
 
-Binding-wide direct mappings become `storage_gateways`; derived route rows
-make their effect visible and queryable.
+Network-boundary identity is stable and scoped; changing its kind or identity
+fingerprint creates a replacement boundary and a planned endpoint move.
+Changing protection requirements, trusted-ingress verification material, or
+probe posture creates an immutable `staged` boundary revision; it does not move
+`default_revision` or invalidate older
+pinned revisions. Activation's explicit default choice may CAS the pointer for
+future plans.
+Reconciliation records verification independently for each exact revision.
+Effective eligibility compares the consumer's pinned ref to that revision's
+own `verified` observation and an `active` or `retiring` lifecycle, never to a global
+desired-equals-observed predicate. Unknown, declared, probing, degraded,
+failed, inactive, or mismatched per-revision observations fail
+closed for credential-bearing HTTP, trusted local `AccessClass`, and private
+redirect eligibility. A public anonymous HTTP endpoint still requires the
+durable cleartext acknowledgement. Endpoint creation additionally requires an
+exact `network_boundary_consumer_scopes` grant for its owner scope.
+Credential-bearing cleartext scheme `http` always requires
+`protected_transport_observed = true` on the exact verified revision;
+`protected_transport_required = false` never waives that runtime predicate.
+Scheme `https` instead requires the exact endpoint generation's listener/TLS
+observation to be healthy and certificate/authority checks to pass; it does not
+require the public boundary to claim a second protected transport.
+
+Migration provisions exactly one instance-owned `instance:public` boundary,
+immutable revision 1, its observation, and an `instance_default` whose exact
+grants are materialized for the instance and every organization. Revision 1
+has `protected_transport_required = false`, trusted ingress `none`, no CIDRs,
+and no private probe location; its observation is `verified` at revision 1 with
+both protection/trusted-ingress observations false. Every public endpoint pins
+that revision. Its lifecycle is provisioned `active` with activation mode
+`system`, `consumer_version = 0`, and cannot transition or retire through a
+public API. The singleton cannot be created, revised, renamed, transferred,
+or deleted through public APIs; probe/reconcile may refresh only its
+observation. It represents the public network realm, not protected transport;
+HTTP credential eligibility still fails and HTTPS relies on its verified TLS
+listener. Other boundary kinds are ordinary scoped resources.
+Each provisioned public scope grant starts active at grant generation 1; live
+pins are acquired only as endpoints/routes/defaults become serving.
+
+Providers that support overlapping enforcement use a staged rollout: create
+the revision in `staged`, verify it, activate it while the old revision remains
+active, create new endpoint/gateway/policy revisions and grants, then CAS the
+old revision to `retiring`. That transition increments `consumer_version` and
+fences new serving pins, but existing pinned consumers remain eligible while
+its exact observation stays verified. Plans acquire equivalent pins on the new
+revision while moving live routes/listeners/gateways/defaults, release the old
+pins, and retire only at zero live pins. Multiple revisions may therefore be
+verified concurrently.
+
+Immutable endpoint, gateway, policy, and route history may reference a
+`staged`, `active`, `retiring`, or later `retired` revision and is retained for
+audit; those foreign keys are not live-consumer counts. The authoritative live
+set is `network_boundary_serving_pins`. Enabling or advertising a listener,
+attaching/enabling a route, activating a gateway mapping, or selecting a
+topology/canonical default inserts the exact typed pin in the same native
+transaction or D1 atomic batch as the serving transition. Pin acquisition
+requires `active` plus an exact verified observation. The target kind/id,
+generation, and configuration digest are derived from the guarded resource row,
+not accepted as arbitrary public input. Disabling/moving that serving resource
+deletes its pin in the same transition.
+
+Every pin insert/delete locks and increments the lifecycle
+`consumer_version`. `active -> retiring` locks the same row, increments the
+version, and fences new pins; deleting existing pins remains legal while
+retiring. `retired` is immutable and ineligible. Final retirement CASes the
+exact version and requires zero serving-pin rows, not deletion of immutable
+history. Pin mutation versus lifecycle transition therefore has one winner on
+native databases and D1 without a check-then-update race. UI counts and move
+plans derive only from this serving-pin relation.
+
+For a provider that cannot overlap enforcement, update returns a coordinated
+impact operation containing every consumer and version. It stages replacement
+topology first, switches external enforcement, verifies/activates the new
+revision, moves consumers, and retires the old revision. Between the external
+switch and the guarded database transitions, affected reads fail closed; the
+plan explicitly estimates and requires acknowledgement of that window. A crash
+leaves a resumable operation with old or new consumers ineligible, never
+silently accepted under the wrong revision.
+
+`identity_spec_json` is the lossless canonical API projection, not arbitrary
+configuration. It contains exactly one closed variant: empty `public`;
+provider kind, provider account/tenant, and globally qualified resource id for
+VPN/VPC/tunnel; an owner-scoped stable logical allowlist id for
+`source_allowlist`; or provider kind, provider account/tenant, and globally
+qualified listener id for `trusted_ingress`. Provider/account tokens are
+lowercase ASCII; ids are NFC UTF-8 with no control characters. The mutable CIDR membership belongs to immutable
+boundary revisions, so ordinary allowlist changes do not replace endpoints.
+CIDRs mask host bits, use 4-byte IPv4 or 16-byte IPv6 network bytes plus an
+unsigned prefix length, reject mapped IPv6, deduplicate, and sort by
+`(family, network_bytes, prefix_length)`.
+
+`identity_fingerprint` is SHA-256 over
+`"aos-hub-network-boundary-v1\0" || kind_tag:u8 || payload`. Each string in
+payload is `length:u32be || UTF-8`. Provider variants encode provider, account,
+then globally qualified resource/listener id. The source-allowlist payload
+encodes `owner_scope_key` then its stable logical allowlist id, so two tenants'
+local `prod` ids cannot collide. Public has no payload and remains the one
+global singleton.
+Kind tags are public `0x00`, VPN `0x01`, VPC `0x02`, tunnel `0x03`, source
+allowlist `0x04`, and trusted ingress `0x05`. Get/show/UI return the typed spec
+and fingerprint so migrations can round-trip and independently verify it.
+
+Normative fingerprint vectors are:
+
+| Identity | SHA-256 fingerprint |
+| --- | --- |
+| public | `a45d7088ef1cb3f42b0f7c1284e56a781daabc736ecce73134b8e4f53078c08d` |
+| source allowlist, scope `org:acme`, id `prod` | `f6d31e77254aa21beee6d7b82c8db4190092253a353a614fd809b95d10e60bf4` |
+| VPC, provider `aws`, account `123456789012`, resource `arn:aws:ec2:us-east-1:123456789012:vpc/vpc-0123456789abcdef0` | `beec20e1ae5f82f5a55a53d425d4e9a08521808d787a209b8c2a589ac39b412e` |
+
+Boundary revision `content_digest` is SHA-256 over
+`"aos-hub-network-boundary-revision-v1\0"`, the boundary fingerprint,
+one-byte booleans/enums, and length-prefixed canonical trusted-ingress/probe
+references. Its source-allowlist field is `count:u32be` followed by
+`family:u8 || prefix_length:u8 || network_bytes` in canonical order. Thus CIDR
+edits change only the immutable revision digest, never boundary identity.
+
+Endpoint origin identity -- scheme, typed host, effective port, and network
+boundary -- is immutable. `UpdateDeliveryEndpoint` creates a new immutable
+generation and may change only ingress, listener/TLS, probe posture, and the
+pinned boundary revision. An origin or realm change creates a replacement
+endpoint followed by planned route and gateway-revision moves. Routes, grants,
+gateway revisions, and observations pin an exact endpoint generation. Hub
+proxy/redirect requires `hub` or `layer7` ingress; direct requires `external`
+or `layer7`; mixing Hub and direct paths on one origin requires `layer7`.
+
+Access policy is a closed canonical value, never arbitrary provider JSON:
+
+- `public` has no boundary, provider, or credential mechanism;
+- `hub_auth` contains only typed Hub principal/client requirements;
+- `external_provider` pins provider kind, stable provider resource id, observed
+  provider revision, client mechanisms, and redacted verification secret refs;
+  and
+- `private_network` pins an exact `NetworkBoundaryRevisionRef`.
+
+The canonical encoding produces `access_policy_digest`; kind-specific columns
+and checks make impossible variants unrepresentable, while JSON contains only
+the closed variant's typed mechanism configuration. Direct routes must match
+their immutable gateway revision's exact digest through the composite foreign
+key. Hub proxy may enforce any compatible variant. Hub redirect additionally
+requires a `verified` access observation proving that the presigned origin
+enforces the same provider revision or boundary revision for the capability
+lifetime. Endpoint boundary identity is not used as a substitute for route
+access policy. A boundary/provider revision change creates a new pinned policy
+value; its plan enumerates routes and gateway revisions that retain or move
+from the old revision.
+
+Domain hostname and owner scope are likewise immutable because DNS-backed
+endpoint identity depends on them. DNS and certificate posture have dedicated
+configuration and reconciliation operations; there is no generic domain
+update. A hostname change creates a replacement domain, replacement endpoint,
+and the same planned route/gateway movement.
+
+`endpoint_identity_digest` is SHA-256 over
+`"aos-hub-delivery-endpoint-v1\0" || scheme_tag:u8 || host_kind:u8 ||
+host_length:u32be || typed_host_bytes || effective_port:u16be ||
+network_boundary_identity_fingerprint:32`. It commits to the boundary's stable
+typed identity fingerprint, never its replaceable database row id or moving
+revision. Ingress is revisioned configuration, not part of request identity.
+The digest is unique, so one resolvable origin in one network realm cannot split
+into ambiguous endpoint rows. Public endpoints use the fixed public-boundary
+fingerprint; private addresses in different realms do not collide. Deleting and
+recreating an identical boundary spec reproduces the same fingerprint and
+therefore cannot bypass a URL reservation. Default ports remain in identity and
+are omitted only when rendering. No row stores a URL, userinfo, query, fragment,
+IPv6 zone id, or storage-origin address.
+
+An endpoint revision grant is always an exact consumer scope. The
+organization-creation workflow materializes any active instance-default grants
+in the same transaction that makes the organization usable, and removing an
+instance default does not silently revoke already-materialized explicit
+access. CLI/API stable endpoint refs resolve to the exact desired generation in
+the plan and apply rejects a changed generation. Endpoint update plans list
+every old-generation grant and affected route; apply creates only the
+explicitly confirmed replacement-generation grants before moving routes. Old
+grants are never wildcards, and revoke enumerates/releases affected live pins
+before CASing the exact durable grant generation to `revoked`.
+Grant/carry-forward/revoke requires dual owner/consumer
+scope authorization.
+
+`base_path` and endpoint origin are stored only after the raw-target
+normalization contract in `01-domain-model.md`; queries are never part of route
+identity. Reserved control namespaces never enter this table. Direct targets
+use complete-placement publication ordering and reconciled gateway manifests,
+while Hub targets use per-request exact presence and publication-head checks.
+Both native and Worker route code consume the same typed resolution and fixed
+failure contract.
+
+The route's endpoint identity and normalized `base_path` are immutable. Together
+they select an immutable `delivery_route_url_reservations` row containing only
+a keyed digest for its permanent path reservation. A change to endpoint
+identity or normalized/derived base path creates a new, initially non-canonical
+replacement route and a new reservation; it never updates the old identity in
+place. Moving to another generation of the same endpoint identity, changing
+mode, or changing a direct target is an update only when the final canonical
+rendered URL remains byte-identical. A direct gateway/placement change whose
+derived path differs is a replacement. The service requires the predecessor to
+be an active route on the same surface, rejects cycles across active replacement
+operations, and permits at most one active successor at a time; replaying the
+same create plan returns that successor. The append-only audit event records the
+old/new route ids and reservation digests without an FK to either live route.
+
+The reservation input is
+`"aos-hub-route-reservation-v1\0" || endpoint_identity_digest:32 ||
+length:u32be || normalized_base_path_utf8 || length:u32be ||
+canonical_rendered_url_utf8`. The endpoint identity digest already commits to
+the NetworkBoundary identity, so identical private origins in distinct realms
+do not collide while reuse in one realm does. `reservation_digest` is
+HMAC-SHA-256 under a versioned instance reservation key. Creation checks the candidate against every
+retained key version and inserts under the current version with a uniqueness
+CAS; reservation keys are retained while any row uses their version, including
+after ordinary credential rotation. Specifically, it recomputes the candidate
+under each retained old key and queries that version/digest pair before it
+inserts under the current key; existing rows need no alias backfill. Keyring
+activation and reservation creation share one serializable version/CAS fence on
+native databases and one D1 actor/batch. If any referenced key is unavailable,
+reservation creation and key rotation fail closed until restore; they never skip
+that version. Reservation keys are backed up and cannot be retired while rows of
+their version exist. Any equal digest is conservatively treated as already
+reserved, so a cryptographic collision can deny reuse but can never cause
+identity takeover. Only the live route/configuration stores renderable host/path
+text. The permanent reservation stores no tenant, surface, actor, endpoint,
+host, path, or URL plaintext and has no FK to deletable topology.
+
+`configuration_digest` covers the normalized endpoint generation, base path,
+surface, mode, exact target/policy/gateway tuple, access-policy digest,
+capabilities, and enabled posture. For an update whose rendered URL remains
+identical, `UpdateRoute` atomically deletes its old probe/access/direct-evidence
+rows, inserts the complete immutable `delivery_route_configurations` snapshot,
+increments `configuration_generation`, and writes the new digest under the
+route resource-version plan; old observations then cannot satisfy the composite
+FK. Initial creation portably inserts a disabled route with a null current
+configuration pointer, inserts its generation-one child snapshot, advances the
+route pointer, and asserts the complete invariant in one native transaction or
+D1 batch. No intermediate row may commit; no backend needs deferred FKs.
+The new configuration begins `unknown` and cannot be healthy or canonically
+advertised until reprobed. Canonical route selection may retain the route id,
+but setup snippets and runtime advertisement require a healthy observation for
+its exact current generation/digest.
+
+`DeleteRoute` physically removes the live route after a guarded plan/apply. It
+requires the route to be disabled, non-canonical, absent from every current
+signed stack projection, and free of all live endpoint, gateway, boundary, and
+grant pins. Apply explicitly deletes direct/access evidence, deletes the route
+observation, nulls the current configuration pointer, deletes configuration
+snapshots, and finally deletes the route in that dependency order in one
+transaction/batch. All relevant FKs
+are `ON DELETE RESTRICT`; a current signed-stack FK to a configuration therefore
+makes unsafe child deletion fail even if the plan check raced. The permanent URL reservation and append-only redacted
+audit events remain without FKs to endpoint, placement, gateway, boundary,
+binding, or surface rows, so historical provenance does not prevent deletion of
+the rest of the topology dependency graph. The signed registry commit remains
+the authoritative long-term signed-history record.
+
+A direct route becomes `healthy` only when its observation proves the exact
+endpoint generation and its pinned boundary revision, gateway generation,
+complete placement, and the manifest selected by
+`placement_delivery_manifest_heads`. The head advances by resource-version CAS
+only after a registry publication or cache inventory generation is completely
+externally readable; route reconciliation compares the exact head manifest id
+and corresponding generation. The registry source is its committed publication
+head. The cache source is the exact published
+`cache_inventory_generations` row also selected by
+`cache_gc_state.inventory_generation`; an in-progress placement scan cannot
+advance either head. An unprobeable private endpoint is `declared`,
+not healthy. Hub route observations may omit the direct-only tuple and report
+aggregate probe state; request-time presence/publication checks remain the
+serving authority.
+
+Binding-wide direct mappings become `storage_gateways`; explicit user-owned
+direct route rows make their use visible and queryable.
 
 ```sql
 storage_gateways(
-  id,
+  id PRIMARY KEY,
   org_id NULL,             -- NULL means instance scope
-  storage_binding_id,
-  domain_id,
-  base_path,
-  origin_path_rewrite,
-  access_policy_json,
+  owner_scope_key,         -- instance | org:<stable-id>
   enabled,
-  desired_generation,
-  observed_generation,
+  desired_generation NULL,
+  observed_generation NULL,
   reconciliation_state,
   reconciliation_error NULL,
   created_at,
   updated_at,
-  UNIQUE(domain_id, base_path)
+  UNIQUE(id, owner_scope_key),
+  CHECK(observed_generation IS NULL OR desired_generation IS NOT NULL),
+  FOREIGN KEY(id, desired_generation)
+    REFERENCES storage_gateway_revisions(gateway_id, generation),
+  FOREIGN KEY(id, observed_generation)
+    REFERENCES storage_gateway_revisions(gateway_id, generation)
+)
+
+storage_gateway_path_reservations(
+  reservation_id PRIMARY KEY,
+  gateway_id,
+  endpoint_id,
+  client_base_path,
+  resource_version,
+  created_at,
+  UNIQUE(endpoint_id, client_base_path),
+  UNIQUE(reservation_id, gateway_id, endpoint_id, client_base_path),
+  FOREIGN KEY(gateway_id) REFERENCES storage_gateways(id),
+  FOREIGN KEY(endpoint_id) REFERENCES delivery_endpoints(id)
+)
+
+storage_gateway_revisions(
+  gateway_id,
+  generation,
+  org_id NULL,
+  owner_scope_key,
+  path_reservation_id,
+  storage_binding_id,
+  endpoint_id,
+  endpoint_generation,
+  endpoint_ingress_kind,   -- external | layer7
+  client_base_path,
+  origin_prefix,
+  access_policy_kind,
+  access_boundary_id NULL,
+  access_boundary_revision NULL,
+  external_provider_kind NULL,
+  external_provider_resource_id NULL,
+  external_provider_revision NULL,
+  access_policy_json,
+  access_policy_digest,
+  content_digest,
+  created_by,
+  created_at,
+  PRIMARY KEY(gateway_id, generation),
+  CHECK(endpoint_ingress_kind IN ('external', 'layer7')),
+  CHECK valid_direct_access_policy_shape,
+  UNIQUE(gateway_id, generation, endpoint_id, endpoint_generation,
+         storage_binding_id, client_base_path, access_policy_digest),
+  UNIQUE(gateway_id, generation, owner_scope_key),
+  FOREIGN KEY(gateway_id, owner_scope_key)
+    REFERENCES storage_gateways(id, owner_scope_key),
+  FOREIGN KEY(storage_binding_id, owner_scope_key)
+    REFERENCES storage_binding_consumer_scopes(
+      storage_binding_id, consumer_scope_key),
+  FOREIGN KEY(endpoint_id, endpoint_generation, endpoint_ingress_kind)
+    REFERENCES delivery_endpoint_revisions(
+      endpoint_id, generation, ingress_kind),
+  FOREIGN KEY(endpoint_id, endpoint_generation, owner_scope_key)
+    REFERENCES delivery_endpoint_route_scopes(
+      endpoint_id, endpoint_generation, consumer_scope_key),
+  FOREIGN KEY(access_boundary_id, access_boundary_revision)
+    REFERENCES network_boundary_revisions(boundary_id, revision),
+  FOREIGN KEY(access_boundary_id, owner_scope_key)
+    REFERENCES network_boundary_consumer_scopes(
+      boundary_id, consumer_scope_key),
+  FOREIGN KEY(path_reservation_id, gateway_id, endpoint_id, client_base_path)
+    REFERENCES storage_gateway_path_reservations(
+      reservation_id, gateway_id, endpoint_id, client_base_path)
+)
+
+storage_gateway_revision_route_scopes(
+  gateway_id,
+  generation,
+  consumer_scope_key,
+  grant_generation,
+  grant_kind,              -- owner | instance_default | explicit
+  state,                   -- active | revoked
+  granted_by,
+  granted_at,
+  revoked_by NULL,
+  revoked_at NULL,
+  resource_version,
+  PRIMARY KEY(gateway_id, generation, consumer_scope_key),
+  UNIQUE(gateway_id, generation, consumer_scope_key, grant_generation, state),
+  CHECK(grant_generation > 0),
+  CHECK((state = 'active' AND revoked_by IS NULL AND revoked_at IS NULL)
+     OR (state = 'revoked' AND revoked_by IS NOT NULL
+         AND revoked_at IS NOT NULL)),
+  FOREIGN KEY(gateway_id, generation)
+    REFERENCES storage_gateway_revisions(gateway_id, generation)
+)
+
+storage_binding_scope_grant_pins(
+  pin_id PRIMARY KEY,
+  storage_binding_id,
+  consumer_scope_key,
+  grant_generation,
+  grant_state,           -- active
+  target_kind,           -- placement | gateway | topology_default
+  target_stable_id,
+  target_generation_key,
+  target_configuration_digest,
+  resource_version,
+  UNIQUE(storage_binding_id, consumer_scope_key, target_kind,
+         target_stable_id, target_generation_key,
+         target_configuration_digest),
+  CHECK(grant_state = 'active'),
+  CHECK valid_scope_grant_pin_shape,
+  FOREIGN KEY(storage_binding_id, consumer_scope_key, grant_generation,
+              grant_state)
+    REFERENCES storage_binding_consumer_scopes(
+      storage_binding_id, consumer_scope_key, grant_generation, state)
+)
+
+delivery_endpoint_scope_grant_pins(
+  pin_id PRIMARY KEY,
+  endpoint_id,
+  endpoint_generation,
+  consumer_scope_key,
+  grant_generation,
+  grant_state,           -- active
+  target_kind,           -- listener | route | gateway | topology_default
+  target_stable_id,
+  target_generation_key,
+  target_configuration_digest,
+  resource_version,
+  UNIQUE(endpoint_id, endpoint_generation, consumer_scope_key, target_kind,
+         target_stable_id, target_generation_key,
+         target_configuration_digest),
+  CHECK(grant_state = 'active'),
+  CHECK valid_scope_grant_pin_shape,
+  FOREIGN KEY(endpoint_id, endpoint_generation, consumer_scope_key,
+              grant_generation, grant_state)
+    REFERENCES delivery_endpoint_route_scopes(
+      endpoint_id, endpoint_generation, consumer_scope_key,
+      grant_generation, state)
+)
+
+storage_gateway_scope_grant_pins(
+  pin_id PRIMARY KEY,
+  gateway_id,
+  generation,
+  consumer_scope_key,
+  grant_generation,
+  grant_state,           -- active
+  target_kind,           -- route | topology_default
+  target_stable_id,
+  target_generation_key,
+  target_configuration_digest,
+  resource_version,
+  UNIQUE(gateway_id, generation, consumer_scope_key, target_kind,
+         target_stable_id, target_generation_key,
+         target_configuration_digest),
+  CHECK(grant_state = 'active'),
+  CHECK valid_scope_grant_pin_shape,
+  FOREIGN KEY(gateway_id, generation, consumer_scope_key, grant_generation,
+              grant_state)
+    REFERENCES storage_gateway_revision_route_scopes(
+      gateway_id, generation, consumer_scope_key, grant_generation, state)
+)
+
+consumer_scope_grant_events(
+  event_id PRIMARY KEY,
+  resource_kind,         -- storage_binding | network_boundary |
+                         -- delivery_endpoint | storage_gateway
+  resource_stable_id,
+  resource_generation_key,
+  consumer_scope_key,
+  grant_generation,
+  transition,            -- granted | revoked | regranted
+  previous_state NULL,
+  resulting_state,
+  actor_id,
+  occurred_at,
+  request_id,
+  CHECK valid_immutable_grant_event_shape
 )
 
 topology_defaults(
@@ -544,30 +1843,77 @@ topology_defaults(
   scope_key UNIQUE,       -- instance | org:<stable-id>
   storage_binding_id NULL,
   domain_id NULL,
+  delivery_endpoint_id NULL,
+  delivery_endpoint_generation NULL,
   storage_gateway_id NULL,
+  storage_gateway_generation NULL,
   created_at,
   updated_at,
-  CHECK valid_scope(scope_kind, org_id, scope_key)
+  CHECK valid_scope(scope_kind, org_id, scope_key),
+  CHECK paired(delivery_endpoint_id, delivery_endpoint_generation),
+  CHECK paired(storage_gateway_id, storage_gateway_generation),
+  FOREIGN KEY(storage_binding_id, scope_key)
+    REFERENCES storage_binding_consumer_scopes(
+      storage_binding_id, consumer_scope_key),
+  FOREIGN KEY(domain_id, scope_key)
+    REFERENCES domains(id, owner_scope_key),
+  FOREIGN KEY(delivery_endpoint_id, delivery_endpoint_generation, scope_key)
+    REFERENCES delivery_endpoint_route_scopes(
+      endpoint_id, endpoint_generation, consumer_scope_key),
+  FOREIGN KEY(storage_gateway_id, storage_gateway_generation, scope_key)
+    REFERENCES storage_gateway_revision_route_scopes(
+      gateway_id, generation, consumer_scope_key)
 )
 ```
 
-`delivery_routes.storage_gateway_id` and `gateway_generation` record materialized
-provenance. Reconciliation previews and then updates ordinary route rows; it
-does not create invisible runtime inheritance. Organization defaults may
+The deployment-provisioned instance binding singleton uses the same eager
+exact-grant projection as instance defaults elsewhere: existing organizations
+are materialized when the grant is enabled, and organization creation inserts
+its exact row before topology can reference the binding. Organization bindings
+grant their owner by default; cross-organization grants require a dual-scope
+impact plan. Placement, gateway, and topology-default rows carry the consuming
+scope and reference that exact grant, so neither a nonexistent nor a foreign
+binding can enter topology. Grant revocation enumerates and removes defaults,
+gateways, and placements first; absence of an active grant generation and its
+required live pin is structural denial.
+
+`delivery_routes.storage_gateway_id` and `gateway_generation` pin immutable
+user-selected provenance. Gateway reconciliation creates/configures or probes a
+new immutable gateway revision and advances only its observed state. It never
+mutates routes. Moving an existing route or creating routes from gateway preview
+is an explicit RouteService plan/apply owned by the surface. Old revisions
+remain addressable until no route pins them.
+One versioned reservation owns each endpoint/base path across all gateway
+identities. Revisions of its owning gateway may coexist; another gateway can
+acquire the path only through a planned reservation CAS after every old route
+and revision has moved or retired.
+Organization defaults may
 override instance defaults. A default is only a creation-time/user-interface
 choice and never silently retargets an existing placement or route.
+Endpoint and gateway defaults pin exact granted generations. Stable CLI/API
+refs resolve those generations in the plan; apply rejects changed desired
+generations. A revision update offers an explicit default-move effect rather
+than making defaults follow a mutable pointer.
 
-A gateway-derived route is necessarily `direct`, references a placement on the
-gateway's binding, and records the gateway generation that produced it. The
-schema enforces one instance defaults row despite SQL NULL-uniqueness
+A gateway-backed route is necessarily `direct`, references a complete
+placement on the revision's binding, and records the gateway generation that
+produced it. Application validation plus the composite foreign keys enforce
+complete kind, compatible scope/access posture, and exact path composition.
+The schema enforces one instance defaults row despite SQL NULL-uniqueness
 differences; every organization has at most one defaults row.
+
+Endpoint, gateway-revision, route-target, and canonical-route composite foreign
+keys are immediate `ON UPDATE RESTRICT ON DELETE RESTRICT`. Cross-surface and
+cross-scope route targets are therefore impossible in every supported SQL
+backend rather than rejected only by service code.
 
 The current `frontends` table migrates as follows:
 
 - registry/cache target -> delivery route;
-- binding target -> storage gateway plus one derived route per eligible
-  placement;
-- `domain`/`base_path` -> normalized domain and route;
+- binding target -> storage gateway plus an explicit reviewed direct route for
+  each still-supported old frontend URL; no route is synthesized merely because
+  a placement is eligible;
+- scheme/DNS/IP/port -> typed delivery endpoint, and `base_path` -> route;
 - `mode` -> delivery mode;
 - `serves_*` -> route capabilities;
 - `advertised` -> either canonical-route selection or no migrated meaning;
@@ -576,7 +1922,7 @@ The current `frontends` table migrates as follows:
 - `is_primary` -> canonical route for the applicable audience.
 
 The resource-level `advertise_storage_frontend` fields are removed after
-derived-route review. There is no generic inheritance toggle in the new model.
+explicit-route review. There is no generic inheritance toggle in the new model.
 
 ## Object presence
 
@@ -587,6 +1933,7 @@ surface_objects(
   cache_id NULL,
   object_key,
   object_kind,           -- immutable | mutable_pointer
+  partition_key NULL,    -- exact 32-byte binary hash-range key
   content_hash NULL,
   size NULL,
   mutable_publication_id NULL,
@@ -594,11 +1941,17 @@ surface_objects(
   tombstoned_at NULL,
   resource_version,
   CHECK exactly_one(registry_id, cache_id),
+  CHECK ((object_kind = 'immutable' AND partition_key IS NOT NULL
+          AND byte_length(partition_key) = 32)
+      OR (object_kind = 'mutable_pointer' AND partition_key IS NULL)),
   UNIQUE(id, registry_id),
   UNIQUE(id, cache_id),
   UNIQUE(registry_id, object_key),
   UNIQUE(cache_id, object_key)
 )
+
+CREATE INDEX surface_objects_partition_key_idx
+  ON surface_objects(partition_key);
 
 object_placements(
   surface_object_id,
@@ -623,6 +1976,12 @@ object_placements(
     REFERENCES surface_placements(id, registry_id)
 )
 ```
+
+Indexing computes `partition_key` once from the canonical logical identity and
+encoding in `01-domain-model.md`; route code reads it and never re-derives it
+from a URL. Cutover recomputes and validates every immutable key, rejects a
+digest/vector mismatch, and does not enable hash policies until the backfill is
+complete. Mutable pointers remain unpartitioned.
 
 The Nix-domain mapping is explicit:
 
@@ -704,6 +2063,8 @@ cache_retention_subscriptions(
   resource_version,
   UNIQUE(cache_id, registry_id),
   UNIQUE(id, cache_id, registry_id),
+  FOREIGN KEY(cache_id) REFERENCES binary_caches(id),
+  FOREIGN KEY(registry_id) REFERENCES registries(id),
   FOREIGN KEY(current_refresh_id, id, cache_id, registry_id)
     REFERENCES cache_retention_refreshes(
       refresh_id, subscription_id, cache_id, registry_id)
@@ -748,11 +2109,21 @@ cache_population_targets(
   registry_id,
   trigger,                -- release | manual | continuous
   required,
-  placement_policy_id NULL,
+  placement_policy_revision_id NULL,
+  placement_policy_revision_state NULL,
   selector_json,
   validation_gate,
   enabled,
-  UNIQUE(cache_id, registry_id, trigger)
+  UNIQUE(cache_id, registry_id, trigger),
+  CHECK ((placement_policy_revision_id IS NULL
+          AND placement_policy_revision_state IS NULL)
+      OR (placement_policy_revision_id IS NOT NULL
+          AND placement_policy_revision_state = 'published')),
+  FOREIGN KEY(placement_policy_revision_id, cache_id,
+              placement_policy_revision_state)
+    REFERENCES placement_policy_revisions(id, cache_id, state),
+  FOREIGN KEY(cache_id) REFERENCES binary_caches(id),
+  FOREIGN KEY(registry_id) REFERENCES registries(id)
 )
 
 release_artifacts(
@@ -929,6 +2300,8 @@ cache_gc_state(
           AND first_sweep_acknowledged_at IS NOT NULL)),
   FOREIGN KEY(current_mark_generation_id, cache_id)
     REFERENCES cache_gc_generations(generation_id, cache_id),
+  FOREIGN KEY(cache_id, inventory_generation)
+    REFERENCES cache_inventory_generations(cache_id, generation),
   FOREIGN KEY(first_sweep_acknowledgement_id, cache_id,
               first_sweep_acknowledgement_state)
     REFERENCES cache_gc_first_sweep_acknowledgements(
@@ -1333,10 +2706,49 @@ registry_cache_stack_entries(
   resolved_priority,
   cache_id NULL,
   delivery_route_id NULL,
+  route_configuration_generation NULL,
+  route_configuration_digest NULL,
   indexed_commit,
-  PRIMARY KEY(registry_id, stack_path)
+  PRIMARY KEY(registry_id, stack_path),
+  CHECK ((cache_id IS NULL AND delivery_route_id IS NULL
+          AND route_configuration_generation IS NULL
+          AND route_configuration_digest IS NULL)
+      OR (cache_id IS NOT NULL AND delivery_route_id IS NOT NULL
+          AND route_configuration_generation IS NOT NULL
+          AND route_configuration_digest IS NOT NULL)),
+  FOREIGN KEY(registry_id) REFERENCES registries(id),
+  FOREIGN KEY(cache_id) REFERENCES binary_caches(id),
+  FOREIGN KEY(delivery_route_id, cache_id, route_configuration_generation,
+              route_configuration_digest)
+    REFERENCES delivery_route_configurations(
+      delivery_route_id, cache_id, configuration_generation,
+      configuration_digest)
 )
 ```
+
+For a managed entry, index validation requires `committed_url` to byte-equal
+the exact immutable route configuration's `canonical_rendered_url` at
+`indexed_commit`; cache identity, route identity, generation, and digest are
+stored together or not at all. A later route update retains that immutable
+configuration for signed-history/audit but does not rewrite the committed
+stack. URL identity cannot change in an update. Its replacement workflow is:
+create and probe the replacement route, enable it, commit the signed cache-stack
+entry to its URL, re-index that exact replacement configuration, move canonical
+selection, then disable and delete the old route. Each transition is an
+independent plan/apply step with resumable state; both routes may serve during
+the overlap, so clients never observe an advertised but disabled URL.
+
+`DisableRoute` and `DeleteRoute` are blocked while any current signed stack
+entry names that route, even when the URL is unchanged. An access-policy or
+capability update reruns compatibility validation for every referencing stack
+entry and fails if any intended client class would lose read access. A
+target-only move may proceed without changing a stack entry only when its URL,
+access policy, and cache-serving capability remain compatible. The entry may
+retain its exact historical configuration generation because immutable history
+proves the signed URL; health and serving always use the route's current exact
+configuration. An external URL has all managed fields null. Cross-cache,
+dangling, partially managed, or generation/digest-mismatched pairs
+abort index and cutover.
 
 The cutover transforms `cache_registry_links.roots_packages` into retention
 subscriptions and then drops the table in the same maintenance operation. Its
@@ -1371,7 +2783,10 @@ names are normative in `09-interface-contracts.md`.
   `CancelPlacementPromotion`, `CancelPlacementDrain`, `DeletePlacement`
 - `GetWriteAuthority`, `ReconcileWriteAuthority`
 - `ListPlacements`, `GetPlacement`, `ScanPlacement`
-- `GetPlacementPolicy`, `SetPlacementPolicy`, `TestPlacementPolicy`
+- `ListPlacementPolicies`, `GetPlacementPolicy`,
+  `ListPlacementPolicyRevisions`, `GetPlacementPolicyRevision`,
+  `CreatePlacementPolicy`, `RevisePlacementPolicy`,
+  `TestPlacementPolicyRevision`
 - `ReplicatePlacement`, `RepairPlacement`, `ListObjectPresence`
 - `ListPlacementEquivalences`, `ConfirmPlacementEquivalence`,
   `DeletePlacementEquivalence`
@@ -1385,20 +2800,37 @@ and generation guarded. Cancellation is a reviewed, generation-guarded
 reconciliation back to the still-observed writer; it never clears a pending
 row without proving the candidate is fenced and the observed writer is ready.
 
-### Domains and routes
+### Domains, network boundaries, endpoints, gateways, and routes
 
-- `CreateDomain`, `UpdateDomain`, `VerifyDomain`, `ConfigureDomainDns`,
-  `ConfigureDomainTls`, `ConfigureDomainAccess`, `ReconcileDomain`,
+- `CreateDomain`, `VerifyDomain`, `ConfigureDomainDns`,
+  `ConfigureDomainCertificate`, `ReconcileDomain`,
   `DeleteDomain`
-- `CreateRoute`, `UpdateRoute`, `EnableRoute`, `DisableRoute`, `DeleteRoute`
+- `CreateNetworkBoundary`, `ReviseNetworkBoundary`,
+  `ProbeNetworkBoundaryRevision`, `ReconcileNetworkBoundaryRevision`,
+  `ActivateNetworkBoundaryRevision`, `RetireNetworkBoundaryRevision`,
+  `GrantNetworkBoundaryScope`, `RevokeNetworkBoundaryScope`,
+  `DeleteNetworkBoundary`
+- `CreateDeliveryEndpoint`, `UpdateDeliveryEndpoint`,
+  `GrantDeliveryEndpointScope`, `RevokeDeliveryEndpointScope`,
+  `ProbeDeliveryEndpoint`, `ReconcileDeliveryEndpoint`,
+  `DeleteDeliveryEndpoint`
+- `CreateRoute`, `UpdateRoute`, `ReplaceRoute`, `EnableRoute`, `DisableRoute`,
+  `DeleteRoute`
 - `SetCanonicalRoute`, `ProbeRoute`, `ExplainRoute`
 - `CreateStorageGateway`, `UpdateStorageGateway`, `PreviewGatewayRoutes`,
+  `GrantStorageGatewayScope`, `RevokeStorageGatewayScope`,
   `ReconcileStorageGateway`, `EnableStorageGateway`, `DisableStorageGateway`,
   `DeleteStorageGateway`
 
-`ExplainRoute` returns the selected access decision, placement candidates,
-origin credential purpose, path rewrite, and rejection reasons without
-disclosing secrets.
+`ExplainRoute` returns the normalized endpoint/realm and grant, selected access
+decision, publication-head/manifest evidence, placement candidates, origin
+credential purpose, path rewrite, and rejection reasons without disclosing
+secrets.
+
+Boundary creation accepts a typed identity specification; the service derives
+the immutable identity fingerprint and never accepts a caller-supplied digest.
+Boundary revision inputs use secret references for mTLS and signed-assertion
+verification material and return only redacted references.
 
 ### Storage bindings and topology defaults
 
@@ -1407,6 +2839,7 @@ disclosing secrets.
   `ValidateStorageBindingCredential`
 - `ListStorageBindingWriteRevisions`, `GetStorageBindingWriteRevision`,
   `ReconcileStorageBindingWriteRevision`
+- `GrantStorageBindingScope`, `RevokeStorageBindingScope`
 - `GetInstanceDefaultStorageBinding`
 - `GetInstanceTopologyDefaults`, `SetInstanceTopologyDefaults`
 - `GetOrganizationTopologyDefaults`, `SetOrganizationTopologyDefaults`
@@ -1454,10 +2887,10 @@ Mutations that cross records use a plan/apply shape:
 3. apply against the same versions or reject as stale; and
 4. enqueue replication/probe/index work after the control-plane transaction.
 
-Examples include surface visibility changes, domain access changes, placement
-drains, write-authority promotion, canonical route changes, and destructive
-GC. GC apply has the same portable requirement as promotion: logical
-tombstoning and operation creation are one version-guarded control-plane
+Examples include surface visibility changes, endpoint/access-policy changes,
+placement drains, write-authority promotion, canonical route changes, and
+destructive GC. GC apply has the same portable requirement as promotion:
+logical tombstoning and operation creation are one version-guarded control-plane
 transition, not an interactive transaction that Worker D1 cannot reproduce.
 Promotion itself remains the sole authority-row compare-and-swap described
 above; GC never changes write authority.
@@ -1468,14 +2901,22 @@ above; GC never changes write authority.
   not a compatibility alias.
 - Every committed registry `[caches]` URL is checked before cutover. If its URL
   will change, the signed change is merged before switching traffic.
-- The schema migration creates placements, domains, gateways, routes,
-  observations, proven binding-write revisions, applicable write authorities,
+- The schema migration creates exact storage-binding consumer grants,
+  placements, DNS domains, the public and imported private network boundaries
+  with immutable revisions/per-revision observations/lifecycle and exact
+  grants, typed delivery endpoints with exact-generation grants, gateways with
+  exact-generation grants, routes, manifests and observations, proven
+  binding-write revisions, applicable write authorities,
   integrations, release snapshots, root reasons, object mappings, GC state,
   and safe initial mark inputs; validates them; and drops the old topology and
   GC tables/columns in the same maintenance operation. Explicitly read-only
   surfaces remain authority-free. A declared writable surface without one
   unambiguous validated legacy writer, or any physical-location collision,
   aborts the cutover.
+- Each legacy frontend URL is parsed exactly into scheme, DNS/IPv4/IPv6 host,
+  effective port, ingress/network realm, and normalized path. Missing network
+  identity, invalid/ambiguous URL text, or an unacknowledged cleartext secret
+  path aborts migration; no opaque URL or compatibility field survives.
 - Native and Worker binaries start only against the new schema and route
   index. They contain no legacy read/write branch.
 - Old API messages, methods, UI handlers, CLI variants, and help text are

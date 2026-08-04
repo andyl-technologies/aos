@@ -262,10 +262,13 @@ Resources
 Infrastructure
   Storage bindings
   Domains
+  Network boundaries
+  Delivery endpoints
   Storage gateways
   Topology defaults
 
 Access & trust
+  Identity & access
   Members
   SSO
   Hosted keys
@@ -287,7 +290,7 @@ landing page. It shows:
 
 - organization identity and member/owner status;
 - resource counts and health exceptions;
-- default storage binding and default domain/gateway, if configured;
+- default storage binding and default domain/endpoint/gateway, if configured;
 - pending operations/change requests;
 - recent audit activity; and
 - direct links to create a project, registry, or binary cache.
@@ -315,6 +318,8 @@ bindings. It owns origin/API capability and credentials—not delivery routes.
 Binding detail contains:
 
 - origin/API endpoint, bucket/root, region, and credential purposes;
+- exact consumer-scope grant generation/state, live-pin counts, revoked
+  history, and affected topology;
 - read capabilities and observed health;
 - immutable binding-write revisions, credential-version references,
   validation, current default, and affected authority fan-out;
@@ -327,26 +332,78 @@ workflows. Rotation shows old/new revisions and per-authority reconciliation;
 the old revision cannot be retired while any desired/observed authority pins
 it. Delete first presents affected placements and cannot proceed while live
 placements remain.
+Grant/revoke is dual-scope plan/apply and cannot CAS an exact grant generation
+to Revoked while a placement, gateway, or topology default holds its active
+pin. Revoked tombstones and lifecycle events remain visible.
 
 ### Domains
 
-The domain inventory shows desired and observed DNS/TLS/access state, route
-count, and affected runtime. Domain detail owns verification and provider
-reconciliation. It links to routes but does not edit their surface-specific
-placement policy inline.
+The domain inventory shows DNS ownership, desired/observed DNS state,
+certificate issuance, endpoint count, and affected runtime. Domain detail owns
+verification, DNS, and certificate-provider reconciliation. It links to its
+delivery endpoints but does not own listeners, route access, or placement
+policy.
+
+### Network boundaries
+
+The boundary inventory shows stable realm identity, kind, desired default
+revision, active/retiring revision count, authorized consumer scopes, endpoint
+count, and last probe. Boundary detail has a per-revision table ordered Staged,
+Active, Retiring, then Retired, with exact protection/trusted-ingress
+verification, activation mode, active/revoked grant generation, serving-pin
+count/version, probe provenance, and
+impact links. It owns revision creation, probe/reconcile, overlap or coordinated
+activation review/apply, consumer move plans, two-phase retirement, and grants.
+Unknown, stale, or mismatched
+observations are visibly ineligible for credential-bearing HTTP, trusted local
+classification, and private redirects.
+Retiring fences new consumers while listing and preserving eligible existing
+verified pins until their explicit move plans complete.
+The `instance:public` row is system managed: the UI exposes its observation,
+fixed revision 1, and exact grants but no create, revise, transfer, rename, or
+delete action. Probe/reconcile is observation-only.
+
+### Delivery endpoints
+
+The endpoint inventory shows exact rendered origin, DNS/IPv4/IPv6 host type,
+effective port, ingress/network boundary, desired/observed listener and TLS
+state, exact boundary revision, probe posture, active/revoked exact-generation
+consumer grants with live-pin counts, and route count. Endpoint detail owns listener reconciliation, cleartext
+acknowledgement, scope grants, and probes. Origin identity is immutable;
+changing scheme, host, port, or realm starts a replacement-and-move workflow.
+It never stores an opaque URL or storage origin. DNS endpoints link
+back to their domain; IP endpoints explicitly show that DNS lifecycle does not
+apply.
+Endpoint generation plans show every exact grant and affected route; operators
+confirm which grants are materialized for the replacement generation before
+routes move.
+Moving to another revision of the same boundary is an explicit endpoint
+generation plan that also lists affected gateways and defaults; changing the
+boundary identity still requires endpoint replacement.
 
 ### Storage gateways
 
-The gateway list shows domain/base path, binding, access posture, origin rewrite,
-and number of materialized routes. Gateway detail previews the routes it would
-materialize and offers an explicit reconcile operation.
+The gateway list shows endpoint/client base path, binding, access posture,
+origin prefix, exact-generation active/revoked grants with live-pin counts, and number of materialized
+routes. Gateway detail owns a grant inventory/editor, previews the routes it
+would materialize, and offers an explicit reconcile operation. Revision plans
+show which grants carry forward and which routes move; a grant never silently
+applies to a later generation.
 
 ### Topology defaults
 
-Owns the organization's optional default storage binding, domain, and storage
-gateway used by creation workflows. Changing a default has an impact plan but
-never retargets an existing placement or route. Overview and infrastructure
-inventories display these values and link here; they do not edit them inline.
+Owns the organization's optional default storage binding, DNS domain, delivery
+endpoint, and storage gateway used by creation workflows. Changing a default
+has an impact plan but never retargets an existing placement or route. Overview
+and infrastructure inventories display these values and link here; they do not
+edit them inline.
+
+### Identity & access
+
+Owns the organization's editable display name and other non-identity profile
+metadata. Stable organization id, slug, and owner scope are immutable after
+creation. Member roles, SSO, hosted keys, infrastructure, and deletion remain
+on their dedicated pages; Overview only summarizes and links here.
 
 ### Members, SSO, and hosted keys
 
@@ -448,6 +505,23 @@ cache, and web capability chips.
 Canonical Git/cache/web routes appear first. “Serving & mirror” is removed:
 upstream registry mirroring is not delivery and belongs on the separate
 Upstream mirror page.
+
+Route detail separates immutable URL identity from mutable target, access,
+capability, observation, and canonical state. Editing fields whose normalized
+result keeps the rendered URL opens the ordinary update impact plan. Editing
+endpoint identity or base path opens **Replace route**, which creates a disabled
+successor and presents a resumable progress rail: create, probe, enable, update
+and re-index every signed cache-stack reference, move canonical audiences,
+disable old, delete old. The old and new URLs are both shown throughout the
+overlap, with blocking references and the next safe action. Closing/reopening
+the page resumes the durable operation rather than drafting another successor.
+
+For a direct route, access is displayed as read-only inherited gateway policy;
+changing it links to creation of a new gateway revision and then a route update
+or replacement. Delete is unavailable until the route is disabled,
+non-canonical, absent from signed stacks, and free of live pins. Route history
+links to the signed registry commit and redacted audit event after live
+configuration rows are deleted.
 
 ### Upstream mirror
 
@@ -617,6 +691,8 @@ Overview
 Infrastructure
   Storage bindings
   Domains
+  Network boundaries
+  Delivery endpoints
   Storage gateways
   Topology defaults
 
@@ -638,11 +714,13 @@ form. Identity & signup owns signup policy, allowed domains, authentication
 methods, and session lifetime. Resource defaults owns new-surface crawl policy,
 upload limits, and anonymous cache discovery defaults. Branding remains its own
 page. Instance infrastructure pages use the same organization components and
-show which organization resources inherit each default. The instance Storage
+show which organization resources inherit each default, including boundary
+protection revisions, trusted-ingress verification, grants, and endpoint usage.
+The instance Storage
 bindings page represents the one deployment-provisioned default binding: it may
-support endpoint/credential maintenance, but it cannot create, delete, or swap
+support origin/credential maintenance, but it cannot create, delete, or swap
 the deployment binding. Instance Topology defaults selects optional domain and
-gateway defaults; its storage binding is the deployment singleton.
+endpoint/gateway defaults; its storage binding is the deployment singleton.
 
 ## Topological context and cross-links
 
@@ -660,8 +738,25 @@ Placement
   used by -> Placement policy
 
 Delivery route
-  uses -> Domain
+  uses -> Delivery endpoint
   uses -> Placement or placement policy
+  direct mode uses -> Storage-gateway revision
+
+Domain
+  used by -> Delivery endpoint
+
+Network boundary
+  used by -> Delivery endpoint
+
+Delivery endpoint
+  used by -> Delivery route and storage-gateway revision
+
+Storage gateway revision
+  uses -> Delivery endpoint and Storage binding
+  used by -> Direct delivery route
+
+Storage binding
+  used by -> Placement and Storage-gateway revision
 
 Registry
   owns -> Consumer cache-stack entry
@@ -684,7 +779,7 @@ Implement one component/data model for each repeated concept:
 - placement table/card and placement health;
 - write-authority panel with desired/observed generations and binding revision;
 - route table, route capability chips, and canonical marker;
-- domain/TLS/DNS/access status;
+- DNS-domain/certificate status and delivery-endpoint listener/TLS/probe status;
 - cache integration matrix;
 - operation status/progress;
 - GC mark/plan review, placement-action progress, and deletion-job detail;

@@ -31,7 +31,10 @@ conflate:
 2. A **placement** stores some or all of a surface on one storage binding and
    prefix. A surface may have several placements from the start; a separate
    per-surface authority record selects and reconciles its single writer.
-3. A **delivery route** maps a domain and base path to a surface, either
+3. A **network boundary** carries revisioned, observed transport/trusted-ingress
+   posture. A **delivery endpoint** is an immutable-identity typed DNS/IP
+   client origin pinned to one boundary, and a **delivery route** maps one
+   endpoint generation and base path to a surface, either
    directly, through AOS Hub, or through an externally protected network or
    gateway. Every valid route implements the same machine-path protocol.
 4. Registry/cache integrations are separate **consumer publication**,
@@ -62,9 +65,9 @@ The resulting topology is:
                  +---- placement B ---- storage binding B + prefix
                  +---- placement C ---- storage binding C + prefix
                  |
-                 +---- route 1: cdn.example/path       -> placement A (direct)
+                 +---- route 1: cdn.example/path       -> gateway rev -> placement A (direct)
                  +---- route 2: hub.example/path       -> placement policy (Hub proxy)
-                 +---- route 3: cache.corp/path        -> placement B (external/VPN auth)
+                 +---- route 3: cache.corp/path        -> gateway rev -> placement B (VPN)
 ```
 
 ## Topic files
@@ -77,7 +80,7 @@ The resulting topology is:
 | [`03-registry-cache-relations.md`](03-registry-cache-relations.md) | Standalone/shared caches, signed consumer stacks, retention, population, and coverage |
 | [`04-retention-and-gc.md`](04-retention-and-gc.md) | Release artifact snapshots, selectors, root provenance, and multi-placement GC |
 | [`05-data-model-and-api.md`](05-data-model-and-api.md) | Normative records, constraints, API verbs, and complete-cutover strategy |
-| [`06-console-and-operations.md`](06-console-and-operations.md) | Information architecture, names, status views, domain lifecycle, and operations |
+| [`06-console-and-operations.md`](06-console-and-operations.md) | Information architecture, names, status views, domain/endpoint lifecycle, and operations |
 | [`07-implementation-plan.md`](07-implementation-plan.md) | Sequencing, migration, acceptance criteria, and test matrix |
 | [`08-decisions-and-open-questions.md`](08-decisions-and-open-questions.md) | Locked choices, rejected conflations, and remaining bounded questions |
 | [`09-interface-contracts.md`](09-interface-contracts.md) | Normative Web UI navigation/actions, clean-break CLI commands, and Connect-JSON services |

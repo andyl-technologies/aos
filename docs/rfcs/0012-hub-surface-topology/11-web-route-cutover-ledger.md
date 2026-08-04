@@ -17,6 +17,8 @@ classifier/dispatcher must change atomically.
 | `GET /-/orgs` | retain as the global organization inventory |
 | `GET /-/caches` | retain as the global cache inventory outside settings |
 | `GET /-/org/{org}` | retain with new Overview semantics |
+| `GET /-/org/{org}/identity-and-access` | add as the owner of organization profile fields |
+| `POST /-/org/{org}/identity-and-access/plan-update` / `POST /-/org/{org}/identity-and-access/update` | add organization profile plan/apply; slug and stable id are not mutable |
 | `GET /-/org/{org}/settings` | remove redirect; use the organization root |
 | `GET /-/org/{org}/audit` | move to `GET /-/org/{org}/audit-log` |
 | `GET /-/org/{org}/members` | retain |
@@ -69,7 +71,7 @@ Let `B = /-/org/{org}/caches/{cache}`.
 | `GET B/storage` | move to `GET B/placements` |
 | `POST B/storage` | remove pointer swap; use placement add, replicate, promote, drain, and delete workflows |
 | `GET B/serving` | move to `GET B/delivery` |
-| `POST B/advertise-frontend` | remove; create an explicit delivery route or gateway-derived route |
+| `POST B/advertise-frontend` | remove; create an explicit gateway-backed delivery route |
 | `POST B/gc` | remove overloaded action; split into policy, immutable plan, and run resources below `B/garbage-collection` |
 | `POST B/pin/add` | move to `POST B/retention/manual-roots` |
 | `POST B/pin/remove` | remove; use `POST B/retention/manual-roots/{root}/delete` |
@@ -120,7 +122,7 @@ Let `R = /{registry}/-/settings`.
 | `POST R/crawl` | move to `POST R/access/crawl-policy` |
 | `GET R/storage` | move to `GET R/placements` |
 | `POST R/storage` | remove pointer swap; use placement workflows |
-| `POST R/advertise-frontend` | remove; use an explicit delivery route or gateway-derived route |
+| `POST R/advertise-frontend` | remove; use an explicit delivery route |
 | `GET R/caches` | retain as read-only cache topology/entry point |
 | `POST R/cache-link` | remove; use independent consumer-stack, retention, and population workflows |
 | `POST R/cache-unlink` | remove; use the same independent workflows |
