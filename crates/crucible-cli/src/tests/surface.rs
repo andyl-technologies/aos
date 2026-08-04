@@ -1133,6 +1133,23 @@ pub(super) fn cli_from_owned(args: Vec<String>) -> Cli {
 }
 
 #[test]
+fn cli_output_format_defaults_follow_stdout_destination() {
+    assert_eq!(resolve_output_format(None, true), OutputFormat::Table);
+    assert_eq!(resolve_output_format(None, false), OutputFormat::Jsonl);
+    assert_eq!(
+        resolve_output_format(Some(OutputFormat::Json), true),
+        OutputFormat::Json
+    );
+    assert_eq!(
+        resolve_output_format(Some(OutputFormat::Table), false),
+        OutputFormat::Table
+    );
+
+    let cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
+    assert_eq!(cli.format, None);
+}
+
+#[test]
 pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
     let mut names = Cli::command()
         .get_subcommands()
@@ -1203,7 +1220,7 @@ pub(super) fn cli_skeleton_parses_global_flag_block() {
         cli.store.as_ref().and_then(|path| path.to_str()),
         Some(".crucible-store")
     );
-    assert_eq!(cli.format, OutputFormat::Json);
+    assert_eq!(cli.format, Some(OutputFormat::Json));
     assert_eq!(
         cli.trace.as_ref().and_then(|path| path.to_str()),
         Some("trace.jsonl")

@@ -11,7 +11,7 @@ Build and invoke the complete package closure:
 
 ```sh
 nix build .#pkg-crucible
-./result/bin/crucible --format table selftest --with-qemu
+./result/bin/crucible selftest
 ```
 
 If you intentionally use separate artifacts, supply both members of the pair:
@@ -20,8 +20,7 @@ If you intentionally use separate artifacts, supply both members of the pair:
 ./result/bin/crucible \
   --qemu /nix/store/.../bin/qemu-system-x86_64 \
   --plugin /nix/store/.../lib/libcrucible_qemu_plugin.so \
-  --format table \
-  selftest --with-qemu
+  selftest
 ```
 
 Do not add an arbitrary host QEMU to `PATH`; Crucible does not consult it.
@@ -65,7 +64,6 @@ Use the same store root as the producing command:
 ```sh
 ./result/bin/crucible \
   --store /path/to/original/store \
-  --format table \
   resume blake3:<checkpoint>
 ```
 
@@ -111,7 +109,7 @@ values are accepted.
 Retain the emitted `.crucible` artifact and replay it before changing the test:
 
 ```sh
-./result/bin/crucible --format table replay <artifact>
+./result/bin/crucible replay <artifact>
 ```
 
 Then save or fork immediately before the failure boundary if an alternate
@@ -123,7 +121,6 @@ Repeat with a fixed seed and bisection enabled:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   --seed <recorded-seed> \
   verify scenario.toml \
   --runs 2 \
@@ -148,7 +145,6 @@ Use subcommand help for exact current syntax:
 
 Common mistakes include:
 
-- omitting `--with-qemu` from the packaged `selftest`;
 - using `--until virtual-time` without `--max-virtual-time`;
 - combining a fork seed with `--override`;
 - passing both positional `FAMILY` and `--family` to `fuzz`;

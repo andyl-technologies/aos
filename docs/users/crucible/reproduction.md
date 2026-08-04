@@ -12,7 +12,6 @@ fingerprint streams:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   --seed 0x2a \
   verify scenario.toml \
   --runs 5
@@ -23,7 +22,6 @@ to identify the first divergent state if reductions disagree:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   --seed 0x2a \
   verify scenario.toml \
   --runs 8 \
@@ -37,9 +35,7 @@ Crucible writes side artifacts for the disagreeing executions.
 To compare two existing artifacts without running the scenario again:
 
 ```sh
-./result/bin/crucible \
-  --format table \
-  verify --compare run-a.crucible run-b.crucible
+./result/bin/crucible verify --compare run-a.crucible run-b.crucible
 ```
 
 ## Failure artifacts
@@ -71,9 +67,7 @@ Replay validates the artifact schema and requires an exact producer/consumer
 build-identity match before reducing embedded scenario and schedule material:
 
 ```sh
-./result/bin/crucible \
-  --format table \
-  replay .crucible/repro-failed-<digest>.crucible
+./result/bin/crucible replay .crucible/repro-failed-<digest>.crucible
 ```
 
 This command currently performs a pure model reduction from embedded artifact
@@ -85,7 +79,6 @@ Compare the artifact's canonical log with a retained log file:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   replay failure.crucible \
   --check original.jsonl
 ```
@@ -97,7 +90,6 @@ Bisect two artifacts:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   replay failing.crucible \
   --bisect passing.crucible
 ```
@@ -113,7 +105,6 @@ Save at virtual time:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   save scenario.toml \
   --at virtual-time \
   --max-virtual-time 20s \
@@ -138,7 +129,6 @@ Resume accepts a savepoint handle or a direct `blake3:<checkpoint>` reference:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   resume .crucible/savepoint-before-election-<digest>.crucible-savepoint
 ```
 
@@ -155,7 +145,6 @@ Fork creates an independent child from a validated execution prefix:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   --seed 0x2b \
   fork .crucible/savepoint-before-election-<digest>.crucible-savepoint \
   --label alternate-seed
@@ -166,7 +155,6 @@ Alternatively, override recorded decisions with repeatable
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   fork savepoint.crucible-savepoint \
   --override 'delivery-order=db-3-first' \
   --label alternate-delivery

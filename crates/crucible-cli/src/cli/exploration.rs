@@ -233,9 +233,9 @@ pub(super) fn emit_backend_command_output(
     outcome: &BackendCommandOutcome,
 ) -> Result<(), CliError> {
     let trace_entries = backend_machine_readable_trace_entries(outcome);
-    let _trace =
-        emit_canonical_trace(cli.format, &trace_entries, cli.trace.as_deref(), !cli.quiet)?;
-    let emit_human = !cli.quiet && should_emit_human_backend_output(cli.format);
+    let format = cli.output_format();
+    let _trace = emit_canonical_trace(format, &trace_entries, cli.trace.as_deref(), !cli.quiet)?;
+    let emit_human = !cli.quiet && should_emit_human_backend_output(format);
     if emit_human {
         for line in &outcome.stdout {
             println!("{line}");
@@ -308,7 +308,7 @@ pub(super) fn should_emit_human_backend_output(format: OutputFormat) -> bool {
 }
 
 pub(super) fn should_emit_human_dispatch_output(cli: &Cli) -> bool {
-    !cli.quiet && should_emit_human_backend_output(cli.format)
+    !cli.quiet && should_emit_human_backend_output(cli.output_format())
 }
 
 pub(super) fn backend_machine_readable_trace_entries(
@@ -343,11 +343,12 @@ pub(super) fn emit_replay_report_output(
     cli: &Cli,
     report: &ReplayArtifactReport,
 ) -> Result<(), CliError> {
-    if cli.format.is_machine_readable() {
+    let format = cli.output_format();
+    if format.is_machine_readable() {
         let status = replay_report_status(report);
         let exit_code = replay_report_exit_code(report);
         let entries = replay_machine_readable_trace_entries(report, status, exit_code);
-        emit_canonical_trace(cli.format, &entries, cli.trace.as_deref(), !cli.quiet)?;
+        emit_canonical_trace(format, &entries, cli.trace.as_deref(), !cli.quiet)?;
     } else if !cli.quiet {
         write_replay_report_human(&mut io::stdout(), report)?;
     }

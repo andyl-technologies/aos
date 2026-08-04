@@ -96,6 +96,7 @@ pub(crate) fn default_run_store_root(cli: &Cli) -> PathBuf {
 }
 
 pub(crate) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
+    let qemu_enabled = args.with_qemu || !cfg!(any(test, feature = "test-double"));
     let requested = match args.gates.as_deref() {
         Some(raw) => raw.split(',').map(str::trim).collect::<Vec<_>>(),
         #[cfg(any(test, feature = "test-double"))]
@@ -124,7 +125,7 @@ pub(crate) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, Cl
         }
         if !CANONICAL_GATE_NAMES.contains(gate) {
             return Err(usage_error(format!(
-                "unknown selftest gate `{gate}`; use canonical gate names from RFC-0010 file 24"
+                "unknown selftest gate `{gate}`; run selftest without --gates to use the supported default set"
             )));
         }
         #[cfg(any(test, feature = "test-double"))]
@@ -132,7 +133,7 @@ pub(crate) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, Cl
             continue;
         }
         if REAL_QEMU_SELFTEST_GATES.contains(gate) {
-            if !args.with_qemu {
+            if !qemu_enabled {
                 return Err(usage_error(format!(
                     "selftest gate `{gate}` requires --with-qemu"
                 )));

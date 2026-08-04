@@ -14,7 +14,6 @@ Start paused at genesis and read commands from standard input:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   run scenario.toml \
   --interactive
 ```
@@ -51,7 +50,7 @@ For a bounded inspection session, pipe commands explicitly:
 
 ```sh
 printf 'query\nstep\nquery\nstop\n' | \
-  ./result/bin/crucible --format table run scenario.toml --interactive
+  ./result/bin/crucible run scenario.toml --interactive
 ```
 
 Avoid an unbounded `continue` in a scripted interactive session unless the
@@ -70,7 +69,6 @@ renderings and do not add a separate non-canonical status stream.
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   debug failure.crucible \
   --at-failure
 ```
@@ -107,7 +105,6 @@ For example:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   debug failure.crucible \
   --at-failure \
   reverse-step event

@@ -49,7 +49,7 @@ pub(super) fn plan_triage_invocation(
         policy: args.policy.policy(),
         minimize: args.minimize,
         report_dir,
-        format: cli.format.triage_report_format(),
+        format: cli.output_format().triage_report_format(),
         recompute_signatures: args.recompute_signatures,
         compare,
         store_root,

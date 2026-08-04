@@ -1179,7 +1179,7 @@ pub(super) fn cli_triage_help_surface_lists_required_flags_and_exit_code_contrac
         "--recompute-signatures",
         "--compare <other-triage-result>",
         "--format <jsonl|json|table|markdown>",
-        "Trace/report render format. Default: jsonl",
+        "Trace/report render format. Default: table on a terminal, otherwise jsonl",
     ] {
         assert!(
             triage_help.contains(needle),
@@ -1307,7 +1307,7 @@ pub(super) fn cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline()
     assert_eq!(args.policy, TriagePolicyArg::Fine);
     assert_eq!(args.minimize, TriageMinimizeArg::Representative);
     assert_eq!(args.report.as_deref(), Some(reports.as_path()));
-    assert_eq!(cli.format, OutputFormat::Markdown);
+    assert_eq!(cli.format, Some(OutputFormat::Markdown));
     assert!(args.recompute_signatures);
     assert_eq!(args.compare.as_deref(), Some(prior.as_str()));
 

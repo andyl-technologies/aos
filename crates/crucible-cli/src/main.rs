@@ -17,7 +17,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::future::Future;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(any(test, feature = "test-double"))]
 use std::sync::Arc;
@@ -155,15 +155,14 @@ struct Cli {
     /// Content-addressed store root (06, 07). Else default.
     #[arg(long, value_name = "path", global = true)]
     store: Option<PathBuf>,
-    /// Trace/report render format. Default: jsonl.
+    /// Trace/report render format. Default: table on a terminal, otherwise jsonl.
     #[arg(
         long,
         value_enum,
         value_name = "jsonl|json|table|markdown",
-        default_value_t = OutputFormat::Jsonl,
         global = true
     )]
-    format: OutputFormat,
+    format: Option<OutputFormat>,
     /// Write the event-log stream here. Default: stdout.
     #[arg(long, value_name = "path", global = true)]
     trace: Option<PathBuf>,
@@ -183,6 +182,21 @@ struct Cli {
     quiet: bool,
     #[command(subcommand)]
     command: Commands,
+}
+
+impl Cli {
+    fn output_format(&self) -> OutputFormat {
+        resolve_output_format(self.format, io::stdout().is_terminal())
+    }
+}
+
+/// Selects the explicit format or a terminal-appropriate default.
+fn resolve_output_format(explicit: Option<OutputFormat>, stdout_is_terminal: bool) -> OutputFormat {
+    match explicit {
+        Some(format) => format,
+        None if stdout_is_terminal => OutputFormat::Table,
+        None => OutputFormat::Jsonl,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -349,6 +363,7 @@ struct SelftestArgs {
     #[arg(long, value_name = "list")]
     gates: Option<String>,
     /// Execute the QEMU-backed gates.
+    #[cfg_attr(not(any(test, feature = "test-double")), arg(hide = true))]
     #[arg(long, action = ArgAction::SetTrue)]
     with_qemu: bool,
     /// Test-only manifest of built-in fixture names.

@@ -46,9 +46,9 @@ Crucible is a good fit when you need to:
 - branch from a known execution point to test an alternate decision; or
 - search a bounded schedule space and retain self-contained findings.
 
-It is not a real-time benchmark, a model checker, an in-process async test
-harness, or a general-purpose VM manager. Application traffic originates in the
-guests. Crucible observes and schedules it; it is not a host-side load generator.
+It is not a real-time benchmark, a model checker, a unit-test framework, or a
+general-purpose VM manager. Application traffic originates in the guests.
+Crucible observes and schedules it; it is not a host-side load generator.
 
 ## Prerequisites
 
@@ -77,11 +77,11 @@ artifacts, so a packaged invocation normally needs no discovery flags.
 Run the live QEMU self-test before authoring or investigating a scenario:
 
 ```sh
-./result/bin/crucible --format table selftest --with-qemu
+./result/bin/crucible selftest
 ```
 
-The production binary does not contain the in-process test double. It fails
-closed if it cannot discover and validate a matched QEMU/plugin pair.
+The production command runs the live QEMU gates by default. It fails closed if
+it cannot discover and validate a matched QEMU/plugin pair.
 
 ## First run
 
@@ -89,13 +89,14 @@ Run the built-in happy-path scenario with an explicit seed:
 
 ```sh
 ./result/bin/crucible \
-  --format table \
   --seed 0x2a \
   run builtin:happy-path.scn
 ```
 
-`--format table` is deliberate. The default is newline-delimited JSON for
-automation. Human-oriented examples in this guide select `table` explicitly.
+When standard output is a terminal, the default rendering is a human-readable
+table. When output is redirected or piped, the default is newline-delimited JSON
+for automation. Pass `--format` when a command must use a fixed representation
+regardless of its output destination.
 
 Other built-in inputs are:
 
@@ -112,7 +113,7 @@ built-in family used by `fuzz`.
 
 The usual progression is:
 
-1. Run `selftest --with-qemu` to validate the packaged backend.
+1. Run `selftest` to validate the packaged backend.
 2. Run a scenario with an explicit seed and bounded terminal condition.
 3. Inspect the event log and branch on the process exit code.
 4. Use `verify` to compare independent reductions.
