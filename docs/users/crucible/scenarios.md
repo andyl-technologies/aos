@@ -32,9 +32,12 @@ Properties are named temporal assertions over observations. The supported model
 includes invariants and reachability-style quantifiers such as `Always`,
 `Sometimes`, `Eventually`, `AfterQuiescence`, and `Reachable`.
 
-Black-box host observations are the default. Optional guest markers can expose
-application state, but Crucible does not require an in-guest agent for normal
-operation.
+The host assertion evaluator consumes deterministic observations such as node
+lifecycle, modeled network events, and guest console output. For application
+outcomes, especially when network payloads are encrypted, have the workload
+emit a stable result marker on its ordinary console and match it with a
+`ConsoleMatch` predicate. This does not require a Crucible agent: the production
+QEMU lifecycle captures serial output through an output-only host connection.
 
 ### Seed
 

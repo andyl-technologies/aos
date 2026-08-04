@@ -65,6 +65,11 @@ pub use whitebox_setup::{
     validate_aarch64_whitebox_setup, validate_x86_whitebox_hmp_mtree,
 };
 
+/// Stable QEMU chardev identifier for output-only guest console capture.
+pub const QEMU_CONSOLE_CHARDEV_ID: &str = "crucible-console";
+/// Stable run-directory Unix socket carrying output-only guest console bytes.
+pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
+
 /// Guest architecture selected by a deterministic QEMU launch profile.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LivePluginGuestArchitecture {
@@ -544,6 +549,7 @@ pub struct QemuLaunchCommandBuilder {
     gdbstub: Option<QemuGdbstubChannelConfig>,
     qmp: Option<QemuQmpChannelConfig>,
     translation_prefetch: Option<QemuTranslationPrefetchExperiment>,
+    console_capture: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -569,6 +575,7 @@ impl QemuLaunchCommandBuilder {
             gdbstub: None,
             qmp: None,
             translation_prefetch: None,
+            console_capture: false,
         }
     }
 
@@ -583,6 +590,16 @@ impl QemuLaunchCommandBuilder {
     #[must_use]
     pub fn with_qmp(mut self, qmp: QemuQmpChannelConfig) -> Self {
         self.qmp = Some(qmp);
+        self
+    }
+
+    /// Returns a builder that captures guest serial output in the node run directory.
+    ///
+    /// The character device is an output sink only from Crucible's perspective:
+    /// no host-to-guest write operation is exposed by the runtime.
+    #[must_use]
+    pub const fn with_console_capture(mut self) -> Self {
+        self.console_capture = true;
         self
     }
 
@@ -630,6 +647,19 @@ impl QemuLaunchCommandBuilder {
 
         let vm_hash_material = self.vm.launch_hash_material();
         let mut args = self.profile.canonical_qemu_args();
+        if self.console_capture {
+            replace_option_value(
+                &mut args,
+                "-serial",
+                &format!("chardev:{QEMU_CONSOLE_CHARDEV_ID}"),
+            )?;
+            args.extend([
+                "-chardev".to_owned(),
+                format!(
+                    "socket,id={QEMU_CONSOLE_CHARDEV_ID},path={QEMU_CONSOLE_SOCKET_FILE_NAME},server=on,wait=off"
+                ),
+            ]);
+        }
         if let Some(experiment) = &self.translation_prefetch {
             let accelerator = args
                 .windows(2)
@@ -664,6 +694,21 @@ impl QemuLaunchCommandBuilder {
             plugin_coverage: self.plugin.coverage(),
         })
     }
+}
+
+fn replace_option_value(
+    args: &mut [String],
+    option: &'static str,
+    replacement: &str,
+) -> Result<(), QemuLaunchCommandError> {
+    let Some(index) = args.iter().position(|argument| argument == option) else {
+        return Err(QemuLaunchCommandError::InvalidLaunchText { field: option });
+    };
+    let Some(value) = args.get_mut(index.saturating_add(1)) else {
+        return Err(QemuLaunchCommandError::InvalidLaunchText { field: option });
+    };
+    *value = replacement.to_owned();
+    Ok(())
 }
 
 /// An immutable launch artifact resolved from a content-addressed world entry.
