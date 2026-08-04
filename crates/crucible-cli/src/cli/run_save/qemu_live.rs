@@ -14,6 +14,15 @@ const LIVE_EXPLORATION_QUANTUM_LIMIT: u64 = 16;
 /// instructions and resolves its link delivery below this three-window bound.
 const LIVE_EXPLORATION_RUN_CEILING_ICOUNT: u64 = 12_000_000_000;
 
+/// Terminal instruction-count ceiling for a production CLI lifecycle session.
+const PRODUCTION_CLI_RUN_CEILING_ICOUNT: u64 = 40_000_000_000;
+
+/// Scheduler-quantum ceiling for a production CLI lifecycle session.
+const PRODUCTION_CLI_QUANTUM_BUDGET: u64 = 10_000;
+
+/// Per-node wall-clock timeout for a production CLI lifecycle step.
+const PRODUCTION_CLI_COMPLETION_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[derive(Debug)]
 pub(crate) struct SelftestGateReport {
     pub(crate) name: String,
@@ -426,7 +435,10 @@ pub(crate) fn production_qemu_lifecycle_config(
     )?;
     let mut config =
         production_api::ProductionVmLifecycleConfig::new(qemu, plugin, kernel, root_image)
-            .with_root_image_format(production_api::ProductionRootImageFormat::Raw);
+            .with_root_image_format(production_api::ProductionRootImageFormat::Raw)
+            .with_run_ceiling_icount(PRODUCTION_CLI_RUN_CEILING_ICOUNT)
+            .with_quantum_budget(PRODUCTION_CLI_QUANTUM_BUDGET)
+            .with_completion_timeout(PRODUCTION_CLI_COMPLETION_TIMEOUT);
     if let Some(kernel_cmdline) = live_qemu_kernel_cmdline() {
         config = config.with_kernel_cmdline_prefix(kernel_cmdline);
     }

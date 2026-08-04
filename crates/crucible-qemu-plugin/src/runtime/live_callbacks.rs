@@ -639,6 +639,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     last_raw_icount: AtomicU64,
     logical_icount_offset: AtomicU64,
     preemption_enqueue_active: AtomicBool,
+    idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
     pending_idle_advance: Mutex<Option<LivePendingIdleAdvance>>,
     network: Option<LiveNetworkCallbackState>,
@@ -658,6 +659,15 @@ struct LivePendingIdleAdvance {
 struct PreemptionEnqueueGuard<'a>(&'a AtomicBool);
 
 impl Drop for PreemptionEnqueueGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// Releases exclusive idle-completion ownership on every return path.
+struct IdleAdvanceCompletionGuard<'a>(&'a AtomicBool);
+
+impl Drop for IdleAdvanceCompletionGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
@@ -730,6 +740,7 @@ impl LiveVcpuTimeCallbackState {
             last_raw_icount: AtomicU64::new(initial_raw_icount),
             logical_icount_offset: AtomicU64::new(logical_icount_offset),
             preemption_enqueue_active: AtomicBool::new(false),
+            idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             pending_idle_advance: Mutex::new(None),
             network: None,
@@ -1095,6 +1106,7 @@ impl LiveVcpuTimeCallbackState {
                 },
             );
         }
+        drop(pending_idle_advance);
         let previous_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
         if raw_icount < previous_raw_icount {
             return Err(LiveVcpuTimeCallbackError::IcountRegressed {
@@ -1200,6 +1212,96 @@ impl LiveVcpuTimeCallbackState {
         &self,
         completion: TimeAdvanceCompletion,
     ) -> Result<u64, LiveVcpuTimeCallbackError> {
+        if self
+            .idle_advance_completion_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(LiveVcpuTimeCallbackError::CallbackReentered);
+        }
+        let _completion_active = IdleAdvanceCompletionGuard(&self.idle_advance_completion_active);
+        let (target_icount, logical_icount_offset) = {
+            let pending_slot = self.try_pending_idle_advance()?;
+            let pending = pending_slot
+                .as_ref()
+                .ok_or(LiveVcpuTimeCallbackError::IdleAdvanceCompletionWithoutPending)?;
+            pending
+                .pending
+                .validate_completion(completion)
+                .map_err(|source| LiveVcpuTimeCallbackError::IdleAdvanceCompletion { source })?;
+
+            let observed_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
+            if observed_raw_icount != pending.raw_icount_at_request {
+                return Err(LiveVcpuTimeCallbackError::IdleAdvanceRawIcountChanged {
+                    expected_raw_icount: pending.raw_icount_at_request,
+                    observed_raw_icount,
+                });
+            }
+            let logical_icount_offset = pending
+                .target_icount
+                .checked_sub(observed_raw_icount)
+                .ok_or(LiveVcpuTimeCallbackError::IdleAdvanceOffsetUnderflow {
+                    raw_icount: observed_raw_icount,
+                    target_icount: pending.target_icount,
+                })?;
+            if let Some(network) = self.network.as_ref() {
+                let outbound = network.outbound.outbound();
+                network
+                    .tx
+                    .preflight_guest_frame_batch(&outbound, pending.buffered_tx_payloads.len())
+                    .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
+            }
+            (pending.target_icount, logical_icount_offset)
+        };
+        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
+        if target_icount > ceiling_icount {
+            return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
+                current_icount: target_icount,
+                ceiling_icount,
+            });
+        }
+
+        // QEMU RX injection and fingerprint capture may synchronously invoke
+        // another plugin callback. Keep the pending token armed, but release its
+        // mutex and every mutable ring view before crossing those boundaries.
+        let preview = if let Some(network) = self.network.as_ref() {
+            let passed_delivery_floor_icount = self.last_icount.load(Ordering::Acquire);
+            let preview = {
+                let inbound = network.inbound.inbound();
+                PluginInboundFrames::reject_already_passed_ring_heads(
+                    [inbound],
+                    passed_delivery_floor_icount,
+                )
+                .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
+                PluginInboundFrames::preview_deliverable_since(
+                    [inbound],
+                    target_icount,
+                    passed_delivery_floor_icount,
+                )
+                .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?
+            };
+            if !preview.frames().is_empty() {
+                let mut rx_queue = network.rx_queue;
+                handle_network_rx_idle_callback(
+                    &network.rx,
+                    &mut rx_queue,
+                    passed_delivery_floor_icount,
+                    target_icount,
+                    preview.frames(),
+                )
+                .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?;
+            }
+            Some(preview)
+        } else {
+            None
+        };
+
+        if target_icount == ceiling_icount {
+            self.publish_fingerprint_sample(target_icount)?;
+        }
+
+        // Reacquire after callback-capable work so TX emitted by the guest while
+        // RX was flushed joins the same deterministic idle-completion batch.
         let mut pending_slot = self.try_pending_idle_advance()?;
         let pending = pending_slot
             .as_ref()
@@ -1208,86 +1310,38 @@ impl LiveVcpuTimeCallbackState {
             .pending
             .validate_completion(completion)
             .map_err(|source| LiveVcpuTimeCallbackError::IdleAdvanceCompletion { source })?;
-
-        let observed_raw_icount = self.last_raw_icount.load(Ordering::Acquire);
-        if observed_raw_icount != pending.raw_icount_at_request {
-            return Err(LiveVcpuTimeCallbackError::IdleAdvanceRawIcountChanged {
-                expected_raw_icount: pending.raw_icount_at_request,
-                observed_raw_icount,
-            });
-        }
-        let logical_icount_offset = pending
-            .target_icount
-            .checked_sub(observed_raw_icount)
-            .ok_or(LiveVcpuTimeCallbackError::IdleAdvanceOffsetUnderflow {
-                raw_icount: observed_raw_icount,
-                target_icount: pending.target_icount,
-            })?;
-        let ceiling_icount = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
-        if pending.target_icount > ceiling_icount {
-            return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
-                current_icount: pending.target_icount,
-                ceiling_icount,
-            });
-        }
-
         if let Some(network) = self.network.as_ref() {
-            let mut outbound = network.outbound.outbound();
-            network
-                .tx
-                .preflight_guest_frame_batch(&outbound, pending.buffered_tx_payloads.len())
-                .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
+            let preview = preview
+                .as_ref()
+                .ok_or(LiveVcpuTimeCallbackError::InboundCommitMismatch)?;
             let inbound = network.inbound.inbound();
-            PluginInboundFrames::reject_already_passed_ring_heads(
-                [inbound],
-                self.last_icount.load(Ordering::Acquire),
-            )
-            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
-            let preview = PluginInboundFrames::preview_deliverable_since(
-                [inbound],
-                pending.target_icount,
-                self.last_icount.load(Ordering::Acquire),
-            )
-            .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
-
-            if !preview.frames().is_empty() {
-                let mut rx_queue = network.rx_queue;
-                handle_network_rx_idle_callback(
-                    &network.rx,
-                    &mut rx_queue,
-                    self.last_icount.load(Ordering::Acquire),
-                    pending.target_icount,
-                    preview.frames(),
-                )
-                .map_err(|source| LiveVcpuTimeCallbackError::NetworkRx { source })?;
-            }
             let committed = PluginInboundFrames::drain_deliverable_since(
                 [inbound],
-                pending.target_icount,
+                target_icount,
                 self.last_icount.load(Ordering::Acquire),
             )
             .map_err(|source| LiveVcpuTimeCallbackError::InboundFrames { source })?;
             if committed.frames() != preview.frames() {
                 return Err(LiveVcpuTimeCallbackError::InboundCommitMismatch);
             }
+            let mut outbound = network.outbound.outbound();
+            network
+                .tx
+                .preflight_guest_frame_batch(&outbound, pending.buffered_tx_payloads.len())
+                .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
             network
                 .tx
                 .enqueue_guest_frame_batch(
                     &mut outbound,
-                    pending.target_icount,
+                    target_icount,
                     &pending.buffered_tx_payloads,
                 )
                 .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
         }
 
-        if pending.target_icount == ceiling_icount {
-            self.publish_fingerprint_sample(pending.target_icount)?;
-        }
-        let completed_target_icount = pending.target_icount;
         self.logical_icount_offset
             .store(logical_icount_offset, Ordering::Release);
-        self.last_icount
-            .store(completed_target_icount, Ordering::Release);
+        self.last_icount.store(target_icount, Ordering::Release);
         *pending_slot = None;
         drop(pending_slot);
         self.all_halted_idle_handled.store(false, Ordering::Release);
@@ -1298,11 +1352,11 @@ impl LiveVcpuTimeCallbackState {
         // the queued idle advance pending.
         PluginShmemOrdering::publish_reached_icount(
             self.slot.get(),
-            completed_target_icount,
+            target_icount,
             self.icount_shift,
         )
         .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
-        Ok(completed_target_icount)
+        Ok(target_icount)
     }
 
     fn on_network_tx(&self, payload: &[u8]) -> Result<(), LiveVcpuTimeCallbackError> {
