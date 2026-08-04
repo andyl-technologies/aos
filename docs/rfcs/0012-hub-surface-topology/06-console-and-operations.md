@@ -52,8 +52,9 @@ by placement.
 **Retention** shows subscriptions and manual/leased roots with counts,
 selectors, last refresh, and exposure warnings.
 
-**Garbage collection** shows logical policy, placement policies, dry-run plan,
-quota contributors, run history, and deletion backlog.
+**Garbage collection** shows logical policy, safety gates, immutable plans,
+quota contributors, and links to dedicated run/deletion-job detail. Placement
+eviction remains a separate workflow reached from Storage & replicas.
 
 **Integrations** distinguishes registries that consume, retain, or populate the
 cache. A registry can appear in one, two, or all three columns.
@@ -180,17 +181,38 @@ The GC plan shows:
 
 - objects and bytes logically retained;
 - root counts by subscription/release/channel/manual source;
-- logically collectable objects after grace;
-- per-placement physical deletions;
+- the root, object-graph, inventory, policy, and topology versions captured;
+- logically collectable objects after subscription and unreferenced grace;
+- per-placement narinfo actions followed by dependent NAR actions;
 - objects blocked by incomplete inventory or unknown presence;
 - projected post-run quotas; and
-- warnings for missing release snapshots or stale selectors.
+- blocking coverage failures for missing release snapshots, missing closure
+  metadata, stale selectors, or in-flight population/copy work.
 
 Operators can inspect “why retained?” for any object and “what would break?”
 for any subscription removal.
 
-The first destructive sweep after migration requires explicit confirmation.
-Subsequent scheduled runs use the approved policy and remain audited.
+Apply accepts the reviewed plan id and confirmation hash. It never recomputes a
+larger candidate set. If roots, leases, objects, inventories, policy, placements,
+or conflicting work changed, the entire apply is stale and creates no
+tombstones. The first destructive sweep after migration also requires explicit
+acknowledgement. Subsequent scheduled runs create and apply their own immutable
+plans under the approved policy and remain audited.
+
+A run detail page separates logical state from physical progress:
+
+```text
+Logical apply       1,204 tombstones · complete
+Narinfo deletion    2,401 / 2,408 placement actions
+NAR deletion        1,881 / 1,889 placement actions
+Confirmed reclaimed 84.2 GiB
+Failed              6 retrying · 2 awaiting review
+Abandoned/leaked    0 B
+```
+
+Each failed action shows placement, phase, expected object version, attempt and
+next retry. Retry is idempotent. Abandon is a separate destructive review that
+keeps leaked-presence evidence and never increases reclaimed-byte totals.
 
 ## Setup snippets
 
@@ -226,3 +248,17 @@ GC            healthy, next run in 4h
 Audit events use the explicit nouns and verbs: `route.enabled`,
 `placement.drained`, `retention.refreshed`, `population.completed`,
 `cache.gc.completed`, and `placement.eviction.completed`.
+
+GC audit additionally records subscription/policy plans and applies, refresh
+source revisions and failures, manual-root lifecycle, lease issue/renew/revoke/
+expiry, plan creation/staleness/apply, first-sweep acknowledgement, logical
+tombstones, job retry, and administrative abandonment. Records contain stable
+resource and operation ids, actor, scope, input versions, and outcome, never
+origin credentials or secret values.
+
+Operational metrics use bounded organization/cache/placement/backend/state
+labels, never store hashes. They cover active reasons by kind, refresh lag and
+failures, mark duration/objects/edges/coverage errors, unreferenced-age buckets,
+plan candidates and stale reasons, live-closure quota breach, tombstones,
+deletion backlog/retries/age/error class, and estimated, confirmed, and leaked
+bytes separately.

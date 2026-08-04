@@ -73,7 +73,15 @@ no client-publication or upload effect.
 
 Several registries sharing a cache contribute independent root reasons. The
 cache retains their union. Removing one subscription removes only the reasons
-derived from that subscription.
+derived from that subscription. A successful refresh publishes an immutable
+retention generation for that subscription; a failed refresh leaves its
+preceding generation authoritative. Removal grace keeps the prior generation
+live long enough for rollout and operator recovery.
+
+Logical GC also snapshots a cache-wide root generation. A subscription refresh,
+manual-root change, or lease renewal that commits after a GC plan was created
+makes that plan stale. This is deliberate: a reviewed candidate set is never
+silently expanded or applied against newer retention state.
 
 ### Population target
 
@@ -93,6 +101,13 @@ publication or GC effect.
 An upload may satisfy a retention subscription, but the two records stay
 independent: retention describes desired survival; population describes how
 bytes arrive.
+
+Population publishes NAR presence before narinfo discoverability and advances
+the cache object-graph generation only after both metadata and reference edges
+are durable. GC plans capture that generation. Population and GC therefore do
+not coordinate by timing assumptions: a concurrent completed population makes
+the older plan stale, while an in-flight population fences any object it may
+publish from destructive apply.
 
 ## Coverage is a fourth, derived fact
 
@@ -154,6 +169,12 @@ Cache ownership and authorization remain with the cache's organization. A
 cross-organization integration requires explicit permission from both sides:
 the registry principal may select its artifacts, and the cache principal may
 accept reads, writes, or retention obligations as applicable.
+
+Logical collection remains cache-wide. It marks the union of every active
+subscription, manual root, and lease before selecting candidates. Removing
+Registry A's subscription cannot collect an object still reachable from
+Registry B, even when their reasons name different top-level store paths that
+share part of a closure or a physical NAR.
 
 ## Registries spanning caches and bindings
 

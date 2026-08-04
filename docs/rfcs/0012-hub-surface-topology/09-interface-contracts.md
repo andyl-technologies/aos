@@ -51,7 +51,7 @@ reference.
 | Delivery | `route` | `RouteService` |
 | Consumer cache stack | `registry cache-stack` | `CacheIntegrationService` consumer methods |
 | Retention subscriptions | `cache retention` | `CacheIntegrationService` retention methods |
-| Manual roots and leases | `cache retention {pin,renew,unpin}` | `BinaryCacheService` retention-root methods |
+| Manual roots and leases | `cache root`, `cache lease` | `BinaryCacheService` retention-root methods |
 | Population and coverage | `cache population`, `cache coverage` | `CacheIntegrationService` population/coverage methods |
 | Logical GC and placement eviction | `cache gc`, `placement eviction` | `BinaryCacheService` |
 | Long-running work | `operation` | `OperationsService` |
@@ -146,10 +146,14 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/caches/{cache}/delivery
 /-/org/{org}/caches/{cache}/objects
 /-/org/{org}/caches/{cache}/retention
-/-/org/{org}/caches/{cache}/retention/{registry}
+/-/org/{org}/caches/{cache}/retention/subscriptions/{registry}
+/-/org/{org}/caches/{cache}/retention/manual-roots/new
 /-/org/{org}/caches/{cache}/integrations
 /-/org/{org}/caches/{cache}/integrations/{registry}/population
 /-/org/{org}/caches/{cache}/garbage-collection
+/-/org/{org}/caches/{cache}/garbage-collection/plans/{plan}
+/-/org/{org}/caches/{cache}/garbage-collection/runs/{operation}
+/-/org/{org}/caches/{cache}/garbage-collection/runs/{operation}/jobs/{job}
 /-/org/{org}/caches/{cache}/access
 /-/org/{org}/caches/{cache}/signing-key
 /-/org/{org}/caches/{cache}/operations
@@ -292,6 +296,11 @@ counts, closure size, and exposure consequences before apply.
 
 GC is always plan-first in the Web UI. Logical cache GC and placement eviction
 have different buttons, reports, permissions, and confirmations.
+The policy page links to dedicated immutable plan and run resources rather than
+submitting a synchronous sweep. Plan review shows captured versions, coverage
+gates, `unreferenced_since`, per-placement narinfo-before-NAR actions, and
+estimated versus shared bytes. Run detail shows confirmed deletion, retry, and
+abandonment without treating leaked bytes as reclaimed.
 
 ### No-JS behavior
 
@@ -523,10 +532,11 @@ aos hub cache retention remove <cache> --registry <registry>
 aos hub cache retention refresh <cache> [--registry <registry>]
 aos hub cache retention explain <cache> <store-hash>
 aos hub cache retention roots <cache> [--registry <registry>]
-aos hub cache retention pin <cache> <store-hash>
-  [--reason <text>] [--expires <time>]
-aos hub cache retention renew <cache> <root-id> --expires <time>
-aos hub cache retention unpin <cache> <root-id>
+aos hub cache root create <cache> <store-hash> --reason <text>
+  [--lease-until <time>]
+aos hub cache root delete <cache> <root-id>
+aos hub cache lease renew <cache> <root-id> --expires <time>
+aos hub cache lease revoke <cache> <lease-id>
 ```
 
 `set` replaces the named subscription after showing the selector diff and
@@ -534,7 +544,8 @@ estimated artifact/closure impact. It does not change cache-global TTL or
 capacity settings.
 
 Manual roots use stable ids for renewal/removal. `roots` and `explain` report
-provenance alongside subscription-derived reasons.
+provenance alongside subscription-derived reasons. Lease renewal creates a new
+history record; it does not rewrite the prior lease in place.
 
 ### Population and coverage
 
@@ -556,16 +567,36 @@ aos hub cache coverage repair <cache> [--registry <registry>]
 
 ```text
 aos hub cache gc policy show|set <cache> ...
-aos hub cache gc plan <cache>
-aos hub cache gc run <cache> --plan-id <id> [--yes]
-aos hub cache gc history <cache>
+aos hub cache gc plan create <cache>
+aos hub cache gc plan show <cache> <plan-id>
+aos hub cache gc first-sweep plan-acknowledgement <cache> --gc-plan-id <id>
+aos hub cache gc first-sweep acknowledge <cache>
+  --ack-plan-id <id> --confirm-hash <hash> [--yes]
+aos hub cache gc run <cache> --plan-id <id> --confirm-hash <hash> [--yes]
+aos hub cache gc runs list <cache>
+aos hub cache gc runs show <cache> <operation-id>
+aos hub cache gc runs watch <cache> <operation-id>
+aos hub cache gc jobs list <cache> <operation-id>
+aos hub cache gc jobs show <cache> <job-id>
+aos hub cache gc jobs retry <cache> <job-id>
+aos hub cache gc jobs abandon <cache> <job-id> [--yes]
 
 aos hub placement eviction plan <surface-ref> <placement>
 aos hub placement eviction run <surface-ref> <placement> --plan-id <id> [--yes]
 ```
 
 `gc run` is the logical namespace operation. Placement eviction is never
-synonymous with it.
+synonymous with it. `gc run` never recalculates candidates: input-version or
+candidate drift rejects the whole apply. Retry is idempotent; abandon records
+the expected leaked presence and requires its own reviewed confirmation.
+
+First-sweep acknowledgement is a separate durable, audited plan/apply. Its
+plan requires a currently valid immutable GC plan and binds that plan's
+candidate/action manifest hash, safety gates, cache epoch, and policy version.
+Apply records actor, GC plan, confirmation hash, and acknowledgement time and
+advances the epoch, deliberately making the reviewed GC plan stale; the first
+destructive run therefore requires a new plan. `--yes` suppresses only the
+interactive prompt and never creates acknowledgement implicitly.
 
 ### Convenience porcelain
 
@@ -600,6 +631,8 @@ only the new model:
 | `frontend ...` | `route ...` and `gateway ...` |
 | `registry/cache change-storage` | placement add/replicate/promote/drain workflow |
 | `cache gc-policy --keep-versions` | per-registry `cache retention set --recent-releases` |
+| `cache pin` / `cache unpin` | stable `cache root` and immutable `cache lease` resources |
+| `cache gc --dry-run` / immediate `cache gc` | `cache gc plan create` then `cache gc run --plan-id` |
 
 There are no deprecated clap variants, translation branches, compatibility
 warnings, or old JSON shapes in the final CLI. The preflight tool scans known
@@ -645,9 +678,24 @@ The public contract defines typed `Placement`, `PlacementObservation`,
 `TlsConfiguration`, `DomainAccessConfiguration`, `StorageGateway`,
 `GatewayRoutePreview`, `InstanceTopologyDefaults`,
 `OrganizationTopologyDefaults`, `ManualRetentionRoot`, `RetentionLease`,
-`RootReason`, and `RetentionImpact` messages. Provider and storage credentials
+`RootReason`, `RetentionImpact`, `CacheGcGeneration`, `CacheGcPlan`,
+`CacheGcCandidate`, `CacheGcPlacementAction`, and `CacheGcDeletionJob`
+messages. Provider and storage credentials
 are represented by purpose-scoped credential references, not opaque public JSON
 or readable secret values.
+
+GC operational state is not implied by public cache visibility. Authorized
+cache readers may inspect summaries and retention explanations; actor identity
+in root provenance requires `audit.read`. Retention configuration uses
+`cache.retention.manage`; plan creation uses `cache.gc.plan`; logical apply,
+retry, and abandonment use `cache.gc.execute`. A scoped service account may
+hold `cache.lease.self` to create, renew, or revoke only its own lease without
+receiving retention-policy or GC authority. Cross-organization subscriptions
+require approval on both the registry source and cache destination. Instance
+caches retain root `iam.admin` administration. Owner and Admin roles receive
+the three cache-management verbs by default; lower roles receive no destructive
+GC verb, and service-account lease authority is granted explicitly rather than
+inferred from cache read access.
 
 ### TopologyService
 
@@ -847,12 +895,20 @@ GetCacheGcPolicy
 PlanSetCacheGcPolicy / SetCacheGcPolicy
 PlanCacheGc
 RunCacheGc(plan_id)
+PlanAcknowledgeCacheGcFirstSweep / AcknowledgeCacheGcFirstSweep
+GetCacheGcPlan
+GetCacheGcRun
 ListCacheGcRuns
+GetCacheGcDeletionJob
+ListCacheGcDeletionJobs
+RetryCacheGcDeletionJob
+PlanAbandonCacheGcDeletionJob / AbandonCacheGcDeletionJob
 ListRootReasons
 GetRetentionRoot
 ListRetentionRoots
 PlanCreateManualRetentionRoot / CreateManualRetentionRoot
 PlanRenewRetentionLease / RenewRetentionLease
+PlanRevokeRetentionLease / RevokeRetentionLease
 PlanDeleteManualRetentionRoot / DeleteManualRetentionRoot
 RefreshAllRetention
 
@@ -866,7 +922,11 @@ are not carried into `aos.hub.v1`.
 
 Plans are immutable snapshots with expiry and input versions. `RunCacheGc`
 rejects a stale or mismatched plan rather than recomputing a more destructive
-set at apply time.
+set at apply time. The plan contains a complete mark-generation reference,
+root/object/inventory/policy/topology versions, coverage failures, and typed
+candidate and placement-action manifests. Apply returns `OperationRef` after
+one guarded logical-tombstone transition; physical workers consume only the
+recorded actions.
 
 ### OperationsService
 
@@ -896,14 +956,47 @@ placement.promotion.failed
 placement.drained
 route.probe.changed
 route.canonical.changed
+retention.subscription.plan.created
+retention.subscription.applied
+retention.subscription.deleted
+retention.refresh.started
 retention.refresh.failed
+retention.refresh.completed
+retention.root.plan.created
+retention.root.created
+retention.root.deleted
+retention.lease.issued
+retention.lease.renewed
+retention.lease.revoked
+retention.lease.expired
 population.completed
 coverage.changed
+cache.gc.policy.plan.created
+cache.gc.policy.updated
+cache.gc.mark.started
+cache.gc.mark.completed
+cache.gc.mark.failed
+cache.gc.plan.created
+cache.gc.plan.stale
+cache.gc.plan.applied
+cache.gc.first_sweep.acknowledged
+cache.gc.started
+cache.gc.logical_tombstones.created
+cache.gc.job.started
+cache.gc.job.succeeded
+cache.gc.job.failed
+cache.gc.job.blocked
+cache.gc.job.retried
+cache.gc.job.abandoned
 cache.gc.completed
+cache.gc.failed
 placement.eviction.completed
 ```
 
-Web UI and CLI operation views consume the same event/status model.
+Web UI and CLI operation views consume the same event/status model. Events
+distinguish estimated, confirmed reclaimed, and administratively leaked bytes.
+Audit payloads include actor, scope, plan/operation ids, source/input versions,
+and result but exclude credentials and high-cardinality object data.
 
 ## Interface acceptance criteria
 

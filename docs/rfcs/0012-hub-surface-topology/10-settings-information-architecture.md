@@ -571,14 +571,34 @@ applies them as one transaction.
 ### Retention
 
 Owns registry subscriptions, selectors, root reasons, manual pins/leases,
-refresh health, and “why retained?” explanation. It does not configure cache
-capacity or run deletion.
+refresh health, source revision, removal-grace lineage, and “why retained?”
+explanation. Release selectors show snapshot completeness and channel
+partition provenance. Manual roots and immutable lease history use stable ids.
+It does not configure cache capacity or run deletion.
 
 ### Garbage collection
 
 Owns logical TTL/capacity/schedule, GC plans, run history, quota breaches, and
-placement-eviction links. Destructive Run always follows a reviewed immutable
+placement-eviction links. A destructive run always follows a reviewed immutable
 plan. Retention selectors are read-only context with a link back to Retention.
+
+The collection page owns policy and plan creation. A plan detail page owns
+review and guarded apply; a run detail page owns progress; and a deletion-job
+detail owns retry or reviewed abandonment. The plan summary shows root,
+object-graph, inventory, policy, and topology versions, coverage blockers,
+`unreferenced_since`, and ordered per-placement narinfo/NAR actions. The run
+summary distinguishes logical tombstones, confirmed reclaimed bytes, retrying
+work, and administratively leaked bytes.
+
+Before the first destructive sweep, the collection page offers a separate
+plan/acknowledge flow bound to one valid reviewed GC plan. It shows that the
+acknowledgement intentionally stales that plan and that a new plan is required
+to run collection. Ordinary run confirmation and no-JS `--yes` equivalents do
+not create this durable acknowledgement implicitly.
+
+Placement eviction is linked from this page but edited under Storage &
+replicas. A local tier quota never appears as permission to collect a logically
+live object from the cache namespace.
 
 ### Identity & access and Signing key
 
@@ -667,6 +687,7 @@ Implement one component/data model for each repeated concept:
 - domain/TLS/DNS/access status;
 - cache integration matrix;
 - operation status/progress;
+- GC mark/plan review, placement-action progress, and deletion-job detail;
 - impact-plan review;
 - danger confirmation; and
 - empty/error/permission states.
@@ -696,6 +717,10 @@ Every page names the absent object and next action:
 ```text
 No delivery routes. Add a route to make this cache reachable.
 No retention subscriptions. Only manual pins currently protect objects.
+No complete GC mark. Run a retention refresh and full placement scan before
+planning collection.
+GC plan stale. Roots, object metadata, inventory, policy, or topology changed;
+create a new plan.
 No write authority. This surface is read-only until an eligible complete
 placement is promoted.
 Promotion pending. Writes are blocked until desired and observed generations
@@ -730,6 +755,9 @@ visible and place remediation beside the failing row.
 - No list page contains a full create form; creation uses a dedicated page.
 - No page owns more than one of placement, route, retention, GC, population,
   identity/access, or destructive deletion mutation domains.
+- GC policy, immutable-plan review, operation progress, and job retry/abandon
+  use distinct canonical resources even though they share the Garbage
+  collection navbar owner.
 - Organization Overview is a real overview rather than an alias for Registries.
 - “General,” “Serving & mirror,” “Linked registries,” “GC & pins,” and
   “Frontend” do not appear in final canonical nav/help text.

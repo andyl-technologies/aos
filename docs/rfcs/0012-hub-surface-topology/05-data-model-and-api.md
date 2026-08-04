@@ -586,28 +586,102 @@ surface_objects(
   registry_id NULL,
   cache_id NULL,
   object_key,
+  object_kind,           -- immutable | mutable_pointer
   content_hash NULL,
   size NULL,
-  mutable_generation NULL,
+  mutable_publication_id NULL,
+  lifecycle_state,       -- active | tombstoned
+  tombstoned_at NULL,
+  resource_version,
   CHECK exactly_one(registry_id, cache_id),
+  UNIQUE(id, registry_id),
+  UNIQUE(id, cache_id),
   UNIQUE(registry_id, object_key),
   UNIQUE(cache_id, object_key)
 )
 
 object_placements(
   surface_object_id,
+  cache_id NULL,
+  registry_id NULL,
   placement_id,
   state,                  -- present | copying | missing | corrupt | deleting
   observed_hash NULL,
   observed_size NULL,
   etag NULL,
+  observed_inventory_generation,
   observed_at,
-  PRIMARY KEY(surface_object_id, placement_id)
+  PRIMARY KEY(surface_object_id, placement_id),
+  CHECK exactly_one(registry_id, cache_id),
+  FOREIGN KEY(surface_object_id, cache_id)
+    REFERENCES surface_objects(id, cache_id),
+  FOREIGN KEY(surface_object_id, registry_id)
+    REFERENCES surface_objects(id, registry_id),
+  FOREIGN KEY(placement_id, cache_id)
+    REFERENCES surface_placements(id, cache_id),
+  FOREIGN KEY(placement_id, registry_id)
+    REFERENCES surface_placements(id, registry_id)
 )
 ```
 
-Existing cache object metadata may remain in `cache_objects`; the essential
-change is moving physical presence/refcounts to placement scope.
+The Nix-domain mapping is explicit:
+
+```sql
+cache_objects(
+  id,
+  cache_id,
+  store_hash,
+  store_name,
+  narinfo_surface_object_id,
+  nar_surface_object_id,
+  nar_hash,
+  nar_size,
+  file_hash,
+  file_size,
+  compression,
+  deriver NULL,
+  signature NULL,
+  content_address NULL,
+  lifecycle_state,       -- active | tombstoned
+  published_at,
+  last_access_observed_at NULL,
+  last_access_source NULL,
+  unreferenced_since NULL,
+  tombstoned_at NULL,
+  resource_version,
+  UNIQUE(id, cache_id),
+  UNIQUE(id, cache_id, store_hash),
+  UNIQUE(cache_id, store_hash),
+  UNIQUE(cache_id, narinfo_surface_object_id),
+  FOREIGN KEY(narinfo_surface_object_id, cache_id)
+    REFERENCES surface_objects(id, cache_id),
+  FOREIGN KEY(nar_surface_object_id, cache_id)
+    REFERENCES surface_objects(id, cache_id)
+)
+
+cache_object_references(
+  cache_id,
+  cache_object_id,
+  referenced_store_hash,
+  referenced_cache_object_id NULL,
+  PRIMARY KEY(cache_id, cache_object_id, referenced_store_hash),
+  FOREIGN KEY(cache_object_id, cache_id)
+    REFERENCES cache_objects(id, cache_id),
+  FOREIGN KEY(referenced_cache_object_id, cache_id, referenced_store_hash)
+    REFERENCES cache_objects(id, cache_id, store_hash)
+)
+```
+
+The narinfo and NAR are distinct `surface_objects`. Multiple cache objects may
+reference one NAR surface object, so NAR ownership and deletion refcounts are
+placement-scoped. The final schema does not use an embedded authoritative
+`refs` JSON value, cache-level storage binding/prefix, or a binding/prefix NAR
+refcount to decide deletion.
+
+`referenced_cache_object_id` is populated when the referenced object is
+present and remains null for a missing-reference coverage error. Carrying
+`cache_id` through both composite foreign keys makes a cross-cache closure edge
+structurally impossible.
 
 ## Registry/cache integration records
 
@@ -617,13 +691,55 @@ cache_retention_subscriptions(
   cache_id,
   registry_id,
   selector_json,
+  selector_digest,
   removal_grace_secs,
   exposure_acknowledged_at NULL,
   enabled,
   last_successful_revision NULL,
   last_refresh_at NULL,
+  current_refresh_id NULL,
+  refresh_state,          -- stale | refreshing | fresh | failed
   refresh_error NULL,
-  UNIQUE(cache_id, registry_id)
+  retired_at NULL,
+  resource_version,
+  UNIQUE(cache_id, registry_id),
+  UNIQUE(id, cache_id, registry_id),
+  FOREIGN KEY(current_refresh_id, id, cache_id, registry_id)
+    REFERENCES cache_retention_refreshes(
+      refresh_id, subscription_id, cache_id, registry_id)
+)
+
+cache_retention_refreshes(
+  refresh_id,
+  subscription_id,
+  cache_id,
+  registry_id,
+  parent_refresh_id NULL,
+  expected_parent_refresh_id NULL,
+  expected_subscription_version,
+  expected_cache_epoch,
+  selector_digest,
+  registry_source_revision,
+  state,                  -- building | complete | failed
+  expected_reason_count,
+  actual_reason_count,
+  started_at,
+  activated_at NULL,
+  parent_grace_until NULL,
+  finished_at NULL,
+  error NULL,
+  PRIMARY KEY(refresh_id),
+  UNIQUE(refresh_id, subscription_id, cache_id, registry_id),
+  CHECK ((state = 'building' AND finished_at IS NULL AND error IS NULL)
+      OR (state = 'complete' AND finished_at IS NOT NULL
+          AND activated_at IS NOT NULL
+          AND actual_reason_count = expected_reason_count AND error IS NULL)
+      OR (state = 'failed' AND finished_at IS NOT NULL AND error IS NOT NULL)),
+  FOREIGN KEY(subscription_id, cache_id, registry_id)
+    REFERENCES cache_retention_subscriptions(id, cache_id, registry_id),
+  FOREIGN KEY(parent_refresh_id, subscription_id, cache_id, registry_id)
+    REFERENCES cache_retention_refreshes(
+      refresh_id, subscription_id, cache_id, registry_id)
 )
 
 cache_population_targets(
@@ -640,43 +756,119 @@ cache_population_targets(
 )
 
 release_artifacts(
+  snapshot_id,
   release_id,
+  registry_id,
   package_name,
   package_version,
   platform,
   artifact_kind,
   store_path,
   store_hash,
-  PRIMARY KEY(release_id, package_name, package_version, platform,
-              artifact_kind, store_hash)
+  metadata_digest,
+  PRIMARY KEY(snapshot_id, package_name, package_version, platform,
+              artifact_kind, store_hash),
+  FOREIGN KEY(snapshot_id, release_id, registry_id)
+    REFERENCES release_artifact_snapshots(
+      snapshot_id, release_id, registry_id)
+)
+
+release_artifact_snapshots(
+  snapshot_id PRIMARY KEY,
+  release_id,
+  registry_id,
+  source_commit,
+  verified_tag_oid,
+  verification_record_id,
+  manifest_digest NULL,
+  state,                  -- building | complete | failed
+  complete_slot NULL,     -- 1 only for the one complete snapshot
+  expected_artifact_count,
+  actual_artifact_count,
+  started_at,
+  completed_at NULL,
+  error NULL,
+  resource_version,
+  UNIQUE(snapshot_id, release_id, registry_id),
+  CHECK ((state = 'complete' AND complete_slot = 1
+          AND manifest_digest IS NOT NULL AND completed_at IS NOT NULL
+          AND error IS NULL
+          AND expected_artifact_count = actual_artifact_count)
+      OR (state = 'building' AND complete_slot IS NULL
+          AND completed_at IS NULL AND error IS NULL)
+      OR (state = 'failed' AND complete_slot IS NULL
+          AND completed_at IS NOT NULL AND error IS NOT NULL)),
+  UNIQUE(release_id, complete_slot),
+  FOREIGN KEY(release_id, registry_id) REFERENCES releases(id, registry_id)
+)
+
+releases(
+  ...,
+  complete_artifact_snapshot_id NULL,
+  UNIQUE(id, registry_id),
+  FOREIGN KEY(complete_artifact_snapshot_id, id, registry_id)
+    REFERENCES release_artifact_snapshots(
+      snapshot_id, release_id, registry_id)
 )
 
 cache_root_reasons(
   id,
   cache_id,
+  registry_id NULL,
   store_hash,
+  reason_key,
   source_kind,
+  refresh_id NULL,
   retention_subscription_id NULL,
   manual_retention_root_id NULL,
   retention_lease_id NULL,
   release_id NULL,
+  release_snapshot_id NULL,
+  channel_id NULL,
+  partition_bucket NULL,
   source_ref,
   source_revision,
   expires_at NULL,
   refreshed_at,
-  UNIQUE(cache_id, store_hash, source_kind, source_ref)
+  UNIQUE(id, cache_id),
+  UNIQUE(id, cache_id, store_hash),
+  UNIQUE(refresh_id, reason_key),
+  UNIQUE(manual_retention_root_id, reason_key),
+  CHECK valid_root_reason_provenance(
+    source_kind, registry_id, refresh_id, retention_subscription_id,
+    manual_retention_root_id, retention_lease_id, release_id,
+    release_snapshot_id, channel_id, partition_bucket,
+    source_ref, source_revision),
+  FOREIGN KEY(refresh_id, retention_subscription_id, cache_id, registry_id)
+    REFERENCES cache_retention_refreshes(
+      refresh_id, subscription_id, cache_id, registry_id),
+  FOREIGN KEY(retention_subscription_id, cache_id, registry_id)
+    REFERENCES cache_retention_subscriptions(id, cache_id, registry_id),
+  FOREIGN KEY(manual_retention_root_id, cache_id)
+    REFERENCES manual_retention_roots(id, cache_id),
+  FOREIGN KEY(retention_lease_id, manual_retention_root_id)
+    REFERENCES retention_leases(id, manual_retention_root_id),
+  FOREIGN KEY(release_snapshot_id, release_id, registry_id)
+    REFERENCES release_artifact_snapshots(
+      snapshot_id, release_id, registry_id)
 )
 
 manual_retention_roots(
   id,
   cache_id,
   store_hash,
+  protection_kind,       -- indefinite | leased
+  current_lease_id NULL,
   reason,
   created_by,
   created_at,
   deleted_at NULL,
   resource_version,
-  UNIQUE(cache_id, id)
+  UNIQUE(id, cache_id),
+  CHECK (protection_kind IN ('indefinite', 'leased')),
+  CHECK (protection_kind = 'leased' OR current_lease_id IS NULL),
+  FOREIGN KEY(current_lease_id, id)
+    REFERENCES retention_leases(id, manual_retention_root_id)
 )
 
 retention_leases(
@@ -685,16 +877,450 @@ retention_leases(
   begins_at,
   expires_at,
   renewed_from_lease_id NULL,
+  state,                  -- active | superseded | revoked
   renewed_by,
   renewed_at,
+  revoked_by NULL,
+  revoked_at NULL,
+  resource_version,
+  UNIQUE(id, manual_retention_root_id),
+  CHECK (expires_at > begins_at),
+  CHECK ((state = 'revoked' AND revoked_by IS NOT NULL
+          AND revoked_at IS NOT NULL)
+      OR (state IN ('active', 'superseded')
+          AND revoked_by IS NULL AND revoked_at IS NULL)),
+  FOREIGN KEY(renewed_from_lease_id, manual_retention_root_id)
+    REFERENCES retention_leases(id, manual_retention_root_id)
+)
+
+cache_gc_policies(
+  cache_id PRIMARY KEY,
+  unreferenced_grace_secs,
+  soft_max_bytes NULL,
+  soft_max_objects NULL,
+  schedule_secs NULL,
+  deletion_concurrency,
+  retry_initial_secs,
+  retry_max_secs,
+  retry_max_attempts,
+  tombstone_retention_secs,
   resource_version
+)
+
+cache_gc_state(
+  cache_id PRIMARY KEY,
+  epoch,
+  epoch_owner_token,
+  root_generation,
+  object_graph_generation,
+  inventory_generation,
+  topology_generation,
+  current_mark_generation_id NULL,
+  destructive_enabled,
+  first_sweep_acknowledgement_id NULL,
+  first_sweep_acknowledgement_state NULL,
+  first_sweep_acknowledged_at NULL,
+  resource_version,
+  CHECK ((first_sweep_acknowledgement_id IS NULL
+          AND first_sweep_acknowledgement_state IS NULL
+          AND first_sweep_acknowledged_at IS NULL)
+      OR (first_sweep_acknowledgement_id IS NOT NULL
+          AND first_sweep_acknowledgement_state = 'applied'
+          AND first_sweep_acknowledged_at IS NOT NULL)),
+  FOREIGN KEY(current_mark_generation_id, cache_id)
+    REFERENCES cache_gc_generations(generation_id, cache_id),
+  FOREIGN KEY(first_sweep_acknowledgement_id, cache_id,
+              first_sweep_acknowledgement_state)
+    REFERENCES cache_gc_first_sweep_acknowledgements(
+      acknowledgement_id, cache_id, state)
+)
+
+cache_gc_first_sweep_acknowledgements(
+  acknowledgement_id,
+  cache_id,
+  gc_plan_id,
+  state,                    -- planned | applied | expired
+  expected_cache_epoch,
+  expected_gc_policy_version,
+  gc_manifest_digest,
+  confirmation_hash,
+  created_by,
+  acknowledged_by NULL,
+  created_at,
+  expires_at,
+  acknowledged_at NULL,
+  PRIMARY KEY(acknowledgement_id),
+  UNIQUE(acknowledgement_id, cache_id),
+  UNIQUE(acknowledgement_id, cache_id, state),
+  CHECK ((state = 'planned' AND acknowledged_by IS NULL
+          AND acknowledged_at IS NULL)
+      OR (state = 'applied' AND acknowledged_by IS NOT NULL
+          AND acknowledged_at IS NOT NULL)
+      OR (state = 'expired' AND acknowledged_by IS NULL
+          AND acknowledged_at IS NULL)),
+  FOREIGN KEY(gc_plan_id, cache_id)
+    REFERENCES cache_gc_plans(plan_id, cache_id)
+)
+
+cache_object_mutation_fences(
+  cache_id,
+  store_hash,
+  operation_id,
+  kind,                   -- upload | population | replication | repair
+  state,                  -- active | completed | cancelled
+  resource_version,
+  PRIMARY KEY(cache_id, store_hash, operation_id),
+  FOREIGN KEY(cache_id) REFERENCES binary_caches(id),
+  FOREIGN KEY(operation_id, cache_id)
+    REFERENCES topology_operations(operation_id, cache_id)
 )
 ```
 
+Acknowledgement apply is one epoch-guarded plan/apply batch. It transitions the
+acknowledgement to `applied`, records the applying actor and time, and sets all
+three cache-state pointer/state/time fields from that row together. The
+composite foreign key makes a planned or expired acknowledgement structurally
+incapable of opening the destructive gate.
+
+The refresh `current_refresh_id` is the only registry-root entry point. Begin
+captures the current pointer in both the lineage `parent_refresh_id` and the
+immutable CAS input `expected_parent_refresh_id`, together with the
+subscription resource version and cache epoch. Complete requires exact
+reason count and provenance plus an unchanged pointer, selector, registry
+source revision, subscription version, and GC epoch. Complete sets
+`parent_grace_until`, advances the pointer, and increments both
+`root_generation` and the epoch in one atomic batch. Failed generations never
+become current. Active reasons are the current complete generation plus only
+the still-graced parent lineage; retirement has its own finite grace cutoff.
+
+Reason-kind constraints make provenance total: catalog reasons carry refresh,
+subscription, registry, and indexed revision; release reasons also carry a
+release and its complete snapshot; channel reasons additionally carry channel
+and partition; indefinite manual reasons carry only their manual root; lease
+reasons carry the root and its exact current lease. The composite foreign keys
+prevent cross-cache, cross-registry, and cross-release provenance.
+
 Manual-root renewal creates a new lease linked to the prior lease, preserving
-who extended protection and when. Deleting a manual root is logical and
-audited; the derived root reason disappears only through the same transactional
-refresh and grace rules as other retention reasons.
+who extended protection and when. The root pointer and lease states define the
+single active chain head; historical, superseded, revoked, expired, or deleted
+roots cannot contribute. Subscription refresh, manual-root mutation, and lease
+issue/renew/revoke advance `root_generation`; cache object/reference
+publication advances `object_graph_generation`; and a complete placement scan
+advances `inventory_generation`. Every one also advances the single epoch.
+
+`inventory_generation` advances only when one cache-wide inventory operation
+has completed the logical object scan and every applicable placement scan. A
+single placement finishing does not make the cache inventory complete. Active
+object-mutation fences are relational apply blockers; an operation removes or
+completes its fences only in the same transition that publishes object metadata
+and advances `object_graph_generation`.
+
+Every competing root, graph, inventory, cache-topology, or fence
+mutation conditionally advances `cache_gc_state.epoch` in the same native
+transaction or D1 atomic batch as its own rows. Object publication and GC apply
+also advance `object_graph_generation`; placement/policy/authority work
+advances `topology_generation`, except for an authority-only desired/observed
+CAS as described below. A policy update advances the epoch and its
+policy version. No mutator may update one of these domains without claiming the
+state row, and GC never updates authority fields itself.
+
+Changing only desired/observed write authority does not change logical
+membership, observed physical inventory, or a GC deletion target, so its
+portable single-row CAS does not update cache GC state. Reconciliation that may
+publish bytes first creates an object-mutation fence; creating/completing that
+fence and publishing object metadata each claim the cache epoch. Any placement
+lifecycle, policy, inventory, or presence change likewise uses its ordinary
+topology/graph epoch mutation. This preserves the one-statement authority
+contract without allowing a writer switch to hide concurrent object work from
+GC.
+
+The GC policy contains only cache-global age, soft-cap, schedule, retry,
+concurrency, and tombstone-lifecycle behavior. Release and channel retention
+selectors never reappear in it.
+
+Release indexing stages one snapshot header and its artifacts, recomputes the
+canonical full-metadata digest and actual count, then publishes that same row
+as the sole complete snapshot and initializes the release pointer
+transactionally. `state = complete` plus matching zero counts is a valid empty
+snapshot; absence of a complete header is unsafe for a release-dependent
+selector. A failed later verification or index attempt remains a separate
+non-complete row and cannot replace an existing complete header or artifact set. Only
+`building -> complete|failed` is legal; terminal headers and their child rows
+are immutable in every steady-state write method.
+
+## GC generations, plans, and deletion work
+
+```sql
+cache_gc_generations(
+  generation_id PRIMARY KEY,
+  cache_id,
+  state,                  -- building | complete | failed
+  cutoff_at,
+  expected_epoch,
+  root_generation,
+  object_graph_generation,
+  inventory_generation,
+  gc_policy_version,
+  topology_version,
+  root_count,
+  marked_object_count,
+  coverage_error_count,
+  error NULL,
+  created_at,
+  completed_at NULL,
+  UNIQUE(generation_id, cache_id)
+)
+
+cache_gc_generation_roots(
+  cache_id,
+  generation_id,
+  root_reason_id,
+  store_hash,
+  PRIMARY KEY(cache_id, generation_id, root_reason_id),
+  FOREIGN KEY(generation_id, cache_id)
+    REFERENCES cache_gc_generations(generation_id, cache_id),
+  FOREIGN KEY(root_reason_id, cache_id, store_hash)
+    REFERENCES cache_root_reasons(id, cache_id, store_hash)
+)
+
+cache_gc_marks(
+  cache_id,
+  generation_id,
+  cache_object_id,
+  PRIMARY KEY(cache_id, generation_id, cache_object_id),
+  FOREIGN KEY(generation_id, cache_id)
+    REFERENCES cache_gc_generations(generation_id, cache_id),
+  FOREIGN KEY(cache_object_id, cache_id)
+    REFERENCES cache_objects(id, cache_id)
+)
+
+cache_gc_generation_coverage_errors(
+  cache_id,
+  generation_id,
+  error_id,
+  kind,                   -- missing_root | missing_reference | stale_inventory
+  store_hash NULL,
+  referenced_store_hash NULL,
+  detail,
+  PRIMARY KEY(cache_id, generation_id, error_id),
+  FOREIGN KEY(generation_id, cache_id)
+    REFERENCES cache_gc_generations(generation_id, cache_id)
+)
+
+cache_gc_plans(
+  plan_id PRIMARY KEY,
+  cache_id,
+  generation_id,
+  expected_epoch,
+  input_versions_digest,
+  confirmation_hash,
+  created_by,
+  created_at,
+  expires_at,
+  applied_at NULL,
+  operation_id NULL,
+  UNIQUE(plan_id, cache_id),
+  FOREIGN KEY(generation_id, cache_id)
+    REFERENCES cache_gc_generations(generation_id, cache_id),
+  FOREIGN KEY(operation_id, cache_id)
+    REFERENCES topology_operations(operation_id, cache_id)
+)
+
+cache_gc_apply_claims(
+  cache_id,
+  plan_id,
+  claim_id,
+  expected_epoch,
+  manifest_digest,
+  actor_scope_digest,
+  confirmation_hash,
+  claimed_at,
+  PRIMARY KEY(cache_id, plan_id),
+  UNIQUE(cache_id, expected_epoch),
+  UNIQUE(claim_id, cache_id),
+  UNIQUE(claim_id, plan_id, cache_id),
+  FOREIGN KEY(plan_id, cache_id)
+    REFERENCES cache_gc_plans(plan_id, cache_id)
+)
+
+cache_gc_apply_assertions(
+  cache_id,
+  plan_id,
+  claim_id,
+  ok,
+  asserted_at,
+  PRIMARY KEY(cache_id, plan_id),
+  CHECK(ok = 1),
+  FOREIGN KEY(claim_id, plan_id, cache_id)
+    REFERENCES cache_gc_apply_claims(claim_id, plan_id, cache_id)
+)
+
+cache_gc_plan_objects(
+  cache_id,
+  plan_id,
+  cache_object_id,
+  expected_object_version,
+  expected_unreferenced_since,
+  eligibility_reason,     -- ttl | byte_cap | object_cap
+  logical_bytes,
+  PRIMARY KEY(cache_id, plan_id, cache_object_id),
+  FOREIGN KEY(plan_id, cache_id)
+    REFERENCES cache_gc_plans(plan_id, cache_id),
+  FOREIGN KEY(cache_object_id, cache_id)
+    REFERENCES cache_objects(id, cache_id)
+)
+
+cache_gc_plan_actions(
+  action_id PRIMARY KEY,
+  cache_id,
+  plan_id,
+  surface_object_id,
+  placement_id,
+  phase,                  -- narinfo | nar
+  expected_etag NULL,
+  expected_hash NULL,
+  expected_size NULL,
+  expected_inventory_generation,
+  estimated_reclaimable_bytes,
+  UNIQUE(action_id, plan_id, cache_id),
+  UNIQUE(action_id, plan_id, cache_id, surface_object_id, placement_id),
+  UNIQUE(plan_id, surface_object_id, placement_id),
+  FOREIGN KEY(plan_id, cache_id)
+    REFERENCES cache_gc_plans(plan_id, cache_id),
+  FOREIGN KEY(surface_object_id, cache_id)
+    REFERENCES surface_objects(id, cache_id),
+  FOREIGN KEY(placement_id, cache_id)
+    REFERENCES surface_placements(id, cache_id)
+)
+
+cache_gc_plan_object_actions(
+  cache_id,
+  plan_id,
+  cache_object_id,
+  action_id,
+  PRIMARY KEY(cache_id, plan_id, cache_object_id, action_id),
+  FOREIGN KEY(cache_id, plan_id, cache_object_id)
+    REFERENCES cache_gc_plan_objects(cache_id, plan_id, cache_object_id),
+  FOREIGN KEY(action_id, plan_id, cache_id)
+    REFERENCES cache_gc_plan_actions(action_id, plan_id, cache_id)
+)
+
+cache_gc_action_dependencies(
+  cache_id,
+  plan_id,
+  action_id,
+  prerequisite_action_id,
+  PRIMARY KEY(cache_id, plan_id, action_id, prerequisite_action_id),
+  FOREIGN KEY(action_id, plan_id, cache_id)
+    REFERENCES cache_gc_plan_actions(action_id, plan_id, cache_id),
+  FOREIGN KEY(prerequisite_action_id, plan_id, cache_id)
+    REFERENCES cache_gc_plan_actions(action_id, plan_id, cache_id)
+)
+
+object_deletion_jobs(
+  job_id PRIMARY KEY,
+  cache_id,
+  originating_operation_id,
+  surface_object_id,
+  placement_id,
+  phase,                  -- narinfo | nar
+  expected_etag NULL,
+  expected_hash NULL,
+  expected_size NULL,
+  expected_inventory_generation,
+  state,                  -- preparing | pending | running | failed | blocked | succeeded | abandoned | cancelled
+  active_slot NULL,       -- 1 for every nonterminal job
+  attempt_count,
+  max_attempts,
+  next_attempt_at NULL,
+  error_class NULL,
+  error NULL,
+  confirmed_reclaimed_bytes DEFAULT 0,
+  leaked_bytes DEFAULT 0,
+  resource_version,
+  UNIQUE(job_id, cache_id),
+  UNIQUE(job_id, cache_id, surface_object_id, placement_id),
+  UNIQUE(surface_object_id, placement_id, active_slot),
+  FOREIGN KEY(originating_operation_id, cache_id)
+    REFERENCES topology_operations(operation_id, cache_id),
+  FOREIGN KEY(surface_object_id, cache_id)
+    REFERENCES surface_objects(id, cache_id),
+  FOREIGN KEY(placement_id, cache_id)
+    REFERENCES surface_placements(id, cache_id),
+  CHECK ((state IN ('preparing', 'pending', 'running', 'failed', 'blocked')
+          AND active_slot = 1)
+      OR (state IN ('succeeded', 'abandoned', 'cancelled')
+          AND active_slot IS NULL)),
+  CHECK (state = 'succeeded' OR confirmed_reclaimed_bytes = 0),
+  CHECK (state = 'abandoned' OR leaked_bytes = 0)
+)
+
+cache_gc_action_jobs(
+  cache_id,
+  plan_id,
+  action_id,
+  job_id,
+  surface_object_id,
+  placement_id,
+  PRIMARY KEY(cache_id, plan_id, action_id),
+  FOREIGN KEY(action_id, plan_id, cache_id, surface_object_id, placement_id)
+    REFERENCES cache_gc_plan_actions(
+      action_id, plan_id, cache_id, surface_object_id, placement_id),
+  FOREIGN KEY(job_id, cache_id, surface_object_id, placement_id)
+    REFERENCES object_deletion_jobs(
+      job_id, cache_id, surface_object_id, placement_id)
+)
+```
+
+`topology_plans` and `topology_operations` supply the common immutable plan and
+long-operation envelopes. The GC-specific tables are relational execution
+authority: workers do not derive candidates from an opaque effects JSON value.
+The common operation table exposes `UNIQUE(operation_id, cache_id)` for every
+cache operation so all operation foreign keys above preserve cache ownership.
+A mark generation is published only after its root set, closure, input
+versions, and coverage status validate.
+
+Applying a GC plan uses the same guarded statement batch in a native transaction
+or Worker D1 atomic batch. The first `INSERT ... SELECT` creates a unique apply
+claim only if the epoch, unused plan, expiry, actor/scope/confirmation, every
+candidate/root/presence/fence predicate, and all expected manifest counts match
+in that one database snapshot. Every following epoch, tombstone, generation,
+operation, and job statement is gated by that exact claim id, immutable plan
+manifest, and `cache_gc_state.epoch_owner_token = claim_id` at
+`epoch = expected_epoch + 1`. A missing claim or a claim that did not win the
+epoch CAS can therefore authorize no destructive write. The claim has
+`UNIQUE(cache_id, expected_epoch)`, so two GC plans cannot both claim one cache
+epoch.
+
+The last statement inserts one row into `cache_gc_apply_assertions`, whose
+`CHECK (ok = 1)` value is computed from the claim, matching epoch owner token,
+final epoch/generation,
+tombstone count, deterministic operation, action/job counts, and dependency-
+ready count. It always attempts one insert. A missing claim or any partial
+effect inserts `ok = 0`, raises a portable constraint error, and makes D1 roll
+back the entire atomic batch just as a native transaction does. The algorithm
+never relies on inspecting intermediate D1 affected-row counts. A competing
+apply loses the unique claim; after failure or on retry, the service rereads
+the deterministic applied-plan/operation relation and returns the existing
+operation only when every identity matches.
+
+An action exists for every observed physical copy, including off-policy copies.
+A shared NAR action may have several prerequisite narinfo actions through
+`cache_gc_action_dependencies`; it becomes runnable only after all are
+confirmed and the placement-scoped refcount from non-tombstoned narinfos is
+zero. Only `succeeded` satisfies a dependency. An abandoned narinfo makes its
+dependent NAR job `blocked`; the NAR cannot run and requires its own reviewed
+abandonment. Failed work preserves possible presence.
+
+The global `(surface_object_id, placement_id, active_slot)` uniqueness permits
+one nonterminal delete regardless of plan. Apply reuses an existing job only
+when its expected hash, ETag, inventory generation, and phase match; otherwise
+the plan is stale. A success CAS records observed size as confirmed reclaimed
+bytes exactly once and clears `active_slot`. Operation totals sum unique linked
+jobs, so retry, crash recovery, and shared-NAR fan-in cannot double count.
+`abandoned` clears the slot but records possible bytes only as leaked.
+Tombstones remain until all actions are `succeeded` or explicitly `abandoned`,
+then remain for the configured tombstone-retention interval.
 
 The signed consumer stack remains in `registry.toml`. Its indexed projection
 gains stable managed identity:
@@ -811,6 +1437,10 @@ consumer-cache changes explicitly.
 
 - `ListRootReasons`, `ExplainRetention`, `RefreshAllRetention`
 - `PlanCacheGc`, `RunCacheGc`, `ListCacheGcRuns`
+- `GetCacheGcPlan`, `GetCacheGcRun`, `GetCacheGcDeletionJob`,
+  `ListCacheGcDeletionJobs`
+- `RetryCacheGcDeletionJob`, `PlanAbandonCacheGcDeletionJob`,
+  `AbandonCacheGcDeletionJob`
 - `PlanPlacementEviction`, `RunPlacementEviction`
 
 Logical GC and placement eviction are different methods and audit event types.
@@ -825,10 +1455,12 @@ Mutations that cross records use a plan/apply shape:
 4. enqueue replication/probe/index work after the control-plane transaction.
 
 Examples include surface visibility changes, domain access changes, placement
-drains, write-authority promotion, canonical route changes, and enabling
-destructive GC. Promotion itself has a stricter portable rule: its authority
-change is one compare-and-swap statement, not an interactive transaction that
-Worker D1 cannot reproduce.
+drains, write-authority promotion, canonical route changes, and destructive
+GC. GC apply has the same portable requirement as promotion: logical
+tombstoning and operation creation are one version-guarded control-plane
+transition, not an interactive transaction that Worker D1 cannot reproduce.
+Promotion itself remains the sole authority-row compare-and-swap described
+above; GC never changes write authority.
 
 ## Complete cutover
 
@@ -838,8 +1470,9 @@ Worker D1 cannot reproduce.
   will change, the signed change is merged before switching traffic.
 - The schema migration creates placements, domains, gateways, routes,
   observations, proven binding-write revisions, applicable write authorities,
-  integrations, and root reasons; validates them; and drops the old topology
-  tables/columns in the same maintenance operation. Explicitly read-only
+  integrations, release snapshots, root reasons, object mappings, GC state,
+  and safe initial mark inputs; validates them; and drops the old topology and
+  GC tables/columns in the same maintenance operation. Explicitly read-only
   surfaces remain authority-free. A declared writable surface without one
   unambiguous validated legacy writer, or any physical-location collision,
   aborts the cutover.
@@ -847,6 +1480,10 @@ Worker D1 cannot reproduce.
   index. They contain no legacy read/write branch.
 - Old API messages, methods, UI handlers, CLI variants, and help text are
   removed rather than deprecated in place.
+- The final runtime contains no cache-global binding/prefix writer, DB-first
+  sweep, legacy cache/registry-link root derivation, embedded authoritative
+  reference JSON, synchronous dry-run GC branch, or compatibility view over
+  the removed GC schema.
 - Fresh installations use a squashed new Hub schema baseline. The one-shot
   cutover artifact is not part of the steady-state runtime.
 - Provisional development migrations that stored primary/write fields are
