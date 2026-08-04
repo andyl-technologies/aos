@@ -88,6 +88,12 @@ No suffix means ticks. Fractional durations are not accepted.
 
 Budget exhaustion is a timeout, not a property failure.
 
+Ordinary local QEMU lifecycle operations admit up to 40 billion retired
+instructions per node and allow 300 wall-clock seconds for each node step.
+`--max-quanta` is the run-level scheduler and control-plane bound; it does not
+raise the per-node instruction ceiling. Live search uses separate, tighter
+exploration bounds.
+
 `run --save-on <fail|always|never>` controls terminal checkpoint
 materialization. The default is `never`. `fail` materializes only a non-passing
 outcome; `always` materializes every outcome. The resulting checkpoint reference

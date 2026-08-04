@@ -10,12 +10,10 @@ deterministic software translation, so KVM is not required.
 
 ## 1. Build Crucible and the guest
 
-Build the CLI, live backend components, and the tutorial guest image:
+Build the CLI, the workload kernel, and the tutorial guest image:
 
 ```sh
 nix build .#pkg-crucible -o result-crucible
-nix build .#pkg-qemu-crucible -o result-crucible-qemu
-nix build .#pkg-crucible-qemu-plugin -o result-crucible-plugin
 nix build .#pkg-linux -o result-crucible-kernel
 nix build \
   .#crucible-nginx-curl-guest \
@@ -85,35 +83,31 @@ by hand.
 
 ## 3. Run the scenario
 
-Use the workload's public example runner here. It owns the workload-specific
-lifecycle bounds and is the same execution path covered by the repository's
-Nginx/Curl acceptance check.
-
 Resolve the immutable build outputs to their Nix store paths:
 
 ```sh
-crucible_qemu=$(readlink -f result-crucible-qemu/bin/qemu-system-x86_64)
-crucible_plugin=$(readlink -f \
-  result-crucible-plugin/lib/libcrucible_qemu_plugin.so)
 crucible_kernel=$(readlink -f result-crucible-kernel/boot/vmlinuz-*)
 crucible_root=$(readlink -f result-crucible-nginx-curl/root.ext4)
 ```
 
-Run the canonical scenario through the live lifecycle:
+Run the canonical scenario through the packaged CLI and retain its canonical
+event log:
 
 ```sh
-crates/target/debug/examples/crucible-nginx-curl-http-200 \
-  "$crucible_qemu" \
-  "$crucible_plugin" \
-  "$crucible_kernel" \
-  "$crucible_root" \
-  nginx-curl.scenario.toml
+CRUCIBLE_KERNEL="$crucible_kernel" \
+CRUCIBLE_ROOT_IMAGE="$crucible_root" \
+CRUCIBLE_KERNEL_CMDLINE="console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init" \
+  ./result-crucible/bin/crucible \
+  --seed 0x200 \
+  --format jsonl \
+  --trace nginx-curl.run.jsonl \
+  run nginx-curl.scenario.toml \
+  --max-quanta 10000
 ```
 
-A successful run prints `PASS`, `http_status=200`, a positive response delivery
-time, and the final configuration hash. The scenario can pass only after
-Crucible delivers frames containing the HTTP request and response across the
-modeled link.
+A successful run exits with status `0`, and its JSONL contains a passing
+`final_outcome`. The scenario can pass only after Crucible delivers frames
+containing the HTTP request and response across the modeled link.
 
 The check is deliberately black-box: it matches bytes in delivered Ethernet
 frames rather than parsing HTTP or relying on Crucible-specific guest software.
@@ -159,12 +153,15 @@ The IDs differ because the seed is part of the immutable scenario definition.
 Run your variant with the same unmodified guest image:
 
 ```sh
-crates/target/debug/examples/my-nginx-curl \
-  "$crucible_qemu" \
-  "$crucible_plugin" \
-  "$crucible_kernel" \
-  "$crucible_root" \
-  nginx-curl-custom.scenario.toml
+CRUCIBLE_KERNEL="$crucible_kernel" \
+CRUCIBLE_ROOT_IMAGE="$crucible_root" \
+CRUCIBLE_KERNEL_CMDLINE="console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init" \
+  ./result-crucible/bin/crucible \
+  --seed 0x201 \
+  --format jsonl \
+  --trace nginx-curl-custom.run.jsonl \
+  run nginx-curl-custom.scenario.toml \
+  --max-quanta 10000
 ```
 
 You now have two independently addressed scenario definitions, both exercised
@@ -175,10 +172,12 @@ interesting execution.
 
 ## Clean up
 
-The generated scenarios and copied generator are ordinary local artifacts:
+The generated scenarios, traces, and copied generator are ordinary local
+artifacts:
 
 ```sh
 rm nginx-curl.scenario.toml nginx-curl-custom.scenario.toml
+rm nginx-curl.run.jsonl nginx-curl-custom.run.jsonl
 rm crates/crucible-api/examples/my-nginx-curl.rs
 ```
 

@@ -18,7 +18,7 @@ use crucible_api::{
 const HTTP_OK: &[u8] = b"HTTP/1.1 200";
 const HTTP_GET: &[u8] = b"GET /";
 const MAX_QUANTA: u64 = 10_000;
-const QUANTUM_BUDGET: u64 = 4_000_000_000;
+const QUANTUM_BUDGET: u64 = MAX_QUANTA;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RunEvidence {
