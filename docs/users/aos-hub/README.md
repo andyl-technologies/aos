@@ -31,7 +31,11 @@ that control-plane latency and capacity when choosing a deployment.
   patterns.
 - [Choose the right CLI](cli.md) distinguishes local operator commands from
   the remote API client.
+- [Operate an AOS package registry](../registry/) covers producer keys,
+  releases, uploads, channels, and incident response.
 - [Deploy the native server](native.md) covers initialization, service
   configuration, storage, backup, and monitoring.
+- [Operate AOS Hub in production](production.md) covers topology, TLS,
+  identity, recovery, storage retention, monitoring, upgrades, and incidents.
 - [Deploy to Cloudflare](cloudflare.md) covers the packaged installer,
   resources, secrets, updates, domains, email, and observability.
