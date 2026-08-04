@@ -27,6 +27,8 @@
 //! - [`delivery`] — raw request-path normalization, reserved namespace
 //!   classification, deterministic route matching, capability classification,
 //!   and versioned partition selection shared by both serving runtimes.
+//! - [`delivery_endpoint`] — typed inbound HTTP(S) endpoint identities,
+//!   canonical authority validation, and stable network-realm-aware digests.
 //! - [`url_guard`] — the pure SSRF guards (global-IP predicate, network-origin
 //!   URL check, HTTP surface-path validator, traversal-safe path join) shared
 //!   by the native hub's `fetch` hardening and the Worker's egress policy.
@@ -45,6 +47,8 @@
 //! - [`placement_read`] — deterministic multi-placement read planning, exact
 //!   inventory/current-publication eligibility, and pre-stream failover shared
 //!   by both serving runtimes.
+//! - [`retention`] — the canonical comparator-only SemVer selector and stable
+//!   verified-release ordering used to materialize cache root reasons.
 //!
 //! Later phases move the remaining HTTP handlers here too, leaving the
 //! deployment crates as thin shells around their concrete backend (sqlx for
@@ -70,6 +74,7 @@ pub mod db;
 pub mod dialect;
 pub mod directory;
 pub mod delivery;
+pub mod delivery_endpoint;
 pub mod domain;
 pub mod email;
 pub mod ephemeral;
@@ -88,6 +93,7 @@ pub mod nix_sign;
 pub mod placement_read;
 pub mod ratelimit;
 pub mod reindex;
+pub mod retention;
 pub mod robots;
 pub mod s3surface;
 pub mod service;

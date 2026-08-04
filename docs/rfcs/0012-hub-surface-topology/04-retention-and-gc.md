@@ -98,6 +98,13 @@ verified tag OID bytes ASC,
 stable release id bytes ASC
 ```
 
+The OID tie-break bytes are `algorithm_tag:u8 || raw_digest`, with
+`sha1 = 0x01` followed by exactly 20 bytes and `sha256 = 0x02` followed by
+exactly 32 bytes. Other lengths or algorithms are invalid rather than ordered
+by caller convention. A stable release id is the positive database identity
+encoded as unsigned `u64be`; zero is invalid. These encodings are shared by
+native and Worker implementations and are the bytes meant by the tuple above.
+
 `tagged_at` is the immutable verified tag timestamp recorded by the registry
 indexer. Re-index time and snapshot completion time never participate. Exact
 tag selectors remain the way to retain a non-SemVer release tag.
@@ -118,12 +125,40 @@ by canonicalization. Caret, tilde, wildcard, partial, implicit-equality, hyphen-
 conjunction syntax are rejected. Parsing enforces SemVer 2.0.0 numeric and
 identifier rules. Canonicalization normalizes whitespace away, renders numeric
 identifiers without leading zeroes, deduplicates comparators, sorts comparators
-within each conjunction by `(operator, canonical version bytes)`, sorts
+within each conjunction by `(operator UTF-8 bytes, canonical version UTF-8
+bytes)` (therefore `<`, `<=`, `=`, `>`, `>=`), sorts
 conjunctions by their canonical bytes, and joins with `,` and `||`. With
 `include_prereleases = false`, candidates containing a prerelease component are
 filtered before evaluation. With it true, all candidates use ordinary SemVer
 precedence. Native and Worker store the canonical expression and selector flag
 in the refresh digest and share the same parser and ordering vectors.
+
+The following parser and precedence vectors are normative:
+
+```text
+input:      "  >=2.0.0, <3.0.0,>=2.0.0 || =1.5.0\t"
+canonical:  "<3.0.0,>=2.0.0||=1.5.0"
+
+precedence, low to high:
+1.0.0-alpha
+1.0.0-alpha.1
+1.0.0-alpha.beta
+1.0.0-beta
+1.0.0-beta.2
+1.0.0-beta.11
+1.0.0-rc.1
+1.0.0
+
+unbounded numeric comparison:
+18446744073709551616.0.0-99999999999999999999
+  < 18446744073709551616.0.0-100000000000000000000
+```
+
+For a recent-release tie with equal `tagged_at`, SemVer precedence, and
+canonical version, SHA-1 OID `01...01` sorts before `02...02`; with an equal
+OID, release id `u64be(1)` sorts before `u64be(2)`. A candidate with count 0 or
+101 is invalid, and an unverified, incomplete-snapshot, invalid-SemVer, or
+filtered prerelease candidate is ineligible before sorting.
 
 `current_catalog` deliberately preserves the current safe behavior: every
 package-output and image store path still published at the registry's current

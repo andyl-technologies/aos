@@ -1532,6 +1532,25 @@ host_length:u32be || typed_host_bytes || effective_port:u16be ||
 network_boundary_identity_fingerprint:32`. It commits to the boundary's stable
 typed identity fingerprint, never its replaceable database row id or moving
 revision. Ingress is revisioned configuration, not part of request identity.
+The closed tags are `http = 0x01`, `https = 0x02`, `dns = 0x01`,
+`ipv4 = 0x02`, and `ipv6 = 0x03`. DNS host bytes are lowercase IDNA A-label
+UTF-8; IP host bytes are the four or sixteen network-order address octets.
+The following lowercase hex SHA-256 vectors are normative:
+
+```text
+origin=https://example.com
+boundary_fingerprint=0000000000000000000000000000000000000000000000000000000000000000
+digest=5f4355f82aabce6be5993fd4e7a2cc8daf9517f65e7c33a853a4fbd1d2e0a845
+
+origin=http://192.0.2.10:8080
+boundary_fingerprint=1111111111111111111111111111111111111111111111111111111111111111
+digest=dd2386a556c359981c96f5e1406f4b1d8a703652256d564ce2231666e70195f3
+
+origin=https://[2001:db8::1]:8443
+boundary_fingerprint=2222222222222222222222222222222222222222222222222222222222222222
+digest=5d13ab476e10142123363cfb3b168c9073cb5cca41411feddd5e1f072db7d62f
+```
+
 The digest is unique, so one resolvable origin in one network realm cannot split
 into ambiguous endpoint rows. Public endpoints use the fixed public-boundary
 fingerprint; private addresses in different realms do not collide. Deleting and
