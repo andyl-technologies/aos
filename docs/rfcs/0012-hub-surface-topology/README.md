@@ -86,13 +86,25 @@ The resulting topology is:
 | [`09-interface-contracts.md`](09-interface-contracts.md) | Normative Web UI navigation/actions, clean-break CLI commands, and Connect-JSON services |
 | [`10-settings-information-architecture.md`](10-settings-information-architecture.md) | Uniform instance/organization/registry/cache settings shell, navbar hierarchy, page ownership, and responsive layout |
 | [`11-web-route-cutover-ledger.md`](11-web-route-cutover-ledger.md) | Exhaustive method+path replacement/deletion ledger for the hard Web UI cutover |
+| [`12-topology-cutover-operator-runbook.md`](12-topology-cutover-operator-runbook.md) | Signed one-shot plan, quiescence, backup/restore proof, switch, rollback, and post-cutover GC procedure |
+| [`hub-api-manifest-v1.json`](hub-api-manifest-v1.json) | Versioned topology CLI/service family and mutation-protocol manifest |
+| [`hub-cli-json-schema-v1.json`](hub-cli-json-schema-v1.json) | JSON Schema for the stable `aos hub --json` success envelope |
+| [`hub-topology-cutover-plan-v1.schema.json`](hub-topology-cutover-plan-v1.schema.json) | Closed schema for the secret-free signed cutover plan |
+| [`hub-topology-cutover-report-v1.schema.json`](hub-topology-cutover-report-v1.schema.json) | Closed schema for success, rollback, and failed-closed execution evidence |
+
+The cutover artifacts use the closed `aos-cutover-schema/v1` dialect defined by
+the checked metaschema and implemented by the offline verifier. Acceptance
+requires root authentication of the complete bundle, byte identity between
+the bundled and running verifier, exact schema validation, signer-role checks,
+all semantic cross-set and reference checks, and the complete adversarial
+fixture matrix described by the operator runbook.
 
 ## Relationship to current behavior
 
 The current implementation has the right raw concepts but gives several rows
 more than one meaning:
 
-- `registries.storage_binding_id` and `caches.storage_binding_id` permit only
+- `registries.storage_binding_id` and `binary_caches.storage_binding_id` permit only
   one placement.
 - `frontends` can target a registry, cache, or storage binding; binding rows are
   inherited through a per-resource advertise toggle.

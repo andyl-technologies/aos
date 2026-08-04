@@ -1,0 +1,452 @@
+{
+  "schema_version": "aos.hub.topology-cutover-verification/v1",
+  "document_kind": "cutover_verification",
+  "dialect": "aos-cutover-schema/v1",
+  "bundle_id": "bundle/fixture/topology-v1",
+  "result": "verified",
+  "verifier_identity": {
+    "bundle_node_id": "verifier/aos",
+    "bundle_entry_sha256": "derive:bundle-sha256:verifier/aos",
+    "current_exe_sha256": "derive:current-exe-sha256",
+    "byte_identity_matches": true,
+    "trust_basis": "out_of_band_running_executable"
+  },
+  "schema_validation": {
+    "dialect": "aos-cutover-schema/v1",
+    "metaschema_node_id": "schema/dialect",
+    "validated_schema_node_ids": [
+      "schema/bundle",
+      "schema/bundle-generation",
+      "schema/fixtures",
+      "schema/plan",
+      "schema/report",
+      "schema/signature-envelope",
+      "schema/signer-key-map",
+      "schema/verification"
+    ],
+    "validated_document_node_ids": [
+      "document/plan",
+      "document/report",
+      "document/verification"
+    ],
+    "unsupported_keyword_count": 0,
+    "result": "pass"
+  },
+  "recomputed_topology": {
+    "source_nodes": {
+      "expected_count": 30,
+      "actual_count": 30,
+      "expected_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJsZWdhY3kvYmluZGluZy9leGFtcGxlLWxvY2FsIiwibGVnYWN5L2JpbmRpbmcvbG9jYWwvY2FwYWJpbGl0aWVzLzEiLCJsZWdhY3kvYmluZGluZy9sb2NhbC9ncmFudC9leGFtcGxlIiwibGVnYWN5L2JpbmRpbmcvbG9jYWwvd3JpdGUtcmV2aXNpb24vMSIsImxlZ2FjeS9ib3VuZGFyeS9wdWJsaWMvMSIsImxlZ2FjeS9jYWNoZS9leGFtcGxlLW1haW4iLCJsZWdhY3kvY2FjaGUvbWFpbi9lcXVpdmFsZW5jZS8xIiwibGVnYWN5L2NhY2hlL21haW4vaW52ZW50b3J5LzEiLCJsZWdhY3kvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsImxlZ2FjeS9jYWNoZS9tYWluL3BsYWNlbWVudC9wcmltYXJ5L21hbmlmZXN0LzEiLCJsZWdhY3kvY2FjaGUvbWFpbi9wb2xpY3kvMSIsImxlZ2FjeS9jYWNoZS9tYWluL3BvcHVsYXRpb24vcmVnaXN0cnktbWFpbiIsImxlZ2FjeS9jYWNoZS9tYWluL3JldGVudGlvbi9yZWdpc3RyeS1tYWluIiwibGVnYWN5L2NhY2hlL21haW4vd3JpdGUtYXV0aG9yaXR5LzEiLCJsZWdhY3kvZG9tYWluL2NhY2hlLWV4YW1wbGUtdGVzdCIsImxlZ2FjeS9lbmRwb2ludC9jYWNoZS1leGFtcGxlLzEiLCJsZWdhY3kvZ2F0ZXdheS9odWIvMSIsImxlZ2FjeS9pbnN0YW5jZS9wcm9kdWN0aW9uIiwibGVnYWN5L29yZy9leGFtcGxlIiwibGVnYWN5L3JlZ2lzdHJ5L2V4YW1wbGUtbWFpbiIsImxlZ2FjeS9yZWdpc3RyeS9tYWluL3BsYWNlbWVudC9wcmltYXJ5IiwibGVnYWN5L3JlZ2lzdHJ5L21haW4vcG9saWN5LzEiLCJsZWdhY3kvcmVnaXN0cnkvbWFpbi9wdWJsaWNhdGlvbi9jYWNoZS1tYWluIiwibGVnYWN5L3JvdXRlL2NhY2hlLWNhbm9uaWNhbCIsImxlZ2FjeS9yb3V0ZS9jYWNoZS1jYW5vbmljYWwvY29uZmlndXJhdGlvbi8xIiwibGVnYWN5L3JvdXRlL3JlZ2lzdHJ5LWdpdCIsImxlZ2FjeS9yb3V0ZS9yZWdpc3RyeS1naXQvY29uZmlndXJhdGlvbi8xIiwibGVnYWN5L3JvdXRlL3JlZ2lzdHJ5LXdlYiIsImxlZ2FjeS9yb3V0ZS9yZWdpc3RyeS13ZWIvY29uZmlndXJhdGlvbi8xIiwibGVnYWN5L3N0b3JhZ2UtZGVmYXVsdC9pbnN0YW5jZSJd",
+      "actual_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJsZWdhY3kvYmluZGluZy9leGFtcGxlLWxvY2FsIiwibGVnYWN5L2JpbmRpbmcvbG9jYWwvY2FwYWJpbGl0aWVzLzEiLCJsZWdhY3kvYmluZGluZy9sb2NhbC9ncmFudC9leGFtcGxlIiwibGVnYWN5L2JpbmRpbmcvbG9jYWwvd3JpdGUtcmV2aXNpb24vMSIsImxlZ2FjeS9ib3VuZGFyeS9wdWJsaWMvMSIsImxlZ2FjeS9jYWNoZS9leGFtcGxlLW1haW4iLCJsZWdhY3kvY2FjaGUvbWFpbi9lcXVpdmFsZW5jZS8xIiwibGVnYWN5L2NhY2hlL21haW4vaW52ZW50b3J5LzEiLCJsZWdhY3kvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsImxlZ2FjeS9jYWNoZS9tYWluL3BsYWNlbWVudC9wcmltYXJ5L21hbmlmZXN0LzEiLCJsZWdhY3kvY2FjaGUvbWFpbi9wb2xpY3kvMSIsImxlZ2FjeS9jYWNoZS9tYWluL3BvcHVsYXRpb24vcmVnaXN0cnktbWFpbiIsImxlZ2FjeS9jYWNoZS9tYWluL3JldGVudGlvbi9yZWdpc3RyeS1tYWluIiwibGVnYWN5L2NhY2hlL21haW4vd3JpdGUtYXV0aG9yaXR5LzEiLCJsZWdhY3kvZG9tYWluL2NhY2hlLWV4YW1wbGUtdGVzdCIsImxlZ2FjeS9lbmRwb2ludC9jYWNoZS1leGFtcGxlLzEiLCJsZWdhY3kvZ2F0ZXdheS9odWIvMSIsImxlZ2FjeS9pbnN0YW5jZS9wcm9kdWN0aW9uIiwibGVnYWN5L29yZy9leGFtcGxlIiwibGVnYWN5L3JlZ2lzdHJ5L2V4YW1wbGUtbWFpbiIsImxlZ2FjeS9yZWdpc3RyeS9tYWluL3BsYWNlbWVudC9wcmltYXJ5IiwibGVnYWN5L3JlZ2lzdHJ5L21haW4vcG9saWN5LzEiLCJsZWdhY3kvcmVnaXN0cnkvbWFpbi9wdWJsaWNhdGlvbi9jYWNoZS1tYWluIiwibGVnYWN5L3JvdXRlL2NhY2hlLWNhbm9uaWNhbCIsImxlZ2FjeS9yb3V0ZS9jYWNoZS1jYW5vbmljYWwvY29uZmlndXJhdGlvbi8xIiwibGVnYWN5L3JvdXRlL3JlZ2lzdHJ5LWdpdCIsImxlZ2FjeS9yb3V0ZS9yZWdpc3RyeS1naXQvY29uZmlndXJhdGlvbi8xIiwibGVnYWN5L3JvdXRlL3JlZ2lzdHJ5LXdlYiIsImxlZ2FjeS9yb3V0ZS9yZWdpc3RyeS13ZWIvY29uZmlndXJhdGlvbi8xIiwibGVnYWN5L3N0b3JhZ2UtZGVmYXVsdC9pbnN0YW5jZSJd",
+      "missing_count": 0,
+      "unexpected_count": 0,
+      "duplicate_count": 0,
+      "result": "pass"
+    },
+    "mapping_edges": {
+      "expected_count": 31,
+      "actual_count": 31,
+      "expected_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJtYXBwaW5nL2JvdW5kYXJ5L3B1YmxpYy8xIiwibWFwcGluZy9kb21haW4vY2FjaGUuZXhhbXBsZS50ZXN0IiwibWFwcGluZy9lbmRwb2ludC9jYWNoZS1leGFtcGxlLzEiLCJtYXBwaW5nL2dhdGV3YXkvaHViLzEiLCJtYXBwaW5nL2luc3RhbmNlL3Byb2R1Y3Rpb24iLCJtYXBwaW5nL2luc3RhbmNlL3Byb2R1Y3Rpb24vc3RvcmFnZS1kZWZhdWx0IiwibWFwcGluZy9vcmcvZXhhbXBsZSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbCIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC9jYXBhYmlsaXRpZXMvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC9ncmFudC9leGFtcGxlIiwibWFwcGluZy9vcmcvZXhhbXBsZS9iaW5kaW5nL2xvY2FsL3dyaXRlLXJldmlzaW9uLzEiLCJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4iLCJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vZXF1aXZhbGVuY2UvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9pbnZlbnRvcnkvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeS9tYW5pZmVzdC8xIiwibWFwcGluZy9vcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BvbGljeS8xIiwibWFwcGluZy9vcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BvcHVsYXRpb24vcmVnaXN0cnktbWFpbiIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9yZXRlbnRpb24vcmVnaXN0cnktbWFpbiIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9yb3V0ZS9jYW5vbmljYWwiLCJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vcm91dGUvY2Fub25pY2FsL2NvbmZpZ3VyYXRpb24vMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi93cml0ZS1hdXRob3JpdHkvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbiIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wb2xpY3kvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wdWJsaWNhdGlvbi8xIiwibWFwcGluZy9vcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3B1YmxpY2F0aW9uL2NhY2hlLW1haW4iLCJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0IiwibWFwcGluZy9vcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL2dpdC9jb25maWd1cmF0aW9uLzEiLCJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvd2ViIiwibWFwcGluZy9vcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL3dlYi9jb25maWd1cmF0aW9uLzEiXQ",
+      "actual_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJtYXBwaW5nL2JvdW5kYXJ5L3B1YmxpYy8xIiwibWFwcGluZy9kb21haW4vY2FjaGUuZXhhbXBsZS50ZXN0IiwibWFwcGluZy9lbmRwb2ludC9jYWNoZS1leGFtcGxlLzEiLCJtYXBwaW5nL2dhdGV3YXkvaHViLzEiLCJtYXBwaW5nL2luc3RhbmNlL3Byb2R1Y3Rpb24iLCJtYXBwaW5nL2luc3RhbmNlL3Byb2R1Y3Rpb24vc3RvcmFnZS1kZWZhdWx0IiwibWFwcGluZy9vcmcvZXhhbXBsZSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbCIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC9jYXBhYmlsaXRpZXMvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC9ncmFudC9leGFtcGxlIiwibWFwcGluZy9vcmcvZXhhbXBsZS9iaW5kaW5nL2xvY2FsL3dyaXRlLXJldmlzaW9uLzEiLCJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4iLCJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vZXF1aXZhbGVuY2UvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9pbnZlbnRvcnkvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeS9tYW5pZmVzdC8xIiwibWFwcGluZy9vcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BvbGljeS8xIiwibWFwcGluZy9vcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BvcHVsYXRpb24vcmVnaXN0cnktbWFpbiIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9yZXRlbnRpb24vcmVnaXN0cnktbWFpbiIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9yb3V0ZS9jYW5vbmljYWwiLCJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vcm91dGUvY2Fub25pY2FsL2NvbmZpZ3VyYXRpb24vMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi93cml0ZS1hdXRob3JpdHkvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbiIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wb2xpY3kvMSIsIm1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wdWJsaWNhdGlvbi8xIiwibWFwcGluZy9vcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3B1YmxpY2F0aW9uL2NhY2hlLW1haW4iLCJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0IiwibWFwcGluZy9vcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL2dpdC9jb25maWd1cmF0aW9uLzEiLCJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvd2ViIiwibWFwcGluZy9vcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL3dlYi9jb25maWd1cmF0aW9uLzEiXQ",
+      "missing_count": 0,
+      "unexpected_count": 0,
+      "duplicate_count": 0,
+      "result": "pass"
+    },
+    "target_nodes": {
+      "expected_count": 31,
+      "actual_count": 31,
+      "expected_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJib3VuZGFyeS9wdWJsaWMvMSIsImRvbWFpbi9jYWNoZS5leGFtcGxlLnRlc3QiLCJlbmRwb2ludC9jYWNoZS1leGFtcGxlLzEiLCJnYXRld2F5L2h1Yi8xIiwiaW5zdGFuY2UvcHJvZHVjdGlvbiIsImluc3RhbmNlL3Byb2R1Y3Rpb24vc3RvcmFnZS1kZWZhdWx0Iiwib3JnL2V4YW1wbGUiLCJvcmcvZXhhbXBsZS9iaW5kaW5nL2xvY2FsIiwib3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC9jYXBhYmlsaXRpZXMvMSIsIm9yZy9leGFtcGxlL2JpbmRpbmcvbG9jYWwvZ3JhbnQvZXhhbXBsZSIsIm9yZy9leGFtcGxlL2JpbmRpbmcvbG9jYWwvd3JpdGUtcmV2aXNpb24vMSIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4iLCJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL2VxdWl2YWxlbmNlLzEiLCJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL2ludmVudG9yeS8xIiwib3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vcGxhY2VtZW50L3ByaW1hcnkvbWFuaWZlc3QvMSIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vcG9saWN5LzEiLCJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BvcHVsYXRpb24vcmVnaXN0cnktbWFpbiIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vcmV0ZW50aW9uL3JlZ2lzdHJ5LW1haW4iLCJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vcm91dGUvY2Fub25pY2FsL2NvbmZpZ3VyYXRpb24vMSIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vd3JpdGUtYXV0aG9yaXR5LzEiLCJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluIiwib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcG9saWN5LzEiLCJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3B1YmxpY2F0aW9uLzEiLCJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3B1YmxpY2F0aW9uL2NhY2hlLW1haW4iLCJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL2dpdCIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0L2NvbmZpZ3VyYXRpb24vMSIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvd2ViIiwib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9yb3V0ZS93ZWIvY29uZmlndXJhdGlvbi8xIl0",
+      "actual_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJib3VuZGFyeS9wdWJsaWMvMSIsImRvbWFpbi9jYWNoZS5leGFtcGxlLnRlc3QiLCJlbmRwb2ludC9jYWNoZS1leGFtcGxlLzEiLCJnYXRld2F5L2h1Yi8xIiwiaW5zdGFuY2UvcHJvZHVjdGlvbiIsImluc3RhbmNlL3Byb2R1Y3Rpb24vc3RvcmFnZS1kZWZhdWx0Iiwib3JnL2V4YW1wbGUiLCJvcmcvZXhhbXBsZS9iaW5kaW5nL2xvY2FsIiwib3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC9jYXBhYmlsaXRpZXMvMSIsIm9yZy9leGFtcGxlL2JpbmRpbmcvbG9jYWwvZ3JhbnQvZXhhbXBsZSIsIm9yZy9leGFtcGxlL2JpbmRpbmcvbG9jYWwvd3JpdGUtcmV2aXNpb24vMSIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4iLCJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL2VxdWl2YWxlbmNlLzEiLCJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL2ludmVudG9yeS8xIiwib3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vcGxhY2VtZW50L3ByaW1hcnkvbWFuaWZlc3QvMSIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vcG9saWN5LzEiLCJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BvcHVsYXRpb24vcmVnaXN0cnktbWFpbiIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vcmV0ZW50aW9uL3JlZ2lzdHJ5LW1haW4iLCJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vcm91dGUvY2Fub25pY2FsL2NvbmZpZ3VyYXRpb24vMSIsIm9yZy9leGFtcGxlL2NhY2hlL21haW4vd3JpdGUtYXV0aG9yaXR5LzEiLCJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluIiwib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcG9saWN5LzEiLCJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3B1YmxpY2F0aW9uLzEiLCJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3B1YmxpY2F0aW9uL2NhY2hlLW1haW4iLCJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL2dpdCIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0L2NvbmZpZ3VyYXRpb24vMSIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvd2ViIiwib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9yb3V0ZS93ZWIvY29uZmlndXJhdGlvbi8xIl0",
+      "missing_count": 0,
+      "unexpected_count": 0,
+      "duplicate_count": 0,
+      "result": "pass"
+    },
+    "source_cardinalities": [
+      {
+        "source_node_id": "legacy/binding/example-local",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9zdG9yYWdlLWJpbmRpbmcvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZS9iaW5kaW5nL2xvY2FsIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvYmluZGluZy9leGFtcGxlLWxvY2FsIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJzdG9yYWdlX2JpbmRpbmciLCJ0YXJnZXRfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbCJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/binding/local/capabilities/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9iaW5kaW5nLWNhcGFiaWxpdGllcy92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL2JpbmRpbmcvbG9jYWwvY2FwYWJpbGl0aWVzLzEiLCJldmlkZW5jZV9yZXF1aXJlZCI6dHJ1ZSwib3JkaW5hbCI6MSwib3duZXJfc2NvcGVfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUiLCJzb3VyY2Vfbm9kZV9pZCI6ImxlZ2FjeS9iaW5kaW5nL2xvY2FsL2NhcGFiaWxpdGllcy8xIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJiaW5kaW5nX2NhcGFiaWxpdHlfb2JzZXJ2YXRpb24iLCJ0YXJnZXRfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC9jYXBhYmlsaXRpZXMvMSJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/binding/local/grant/example",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9iaW5kaW5nLWdyYW50L3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC9ncmFudC9leGFtcGxlIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvYmluZGluZy9sb2NhbC9ncmFudC9leGFtcGxlIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJiaW5kaW5nX2dyYW50IiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL2JpbmRpbmcvbG9jYWwvZ3JhbnQvZXhhbXBsZSJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/binding/local/write-revision/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9iaW5kaW5nLXdyaXRlLXJldmlzaW9uL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvYmluZGluZy9sb2NhbC93cml0ZS1yZXZpc2lvbi8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvYmluZGluZy9sb2NhbC93cml0ZS1yZXZpc2lvbi8xIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJiaW5kaW5nX3dyaXRlX3JldmlzaW9uIiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL2JpbmRpbmcvbG9jYWwvd3JpdGUtcmV2aXNpb24vMSJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/boundary/public/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9uZXR3b3JrLWJvdW5kYXJ5L3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvYm91bmRhcnkvcHVibGljLzEiLCJldmlkZW5jZV9yZXF1aXJlZCI6dHJ1ZSwib3JkaW5hbCI6MSwib3duZXJfc2NvcGVfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUiLCJzb3VyY2Vfbm9kZV9pZCI6ImxlZ2FjeS9ib3VuZGFyeS9wdWJsaWMvMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoibmV0d29ya19ib3VuZGFyeSIsInRhcmdldF9zdGFibGVfaWQiOiJib3VuZGFyeS9wdWJsaWMvMSJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/cache/example-main",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9jYWNoZS1zY29wZS1zbHVnL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbiIsImV2aWRlbmNlX3JlcXVpcmVkIjp0cnVlLCJvcmRpbmFsIjoxLCJvd25lcl9zY29wZV9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZSIsInNvdXJjZV9ub2RlX2lkIjoibGVnYWN5L2NhY2hlL2V4YW1wbGUtbWFpbiIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoiYmluYXJ5X2NhY2hlIiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL2NhY2hlL21haW4ifV0"
+      },
+      {
+        "source_node_id": "legacy/cache/main/equivalence/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9lcXVpdmFsZW5jZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vZXF1aXZhbGVuY2UvMSIsImV2aWRlbmNlX3JlcXVpcmVkIjp0cnVlLCJvcmRpbmFsIjoxLCJvd25lcl9zY29wZV9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZSIsInNvdXJjZV9ub2RlX2lkIjoibGVnYWN5L2NhY2hlL21haW4vZXF1aXZhbGVuY2UvMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoiZXF1aXZhbGVuY2Vfc2V0IiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL2NhY2hlL21haW4vZXF1aXZhbGVuY2UvMSJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/cache/main/inventory/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9pbnZlbnRvcnktZ2VuZXJhdGlvbi92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vaW52ZW50b3J5LzEiLCJldmlkZW5jZV9yZXF1aXJlZCI6dHJ1ZSwib3JkaW5hbCI6MSwib3duZXJfc2NvcGVfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUiLCJzb3VyY2Vfbm9kZV9pZCI6ImxlZ2FjeS9jYWNoZS9tYWluL2ludmVudG9yeS8xIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJpbnZlbnRvcnlfZ2VuZXJhdGlvbiIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL2ludmVudG9yeS8xIn1d"
+      },
+      {
+        "source_node_id": "legacy/cache/main/placement/primary",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9wbGFjZW1lbnQvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BsYWNlbWVudC9wcmltYXJ5IiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvY2FjaGUvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoicGxhY2VtZW50IiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL2NhY2hlL21haW4vcGxhY2VtZW50L3ByaW1hcnkifV0"
+      },
+      {
+        "source_node_id": "legacy/cache/main/placement/primary/manifest/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9wbGFjZW1lbnQtbWFuaWZlc3QvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BsYWNlbWVudC9wcmltYXJ5L21hbmlmZXN0LzEiLCJldmlkZW5jZV9yZXF1aXJlZCI6dHJ1ZSwib3JkaW5hbCI6MSwib3duZXJfc2NvcGVfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUiLCJzb3VyY2Vfbm9kZV9pZCI6ImxlZ2FjeS9jYWNoZS9tYWluL3BsYWNlbWVudC9wcmltYXJ5L21hbmlmZXN0LzEiLCJ0YXJnZXRfcmVzb3VyY2Vfa2luZCI6InBsYWNlbWVudF9tYW5pZmVzdCIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3BsYWNlbWVudC9wcmltYXJ5L21hbmlmZXN0LzEifV0"
+      },
+      {
+        "source_node_id": "legacy/cache/main/policy/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9wbGFjZW1lbnQtcG9saWN5L3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9wb2xpY3kvMSIsImV2aWRlbmNlX3JlcXVpcmVkIjp0cnVlLCJvcmRpbmFsIjoxLCJvd25lcl9zY29wZV9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZSIsInNvdXJjZV9ub2RlX2lkIjoibGVnYWN5L2NhY2hlL21haW4vcG9saWN5LzEiLCJ0YXJnZXRfcmVzb3VyY2Vfa2luZCI6InBsYWNlbWVudF9wb2xpY3kiLCJ0YXJnZXRfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9wb2xpY3kvMSJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/cache/main/population/registry-main",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9wb3B1bGF0aW9uLXRhcmdldC92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vcG9wdWxhdGlvbi9yZWdpc3RyeS1tYWluIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvY2FjaGUvbWFpbi9wb3B1bGF0aW9uL3JlZ2lzdHJ5LW1haW4iLCJ0YXJnZXRfcmVzb3VyY2Vfa2luZCI6InBvcHVsYXRpb25fdGFyZ2V0IiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL2NhY2hlL21haW4vcG9wdWxhdGlvbi9yZWdpc3RyeS1tYWluIn1d"
+      },
+      {
+        "source_node_id": "legacy/cache/main/retention/registry-main",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yZXRlbnRpb24tc3Vic2NyaXB0aW9uL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9yZXRlbnRpb24vcmVnaXN0cnktbWFpbiIsImV2aWRlbmNlX3JlcXVpcmVkIjp0cnVlLCJvcmRpbmFsIjoxLCJvd25lcl9zY29wZV9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZSIsInNvdXJjZV9ub2RlX2lkIjoibGVnYWN5L2NhY2hlL21haW4vcmV0ZW50aW9uL3JlZ2lzdHJ5LW1haW4iLCJ0YXJnZXRfcmVzb3VyY2Vfa2luZCI6InJldGVudGlvbl9zdWJzY3JpcHRpb24iLCJ0YXJnZXRfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9yZXRlbnRpb24vcmVnaXN0cnktbWFpbiJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/cache/main/write-authority/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS93cml0ZS1hdXRob3JpdHkvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZS9jYWNoZS9tYWluL3dyaXRlLWF1dGhvcml0eS8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvY2FjaGUvbWFpbi93cml0ZS1hdXRob3JpdHkvMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoid3JpdGVfYXV0aG9yaXR5IiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL2NhY2hlL21haW4vd3JpdGUtYXV0aG9yaXR5LzEifV0"
+      },
+      {
+        "source_node_id": "legacy/domain/cache-example-test",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9kb21haW4vdjEiLCJlZGdlX2lkIjoibWFwcGluZy9kb21haW4vY2FjaGUuZXhhbXBsZS50ZXN0IiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvZG9tYWluL2NhY2hlLWV4YW1wbGUtdGVzdCIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoiZG9tYWluIiwidGFyZ2V0X3N0YWJsZV9pZCI6ImRvbWFpbi9jYWNoZS5leGFtcGxlLnRlc3QifV0"
+      },
+      {
+        "source_node_id": "legacy/endpoint/cache-example/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9lbmRwb2ludC1nZW5lcmF0aW9uL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvZW5kcG9pbnQvY2FjaGUtZXhhbXBsZS8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvZW5kcG9pbnQvY2FjaGUtZXhhbXBsZS8xIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJkZWxpdmVyeV9lbmRwb2ludCIsInRhcmdldF9zdGFibGVfaWQiOiJlbmRwb2ludC9jYWNoZS1leGFtcGxlLzEifV0"
+      },
+      {
+        "source_node_id": "legacy/gateway/hub/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9zdG9yYWdlLWdhdGV3YXkvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9nYXRld2F5L2h1Yi8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvZ2F0ZXdheS9odWIvMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoic3RvcmFnZV9nYXRld2F5IiwidGFyZ2V0X3N0YWJsZV9pZCI6ImdhdGV3YXkvaHViLzEifV0"
+      },
+      {
+        "source_node_id": "legacy/instance/production",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9pbnN0YW5jZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL2luc3RhbmNlL3Byb2R1Y3Rpb24iLCJldmlkZW5jZV9yZXF1aXJlZCI6dHJ1ZSwib3JkaW5hbCI6MSwib3duZXJfc2NvcGVfc3RhYmxlX2lkIjoiaW5zdGFuY2UvcHJvZHVjdGlvbiIsInNvdXJjZV9ub2RlX2lkIjoibGVnYWN5L2luc3RhbmNlL3Byb2R1Y3Rpb24iLCJ0YXJnZXRfcmVzb3VyY2Vfa2luZCI6Imluc3RhbmNlIiwidGFyZ2V0X3N0YWJsZV9pZCI6Imluc3RhbmNlL3Byb2R1Y3Rpb24ifV0"
+      },
+      {
+        "source_node_id": "legacy/org/example",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9vcmdhbml6YXRpb24vdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZSIsImV2aWRlbmNlX3JlcXVpcmVkIjp0cnVlLCJvcmRpbmFsIjoxLCJvd25lcl9zY29wZV9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZSIsInNvdXJjZV9ub2RlX2lkIjoibGVnYWN5L29yZy9leGFtcGxlIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJvcmdhbml6YXRpb24iLCJ0YXJnZXRfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUifV0"
+      },
+      {
+        "source_node_id": "legacy/registry/example-main",
+        "expected_mapping_edge_count": 2,
+        "actual_mapping_edge_count": 2,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yZWdpc3RyeS1wdWJsaWNhdGlvbi92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcHVibGljYXRpb24vMSIsImV2aWRlbmNlX3JlcXVpcmVkIjp0cnVlLCJvcmRpbmFsIjoyLCJvd25lcl9zY29wZV9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZSIsInNvdXJjZV9ub2RlX2lkIjoibGVnYWN5L3JlZ2lzdHJ5L2V4YW1wbGUtbWFpbiIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoicmVnaXN0cnlfcHVibGljYXRpb24iLCJ0YXJnZXRfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wdWJsaWNhdGlvbi8xIn0seyJkZXJpdmF0aW9uX3J1bGVfaWQiOiJydWxlL3JlZ2lzdHJ5LXNjb3BlLXNsdWcvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcmVnaXN0cnkvZXhhbXBsZS1tYWluIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJyZWdpc3RyeSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluIn1d"
+      },
+      {
+        "source_node_id": "legacy/registry/main/placement/primary",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9wbGFjZW1lbnQvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9vcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3BsYWNlbWVudC9wcmltYXJ5IiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcmVnaXN0cnkvbWFpbi9wbGFjZW1lbnQvcHJpbWFyeSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoicGxhY2VtZW50IiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcGxhY2VtZW50L3ByaW1hcnkifV0"
+      },
+      {
+        "source_node_id": "legacy/registry/main/policy/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9wbGFjZW1lbnQtcG9saWN5L3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wb2xpY3kvMSIsImV2aWRlbmNlX3JlcXVpcmVkIjp0cnVlLCJvcmRpbmFsIjoxLCJvd25lcl9zY29wZV9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZSIsInNvdXJjZV9ub2RlX2lkIjoibGVnYWN5L3JlZ2lzdHJ5L21haW4vcG9saWN5LzEiLCJ0YXJnZXRfcmVzb3VyY2Vfa2luZCI6InBsYWNlbWVudF9wb2xpY3kiLCJ0YXJnZXRfc3RhYmxlX2lkIjoib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wb2xpY3kvMSJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/registry/main/publication/cache-main",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9wdWJsaWNhdGlvbi1iaW5kaW5nL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9wdWJsaWNhdGlvbi9jYWNoZS1tYWluIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcmVnaXN0cnkvbWFpbi9wdWJsaWNhdGlvbi9jYWNoZS1tYWluIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJwdWJsaWNhdGlvbl9iaW5kaW5nIiwidGFyZ2V0X3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcHVibGljYXRpb24vY2FjaGUtbWFpbiJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/route/cache-canonical",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL2NhY2hlL21haW4vcm91dGUvY2Fub25pY2FsIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvY2FjaGUtY2Fub25pY2FsIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJkZWxpdmVyeV9yb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/route/cache-canonical/configuration/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS1jb25maWd1cmF0aW9uL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvY2FjaGUvbWFpbi9yb3V0ZS9jYW5vbmljYWwvY29uZmlndXJhdGlvbi8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvY2FjaGUtY2Fub25pY2FsL2NvbmZpZ3VyYXRpb24vMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoicm91dGVfY29uZmlndXJhdGlvbiIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbC9jb25maWd1cmF0aW9uLzEifV0"
+      },
+      {
+        "source_node_id": "legacy/route/registry-git",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0IiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvcmVnaXN0cnktZ2l0IiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJkZWxpdmVyeV9yb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL2dpdCJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/route/registry-git/configuration/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS1jb25maWd1cmF0aW9uL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9yb3V0ZS9naXQvY29uZmlndXJhdGlvbi8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvcmVnaXN0cnktZ2l0L2NvbmZpZ3VyYXRpb24vMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoicm91dGVfY29uZmlndXJhdGlvbiIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL2dpdC9jb25maWd1cmF0aW9uLzEifV0"
+      },
+      {
+        "source_node_id": "legacy/route/registry-web",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS92MSIsImVkZ2VfaWQiOiJtYXBwaW5nL29yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvd2ViIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvcmVnaXN0cnktd2ViIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJkZWxpdmVyeV9yb3V0ZSIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL3dlYiJ9XQ"
+      },
+      {
+        "source_node_id": "legacy/route/registry-web/configuration/1",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9yb3V0ZS1jb25maWd1cmF0aW9uL3YxIiwiZWRnZV9pZCI6Im1hcHBpbmcvb3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9yb3V0ZS93ZWIvY29uZmlndXJhdGlvbi8xIiwiZXZpZGVuY2VfcmVxdWlyZWQiOnRydWUsIm9yZGluYWwiOjEsIm93bmVyX3Njb3BlX3N0YWJsZV9pZCI6Im9yZy9leGFtcGxlIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvcm91dGUvcmVnaXN0cnktd2ViL2NvbmZpZ3VyYXRpb24vMSIsInRhcmdldF9yZXNvdXJjZV9raW5kIjoicm91dGVfY29uZmlndXJhdGlvbiIsInRhcmdldF9zdGFibGVfaWQiOiJvcmcvZXhhbXBsZS9yZWdpc3RyeS9tYWluL3JvdXRlL3dlYi9jb25maWd1cmF0aW9uLzEifV0"
+      },
+      {
+        "source_node_id": "legacy/storage-default/instance",
+        "expected_mapping_edge_count": 1,
+        "actual_mapping_edge_count": 1,
+        "edge_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3siZGVyaXZhdGlvbl9ydWxlX2lkIjoicnVsZS9zdG9yYWdlLWRlZmF1bHQvdjEiLCJlZGdlX2lkIjoibWFwcGluZy9pbnN0YW5jZS9wcm9kdWN0aW9uL3N0b3JhZ2UtZGVmYXVsdCIsImV2aWRlbmNlX3JlcXVpcmVkIjp0cnVlLCJvcmRpbmFsIjoxLCJvd25lcl9zY29wZV9zdGFibGVfaWQiOiJpbnN0YW5jZS9wcm9kdWN0aW9uIiwic291cmNlX25vZGVfaWQiOiJsZWdhY3kvc3RvcmFnZS1kZWZhdWx0L2luc3RhbmNlIiwidGFyZ2V0X3Jlc291cmNlX2tpbmQiOiJzdG9yYWdlX2RlZmF1bHQiLCJ0YXJnZXRfc3RhYmxlX2lkIjoiaW5zdGFuY2UvcHJvZHVjdGlvbi9zdG9yYWdlLWRlZmF1bHQifV0"
+      }
+    ],
+    "one_to_many_source_count": 1,
+    "result": "pass"
+  },
+  "reference_validation": {
+    "categories": [
+      {
+        "category": "binding_revision",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "credential_generation",
+        "checked_count": 0,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "domain_route",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "evidence_node",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "inventory_manifest",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "mapping",
+        "checked_count": 31,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "population",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "publication",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "retention_source",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "route_configuration",
+        "checked_count": 3,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "route_placement",
+        "checked_count": 3,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "storage_default",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      },
+      {
+        "category": "write_authority",
+        "checked_count": 1,
+        "invalid_count": 0,
+        "result": "pass"
+      }
+    ],
+    "result": "pass"
+  },
+  "database_restore_validation": {
+    "planned_database_count": 2,
+    "proofs": [
+      {
+        "database_stable_id": "database/do/topology",
+        "database_kind": "durable_object_sqlite",
+        "backup_artifact_node_id": "artifact/backup/do-topology",
+        "expected_source_digest": "8ed7fd1dc6b502bec8979fa04bb4b98c1b0af63b8e7d6bbe5b730fae7b4d7dbf",
+        "expected_source_row_count": 2,
+        "status": "not_run",
+        "restored_digest": null,
+        "restored_row_count": null,
+        "verification_query_set_node_id": "ruleset/database-restore-verification",
+        "evidence_node_id": null,
+        "result": "pass"
+      },
+      {
+        "database_stable_id": "database/production",
+        "database_kind": "d1",
+        "backup_artifact_node_id": "artifact/backup/d1",
+        "expected_source_digest": "derive:sha256:a000000000000000000000000000000000000000000000000000000000000005",
+        "expected_source_row_count": 10,
+        "status": "not_run",
+        "restored_digest": null,
+        "restored_row_count": null,
+        "verification_query_set_node_id": "ruleset/database-restore-verification",
+        "evidence_node_id": null,
+        "result": "pass"
+      }
+    ],
+    "missing_count": 0,
+    "unexpected_count": 0,
+    "result": "pass"
+  },
+  "durable_object_aggregates": [
+    {
+      "database_stable_id": "database/do/topology",
+      "object_manifests": [
+        {
+          "object_stable_id": "durable-object/hub-db/production",
+          "schema_revision": "topology-000001",
+          "row_count": 2,
+          "logical_digest": "8ed7fd1dc6b502bec8979fa04bb4b98c1b0af63b8e7d6bbe5b730fae7b4d7dbf"
+        }
+      ],
+      "recomputed_object_count": 1,
+      "recomputed_row_count": 2,
+      "object_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3sibG9naWNhbF9kaWdlc3QiOiI4ZWQ3ZmQxZGM2YjUwMmJlYzg5NzlmYTA0YmI0Yjk4YzFiMGFmNjNiOGU3ZDZiYmU1YjczMGZhZTdiNGQ3ZGJmIiwib2JqZWN0X3N0YWJsZV9pZCI6ImR1cmFibGUtb2JqZWN0L2h1Yi1kYi9wcm9kdWN0aW9uIiwicm93X2NvdW50IjoyLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifV0",
+      "aggregate_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmRvLWFnZ3JlZ2F0ZS92MQ:eyJkYXRhYmFzZV9zdGFibGVfaWQiOiJkYXRhYmFzZS9kby90b3BvbG9neSIsIm9iamVjdF9tYW5pZmVzdHMiOlt7ImxvZ2ljYWxfZGlnZXN0IjoiOGVkN2ZkMWRjNmI1MDJiZWM4OTc5ZmEwNGJiNGI5OGMxYjBhZjYzYjhlN2Q2YmJlNWI3MzBmYWU3YjRkN2RiZiIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9odWItZGIvcHJvZHVjdGlvbiIsInJvd19jb3VudCI6Miwic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn1dLCJyZWNvbXB1dGVkX29iamVjdF9jb3VudCI6MSwicmVjb21wdXRlZF9yb3dfY291bnQiOjJ9",
+      "result": "pass"
+    }
+  ],
+  "blocker_validation": {
+    "expected_count": 0,
+    "actual_count": 0,
+    "expected_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W10",
+    "actual_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W10",
+    "missing_count": 0,
+    "unexpected_count": 0,
+    "duplicate_count": 0,
+    "result": "pass"
+  },
+  "transition_validation": {
+    "attempt_id": "attempt/production/1",
+    "attempt_ordinal": 1,
+    "predecessor_chain_valid": true,
+    "idempotency_key_matches": true,
+    "transition_count": 6,
+    "terminal_state": "closed",
+    "chronology_valid": true,
+    "write_open_transition_count": 2,
+    "admitted_target_write_count": 0,
+    "result": "pass"
+  },
+  "gc_validation": {
+    "cutover_checks": {
+      "expected_count": 3,
+      "actual_count": 3,
+      "expected_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9nYy1kaXNhYmxlZCIsImNoZWNrL3JldGVudGlvbi1mcmVzaCIsImNoZWNrL3RhcmdldC9pbnZlbnRvcnktY29tcGxldGUiXQ",
+      "actual_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9nYy1kaXNhYmxlZCIsImNoZWNrL3JldGVudGlvbi1mcmVzaCIsImNoZWNrL3RhcmdldC9pbnZlbnRvcnktY29tcGxldGUiXQ",
+      "missing_count": 0,
+      "unexpected_count": 0,
+      "duplicate_count": 0,
+      "result": "pass"
+    },
+    "post_cutover_checks": {
+      "expected_count": 0,
+      "actual_count": 0,
+      "expected_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W10",
+      "actual_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W10",
+      "missing_count": 0,
+      "unexpected_count": 0,
+      "duplicate_count": 0,
+      "result": "pass"
+    },
+    "outstanding_checks": {
+      "expected_count": 0,
+      "actual_count": 0,
+      "expected_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W10",
+      "actual_set_sha256": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W10",
+      "missing_count": 0,
+      "unexpected_count": 0,
+      "duplicate_count": 0,
+      "result": "pass"
+    },
+    "partition_overlap_count": 0,
+    "undeclared_outstanding_count": 0,
+    "destructive_gc_disabled": true,
+    "result": "pass"
+  },
+  "fixture_validation": {
+    "manifest_node_id": "manifest/fixtures",
+    "case_count": 74,
+    "passed_count": 74,
+    "failed_count": 0,
+    "native_zero_do_case_passed": true,
+    "result": "pass"
+  }
+}

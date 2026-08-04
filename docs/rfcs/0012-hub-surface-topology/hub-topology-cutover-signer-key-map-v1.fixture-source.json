@@ -1,0 +1,11 @@
+{
+  "schema_version": "aos-cutover-signer-key-map/v1",
+  "keys": [
+    {
+      "key_id": "key/release/example",
+      "public_key_node_id": "key/release/example",
+      "public_key_sha256": "derive:bundle-sha256:key/release/example",
+      "roles": ["plan", "report", "verification"]
+    }
+  ]
+}

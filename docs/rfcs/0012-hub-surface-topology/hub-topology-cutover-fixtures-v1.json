@@ -1,0 +1,1944 @@
+{
+  "schema_version": "aos-cutover-fixtures/v1",
+  "base": {
+    "plan_payload_node_id": "document/plan",
+    "report_payload_node_id": "document/report",
+    "verification_payload_node_id": "document/verification"
+  },
+  "cases": [
+    {
+      "case_id": "authorization-permission-widening",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/auth_no_widening/principal_proofs/0/target_permissions/-",
+          "value": "cache.write"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "auth_contract_invalid"
+    },
+    {
+      "case_id": "backup-destination-wrong-media",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/backup/0/expected_media_type",
+          "value": "application/sql"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "binding-revision-generation-mismatch",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/topology/bindings/0/current_write_revision",
+          "value": 2
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "blocked-gc-readiness-success",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/gc_gate/readiness",
+          "value": "blocked"
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/gc_gate/inventory_gate",
+          "value": "blocked"
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/gc_gate/retention_gate",
+          "value": "blocked"
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/gc_gate/cutover_check_ids",
+          "value": [
+            "check/gc-disabled"
+          ]
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/gc_gate/post_cutover_check_ids",
+          "value": [
+            "check/retention-fresh",
+            "check/target/inventory-complete"
+          ]
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/gc_gate/outstanding_blocker_check_ids",
+          "value": [
+            "check/retention-fresh",
+            "check/target/inventory-complete"
+          ]
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/gc_gate/readiness",
+          "value": "blocked"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/gc_gate/inventory_gate",
+          "value": "blocked"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/gc_gate/retention_gate",
+          "value": "blocked"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/gc_gate/outstanding_check_ids",
+          "value": [
+            "check/retention-fresh",
+            "check/target/inventory-complete"
+          ]
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/validation/checks/6/result",
+          "value": "not_run"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/validation/checks/10/result",
+          "value": "not_run"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/coverage/not_run_check_count",
+          "value": 2
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/cutover_checks/expected_count",
+          "value": 1
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/cutover_checks/actual_count",
+          "value": 1
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/post_cutover_checks/expected_count",
+          "value": 2
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/post_cutover_checks/actual_count",
+          "value": 2
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/outstanding_checks/expected_count",
+          "value": 2
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/outstanding_checks/actual_count",
+          "value": 2
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/cutover_checks/expected_set_sha256",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9nYy1kaXNhYmxlZCJd"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/cutover_checks/actual_set_sha256",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9nYy1kaXNhYmxlZCJd"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/post_cutover_checks/expected_set_sha256",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9yZXRlbnRpb24tZnJlc2giLCJjaGVjay90YXJnZXQvaW52ZW50b3J5LWNvbXBsZXRlIl0"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/post_cutover_checks/actual_set_sha256",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9yZXRlbnRpb24tZnJlc2giLCJjaGVjay90YXJnZXQvaW52ZW50b3J5LWNvbXBsZXRlIl0"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/outstanding_checks/expected_set_sha256",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9yZXRlbnRpb24tZnJlc2giLCJjaGVjay90YXJnZXQvaW52ZW50b3J5LWNvbXBsZXRlIl0"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/gc_validation/outstanding_checks/actual_set_sha256",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9yZXRlbnRpb24tZnJlc2giLCJjaGVjay90YXJnZXQvaW52ZW50b3J5LWNvbXBsZXRlIl0"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
+      "case_id": "blocker-omitted",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/blockers/-",
+          "value": {
+            "blocker_id": "blocker/fixture",
+            "code": "smoke_failed",
+            "severity": "blocking",
+            "resource": {
+              "kind": "delivery_route",
+              "stable_id": "org/example/registry/main/route/git"
+            },
+            "state": "resolved",
+            "resolution_check_id": "smoke/git-private-reader",
+            "evidence_required": true
+          }
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "blocker_contract_invalid"
+    },
+    {
+      "case_id": "blocker-resolution-check-not-passing",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/blockers/-",
+          "value": {
+            "blocker_id": "blocker/test/nonpassing",
+            "code": "url_unmapped",
+            "severity": "blocking",
+            "resource": {
+              "kind": "binary_cache",
+              "stable_id": "org/example/cache/main"
+            },
+            "state": "resolved",
+            "resolution_check_id": "check/storage-access",
+            "evidence_required": true
+          }
+        },
+        {
+          "target": "report",
+          "operation": "add",
+          "pointer": "/blockers/-",
+          "value": {
+            "blocker_id": "blocker/test/nonpassing",
+            "code": "url_unmapped",
+            "resource": {
+              "kind": "binary_cache",
+              "stable_id": "org/example/cache/main"
+            },
+            "resolution_check_id": "check/storage-access",
+            "state": "resolved",
+            "resolution_evidence": {
+              "artifact_node_id": "evidence/cutover-fixture"
+            }
+          }
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/validation/checks/9/result",
+          "value": "fail"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "blocker_contract_invalid"
+    },
+    {
+      "case_id": "blocker-resource-does-not-resolve",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/blockers/-",
+          "value": {
+            "blocker_id": "blocker/test/resource",
+            "code": "url_unmapped",
+            "severity": "blocking",
+            "resource": {
+              "kind": "binary_cache",
+              "stable_id": "org/example/cache/missing"
+            },
+            "state": "resolved",
+            "resolution_check_id": "check/storage-access",
+            "evidence_required": true
+          }
+        },
+        {
+          "target": "report",
+          "operation": "add",
+          "pointer": "/blockers/-",
+          "value": {
+            "blocker_id": "blocker/test/resource",
+            "code": "url_unmapped",
+            "resource": {
+              "kind": "binary_cache",
+              "stable_id": "org/example/cache/missing"
+            },
+            "resolution_check_id": "check/storage-access",
+            "state": "resolved",
+            "resolution_evidence": {
+              "artifact_node_id": "evidence/cutover-fixture"
+            }
+          }
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "blocker_contract_invalid"
+    },
+    {
+      "case_id": "bundle-entry-omitted",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "remove",
+          "pointer": "/payload/entries/0"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "coordinated-arbitrary-idempotency-key",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/execution_contract/idempotency_key",
+          "value": "derive:sha256:fixture/coordinated-arbitrary-key"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt/idempotency_key",
+          "value": "derive:sha256:fixture/coordinated-arbitrary-key"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt_history/0/idempotency_key",
+          "value": "derive:sha256:fixture/coordinated-arbitrary-key"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "attempt_contract_invalid"
+    },
+    {
+      "case_id": "count-invariant-duplicate",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/validation/count_invariants/0",
+          "pointer": "/validation/count_invariants/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "count-invariants-out-of-order",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/validation/count_invariants/0",
+          "pointer": "/validation/count_invariants/-"
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/validation/count_invariants/0/name",
+          "value": "zeta"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "credential-generation-missing",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/topology/bindings/0/credential_refs/-",
+          "value": {
+            "purpose": "write",
+            "stable_id": "credential/missing",
+            "version": 1,
+            "metadata_digest": "derive:sha256:fixture/missing-credential"
+          }
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "digest-invariant-duplicate",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/validation/digest_invariants/0",
+          "pointer": "/validation/digest_invariants/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "digest-invariants-out-of-order",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/validation/digest_invariants/0",
+          "pointer": "/validation/digest_invariants/-"
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/validation/digest_invariants/0/name",
+          "value": "zeta"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "document-entry-wrong-exact-role",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "replace",
+          "pointer": "/payload/entries/5/role",
+          "value": "report_payload"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "document-envelope-ref-wrong-kind",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "replace",
+          "pointer": "/payload/documents/plan_signature_envelope_node_id",
+          "value": "document/report"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "document-envelope-ref-wrong-media",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "replace",
+          "pointer": "/payload/documents/plan_signature_envelope_node_id",
+          "value": "manifest/routes"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "document-envelope-ref-wrong-role",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "replace",
+          "pointer": "/payload/documents/plan_signature_envelope_node_id",
+          "value": "document/report/signature-envelope"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "document-payload-ref-wrong-role",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "replace",
+          "pointer": "/payload/documents/plan_payload_node_id",
+          "value": "document/report"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "domain-policy-mismatch",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/topology/domains/0/access_policy",
+          "value": "private_network"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "duplicate-attempt-id",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/attempt_history/0",
+          "pointer": "/attempt_history/-"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt_history/1/ordinal",
+          "value": 2
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt_history/1/predecessor_attempt_id",
+          "value": "attempt/production/1"
+        },
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/attempt_history/1",
+          "pointer": "/attempt"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "attempt_contract_invalid"
+    },
+    {
+      "case_id": "duplicate-binding-credential-ref",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/topology/bindings/0/credential_refs/-",
+          "value": {
+            "purpose": "read",
+            "stable_id": "credential/test/1",
+            "version": 1,
+            "metadata_digest": "derive:sha256:fixture/credential-test"
+          }
+        },
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/topology/bindings/0/credential_refs/0",
+          "pointer": "/topology/bindings/0/credential_refs/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "duplicate-inventory-placement-manifest-ref",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/topology/inventories/0/placement_manifests/0",
+          "pointer": "/topology/inventories/0/placement_manifests/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "duplicate-plan-backup-database-id",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/backup/0",
+          "pointer": "/backup/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "database_restore_contract_invalid"
+    },
+    {
+      "case_id": "duplicate-report-backup-database-id",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/backup/0",
+          "pointer": "/backup/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "database_restore_contract_invalid"
+    },
+    {
+      "case_id": "duplicate-restore-database-id",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/rollback/database_restores/0",
+          "pointer": "/rollback/database_restores/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "database_restore_contract_invalid"
+    },
+    {
+      "case_id": "duplicate-rollback-backup",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/rollback/restore_backups/1",
+          "pointer": "/rollback/restore_backups/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "duplicate-route-backend-placement",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/topology/routes/0/backend_placement_stable_ids/0",
+          "pointer": "/topology/routes/0/backend_placement_stable_ids/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "duplicate-source-database-id",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/source/databases/0",
+          "pointer": "/source/databases/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "database_restore_contract_invalid"
+    },
+    {
+      "case_id": "duplicate-target-stable-id",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/topology/surfaces/0",
+          "pointer": "/topology/surfaces/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "mapping_contract_invalid"
+    },
+    {
+      "case_id": "duplicate-verification-proof-database-id",
+      "mutations": [
+        {
+          "target": "verification",
+          "operation": "copy",
+          "from_pointer": "/database_restore_validation/proofs/0",
+          "pointer": "/database_restore_validation/proofs/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "database_restore_contract_invalid"
+    },
+    {
+      "case_id": "durable-object-aggregate-tamper",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/backup/0/aggregate_manifest_digest",
+          "value": "derive:sha256:fixture/tampered-aggregate"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "durable_object_aggregate_invalid"
+    },
+    {
+      "case_id": "durable-object-jcs-order-differs-from-stable-id",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "add",
+          "pointer": "/backup/0/object_manifests/-",
+          "value": {
+            "object_stable_id": "durable-object/a",
+            "schema_revision": "topology-000001",
+            "row_count": 3,
+            "logical_digest": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+          }
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/backup/0/durable_object_count",
+          "value": 2
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/backup/0/restore_verification/row_count",
+          "value": 5
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/backup/0/expected_object_set_digest",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3sibG9naWNhbF9kaWdlc3QiOiI4ZWQ3ZmQxZGM2YjUwMmJlYzg5NzlmYTA0YmI0Yjk4YzFiMGFmNjNiOGU3ZDZiYmU1YjczMGZhZTdiNGQ3ZGJmIiwib2JqZWN0X3N0YWJsZV9pZCI6ImR1cmFibGUtb2JqZWN0L2h1Yi1kYi9wcm9kdWN0aW9uIiwicm93X2NvdW50IjoyLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifSx7ImxvZ2ljYWxfZGlnZXN0IjoiZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMCIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9hIiwicm93X2NvdW50IjozLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifV0"
+        },
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/backup/0/expected_object_set_digest",
+          "pointer": "/backup/0/observed_object_set_digest"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/backup/0/aggregate_manifest_digest",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmRvLWFnZ3JlZ2F0ZS92MQ:eyJkYXRhYmFzZV9zdGFibGVfaWQiOiJkYXRhYmFzZS9kby90b3BvbG9neSIsIm9iamVjdF9tYW5pZmVzdHMiOlt7ImxvZ2ljYWxfZGlnZXN0IjoiOGVkN2ZkMWRjNmI1MDJiZWM4OTc5ZmEwNGJiNGI5OGMxYjBhZjYzYjhlN2Q2YmJlNWI3MzBmYWU3YjRkN2RiZiIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9odWItZGIvcHJvZHVjdGlvbiIsInJvd19jb3VudCI6Miwic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn0seyJsb2dpY2FsX2RpZ2VzdCI6ImZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTAiLCJvYmplY3Rfc3RhYmxlX2lkIjoiZHVyYWJsZS1vYmplY3QvYSIsInJvd19jb3VudCI6Mywic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn1dLCJyZWNvbXB1dGVkX29iamVjdF9jb3VudCI6MiwicmVjb21wdXRlZF9yb3dfY291bnQiOjV9"
+        },
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/backup/0/aggregate_manifest_digest",
+          "pointer": "/backup/0/verified_aggregate_manifest_digest"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/expected_source_row_count",
+          "value": 5
+        },
+        {
+          "target": "verification",
+          "operation": "add",
+          "pointer": "/durable_object_aggregates/0/object_manifests/-",
+          "value": {
+            "object_stable_id": "durable-object/a",
+            "schema_revision": "topology-000001",
+            "row_count": 3,
+            "logical_digest": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+          }
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/durable_object_aggregates/0/recomputed_object_count",
+          "value": 2
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/durable_object_aggregates/0/recomputed_row_count",
+          "value": 5
+        },
+        {
+          "target": "verification",
+          "operation": "copy",
+          "from_pointer": "/durable_object_aggregates/0/object_set_sha256",
+          "pointer": "/durable_object_aggregates/0/object_set_sha256"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/durable_object_aggregates/0/object_set_sha256",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3sibG9naWNhbF9kaWdlc3QiOiI4ZWQ3ZmQxZGM2YjUwMmJlYzg5NzlmYTA0YmI0Yjk4YzFiMGFmNjNiOGU3ZDZiYmU1YjczMGZhZTdiNGQ3ZGJmIiwib2JqZWN0X3N0YWJsZV9pZCI6ImR1cmFibGUtb2JqZWN0L2h1Yi1kYi9wcm9kdWN0aW9uIiwicm93X2NvdW50IjoyLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifSx7ImxvZ2ljYWxfZGlnZXN0IjoiZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMCIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9hIiwicm93X2NvdW50IjozLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifV0"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/durable_object_aggregates/0/aggregate_sha256",
+          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmRvLWFnZ3JlZ2F0ZS92MQ:eyJkYXRhYmFzZV9zdGFibGVfaWQiOiJkYXRhYmFzZS9kby90b3BvbG9neSIsIm9iamVjdF9tYW5pZmVzdHMiOlt7ImxvZ2ljYWxfZGlnZXN0IjoiOGVkN2ZkMWRjNmI1MDJiZWM4OTc5ZmEwNGJiNGI5OGMxYjBhZjYzYjhlN2Q2YmJlNWI3MzBmYWU3YjRkN2RiZiIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9odWItZGIvcHJvZHVjdGlvbiIsInJvd19jb3VudCI6Miwic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn0seyJsb2dpY2FsX2RpZ2VzdCI6ImZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTAiLCJvYmplY3Rfc3RhYmxlX2lkIjoiZHVyYWJsZS1vYmplY3QvYSIsInJvd19jb3VudCI6Mywic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn1dLCJyZWNvbXB1dGVkX29iamVjdF9jb3VudCI6MiwicmVjb21wdXRlZF9yb3dfY291bnQiOjV9"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/database_restore_validation/proofs/0/expected_source_row_count",
+          "value": 5
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
+      "case_id": "durable-object-object-set-tamper",
+      "mutations": [
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/durable_object_aggregates/0/object_set_sha256",
+          "value": "derive:sha256:fixture/tampered-object-set"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "durable_object_aggregate_invalid"
+    },
+    {
+      "case_id": "durable-object-row-mismatch",
+      "mutations": [
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/durable_object_aggregates/0/recomputed_row_count",
+          "value": 999
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "durable_object_aggregate_invalid"
+    },
+    {
+      "case_id": "failed-closed",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/result",
+          "value": "failed_closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt/state",
+          "value": "failed_closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt_history/0/state",
+          "value": "failed_closed"
+        },
+        {
+          "target": "report",
+          "operation": "add",
+          "pointer": "/failure",
+          "value": {
+            "stage": "switch",
+            "code": "switch_failed",
+            "failed_check_id": null,
+            "evidence": {
+              "artifact_node_id": "evidence/cutover-fixture"
+            }
+          }
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/switch/state",
+          "value": "failed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/switch/write_admission_after_switch",
+          "value": "closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/state",
+          "value": "not_required"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/rollback_boundary_crossed",
+          "value": false
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/4/to_state",
+          "value": "failed_closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/4/target_write_open_count",
+          "value": 0
+        },
+        {
+          "target": "report",
+          "operation": "remove",
+          "pointer": "/transition_ledger/5"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/transition_validation/terminal_state",
+          "value": "failed_closed"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/transition_validation/transition_count",
+          "value": 5
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/transition_validation/write_open_transition_count",
+          "value": 0
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
+      "case_id": "failed-closed-restore-failed",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/result",
+          "value": "failed_closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt/state",
+          "value": "failed_closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt_history/0/state",
+          "value": "failed_closed"
+        },
+        {
+          "target": "report",
+          "operation": "add",
+          "pointer": "/failure",
+          "value": {
+            "stage": "rollback",
+            "code": "rollback_failed",
+            "failed_check_id": null,
+            "evidence": {
+              "artifact_node_id": "evidence/cutover-fixture"
+            }
+          }
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/switch/state",
+          "value": "failed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/switch/write_admission_after_switch",
+          "value": "closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/state",
+          "value": "closed_failed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/rollback_boundary_crossed",
+          "value": false
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/restore_failed_count",
+          "value": 1
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/restore_set_result",
+          "value": "failed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/old_deployment_restored",
+          "value": "failed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/status",
+          "value": "failed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/restore_started_at",
+          "value": "2026-08-05T02:51:00Z"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/restore_finished_at",
+          "value": "2026-08-05T02:52:00Z"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/evidence",
+          "value": {
+            "artifact_node_id": "evidence/cutover-fixture"
+          }
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/4/to_state",
+          "value": "failed_closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/4/target_write_open_count",
+          "value": 0
+        },
+        {
+          "target": "report",
+          "operation": "remove",
+          "pointer": "/transition_ledger/5"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/transition_validation/terminal_state",
+          "value": "failed_closed"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/transition_validation/transition_count",
+          "value": 5
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/transition_validation/write_open_transition_count",
+          "value": 0
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/database_restore_validation/proofs/0/status",
+          "value": "failed"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/database_restore_validation/proofs/0/evidence_node_id",
+          "value": "evidence/cutover-fixture"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
+      "case_id": "fixture-result-count-mismatch",
+      "mutations": [
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/fixture_validation/case_count",
+          "value": 73
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "verification_contract_invalid"
+    },
+    {
+      "case_id": "fractional-transition-equal-instant",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/2/occurred_at",
+          "value": "2026-08-05T02:20:00.10Z"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/3/occurred_at",
+          "value": "2026-08-05T02:20:00.1Z"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "transition_contract_invalid"
+    },
+    {
+      "case_id": "gc-partition-overlap",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/gc_gate/post_cutover_check_ids/-",
+          "value": "check/gc-disabled"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "gc_partition_invalid"
+    },
+    {
+      "case_id": "idempotency-mismatch",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt/idempotency_key",
+          "value": "cutover/fixture/wrong"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "attempt_contract_invalid"
+    },
+    {
+      "case_id": "inventory-cross-surface",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/topology/inventories/0/placement_manifests/0/placement_stable_id",
+          "value": "org/example/registry/main/placement/primary"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "mapping-target-kind-mismatch",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/topology/mapping_edges/0/target_resource_kind",
+          "value": "registry"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "mapping_contract_invalid"
+    },
+    {
+      "case_id": "metaschema-wrong-media-node",
+      "mutations": [
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/schema_validation/metaschema_node_id",
+          "value": "manifest/routes"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "native-zero-durable-objects",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "remove",
+          "pointer": "/source/databases/0"
+        },
+        {
+          "target": "plan",
+          "operation": "remove",
+          "pointer": "/backup/0"
+        },
+        {
+          "target": "report",
+          "operation": "remove",
+          "pointer": "/backup/0"
+        },
+        {
+          "target": "report",
+          "operation": "remove",
+          "pointer": "/rollback/database_restores/0"
+        },
+        {
+          "target": "report",
+          "operation": "remove",
+          "pointer": "/rollback/backup_artifacts/1"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/restore_expected_count",
+          "value": 1
+        },
+        {
+          "target": "verification",
+          "operation": "remove",
+          "pointer": "/durable_object_aggregates/0"
+        },
+        {
+          "target": "verification",
+          "operation": "remove",
+          "pointer": "/database_restore_validation/proofs/0"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/database_restore_validation/planned_database_count",
+          "value": 1
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
+      "case_id": "payload-after-signing",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/plan_id",
+          "value": "plan/fixture/tampered"
+        }
+      ],
+      "evaluation_stage": "signature",
+      "expected_result": "fail",
+      "expected_code": "signature_invalid"
+    },
+    {
+      "case_id": "quiescence-target-duplicate",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/switch/quiescence_targets/0",
+          "pointer": "/switch/quiescence_targets/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "quiescence-targets-out-of-order",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/switch/quiescence_targets/0",
+          "value": {
+            "stable_id": "schedule/cron",
+            "kind": "cron"
+          }
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/switch/quiescence_targets/1",
+          "value": {
+            "stable_id": "alarm/domain-probes",
+            "kind": "alarm"
+          }
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "raw-signature-ref-wrong-class",
+      "mutations": [
+        {
+          "target": "signature_envelope",
+          "operation": "replace",
+          "pointer": "/plan/signature_node_id",
+          "value": "key/release/example"
+        }
+      ],
+      "evaluation_stage": "signature",
+      "expected_result": "fail",
+      "expected_code": "signature_invalid"
+    },
+    {
+      "case_id": "required-evidence-missing",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/validation/checks/0/evidence",
+          "value": null
+        }
+      ],
+      "evaluation_stage": "schema",
+      "expected_result": "fail",
+      "expected_code": "type_mismatch"
+    },
+    {
+      "case_id": "retention-source-missing",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/topology/retention_subscriptions/0/source_generation_stable_id",
+          "value": "publication/missing"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "retry-predecessor-missing",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt/ordinal",
+          "value": 2
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "attempt_contract_invalid"
+    },
+    {
+      "case_id": "rollback-aggregate-count-mismatch",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/restore_completed_count",
+          "value": 1
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "database_restore_contract_invalid"
+    },
+    {
+      "case_id": "rollback-backups-out-of-order",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/rollback/restore_backups",
+          "value": [
+            "database/production",
+            "database/do/topology"
+          ]
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "rollback-digest-mismatch",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/expected_source_digest",
+          "value": "derive:sha256:fixture/wrong-restore"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "database_restore_contract_invalid"
+    },
+    {
+      "case_id": "rolled-back",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/result",
+          "value": "rolled_back"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt/state",
+          "value": "rolled_back"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/attempt_history/0/state",
+          "value": "rolled_back"
+        },
+        {
+          "target": "report",
+          "operation": "add",
+          "pointer": "/failure",
+          "value": {
+            "stage": "post_switch_smoke",
+            "code": "smoke_failed",
+            "failed_check_id": "smoke/nix-cache-info",
+            "evidence": {
+              "artifact_node_id": "evidence/cutover-fixture"
+            }
+          }
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/switch/write_admission_after_switch",
+          "value": "closed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/state",
+          "value": "executed"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/rollback_boundary_crossed",
+          "value": false
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/restore_completed_count",
+          "value": 2
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/restore_set_result",
+          "value": "pass"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/old_deployment_restored",
+          "value": "verified"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/old_runtime_smoke_result",
+          "value": "pass"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/old_writes_reopened_after_verification",
+          "value": true
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/4/target_write_open_count",
+          "value": 0
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/5/target_write_open_count",
+          "value": 0
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/5/to_state",
+          "value": "rolled_back"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/status",
+          "value": "pass"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/restore_started_at",
+          "value": "2026-08-05T02:51:00Z"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/restore_finished_at",
+          "value": "2026-08-05T02:52:00Z"
+        },
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/rollback/database_restores/0/expected_source_digest",
+          "pointer": "/rollback/database_restores/0/restored_digest"
+        },
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/rollback/database_restores/0/expected_source_row_count",
+          "pointer": "/rollback/database_restores/0/restored_row_count"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/0/evidence",
+          "value": {
+            "artifact_node_id": "evidence/cutover-fixture"
+          }
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/1/status",
+          "value": "pass"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/1/restore_started_at",
+          "value": "2026-08-05T02:52:00Z"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/1/restore_finished_at",
+          "value": "2026-08-05T02:53:00Z"
+        },
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/rollback/database_restores/1/expected_source_digest",
+          "pointer": "/rollback/database_restores/1/restored_digest"
+        },
+        {
+          "target": "report",
+          "operation": "copy",
+          "from_pointer": "/rollback/database_restores/1/expected_source_row_count",
+          "pointer": "/rollback/database_restores/1/restored_row_count"
+        },
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/rollback/database_restores/1/evidence",
+          "value": {
+            "artifact_node_id": "evidence/cutover-fixture"
+          }
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/transition_validation/terminal_state",
+          "value": "rolled_back"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/transition_validation/write_open_transition_count",
+          "value": 0
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/database_restore_validation/proofs/0/status",
+          "value": "pass"
+        },
+        {
+          "target": "verification",
+          "operation": "copy",
+          "from_pointer": "/database_restore_validation/proofs/0/expected_source_digest",
+          "pointer": "/database_restore_validation/proofs/0/restored_digest"
+        },
+        {
+          "target": "verification",
+          "operation": "copy",
+          "from_pointer": "/database_restore_validation/proofs/0/expected_source_row_count",
+          "pointer": "/database_restore_validation/proofs/0/restored_row_count"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/database_restore_validation/proofs/0/evidence_node_id",
+          "value": "evidence/cutover-fixture"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/database_restore_validation/proofs/1/status",
+          "value": "pass"
+        },
+        {
+          "target": "verification",
+          "operation": "copy",
+          "from_pointer": "/database_restore_validation/proofs/1/expected_source_digest",
+          "pointer": "/database_restore_validation/proofs/1/restored_digest"
+        },
+        {
+          "target": "verification",
+          "operation": "copy",
+          "from_pointer": "/database_restore_validation/proofs/1/expected_source_row_count",
+          "pointer": "/database_restore_validation/proofs/1/restored_row_count"
+        },
+        {
+          "target": "verification",
+          "operation": "replace",
+          "pointer": "/database_restore_validation/proofs/1/evidence_node_id",
+          "value": "evidence/cutover-fixture"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
+      "case_id": "route-configuration-missing",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "remove",
+          "pointer": "/topology/route_configurations/0"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "route-proof-configuration-mismatch",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/auth_no_widening/route_proofs/0/target_policy_configuration_digest",
+          "value": "derive:sha256:fixture/wrong-route-configuration"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "auth_contract_invalid"
+    },
+    {
+      "case_id": "schema-entry-wrong-exact-role",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "replace",
+          "pointer": "/payload/entries/22/role",
+          "value": "report_schema"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "signer-public-key-ref-wrong-class",
+      "mutations": [
+        {
+          "target": "signer_key_map",
+          "operation": "replace",
+          "pointer": "/keys/0/public_key_node_id",
+          "value": "artifact/transformer/v1"
+        }
+      ],
+      "evaluation_stage": "signature",
+      "expected_result": "fail",
+      "expected_code": "signature_invalid"
+    },
+    {
+      "case_id": "signer-role-widened",
+      "mutations": [
+        {
+          "target": "signer_key_map",
+          "operation": "add",
+          "pointer": "/keys/0/roles/-",
+          "value": "bundle_root"
+        }
+      ],
+      "evaluation_stage": "signature",
+      "expected_result": "fail",
+      "expected_code": "signer_role_not_authorized"
+    },
+    {
+      "case_id": "smoke-observed-status-mismatch",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/smoke_tests/0/status",
+          "value": 200
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "smoke_contract_invalid"
+    },
+    {
+      "case_id": "source-cardinality-mismatch",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/source/resource_nodes/24/expected_mapping_edge_count",
+          "value": 1
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "mapping_contract_invalid"
+    },
+    {
+      "case_id": "stable-id-rule-duplicate",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/transform/stable_id_rules/0",
+          "pointer": "/transform/stable_id_rules/-"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "stable-id-rules-out-of-order",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "copy",
+          "from_pointer": "/transform/stable_id_rules/0",
+          "pointer": "/transform/stable_id_rules/-"
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/transform/stable_id_rules/0/resource_kind",
+          "value": "registry"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "canonical_order_invalid"
+    },
+    {
+      "case_id": "strict-principal-narrowing",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/auth_no_widening/principal_proofs/0/source_permissions/-",
+          "value": "cache.write"
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/auth_no_widening/principal_proofs/0/assertion",
+          "value": "narrower"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
+      "case_id": "success",
+      "mutations": [],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
+      "case_id": "tool-node-used-as-evidence",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/validation/checks/0/evidence/artifact_node_id",
+          "value": "artifact/transformer/v1"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "transition-chronology-regression",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/transition_ledger/4/occurred_at",
+          "value": "2026-08-05T02:01:00Z"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "transition_contract_invalid"
+    },
+    {
+      "case_id": "trust-key-map-envelope-ref-wrong-role",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "replace",
+          "pointer": "/payload/trust/key_map_signature_envelope_node_id",
+          "value": "document/report/signature-envelope"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "trust-key-map-payload-ref-wrong-class",
+      "mutations": [
+        {
+          "target": "bundle_manifest",
+          "operation": "replace",
+          "pointer": "/payload/trust/key_map_payload_node_id",
+          "value": "document/plan"
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "bundle_not_closed"
+    },
+    {
+      "case_id": "undeclared-evidence-node",
+      "mutations": [
+        {
+          "target": "report",
+          "operation": "replace",
+          "pointer": "/validation/checks/0/evidence/artifact_node_id",
+          "value": "evidence/not-declared"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "reference_contract_invalid"
+    },
+    {
+      "case_id": "unknown-plan-property",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/unknown",
+          "value": true
+        }
+      ],
+      "evaluation_stage": "schema",
+      "expected_result": "fail",
+      "expected_code": "unknown_property"
+    },
+    {
+      "case_id": "verifier-byte-mismatch",
+      "mutations": [
+        {
+          "target": "verifier_bytes",
+          "operation": "replace",
+          "pointer": "/0",
+          "value": 0
+        }
+      ],
+      "evaluation_stage": "bundle",
+      "expected_result": "fail",
+      "expected_code": "verifier_identity_mismatch"
+    }
+  ]
+}

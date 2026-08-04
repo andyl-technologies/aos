@@ -28,7 +28,7 @@ BinaryCache
 ```
 
 This is a conceptual supertype. Implementations may retain separate
-`registries` and `caches` tables if foreign-key and one-of constraints remain
+`registries` and `binary_caches` tables if foreign-key and one-of constraints remain
 enforceable.
 
 A registry's Git layout and its Nix-compatible paths are one logical registry

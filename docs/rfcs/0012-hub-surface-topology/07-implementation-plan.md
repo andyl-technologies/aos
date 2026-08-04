@@ -117,7 +117,7 @@ fail-closed degraded state through Web, CLI, API, native, and Worker paths.
       the shared route authorization boundary.
 - [ ] Add scoped origin-read credentials and secret-free route explanations.
 - [ ] Add external-provider and private-network access-policy records.
-- [ ] Accept ingress identity/access class only from mutually authenticated,
+- [x] Accept ingress identity/access class only from mutually authenticated,
       configured ingress and strip client-supplied forwarding assertions.
 - [ ] Permit private-network redirects only when the presigned origin enforces
       the same named boundary.
