@@ -384,12 +384,47 @@ abandonment records leaked bytes and permits tombstone lifecycle completion,
 but never reports them as reclaimed. Database state must not claim storage was
 freed until the backend confirms it.
 
+The deletion capability is stricter than ordinary write capability. A backend
+must atomically condition `DELETE` on the strong ETag captured by complete
+inventory. A plan fails closed before creating candidates when any targeted
+placement cannot provide that contract or has no strong ETag. AWS S3 general
+buckets provide `DeleteObject` with `If-Match`; AOS does not substitute
+size-only conditions. The Cloudflare Workers R2 binding exposes conditional
+`get` and `put`, but its `delete` has no condition, and R2's S3 compatibility
+does not advertise conditional `DeleteObject`. Direct R2, `local_fs`, and an
+R2-compatible binding therefore remain an explicit blocked GC capability until
+they gain a proven conditional-delete or cooperative fencing protocol. A
+read-then-delete sequence is not sufficient because it can delete a replacement
+written between those calls.
+
+Physical delete capability is also independent of logical write authority.
+The current authority controls where new bytes may be published; it does not
+grant or revoke the ability to remove a reviewed physical replica or shard.
+The deletion controller therefore resolves credentials and conditional-delete
+support for the action's exact placement without requiring that placement to be
+the reconciled writer. It never falls back from conditional deletion to an
+unconditional ordinary delete.
+
+Each attempt has a durable request/response receipt. Claiming a job and writing
+its deterministic backend request are atomic. The backend response is persisted
+before presence, byte accounting, or operation state can change; applying that
+response finalizes the receipt and job in one checked batch. A controller crash
+at either boundary resumes the same request, and an already-absent object is the
+idempotent successful response to a delete that reached the backend before its
+response was recorded.
+
 An abandoned narinfo action never satisfies a NAR dependency. Its possible
 discoverability keeps the placement-scoped NAR refcount nonzero, so the
 dependent NAR action becomes blocked and cannot run. Completing the logical
 operation then requires a separate reviewed abandonment of that blocked NAR
 action, recording its possible bytes as leaked. “All prerequisites terminal”
 is insufficient; every NAR prerequisite must be `succeeded`.
+
+On successful prerequisite finalization, the same atomic batch promotes every
+dependent job whose complete prerequisite set is now `succeeded` from
+`blocked` to `pending`. Runnable-job discovery repeats that dependency check as
+crash-recovery reconciliation; it never treats a merely terminal prerequisite
+as satisfied.
 
 At most one active deletion job exists globally for one surface object and
 placement, independent of plan. Job ids are deterministic from the action, and
@@ -467,6 +502,50 @@ edge, complete scan, placement change, fence mutation, or second apply racing
 that transaction has one epoch-guarded winner. New roots that encounter an
 existing tombstone fail closed and request repair or proven resurrection; they
 never silently make an in-flight deletion safe.
+
+## Write journals and direct capabilities
+
+Every cache write is represented by a durable per-object ticket before bytes
+can reach a placement. The ticket pins the placement and write-spec versions,
+binding version, immutable write revision and credential generation, and the
+starting inventory generation. A direct presigned PUT additionally pins the
+exact presign credential generation. Active tickets and completed deltas not
+yet covered by a complete inventory block mark and apply.
+
+Presigned and multipart clients declare the final byte size before receiving a
+capability or upload id. The hub reserves the owning organization's byte/object
+delta before it permits bytes to move and records that reservation on the same
+durable ticket. A backend-confirmed abort or pre-write failure atomically
+releases it; success, timeout, or an ambiguous transport result preserves or
+commits it. Recovery never gives quota back merely because an origin's abort
+API cannot prove whether completion landed.
+
+Acknowledging a direct PUT observes the object from the pinned placement and
+records its size and strong ETag when available. It does not release
+the ticket: the same URL remains replayable until its exclusive expiry. The
+server retains a short clock-skew grace beyond the advertised origin expiry.
+Only after that fence expires does recovery convert the ticket to an uncovered delta, and only a
+subsequent complete placement inventory may cover that delta and release its
+topology and credential fences.
+
+Registry writes use the same journal rule: every confirmed or uncertain write
+becomes `completed_uncovered` and continues to fence topology. Only an index
+pass that read the ticket's exact placement, started after the uncertain write,
+and completed successfully may release that fence. Private registries are
+indexed on the same production schedule as public registries because serving
+visibility does not weaken retention or GC evidence.
+
+Promotion, confirmation, and removal of write authority all reject while the
+surface has an active or completed-uncovered write ticket. Native filesystem
+multipart completion writes a durable ambiguity marker before its final rename,
+so recovery cannot confuse "completed and staging removed" with "never
+existed" and release a live fence.
+
+Scheduled cleanup is bounded: one pass handles at most 128 expired write
+tickets and 128 eligible tombstones. Both native and Worker schedules run the
+tombstone reaper; eligibility and the guarded mutation independently re-check
+retention age, physical absence, active deletion jobs, live references, object
+version, and the cache epoch.
 
 ## Access telemetry
 

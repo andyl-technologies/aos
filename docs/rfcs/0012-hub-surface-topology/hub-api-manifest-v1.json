@@ -1,0 +1,1931 @@
+{
+   "cli_families" : [
+      "instance",
+      "org",
+      "registry",
+      "cache",
+      "storage-binding",
+      "surface",
+      "placement",
+      "placement-policy",
+      "placement-equivalence",
+      "domain",
+      "network-boundary",
+      "endpoint",
+      "gateway",
+      "route",
+      "operation"
+   ],
+   "cli_nested_families" : {
+      "org" : [ "audit", "identity", "project", "webhook" ],
+      "registry" : [ "cache-stack", "channel", "configuration", "mirror", "package", "publish" ]
+   },
+   "cli_json_schema" : {
+      "bundle_node_id" : "manifest/cli",
+      "bundle_path" : "manifests/cli.json"
+   },
+   "manifest_version" : "aos.hub.api/v1",
+   "methods" : [
+      {
+         "method" : "ListRegistries",
+         "path" : "aos.hub.v1.RegistryService/ListRegistries",
+         "request" : "ListRegistriesRequest",
+         "response" : "ListRegistriesResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "GetRegistry",
+         "path" : "aos.hub.v1.RegistryService/GetRegistry",
+         "request" : "GetRegistryRequest",
+         "response" : "GetRegistryResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "ListReleases",
+         "path" : "aos.hub.v1.RegistryService/ListReleases",
+         "request" : "ListReleasesRequest",
+         "response" : "ListReleasesResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "PlanCreateRegistry",
+         "path" : "aos.hub.v1.RegistryService/PlanCreateRegistry",
+         "request" : "PlanCreateRegistryRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "CreateRegistry",
+         "path" : "aos.hub.v1.RegistryService/CreateRegistry",
+         "request" : "ApplyRegistryMutationRequest",
+         "response" : "RegistryResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "SetCrawlPolicy",
+         "path" : "aos.hub.v1.RegistryService/SetCrawlPolicy",
+         "request" : "SetCrawlPolicyRequest",
+         "response" : "SetCrawlPolicyResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "ListOrganizations",
+         "path" : "aos.hub.v1.OrganizationService/ListOrganizations",
+         "request" : "ListOrganizationsRequest",
+         "response" : "ListOrganizationsResponse",
+         "service" : "OrganizationService"
+      },
+      {
+         "method" : "GetOrganization",
+         "path" : "aos.hub.v1.OrganizationService/GetOrganization",
+         "request" : "GetOrganizationRequest",
+         "response" : "OrganizationResponse",
+         "service" : "OrganizationService"
+      },
+      {
+         "method" : "PlanCreateOrganization",
+         "path" : "aos.hub.v1.OrganizationService/PlanCreateOrganization",
+         "request" : "PlanCreateOrganizationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "OrganizationService"
+      },
+      {
+         "method" : "CreateOrganization",
+         "path" : "aos.hub.v1.OrganizationService/CreateOrganization",
+         "request" : "ApplyOrganizationMutationRequest",
+         "response" : "OrganizationResponse",
+         "service" : "OrganizationService"
+      },
+      {
+         "method" : "PlanUpdateOrganization",
+         "path" : "aos.hub.v1.OrganizationService/PlanUpdateOrganization",
+         "request" : "PlanUpdateOrganizationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "OrganizationService"
+      },
+      {
+         "method" : "UpdateOrganization",
+         "path" : "aos.hub.v1.OrganizationService/UpdateOrganization",
+         "request" : "ApplyOrganizationMutationRequest",
+         "response" : "OrganizationResponse",
+         "service" : "OrganizationService"
+      },
+      {
+         "method" : "PlanDeleteOrganization",
+         "path" : "aos.hub.v1.OrganizationService/PlanDeleteOrganization",
+         "request" : "PlanDeleteOrganizationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "OrganizationService"
+      },
+      {
+         "method" : "DeleteOrganization",
+         "path" : "aos.hub.v1.OrganizationService/DeleteOrganization",
+         "request" : "ApplyOrganizationMutationRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "OrganizationService"
+      },
+      {
+         "method" : "CreateProject",
+         "path" : "aos.hub.v1.ProjectService/CreateProject",
+         "request" : "CreateProjectRequest",
+         "response" : "CreateProjectResponse",
+         "service" : "ProjectService"
+      },
+      {
+         "method" : "ListProjects",
+         "path" : "aos.hub.v1.ProjectService/ListProjects",
+         "request" : "ListProjectsRequest",
+         "response" : "ListProjectsResponse",
+         "service" : "ProjectService"
+      },
+      {
+         "method" : "ListStorageBindings",
+         "path" : "aos.hub.v1.StorageBindingService/ListStorageBindings",
+         "request" : "ListStorageBindingsRequest",
+         "response" : "ListStorageBindingsResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "GetStorageBinding",
+         "path" : "aos.hub.v1.StorageBindingService/GetStorageBinding",
+         "request" : "GetStorageBindingRequest",
+         "response" : "GetStorageBindingResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "PlanCreateStorageBinding",
+         "path" : "aos.hub.v1.StorageBindingService/PlanCreateStorageBinding",
+         "request" : "PlanStorageBindingMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "CreateStorageBinding",
+         "path" : "aos.hub.v1.StorageBindingService/CreateStorageBinding",
+         "request" : "ApplyStorageBindingMutationRequest",
+         "response" : "StorageBindingResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "PlanSetStorageBindingCredential",
+         "path" : "aos.hub.v1.StorageBindingService/PlanSetStorageBindingCredential",
+         "request" : "PlanStorageBindingCredentialRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "SetStorageBindingCredential",
+         "path" : "aos.hub.v1.StorageBindingService/SetStorageBindingCredential",
+         "request" : "ApplyStorageBindingCredentialRequest",
+         "response" : "StorageBindingCredentialResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "PlanRotateStorageBindingCredential",
+         "path" : "aos.hub.v1.StorageBindingService/PlanRotateStorageBindingCredential",
+         "request" : "PlanStorageBindingCredentialRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "RotateStorageBindingCredential",
+         "path" : "aos.hub.v1.StorageBindingService/RotateStorageBindingCredential",
+         "request" : "ApplyStorageBindingCredentialRequest",
+         "response" : "StorageBindingCredentialResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "ValidateStorageBindingCredential",
+         "path" : "aos.hub.v1.StorageBindingService/ValidateStorageBindingCredential",
+         "request" : "ValidateStorageBindingCredentialRequest",
+         "response" : "StorageBindingCredentialResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "PlanGrantStorageBindingScope",
+         "path" : "aos.hub.v1.StorageBindingService/PlanGrantStorageBindingScope",
+         "request" : "PlanConsumerScopeGrantRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "GrantStorageBindingScope",
+         "path" : "aos.hub.v1.StorageBindingService/GrantStorageBindingScope",
+         "request" : "ApplyConsumerScopeGrantRequest",
+         "response" : "ConsumerScopeGrantResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "PlanRevokeStorageBindingScope",
+         "path" : "aos.hub.v1.StorageBindingService/PlanRevokeStorageBindingScope",
+         "request" : "PlanConsumerScopeGrantRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "RevokeStorageBindingScope",
+         "path" : "aos.hub.v1.StorageBindingService/RevokeStorageBindingScope",
+         "request" : "ApplyConsumerScopeGrantRequest",
+         "response" : "ConsumerScopeGrantResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "ListStorageBindingWriteRevisions",
+         "path" : "aos.hub.v1.StorageBindingService/ListStorageBindingWriteRevisions",
+         "request" : "ListStorageBindingWriteRevisionsRequest",
+         "response" : "ListStorageBindingWriteRevisionsResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "GetStorageBindingWriteRevision",
+         "path" : "aos.hub.v1.StorageBindingService/GetStorageBindingWriteRevision",
+         "request" : "GetStorageBindingWriteRevisionRequest",
+         "response" : "StorageBindingWriteRevisionResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "ReconcileStorageBindingWriteRevision",
+         "path" : "aos.hub.v1.StorageBindingService/ReconcileStorageBindingWriteRevision",
+         "request" : "ReconcileStorageBindingWriteRevisionRequest",
+         "response" : "StorageBindingWriteRevisionResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "PlanDeleteStorageBinding",
+         "path" : "aos.hub.v1.StorageBindingService/PlanDeleteStorageBinding",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "DeleteStorageBinding",
+         "path" : "aos.hub.v1.StorageBindingService/DeleteStorageBinding",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "GetInstanceDefaultStorageBinding",
+         "path" : "aos.hub.v1.StorageBindingService/GetInstanceDefaultStorageBinding",
+         "request" : "GetInstanceTopologyDefaultsRequest",
+         "response" : "GetStorageBindingResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "GetInstanceTopologyDefaults",
+         "path" : "aos.hub.v1.StorageBindingService/GetInstanceTopologyDefaults",
+         "request" : "GetInstanceTopologyDefaultsRequest",
+         "response" : "TopologyDefaultsResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "PlanSetInstanceTopologyDefaults",
+         "path" : "aos.hub.v1.StorageBindingService/PlanSetInstanceTopologyDefaults",
+         "request" : "PlanSetTopologyDefaultsRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "SetInstanceTopologyDefaults",
+         "path" : "aos.hub.v1.StorageBindingService/SetInstanceTopologyDefaults",
+         "request" : "ApplySetTopologyDefaultsRequest",
+         "response" : "TopologyDefaultsResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "GetOrganizationTopologyDefaults",
+         "path" : "aos.hub.v1.StorageBindingService/GetOrganizationTopologyDefaults",
+         "request" : "GetOrganizationTopologyDefaultsRequest",
+         "response" : "TopologyDefaultsResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "PlanSetOrganizationTopologyDefaults",
+         "path" : "aos.hub.v1.StorageBindingService/PlanSetOrganizationTopologyDefaults",
+         "request" : "PlanSetTopologyDefaultsRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "SetOrganizationTopologyDefaults",
+         "path" : "aos.hub.v1.StorageBindingService/SetOrganizationTopologyDefaults",
+         "request" : "ApplySetTopologyDefaultsRequest",
+         "response" : "TopologyDefaultsResponse",
+         "service" : "StorageBindingService"
+      },
+      {
+         "method" : "ListDomains",
+         "path" : "aos.hub.v1.DomainService/ListDomains",
+         "request" : "ListDomainsRequest",
+         "response" : "ListDomainsResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "GetDomain",
+         "path" : "aos.hub.v1.DomainService/GetDomain",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "DomainResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "PlanCreateDomain",
+         "path" : "aos.hub.v1.DomainService/PlanCreateDomain",
+         "request" : "PlanDomainMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "CreateDomain",
+         "path" : "aos.hub.v1.DomainService/CreateDomain",
+         "request" : "ApplyDomainMutationRequest",
+         "response" : "DomainResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "PlanConfigureDomainDns",
+         "path" : "aos.hub.v1.DomainService/PlanConfigureDomainDns",
+         "request" : "PlanDomainDnsRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "ConfigureDomainDns",
+         "path" : "aos.hub.v1.DomainService/ConfigureDomainDns",
+         "request" : "ApplyDomainConfigurationRequest",
+         "response" : "DomainResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "PlanConfigureDomainCertificate",
+         "path" : "aos.hub.v1.DomainService/PlanConfigureDomainCertificate",
+         "request" : "PlanDomainCertificateRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "ConfigureDomainCertificate",
+         "path" : "aos.hub.v1.DomainService/ConfigureDomainCertificate",
+         "request" : "ApplyDomainConfigurationRequest",
+         "response" : "DomainResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "VerifyDomain",
+         "path" : "aos.hub.v1.DomainService/VerifyDomain",
+         "request" : "ProbeTopologyResourceRequest",
+         "response" : "OperationResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "PlanDeleteDomain",
+         "path" : "aos.hub.v1.DomainService/PlanDeleteDomain",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "DeleteDomain",
+         "path" : "aos.hub.v1.DomainService/DeleteDomain",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "DomainService"
+      },
+      {
+         "method" : "ListNetworkBoundaries",
+         "path" : "aos.hub.v1.NetworkBoundaryService/ListNetworkBoundaries",
+         "request" : "ListTopologyResourcesRequest",
+         "response" : "ListNetworkBoundariesResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "GetNetworkBoundary",
+         "path" : "aos.hub.v1.NetworkBoundaryService/GetNetworkBoundary",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "NetworkBoundaryResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "PlanCreateNetworkBoundary",
+         "path" : "aos.hub.v1.NetworkBoundaryService/PlanCreateNetworkBoundary",
+         "request" : "PlanNetworkBoundaryMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "CreateNetworkBoundary",
+         "path" : "aos.hub.v1.NetworkBoundaryService/CreateNetworkBoundary",
+         "request" : "ApplyNetworkBoundaryMutationRequest",
+         "response" : "NetworkBoundaryResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "ListNetworkBoundaryRevisions",
+         "path" : "aos.hub.v1.NetworkBoundaryService/ListNetworkBoundaryRevisions",
+         "request" : "ListNetworkBoundaryRevisionsRequest",
+         "response" : "ListNetworkBoundaryRevisionsResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "GetNetworkBoundaryRevision",
+         "path" : "aos.hub.v1.NetworkBoundaryService/GetNetworkBoundaryRevision",
+         "request" : "GetNetworkBoundaryRevisionRequest",
+         "response" : "NetworkBoundaryRevisionResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "PlanReviseNetworkBoundary",
+         "path" : "aos.hub.v1.NetworkBoundaryService/PlanReviseNetworkBoundary",
+         "request" : "PlanNetworkBoundaryRevisionRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "ReviseNetworkBoundary",
+         "path" : "aos.hub.v1.NetworkBoundaryService/ReviseNetworkBoundary",
+         "request" : "ApplyNetworkBoundaryRevisionRequest",
+         "response" : "NetworkBoundaryRevisionResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "ProbeNetworkBoundaryRevision",
+         "path" : "aos.hub.v1.NetworkBoundaryService/ProbeNetworkBoundaryRevision",
+         "request" : "GetNetworkBoundaryRevisionRequest",
+         "response" : "NetworkBoundaryRevisionResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "ReconcileNetworkBoundaryRevision",
+         "path" : "aos.hub.v1.NetworkBoundaryService/ReconcileNetworkBoundaryRevision",
+         "request" : "ReconcileNetworkBoundaryRevisionRequest",
+         "response" : "NetworkBoundaryRevisionResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "PlanActivateNetworkBoundaryRevision",
+         "path" : "aos.hub.v1.NetworkBoundaryService/PlanActivateNetworkBoundaryRevision",
+         "request" : "PlanNetworkBoundaryLifecycleRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "ActivateNetworkBoundaryRevision",
+         "path" : "aos.hub.v1.NetworkBoundaryService/ActivateNetworkBoundaryRevision",
+         "request" : "ApplyNetworkBoundaryLifecycleRequest",
+         "response" : "NetworkBoundaryRevisionResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "PlanRetireNetworkBoundaryRevision",
+         "path" : "aos.hub.v1.NetworkBoundaryService/PlanRetireNetworkBoundaryRevision",
+         "request" : "PlanNetworkBoundaryLifecycleRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "RetireNetworkBoundaryRevision",
+         "path" : "aos.hub.v1.NetworkBoundaryService/RetireNetworkBoundaryRevision",
+         "request" : "ApplyNetworkBoundaryLifecycleRequest",
+         "response" : "NetworkBoundaryRevisionResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "PlanGrantNetworkBoundaryScope",
+         "path" : "aos.hub.v1.NetworkBoundaryService/PlanGrantNetworkBoundaryScope",
+         "request" : "PlanConsumerScopeGrantRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "GrantNetworkBoundaryScope",
+         "path" : "aos.hub.v1.NetworkBoundaryService/GrantNetworkBoundaryScope",
+         "request" : "ApplyConsumerScopeGrantRequest",
+         "response" : "ConsumerScopeGrantResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "PlanRevokeNetworkBoundaryScope",
+         "path" : "aos.hub.v1.NetworkBoundaryService/PlanRevokeNetworkBoundaryScope",
+         "request" : "PlanConsumerScopeGrantRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "RevokeNetworkBoundaryScope",
+         "path" : "aos.hub.v1.NetworkBoundaryService/RevokeNetworkBoundaryScope",
+         "request" : "ApplyConsumerScopeGrantRequest",
+         "response" : "ConsumerScopeGrantResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "PlanDeleteNetworkBoundary",
+         "path" : "aos.hub.v1.NetworkBoundaryService/PlanDeleteNetworkBoundary",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "DeleteNetworkBoundary",
+         "path" : "aos.hub.v1.NetworkBoundaryService/DeleteNetworkBoundary",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "NetworkBoundaryService"
+      },
+      {
+         "method" : "ListDeliveryEndpoints",
+         "path" : "aos.hub.v1.DeliveryService/ListDeliveryEndpoints",
+         "request" : "ListTopologyResourcesRequest",
+         "response" : "ListDeliveryEndpointsResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "GetDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/GetDeliveryEndpoint",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "DeliveryEndpointResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanCreateDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/PlanCreateDeliveryEndpoint",
+         "request" : "PlanDeliveryEndpointMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "CreateDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/CreateDeliveryEndpoint",
+         "request" : "ApplyDeliveryEndpointMutationRequest",
+         "response" : "DeliveryEndpointResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanUpdateDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/PlanUpdateDeliveryEndpoint",
+         "request" : "PlanDeliveryEndpointMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "UpdateDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/UpdateDeliveryEndpoint",
+         "request" : "ApplyDeliveryEndpointMutationRequest",
+         "response" : "DeliveryEndpointResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanGrantDeliveryEndpointScope",
+         "path" : "aos.hub.v1.DeliveryService/PlanGrantDeliveryEndpointScope",
+         "request" : "PlanConsumerScopeGrantRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "GrantDeliveryEndpointScope",
+         "path" : "aos.hub.v1.DeliveryService/GrantDeliveryEndpointScope",
+         "request" : "ApplyConsumerScopeGrantRequest",
+         "response" : "ConsumerScopeGrantResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanRevokeDeliveryEndpointScope",
+         "path" : "aos.hub.v1.DeliveryService/PlanRevokeDeliveryEndpointScope",
+         "request" : "PlanConsumerScopeGrantRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "RevokeDeliveryEndpointScope",
+         "path" : "aos.hub.v1.DeliveryService/RevokeDeliveryEndpointScope",
+         "request" : "ApplyConsumerScopeGrantRequest",
+         "response" : "ConsumerScopeGrantResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ProbeDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/ProbeDeliveryEndpoint",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "DeliveryEndpointResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ReconcileDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/ReconcileDeliveryEndpoint",
+         "request" : "ReconcileDeliveryEndpointRequest",
+         "response" : "DeliveryEndpointResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanDeleteDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/PlanDeleteDeliveryEndpoint",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "DeleteDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryService/DeleteDeliveryEndpoint",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ListStorageGateways",
+         "path" : "aos.hub.v1.DeliveryService/ListStorageGateways",
+         "request" : "ListStorageGatewaysRequest",
+         "response" : "ListStorageGatewaysResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "GetStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/GetStorageGateway",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "StorageGatewayResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanCreateStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/PlanCreateStorageGateway",
+         "request" : "PlanStorageGatewayMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "CreateStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/CreateStorageGateway",
+         "request" : "ApplyStorageGatewayMutationRequest",
+         "response" : "StorageGatewayResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanUpdateStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/PlanUpdateStorageGateway",
+         "request" : "PlanStorageGatewayMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "UpdateStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/UpdateStorageGateway",
+         "request" : "ApplyStorageGatewayMutationRequest",
+         "response" : "StorageGatewayResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanGrantStorageGatewayScope",
+         "path" : "aos.hub.v1.DeliveryService/PlanGrantStorageGatewayScope",
+         "request" : "PlanConsumerScopeGrantRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "GrantStorageGatewayScope",
+         "path" : "aos.hub.v1.DeliveryService/GrantStorageGatewayScope",
+         "request" : "ApplyConsumerScopeGrantRequest",
+         "response" : "ConsumerScopeGrantResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanRevokeStorageGatewayScope",
+         "path" : "aos.hub.v1.DeliveryService/PlanRevokeStorageGatewayScope",
+         "request" : "PlanConsumerScopeGrantRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "RevokeStorageGatewayScope",
+         "path" : "aos.hub.v1.DeliveryService/RevokeStorageGatewayScope",
+         "request" : "ApplyConsumerScopeGrantRequest",
+         "response" : "ConsumerScopeGrantResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PreviewGatewayRoutes",
+         "path" : "aos.hub.v1.DeliveryService/PreviewGatewayRoutes",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "GatewayRoutePreviewResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ReconcileStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/ReconcileStorageGateway",
+         "request" : "ReconcileStorageGatewayRequest",
+         "response" : "StorageGatewayResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanEnableStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/PlanEnableStorageGateway",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "EnableStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/EnableStorageGateway",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "StorageGatewayResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanDisableStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/PlanDisableStorageGateway",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "DisableStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/DisableStorageGateway",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "StorageGatewayResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanDeleteStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/PlanDeleteStorageGateway",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "DeleteStorageGateway",
+         "path" : "aos.hub.v1.DeliveryService/DeleteStorageGateway",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ListRoutes",
+         "path" : "aos.hub.v1.RouteService/ListRoutes",
+         "request" : "ListRoutesRequest",
+         "response" : "ListRoutesResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "GetRoute",
+         "path" : "aos.hub.v1.RouteService/GetRoute",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "DeliveryRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "PlanCreateRoute",
+         "path" : "aos.hub.v1.RouteService/PlanCreateRoute",
+         "request" : "PlanRouteMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "CreateRoute",
+         "path" : "aos.hub.v1.RouteService/CreateRoute",
+         "request" : "ApplyRouteMutationRequest",
+         "response" : "DeliveryRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "PlanUpdateRoute",
+         "path" : "aos.hub.v1.RouteService/PlanUpdateRoute",
+         "request" : "PlanRouteMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "UpdateRoute",
+         "path" : "aos.hub.v1.RouteService/UpdateRoute",
+         "request" : "ApplyRouteMutationRequest",
+         "response" : "DeliveryRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "PlanReplaceRoute",
+         "path" : "aos.hub.v1.RouteService/PlanReplaceRoute",
+         "request" : "PlanReplaceRouteRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "ReplaceRoute",
+         "path" : "aos.hub.v1.RouteService/ReplaceRoute",
+         "request" : "ApplyRouteMutationRequest",
+         "response" : "DeliveryRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "PlanEnableRoute",
+         "path" : "aos.hub.v1.RouteService/PlanEnableRoute",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "EnableRoute",
+         "path" : "aos.hub.v1.RouteService/EnableRoute",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeliveryRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "PlanDisableRoute",
+         "path" : "aos.hub.v1.RouteService/PlanDisableRoute",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "DisableRoute",
+         "path" : "aos.hub.v1.RouteService/DisableRoute",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeliveryRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "PlanDeleteRoute",
+         "path" : "aos.hub.v1.RouteService/PlanDeleteRoute",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "DeleteRoute",
+         "path" : "aos.hub.v1.RouteService/DeleteRoute",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "PlanSetCanonicalRoute",
+         "path" : "aos.hub.v1.RouteService/PlanSetCanonicalRoute",
+         "request" : "PlanCanonicalRouteRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "SetCanonicalRoute",
+         "path" : "aos.hub.v1.RouteService/SetCanonicalRoute",
+         "request" : "ApplyCanonicalRouteRequest",
+         "response" : "CanonicalRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "ProbeRoute",
+         "path" : "aos.hub.v1.RouteService/ProbeRoute",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "DeliveryRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "ExplainRoute",
+         "path" : "aos.hub.v1.RouteService/ExplainRoute",
+         "request" : "ExplainRouteRequest",
+         "response" : "ExplainRouteResponse",
+         "service" : "RouteService"
+      },
+      {
+         "method" : "GetSurfaceTopology",
+         "path" : "aos.hub.v1.TopologyService/GetSurfaceTopology",
+         "request" : "GetSurfaceTopologyRequest",
+         "response" : "GetSurfaceTopologyResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ExplainSurfaceRequest",
+         "path" : "aos.hub.v1.TopologyService/ExplainSurfaceRequest",
+         "request" : "ExplainSurfaceRequestRequest",
+         "response" : "ExplainSurfaceRequestResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ListPlacements",
+         "path" : "aos.hub.v1.TopologyService/ListPlacements",
+         "request" : "ListPlacementsRequest",
+         "response" : "ListPlacementsResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "GetPlacement",
+         "path" : "aos.hub.v1.TopologyService/GetPlacement",
+         "request" : "GetPlacementRequest",
+         "response" : "GetPlacementResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanCreatePlacement",
+         "path" : "aos.hub.v1.TopologyService/PlanCreatePlacement",
+         "request" : "PlanCreatePlacementRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "CreatePlacement",
+         "path" : "aos.hub.v1.TopologyService/CreatePlacement",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "PlacementResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanUpdatePlacement",
+         "path" : "aos.hub.v1.TopologyService/PlanUpdatePlacement",
+         "request" : "PlanUpdatePlacementRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "UpdatePlacement",
+         "path" : "aos.hub.v1.TopologyService/UpdatePlacement",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "PlacementResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "GetWriteAuthority",
+         "path" : "aos.hub.v1.TopologyService/GetWriteAuthority",
+         "request" : "GetWriteAuthorityRequest",
+         "response" : "GetWriteAuthorityResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanPromotePlacement",
+         "path" : "aos.hub.v1.TopologyService/PlanPromotePlacement",
+         "request" : "PlacementMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PromotePlacement",
+         "path" : "aos.hub.v1.TopologyService/PromotePlacement",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "GetWriteAuthorityResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanCancelPlacementPromotion",
+         "path" : "aos.hub.v1.TopologyService/PlanCancelPlacementPromotion",
+         "request" : "SurfaceMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "CancelPlacementPromotion",
+         "path" : "aos.hub.v1.TopologyService/CancelPlacementPromotion",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "GetWriteAuthorityResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ReconcileWriteAuthority",
+         "path" : "aos.hub.v1.TopologyService/ReconcileWriteAuthority",
+         "request" : "ReconcileWriteAuthorityRequest",
+         "response" : "ReconcileWriteAuthorityResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanRemoveWriteAuthority",
+         "path" : "aos.hub.v1.TopologyService/PlanRemoveWriteAuthority",
+         "request" : "SurfaceMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "RemoveWriteAuthority",
+         "path" : "aos.hub.v1.TopologyService/RemoveWriteAuthority",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "RemoveWriteAuthorityResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanDrainPlacement",
+         "path" : "aos.hub.v1.TopologyService/PlanDrainPlacement",
+         "request" : "PlacementMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "DrainPlacement",
+         "path" : "aos.hub.v1.TopologyService/DrainPlacement",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "OperationResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanCancelPlacementDrain",
+         "path" : "aos.hub.v1.TopologyService/PlanCancelPlacementDrain",
+         "request" : "PlacementMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "CancelPlacementDrain",
+         "path" : "aos.hub.v1.TopologyService/CancelPlacementDrain",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "PlacementResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanDeletePlacement",
+         "path" : "aos.hub.v1.TopologyService/PlanDeletePlacement",
+         "request" : "PlacementMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "DeletePlacement",
+         "path" : "aos.hub.v1.TopologyService/DeletePlacement",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ScanPlacement",
+         "path" : "aos.hub.v1.TopologyService/ScanPlacement",
+         "request" : "PlacementOperationRequest",
+         "response" : "OperationResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ReplicatePlacement",
+         "path" : "aos.hub.v1.TopologyService/ReplicatePlacement",
+         "request" : "ReplicatePlacementRequest",
+         "response" : "OperationResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "RepairPlacement",
+         "path" : "aos.hub.v1.TopologyService/RepairPlacement",
+         "request" : "RepairPlacementRequest",
+         "response" : "OperationResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ListObjectPresence",
+         "path" : "aos.hub.v1.TopologyService/ListObjectPresence",
+         "request" : "ListObjectPresenceRequest",
+         "response" : "ListObjectPresenceResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ListPlacementPolicies",
+         "path" : "aos.hub.v1.TopologyService/ListPlacementPolicies",
+         "request" : "SurfaceListRequest",
+         "response" : "ListPlacementPoliciesResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "GetPlacementPolicy",
+         "path" : "aos.hub.v1.TopologyService/GetPlacementPolicy",
+         "request" : "GetPlacementPolicyRequest",
+         "response" : "PlacementPolicyResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ListPlacementPolicyRevisions",
+         "path" : "aos.hub.v1.TopologyService/ListPlacementPolicyRevisions",
+         "request" : "ListPlacementPolicyRevisionsRequest",
+         "response" : "ListPlacementPolicyRevisionsResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "GetPlacementPolicyRevision",
+         "path" : "aos.hub.v1.TopologyService/GetPlacementPolicyRevision",
+         "request" : "GetPlacementPolicyRevisionRequest",
+         "response" : "PlacementPolicyRevisionResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanCreatePlacementPolicy",
+         "path" : "aos.hub.v1.TopologyService/PlanCreatePlacementPolicy",
+         "request" : "PlanPlacementPolicyMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "CreatePlacementPolicy",
+         "path" : "aos.hub.v1.TopologyService/CreatePlacementPolicy",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "PlacementPolicyResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanRevisePlacementPolicy",
+         "path" : "aos.hub.v1.TopologyService/PlanRevisePlacementPolicy",
+         "request" : "PlanPlacementPolicyMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "RevisePlacementPolicy",
+         "path" : "aos.hub.v1.TopologyService/RevisePlacementPolicy",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "PlacementPolicyRevisionResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "TestPlacementPolicyRevision",
+         "path" : "aos.hub.v1.TopologyService/TestPlacementPolicyRevision",
+         "request" : "TestPlacementPolicyRevisionRequest",
+         "response" : "TestPlacementPolicyRevisionResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ListPlacementEquivalences",
+         "path" : "aos.hub.v1.TopologyService/ListPlacementEquivalences",
+         "request" : "SurfaceListRequest",
+         "response" : "ListPlacementEquivalencesResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanConfirmPlacementEquivalence",
+         "path" : "aos.hub.v1.TopologyService/PlanConfirmPlacementEquivalence",
+         "request" : "PlanPlacementEquivalenceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "ConfirmPlacementEquivalence",
+         "path" : "aos.hub.v1.TopologyService/ConfirmPlacementEquivalence",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "PlacementEquivalenceResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanDeletePlacementEquivalence",
+         "path" : "aos.hub.v1.TopologyService/PlanDeletePlacementEquivalence",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "DeletePlacementEquivalence",
+         "path" : "aos.hub.v1.TopologyService/DeletePlacementEquivalence",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "GetRegistryMirror",
+         "path" : "aos.hub.v1.RegistryMirrorService/GetRegistryMirror",
+         "request" : "GetRegistryMirrorRequest",
+         "response" : "RegistryMirrorResponse",
+         "service" : "RegistryMirrorService"
+      },
+      {
+         "method" : "PlanSetRegistryMirror",
+         "path" : "aos.hub.v1.RegistryMirrorService/PlanSetRegistryMirror",
+         "request" : "PlanRegistryMirrorMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RegistryMirrorService"
+      },
+      {
+         "method" : "SetRegistryMirror",
+         "path" : "aos.hub.v1.RegistryMirrorService/SetRegistryMirror",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "RegistryMirrorResponse",
+         "service" : "RegistryMirrorService"
+      },
+      {
+         "method" : "PlanDeleteRegistryMirror",
+         "path" : "aos.hub.v1.RegistryMirrorService/PlanDeleteRegistryMirror",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RegistryMirrorService"
+      },
+      {
+         "method" : "DeleteRegistryMirror",
+         "path" : "aos.hub.v1.RegistryMirrorService/DeleteRegistryMirror",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "RegistryMirrorService"
+      },
+      {
+         "method" : "SyncRegistryMirror",
+         "path" : "aos.hub.v1.RegistryMirrorService/SyncRegistryMirror",
+         "request" : "SyncRegistryMirrorRequest",
+         "response" : "OperationResponse",
+         "service" : "RegistryMirrorService"
+      },
+      {
+         "method" : "ListAudit",
+         "path" : "aos.hub.v1.AuditService/ListAudit",
+         "request" : "ListAuditRequest",
+         "response" : "ListAuditResponse",
+         "service" : "AuditService"
+      },
+      {
+         "method" : "GetInstanceSettings",
+         "path" : "aos.hub.v1.InstanceService/GetInstanceSettings",
+         "request" : "GetInstanceSettingsRequest",
+         "response" : "GetInstanceSettingsResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "UpdateInstanceSettings",
+         "path" : "aos.hub.v1.InstanceService/UpdateInstanceSettings",
+         "request" : "UpdateInstanceSettingsRequest",
+         "response" : "UpdateInstanceSettingsResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "ListChangesets",
+         "path" : "aos.hub.v1.RegistryConfigurationService/ListChangesets",
+         "request" : "ListChangesetsRequest",
+         "response" : "ListChangesetsResponse",
+         "service" : "RegistryConfigurationService"
+      },
+      {
+         "method" : "GetChangeset",
+         "path" : "aos.hub.v1.RegistryConfigurationService/GetChangeset",
+         "request" : "GetChangesetRequest",
+         "response" : "GetChangesetResponse",
+         "service" : "RegistryConfigurationService"
+      },
+      {
+         "method" : "RevertChangeset",
+         "path" : "aos.hub.v1.RegistryConfigurationService/RevertChangeset",
+         "request" : "RevertChangesetRequest",
+         "response" : "RevertChangesetResponse",
+         "service" : "RegistryConfigurationService"
+      },
+      {
+         "method" : "ListPackages",
+         "path" : "aos.hub.v1.PackageService/ListPackages",
+         "request" : "ListPackagesRequest",
+         "response" : "ListPackagesResponse",
+         "service" : "PackageService"
+      },
+      {
+         "method" : "GetPackage",
+         "path" : "aos.hub.v1.PackageService/GetPackage",
+         "request" : "GetPackageRequest",
+         "response" : "GetPackageResponse",
+         "service" : "PackageService"
+      },
+      {
+         "method" : "ListChannels",
+         "path" : "aos.hub.v1.ChannelService/ListChannels",
+         "request" : "ListChannelsRequest",
+         "response" : "ListChannelsResponse",
+         "service" : "ChannelService"
+      },
+      {
+         "method" : "GetChannel",
+         "path" : "aos.hub.v1.ChannelService/GetChannel",
+         "request" : "GetChannelRequest",
+         "response" : "GetChannelResponse",
+         "service" : "ChannelService"
+      },
+      {
+         "method" : "MintUploadCredentials",
+         "path" : "aos.hub.v1.PublishService/MintUploadCredentials",
+         "request" : "MintUploadCredentialsRequest",
+         "response" : "MintUploadCredentialsResponse",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "GitLog",
+         "path" : "aos.hub.v1.GitService/GitLog",
+         "request" : "GitLogRequest",
+         "response" : "GitLogResponse",
+         "service" : "GitService"
+      },
+      {
+         "method" : "GitDiff",
+         "path" : "aos.hub.v1.GitService/GitDiff",
+         "request" : "GitDiffRequest",
+         "response" : "GitDiffResponse",
+         "service" : "GitService"
+      },
+      {
+         "method" : "ListChangeRequests",
+         "path" : "aos.hub.v1.GitService/ListChangeRequests",
+         "request" : "ListChangeRequestsRequest",
+         "response" : "ListChangeRequestsResponse",
+         "service" : "GitService"
+      },
+      {
+         "method" : "CreateWebhook",
+         "path" : "aos.hub.v1.WebhookService/CreateWebhook",
+         "request" : "CreateWebhookRequest",
+         "response" : "CreateWebhookResponse",
+         "service" : "WebhookService"
+      },
+      {
+         "method" : "ListWebhooks",
+         "path" : "aos.hub.v1.WebhookService/ListWebhooks",
+         "request" : "ListWebhooksRequest",
+         "response" : "ListWebhooksResponse",
+         "service" : "WebhookService"
+      },
+      {
+         "method" : "DeleteWebhook",
+         "path" : "aos.hub.v1.WebhookService/DeleteWebhook",
+         "request" : "DeleteWebhookRequest",
+         "response" : "DeleteWebhookResponse",
+         "service" : "WebhookService"
+      },
+      {
+         "method" : "ListBinaryCaches",
+         "path" : "aos.hub.v1.BinaryCacheService/ListBinaryCaches",
+         "request" : "ListBinaryCachesRequest",
+         "response" : "ListBinaryCachesResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "GetBinaryCache",
+         "path" : "aos.hub.v1.BinaryCacheService/GetBinaryCache",
+         "request" : "GetBinaryCacheRequest",
+         "response" : "BinaryCacheResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanCreateBinaryCache",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanCreateBinaryCache",
+         "request" : "PlanBinaryCacheMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "CreateBinaryCache",
+         "path" : "aos.hub.v1.BinaryCacheService/CreateBinaryCache",
+         "request" : "ApplyBinaryCacheMutationRequest",
+         "response" : "BinaryCacheResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanUpdateBinaryCache",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanUpdateBinaryCache",
+         "request" : "PlanBinaryCacheMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "UpdateBinaryCache",
+         "path" : "aos.hub.v1.BinaryCacheService/UpdateBinaryCache",
+         "request" : "ApplyBinaryCacheMutationRequest",
+         "response" : "BinaryCacheResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanDeleteBinaryCache",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanDeleteBinaryCache",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "DeleteBinaryCache",
+         "path" : "aos.hub.v1.BinaryCacheService/DeleteBinaryCache",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "GetCacheGcPolicy",
+         "path" : "aos.hub.v1.BinaryCacheService/GetCacheGcPolicy",
+         "request" : "GetCacheGcPolicyRequest",
+         "response" : "GetCacheGcPolicyResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanSetCacheGcPolicy",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanSetCacheGcPolicy",
+         "request" : "PlanSetCacheGcPolicyRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "SetCacheGcPolicy",
+         "path" : "aos.hub.v1.BinaryCacheService/SetCacheGcPolicy",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "GetCacheGcPolicyResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanCacheGc",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanCacheGc",
+         "request" : "PlanCacheGcRequest",
+         "response" : "CacheGcPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "RunCacheGc",
+         "path" : "aos.hub.v1.BinaryCacheService/RunCacheGc",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "OperationResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanAcknowledgeCacheGcFirstSweep",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanAcknowledgeCacheGcFirstSweep",
+         "request" : "PlanAcknowledgeCacheGcFirstSweepRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "AcknowledgeCacheGcFirstSweep",
+         "path" : "aos.hub.v1.BinaryCacheService/AcknowledgeCacheGcFirstSweep",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "CacheGcGenerationResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "GetCacheGcPlan",
+         "path" : "aos.hub.v1.BinaryCacheService/GetCacheGcPlan",
+         "request" : "GetCacheGcPlanRequest",
+         "response" : "CacheGcPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "GetCacheGcRun",
+         "path" : "aos.hub.v1.BinaryCacheService/GetCacheGcRun",
+         "request" : "GetCacheOperationRequest",
+         "response" : "CacheGcRunResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "SearchCache",
+         "path" : "aos.hub.v1.BinaryCacheService/SearchCache",
+         "request" : "SearchCacheRequest",
+         "response" : "SearchCacheResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "GetCacheObject",
+         "path" : "aos.hub.v1.BinaryCacheService/GetCacheObject",
+         "request" : "GetCacheObjectRequest",
+         "response" : "GetCacheObjectResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "ListCacheGcRuns",
+         "path" : "aos.hub.v1.BinaryCacheService/ListCacheGcRuns",
+         "request" : "ListCacheGcRunsRequest",
+         "response" : "ListCacheGcRunsResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "GetCacheGcDeletionJob",
+         "path" : "aos.hub.v1.BinaryCacheService/GetCacheGcDeletionJob",
+         "request" : "GetCacheGcDeletionJobRequest",
+         "response" : "CacheGcDeletionJobResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "ListCacheGcDeletionJobs",
+         "path" : "aos.hub.v1.BinaryCacheService/ListCacheGcDeletionJobs",
+         "request" : "ListCacheGcDeletionJobsRequest",
+         "response" : "ListCacheGcDeletionJobsResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "RetryCacheGcDeletionJob",
+         "path" : "aos.hub.v1.BinaryCacheService/RetryCacheGcDeletionJob",
+         "request" : "RetryCacheGcDeletionJobRequest",
+         "response" : "OperationResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanAbandonCacheGcDeletionJob",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanAbandonCacheGcDeletionJob",
+         "request" : "PlanAbandonCacheGcDeletionJobRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "AbandonCacheGcDeletionJob",
+         "path" : "aos.hub.v1.BinaryCacheService/AbandonCacheGcDeletionJob",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "CacheGcDeletionJobResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "ListRootReasons",
+         "path" : "aos.hub.v1.BinaryCacheService/ListRootReasons",
+         "request" : "ListRootReasonsRequest",
+         "response" : "ListRootReasonsResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "GetRetentionRoot",
+         "path" : "aos.hub.v1.BinaryCacheService/GetRetentionRoot",
+         "request" : "GetRetentionRootRequest",
+         "response" : "RetentionRootResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "ListRetentionRoots",
+         "path" : "aos.hub.v1.BinaryCacheService/ListRetentionRoots",
+         "request" : "ListRetentionRootsRequest",
+         "response" : "ListRetentionRootsResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanCreateManualRetentionRoot",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanCreateManualRetentionRoot",
+         "request" : "PlanManualRetentionRootRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "CreateManualRetentionRoot",
+         "path" : "aos.hub.v1.BinaryCacheService/CreateManualRetentionRoot",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "RetentionRootResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanRenewRetentionLease",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanRenewRetentionLease",
+         "request" : "PlanRetentionLeaseRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "RenewRetentionLease",
+         "path" : "aos.hub.v1.BinaryCacheService/RenewRetentionLease",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "RetentionLeaseResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanRevokeRetentionLease",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanRevokeRetentionLease",
+         "request" : "PlanRevokeRetentionLeaseRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "RevokeRetentionLease",
+         "path" : "aos.hub.v1.BinaryCacheService/RevokeRetentionLease",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "RetentionLeaseResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanDeleteManualRetentionRoot",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanDeleteManualRetentionRoot",
+         "request" : "PlanDeleteManualRetentionRootRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "DeleteManualRetentionRoot",
+         "path" : "aos.hub.v1.BinaryCacheService/DeleteManualRetentionRoot",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "RefreshAllRetention",
+         "path" : "aos.hub.v1.BinaryCacheService/RefreshAllRetention",
+         "request" : "RefreshAllRetentionRequest",
+         "response" : "OperationResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "PlanPlacementEviction",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanPlacementEviction",
+         "request" : "PlanPlacementEvictionRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "RunPlacementEviction",
+         "path" : "aos.hub.v1.BinaryCacheService/RunPlacementEviction",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "OperationResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "CacheClosure",
+         "path" : "aos.hub.v1.BinaryCacheService/CacheClosure",
+         "request" : "CacheClosureRequest",
+         "response" : "CacheClosureResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "MintCacheUploadCredentials",
+         "path" : "aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials",
+         "request" : "MintCacheUploadCredentialsRequest",
+         "response" : "MintCacheUploadCredentialsResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "AcknowledgeCacheUpload",
+         "path" : "aos.hub.v1.BinaryCacheService/AcknowledgeCacheUpload",
+         "request" : "AcknowledgeCacheUploadRequest",
+         "response" : "AcknowledgeCacheUploadResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "RegisterCacheNarinfos",
+         "path" : "aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
+         "request" : "RegisterCacheNarinfosRequest",
+         "response" : "RegisterCacheNarinfosResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "ListRegistryCacheIntegrations",
+         "path" : "aos.hub.v1.CacheIntegrationService/ListRegistryCacheIntegrations",
+         "request" : "ListRegistryCacheIntegrationsRequest",
+         "response" : "ListCacheIntegrationsResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "ListCacheRegistryIntegrations",
+         "path" : "aos.hub.v1.CacheIntegrationService/ListCacheRegistryIntegrations",
+         "request" : "ListCacheRegistryIntegrationsRequest",
+         "response" : "ListCacheIntegrationsResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "GetCacheRegistryIntegration",
+         "path" : "aos.hub.v1.CacheIntegrationService/GetCacheRegistryIntegration",
+         "request" : "GetCacheRegistryIntegrationRequest",
+         "response" : "CacheIntegrationResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "PreviewCacheIntegration",
+         "path" : "aos.hub.v1.CacheIntegrationService/PreviewCacheIntegration",
+         "request" : "PreviewCacheIntegrationRequest",
+         "response" : "PreviewCacheIntegrationResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "GetConsumerCacheStack",
+         "path" : "aos.hub.v1.CacheIntegrationService/GetConsumerCacheStack",
+         "request" : "GetConsumerCacheStackRequest",
+         "response" : "ConsumerCacheStackResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "ValidateConsumerCacheStack",
+         "path" : "aos.hub.v1.CacheIntegrationService/ValidateConsumerCacheStack",
+         "request" : "GetConsumerCacheStackRequest",
+         "response" : "ConsumerCacheStackValidationResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "PlanConsumerCacheChange",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanConsumerCacheChange",
+         "request" : "PlanConsumerCacheChangeRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "CreateConsumerCacheChangeset",
+         "path" : "aos.hub.v1.CacheIntegrationService/CreateConsumerCacheChangeset",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "ConsumerCacheChangesetResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "GetRetentionSubscription",
+         "path" : "aos.hub.v1.CacheIntegrationService/GetRetentionSubscription",
+         "request" : "GetRetentionSubscriptionRequest",
+         "response" : "RetentionSubscriptionResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "ListRetentionSubscriptions",
+         "path" : "aos.hub.v1.CacheIntegrationService/ListRetentionSubscriptions",
+         "request" : "ListRetentionSubscriptionsRequest",
+         "response" : "ListRetentionSubscriptionsResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "PlanSetRetentionSubscription",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanSetRetentionSubscription",
+         "request" : "PlanRetentionSubscriptionRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "SetRetentionSubscription",
+         "path" : "aos.hub.v1.CacheIntegrationService/SetRetentionSubscription",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "RetentionSubscriptionResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "PlanDeleteRetentionSubscription",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanDeleteRetentionSubscription",
+         "request" : "PlanDeleteRetentionSubscriptionRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "DeleteRetentionSubscription",
+         "path" : "aos.hub.v1.CacheIntegrationService/DeleteRetentionSubscription",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "RefreshRetentionSubscription",
+         "path" : "aos.hub.v1.CacheIntegrationService/RefreshRetentionSubscription",
+         "request" : "RefreshRetentionSubscriptionRequest",
+         "response" : "OperationResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "ExplainRetention",
+         "path" : "aos.hub.v1.CacheIntegrationService/ExplainRetention",
+         "request" : "ExplainRetentionRequest",
+         "response" : "ExplainRetentionResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "GetPopulationTarget",
+         "path" : "aos.hub.v1.CacheIntegrationService/GetPopulationTarget",
+         "request" : "GetPopulationTargetRequest",
+         "response" : "PopulationTargetResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "ListPopulationTargets",
+         "path" : "aos.hub.v1.CacheIntegrationService/ListPopulationTargets",
+         "request" : "ListPopulationTargetsRequest",
+         "response" : "ListPopulationTargetsResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "PlanSetPopulationTarget",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanSetPopulationTarget",
+         "request" : "PlanPopulationTargetRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "SetPopulationTarget",
+         "path" : "aos.hub.v1.CacheIntegrationService/SetPopulationTarget",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "PopulationTargetResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "PlanDeletePopulationTarget",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanDeletePopulationTarget",
+         "request" : "PlanDeletePopulationTargetRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "DeletePopulationTarget",
+         "path" : "aos.hub.v1.CacheIntegrationService/DeletePopulationTarget",
+         "request" : "ApplyCachePlanRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "RunPopulation",
+         "path" : "aos.hub.v1.CacheIntegrationService/RunPopulation",
+         "request" : "RunPopulationRequest",
+         "response" : "OperationResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "GetCoverage",
+         "path" : "aos.hub.v1.CacheIntegrationService/GetCoverage",
+         "request" : "GetPopulationTargetRequest",
+         "response" : "CoverageResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "RunCoverageValidation",
+         "path" : "aos.hub.v1.CacheIntegrationService/RunCoverageValidation",
+         "request" : "GetPopulationTargetRequest",
+         "response" : "OperationResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "RunCoverageRepair",
+         "path" : "aos.hub.v1.CacheIntegrationService/RunCoverageRepair",
+         "request" : "GetPopulationTargetRequest",
+         "response" : "OperationResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "GetOperation",
+         "path" : "aos.hub.v1.OperationsService/GetOperation",
+         "request" : "GetOperationRequest",
+         "response" : "OperationDetailResponse",
+         "service" : "OperationsService"
+      },
+      {
+         "method" : "ListOperations",
+         "path" : "aos.hub.v1.OperationsService/ListOperations",
+         "request" : "ListOperationsRequest",
+         "response" : "ListOperationsResponse",
+         "service" : "OperationsService"
+      },
+      {
+         "method" : "WatchOperation",
+         "path" : "aos.hub.v1.OperationsService/WatchOperation",
+         "request" : "WatchOperationRequest",
+         "response" : "WatchOperationResponse",
+         "service" : "OperationsService"
+      },
+      {
+         "method" : "CancelOperation",
+         "path" : "aos.hub.v1.OperationsService/CancelOperation",
+         "request" : "MutateOperationRequest",
+         "response" : "OperationDetailResponse",
+         "service" : "OperationsService"
+      },
+      {
+         "method" : "RetryOperation",
+         "path" : "aos.hub.v1.OperationsService/RetryOperation",
+         "request" : "MutateOperationRequest",
+         "response" : "OperationDetailResponse",
+         "service" : "OperationsService"
+      },
+      {
+         "method" : "CreateServiceAccount",
+         "path" : "aos.hub.v1.IdentityService/CreateServiceAccount",
+         "request" : "CreateServiceAccountRequest",
+         "response" : "CreateServiceAccountResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "GrantMembership",
+         "path" : "aos.hub.v1.IdentityService/GrantMembership",
+         "request" : "GrantMembershipRequest",
+         "response" : "GrantMembershipResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "RevokeMembership",
+         "path" : "aos.hub.v1.IdentityService/RevokeMembership",
+         "request" : "RevokeMembershipRequest",
+         "response" : "RevokeMembershipResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "MintToken",
+         "path" : "aos.hub.v1.IdentityService/MintToken",
+         "request" : "MintTokenRequest",
+         "response" : "MintTokenResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "RevokeToken",
+         "path" : "aos.hub.v1.IdentityService/RevokeToken",
+         "request" : "RevokeTokenRequest",
+         "response" : "RevokeTokenResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "ListTokens",
+         "path" : "aos.hub.v1.IdentityService/ListTokens",
+         "request" : "ListTokensRequest",
+         "response" : "ListTokensResponse",
+         "service" : "IdentityService"
+      }
+   ],
+   "mutation_protocol" : {
+      "apply_fields" : [
+         "plan_id",
+         "confirmation_hash",
+         "idempotency_key"
+      ],
+      "automatic_plan_apply" : false,
+      "plan_fields" : [
+         "idempotency_key",
+         "expected_resource_version"
+      ]
+   },
+   "pagination" : {
+      "request_fields" : [
+         "page_size",
+         "page_token"
+      ],
+      "response_field" : "next_page_token"
+   },
+   "protobuf_package" : "aos.hub.v1",
+   "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
+   "rpc_count" : 265,
+   "services" : [
+      "RegistryService",
+      "OrganizationService",
+      "ProjectService",
+      "StorageBindingService",
+      "DomainService",
+      "NetworkBoundaryService",
+      "DeliveryService",
+      "RouteService",
+      "TopologyService",
+      "RegistryMirrorService",
+      "AuditService",
+      "InstanceService",
+      "RegistryConfigurationService",
+      "PackageService",
+      "ChannelService",
+      "PublishService",
+      "GitService",
+      "WebhookService",
+      "BinaryCacheService",
+      "CacheIntegrationService",
+      "OperationsService",
+      "IdentityService"
+   ]
+}

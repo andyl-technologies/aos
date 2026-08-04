@@ -18,7 +18,7 @@ same resources and operations. They must not invent separate meanings for
    identifiers and are not the principal navigation model.
 6. Every read command and list endpoint has stable machine-readable output.
 7. Destructive operations require an explicit plan/apply or confirmation
-   token; `--yes` is valid only after the plan is printed or supplied by id.
+   token; `--yes` is valid only while applying a plan supplied by id.
 8. Placement mutation inputs use kind, lifecycle, and read selection. Primary
    role and effective write eligibility are derived responses; only promotion
    changes desired write authority.
@@ -338,6 +338,14 @@ Ordinary topology CRUD is not independently reimplemented as direct database
 logic in both binaries. Local recovery commands call the same core service
 methods or are explicitly labeled offline recovery operations.
 
+The cutover CLI is resource-scoped. Organization-owned project, audit,
+identity, and webhook commands live below `aos hub org`; registry-owned
+package, channel, publication, configuration, mirror, and consumer-cache-stack
+commands live below `aos hub registry`. The former top-level spellings are
+removed rather than retained as aliases. Cross-cutting topology resources such
+as placements, routes, domains, and storage bindings remain top-level families
+because their typed references can span more than one owner or surface.
+
 The cutover uses a one-shot preflight/transformer artifact. That artifact is
 removed after all managed deployments migrate; it is not a permanent
 `aos-hub` subcommand or runtime compatibility layer.
@@ -352,13 +360,25 @@ existing Hub URL/token configuration and:
 --plan                 print effects without applying
 --plan-id <id>         apply a previously reviewed plan
 --if-version <value>   optimistic-concurrency precondition
---yes                  non-interactive confirmation after a plan
+--yes                  non-interactive confirmation for a supplied plan id
 ```
 
 List commands support pagination and `--json`. Long-running commands print the
 operation id and support `--wait`, `--timeout`, and `operation watch`.
 Read-only probes and idempotent reconcile/refresh/scan triggers do not invent a
 no-op semantic plan; they return observed state or an operation id.
+
+Every successful `--json` response is wrapped as
+`{"schema_version":"aos.hub.cli/v1","kind":"...","data":...}`. The
+stable, snake-case `kind` discriminator identifies the command result. The committed
+[`hub-cli-json-schema-v1.json`](hub-cli-json-schema-v1.json) defines the stable
+envelope, while [`hub-api-manifest-v1.json`](hub-api-manifest-v1.json) records
+the cutover command families, service ownership, pagination convention, and
+plan/apply fields. Command-specific data preserves the public API response
+shape with recursively normalized `snake_case` keys. Version 1 is closed:
+unknown envelope and command-specific `data` fields are rejected. Any field
+addition or incompatible shape change requires a new schema version and an
+explicit client upgrade.
 
 ### Surface inspection
 
@@ -377,7 +397,7 @@ explanation and has identical JSON fields.
 ```text
 aos hub placement list <surface-ref>
 aos hub placement show <surface-ref> <placement>
-aos hub placement add <surface-ref> --binding <name> --prefix <prefix>
+aos hub placement add <surface-ref> <placement> --binding <name> --prefix <prefix>
   [--kind complete|shard|archive]
   [--desired-state active|offline] [--read enabled|disabled]
   [--read-order <ordinal>] [--hash-range <start>-<end>]
@@ -394,7 +414,7 @@ aos hub placement drain cancel <surface-ref> <placement>
 aos hub placement remove <surface-ref> <placement>
 
 aos hub placement-equivalence list <surface-ref>
-aos hub placement-equivalence confirm <placement-a> <placement-b>
+aos hub placement-equivalence confirm <surface-ref> <placement-a> <placement-b>
 aos hub placement-equivalence remove <equivalence>
 
 aos hub placement-policy list <surface-ref>
@@ -470,9 +490,6 @@ aos hub storage-binding create --org <org> --name <name>
   --kind s3|r2 --bucket <bucket> [--prefix <object-prefix>]
   --endpoint <https-origin> --region <signing-region>
   --access public|private
-aos hub storage-binding update <binding-ref>
-  [--endpoint <https-origin>] [--region <signing-region>]
-  [--access public|private]
 aos hub storage-binding credential set <binding-ref>
   --purpose read|write|delete|list|presign --credential-ref <secret-ref>
 aos hub storage-binding credential rotate <binding-ref>
@@ -481,6 +498,7 @@ aos hub storage-binding credential rotate <binding-ref>
 aos hub storage-binding credential validate <binding-ref>
   [--purpose read|write|delete|list|presign]
 aos hub storage-binding write-revision list <binding-ref>
+  [--page-size <count>] [--page-token <token>]
 aos hub storage-binding write-revision show <binding-ref> <revision>
 aos hub storage-binding write-revision reconcile <binding-ref> <revision>
 aos hub storage-binding grant <binding-ref> --consumer-scope <scope>
@@ -536,6 +554,7 @@ aos hub network-boundary revise <boundary>
 aos hub network-boundary grant <boundary> --consumer-scope <scope>
 aos hub network-boundary revoke <boundary> --consumer-scope <scope>
 aos hub network-boundary revision list <boundary>
+  [--page-size <count>] [--page-token <token>]
 aos hub network-boundary revision show <boundary>@<revision>
 aos hub network-boundary revision probe <boundary>@<revision>
 aos hub network-boundary revision reconcile <boundary>@<revision>
@@ -702,6 +721,30 @@ query, and fragment are rejected. Route and gateway commands reference an
 existing endpoint and never create one implicitly. Default ports are omitted
 only when rendering the canonical origin.
 
+### Binary cache definition
+
+```text
+aos hub cache list [--org <org>]
+aos hub cache show <cache>
+aos hub cache create <cache> --name <name>
+  --visibility public|internal|private
+  [--nix-priority <priority>] [--compression zstd|xz|none]
+  [--mass-query enabled|disabled]
+aos hub cache update <cache>
+  [--name <name>] [--visibility public|internal|private]
+  [--nix-priority <priority>] [--compression zstd|xz|none]
+  [--mass-query enabled|disabled]
+aos hub cache delete <cache>
+```
+
+Create, update, and delete use the same plan/apply contract as every other
+control-plane mutation. The cache definition owns stable identity, access
+posture, and the Nix protocol defaults `nix_priority`, `compression`, and
+`want_mass_query`; placements, delivery, consumer publication, retention,
+population, and garbage collection remain separate command families below.
+List and show render `BinaryCache` resources even though the user-facing CLI
+noun remains the concise `cache`.
+
 ### Upstream registry mirror
 
 ```text
@@ -711,7 +754,7 @@ aos hub registry mirror set <registry> --source <https-url>
   [--interval <duration>]
   [--signature-policy required|optional|disabled]
 aos hub registry mirror remove <registry>
-aos hub registry mirror sync <registry>
+aos hub registry mirror sync <registry> [--if-version <version>]
 ```
 
 Set/remove are plan/apply desired-state changes. Sync is an idempotent operation
@@ -747,6 +790,7 @@ aos hub cache retention set <cache> --registry <registry>
   [--removal-grace <duration>]
 aos hub cache retention remove <cache> --registry <registry>
 aos hub cache retention refresh <cache> [--registry <registry>]
+  [--if-version <version>]
 aos hub cache retention explain <cache> <store-hash>
 aos hub cache retention roots <cache> [--registry <registry>]
 aos hub cache root create <cache> <store-hash> --reason <text>
@@ -802,8 +846,11 @@ aos hub cache gc runs show <cache> <operation-id>
 aos hub cache gc runs watch <cache> <operation-id>
 aos hub cache gc jobs list <cache> <operation-id>
 aos hub cache gc jobs show <cache> <job-id>
-aos hub cache gc jobs retry <cache> <job-id>
-aos hub cache gc jobs abandon <cache> <job-id> [--yes]
+aos hub cache gc jobs retry <cache> <job-id> [--if-version <version>]
+aos hub cache gc jobs abandon <cache> <job-id>
+  [--if-version <version>]
+aos hub cache gc jobs abandon <cache> <job-id>
+  --plan-id <id> --confirm-hash <hash> [--yes]
 
 aos hub placement eviction plan <surface-ref> <placement>
 aos hub placement eviction run <surface-ref> <placement> --plan-id <id> [--yes]
@@ -956,6 +1003,13 @@ PlanDeleteOrganization / DeleteOrganization
 Organization slug, stable id, and owner scope are immutable after creation.
 Update owns display name and other non-identity profile metadata only; member,
 SSO, infrastructure, and deletion mutations remain on their dedicated owners.
+The stable id is also the canonical `org:<incarnation-id>` consumer scope. It
+is generated once, never derived from the mutable human-facing namespace, and
+is never reused after hard deletion. Grant APIs reject organization scopes
+that do not identify a live organization. Hard purge atomically releases every
+binding, boundary, endpoint, and gateway pin, appends revocation events for
+every active grant, removes all grant rows for the old incarnation, and only
+then completes. Recreating the same slug therefore creates unrelated authority.
 
 ### TopologyService
 
@@ -1044,7 +1098,6 @@ retry the associated operation without creating a new desired generation.
 ListStorageBindings
 GetStorageBinding
 PlanCreateStorageBinding / CreateStorageBinding
-PlanUpdateStorageBinding / UpdateStorageBinding
 PlanSetStorageBindingCredential / SetStorageBindingCredential
 PlanRotateStorageBindingCredential / RotateStorageBindingCredential
 ValidateStorageBindingCredential
@@ -1065,6 +1118,9 @@ PlanSetOrganizationTopologyDefaults / SetOrganizationTopologyDefaults
 `StorageBindingRef` is a oneof of the instance default or an organization
 binding reference. Capability and health records contain no credentials.
 Changing defaults does not mutate existing placements, routes, or gateways.
+The provider identity carried by `StorageBindingSpec` is immutable after
+creation; endpoint, bucket, prefix, root, region, access-mode, and provider
+changes use replacement plus explicit placement migration rather than update.
 Binding grant/revoke is dual-scope plan/apply. Stable binding refs resolve to
 one exact binding; apply rejects changed dependencies and cannot revoke while a
 placement, gateway, or topology default holds an exact active grant pin. Revoke
@@ -1085,18 +1141,57 @@ GetDomain
 PlanCreateDomain / CreateDomain
 PlanConfigureDomainDns / ConfigureDomainDns
 PlanConfigureDomainCertificate / ConfigureDomainCertificate
-GetDomainVerification
-GetDomainStatus
 VerifyDomain
-ReconcileDomain
 PlanDeleteDomain / DeleteDomain
 ```
 
-Domain responses report DNS-name ownership, DNS state, and certificate
+`GetDomain` is the single read projection for both desired and observed domain
+state; there are no overloaded verification/status aliases. Domain responses
+report DNS-name ownership, DNS state, and certificate
 issuance. They do not represent an IP address, listener, route access policy,
 or full client origin. Hostname and owner scope are immutable, and there is no
 generic update: DNS and certificate posture use their dedicated methods. A
-hostname change uses replacement domain and endpoint plans.
+hostname change uses replacement domain and endpoint plans. `VerifyDomain`
+creates a durable, generically targeted operation and queues external I/O; it
+requires the exact current resource version plus an idempotency key, and a
+retry resolves to the same operation instead of scheduling duplicate work. It
+never changes observations inline. There is no public reconciliation RPC: the
+native and Worker controllers claim the operation and record evidence directly
+in one lease-version-fenced database transaction.
+
+The controller queries typed A, AAAA, and CNAME records and canonicalizes IP
+addresses and IDNA hostnames before comparison. Outbound resolution rejects
+non-global addresses at connection time, does not follow redirects, and repeats
+the same checks on every durable retry. Each retry sends its own
+controller-keyed, operation-, generation-, and attempt-bound nonce to
+`/.well-known/aos-domain-probe`. The version-2 response is canonical JSON in a
+canonically base64url-encoded Ed25519 envelope. Its signed statement binds the
+nonce, a maximum-30-second issuance window, hostname, exact endpoint id and
+generation, and pinned public-key identity. It does not carry certificate
+fingerprints, provider mode, configuration digests, SANs, or validity dates:
+those would be self-attested because neither portable reqwest nor Worker Fetch
+exposes the live TLS leaf. The successful HTTPS connection independently proves
+public trust, hostname coverage, and current validity for that request.
+
+The controller creates each challenge from cryptographically secure random
+bytes and commits only its digest, operation id, endpoint generation, attempt,
+and expiry to the durable database in the same transaction that creates the
+attempt. A retry always receives a fresh challenge; accepting a response
+atomically consumes that challenge, so concurrent and replayed responses fail
+closed. There is no configured nonce-derivation key and no process-local nonce
+table. Trust comes from the public key pinned in each immutable endpoint
+generation's `probeConfiguration`. Native deployments load exact
+endpoint-generation seeds from
+`HUB_DOMAIN_PROBE_SIGNER_MANIFEST_FILE`; Worker deployments use the
+`HUB_DOMAIN_PROBE_SIGNER_MANIFEST` secret. Both runtimes mount the well-known
+route, reject cleartext/non-443 requests, consume a nonce once, and return 503
+when the exact secret reference is absent or owned by another provider.
+Cloudflare deploy installs an empty manifest when none exists, keeping the
+responder explicitly unready until endpoint-generation material is deployed.
+External/CDN terminators must implement this responder contract themselves and
+remain unready until their provider reports the exact generation installed.
+The verified TLS connection and signed responder identity are both required;
+the manifest is readiness configuration, not certificate evidence.
 
 ### NetworkBoundaryService
 
@@ -1126,6 +1221,16 @@ reconcile actions use `network_boundary.manage`; cross-scope grants
 additionally require `network_boundary.grant` in both owner and consumer
 scopes. Instance administrators hold these permissions for instance
 boundaries.
+
+Topology authorization uses closed, resource-specific verbs rather than a
+generic storage-management surrogate: `storage_binding.read/manage/grant`,
+`placement.read/manage`, `placement_policy.read/manage`, `domain.read/manage`,
+`network_boundary.read/manage/grant`, `delivery_endpoint.read/manage/grant`,
+`storage_gateway.read/manage/grant`, and `route.read/manage`. Every durable
+operation persists the exact controlling verb at creation; cancel and retry
+re-authorize that stored verb, so adding a secondary target cannot silently
+change who controls existing work.
+
 The deployment-provisioned public singleton is returned by list/get but create,
 identity update, transfer, and delete reject it. Its instance-default grant is
 eagerly projected to exact organization scope rows.
@@ -1338,6 +1443,15 @@ RetryOperation
 Operations expose progress, item/byte counts, current phase, warnings, and
 terminal error details. Cancellation is best-effort and leaves topology in a
 documented resumable state.
+
+`ListOperations` takes the same closed typed resource oneof returned in each
+operation's immutable target list; it does not accept a free-form
+`targetKind`/`targetId` pair. The CLI expresses this as one required qualified
+argument such as `registry:andyl/main`, `cache:andyl/shared`,
+`domain:<stable-id>`, or `route:<stable-id>`. Only the operation's `primary`
+target participates in resource listing and authorization; source,
+destination, policy, and generation targets remain visible in the operation
+detail without making the operation appear in several unrelated inventories.
 
 ### Events and audit
 

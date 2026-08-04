@@ -836,24 +836,16 @@ network_boundaries(
                          -- trusted_ingress
   identity_spec_json,    -- canonical closed, non-secret typed identity
   identity_fingerprint,
-  default_revision NULL,
-  default_revision_state NULL,
   resource_version,
   created_at,
   updated_at,
   CHECK valid_boundary_identity_shape(kind, identity_spec_json),
-  CHECK((default_revision IS NULL AND default_revision_state IS NULL)
-     OR (default_revision IS NOT NULL
-         AND default_revision_state = 'active')),
   CHECK(kind <> 'public' OR
         (id = 'instance:public' AND owner_scope_key = 'instance'
          AND org_id IS NULL)),
   UNIQUE(owner_scope_key, name),
   UNIQUE(identity_fingerprint),
-  UNIQUE(id, owner_scope_key),
-  FOREIGN KEY(id, default_revision, default_revision_state)
-    REFERENCES network_boundary_revision_lifecycle(
-      boundary_id, revision, state)
+  UNIQUE(id, owner_scope_key)
 )
 
 network_boundary_revisions(
@@ -900,6 +892,20 @@ network_boundary_revision_lifecycle(
   UNIQUE(boundary_id, revision, state),
   FOREIGN KEY(boundary_id, revision)
     REFERENCES network_boundary_revisions(boundary_id, revision)
+)
+
+network_boundary_defaults(
+  boundary_id PRIMARY KEY,
+  revision,
+  state,                 -- active
+  resource_version,
+  updated_at,
+  UNIQUE(boundary_id, revision, state),
+  CHECK(state = 'active'),
+  FOREIGN KEY(boundary_id) REFERENCES network_boundaries(id),
+  FOREIGN KEY(boundary_id, revision, state)
+    REFERENCES network_boundary_revision_lifecycle(
+      boundary_id, revision, state)
 )
 
 network_boundary_serving_pins(
@@ -1249,6 +1255,42 @@ cache_inventory_generations(
   CHECK valid_immutable_inventory_generation_state
 )
 
+cache_inventory_placement_scans(
+  cache_id,
+  generation,
+  placement_id,
+  placement_resource_version,
+  content_digest NULL,
+  object_count NULL,
+  completed_at NULL,
+  selected_at,
+  PRIMARY KEY(cache_id, generation, placement_id),
+  FOREIGN KEY(cache_id, generation)
+    REFERENCES cache_inventory_generations(cache_id, generation),
+  FOREIGN KEY(placement_id, cache_id)
+    REFERENCES surface_placements(id, cache_id),
+  CHECK complete_or_unfinished_scan_evidence
+)
+
+cache_inventory_object_observations(
+  cache_id,
+  generation,
+  surface_object_id,
+  placement_id,
+  state,
+  observed_hash NULL,
+  observed_size NULL,
+  etag NULL,
+  observed_at,
+  PRIMARY KEY(cache_id, generation, surface_object_id, placement_id),
+  FOREIGN KEY(cache_id, generation)
+    REFERENCES cache_inventory_generations(cache_id, generation),
+  FOREIGN KEY(surface_object_id, cache_id)
+    REFERENCES surface_objects(id, cache_id),
+  FOREIGN KEY(placement_id, cache_id)
+    REFERENCES surface_placements(id, cache_id)
+)
+
 placement_delivery_manifests(
   manifest_id,
   placement_id,
@@ -1373,17 +1415,43 @@ delivery_route_access_observations(
 )
 ```
 
+`probe_configuration` is canonical JSON and is part of the immutable endpoint
+generation digest. It pins one Ed25519 responder identity and names the secret
+provider that owns the corresponding private seed:
+
+```json
+{"provider":"worker_secret","signerSecretRef":"edge-prod-7","publicKey":"<base64url Ed25519 public key>"}
+```
+
+The closed provider set is `native_file`, `worker_secret`, and `external`.
+Native Hub serves only `native_file` identities from its operator-owned signer
+manifest; Worker serves only `worker_secret` identities from its Worker secret.
+An `external` endpoint is not made ready by either Hub runtime: its CDN or TLS
+terminator must implement the same responder contract and deployment must gate
+endpoint readiness on that provider. A secret reference and public-key pin are
+generation-specific; rotation creates a new endpoint generation rather than
+mutating either value in place. Signer manifests contain only endpoint identity
+and private seed readiness; they do not assert certificate metadata.
+
 Network-boundary identity is stable and scoped; changing its kind or identity
 fingerprint creates a replacement boundary and a planned endpoint move.
+The optional default is a separate dependent row, not nullable columns on the
+boundary: this keeps the active-revision foreign key acyclic and portable
+across SQLite, PostgreSQL, MySQL, and Durable Object SQLite while preserving a
+single CAS-managed pointer for future plans.
 Changing protection requirements, trusted-ingress verification material, or
 probe posture creates an immutable `staged` boundary revision; it does not move
-`default_revision` or invalidate older
+the `network_boundary_defaults` pointer or invalidate older
 pinned revisions. Activation's explicit default choice may CAS the pointer for
-future plans.
+future plans. That plan seals the boundary resource version plus the exact
+previous default revision and default-row resource version (or sealed absence);
+apply never rereads a newer pointer and silently substitutes it.
 Reconciliation records verification independently for each exact revision.
 Effective eligibility compares the consumer's pinned ref to that revision's
-own `verified` observation and an `active` or `retiring` lifecycle, never to a global
-desired-equals-observed predicate. Unknown, declared, probing, degraded,
+own `verified` observation and an `active` or `retiring` lifecycle. A verified
+observation must exactly equal both desired protected-transport and desired
+trusted-ingress posture; the state label alone is insufficient. Unknown,
+declared, probing, degraded,
 failed, inactive, or mismatched per-revision observations fail
 closed for credential-bearing HTTP, trusted local `AccessClass`, and private
 redirect eligibility. A public anonymous HTTP endpoint still requires the
@@ -1489,6 +1557,10 @@ one-byte booleans/enums, and length-prefixed canonical trusted-ingress/probe
 references. Its source-allowlist field is `count:u32be` followed by
 `family:u8 || prefix_length:u8 || network_bytes` in canonical order. Thus CIDR
 edits change only the immutable revision digest, never boundary identity.
+Trusted-ingress configuration is a closed canonical projection: `none` is
+exactly `{}`, `mtls` requires only `ca_secret_ref` and `client_sans`, and
+`signed_assertion` requires only `issuer`, `audience`, and
+`verification_key_secret_ref`. Missing or unknown fields are rejected.
 
 Endpoint origin identity -- scheme, typed host, effective port, and network
 boundary -- is immutable. `UpdateDeliveryEndpoint` creates a new immutable
@@ -1523,7 +1595,9 @@ from the old revision.
 Domain hostname and owner scope are likewise immutable because DNS-backed
 endpoint identity depends on them. DNS and certificate posture have dedicated
 configuration and reconciliation operations; there is no generic domain
-update. A hostname change creates a replacement domain, replacement endpoint,
+update. The hostname input is a DNS name only and rejects an explicit port
+(including a scheme-default port) rather than allowing URL parsing to erase it.
+A hostname change creates a replacement domain, replacement endpoint,
 and the same planned route/gateway movement.
 
 `endpoint_identity_digest` is SHA-256 over
@@ -1532,6 +1606,9 @@ host_length:u32be || typed_host_bytes || effective_port:u16be ||
 network_boundary_identity_fingerprint:32`. It commits to the boundary's stable
 typed identity fingerprint, never its replaceable database row id or moving
 revision. Ingress is revisioned configuration, not part of request identity.
+HTTPS revision TLS configuration is the exact closed projection of `provider`,
+`certificate_ref`, and `require_client_certificate`; HTTP uses exactly `{}`.
+Unknown or missing TLS fields are rejected before digesting or persistence.
 The closed tags are `http = 0x01`, `https = 0x02`, `dns = 0x01`,
 `ipv4 = 0x02`, and `ipv6 = 0x03`. DNS host bytes are lowercase IDNA A-label
 UTF-8; IP host bytes are the four or sixteen network-order address octets.
@@ -1567,7 +1644,10 @@ access. CLI/API stable endpoint refs resolve to the exact desired generation in
 the plan and apply rejects a changed generation. Endpoint update plans list
 every old-generation grant and affected route; apply creates only the
 explicitly confirmed replacement-generation grants before moving routes. Old
-grants are never wildcards, and revoke enumerates/releases affected live pins
+grants are never wildcards: every carry-forward item seals the old endpoint
+generation, consumer scope, grant generation, and grant resource version, and
+the owner grant is sealed the same way automatically. Revoke enumerates and
+releases affected live pins
 before CASing the exact durable grant generation to `revoked`.
 Grant/carry-forward/revoke requires dual owner/consumer
 scope authorization.
@@ -1631,6 +1711,16 @@ The new configuration begins `unknown` and cannot be healthy or canonically
 advertised until reprobed. Canonical route selection may retain the route id,
 but setup snippets and runtime advertisement require a healthy observation for
 its exact current generation/digest.
+
+The inbound Hub route projection is fail closed across the complete security
+chain. It joins the endpoint's exact desired generation to a `healthy`
+observation, the endpoint boundary's exact pinned revision to `active` and
+`verified` lifecycle/observation rows, and requires observed protected/trusted
+posture to equal the desired revision. A `private_network` access policy also
+joins its separately pinned access-boundary revision under those same exact
+conditions, while other authenticated policies require the exact route access
+observation to be `verified`. `degraded`, stale, mismatched, or missing rows are
+not ready and are never projected as an alternate path.
 
 `DeleteRoute` physically removes the live route after a guarded plan/apply. It
 requires the route to be disabled, non-canonical, absent from every current
@@ -2402,7 +2492,19 @@ advances `inventory_generation`. Every one also advances the single epoch.
 
 `inventory_generation` advances only when one cache-wide inventory operation
 has completed the logical object scan and every applicable placement scan. A
-single placement finishing does not make the cache inventory complete. Active
+generation snapshots every non-offline placement and its resource version at
+begin time. Every selected placement must publish a structurally complete
+manifest, and the selected set and versions must remain unchanged through
+publication. Placement manifests may differ for shards; the cache-wide digest
+is the deterministic digest of ordered placement id, resource version, and
+manifest digest tuples. A single placement finishing does not make the cache
+inventory complete. Every `present` row carries hash and size derived from the
+bytes read from that exact placement plus a backend-issued strong ETag when the
+backend exposes one; the scanner never copies expected database identity into
+observed evidence without verification. Building observations remain in
+`cache_inventory_object_observations`; replacing live `object_placements` and
+advancing the generation head are one atomic publication, so a partial scan is
+never visible to GC. Active
 object-mutation fences are relational apply blockers; an operation removes or
 completes its fences only in the same transition that publishes object metadata
 and advances `object_graph_generation`.
@@ -2822,7 +2924,7 @@ row without proving the candidate is fenced and the observed writer is ready.
 ### Domains, network boundaries, endpoints, gateways, and routes
 
 - `CreateDomain`, `VerifyDomain`, `ConfigureDomainDns`,
-  `ConfigureDomainCertificate`, `ReconcileDomain`,
+  `ConfigureDomainCertificate`,
   `DeleteDomain`
 - `CreateNetworkBoundary`, `ReviseNetworkBoundary`,
   `ProbeNetworkBoundaryRevision`, `ReconcileNetworkBoundaryRevision`,
@@ -2853,7 +2955,7 @@ verification material and return only redacted references.
 
 ### Storage bindings and topology defaults
 
-- `CreateStorageBinding`, `UpdateStorageBinding`, `DeleteStorageBinding`
+- `CreateStorageBinding`, `DeleteStorageBinding`
 - `SetStorageBindingCredential`, `RotateStorageBindingCredential`,
   `ValidateStorageBindingCredential`
 - `ListStorageBindingWriteRevisions`, `GetStorageBindingWriteRevision`,
@@ -2868,6 +2970,11 @@ and health, never credential material. Rotation plans include authority fan-out
 and explicit old-revision retirement. Default changes have their own impact
 plan and affect only future workflows unless the operator separately plans
 changes to existing resources.
+
+A storage binding's provider identity (provider kind, filesystem root, object
+bucket and prefix, endpoint, region, and access mode) is immutable. Changing
+any identity field requires creating a replacement binding, migrating exact
+placement pins, and deleting the unreferenced predecessor through plan/apply.
 
 ### Cache integrations
 

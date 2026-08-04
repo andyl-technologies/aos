@@ -1,0 +1,452 @@
+{
+  "schema_version": "aos-cutover-bundle-generation/v1",
+  "bundle_id": "bundle/rfc-0012/fixture-1",
+  "dialect": "aos-cutover-schema/v1",
+  "layout": [
+    {
+      "node_id": "artifact/backup/d1",
+      "path": "evidence/backup-d1.sql",
+      "kind": "evidence",
+      "media_type": "application/sql",
+      "role": "evidence"
+    },
+    {
+      "node_id": "artifact/backup/do-topology",
+      "path": "evidence/backup-do-topology.json",
+      "kind": "evidence",
+      "media_type": "application/vnd.aos.do-export+json",
+      "role": "evidence"
+    },
+    {
+      "node_id": "artifact/deployment/source",
+      "path": "evidence/source-deployment.json",
+      "kind": "evidence",
+      "media_type": "application/json",
+      "role": "evidence"
+    },
+    {
+      "node_id": "artifact/source-export/redacted",
+      "path": "evidence/source-export.json",
+      "kind": "source_export",
+      "media_type": "application/json",
+      "role": "source_export"
+    },
+    {
+      "node_id": "artifact/transformer/v1",
+      "path": "tools/topology-transformer",
+      "kind": "tool",
+      "media_type": "application/octet-stream",
+      "role": "tool"
+    },
+    {
+      "node_id": "document/plan",
+      "path": "documents/plan.json",
+      "kind": "document",
+      "media_type": "application/json",
+      "role": "plan_payload"
+    },
+    {
+      "node_id": "document/plan/signature-envelope",
+      "path": "signatures/plan-envelope.json",
+      "kind": "signature_envelope",
+      "media_type": "application/json",
+      "role": "plan_signature_envelope"
+    },
+    {
+      "node_id": "document/report",
+      "path": "documents/report.json",
+      "kind": "document",
+      "media_type": "application/json",
+      "role": "report_payload"
+    },
+    {
+      "node_id": "document/report/signature-envelope",
+      "path": "signatures/report-envelope.json",
+      "kind": "signature_envelope",
+      "media_type": "application/json",
+      "role": "report_signature_envelope"
+    },
+    {
+      "node_id": "document/verification",
+      "path": "documents/verification.json",
+      "kind": "document",
+      "media_type": "application/json",
+      "role": "verification_payload"
+    },
+    {
+      "node_id": "document/verification/signature-envelope",
+      "path": "signatures/verification-envelope.json",
+      "kind": "signature_envelope",
+      "media_type": "application/json",
+      "role": "verification_signature_envelope"
+    },
+    {
+      "node_id": "evidence/cutover-fixture",
+      "path": "evidence/cutover.json",
+      "kind": "evidence",
+      "media_type": "application/json",
+      "role": "evidence"
+    },
+    {
+      "node_id": "key/release/example",
+      "path": "keys/release.pub",
+      "kind": "public_key",
+      "media_type": "application/octet-stream",
+      "role": "signer_public_key"
+    },
+    {
+      "node_id": "manifest/api",
+      "path": "manifests/api.json",
+      "kind": "interface_manifest",
+      "media_type": "application/json",
+      "role": "api_manifest"
+    },
+    {
+      "node_id": "manifest/cli",
+      "path": "manifests/cli.json",
+      "kind": "interface_manifest",
+      "media_type": "application/json",
+      "role": "cli_manifest"
+    },
+    {
+      "node_id": "manifest/fixtures",
+      "path": "fixtures/cases.json",
+      "kind": "fixture_manifest",
+      "media_type": "application/json",
+      "role": "fixture_manifest"
+    },
+    {
+      "node_id": "manifest/routes",
+      "path": "manifests/routes.md",
+      "kind": "interface_manifest",
+      "media_type": "text/markdown",
+      "role": "route_manifest"
+    },
+    {
+      "node_id": "ruleset/database-restore-verification",
+      "path": "rules/database-restore.json",
+      "kind": "ruleset",
+      "media_type": "application/json",
+      "role": "ruleset"
+    },
+    {
+      "node_id": "schema/bundle",
+      "path": "schemas/bundle.json",
+      "kind": "schema",
+      "media_type": "application/json",
+      "role": "bundle_schema"
+    },
+    {
+      "node_id": "schema/bundle-generation",
+      "path": "schemas/bundle-generation.json",
+      "kind": "schema",
+      "media_type": "application/json",
+      "role": "bundle_generation_schema"
+    },
+    {
+      "node_id": "schema/dialect",
+      "path": "schemas/dialect.json",
+      "kind": "metaschema",
+      "media_type": "application/json",
+      "role": "dialect_metaschema"
+    },
+    {
+      "node_id": "schema/fixtures",
+      "path": "schemas/fixtures.json",
+      "kind": "schema",
+      "media_type": "application/json",
+      "role": "fixture_schema"
+    },
+    {
+      "node_id": "schema/plan",
+      "path": "schemas/plan.json",
+      "kind": "schema",
+      "media_type": "application/json",
+      "role": "plan_schema"
+    },
+    {
+      "node_id": "schema/report",
+      "path": "schemas/report.json",
+      "kind": "schema",
+      "media_type": "application/json",
+      "role": "report_schema"
+    },
+    {
+      "node_id": "schema/signature-envelope",
+      "path": "schemas/signature-envelope.json",
+      "kind": "schema",
+      "media_type": "application/json",
+      "role": "signature_envelope_schema"
+    },
+    {
+      "node_id": "schema/signer-key-map",
+      "path": "schemas/signer-key-map.json",
+      "kind": "schema",
+      "media_type": "application/json",
+      "role": "signer_key_map_schema"
+    },
+    {
+      "node_id": "schema/verification",
+      "path": "schemas/verification.json",
+      "kind": "schema",
+      "media_type": "application/json",
+      "role": "verification_schema"
+    },
+    {
+      "node_id": "signature/key-map",
+      "path": "signatures/key-map.sig",
+      "kind": "signature",
+      "media_type": "application/octet-stream",
+      "role": "key_map_signature"
+    },
+    {
+      "node_id": "signature/plan",
+      "path": "signatures/plan.sig",
+      "kind": "signature",
+      "media_type": "application/octet-stream",
+      "role": "plan_signature"
+    },
+    {
+      "node_id": "signature/report",
+      "path": "signatures/report.sig",
+      "kind": "signature",
+      "media_type": "application/octet-stream",
+      "role": "report_signature"
+    },
+    {
+      "node_id": "signature/verification",
+      "path": "signatures/verification.sig",
+      "kind": "signature",
+      "media_type": "application/octet-stream",
+      "role": "verification_signature"
+    },
+    {
+      "node_id": "trust/signer-key-map",
+      "path": "trust/signer-key-map.json",
+      "kind": "key_map",
+      "media_type": "application/json",
+      "role": "signer_key_map"
+    },
+    {
+      "node_id": "trust/signer-key-map/signature-envelope",
+      "path": "signatures/key-map-envelope.json",
+      "kind": "signature_envelope",
+      "media_type": "application/json",
+      "role": "key_map_signature_envelope"
+    },
+    {
+      "node_id": "verifier/aos",
+      "path": "bin/aos",
+      "kind": "tool",
+      "media_type": "application/octet-stream",
+      "role": "verifier"
+    }
+  ],
+  "edges": [
+    {
+      "from_node_id": "document/plan",
+      "relation": "commits_to",
+      "to_node_id": "artifact/transformer/v1"
+    },
+    {
+      "from_node_id": "document/plan",
+      "relation": "commits_to",
+      "to_node_id": "manifest/api"
+    },
+    {
+      "from_node_id": "document/plan",
+      "relation": "commits_to",
+      "to_node_id": "manifest/cli"
+    },
+    {
+      "from_node_id": "document/plan",
+      "relation": "commits_to",
+      "to_node_id": "manifest/routes"
+    },
+    {
+      "from_node_id": "document/plan",
+      "relation": "derived_from",
+      "to_node_id": "artifact/source-export/redacted"
+    },
+    {
+      "from_node_id": "document/plan",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/plan"
+    },
+    {
+      "from_node_id": "document/plan",
+      "relation": "signed_by",
+      "to_node_id": "document/plan/signature-envelope"
+    },
+    {
+      "from_node_id": "document/plan",
+      "relation": "validated_by",
+      "to_node_id": "verifier/aos"
+    },
+    {
+      "from_node_id": "document/plan/signature-envelope",
+      "relation": "authorized_by",
+      "to_node_id": "key/release/example"
+    },
+    {
+      "from_node_id": "document/plan/signature-envelope",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/signature-envelope"
+    },
+    {
+      "from_node_id": "document/plan/signature-envelope",
+      "relation": "uses_signature",
+      "to_node_id": "signature/plan"
+    },
+    {
+      "from_node_id": "document/report",
+      "relation": "commits_to",
+      "to_node_id": "artifact/backup/d1"
+    },
+    {
+      "from_node_id": "document/report",
+      "relation": "commits_to",
+      "to_node_id": "artifact/backup/do-topology"
+    },
+    {
+      "from_node_id": "document/report",
+      "relation": "derived_from",
+      "to_node_id": "document/plan"
+    },
+    {
+      "from_node_id": "document/report",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/report"
+    },
+    {
+      "from_node_id": "document/report",
+      "relation": "signed_by",
+      "to_node_id": "document/report/signature-envelope"
+    },
+    {
+      "from_node_id": "document/report",
+      "relation": "validated_by",
+      "to_node_id": "verifier/aos"
+    },
+    {
+      "from_node_id": "document/report/signature-envelope",
+      "relation": "authorized_by",
+      "to_node_id": "key/release/example"
+    },
+    {
+      "from_node_id": "document/report/signature-envelope",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/signature-envelope"
+    },
+    {
+      "from_node_id": "document/report/signature-envelope",
+      "relation": "uses_signature",
+      "to_node_id": "signature/report"
+    },
+    {
+      "from_node_id": "document/verification",
+      "relation": "derived_from",
+      "to_node_id": "document/report"
+    },
+    {
+      "from_node_id": "document/verification",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/verification"
+    },
+    {
+      "from_node_id": "document/verification",
+      "relation": "signed_by",
+      "to_node_id": "document/verification/signature-envelope"
+    },
+    {
+      "from_node_id": "document/verification",
+      "relation": "validated_by",
+      "to_node_id": "verifier/aos"
+    },
+    {
+      "from_node_id": "document/verification/signature-envelope",
+      "relation": "authorized_by",
+      "to_node_id": "key/release/example"
+    },
+    {
+      "from_node_id": "document/verification/signature-envelope",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/signature-envelope"
+    },
+    {
+      "from_node_id": "document/verification/signature-envelope",
+      "relation": "uses_signature",
+      "to_node_id": "signature/verification"
+    },
+    {
+      "from_node_id": "manifest/fixtures",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/fixtures"
+    },
+    {
+      "from_node_id": "manifest/fixtures",
+      "relation": "validated_by",
+      "to_node_id": "verifier/aos"
+    },
+    {
+      "from_node_id": "schema/plan",
+      "relation": "validated_by",
+      "to_node_id": "verifier/aos"
+    },
+    {
+      "from_node_id": "schema/report",
+      "relation": "validated_by",
+      "to_node_id": "verifier/aos"
+    },
+    {
+      "from_node_id": "schema/verification",
+      "relation": "validated_by",
+      "to_node_id": "verifier/aos"
+    },
+    {
+      "from_node_id": "trust/signer-key-map",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/signer-key-map"
+    },
+    {
+      "from_node_id": "trust/signer-key-map",
+      "relation": "signed_by",
+      "to_node_id": "trust/signer-key-map/signature-envelope"
+    },
+    {
+      "from_node_id": "trust/signer-key-map/signature-envelope",
+      "relation": "schema_validated_by",
+      "to_node_id": "schema/signature-envelope"
+    },
+    {
+      "from_node_id": "trust/signer-key-map/signature-envelope",
+      "relation": "uses_signature",
+      "to_node_id": "signature/key-map"
+    }
+  ],
+  "documents": {
+    "plan_payload_node_id": "document/plan",
+    "plan_signature_envelope_node_id": "document/plan/signature-envelope",
+    "report_payload_node_id": "document/report",
+    "report_signature_envelope_node_id": "document/report/signature-envelope",
+    "verification_payload_node_id": "document/verification",
+    "verification_signature_envelope_node_id": "document/verification/signature-envelope"
+  },
+  "schemas": {
+    "dialect_metaschema_node_id": "schema/dialect",
+    "plan_node_id": "schema/plan",
+    "report_node_id": "schema/report",
+    "verification_node_id": "schema/verification",
+    "fixtures_node_id": "schema/fixtures",
+    "bundle_node_id": "schema/bundle",
+    "bundle_generation_node_id": "schema/bundle-generation",
+    "signature_envelope_node_id": "schema/signature-envelope",
+    "signer_key_map_node_id": "schema/signer-key-map"
+  },
+  "trust": {
+    "key_map_payload_node_id": "trust/signer-key-map",
+    "key_map_signature_envelope_node_id": "trust/signer-key-map/signature-envelope"
+  },
+  "verifier_node_id": "verifier/aos",
+  "complete": true
+}

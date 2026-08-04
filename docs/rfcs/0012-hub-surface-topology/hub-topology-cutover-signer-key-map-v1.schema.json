@@ -1,0 +1,31 @@
+{
+  "$schema": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json",
+  "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-signer-key-map-v1.schema.json",
+  "dialect": "aos-cutover-schema/v1",
+  "type": "object",
+  "required": ["schema_version", "keys"],
+  "properties": {
+    "schema_version": { "const": "aos-cutover-signer-key-map/v1" },
+    "keys": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["key_id", "public_key_node_id", "public_key_sha256", "roles"],
+        "properties": {
+          "key_id": { "$ref": "#/$defs/stableId" },
+          "public_key_node_id": { "$ref": "#/$defs/stableId" },
+          "public_key_sha256": { "$ref": "#/$defs/sha256" },
+          "roles": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "enum": ["plan", "report", "verification"] } }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "stableId": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
