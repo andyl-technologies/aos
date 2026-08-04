@@ -47,6 +47,9 @@
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
   doctestPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
   doctestPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") doctestPackages);
+  forbiddenControllerRuntimePaths = map
+    (package: builtins.unsafeDiscardStringContext (toString package))
+    [qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];
   shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;
   protocolLib = builtins.readFile ../../../crates/crucible-protocol/src/lib.rs;
   apiRpcAbi = builtins.readFile ../../../crates/crucible-api/src/rpc_abi.rs;
@@ -83,6 +86,11 @@
     doCheck = true;
     buildDeps = [rust.dev pkg-config openssl];
     runtimeDeps = [openssl];
+    # The controller is the Apache side of a process boundary. Fail the build
+    # if any QEMU-side implementation, guest kernel, or fixture enters either
+    # its direct references or its runtime closure.
+    disallowedReferences = forbiddenControllerRuntimePaths;
+    disallowedRequisites = forbiddenControllerRuntimePaths;
     OPENSSL_DIR = "${openssl}";
     OPENSSL_LIB_DIR = "${openssl}/lib";
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
@@ -235,12 +243,15 @@
           CRUCIBLE_RELEASE_MANIFEST_JSON
 
           cp ${../../../LICENSES/Apache-2.0.txt} "$out/share/licenses/crucible/Apache-2.0.txt"
+          cp ${../../../LICENSES/MIT.txt} "$out/share/licenses/crucible/MIT.txt"
           cp ${../../../LICENSES/GPL-2.0-only.txt} "$out/share/licenses/crucible/GPL-2.0-only.txt"
           mkdir -p "$out/nix-support"
           cat > "$out/nix-support/crucible-build-info" <<'INFO'
           package=crucible
           component=suite
-          component_licenses=Apache-2.0,GPL-2.0-only
+          component_licenses=Apache-2.0,MIT,GPL-2.0-only
+          boundary_crates=crucible-protocol,crucible-shmem
+          boundary_crates_license=MIT
           controller_package=crucible-controller
           controller_path=${controller}
           controller_license=Apache-2.0
@@ -273,7 +284,7 @@
     meta = {
       description = "Crucible controller with the GPL QEMU backend";
       homepage = "https://github.com/andyl/andyl-os";
-      license = ["Apache-2.0" "GPL-2.0-only"];
+      license = ["Apache-2.0" "MIT" "GPL-2.0-only"];
       mainProgram = "crucible";
     };
   };

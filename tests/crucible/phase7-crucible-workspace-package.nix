@@ -92,6 +92,22 @@
         needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
       }
       {
+        label = "suite installs the MIT boundary-crate notice";
+        needle = "cp " + "$" + "{../../../LICENSES/MIT.txt} \"$out/share/licenses/crucible/MIT.txt\"";
+      }
+      {
+        label = "suite build info inventories every project component license";
+        needle = "component_licenses=Apache-2.0,MIT,GPL-2.0-only";
+      }
+      {
+        label = "suite build info names the MIT boundary crates";
+        needle = "boundary_crates=crucible-protocol,crucible-shmem";
+      }
+      {
+        label = "suite metadata inventories every project component license";
+        needle = "license = [\"Apache-2.0\" \"MIT\" \"GPL-2.0-only\"];";
+      }
+      {
         label = "workspace build info";
         needle = "cargo_workspace_flags=" + "$" + "{workspaceCargoFlags}";
       }

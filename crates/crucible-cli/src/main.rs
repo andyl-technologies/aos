@@ -103,6 +103,7 @@ const REAL_QEMU_SELFTEST_GATES: &[&str] = &[
 ];
 const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:harness-lint",
+    "gate:license-boundary",
     "gate:layer0-determinism",
     "gate:single-vm-fingerprint",
     "gate:layer1-injection",

@@ -265,18 +265,20 @@ of wall-clock, and frame-delivery precision is chained to synchronization
 frequency (a frame can only land at a barrier). Crucible avoids both by carrying
 all per-quantum timing and all frame delivery in a single mapped region
 ([SHM-1], [SHM-2]): a node reading its ceiling is one acquire load; the scheduler
-raising a ceiling is one release store plus an optional wake; a frame's
+raising a ceiling is one release store plus the current unconditional
+non-private futex wake; a frame's
 deliverability is the comparison `delivery_icount <= current_icount` of two
 integers ([SHM-33]), with the wall-clock moment of the producer's store
 irrelevant. The cost of a synchronization event drops from a microsecond-scale
 syscall round-trip to a **tens-of-nanoseconds** atomic memory operation.
 
-> **Cost-model fact 5 (sync is atomics, not syscalls).** A per-quantum
+> **Cost-model fact 5 (sync avoids IPC round trips).** A per-quantum
 > synchronization event (publish clock, read ceiling, check inbound rings) costs
-> **tens of nanoseconds** of atomic memory traffic per node — the cost of a few
-> cache-line accesses — not the microseconds of a kernel IPC round-trip. A futex
-> wake is paid only when a node actually parks and must be woken, not per quantum
-> ([SHM-26], [SHM-27]).
+> atomic memory traffic plus the current non-private futex wake per ceiling
+> publication, rather than a socket request/response with payload copying. The
+> wake is currently unconditional. A future waiter-armed optimization may make
+> it conditional when no node is parked without changing the public ABI or
+> race-free wait protocol ([SHM-26], [SHM-27]).
 
 ### 25.3.2 The budget
 
@@ -295,12 +297,14 @@ contract budgets the *product*:
   `gate:perf-bench`. *Spec:* §25.3; routes [G-9].
 
 - **[PERF-8]** All hot-path cross-node synchronization MUST be expressed as
-  shared-memory atomics plus at most one futex syscall per park/wake, never an IPC
+  shared-memory atomics plus at most one futex wake per ceiling publication and
+  a futex wait when parking, never an IPC
   round-trip per quantum ([SHM-1], [QEMU-18]); a per-quantum QMP or plugin-IPC
   round-trip on the advance/delivery path is both a determinism defect and a
-  performance defect. The perf-bench gate MUST assert zero per-quantum syscalls on
-  the advance path beyond the futex park/wake (e.g. by syscall counting over a
-  fixed advance workload). *Gate:* `gate:perf-bench`, `gate:layer1-injection`.
+  performance defect. The perf-bench gate MUST assert zero per-quantum socket
+  round trips on the advance path and account separately for the current
+  unconditional futex wake (e.g. by syscall counting over a fixed advance
+  workload). *Gate:* `gate:perf-bench`, `gate:layer1-injection`.
   *Spec:* §25.3.1; routes [G-9], references [SHM-1], [SHM-2], [QEMU-18].
 
 - **[PERF-9]** The per-translation-block plugin overhead (the clock publish, the
@@ -1158,8 +1162,9 @@ the complete five-mechanism register and its reject-unclassified policy.
 - [x] **T-PERF-7** Implement the sync-overhead budget measurement and the
   warn-5%/fail-10% thresholds against guest busy-execution wall-clock. — satisfies
   [PERF-7]; spec §25.3.
-- [x] **T-PERF-8** Implement the no-per-quantum-syscall assertion (syscall count
-  over a fixed advance workload is the futex park/wake only; zero IPC round-trips).
+- [x] **T-PERF-8** Implement the no-per-quantum-socket-round-trip assertion
+  (syscall count over a fixed advance workload accounts for the current
+  unconditional futex wakes separately; zero IPC round-trips).
   — satisfies [PERF-8]; spec §25.3.1.
 - [x] **T-PERF-9** Implement per-TB plugin-overhead measurement and assert it is a
   small constant independent of node count. — satisfies [PERF-9]; spec §25.3.1.

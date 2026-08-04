@@ -47,6 +47,9 @@ in
             set -eu
 
             test -x ${packages.crucible}/bin/crucible
+            test -f ${packages.crucible}/share/licenses/crucible/Apache-2.0.txt
+            test -f ${packages.crucible}/share/licenses/crucible/MIT.txt
+            test -f ${packages.crucible}/share/licenses/crucible/GPL-2.0-only.txt
             test -f ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^build_system=mkCargoPackage$' \
               ${packages.crucible-controller}/nix-support/crucible-build-info
@@ -65,6 +68,12 @@ in
             grep -q '^plugin_package=crucible-qemu-plugin$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^plugin_path=${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^component_licenses=Apache-2.0,MIT,GPL-2.0-only$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^boundary_crates=crucible-protocol,crucible-shmem$' \
+              ${packages.crucible}/nix-support/crucible-build-info
+            grep -q '^boundary_crates_license=MIT$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^discovery_hint=runtime-environment-wrapper$' \
               ${packages.crucible}/nix-support/crucible-build-info

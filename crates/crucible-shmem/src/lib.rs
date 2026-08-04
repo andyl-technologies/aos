@@ -9,9 +9,13 @@
 //! of that public contract, not a QEMU-internal FFI surface. The mapped region
 //! contains only fixed-width values, byte arrays, offsets, and shared atomics;
 //! it never contains native pointers, callback tables, or QEMU-private types.
-//! Keeping this transport process-shaped preserves the zero-syscall steady
-//! state while allowing Apache-licensed hosts and GPL QEMU-side code to
-//! implement the same protocol independently.
+//! Keeping this transport process-shaped avoids socket round trips and payload
+//! copies on the data path while allowing Apache-licensed hosts and GPL
+//! QEMU-side code to implement the same protocol independently. The current
+//! scheduler ceiling publication performs a non-private futex wake even when
+//! no peer is parked, so this is not a zero-syscall steady state. A future
+//! waiter-armed optimization may make that wake conditional without changing
+//! the public process boundary or the race-free futex protocol.
 //!
 //! Module map: the crate root owns the initial frame-entry layout, the
 //! delivery-icount contract, the Lamport SPSC frame queue, and the per-node

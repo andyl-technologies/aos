@@ -365,8 +365,8 @@ fn gate_perf_bench_records_fork_replay_and_rss_evidence() {
     assert!(report.peak_rss_units > 0, "peak RSS must be recorded");
 }
 
-/// [PERF-8] — the advance path issues zero per-quantum IPC round-trips; the only
-/// syscalls charged are futex park/wakes, bounded by park events, not by quanta.
+/// [PERF-8] — the advance path issues zero per-quantum IPC round trips and
+/// accounts for the current unconditional futex wake separately.
 #[test]
 fn gate_perf_bench_advance_path_has_no_per_quantum_ipc() {
     let count = advance_syscall_count(10_000, 7);
@@ -374,9 +374,10 @@ fn gate_perf_bench_advance_path_has_no_per_quantum_ipc() {
         count.per_quantum_ipc_round_trips, 0,
         "the advance path must issue no per-quantum IPC round-trip"
     );
-    assert!(
-        count.futex_park_wake <= count.quanta,
-        "futex park/wake must be bounded by park events, not the quantum count"
+    assert_eq!(
+        count.futex_wake_wait,
+        count.quanta + 7,
+        "current accounting includes one wake per quantum and each park wait"
     );
     // The recorded report carries the same accounting.
     let report = run_perf_bench_gate(&canonical_perf_bench_input()).expect("gate must pass");

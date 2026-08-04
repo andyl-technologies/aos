@@ -157,35 +157,33 @@ pub fn rendezvous_frequency_sweep(
 
 /// The modeled syscall accounting for a fixed advance workload ([PERF-8]).
 ///
-/// All hot-path cross-node synchronization is shared-memory atomics plus at most
-/// one futex per park/wake, never an IPC round-trip per quantum. The only
-/// syscalls charged to the advance path are the futex park/wake operations paid
-/// when a node actually parks and is woken; there are *zero* per-quantum IPC
-/// round-trips (no QMP, no plugin-IPC on the advance/delivery path).
+/// All hot-path cross-node synchronization is shared-memory based and never an
+/// IPC round trip per quantum. The current ceiling-publication path performs one
+/// unconditional futex wake per quantum, and a parked node performs its futex
+/// wait separately. These kernel entries are accounted independently from the
+/// zero socket/QMP/plugin-IPC round trips on the advance and delivery path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdvanceSyscallCount {
     /// Quanta advanced over the fixed workload.
     pub quanta: u64,
-    /// Park/wake futex syscalls (paid only when a node parks and is woken).
-    pub futex_park_wake: u64,
+    /// Futex syscalls: one wake per quantum plus one wait per park event.
+    pub futex_wake_wait: u64,
     /// Per-quantum IPC round-trips on the advance/delivery path (MUST be zero).
     pub per_quantum_ipc_round_trips: u64,
 }
 
 /// Models the syscall count over a fixed advance workload ([PERF-8]).
 ///
-/// The advance path issues no per-quantum IPC round-trip; it pays only a futex
-/// park/wake when a node actually parks. The returned count therefore has
-/// `per_quantum_ipc_round_trips == 0` regardless of quanta or node count, and
-/// `futex_park_wake` bounded by the number of park events, not by the quanta.
+/// The advance path issues no per-quantum IPC round trip. The current
+/// implementation pays one unconditional futex wake per quantum and one futex
+/// wait per park event. A future waiter-armed optimization may eliminate wakes
+/// when no node is parked, but this model intentionally describes current code.
 #[must_use]
 pub fn advance_syscall_count(quanta: u64, park_events: u64) -> AdvanceSyscallCount {
     AdvanceSyscallCount {
         quanta,
-        // One futex wake per park event; parks happen only when a node blocks,
-        // never once per quantum.
-        futex_park_wake: park_events,
-        // The advance/delivery path is shared-memory atomics only.
+        futex_wake_wait: quanta.saturating_add(park_events),
+        // The advance/delivery path does not use request/response IPC.
         per_quantum_ipc_round_trips: 0,
     }
 }

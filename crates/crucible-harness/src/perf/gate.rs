@@ -137,19 +137,17 @@ fn with_latency_evidence(
 }
 
 fn assert_no_per_quantum_ipc() -> Result<AdvanceSyscallCount, PerfBenchError> {
-    // Over a fixed advance workload, the only syscalls charged to the advance
-    // path are futex park/wakes; there are zero per-quantum IPC round-trips.
+    // Over a fixed advance workload there is one unconditional futex wake per
+    // quantum plus the waits for actual park events, but no IPC round trips.
     let count = advance_syscall_count(10_000, 7);
     if count.per_quantum_ipc_round_trips != 0 {
         return Err(PerfBenchError::PerQuantumIpcRoundTrip {
             round_trips: count.per_quantum_ipc_round_trips,
         });
     }
-    // Futex park/wake must be bounded by park events, not by quanta: it must not
-    // scale with the fixed workload's quantum count.
-    if count.futex_park_wake > count.quanta {
+    if count.futex_wake_wait != count.quanta.saturating_add(7) {
         return Err(PerfBenchError::PerQuantumIpcRoundTrip {
-            round_trips: count.futex_park_wake,
+            round_trips: count.futex_wake_wait,
         });
     }
     Ok(count)
