@@ -1,41 +1,31 @@
 # Install an AOS image
 
-AOS produces complete UEFI disk images. There is no `aos install` command that
-writes a disk: deployment means importing a virtual-disk image or writing the
-raw image with tooling appropriate to the target platform.
+AOS is installed from one golden x86-64 UEFI disk image. There is no `aos
+install` command that writes a disk: installation means importing the image
+into a hypervisor or writing it with the target platform's normal imaging
+tool.
+
+AOS is currently an early preview and the public system image is not published
+yet. AOS Hub will provide the image catalog and downloads; it does not expose
+that surface today. Do not treat a source build as the normal installation
+path. Maintainers and release integrators can use the
+[source-build guide](../../maintainers/) until public image distribution is
+available.
 
 ## Choose an image format
 
-Every discovered file under `systems/*.nix` becomes a system variant and four
-flake outputs:
+The same golden system may be published in several disk encodings:
 
-| Output suffix | Format | Typical target |
+| Format | Typical target |
 | --- | --- | --- |
-| `image-raw` | Raw GPT disk | Bare metal, custom image pipelines, QEMU |
-| `image-qcow2` | QCOW2 | QEMU/KVM, OpenStack, Proxmox |
-| `image-vmdk` | VMDK | VMware and vSphere |
-| `image-vhd` | Dynamic VHD | Hyper-V and VHD-based conversion pipelines |
+| Raw GPT disk | Bare metal, custom image pipelines, QEMU |
+| QCOW2 | QEMU/KVM, OpenStack, Proxmox |
+| VMDK | VMware and vSphere |
+| Dynamic VHD | Hyper-V and VHD-based conversion pipelines |
 
-For the stock server variant:
-
-```sh
-nix build .#server-image-raw
-nix build .#server-image-qcow2
-```
-
-The raw result contains `aos-aos.img` and `image-info.json`. Converted results
-contain the corresponding `aos-aos.qcow2`, `.vmdk`, or `.vhd` file.
-
-The current bootable image workflow is supported on `x86_64-linux`. The short
-flake commands above assume an `x86_64-linux` caller. From another system with
-an x86 Linux remote builder, select the package set explicitly:
-
-```sh
-nix build .#packages.x86_64-linux.server-image-qcow2
-```
-
-UEFI firmware is required to boot the image; do not pass a separate kernel or
-initrd.
+Use the format published for the target. Verify the release checksum or
+signature and retain its `image-info.json` with the deployment record. UEFI
+firmware is required; do not pass a separate kernel or initrd.
 
 ## Size the target
 
@@ -53,12 +43,11 @@ If a raw file is enlarged before boot, relocate its backup GPT header after
 resizing:
 
 ```sh
-cp result/aos-aos.img aos-server.img
+cp /path/to/downloaded-aos.img aos-server.img
 chmod u+w aos-server.img
 truncate -s 16G aos-server.img
 
-nix-build -A pkgs.gptfdisk -o result-aos-gptfdisk
-./result-aos-gptfdisk/sbin/sgdisk -e aos-server.img
+sgdisk -e aos-server.img
 ```
 
 For a cloud or hypervisor, expand the virtual disk and relocate its backup GPT
@@ -79,11 +68,11 @@ lsblk -o NAME,SIZE,MODEL,SERIAL,MOUNTPOINTS
 ```
 
 After the operator has confirmed the target, a typical imaging tool can copy
-`result/aos-aos.img` to that device and flush it. Relocate the GPT backup header
+the downloaded raw image to that device and flush it. Relocate the GPT backup header
 on the target before first boot:
 
 ```sh
-sudo ./result-aos-gptfdisk/sbin/sgdisk -e /dev/disk/by-id/REPLACE_WITH_TARGET
+sudo sgdisk -e /dev/disk/by-id/REPLACE_WITH_TARGET
 ```
 
 The repository intentionally does not wrap this destructive step in an AOS
@@ -116,17 +105,16 @@ An AOS metadata ISO is more portable across QEMU and physical installation
 tests:
 
 ```sh
-nix-build -A pkgs.libisoburn -o result-aos-libisoburn
 mkdir -p metadata
 cp host.nix metadata/host.nix
-./result-aos-libisoburn/bin/xorriso -as mkisofs \
+xorriso -as mkisofs \
   -V aos-metadata \
   -o metadata.iso \
   metadata
 ```
 
 Attach `metadata.iso` as a CD-ROM for the first boot. The
-[configuration guide](configuration.md) documents build-time customization;
+[configuration guide](configuration.md) explains the current runtime boundary;
 the complete metadata lifecycle and storage recipe reference is in
 [Understand and operate `host.nix`](host-nix.md).
 
@@ -140,8 +128,10 @@ VirtualBox use image defaults unless an offline metadata drive is attached.
 The default `platform` policy treats access to the platform's metadata channel
 as configuration authority. Deployments that do not trust that transport can
 build an image with `aos.config.evalAtBoot.trust = "signed"` and one or more
-`aos.apm.configKeys` trust anchors. In signed mode, a missing key, missing
-signature, or invalid signature prevents first-boot provisioning.
+`aos.apm.configKeys` trust anchors. When a `host.nix` is supplied in signed
+mode, a missing key, missing signature, or invalid signature rejects that
+input. With no operator input, AOS provisions the image's fallback storage
+defaults.
 
 Trust anchors belong in the image definition. The detached signature travels
 next to `host.nix` as described above.

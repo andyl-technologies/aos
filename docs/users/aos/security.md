@@ -1,8 +1,15 @@
 # Secure an AOS host
 
-AOS security policy is built into a system variant. Start with the server role,
-choose a security level, then make explicit decisions about remote access,
+AOS security policy is currently built into the published system image. Start
+with the server baseline, then make explicit decisions about remote access,
 network exposure, audit behavior, and trust roots.
+
+General runtime `host.nix` activation is not complete. Users of the current
+golden image cannot change these module settings at runtime; release
+maintainers must apply them while producing the image. The examples below
+document the policy and its current effect. See
+[Build and customize release images](../../maintainers/system-images.md) for
+the source-build workflow.
 
 Do not treat a successful image build as evidence that a deployment meets a
 particular compliance profile. The module presets configure mechanisms; the
@@ -42,13 +49,6 @@ The available levels are:
 SELinux is not enabled by any preset today. The module exists, but a production
 policy package is not wired into the presets. Do not infer SELinux enforcement
 from `standard` or `hardened`.
-
-Build the evaluated system before producing an image:
-
-```sh
-nix-build -A systems.acme-server.build.toplevel
-nix build .#acme-server-image-qcow2
-```
 
 ## Restrict remote access
 
