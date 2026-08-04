@@ -27,6 +27,8 @@ a channel unless the release command initializes or advances it.
   complete tutorial using a real package from this repository.
 - [Publish packages and releases](publishing.md) covers the routine maintainer
   workflow, signed Git remotes, and repair commands.
+- [Automate registry releases](automation.md) covers CI credentials, guarded
+  publication, staged advancement, and recovery.
 - [Host a registry](hosting.md) covers a shared filesystem, static HTTP,
   object storage and CDNs, SFTP, smart Git, and AOS Hub.
 - [Use multiple registries](multiple-registries.md) covers the built-in AOS
