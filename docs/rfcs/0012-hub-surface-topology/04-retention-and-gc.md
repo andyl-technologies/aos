@@ -61,9 +61,9 @@ The count is editable per subscription. Organizations may define a different
 default, and archival caches may select all releases.
 
 `current_catalog` deliberately preserves the current safe behavior: every
-primary and image store path still published at the registry's current indexed
-commit is rooted. Release selectors add historical correctness rather than
-replacing current-catalog safety.
+package-output and image store path still published at the registry's current
+indexed commit is rooted. Release selectors add historical correctness rather
+than replacing current-catalog safety.
 
 ## Root reasons
 
@@ -127,7 +127,8 @@ backend failures recoverable and auditable.
 
 Placement policy decides where a logically live object must be present:
 
-- Primary and complete replica placements retain every logically live object.
+- The placement derived as primary from observed write authority, and every
+  complete replica placement, retain every logically live object.
 - Shards retain live objects selected by their partition rule.
 - Archive placements follow their own archival replication policy.
 - A complete placement may not evict a logically live object merely to satisfy
@@ -137,6 +138,9 @@ Placement policy decides where a logically live object must be present:
 
 Thus “GC from the cache” and “evict from one tier” are separate operations.
 The former changes namespace membership; the latter changes physical presence.
+Authority-free or write-blocked state does not make live objects collectable,
+and a pending desired authority does not transfer GC responsibility before its
+observed generation reconciles.
 
 ## Replication and deletion ordering
 

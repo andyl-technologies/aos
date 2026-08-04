@@ -16,8 +16,11 @@ making a decision, without requiring them to follow numeric binding links.
 
 **Overview** shows canonical Git, Nix-cache, and web endpoints plus health.
 
-**Storage & replicas** shows every placement, role, binding, prefix,
-completeness, generation lag, and replication state.
+**Storage & replicas** shows every placement's kind, derived role, binding,
+prefix, desired lifecycle/read posture, observed completeness/health,
+generation lag, and replication state. A separate Write authority panel shows
+desired and observed placement, topology and binding-write revisions,
+generations, reconciliation, and effective Enabled or Blocked state.
 
 **Delivery** shows every simultaneous route:
 
@@ -38,7 +41,8 @@ change request. Managed identities survive route URL changes.
 **Overview / Use this cache** shows the stable canonical substituter URL,
 trusted public key, visibility, coverage summary, and setup snippets.
 
-**Storage & replicas** shows placements and object-presence completeness.
+**Storage & replicas** uses the same placement and Write authority components
+as registries and adds object-presence completeness.
 
 **Delivery** uses the same route table as registries.
 
@@ -58,14 +62,27 @@ cache. A registry can appear in one, two, or all three columns.
 
 The binding page owns infrastructure facts:
 
-- API origin, bucket/root, region, and capabilities;
+- API origin, bucket/root, region, and read capabilities;
+- immutable write-capability/credential revisions, validation, and current
+  default;
 - credential purposes and last validation;
 - placements using the binding;
+- desired/observed authorities pinned to each write revision and rotation
+  fan-out progress;
 - storage gateways;
 - capacity and health; and
 - possible physical equivalence requiring confirmation.
 
 It does not decide which cache a registry publishes to clients.
+
+The Write authority panel never folds authority into placement edit controls.
+When no authority exists it says **Writes blocked — no write authority** and
+offers Promote on an eligible complete placement. During promotion it shows
+the old observed authority first, the desired candidate second, and **Writes
+blocked pending generation N** until reconciliation completes. A degraded or
+externally invalidated observed authority remains identified as Primary while
+its separate effective-write state says Blocked and links to the failing
+placement or binding revision.
 
 ### Domains
 
@@ -122,15 +139,19 @@ https://hub.example/acme/cache/abc.narinfo
   mode: Hub proxy
   client access: AOS bearer token required
   placement policy: ordered failover
-    1. r2-primary/acme/cache (ready, complete)
-    2. s3-replica/acme/cache (ready, complete)
+    1. r2-us/acme/cache (primary derived from observed authority; ready, complete)
+    2. s3-eu/acme/cache (replica derived from complete kind; ready, complete)
   origin access: scoped read credential
   result: eligible
 ```
 
 Rejected paths show the exact invariant: visibility mismatch, incomplete
-placement, missing capability, stale generation, failed TLS, unsupported
-client authentication, or unavailable origin credentials.
+placement, desired read/lifecycle exclusion, policy or shard mismatch, missing
+object presence, stale mutable-publication watermark, missing capability, stale
+generation, failed TLS, unsupported client authentication, or unavailable
+origin credentials. This request-relative explanation is the authoritative
+effective-read result; a placement's Read selected label is only desired
+posture.
 
 ## Cache integration workflow
 
@@ -186,14 +207,16 @@ cannot satisfy.
 
 ## Operational status
 
-Route, placement, replication, coverage, retention, and GC health are separate
-states. A single green “cache” badge is insufficient.
+Route, placement, write authority, binding capability, replication, coverage,
+retention, and GC health are separate states. A single green “cache” badge is
+insufficient.
 
 Recommended surface summary:
 
 ```text
 Delivery          3/3 routes healthy
-Storage & replicas primary ready, 1 replica 12s behind
+Write authority   primary r2-us · writes enabled · generation 8
+Storage & replicas 2 complete placements · 1 replica 12s behind
 Coverage      99.98% (2 missing paths)
 Retention     current, 14,202 roots
 Population    last release complete

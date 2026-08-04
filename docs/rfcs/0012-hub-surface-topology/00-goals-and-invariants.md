@@ -37,6 +37,7 @@
 | **Binary cache** | Standalone Nix substituter namespace |
 | **Storage binding** | Credentials and capabilities for an object-store origin |
 | **Placement** | A surface's data at one binding and prefix |
+| **Write authority** | Per-surface desired and observed selection of the placement that accepts Hub writes |
 | **Domain** | Verified hostname and TLS/access-provider lifecycle |
 | **Delivery route** | Domain + base path mapped to a surface and delivery mode |
 | **Endpoint** | The concrete URL produced by a delivery route |
@@ -110,6 +111,53 @@ configured and probed enforcement mechanism.
 A route advertised as a complete registry/cache endpoint may select only a
 complete placement or a placement policy with transparent failover. A shard is
 never directly advertised as the whole surface.
+
+### Write authority is not a placement property
+
+A placement records physical topology, desired lifecycle, and observed
+condition. It does not persist `primary`, `write_enabled`, or write-order
+state. One versioned authority record per writable surface selects the desired
+single writer and records the writer generation that has actually reconciled.
+Primary role and effective write eligibility are derived from that record.
+
+Promotion never swaps role flags across two placement rows. Applying a
+reviewed promotion is a compare-and-swap on one authority row, guarded by the
+authority, current-writer, and candidate-placement versions. A pending or
+failed reconciliation cannot expose two Hub writers; uncertainty fails closed.
+
+Complete replicas, shards, and archives remain independently useful even when
+a surface has no reconciled write authority. A future multi-writer mode must
+be an explicit policy with payload conflict and conditional-write semantics,
+not a collection of placement booleans.
+
+### Desired topology and observed condition remain distinct
+
+Operators set placement kind, lifecycle intent, read selection, policies, and
+desired write authority. Probes and reconcilers report readiness,
+completeness, health, and observed authority generation. Observation may show
+that the selected writer is degraded or offline, but it never silently moves
+authority to another placement. Effective read and write fields are computed
+from both halves and fail closed when they disagree.
+
+### Effective reads are request-relative and proven
+
+Desired read selection alone never proves that a placement may answer a
+request. Effective eligibility also requires usable observed health and
+completeness, a non-archive kind, membership in the resolved route policy,
+shard-rule membership where applicable, present object bytes, and the exact
+registry publication watermark for mutable paths. Native and Worker selection
+evaluate the same predicate. Unknown presence or publication state fails over
+or fails closed; it is not treated as likely present.
+
+### Binding write capability is versioned and pinned
+
+Credential and write-capability changes create immutable binding revisions.
+Placement write specifications map to an exact revision, and desired/observed
+authority pin that mapping. Rotation may fan out across many surfaces without
+an all-or-nothing cross-surface transaction: old and new validated revisions
+coexist until every authority moves. A revision cannot be deleted or revoked
+by the Hub while authority references it, and an externally invalidated
+revision makes affected writes fail closed.
 
 ### Signed publication remains signed
 

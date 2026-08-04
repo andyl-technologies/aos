@@ -26,20 +26,42 @@ GC plans for every existing surface before it mutates production state.
 ## Phase 1: placements
 
 - [ ] Finalize typed storage-binding capabilities, purpose-scoped credentials,
+      immutable write revisions and validation observations,
       instance-singleton behavior, and organization/instance topology defaults.
 - [ ] Ship `StorageBindingService`, `aos hub storage-binding`, topology-default
       CLI families, and organization/instance Web editors before placement
       creation depends on them.
-- [ ] Add `surface_placements`, placement state, and placement policies.
+- [ ] Add placement specification, separately writable observations, placement
+      policies, and one versioned write-authority resource per writable
+      surface. Do not store primary role, write enablement, or write order on
+      placement rows.
 - [ ] Make the cutover transform each registry/cache binding+prefix into a
-      primary placement and reject incomplete or ambiguous rows.
+      complete placement plus observation. Create ready authority only for a
+      proven writable, validated, unambiguous legacy destination; leave
+      explicitly read-only surfaces authority-free and abort on unproven
+      declared writability, ambiguity, or collisions.
+- [ ] Implement initial authority creation and promotion as guarded
+      single-row statements shared by native SQL and Worker D1.
+- [ ] Implement retry and reviewed cancellation for pending/failed promotions;
+      cancellation restores the observed writer only after fencing checks and
+      is itself generation guarded.
+- [ ] Pin writer-critical placement revisions through same-surface composite
+      foreign keys so promotion cannot race drain, delete, or incompatible
+      placement changes on PostgreSQL or MySQL.
+- [ ] Map placement write-spec versions to immutable binding-write revisions;
+      pin both in authority and implement resumable revision-rotation fan-out
+      before revoking an old credential.
+- [ ] Derive primary role, promotion-pending status, and effective read/write
+      eligibility in one shared projection used by API, Web, CLI, and routing.
 - [ ] Add object-presence indexing per placement.
 - [ ] Implement placement scan, replicate, repair, drain, and explain APIs.
 - [ ] Implement ordered failover in shared core for native and Worker.
 
 **Done when:** one registry and one binary cache can each serve through a Hub
-route from two bindings, survive primary read failure, and report which
-placement served the object.
+route from two bindings; each has several complete placements but one
+generation-checked writer; promotion cannot produce two Hub writers; a read
+failure on the observed-authority placement is visible without silently moving
+authority; and the runtime reports which placement served the object.
 
 ## Phase 2: domains and delivery routes
 
@@ -135,6 +157,10 @@ state.
       cache-integration, operation, impact-review, and danger components.
 - [ ] Render registry and binary-cache placement/delivery pages from the same
       component and column definitions, parameterized by `SurfaceRef`.
+- [ ] Give Storage & replicas a separate Write authority panel showing desired
+      and observed placement/generation, pending or failed reconciliation, and
+      the sole Promote action. Placement editors expose kind, lifecycle, read
+      selection, and order but never editable primary/write fields.
 - [ ] Split storage inventory from credentials, gateways, placements, and
       delivery; split cache retention from logical GC and placement eviction.
 - [ ] Replace combined “Serving & mirror,” “Linked registries,” and “GC & pins”
@@ -179,6 +205,9 @@ and the final route table contains only the canonical paths in
 - [ ] Squash the Hub database schema for fresh installations so it creates only
       the new topology. Do not retain the cutover transformer in steady-state
       runtime code.
+- [ ] Rewrite any unreleased additive topology migration in place instead of
+      adding a compatibility migration from its provisional role/write shape;
+      reset branch-local databases that ran it.
 - [ ] Update canonical operator documentation to describe only the new model.
 - [ ] Mark RFC-0012 implemented and RFC-0004 topology chapters superseded.
 
@@ -201,6 +230,7 @@ source and generated artifacts:
 | `cache_registry_links` / `CacheRegistryLink` | separate retention and population records; signed stack remains registry content |
 | `advertised_caches` and URL-string reconciliation | `registry_cache_stack_entries` with stable managed ids |
 | generic `consumer_priority` | stack order, placement member order, or Nix priority as distinct fields |
+| placement `role`, `write_enabled`, `write_order`, and primary-discriminator columns | placement `kind` plus per-surface desired/observed write authority; role and effective write state are derived |
 | `change_storage` pointer swap | placement add/replicate/promote/drain workflow |
 | `frontends_by_domain`-style dispatch | domain + longest-prefix delivery-route dispatch |
 | `direct_consumer_url`/inheritance resolver | canonical delivery-route and placement-policy resolution |
@@ -220,13 +250,59 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 
 ### Placement cases
 
-- one primary;
-- primary plus complete replica;
-- degraded primary failover;
+- an authority-free surface is read-only and initial authority creation is
+  idempotent;
+- cutover leaves explicitly read-only legacy surfaces authority-free, creates
+  ready authority only from validated unambiguous writable evidence, and
+  aborts on unproven declared writability or multiple writer candidates;
+- several complete placements coexist without stored primary/write fields;
+- one observed primary plus complete replicas is derived consistently;
+- simultaneous promotions from one authority version have exactly one winner;
+- stale authority, current-writer, and candidate write-spec versions each
+  reject;
+- stale, invalid, or capability-insufficient binding-write revisions reject;
+- binding rotation may reconcile the same placement to a new revision,
+  survives partial fan-out, and cannot delete/revoke the old Hub-managed
+  revision while any desired/observed authority pins it;
+- a same-capability/new-credential rotation produces a distinct revision
+  fingerprint, retains the equal capability fingerprint, and completes the
+  normal authority fan-out instead of colliding with uniqueness;
+- promotion racing binding-revision deletion has one FK-serialized winner;
+  provider-side invalidation immediately blocks effective writes without
+  moving authority;
+- a cross-surface, shard, archive, partial, provisioning, degraded, draining,
+  or write-incapable candidate rejects;
+- promotion racing drain, delete, or a writer-critical placement change cannot
+  commit both outcomes;
+- crash after desired promotion leaves explicit pending reconciliation and no
+  effective Hub writer; retry, cancellation, or completion is generation
+  guarded;
+- cancellation cannot restore writes until the candidate is fenced and the
+  observed writer is ready, and stale cancellation cannot rewrite a newer
+  promotion;
+- stale reconciliation completion cannot overwrite a newer desired generation;
+- desired and observed authority placements cannot drain or delete, including
+  both sides of a pending promotion;
+- degraded/offline observation makes effective writes false without silently
+  moving authority, while observations remain writable;
+- derived primary/replica/shard/archive roles and effective write fields match
+  in database, API, CLI, Web UI, native routing, and Worker routing;
 - archive excluded from reads;
 - deterministic two-shard routing;
 - drain while requests are active;
-- duplicate-prefix rejection and explicit placement equivalence.
+- duplicate-prefix rejection and explicit placement equivalence;
+- direct SQL rejects duplicate per-surface authority, cross-surface authority,
+  deletion of an authority placement or pinned binding revision, a cache
+  publication watermark, and a cross-registry publication watermark;
+- placement deletion cascades generic observations and same-registry
+  publication watermarks only after authority references are removed;
+- request-relative effective reads cover desired lifecycle/read selection,
+  ready/degraded observation, complete versus shard policy, object presence,
+  mutable publication watermark, and native/Worker parity;
+- MySQL affected-row classification rereads authoritative state rather than
+  relying on no-change row counts; and
+- SQLite, D1, PostgreSQL, and MySQL pass the same single-statement CAS and
+  fault-injection fixtures.
 
 ### Route cases
 
@@ -251,7 +327,8 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 - each instance, organization, registry, and cache scope root renders Overview
   and activates the first navbar item;
 - grouped navbar order is stable for every scope and permission class;
-- canonical routes, primary placements, and defaults sort before alternates;
+- canonical routes, the observed write-authority placement, and defaults sort
+  before alternates; a desired pending candidate is visibly distinct;
 - organization resource inventories and all creation workflows have distinct
   paths, with no full create form appended to a list page;
 - registry and binary-cache placement/delivery views share component and

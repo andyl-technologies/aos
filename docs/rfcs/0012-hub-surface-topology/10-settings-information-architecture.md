@@ -221,7 +221,8 @@ actions appear as explicit text links rather than an inaccessible menu.
 Default and canonical objects are always first:
 
 - canonical route before alternate routes;
-- primary placement before replicas, shards, and archives;
+- observed authority placement before a different desired pending candidate,
+  then other complete placements, shards, and archives;
 - default storage binding before custom bindings;
 - default gateway before alternates;
 - current/active policy before historical revisions;
@@ -236,7 +237,8 @@ Each default/canonical row carries a text chip and a short reason:
 
 ```text
 canonical · used in setup snippets
-primary · receives writes
+primary · observed write authority
+writes blocked · authority or binding revision is not effectively writable
 default · used when no binding is selected
 ```
 
@@ -313,14 +315,18 @@ bindings. It owns origin/API capability and credentials—not delivery routes.
 Binding detail contains:
 
 - origin/API endpoint, bucket/root, region, and credential purposes;
-- backend capabilities and observed health;
+- read capabilities and observed health;
+- immutable binding-write revisions, credential-version references,
+  validation, current default, and affected authority fan-out;
 - placements using the binding, grouped by registry/cache;
 - storage gateways using it; and
 - capacity/usage.
 
 Create, edit credentials, rotate credentials, and delete are separate
-workflows. Delete first presents affected placements and cannot proceed while
-live placements remain.
+workflows. Rotation shows old/new revisions and per-authority reconciliation;
+the old revision cannot be retired while any desired/observed authority pins
+it. Delete first presents affected placements and cannot proceed while live
+placements remain.
 
 ### Domains
 
@@ -405,7 +411,7 @@ It contains a compact topology summary:
 signed registry
   -> canonical delivery route
   -> placement policy
-  -> primary + replicas
+  -> observed write authority + complete replicas
 
 consumer cache stack
   -> managed/external endpoints
@@ -418,8 +424,20 @@ All nodes link to their owning settings pages. Overview has no full edit form.
 Owns placement inventory, presence/completeness, replication, promotion, drain,
 and migration. Binding credentials remain on the organization binding page.
 
-The primary placement is first. The page shows the route impact of changing a
-placement, but route editing remains on Delivery.
+Above the inventory, a separate Write authority panel shows desired and
+observed placement, topology/binding revisions, generations, reconciliation,
+and effective Enabled or Blocked state. The observed authority is first; a
+different desired candidate follows with Promotion pending. Other complete
+placements, shards, and archives follow. Placement forms never edit primary or
+write-enabled state. The page shows route impact of changing a placement, but
+route editing remains on Delivery.
+
+Add placement owns binding, prefix, kind (complete by default), initial active
+or offline state, desired read selection/order, and a shard rule only for
+shards. Archive defaults to read disabled. Edit placement owns only desired
+active/offline state and read selection/order; Drain owns the draining
+transition. Binding, prefix, kind, shard rule, observed fields, and authority
+are not editable there.
 
 ### Delivery
 
@@ -514,7 +532,8 @@ Cache Overview shows:
 - stable canonical substituter URL and public key;
 - visibility and compatible client setup snippets;
 - object/byte usage;
-- primary/replica health and route health;
+- derived observed-authority/replica health, effective write state, and route
+  health;
 - registry coverage and retention freshness;
 - last/next GC; and
 - pending population, replication, or repair operations.
@@ -643,6 +662,7 @@ Implement one component/data model for each repeated concept:
 - settings shell, group heading, and nav item;
 - scope header and summary strip;
 - placement table/card and placement health;
+- write-authority panel with desired/observed generations and binding revision;
 - route table, route capability chips, and canonical marker;
 - domain/TLS/DNS/access status;
 - cache integration matrix;
@@ -676,7 +696,11 @@ Every page names the absent object and next action:
 ```text
 No delivery routes. Add a route to make this cache reachable.
 No retention subscriptions. Only manual pins currently protect objects.
-No replicas. The primary placement is the only current copy.
+No write authority. This surface is read-only until an eligible complete
+placement is promoted.
+Promotion pending. Writes are blocked until desired and observed generations
+match; retry or review cancellation.
+No replicas. The observed authority placement is the only current copy.
 ```
 
 Do not use universal claims for empty sets. Degraded states keep the inventory
@@ -699,7 +723,8 @@ visible and place remediation beside the failing row.
   settings selects the first **Overview** navbar item.
 - Navbar group and item order is deterministic and snapshot-tested for every
   scope and permission class.
-- Canonical/default/primary rows are first and labeled in every inventory.
+- Canonical/default rows and the derived observed-authority placement are first
+  and labeled in every inventory.
 - Registry and cache placement/delivery pages render through the same shared
   components and column definitions.
 - No list page contains a full create form; creation uses a dedicated page.
