@@ -426,7 +426,7 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
   per-file checklist is a doc-lint failure. *Spec:* §1 of 24,
   [`00-conventions.md`](00-conventions.md).
 
-- **[STD-32]** **License-boundary review.** Code and documentation that touch
+- **[STD-34]** **License-boundary review.** Code and documentation that touch
   QEMU integration, `crucible-qemu-plugin`, `crucible-protocol`,
   `crucible-shmem`, packaging, or guest doorbells MUST preserve the component,
   dependency, and public-protocol rules in

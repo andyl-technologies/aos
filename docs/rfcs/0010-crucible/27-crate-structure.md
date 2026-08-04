@@ -457,11 +457,11 @@ contract and which crate realizes a file.
 | --- | --- | --- |
 | `crucible-sim` | [`04`](04-determinism-contract.md), [`08`](08-scheduling.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism`, `gate:harness-lint` |
 | `crucible-assert` | [`18`](18-assertions-properties.md) | `gate:layer0-determinism`, `gate:harness-lint` |
-| `crucible-shmem` | [`13`](13-shmem-abi.md), [`37`](37-licensing-process-boundary.md) | `gate:abi-conformance`, `gate:license-boundary` |
-| `crucible-protocol` | [`14`](14-protocol.md), [`16`](16-guest-host-channel.md), [`37`](37-licensing-process-boundary.md) | `gate:abi-conformance`, `gate:harness-lint`, `gate:license-boundary` |
+| `crucible-shmem` | [`13`](13-shmem-abi.md) | `gate:abi-conformance`, `gate:license-boundary` |
+| `crucible-protocol` | [`14`](14-protocol.md), [`16`](16-guest-host-channel.md) | `gate:abi-conformance`, `gate:harness-lint`, `gate:license-boundary` |
 | `crucible-device` | [`15`](15-io-subnodes.md) | `gate:layer1-injection`, `gate:harness-lint` |
-| `crucible-qemu` | [`10`](10-qemu-integration.md), [`11`](11-qemu-patches.md), [`37`](37-licensing-process-boundary.md) | `gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert`, `gate:license-boundary` |
-| `crucible-qemu-plugin` | [`11`](11-qemu-patches.md), [`12`](12-qemu-plugin.md), [`37`](37-licensing-process-boundary.md) | `gate:single-vm-fingerprint`, `gate:patch-microtests`, `gate:license-boundary` |
+| `crucible-qemu` | [`10`](10-qemu-integration.md), [`11`](11-qemu-patches.md) | `gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert`, `gate:license-boundary` |
+| `crucible-qemu-plugin` | [`11`](11-qemu-patches.md), [`12`](12-qemu-plugin.md) | `gate:single-vm-fingerprint`, `gate:patch-microtests`, `gate:license-boundary` |
 | `crucible-guest` | [`16`](16-guest-host-channel.md) | `gate:single-vm-fingerprint` (markers excluded from comparison) |
 | `crucible` | [`05`](05-execution-model.md), [`06`](06-spatial-graph.md), [`07`](07-temporal-graph.md), [`08`](08-scheduling.md), [`17`](17-fault-injection.md), [`18`](18-assertions-properties.md), [`19`](19-observability-event-log.md) | `gate:replay-oracle`, `gate:content-address`, `gate:scheduler-liveness`, `gate:divergence-bisect`, `gate:harness-lint` |
 | `crucible-cas` | [`35`](35-distributed-continuous-exploration.md) | `gate:fleet-equivalence`, `gate:campaign-continuity`, `gate:content-address` |

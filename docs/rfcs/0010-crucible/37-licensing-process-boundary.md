@@ -128,12 +128,18 @@ an assertion evaluator.
 ## Implementation checklist
 
 - [x] **T-BOUND-1** Keep component license declarations and dependency scopes
-  consistent with [BOUND-1]–[BOUND-4], [BOUND-9].
+  consistent across host, boundary, and in-QEMU components. — satisfies
+  [BOUND-1], [BOUND-2], [BOUND-3], [BOUND-4], [BOUND-9], [STD-34]; spec §37.1,
+  §37.2, §37.3.
 - [x] **T-BOUND-2** Enforce the public shared-memory protocol constraints and
   independent conformance peer in `gate:license-boundary` and
-  `gate:abi-conformance` — satisfies [BOUND-5]–[BOUND-9].
+  `gate:abi-conformance`. — satisfies [BOUND-5], [BOUND-6], [BOUND-7],
+  [BOUND-8], [BOUND-9]; spec §37.2, §37.3.
 - [x] **T-BOUND-3** Make packaging/release construction emit accurate aggregate
   metadata and matching QEMU corresponding source — satisfies [BOUND-3],
-  [BOUND-10], [BOUND-11].
+  [BOUND-10], [BOUND-11]; spec §37.1, §37.4.
 - [ ] **T-BOUND-4** Keep guest assertion evaluation host-side while gating the
-  observation protocol across the boundary — satisfies [BOUND-12].
+  observation protocol across the boundary. This task remains deferred to the
+  ongoing guest-assertions work; the checked boundary gate already enforces the
+  compatibility invariant for code merged before it. — satisfies [BOUND-12];
+  spec §37.5.

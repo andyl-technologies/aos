@@ -30,7 +30,7 @@ normative `MUST` maps to at least one task.
 
 ## Inventory
 
-The plan covers **582 tasks** across 36 areas, satisfying **1079 numbered
+The plan covers **586 tasks** across 37 areas, satisfying **1092 numbered
 requirements** (plus the goal/non-goal/invariant/decision IDs). Coverage is
 **complete**: every defined requirement is cited by at least one checklist task,
 and no task cites a non-existent requirement (verified by the `T-PLAN-1` lint).
@@ -40,10 +40,10 @@ Task counts by area:
 PERF 34  DET 31  SCHED 30  HARN 28  PLUG 27  PATCH 24  PKG 23  ADV 21  SPAT 21
 CLI 20  EXEC 20  RISK 20  TRIG 20  SHM 19  ASRT 18  GHC 17  CRATE 16  FAULT 16
 IO 16  QEMU 16  API 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11  DCE 10
-PAT 9  TIME 9  DBG 8  TRI 8  WL 6  ARCH 5  EX 5  D 4  PLAN 3
+PAT 9  TIME 9  DBG 8  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:08a31c70c4d985d5`
+Checklist sync digest: `rfc0010-checklist-v1:3b2d82066d65a6fd`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -64,7 +64,8 @@ implemented and an adversarial review confirms the gate exercises that behavior.
 
 ```text
   Phase 0  De-risk          spikes that can reshape the design       gate: Phase-0 blockers pass
-  Phase 1  Determinism core L0 runtime, decision RNG, time, harness  gate:harness-lint, gate:layer0-determinism,
+  Phase 1  Determinism core L0 runtime, decision RNG, time, harness  gate:harness-lint, gate:license-boundary,
+                            licensing boundary                            gate:layer0-determinism,
                             content-addressed store, the test double        gate:content-address, gate:replay-oracle (sim),
                                                                             gate:single-vm-fingerprint (double), gate:divergence-bisect
   Phase 2  Transport+QEMU   shmem ABI, protocol, patch series,       gate:abi-conformance, gate:layer1-injection,
@@ -122,6 +123,9 @@ all land and are gated. Everything later is built on this.
 **Tasks.**
 - Workspace + layer skeleton: `T-ARCH-1 … T-ARCH-5` ([`03`](03-architecture-overview.md)), `T-CRATE-1 … T-CRATE-16` ([`27`](27-crate-structure.md)).
 - Engineering standards + harness-lint: `T-STD-1 … T-STD-14` ([`28`](28-engineering-standards.md)).
+- Licensing and process boundary: `T-BOUND-1 … T-BOUND-4`
+  ([`37`](37-licensing-process-boundary.md)); `T-BOUND-4` remains deferred to
+  the ongoing guest-assertions work.
 - Determinism contract mechanisms (incl. the pure multi-vCPU and app-random
   determinism tasks `T-DET-29 … T-DET-31`): `T-DET-1 … T-DET-31` ([`04`](04-determinism-contract.md)).
 - Time / icount model: `T-TIME-1 … T-TIME-9` ([`09`](09-virtual-time-icount.md)).
@@ -133,7 +137,7 @@ all land and are gated. Everything later is built on this.
   the backend pattern is completed by the phase-5 backend and SimDouble suite
   ([`29`](29-patterns-and-sketches.md)).
 
-**Exit gates.** `gate:harness-lint`, `gate:layer0-determinism`,
+**Exit gates.** `gate:harness-lint`, `gate:license-boundary`, `gate:layer0-determinism`,
 `gate:content-address`, `gate:replay-oracle` (against the test double),
 `gate:single-vm-fingerprint` (against the test double), `gate:divergence-bisect`.
 
