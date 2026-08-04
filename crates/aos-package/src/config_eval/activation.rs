@@ -124,7 +124,7 @@ impl Error for ActivationFailure {}
 /// as an error *after* committing because the switch stands but the system is
 /// degraded.
 pub fn activate_config(params: &ActivateConfigParams) -> Result<u32> {
-    activate_config_with(params, true, true, |activate, number, nonce| {
+    activate_config_with(params, true, true, true, |activate, number, nonce| {
         let status = std::process::Command::new(activate)
             .arg(number.to_string())
             .env("AOS_SWITCH_LOCK_HELD", "1")
@@ -139,6 +139,7 @@ fn activate_config_with<F>(
     params: &ActivateConfigParams,
     verify_realized_paths: bool,
     resolve_credentials: bool,
+    detect_tpm: bool,
     run_activate: F,
 ) -> Result<u32>
 where
@@ -285,6 +286,7 @@ where
                     .context("parsing projected manifest for generation attestation")?,
                 &running_image,
                 params.require_attestation_quote,
+                detect_tpm,
             )
             .map_err(|error| ActivationFailure {
                 exit_code: 4,
@@ -935,12 +937,13 @@ mod tests {
         mark(&params, "firewall");
         mark(&params, "web");
 
-        let number = activate_config_with(&params, false, false, |activate, number, _nonce| {
-            assert!(activate.ends_with("activate"));
-            assert_eq!(number, 2);
-            Ok(Some(0))
-        })
-        .unwrap();
+        let number =
+            activate_config_with(&params, false, false, false, |activate, number, _nonce| {
+                assert!(activate.ends_with("activate"));
+                assert_eq!(number, 2);
+                Ok(Some(0))
+            })
+            .unwrap();
 
         assert_eq!(number, 2);
         let state = load_generation_state_pub(&params.profile).unwrap();
@@ -1022,9 +1025,13 @@ mod tests {
         mark(&params, "firewall");
         mark(&params, "web");
 
-        let error = activate_config_with(&params, false, false, |_activate, _number, _nonce| {
-            Ok(Some(0))
-        })
+        let error = activate_config_with(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, _number, _nonce| Ok(Some(0)),
+        )
         .expect_err("measured activation must require TPM evidence");
         let failure = error
             .downcast_ref::<ActivationFailure>()
@@ -1043,9 +1050,13 @@ mod tests {
         mark(&params, "firewall");
         mark(&params, "web");
         assert_eq!(
-            activate_config_with(&params, false, false, |_activate, _number, _nonce| Ok(
-                Some(0)
-            ))
+            activate_config_with(
+                &params,
+                false,
+                false,
+                false,
+                |_activate, _number, _nonce| Ok(Some(0))
+            )
             .unwrap(),
             2
         );
@@ -1067,7 +1078,7 @@ mod tests {
             .number = 3;
 
         assert_eq!(
-            activate_config_with(&params, false, false, |_activate, number, _nonce| {
+            activate_config_with(&params, false, false, false, |_activate, number, _nonce| {
                 assert_eq!(number, 4);
                 Ok(Some(0))
             })
@@ -1085,9 +1096,13 @@ mod tests {
         mark(&params, "firewall");
         mark(&params, "web");
         assert_eq!(
-            activate_config_with(&params, false, false, |_activate, _number, _nonce| Ok(
-                Some(0)
-            ))
+            activate_config_with(
+                &params,
+                false,
+                false,
+                false,
+                |_activate, _number, _nonce| Ok(Some(0))
+            )
             .unwrap(),
             2
         );
@@ -1098,9 +1113,15 @@ mod tests {
         tampered["config"]["web"]["tampered"] = json!(true);
         write_json_atomic(&retained, &tampered).unwrap();
 
-        let error = activate_config_with(&params, false, false, |_activate, _number, _nonce| {
-            panic!("tampered generation must be rejected before activation")
-        })
+        let error = activate_config_with(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, _number, _nonce| {
+                panic!("tampered generation must be rejected before activation")
+            },
+        )
         .unwrap_err();
         assert!(error.to_string().contains("hash mismatch"));
     }
@@ -1111,9 +1132,13 @@ mod tests {
         mark(&params, "firewall");
         mark(&params, "web");
 
-        let error = activate_config_with(&params, false, false, |_activate, _number, _nonce| {
-            Ok(Some(2))
-        })
+        let error = activate_config_with(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, _number, _nonce| Ok(Some(2)),
+        )
         .unwrap_err();
         assert!(
             error
@@ -1138,9 +1163,13 @@ mod tests {
         let (_root, params, _manifest) = setup();
         mark(&params, "firewall");
         mark(&params, "web");
-        activate_config_with(&params, false, false, |_activate, _number, _nonce| {
-            Ok(Some(2))
-        })
+        activate_config_with(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, _number, _nonce| Ok(Some(2)),
+        )
         .unwrap_err();
 
         let mut state = load_generation_state_pub(&params.profile).unwrap();
@@ -1151,7 +1180,7 @@ mod tests {
         save_generation_state_pub(&params.profile, &state).unwrap();
 
         assert_eq!(
-            activate_config_with(&params, false, false, |_activate, number, _nonce| {
+            activate_config_with(&params, false, false, false, |_activate, number, _nonce| {
                 assert_eq!(number, 2);
                 Ok(Some(0))
             })
@@ -1175,9 +1204,13 @@ mod tests {
         let (_root, params, manifest) = setup();
         mark(&params, "web");
 
-        let number = activate_config_with(&params, false, false, |_activate, _number, _nonce| {
-            Ok(Some(6))
-        })
+        let number = activate_config_with(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, _number, _nonce| Ok(Some(6)),
+        )
         .unwrap_err();
         assert!(number.to_string().contains("was committed"));
         let state = load_generation_state_pub(&params.profile).unwrap();

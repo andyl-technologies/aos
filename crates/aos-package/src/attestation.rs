@@ -404,6 +404,8 @@ struct EmbeddedQuote {
 /// existing package-attestation machinery. Without a TPM, an explicit
 /// `unquoted-tpm-unavailable` record is retained unless `require_quote` makes
 /// hardware evidence mandatory.
+/// `detect_tpm` is kept explicit so hermetic tests do not inherit ambient host
+/// devices; the production activation path always enables detection.
 ///
 /// # Errors
 ///
@@ -417,6 +419,7 @@ pub(crate) fn persist_generation_attestation(
     manifest: &ConfigManifest,
     running_image: &ImageGeneration,
     require_quote: bool,
+    detect_tpm: bool,
 ) -> Result<GenAttestation> {
     let record_path = generation_dir.join("gen-attestation.json");
     if record_path.is_file() {
@@ -429,7 +432,7 @@ pub(crate) fn persist_generation_attestation(
     }
 
     let inputs = inputs_from_manifest(manifest, running_image)?;
-    if !crate::package_attestation::tpm_available()? {
+    if !detect_tpm || !crate::package_attestation::tpm_available()? {
         if require_quote {
             bail!("measured boot requires a TPM-backed generation attestation quote");
         }
