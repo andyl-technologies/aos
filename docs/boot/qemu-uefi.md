@@ -2,7 +2,7 @@
 
 The operator procedure for building, sizing, provisioning, and booting an AOS
 image under the AOS-built QEMU and EDK2 firmware is maintained in the
-[AOS first-boot tutorial](../users/aos/quickstart.md).
+[AOS source-build tutorial](../maintainers/source-build-quickstart.md).
 
 For deployment outside a local VM, use the [installation guide](../users/aos/installation.md).
 The [`host.nix` guide](../users/aos/host-nix.md) documents metadata channels,
