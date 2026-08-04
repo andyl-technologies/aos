@@ -38,6 +38,17 @@ in
     ];
     propagatedDeps = [];
 
+    # Pure stage-2 inventory for consumers that opt into
+    # `systemd.packages = [ pkgs.dbus ]`.
+    passthru.systemdUnitInventory = {
+      system = [];
+      user = [
+        "lib/systemd/user/dbus.service"
+        "lib/systemd/user/dbus.socket"
+        "lib/systemd/user/sockets.target.wants/dbus.socket"
+      ];
+    };
+
     # dbus-daemon crash-loops on activation under -fstrict-flex-arrays=3
     # (its trailing-array message structs trip _FORTIFY_SOURCE at runtime).
     # Step down to level 1; fortify3 and the rest stay on.
@@ -54,8 +65,9 @@ in
       }
       {
         name = "configure";
-        # --enable-systemd so dbus installs lib/systemd/system/{dbus.service,dbus.socket}
-        # that AOS can pick up via systemd.packages. --sysconfdir=/etc so
+        # --enable-systemd so dbus installs its user service/socket units and
+        # sockets.target.wants link for systemd.packages consumers.
+        # --sysconfdir=/etc so
         # baked-in config lookups go to /etc/dbus-1 on the running system,
         # not a read-only store path.
         script = ''

@@ -20,14 +20,10 @@
 #     path; the `Exec*=` directive now points there. See `makeJobScript`
 #     below. (The dropped `writeShellApplication`/shellcheck branch — AOS
 #     has no Haskell toolchain, spec §5.4 — stays dropped.)
-#   - `generateUnits` keeps its `upstreamUnits` / `upstreamWants` parameters
-#     so the future initrd builder can cherry-pick stage-1 units from the
-#     systemd package, but drops the `type == "system"` tail that
-#     manufactures default.target / ctrl-alt-del.target / multi-user.target
-#     .wants symlinks — systemd finds those natively via the patched
-#     SYSTEM_DATA_UNIT_DIR lookup. See spec §5.5.
-#   - `lndir` is replaced by a plain shell loop that walks
-#     `$pkg/etc/systemd/<type>` and `$pkg/lib/systemd/<type>`. See §5.6.
+#   - `generateUnits` now returns pure unit records. `unitsToEtc` flattens
+#     those records into the manifest layout and `materializeUnits` is the
+#     only build-side derivation seam. Package/upstream discovery consumes a
+#     stage-1-authored `systemdUnitInventory` instead of reading outputs (IFD).
 #   - The `X-*` switch-to-configuration emissions were originally dropped
 #     here. The live in-place `apm upgrade --system` path
 #     (2026-05-27_apm_system_upgrade_refactor_v2 §6.4) restores them: the
@@ -205,7 +201,7 @@
 in rec {
   shellEscape = s: replaceStrings ["\\"] ["\\\\"] s;
 
-  mkPathSafeName = replaceStrings ["@" ":" "\\" "[" "]"] ["-" "-" "-" "" ""];
+  mkPathSafeName = replaceStrings ["/" "@" ":" "\\" "[" "]"] ["-" "-" "-" "-" "" ""];
 
   # A type for options that take a unit name.
   unitNameType = types.strMatching "[a-zA-Z0-9@%:_.\\-]+[.](service|socket|device|mount|automount|swap|target|path|timer|scope|slice)";
@@ -497,27 +493,27 @@ in rec {
       settings
     );
 
-  # generateUnits — assemble the final unit directory.
+  # generateUnits — render systemd units as pure data.
   #
-  # Signature retains `upstreamUnits` and `upstreamWants` so the future
-  # initrd builder (tier ii, outside this refactor; see spec §5.5) can
-  # cherry-pick default stage-1 units from `${package}/lib/systemd/system/`.
-  # Stage-2 callers (modules/systemd/system.nix) pass `[]` for both,
-  # because AOS systemd's SYSTEM_DATA_UNIT_DIR patch makes upstream
-  # `/lib/systemd/system/` findable natively at runtime.
+  # Authored records remain keyed by full unit name; inventory leaves use an
+  # internal slash-bearing key (not a valid unit name) while retaining their
+  # final path in `name`.
+  # Every value is JSON-safe pure data and deliberately omits the legacy
+  # `unit` derivation and derivation-bearing job-script fields.
   #
-  # `package` defaults to `pkgs.systemd` rather than reading a NixOS
-  # `systemd.package` option, per spec §3.2. `packages` has no default
-  # and must be supplied by the caller (system.nix passes
-  # `config.systemd.packages`).
+  # Package outputs cannot be enumerated during pure evaluation. Packages that
+  # provide unit files therefore carry a `systemdUnitInventory.<type>` list of
+  # paths relative to their output. `freeze-pkgs.nix` preserves this metadata,
+  # so image-build and on-host evaluation consume the same pure inventory.
   generateUnits = {
     allowCollisions ? true,
     type,
     units,
-    upstreamUnits,
-    upstreamWants,
-    packages,
-    package ? pkgs.systemd,
+    upstreamUnits ? [],
+    upstreamWants ? [],
+    packages ? [],
+    package ? null,
+    packageOwners ? {},
   }: let
     typeDir =
       {
@@ -529,185 +525,362 @@ in rec {
       .${
         type
       };
+    normalRoots = [
+      "etc/systemd/${typeDir}/"
+      "lib/systemd/${typeDir}/"
+    ];
+    upstreamRoot = "example/systemd/${typeDir}/";
+    allRoots = normalRoots ++ [upstreamRoot];
+
+    inventoryOf = pkg: let
+      inventory =
+        pkg.systemdUnitInventory
+        or (pkg.passthru.systemdUnitInventory or null);
+    in
+      if inventory == null || !(inventory ? ${type})
+      then throw "generateUnits: package ${builtins.toString pkg} has no systemdUnitInventory.${type}"
+      else inventory.${type};
+
+    normalizeInventoryEntry = pkg: owner: raw: let
+      item =
+        if isString raw
+        then {path = raw;}
+        else if builtins.isAttrs raw
+        then raw
+        else throw "generateUnits: systemd inventory entries must be strings or attribute sets";
+      path =
+        if item ? path && isString item.path
+        then item.path
+        else throw "generateUnits: systemd inventory entry has no string path";
+      components = splitString "/" path;
+      rootMatches = filter (root: hasPrefix root path) allRoots;
+      root =
+        if length rootMatches == 1
+        then head rootMatches
+        else throw "generateUnits: invalid systemd inventory path '${path}' in ${builtins.toString pkg}";
+      logicalPath = lib.removePrefix root path;
+      safe =
+        path != ""
+        && !(hasPrefix "/" path)
+        && !(lib.hasSuffix "/" path)
+        && !(elem "" components)
+        && !(elem "." components)
+        && !(elem ".." components)
+        && logicalPath != "";
+      source = "${builtins.toString pkg}/${path}";
+    in
+      if !safe
+      then throw "generateUnits: unsafe systemd inventory path '${path}' in ${builtins.toString pkg}"
+      else {
+        inherit logicalPath owner path root source;
+        # Upstream copied symlinks preserve their authored target. Ordinary
+        # systemd.packages leaves always point at the package path itself.
+        upstreamTarget =
+          if !(item ? upstreamTarget) || isString item.upstreamTarget
+          then item.upstreamTarget or source
+          else throw "generateUnits: upstreamTarget for '${path}' must be a string";
+      };
+
+    entriesFor = pkg: owner:
+      builtins.map (normalizeInventoryEntry pkg owner) (inventoryOf pkg);
+
+    packageKey = pkg:
+      builtins.unsafeDiscardStringContext (builtins.toString pkg);
+    uniquePackagesByPath = builtins.listToAttrs (builtins.map (pkg:
+      lib.nameValuePair (packageKey pkg) pkg)
+    packages);
+    uniquePackages = builtins.attrValues uniquePackagesByPath;
+    normalPackageEntries = concatLists (builtins.map (pkg: let
+      owner = packageOwners.${packageKey pkg} or "@base";
+    in
+      filter (entry: elem entry.root normalRoots) (entriesFor pkg owner))
+    uniquePackages);
+
+    upstreamInventory =
+      if upstreamUnits == [] && upstreamWants == []
+      then []
+      else if package == null
+      then throw "generateUnits: upstreamUnits/upstreamWants require package"
+      else filter (entry: entry.root == upstreamRoot) (entriesFor package "@base");
+    requestedUpstreamEntries = concatLists (
+      builtins.map (name: let
+        matches = filter (entry: entry.logicalPath == name) upstreamInventory;
+      in
+        if length matches == 1
+        then matches
+        else throw "generateUnits: upstream unit '${name}' is missing or ambiguous in systemdUnitInventory.${type}"
+      ) upstreamUnits
+      ++ builtins.map (wanted: let
+        prefix = "${wanted}/";
+        matches = filter (entry: hasPrefix prefix entry.logicalPath) upstreamInventory;
+      in
+        if matches != []
+        then matches
+        else throw "generateUnits: upstream wants directory '${wanted}' is missing from systemdUnitInventory.${type}"
+      ) upstreamWants
+    );
+
+    allExternalEntries = normalPackageEntries ++ requestedUpstreamEntries;
+    externalNames = builtins.map (entry: entry.logicalPath) allExternalEntries;
+    duplicateExternalNames = filter
+      (name: length (filter (candidate: candidate == name) externalNames) > 1)
+      (lib.unique externalNames);
+
+    # Automatic override selection must observe the package inventory just as
+    # the historical builder observed `$out/$name` after constructing the
+    # package symlink farm.
+    hasExternalUnit = name: elem name externalNames;
+    renderUnit = name: unit: let
+      requested = attrByPath ["overrideStrategy"] "asDropinIfExists" unit;
+      collides = hasExternalUnit name;
+      effective =
+        if requested == "asDropin"
+        then "asDropin"
+        else if requested == "asDropinIfExists" && collides && unit.enable
+        then
+          if allowCollisions
+          then "asDropin"
+          else throw "generateUnits: multiple derivations configure ${name}"
+        else requested;
+    in {
+      inherit name;
+      text =
+        if unit.text == null
+        then ""
+        else unit.text;
+      mode = "0644";
+      enable = unit.enable;
+      overrideStrategy = effective;
+      aliases = unit.aliases or [];
+      wantedBy = unit.wantedBy or [];
+      requiredBy = unit.requiredBy or [];
+      upheldBy = unit.upheldBy or [];
+      jobScriptKeys = builtins.map (job: job.key) (unit.jobScripts or []);
+    };
+    renderedUnits = mapAttrs renderUnit units;
+
+    # These historical `ln -sfn` sites replace an existing package leaf.
+    replacingPaths = lib.unique (concatLists (mapAttrsToList (name: unit:
+      optional (unit.overrideStrategy != "asDropin") name
+      ++ unit.aliases
+      ++ builtins.map (target: "${target}.wants/${name}") unit.wantedBy
+      ++ builtins.map (target: "${target}.requires/${name}") unit.requiredBy
+      ++ builtins.map (target: "${target}.upholds/${name}") unit.upheldBy)
+    renderedUnits));
+    survivingExternalEntries = filter
+      (entry: !(elem entry.logicalPath replacingPaths))
+      allExternalEntries;
+    externalRecords = builtins.listToAttrs (builtins.map (entry:
+      lib.nameValuePair "/package/${entry.logicalPath}" {
+        name = entry.logicalPath;
+        text = "";
+        mode = "0644";
+        enable = true;
+        overrideStrategy = "external";
+        aliases = [];
+        wantedBy = [];
+        requiredBy = [];
+        upheldBy = [];
+        jobScriptKeys = [];
+        externalEntry = {
+          kind = "symlink";
+          target =
+            if entry.root == upstreamRoot
+            then entry.upstreamTarget
+            else entry.source;
+        };
+        inherit (entry) owner;
+      })
+    survivingExternalEntries);
   in
-    pkgs.runCommand "${type}-units" {
-      preferLocalBuild = true;
-      allowSubstitutes = false;
-    } ''
-      mkdir -p $out
+    if duplicateExternalNames != []
+    then throw "generateUnits: package/upstream unit collision at ${concatStringsSep ", " duplicateExternalNames}"
+    else
+      builtins.seq typeDir (externalRecords // renderedUnits);
 
-      # TODO(tier-ii-initrd): upstream walks $package/example/systemd/$typeDir/
-      # but AOS's systemd ships units at $package/lib/systemd/system/ (the
-      # move to example/ is a nixpkgs-specific install step AOS does not
-      # perform). When the initrd builder starts passing non-empty
-      # upstreamUnits/upstreamWants, rewrite the `fn=...` assignments
-      # below to use lib/systemd/$typeDir instead. For tier-i stage-2
-      # the loops run over empty lists and the mismatch is harmless.
+  # unitsToEtc — flatten pure unit records into manifest `/etc` entries.
+  # This is shared by the config manifest and role exposure so the pure plan
+  # and the materialized directory cannot acquire independent layout rules.
+  unitsToEtc = units: let
+    checkedEntries = description: entries: let
+      names = builtins.map (entry: entry.name) entries;
+      conflicts = builtins.filter
+        (name:
+          builtins.any
+          (candidate:
+            candidate != name
+            && (hasPrefix "${name}/" candidate || hasPrefix "${candidate}/" name))
+          names
+          || builtins.length (builtins.filter (candidate: candidate == name) names) > 1)
+        (lib.unique names);
+    in
+      if conflicts == []
+      then builtins.listToAttrs entries
+      else throw "${description} overlap at final /etc target(s): ${builtins.concatStringsSep ", " conflicts}";
+    unitEntries = concatLists (mapAttrsToList (key: unit: let
+      name = unit.name or key;
+      unitPath =
+        if unit.overrideStrategy == "asDropin"
+        then "${name}.d/overrides.conf"
+        else name;
+    in
+      if unit ? externalEntry
+      then [
+        (lib.nameValuePair "systemd/system/${unitPath}" unit.externalEntry)
+      ]
+      else [
+        (lib.nameValuePair "systemd/system/${unitPath}" (
+        if unit.enable
+        then {
+          kind = "text";
+          inherit (unit) text mode;
+        }
+        else {
+          kind = "symlink";
+          target = "/dev/null";
+        }
+      ))
+      ]) units);
 
-      # Copy the upstream systemd units we're interested in.
-      for i in ${builtins.toString upstreamUnits}; do
-        fn=${package}/example/systemd/${typeDir}/$i
-        if ! [ -e $fn ]; then echo "missing $fn"; false; fi
-        if [ -L $fn ]; then
-          target="$(readlink "$fn")"
-          if [ ''${target:0:3} = ../ ]; then
-            ln -s "$(readlink -f "$fn")" $out/
-          else
-            cp -pd $fn $out/
+    installEntries = concatLists (mapAttrsToList (key: unit: let
+      name = unit.name or key;
+    in
+      if unit ? externalEntry
+      then []
+      else
+      builtins.map (alias:
+        lib.nameValuePair "systemd/system/${alias}" {
+          kind = "symlink";
+          target = name;
+        })
+      unit.aliases
+      ++ builtins.map (target:
+        lib.nameValuePair "systemd/system/${target}.wants/${name}" {
+          kind = "symlink";
+          target = "../${name}";
+        })
+      unit.wantedBy
+      ++ builtins.map (target:
+        lib.nameValuePair "systemd/system/${target}.requires/${name}" {
+          kind = "symlink";
+          target = "../${name}";
+        })
+      unit.requiredBy
+      ++ builtins.map (target:
+        lib.nameValuePair "systemd/system/${target}.upholds/${name}" {
+          kind = "symlink";
+          target = "../${name}";
+        })
+      unit.upheldBy)
+    units);
+  in
+    checkedEntries "systemd unit/install entries" (unitEntries ++ installEntries);
+
+  # Mirror `unitsToEtc`'s complete leaf layout while retaining the owner of
+  # the source unit. This stays pure data and deliberately keys aliases and
+  # install symlinks to the unit they point at, not to the target directory.
+  unitsToOwnership = units: owners: let
+    entries = concatLists (mapAttrsToList (key: unit: let
+      name = unit.name or key;
+      owner = unit.owner or (owners.${name} or (throw "unitsToOwnership: missing owner for ${name}"));
+      unitPath =
+        if unit.overrideStrategy == "asDropin"
+        then "${name}.d/overrides.conf"
+        else name;
+      owned = path: lib.nameValuePair "systemd/system/${path}" owner;
+    in
+      if unit ? externalEntry
+      then [(owned unitPath)]
+      else
+        [(owned unitPath)]
+        ++ builtins.map owned unit.aliases
+        ++ builtins.map (target: owned "${target}.wants/${name}") unit.wantedBy
+        ++ builtins.map (target: owned "${target}.requires/${name}") unit.requiredBy
+        ++ builtins.map (target: owned "${target}.upholds/${name}") unit.upheldBy
+    )
+    units);
+  in
+    let
+      names = builtins.map (entry: entry.name) entries;
+      conflicts = builtins.filter
+        (name:
+          builtins.any
+          (candidate:
+            candidate != name
+            && (hasPrefix "${name}/" candidate || hasPrefix "${candidate}/" name))
+          names
+          || builtins.length (builtins.filter (candidate: candidate == name) names) > 1)
+        (lib.unique names);
+    in
+      if conflicts == []
+      then builtins.listToAttrs entries
+      else throw "systemd ownership entries overlap at final /etc target(s): ${builtins.concatStringsSep ", " conflicts}";
+
+  # materializeUnits — thin builder adapter for manifest systemd entries.
+  materializeUnits = {
+    type,
+    etc,
+    jobScripts ? {},
+  }: let
+    prefix = "systemd/system/";
+    systemdEntries = filterAttrs (path: _entry: hasPrefix prefix path) etc;
+    entries = builtins.listToAttrs (mapAttrsToList (path: entry:
+      lib.nameValuePair (lib.removePrefix prefix path) entry
+    ) systemdEntries);
+
+    jobScriptDrvs = mapAttrs (key: script:
+      pkgs.writeTextFile {
+        name = "aos-job-script-${script.name}";
+        executable = true;
+        destination = "/aos-job-scripts/${key}";
+        text = script.text;
+        checkPhase = ''${pkgs.bash}/bin/bash -n "$target"'';
+      })
+    jobScripts;
+    jobScriptKeys = attrNames jobScriptDrvs;
+    jobScriptPaths = builtins.map (key: "${jobScriptDrvs.${key}}/aos-job-scripts/${key}") jobScriptKeys;
+    placeholders = builtins.map (key: "#aos-jobscript:${key}#") jobScriptKeys;
+
+    textEntries = filterAttrs (_path: entry: entry.kind == "text") entries;
+    linkEntries = filterAttrs (_path: entry: entry.kind == "symlink") entries;
+    unsupportedEntries = filterAttrs (_path: entry: !elem entry.kind ["text" "symlink"]) entries;
+    unitDrvs = mapAttrs (path: entry:
+      makeUnit path {
+        enable = true;
+        text = replaceStrings placeholders jobScriptPaths entry.text;
+        jobScripts = [];
+      })
+    textEntries;
+
+    materializeText = concatStrings (mapAttrsToList (path: unitDrv: ''
+      mkdir -p "$out/$(dirname -- ${lib.escapeShellArg path})"
+      ln -s ${lib.escapeShellArg "${unitDrv}/${path}"} "$out/${path}"
+    '') unitDrvs);
+    materializeLinks = concatStrings (mapAttrsToList (path: entry: ''
+      mkdir -p "$out/$(dirname -- ${lib.escapeShellArg path})"
+      target=${lib.escapeShellArg entry.target}
+      case "$target" in
+        /nix/store/*)
+          if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+            echo "materializeUnits: inventory target for ${path} does not exist: $target" >&2
+            exit 1
           fi
-        else
-          ln -s $fn $out/
-        fi
-      done
-
-      # Copy .wants links, but only those that point to units that
-      # we're interested in.
-      for i in ${builtins.toString upstreamWants}; do
-        fn=${package}/example/systemd/${typeDir}/$i
-        if ! [ -e $fn ]; then echo "missing $fn"; false; fi
-        x=$out/$(basename $fn)
-        mkdir $x
-        for i in $fn/*; do
-          y=$x/$(basename $i)
-          cp -pd $i $y
-          if ! [ -e $y ]; then rm $y; fi
-        done
-      done
-
-      # Symlink all unit files provided by `systemd.packages`.
-      #
-      # Replacement for the upstream `lndir`-based loop (spec §5.6).
-      # Walks both `$pkg/etc/systemd/$typeDir` and `$pkg/lib/systemd/$typeDir`
-      # (matching upstream's feature set), handling drop-in dirs
-      # (`foo.service.d/`) and `.wants/` dirs by re-creating the directory
-      # and symlinking each entry individually, so merges across multiple
-      # packages work. Plain unit files become single symlinks.
-      packages="${builtins.toString packages}"
-      declare -A unique_packages
-      for k in $packages; do unique_packages[$k]=1; done
-
-      for i in "''${!unique_packages[@]}"; do
-        for base in "$i/etc/systemd/${typeDir}" "$i/lib/systemd/${typeDir}"; do
-          [ -d "$base" ] || continue
-          for fn in "$base"/*; do
-            [ -e "$fn" ] || continue
-            bn=$(basename "$fn")
-            if [ -d "$fn" ]; then
-              # Drop-in dirs (.d) and .wants dirs: recreate the directory
-              # and symlink each entry individually so merges work.
-              mkdir -p "$out/$bn"
-              for inner in "$fn"/*; do
-                [ -e "$inner" ] || continue
-                ln -s "$inner" "$out/$bn/$(basename "$inner")"
-              done
-            else
-              ln -s "$fn" "$out/$bn"
-            fi
-          done
-        done
-      done
-
-      # Symlink units defined by systemd.units where override strategy
-      # shall be automatically detected. If these are also provided by
-      # systemd or systemd.packages, add them as <unit-name>.d/overrides.conf
-      # so they extend the upstream unit instead of replacing it.
-      for i in ${
-        builtins.toString (
-          mapAttrsToList (_n: v: v.unit) (
-            filterAttrs (
-              _n: v: (attrByPath ["overrideStrategy"] "asDropinIfExists" v) == "asDropinIfExists"
-            )
-            units
-          )
-        )
-      }; do
-        fn=$(basename $i/*)
-        if [ -e $out/$fn ]; then
-          if [ "$(readlink -f $i/$fn)" = /dev/null ]; then
-            ln -sfn /dev/null $out/$fn
-          else
-            ${
-        if allowCollisions
-        then ''
-          mkdir -p $out/$fn.d
-          ln -s $i/$fn $out/$fn.d/overrides.conf
-        ''
-        else ''
-          echo "Found multiple derivations configuring $fn!"
-          exit 1
-        ''
-      }
-          fi
-       else
-          ln -fs $i/$fn $out/
-        fi
-      done
-
-      # Symlink units defined by systemd.units which shall be
-      # treated as drop-in file.
-      for i in ${
-        builtins.toString (
-          mapAttrsToList (_n: v: v.unit) (
-            filterAttrs (_n: v: v ? overrideStrategy && v.overrideStrategy == "asDropin") units
-          )
-        )
-      }; do
-        fn=$(basename $i/*)
-        mkdir -p $out/$fn.d
-        ln -s $i/$fn $out/$fn.d/overrides.conf
-      done
-
-      # Create service aliases from aliases option.
-      ${concatStrings (
-        mapAttrsToList (
-          name: unit:
-            concatMapStrings (name2: ''
-              ln -sfn '${name}' $out/'${name2}'
-            '') (unit.aliases or [])
-        )
-        units
-      )}
-
-      # Create .wants, .upholds and .requires symlinks from the wantedBy,
-      # upheldBy and requiredBy options.
-      ${concatStrings (
-        mapAttrsToList (
-          name: unit:
-            concatMapStrings (name2: ''
-              mkdir -p $out/'${name2}.wants'
-              ln -sfn '../${name}' $out/'${name2}.wants'/
-            '') (unit.wantedBy or [])
-        )
-        units
-      )}
-
-      ${concatStrings (
-        mapAttrsToList (
-          name: unit:
-            concatMapStrings (name2: ''
-              mkdir -p $out/'${name2}.upholds'
-              ln -sfn '../${name}' $out/'${name2}.upholds'/
-            '') (unit.upheldBy or [])
-        )
-        units
-      )}
-
-      ${concatStrings (
-        mapAttrsToList (
-          name: unit:
-            concatMapStrings (name2: ''
-              mkdir -p $out/'${name2}.requires'
-              ln -sfn '../${name}' $out/'${name2}.requires'/
-            '') (unit.requiredBy or [])
-        )
-        units
-      )}
-
-      # (Upstream's `type == "system"` tail that manufactures default.target,
-      # ctrl-alt-del.target, and multi-user.target.wants/remote-fs.target is
-      # intentionally omitted — AOS systemd finds those natively at
-      # /lib/systemd/system/ via SYSTEM_DATA_UNIT_DIR. See spec §5.5.)
-    ''; # */
+          ;;
+      esac
+      ln -sfn ${lib.escapeShellArg entry.target} "$out/${path}"
+    '') linkEntries);
+  in
+    if unsupportedEntries != {}
+    then throw "materializeUnits: unsupported manifest entry kinds below /etc/systemd/system"
+    else
+      pkgs.runCommand "${type}-units" {
+        preferLocalBuild = true;
+        allowSubstitutes = false;
+      } ''
+        mkdir -p "$out"
+        ${materializeText}
+        ${materializeLinks}
+      '';
 
   # makeJobScript — render a shell-snippet service option
   # (`script=`/`preStart=`/`postStart=`/`reload=`/`preStop=`/`postStop=`)
