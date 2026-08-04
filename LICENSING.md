@@ -26,6 +26,11 @@ The Apache-licensed Crucible host and QEMU are separate processes. They
 communicate through a public, versioned protocol: a Unix-domain socket is the
 setup and control plane, and shared memory is the high-throughput data plane.
 The protocol is an interoperability contract, not a shared implementation.
+The data plane avoids per-event socket round trips and payload copies. It does
+not currently avoid every kernel entry: scheduler ceiling publication performs
+a non-private futex wake unconditionally. A future waiter-armed optimization
+may skip that wake when no peer is parked, but it must preserve the documented
+race-free futex protocol and ABI.
 
 `crucible-protocol` and `crucible-shmem` contain protocol and transport
 definitions used on both sides of that process boundary. Their permissive

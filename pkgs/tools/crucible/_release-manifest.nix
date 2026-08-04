@@ -126,6 +126,11 @@
         license = "GPL-2.0-only";
         boundary = "loaded-into-qemu-process";
       };
+      boundaryCrates = {
+        packages = ["crucible-protocol" "crucible-shmem"];
+        license = "MIT";
+        selection = "gpl-plugin-consumption";
+      };
       correspondingSource = {
         package = "qemu-crucible-source";
         path = componentPath qemuSourcePackage;
@@ -136,7 +141,9 @@
     };
     licensing = {
       aggregate = true;
-      licenses = ["Apache-2.0" "GPL-2.0-only"];
+      licenses = ["Apache-2.0" "MIT" "GPL-2.0-only"];
+      licenseSetScope = "primary-project-components";
+      thirdPartyLicenseMetadata = "vendored-source-manifests";
       processBoundary = "unix-socket-control+memfd-shared-memory-data";
       sharedMemoryRole = "versioned-process-to-process-protocol";
     };
@@ -198,11 +205,15 @@
     plugin_package=crucible-qemu-plugin
     plugin_path=${manifest.components.plugin.path}
     plugin_license=GPL-2.0-only
+    boundary_crates=crucible-protocol,crucible-shmem
+    boundary_crates_license=MIT
     qemu_corresponding_source_package=qemu-crucible-source
     qemu_corresponding_source_path=${manifest.components.correspondingSource.path}
     qemu_corresponding_source_build_id=${manifest.components.correspondingSource.qemuBuildId}
     corresponding_source_scope=qemu-crucible,crucible-qemu-plugin
-    aggregate_licenses=Apache-2.0,GPL-2.0-only
+    aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only
+    aggregate_license_scope=primary-project-components
+    third_party_license_metadata=vendored-source-manifests
     process_boundary=unix-socket-control+memfd-shared-memory-data
     shmem_abi_version=${shmemAbiVersion}
     shmem_abi=${shmemAbi}

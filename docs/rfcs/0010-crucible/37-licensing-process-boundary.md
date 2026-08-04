@@ -49,7 +49,12 @@ The host and QEMU remain distinct operating-system processes. A socket pair
 negotiates versions and transfers descriptors during setup. Once setup
 completes, the socket is quiescent and high-frequency scheduling, clock, frame,
 I/O, observation, and doorbell traffic flows through shared memory. This retains
-the zero-IPC-round-trip steady state defined by [SHM-1] and [PROTO-1].
+the zero-socket-round-trip data path defined by [SHM-1] and [PROTO-1]. The
+current scheduler ceiling path still enters the kernel for an unconditional
+non-private futex wake; shared memory avoids socket serialization and copying,
+not every syscall. A future waiter-armed optimization may make that wake
+conditional after the existing race-free futex protocol exposes a reliable
+waiter state.
 
 - **[BOUND-4]** Apache host code and GPL-side QEMU code MUST communicate only as
   separate processes through the versioned control and shared-memory protocols.

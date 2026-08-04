@@ -59,7 +59,9 @@ synchronization therefore happens through **atomic reads and writes of shared
 memory plus one cross-process futex**, not through IPC round-trips. There is no
 request/response on the hot path: a VM advancing virtual time reads its ceiling
 with a single relaxed-or-acquire load; the scheduler raising a ceiling does a
-single store plus an optional wake.
+single store plus the current unconditional non-private futex wake. A future
+waiter-armed optimization may make the wake conditional when it can reliably
+prove that no peer is parked.
 
 - **[SHM-1]** Crucible MUST carry all hot-path cross-node synchronization state
   (per-node clocks, per-node status, per-node advance ceilings, and frame queues)

@@ -41,9 +41,12 @@ The protocol carries **control**, never **data**. Concretely:
   through the shmem region of [`13-shmem-abi.md`](13-shmem-abi.md). *Gate:*
   `gate:abi-conformance`. *Spec:* §1, §3.
 
-  *Rationale.* Splitting control from data keeps the hot path free of syscalls
-  and serialization: a quantum advances by writing a u64 to a shmem cell and
-  signalling a wake fd, not by sending a socket message. It also keeps the
+  *Rationale.* Splitting control from data keeps the hot path free of socket
+  round trips, payload copies, and serialization: a quantum advances by writing
+  a u64 to a shmem cell and issuing the current non-private futex wake, not by
+  sending a socket message. The wake is currently unconditional, so this is not
+  a zero-syscall claim; a future waiter-armed optimization may skip it when no
+  peer is parked. The split also keeps the
   protocol tiny — a few message types with fixed-size payloads — which is what
   makes it cheaply fuzzable and golden-vector-checkable ([G-8]). And it isolates
   the determinism-critical machinery (time, ordering) into a single audited

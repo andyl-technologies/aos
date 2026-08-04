@@ -166,6 +166,21 @@
     ++ lib.optionals (manifest.qemu.buildId != qemuPackageMetadataProbe.qemuBuildIdentity) [
       "release manifest QEMU build identity does not match qemu-crucible passthru"
     ]
+    ++ lib.optionals (manifest.components.boundaryCrates.license != "MIT") [
+      "release manifest does not record the GPL plugin's MIT boundary-crate license selection"
+    ]
+    ++ lib.optionals (manifest.components.boundaryCrates.packages != ["crucible-protocol" "crucible-shmem"]) [
+      "release manifest boundary-crate inventory is incomplete"
+    ]
+    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only"]) [
+      "release manifest aggregate project license inventory is incomplete"
+    ]
+    ++ lib.optionals (manifest.licensing.licenseSetScope != "primary-project-components") [
+      "release manifest does not distinguish its project component license set"
+    ]
+    ++ lib.optionals (manifest.licensing.thirdPartyLicenseMetadata != "vendored-source-manifests") [
+      "release manifest does not identify the location of third-party license metadata"
+    ]
     ++ lib.optionals (manifest.abi.shmem.version != shmemAbiVersion) [
       "release manifest shmem ABI ${manifest.abi.shmem.version} does not match Rust ABI ${shmemAbiVersion}"
     ]
@@ -258,6 +273,18 @@
       {
         label = "manifest records host path policy";
         needle = "hostPathPolicy = \"no-host-paths\";";
+      }
+      {
+        label = "manifest records MIT boundary-crate selection";
+        needle = "license = \"MIT\";\n        selection = \"gpl-plugin-consumption\";";
+      }
+      {
+        label = "manifest scopes aggregate licenses to project components";
+        needle = "licenseSetScope = \"primary-project-components\";";
+      }
+      {
+        label = "manifest locates third-party license metadata";
+        needle = "thirdPartyLicenseMetadata = \"vendored-source-manifests\";";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
@@ -373,6 +400,18 @@
         label = "timestamp policy";
         needle = "reproducibility_timestamp_policy=no-wall-clock-timestamps";
       }
+      {
+        label = "aggregate project licenses include MIT";
+        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only";
+      }
+      {
+        label = "aggregate license scope";
+        needle = "aggregate_license_scope=primary-project-components";
+      }
+      {
+        label = "third-party metadata location";
+        needle = "third_party_license_metadata=vendored-source-manifests";
+      }
     ]
     ++ failuresFor "release manifest JSON" manifestJson [
       {
@@ -445,6 +484,10 @@ in
           grep -q "^guest_host_protocol_abi=$GUEST_HOST_PROTOCOL_ABI$" "$manifest_env"
           grep -q "^rpc_abi=$RPC_ABI$" "$manifest_env"
           grep -q '^reproducibility_timestamp_policy=no-wall-clock-timestamps$' "$manifest_env"
+          grep -q '^boundary_crates_license=MIT$' "$manifest_env"
+          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only$' "$manifest_env"
+          grep -q '^aggregate_license_scope=primary-project-components$' "$manifest_env"
+          grep -q '^third_party_license_metadata=vendored-source-manifests$' "$manifest_env"
           grep -q "\"sourceStoreHash\":\"$CRUCIBLE_SOURCE_STORE_HASH\"" "$manifest_json"
           grep -q "\"patchSeriesHash\":\"$QEMU_PATCH_SERIES_HASH\"" "$manifest_json"
           grep -q "\"buildId\":\"$QEMU_BUILD_ID\"" "$manifest_json"

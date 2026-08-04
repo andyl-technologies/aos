@@ -16,8 +16,11 @@ independently_implementable = true
 [transport]
 control_plane = "versioned-unix-socket"
 data_plane = "shared-memory"
-steady_state_syscalls_required = false
-wakeup = "futex-or-eventfd-when-parked"
+steady_state_syscalls_required = true
+data_plane_socket_round_trips = false
+scheduler_ceiling_futex_wake = "unconditional-currently"
+wakeup = "non-private-futex"
+future_waiter_armed_wake_optimization = "documented-not-implemented"
 
 [representation]
 allowed = [

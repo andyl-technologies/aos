@@ -20,6 +20,9 @@ const PLUGIN_LICENSE: &str = "GPL-2.0-only";
 const PLUGIN_PACKAGE: &str = "crucible-qemu-plugin";
 const BOUNDARY_PACKAGES: &[&str] = &["crucible-protocol", "crucible-shmem"];
 
+#[path = "gate_license_boundary/dependencies.rs"]
+mod dependencies;
+
 #[test]
 fn repository_publishes_each_declared_license_scope() -> Result<(), Box<dyn Error>> {
     let root = workspace_crates_dir()?
@@ -71,10 +74,13 @@ fn cargo_metadata_preserves_component_licenses() -> Result<(), Box<dyn Error>> {
         let package = member.as_str().ok_or("workspace member must be a string")?;
         let manifest_path = crates.join(package).join("Cargo.toml");
         let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
-        let expected = expected_license(package);
         let package_table = manifest["package"]
             .as_table()
             .ok_or("package metadata must be a table")?;
+        let package_name = package_table["name"]
+            .as_str()
+            .ok_or("package.name must be a string")?;
+        let expected = expected_license(package_name);
         let actual = declared_package_license(package_table, APACHE_LICENSE);
 
         if actual.as_deref() != Some(expected) {
@@ -96,27 +102,33 @@ fn cargo_metadata_preserves_component_licenses() -> Result<(), Box<dyn Error>> {
 #[test]
 fn plugin_depends_only_on_permissive_boundary_crates() -> Result<(), Box<dyn Error>> {
     let crates = workspace_crates_dir()?;
+    let workspace: Value = fs::read_to_string(crates.join("Cargo.toml"))?.parse()?;
+    let workspace_dependencies = workspace["workspace"]["dependencies"]
+        .as_table()
+        .ok_or("workspace.dependencies must be a table")?;
     let manifest_path = crates.join(PLUGIN_PACKAGE).join("Cargo.toml");
     let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
     let mut failures = Vec::new();
 
-    for table_name in ["dependencies", "build-dependencies"] {
-        let Some(dependencies) = manifest.get(table_name).and_then(Value::as_table) else {
-            continue;
-        };
-        for (name, dependency) in dependencies {
-            let package = dependency
-                .get("package")
-                .and_then(Value::as_str)
-                .unwrap_or(name);
-            let is_internal_crucible = package == "crucible" || package.starts_with("crucible-");
-            if is_internal_crucible && !BOUNDARY_PACKAGES.contains(&package) {
-                failures.push(format!(
+    dependencies::visit_production_dependency_tables(
+        &manifest,
+        &mut |table_name, dependencies| {
+            for (name, dependency) in dependencies {
+                let package = dependencies::resolved_dependency_package(
+                    name,
+                    dependency,
+                    workspace_dependencies,
+                );
+                let is_internal_crucible =
+                    package == "crucible" || package.starts_with("crucible-");
+                if is_internal_crucible && !BOUNDARY_PACKAGES.contains(&package) {
+                    failures.push(format!(
                     "{PLUGIN_PACKAGE}: production {table_name} entry `{package}` crosses the GPL boundary"
                 ));
+                }
             }
-        }
-    }
+        },
+    )?;
 
     for boundary in BOUNDARY_PACKAGES {
         let boundary_manifest: Value =
@@ -213,7 +225,19 @@ fn public_shmem_interface_is_process_shaped() -> Result<(), Box<dyn Error>> {
     );
     assert_eq!(
         interface["transport"]["steady_state_syscalls_required"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        interface["transport"]["data_plane_socket_round_trips"].as_bool(),
         Some(false)
+    );
+    assert_eq!(
+        interface["transport"]["scheduler_ceiling_futex_wake"].as_str(),
+        Some("unconditional-currently")
+    );
+    assert_eq!(
+        interface["transport"]["future_waiter_armed_wake_optimization"].as_str(),
+        Some("documented-not-implemented")
     );
 
     let forbidden = string_set(&interface["representation"]["forbidden"])?;
