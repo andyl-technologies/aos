@@ -58,7 +58,7 @@ split.)
     crucible-guest       OPTIONAL in-guest white-box agent (doorbell client)
 
   L1  CO-SIM TRANSPORT
-    crucible-shmem     the #[repr(C)] shared-memory ABI (single source of truth)
+    crucible-shmem     the public #[repr(C)] shared-memory process protocol
     crucible-protocol  the IPC wire protocol (framing, versioning, golden vectors)
     crucible-device    disk / 9p / net I/O sub-nodes (deterministic completion)
 
@@ -74,7 +74,7 @@ One-line responsibilities:
 | --- | --- | --- |
 | L0 | `crucible-sim` | Deterministic runtime/scheduler primitives: seeded decision RNG, ordered collections, deterministic `select`, content-hashing — the substrate every higher layer must use. |
 | L0 | `crucible-assert` | The assertion vocabulary *types* — `Always`/`Sometimes`/`Eventually`/`AfterQuiescence`/`Reachable` and their (de)serialization — with no evaluation engine. |
-| L1 | `crucible-shmem` | The `#[repr(C)]` shared-memory layout (per-node clocks, status, SPSC frame queues): the single source of truth shared with the C plugin patches. |
+| L1 | `crucible-shmem` | The public `#[repr(C)]` shared-memory process protocol (per-node clocks, status, SPSC frame queues), with generated language views and golden vectors. |
 | L1 | `crucible-protocol` | The host↔plugin IPC protocol: message framing, explicit version field, encode/decode, golden vectors. |
 | L1 | `crucible-device` | Disk (CoW overlay), 9p (read-only, path-hashed QIDs), and net-link I/O sub-nodes with deterministic completion events. |
 | L2 | `crucible-qemu` | Host-side QEMU process launch/control and the concrete VM driver wrapped by higher layers. |
@@ -121,8 +121,9 @@ One-line responsibilities:
    crucible-guest       (L2 agent)   ── depends on ──► crucible-shmem      (L1 only)
 ```
 
-The two L2 in-VM crates (`crucible-qemu-plugin`, `crucible-guest`) deliberately
-depend **only on L1** (the ABI + protocol), never on the engine: they run inside
+The QEMU-loaded plugin deliberately depends **only on the dual-licensed L1
+boundary crates** (the ABI + protocol), never on the engine. The optional guest
+crate uses only its versioned boundary protocol. They run inside
 a different address space (or process) and must share *only* the wire/memory
 contract. The host-side `crucible-qemu` is the sole L2 exception: it may depend
 on `crucible` to implement the concrete host adapter for the engine `Backend`
@@ -222,8 +223,8 @@ the event-log schema itself (L3).
 
 ### L1 — co-sim transport
 
-**`crucible-shmem`** owns the `#[repr(C)]` shared-memory layout — the **single
-source of truth for the ABI shared with the C patches**
+**`crucible-shmem`** owns the `#[repr(C)]` shared-memory layout — the
+**mechanically checked implementation schema for a public process protocol**
 ([`13-shmem-abi.md`](13-shmem-abi.md)). It defines the region header (per-node
 clocks, status words), the SPSC ring buffers, the `FrameEntry` layout, the
 version constant, and the `unsafe` accessors that map and read/write the region.
@@ -231,6 +232,8 @@ The C side of the QEMU patch series is generated from / checked against these
 definitions (a `cbindgen`-style header emit + the `gate:abi-conformance` golden
 vectors). *Not in it:* any message *semantics* or framing (that is
 `crucible-protocol`), any scheduling, any QEMU process control.
+It is `MIT OR Apache-2.0`, contains no QEMU dependency or header, and may expose
+only protocol-shaped values allowed by 37/[BOUND-6].
 
 **`crucible-protocol`** owns the IPC **wire protocol**
 ([`14-protocol.md`](14-protocol.md)): message kinds, framing, the explicit
@@ -240,6 +243,7 @@ corpus. It is an unsafe-boundary crate only for the Unix `SCM_RIGHTS`
 owned byte buffers. *Not in it:* shmem mapping (that is `crucible-shmem`), QEMU
 process control (that is `crucible-qemu`), or the meaning of a delivered frame
 to the scheduler (L3).
+It is `MIT OR Apache-2.0` and contains no QEMU implementation dependency.
 
 **`crucible-device`** owns the **I/O sub-nodes**
 ([`15-io-subnodes.md`](15-io-subnodes.md)): the disk model (CoW overlay over a
@@ -270,6 +274,8 @@ entry points, virtual-time control via `qemu_plugin_request_time_control`
 basic-block coverage, and the device/channel callbacks. It is built as a separate
 `cdylib` artifact loaded by QEMU. *Not in it:* host policy of any kind; it is a
 mechanism that the host (`crucible-qemu`) configures over the ABI.
+Because it loads into QEMU and calls QEMU APIs, it is GPL-2.0-only and may depend
+only on GPL-compatible code, including the dual-licensed L1 boundary crates.
 
 **`crucible-guest`** owns the **OPTIONAL** white-box agent
 ([`16-guest-host-channel.md`](16-guest-host-channel.md)): a tiny in-guest client
@@ -451,11 +457,11 @@ contract and which crate realizes a file.
 | --- | --- | --- |
 | `crucible-sim` | [`04`](04-determinism-contract.md), [`08`](08-scheduling.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism`, `gate:harness-lint` |
 | `crucible-assert` | [`18`](18-assertions-properties.md) | `gate:layer0-determinism`, `gate:harness-lint` |
-| `crucible-shmem` | [`13`](13-shmem-abi.md) | `gate:abi-conformance` |
-| `crucible-protocol` | [`14`](14-protocol.md), [`16`](16-guest-host-channel.md) | `gate:abi-conformance`, `gate:harness-lint` |
+| `crucible-shmem` | [`13`](13-shmem-abi.md), [`37`](37-licensing-process-boundary.md) | `gate:abi-conformance`, `gate:license-boundary` |
+| `crucible-protocol` | [`14`](14-protocol.md), [`16`](16-guest-host-channel.md), [`37`](37-licensing-process-boundary.md) | `gate:abi-conformance`, `gate:harness-lint`, `gate:license-boundary` |
 | `crucible-device` | [`15`](15-io-subnodes.md) | `gate:layer1-injection`, `gate:harness-lint` |
-| `crucible-qemu` | [`10`](10-qemu-integration.md), [`11`](11-qemu-patches.md) | `gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert` |
-| `crucible-qemu-plugin` | [`11`](11-qemu-patches.md), [`12`](12-qemu-plugin.md) | `gate:single-vm-fingerprint`, `gate:patch-microtests` |
+| `crucible-qemu` | [`10`](10-qemu-integration.md), [`11`](11-qemu-patches.md), [`37`](37-licensing-process-boundary.md) | `gate:single-vm-fingerprint`, `gate:any-guest`, `gate:qemu-inert`, `gate:license-boundary` |
+| `crucible-qemu-plugin` | [`11`](11-qemu-patches.md), [`12`](12-qemu-plugin.md), [`37`](37-licensing-process-boundary.md) | `gate:single-vm-fingerprint`, `gate:patch-microtests`, `gate:license-boundary` |
 | `crucible-guest` | [`16`](16-guest-host-channel.md) | `gate:single-vm-fingerprint` (markers excluded from comparison) |
 | `crucible` | [`05`](05-execution-model.md), [`06`](06-spatial-graph.md), [`07`](07-temporal-graph.md), [`08`](08-scheduling.md), [`17`](17-fault-injection.md), [`18`](18-assertions-properties.md), [`19`](19-observability-event-log.md) | `gate:replay-oracle`, `gate:content-address`, `gate:scheduler-liveness`, `gate:divergence-bisect`, `gate:harness-lint` |
 | `crucible-cas` | [`35`](35-distributed-continuous-exploration.md) | `gate:fleet-equivalence`, `gate:campaign-continuity`, `gate:content-address` |
@@ -517,7 +523,8 @@ unsafe_op_in_unsafe_fn = "deny"   # UNSAFE crates re-affirm; SAFE crates forbid
 
 [workspace.package]
 edition = "2021"
-license = "see AOS"
+# Individual packages declare Apache-2.0, MIT OR Apache-2.0, or GPL-2.0-only
+# according to LICENSING.md and file 37.
 ```
 
 `crucible-qemu-plugin` builds a `cdylib`; most crates build `lib`s.
@@ -561,6 +568,7 @@ enters a release build.
 | `gate:single-vm-fingerprint` | `crucible-qemu` + `crucible-qemu-plugin` `tests/` | one-VM fingerprint match |
 | `gate:layer1-injection` | `crucible-device` + `crucible-protocol` `tests/` | injection-icount purity |
 | `gate:abi-conformance` | `crucible-harness` golden vectors over `crucible-shmem`/`crucible-protocol`/`crucible-api` plus `crucible-qemu-plugin`/`crucible-guest` ABI tests | frozen golden vectors |
+| `gate:license-boundary` | `crucible-harness` dependency/license/protocol/package checks | Always; every boundary change and release construction |
 | `gate:replay-oracle` | `crucible` `tests/` (`--features test-double`) | fat-hash == thin-hash |
 | `gate:content-address` | `crucible` + `crucible-sim` `tests/` | hash equality/collision |
 | `gate:scheduler-liveness` | `crucible` `tests/` (`--features test-double`) | reaches quiescence/limit |

@@ -19,8 +19,8 @@ development.
   It runs as a native service or as a Cloudflare Worker and exposes a web
   console, HTTP API, and the registry and cache protocols used by `apr`, `apm`,
   Git, and Nix.
-- **[Crucible](docs/users/crucible/)** provides deterministic state-space
-  exploration and debugging for unmodified QEMU guests.
+- **[Crucible](docs/users/crucible/)** runs repeatable black-box network tests
+  against unmodified guests using QEMU-backed execution.
 
 ## Build a server image
 
@@ -111,4 +111,8 @@ VM and fleet checks require a Linux builder with KVM.
   [Nginx and Curl quickstart](docs/users/crucible/quickstart.md)
 - [Registry architecture and implementation notes](docs/registry/)
 
-AOS is licensed under the [Apache License 2.0](LICENSE).
+Original AOS code is generally licensed under the
+[Apache License 2.0](LICENSE). The repository and its distributions also contain
+separately licensed components, including QEMU and its Crucible integration.
+See the authoritative [license map](LICENSING.md) and complete license texts in
+[`LICENSES/`](LICENSES/).

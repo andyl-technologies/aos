@@ -7,6 +7,11 @@ contract between the Rust host engine and the C QEMU side, and a change to any o
 them is a versioned, conformance-gated event. Treat every number in this file as
 normative.
 
+It is also a public process protocol, not a channel for either implementation's
+private objects. The region's semantics must be independently implementable;
+the additional license-boundary constraints are normative in
+[`37-licensing-process-boundary.md`](37-licensing-process-boundary.md).
+
 Requirement IDs in this file use the prefix `SHM`. Gate names referenced here
 (`gate:abi-conformance`, `gate:layer1-injection`, `gate:content-address`,
 `gate:qemu-inert`, `gate:replay-oracle`) are defined in
@@ -94,12 +99,22 @@ silently collapses — a scheduler ceiling read from the wrong offset, a frame's
 delivery icount parsed as its length.
 
 - **[SHM-3]** The Rust `#[repr(C)]` definitions in the `crucible-shmem` crate are
-  the **single authoritative source** of the region layout. Every other view of
+  the **mechanically checked source** of the publicly specified region layout.
+  The normative field semantics, offsets, ordering rules, compatibility policy,
+  and golden vectors MUST be sufficient for an independent implementation.
+  Every other language view of
   the region — the generated C header consumed by the QEMU patches, any
   documentation table, any test vector — MUST be derived from, or checked against,
   those Rust definitions. No hand-maintained second copy of the layout is
   permitted. *Gate:* `gate:abi-conformance`. *Spec:* §13.2, forward-ref
   [`11-qemu-patches.md`](11-qemu-patches.md), [`12-qemu-plugin.md`](12-qemu-plugin.md).
+
+- **[SHM-3A]** Shared fields MUST be protocol values and MUST NOT contain native
+  pointers, QEMU private structures, function/callback tables, Rust trait
+  objects or compiler-selected enum layouts, or shared ownership of a
+  process-private object. References within the region MUST be checked offsets
+  from its base. *Gate:* `gate:abi-conformance`, `gate:license-boundary`.
+  *Spec:* §13.2, 37/[BOUND-6].
 
 - **[SHM-4]** `crucible-shmem` MUST emit a generated C header
   (`crucible_shmem_abi.h`) describing every shared struct, its fields, and the ABI

@@ -25,10 +25,10 @@ the ABIs this file versions are [`13-shmem-abi.md`](13-shmem-abi.md),
 [`16-guest-host-channel.md`](16-guest-host-channel.md), and
 [`21-api.md`](21-api.md); the `ratchet` seam is RFC-0007.
 
-The four canonical gates this file wires and refers to are, per
+The five canonical gates this file wires and refers to are, per
 [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md) §1:
 `gate:qemu-inert`, `gate:patch-microtests`, `gate:e2e-determinism`, and
-`gate:abi-conformance`.
+`gate:abi-conformance`, and `gate:license-boundary`.
 
 ## 26.1 AOS build principles Crucible inherits (non-negotiable)
 
@@ -206,7 +206,19 @@ is the *only* thing that activates sim mode ([PATCH-1]).
   only AOS-built dependencies. It MUST be built against the **same pinned QEMU
   plugin-API headers** as `qemu-crucible` so the plugin ABI version it advertises
   matches the patched binary's exported surface ([PATCH-40], §11.5–§11.6). *Gate:*
-  `gate:abi-conformance`. *Spec:* §26.4; satisfies [G-7], [G-8].
+  `gate:abi-conformance`, `gate:license-boundary`. The plugin is GPL-2.0-only
+  in-process QEMU code and may depend only on GPL-compatible dependencies,
+  including the dual-licensed boundary crates; it MUST NOT depend on an
+  Apache-only host crate. *Spec:* §26.4; satisfies [G-7], [G-8], [BOUND-2].
+
+- **[PKG-17A]** Distribution outputs MUST preserve accurate component license
+  metadata and keep the Apache host, GPL-side QEMU/plugin, and aggregate bundle
+  distinguishable. Every distributed patched-QEMU binary MUST have an equally
+  accessible, identity-matched complete corresponding-source artifact containing
+  the exact source, patches, integration and generated build inputs, build
+  scripts, and notices. Release construction MUST fail when it is absent.
+  *Gate:* `gate:license-boundary`. *Spec:* §26.4, 37 §37.4; satisfies
+  [BOUND-3], [BOUND-10], [BOUND-11].
 
 - **[PKG-18]** The plugin output MUST be co-located with `qemu-crucible` (e.g. as
   a propagated dependency exposed under a stable relative path) so the CLI's

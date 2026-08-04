@@ -1,5 +1,32 @@
 # ANDYL OS — Build Principles
 
+## Crucible/QEMU license boundary
+
+These invariants are mandatory for maintainers and automated agents. The
+normative policy is [`LICENSING.md`](LICENSING.md) and RFC-0010
+[`37-licensing-process-boundary.md`](docs/rfcs/0010-crucible/37-licensing-process-boundary.md).
+
+- The Apache-licensed Crucible host and GPL-side QEMU/plugin MUST remain
+  separate processes. Their only integration surfaces are the versioned Unix
+  socket control protocol and versioned shared-memory data protocol.
+- Shared memory is a public process protocol. It MUST NOT contain native
+  pointers, QEMU private structures, function/callback tables, Rust-native enum
+  layouts, or other process-private objects. Cross-region references are checked
+  offsets; changes require explicit compatibility/version handling.
+- Code compiled into, linked into, or dynamically loaded by QEMU belongs to the
+  applicable QEMU/GPL-compatible scope. Apache-only crates MUST NOT link QEMU,
+  include QEMU headers, or expose QEMU callback entry points.
+- `crucible-protocol` and `crucible-shmem` are permissive boundary components;
+  neither may acquire a dependency on a QEMU implementation or QEMU headers.
+- Boundary changes MUST pass `gate:abi-conformance` and
+  `gate:license-boundary`. A distributed patched-QEMU binary MUST have a
+  matching complete corresponding-source artifact; release automation fails
+  closed when it is absent.
+
+Guest assertion semantics and evaluation remain Apache host-side. QEMU/plugin
+observation changes remain GPL-side and cross the boundary only through the
+versioned shared-memory or doorbell protocol.
+
 ## Hermetic builds from source
 
 All packages in this repository MUST be built hermetically from source using

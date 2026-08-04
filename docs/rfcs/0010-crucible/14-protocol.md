@@ -16,6 +16,9 @@ versioned boundary ABIs of [G-8] and is guarded by `gate:abi-conformance`; its
 inertness when sim mode is off is guarded by `gate:qemu-inert`; its
 responsiveness to control operations is guarded by `gate:control-responsive`
 (gates defined in [`24-determinism-harness-testing.md`](24-determinism-harness-testing.md)).
+Like the shared-memory data plane, this is a public process protocol that either
+side can implement without the other's private code; see
+[`37-licensing-process-boundary.md`](37-licensing-process-boundary.md).
 
 ## 1. Scope and the control/data split
 
