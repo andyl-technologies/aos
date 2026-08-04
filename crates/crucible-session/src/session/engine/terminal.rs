@@ -36,6 +36,23 @@ impl<L> Engine<L> {
         self.enter_stopped(TerminalCause::BackendCrash(detail))
     }
 
+    /// Publishes an actor failure as a terminal crash even if checkpointing fails.
+    pub(crate) fn stop_after_actor_crash(&mut self, mut detail: String) {
+        self.pending_control.clear();
+        self.active_step = None;
+        match self.save_current_checkpoint() {
+            Ok(checkpoint) => self.terminal_savepoint = Some(checkpoint),
+            Err(error) => {
+                detail.push_str("; terminal checkpoint failed: ");
+                detail.push_str(&error.to_string());
+                self.terminal_savepoint = None;
+            }
+        }
+        self.state = EngineState::Stopped {
+            outcome: Outcome::Crashed { detail },
+        };
+    }
+
     pub(super) fn enter_stopped(&mut self, cause: TerminalCause) -> Result<(), SessionError> {
         let outcome = match cause {
             TerminalCause::Failed(violations) => Outcome::Failed { violations },

@@ -1086,17 +1086,12 @@ pub(super) async fn observe_run_final_state<C>(
 where
     C: ControlClient + Sync,
 {
-    let max_yields = run_plan
-        .max_quanta
-        .unwrap_or(RUN_INTERACTIVE_ACK_QUANTA_BOUND);
-    let mut last_frontier_ticks = 0;
-    let mut last_quanta = 0;
-    let mut last_session = None;
     let mut watch_statuses = Vec::new();
-    for _ in 0..max_yields {
+    loop {
         for _ in 0..run_plan.observer_profile.pre_poll_yields {
             tokio::task::yield_now().await;
         }
+        let mut stream_ended = false;
         match run_plan.observer_profile.poll_order {
             VerifyPollOrder::EventThenState => {
                 if observe_next_event(
@@ -1109,16 +1104,17 @@ where
                 )
                 .await?
                 {
-                    break;
+                    stream_ended = true;
                 }
-                if observe_next_state_update(
-                    control,
-                    run_plan.observer_profile.state_timeout_ms,
-                    state_updates,
-                )
-                .await?
+                if !stream_ended
+                    && observe_next_state_update(
+                        control,
+                        run_plan.observer_profile.state_timeout_ms,
+                        state_updates,
+                    )
+                    .await?
                 {
-                    break;
+                    stream_ended = true;
                 }
             }
             VerifyPollOrder::StateThenEvent => {
@@ -1129,19 +1125,20 @@ where
                 )
                 .await?
                 {
-                    break;
+                    stream_ended = true;
                 }
-                if observe_next_event(
-                    control,
-                    run_plan.observer_profile.event_timeout_ms,
-                    streamed_events,
-                    streamed_event_frames,
-                    coverage_events,
-                    streamed_event_cursor,
-                )
-                .await?
+                if !stream_ended
+                    && observe_next_event(
+                        control,
+                        run_plan.observer_profile.event_timeout_ms,
+                        streamed_events,
+                        streamed_event_frames,
+                        coverage_events,
+                        streamed_event_cursor,
+                    )
+                    .await?
                 {
-                    break;
+                    stream_ended = true;
                 }
             }
         }
@@ -1155,19 +1152,15 @@ where
                 "run session disappeared before the engine reported an outcome",
             ));
         };
-        let state = format!("{:?}", session.state).to_ascii_lowercase();
-        last_session = Some(session.clone());
-        last_frontier_ticks = session.frontier.ticks;
-        last_quanta = session.quanta_stepped;
         if run_plan.watch_streams_live_status {
             watch_statuses.push(run_watch_status(session));
         }
         let virtual_time_timed_out = run_plan
             .max_virtual_time_ticks
             .is_some_and(|budget| session.frontier.ticks >= budget);
-        let quantum_timed_out = run_plan
-            .max_quanta
-            .is_some_and(|budget| session.quanta_stepped >= budget && state != "stopped");
+        let quantum_timed_out = run_plan.max_quanta.is_some_and(|budget| {
+            session.quanta_stepped >= budget && session.state != LiveStateKind::Stopped
+        });
         if virtual_time_timed_out {
             return stop_budget_timed_out_session(
                 client,
@@ -1194,7 +1187,7 @@ where
             )
             .await;
         }
-        if state == "stopped" {
+        if session.state == LiveStateKind::Stopped {
             drain_terminal_event_log(
                 control,
                 session.event_log_len,
@@ -1219,26 +1212,16 @@ where
                 watch_statuses,
             });
         }
+        if stream_ended {
+            return Err(backend_error(format!(
+                "run observation stream ended while session remained running at frontier {} after {} quanta",
+                session.frontier.ticks, session.quanta_stepped
+            )));
+        }
         for _ in 0..run_plan.observer_profile.post_poll_yields {
             tokio::task::yield_now().await;
         }
     }
-    if let Some(session) = last_session {
-        return stop_budget_timed_out_session(
-            client,
-            control,
-            command_id,
-            acknowledged_commands,
-            String::from("timeout"),
-            session,
-            watch_statuses,
-            run_plan.watch_streams_live_status,
-        )
-        .await;
-    }
-    Err(backend_error(format!(
-        "run observation ended before the engine reported an outcome at frontier {last_frontier_ticks} after {last_quanta} quanta"
-    )))
 }
 
 pub(super) async fn query_execution_fingerprint(
