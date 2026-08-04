@@ -124,11 +124,17 @@ The usual progression is:
 
 ## Guide map
 
+Start with the [Nginx/Curl tutorial](quickstart.md). It builds the runtime and a
+workload guest, generates a two-node scenario through the public Rust API, and
+runs that scenario on the live QEMU backend.
+
+For deeper work:
+
 - [Scenarios](scenarios.md) explains scenario identity, authoring, and input
   resolution.
-- [Running Crucible](running.md) covers backend discovery, seeds, terminal
-  conditions, output, and exit codes.
-- [Reproduction and branching](reproduction.md) covers `verify`, artifacts,
+- [Running Crucible](running.md) is the command reference for backend discovery,
+  seeds, terminal conditions, output, and exit codes.
+- [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
   `replay`, `save`, `resume`, and `fork`.
 - [Exploration](exploration.md) covers bounded search, fuzzing, and triage.
 - [Interactive control and debugging](debugging.md) covers the current

@@ -136,8 +136,28 @@ in
         ${doctestPackageFlags}
     '';
 
+    # The check phase enables the test-only backend and writes a feature-enabled
+    # binary to target/release. Rebuild the installed CLI without test features.
+    preInstall = ''
+      cargo build \
+        --release \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        -p crucible-cli \
+        --bin crucible
+    '';
+
     postInstall = ''
       test -x "$out/bin/crucible"
+      if "$out/bin/crucible" --help | grep -q 'auto|qemu|double'; then
+        echo "installed Crucible CLI unexpectedly contains the test-only backend" >&2
+        exit 1
+      fi
+      if "$out/bin/crucible" selftest --help | grep -q -- '--with-qemu'; then
+        echo "installed Crucible CLI unexpectedly exposes --with-qemu" >&2
+        exit 1
+      fi
 
       mkdir -p "$out/share/aos/crucible"
       cat > "$out/share/aos/crucible/release-manifest.env" <<'CRUCIBLE_RELEASE_MANIFEST'

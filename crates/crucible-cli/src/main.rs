@@ -184,21 +184,6 @@ struct Cli {
     command: Commands,
 }
 
-impl Cli {
-    fn output_format(&self) -> OutputFormat {
-        resolve_output_format(self.format, io::stdout().is_terminal())
-    }
-}
-
-/// Selects the explicit format or a terminal-appropriate default.
-fn resolve_output_format(explicit: Option<OutputFormat>, stdout_is_terminal: bool) -> OutputFormat {
-    match explicit {
-        Some(format) => format,
-        None if stdout_is_terminal => OutputFormat::Table,
-        None => OutputFormat::Jsonl,
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 enum Backend {
     /// Discover the best local backend.
