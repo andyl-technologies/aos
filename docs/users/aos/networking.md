@@ -1,8 +1,11 @@
 # Configure networking
 
 AOS uses systemd-networkd for links and addresses and systemd-resolved for
-name resolution. Networking is build-time system policy: put it in the system
-variant, not runtime `host.nix`.
+name resolution. Networking is release-time image policy in the current early
+preview. Runtime `host.nix` understands these options but does not activate
+them yet. The examples below document the active policy and are for release
+maintainers; see
+[Build and customize release images](../../maintainers/system-images.md).
 
 Keep console access while changing static addressing. An incorrect interface
 name, gateway, VLAN, or bond can make an otherwise healthy image unreachable.
@@ -62,13 +65,8 @@ routing, or explicit route tables. Use a reviewed raw networkd unit through
 `environment.etc` only when the generated interface is insufficient, and
 avoid defining two units that match the same link.
 
-Inspect the generated policy before building an image:
-
-```sh
-nix-build -A systems.acme-server.build.toplevel -o result-system
-sed -n '1,200p' result-system/etc/systemd/network/10-ens3.network
-sed -n '1,200p' result-system/etc/systemd/resolved.conf
-```
+Release maintainers should inspect the generated networkd and resolved files
+in the evaluated system closure before publishing an image.
 
 ## Configure DNS
 
