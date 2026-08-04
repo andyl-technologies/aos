@@ -60,6 +60,19 @@ const GET_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/GetPlacement";
 const CREATE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/CreatePlacement";
 /// Canonical Connect namespace for mutable placement updates.
 const UPDATE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/UpdatePlacement";
+/// Canonical Connect namespace for the desired/observed authority view.
+const GET_WRITE_AUTHORITY_PATH: &str = "/aos.hub.v1.TopologyService/GetWriteAuthority";
+/// Canonical Connect namespace for immutable promotion planning.
+const PLAN_PROMOTE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/PlanPromotePlacement";
+/// Canonical Connect namespace for promotion-plan application.
+const PROMOTE_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/PromotePlacement";
+/// Canonical Connect namespace for controller authority observations.
+const RECONCILE_WRITE_AUTHORITY_PATH: &str = "/aos.hub.v1.TopologyService/ReconcileWriteAuthority";
+/// Canonical Connect namespace for explicit read-only planning.
+const PLAN_REMOVE_WRITE_AUTHORITY_PATH: &str =
+    "/aos.hub.v1.TopologyService/PlanRemoveWriteAuthority";
+/// Canonical Connect namespace for explicit read-only plan application.
+const REMOVE_WRITE_AUTHORITY_PATH: &str = "/aos.hub.v1.TopologyService/RemoveWriteAuthority";
 /// Canonical Connect namespace for placement drain plans/applies.
 const DRAIN_PLACEMENT_PATH: &str = "/aos.hub.v1.TopologyService/DrainPlacement";
 /// Canonical Connect namespace for placement deletion plans/applies.
@@ -1315,6 +1328,16 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
     );
     r = rpc_route!(r, CREATE_PLACEMENT_PATH, create_placement);
     r = rpc_route!(r, UPDATE_PLACEMENT_PATH, update_placement);
+    r = rpc_route!(r, GET_WRITE_AUTHORITY_PATH, get_write_authority);
+    r = rpc_route!(r, PLAN_PROMOTE_PLACEMENT_PATH, plan_promote_placement);
+    r = rpc_route!(r, PROMOTE_PLACEMENT_PATH, promote_placement);
+    r = rpc_route!(r, RECONCILE_WRITE_AUTHORITY_PATH, reconcile_write_authority);
+    r = rpc_route!(
+        r,
+        PLAN_REMOVE_WRITE_AUTHORITY_PATH,
+        plan_remove_write_authority
+    );
+    r = rpc_route!(r, REMOVE_WRITE_AUTHORITY_PATH, remove_write_authority);
     r = rpc_route!(r, DRAIN_PLACEMENT_PATH, drain_placement);
     r = rpc_route!(r, DELETE_PLACEMENT_PATH, delete_placement);
     // PackageService
@@ -1811,6 +1834,30 @@ mod tests {
         assert_eq!(
             UPDATE_PLACEMENT_PATH,
             "/aos.hub.v1.TopologyService/UpdatePlacement"
+        );
+        assert_eq!(
+            GET_WRITE_AUTHORITY_PATH,
+            "/aos.hub.v1.TopologyService/GetWriteAuthority"
+        );
+        assert_eq!(
+            PLAN_PROMOTE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/PlanPromotePlacement"
+        );
+        assert_eq!(
+            PROMOTE_PLACEMENT_PATH,
+            "/aos.hub.v1.TopologyService/PromotePlacement"
+        );
+        assert_eq!(
+            RECONCILE_WRITE_AUTHORITY_PATH,
+            "/aos.hub.v1.TopologyService/ReconcileWriteAuthority"
+        );
+        assert_eq!(
+            PLAN_REMOVE_WRITE_AUTHORITY_PATH,
+            "/aos.hub.v1.TopologyService/PlanRemoveWriteAuthority"
+        );
+        assert_eq!(
+            REMOVE_WRITE_AUTHORITY_PATH,
+            "/aos.hub.v1.TopologyService/RemoveWriteAuthority"
         );
         assert_eq!(
             DRAIN_PLACEMENT_PATH,

@@ -43,6 +43,92 @@ async fn login(printer: &Printer, hub: &str, provisioning_token: &str) -> Result
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use aos_remote::{PlacementHashRange, PlacementObservation, PlacementSpec, PlacementStatus};
+
+    use super::*;
+
+    #[test]
+    fn placement_json_keeps_the_normalized_snake_case_contract() {
+        let placement = Placement {
+            name: "west".to_string(),
+            storage_binding_name: "origin".to_string(),
+            prefix: "registry/west".to_string(),
+            spec: Some(PlacementSpec {
+                kind: "shard".to_string(),
+                desired_state: "active".to_string(),
+                desired_read_enabled: true,
+                read_order: 20,
+                write_spec_version: 3,
+                requires_conditional_writes: true,
+                hash_range: Some(PlacementHashRange {
+                    start: 0,
+                    end: 32_768,
+                }),
+            }),
+            observation: Some(PlacementObservation {
+                state: "ready".to_string(),
+                completeness: "partial".to_string(),
+                observed_at: 100,
+                observation_version: "4".to_string(),
+                mutable_publication_id: "pub-1".to_string(),
+                pending_publication_id: "pub-2".to_string(),
+                watermark_resource_version: "9".to_string(),
+            }),
+            status: Some(PlacementStatus {
+                derived_role: "replica".to_string(),
+                desired_writer: false,
+                observed_writer: false,
+                promotion_pending: false,
+                effective_read_enabled: true,
+                effective_write_enabled: false,
+            }),
+            created_at: 90,
+            updated_at: 100,
+            resource_version: "5".to_string(),
+        };
+
+        assert_eq!(
+            placement_json(&placement).unwrap(),
+            serde_json::json!({
+                "name": "west",
+                "storage_binding_name": "origin",
+                "prefix": "registry/west",
+                "spec": {
+                    "kind": "shard",
+                    "desired_state": "active",
+                    "desired_read_enabled": true,
+                    "read_order": 20,
+                    "write_spec_version": 3,
+                    "requires_conditional_writes": true,
+                    "hash_range": { "start": 0, "end": 32768 },
+                },
+                "observation": {
+                    "state": "ready",
+                    "completeness": "partial",
+                    "observed_at": 100,
+                    "observation_version": "4",
+                    "mutable_publication_id": "pub-1",
+                    "pending_publication_id": "pub-2",
+                    "watermark_resource_version": "9",
+                },
+                "status": {
+                    "derived_role": "replica",
+                    "desired_writer": false,
+                    "observed_writer": false,
+                    "promotion_pending": false,
+                    "effective_read_enabled": true,
+                    "effective_write_enabled": false,
+                },
+                "created_at": 90,
+                "updated_at": 100,
+                "resource_version": "5",
+            })
+        );
+    }
+}
+
 /// Dispatches one `aos hub` subcommand.
 ///
 /// # Errors
@@ -79,22 +165,59 @@ pub async fn run(printer: &Printer, command: &HubCmd) -> Result<()> {
 }
 
 /// Renders one placement as a stable public JSON object.
-fn placement_json(placement: &Placement) -> serde_json::Value {
-    serde_json::json!({
+fn placement_json(placement: &Placement) -> Result<serde_json::Value> {
+    let spec = placement
+        .spec
+        .as_ref()
+        .context("the hub returned a placement without desired spec")?;
+    let observation = placement
+        .observation
+        .as_ref()
+        .context("the hub returned a placement without observation")?;
+    let status = placement
+        .status
+        .as_ref()
+        .context("the hub returned a placement without status projection")?;
+    let hash_range = spec.hash_range.as_ref().map(|range| {
+        serde_json::json!({
+            "start": range.start,
+            "end": range.end,
+        })
+    });
+    Ok(serde_json::json!({
         "name": placement.name,
         "storage_binding_name": placement.storage_binding_name,
         "prefix": placement.prefix,
-        "role": placement.role,
-        "state": placement.state,
-        "completeness": placement.completeness,
-        "read_enabled": placement.read_enabled,
-        "write_enabled": placement.write_enabled,
-        "read_order": placement.read_order,
-        "write_order": placement.write_order,
+        "spec": {
+            "kind": spec.kind,
+            "desired_state": spec.desired_state,
+            "desired_read_enabled": spec.desired_read_enabled,
+            "read_order": spec.read_order,
+            "write_spec_version": spec.write_spec_version,
+            "requires_conditional_writes": spec.requires_conditional_writes,
+            "hash_range": hash_range,
+        },
+        "observation": {
+            "state": observation.state,
+            "completeness": observation.completeness,
+            "observed_at": observation.observed_at,
+            "observation_version": observation.observation_version,
+            "mutable_publication_id": observation.mutable_publication_id,
+            "pending_publication_id": observation.pending_publication_id,
+            "watermark_resource_version": observation.watermark_resource_version,
+        },
+        "status": {
+            "derived_role": status.derived_role,
+            "desired_writer": status.desired_writer,
+            "observed_writer": status.observed_writer,
+            "promotion_pending": status.promotion_pending,
+            "effective_read_enabled": status.effective_read_enabled,
+            "effective_write_enabled": status.effective_write_enabled,
+        },
         "created_at": placement.created_at,
         "updated_at": placement.updated_at,
         "resource_version": placement.resource_version,
-    })
+    }))
 }
 
 /// Renders a destructive placement plan as stable CLI JSON.
@@ -112,13 +235,30 @@ fn print_placement_result(printer: &Printer, surface: &HubSurfaceRef, placement:
     printer.header(&format!("{} on {surface}", placement.name));
     printer.kv("storage binding", &placement.storage_binding_name);
     printer.kv("prefix", &placement.prefix);
-    printer.kv("role", &placement.role);
-    printer.kv("state", &placement.state);
-    printer.kv("completeness", &placement.completeness);
-    printer.kv("read enabled", &placement.read_enabled.to_string());
-    printer.kv("write enabled", &placement.write_enabled.to_string());
-    printer.kv("read order", &placement.read_order.to_string());
-    printer.kv("write order", &placement.write_order.to_string());
+    if let Some(spec) = placement.spec.as_ref() {
+        printer.kv("kind", &spec.kind);
+        printer.kv("desired state", &spec.desired_state);
+        printer.kv(
+            "desired read enabled",
+            &spec.desired_read_enabled.to_string(),
+        );
+        printer.kv("read order", &spec.read_order.to_string());
+    }
+    if let Some(observation) = placement.observation.as_ref() {
+        printer.kv("observed state", &observation.state);
+        printer.kv("completeness", &observation.completeness);
+    }
+    if let Some(status) = placement.status.as_ref() {
+        printer.kv("derived role", &status.derived_role);
+        printer.kv(
+            "effective read enabled",
+            &status.effective_read_enabled.to_string(),
+        );
+        printer.kv(
+            "effective write enabled",
+            &status.effective_write_enabled.to_string(),
+        );
+    }
     printer.kv("resource version", &placement.resource_version);
 }
 
@@ -146,9 +286,13 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
             let surface: HubSurfaceRef = surface.parse()?;
             let client = hub_client(hub, token.as_deref())?;
             let placements = client.list_placements(&surface).await?;
+            let placements_json = placements
+                .iter()
+                .map(placement_json)
+                .collect::<Result<Vec<_>>>()?;
             if printer.json_if_active(&serde_json::json!({
                 "surface": surface.to_string(),
-                "placements": placements.iter().map(placement_json).collect::<Vec<_>>(),
+                "placements": placements_json,
             })) {
                 return Ok(());
             }
@@ -158,16 +302,28 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
             }
             printer.header(&format!("{} placement(s) on {surface}", placements.len()));
             for placement in &placements {
+                let spec = placement
+                    .spec
+                    .as_ref()
+                    .context("the hub returned a placement without desired spec")?;
+                let observation = placement
+                    .observation
+                    .as_ref()
+                    .context("the hub returned a placement without observation")?;
+                let status = placement
+                    .status
+                    .as_ref()
+                    .context("the hub returned a placement without status projection")?;
                 printer.plain(&format!(
-                    "  {}  [{} / {} / {}]  {}:{}  read-order={} write-order={}",
+                    "  {}  [{} / {} / {} / {}]  {}:{}  read-order={}",
                     placement.name,
-                    placement.role,
-                    placement.state,
-                    placement.completeness,
+                    status.derived_role,
+                    spec.kind,
+                    observation.state,
+                    observation.completeness,
                     placement.storage_binding_name,
                     placement.prefix,
-                    placement.read_order,
-                    placement.write_order,
+                    spec.read_order,
                 ));
             }
             Ok(())
@@ -183,20 +339,43 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
             let placement = client.get_placement(&surface, name).await?;
             if printer.json_if_active(&serde_json::json!({
                 "surface": surface.to_string(),
-                "placement": placement_json(&placement),
+                "placement": placement_json(&placement)?,
             })) {
                 return Ok(());
             }
             printer.header(&format!("{} on {surface}", placement.name));
             printer.kv("storage binding", &placement.storage_binding_name);
             printer.kv("prefix", &placement.prefix);
-            printer.kv("role", &placement.role);
-            printer.kv("state", &placement.state);
-            printer.kv("completeness", &placement.completeness);
-            printer.kv("read enabled", &placement.read_enabled.to_string());
-            printer.kv("write enabled", &placement.write_enabled.to_string());
-            printer.kv("read order", &placement.read_order.to_string());
-            printer.kv("write order", &placement.write_order.to_string());
+            let spec = placement
+                .spec
+                .as_ref()
+                .context("the hub returned a placement without desired spec")?;
+            let observation = placement
+                .observation
+                .as_ref()
+                .context("the hub returned a placement without observation")?;
+            let status = placement
+                .status
+                .as_ref()
+                .context("the hub returned a placement without status projection")?;
+            printer.kv("kind", &spec.kind);
+            printer.kv("desired state", &spec.desired_state);
+            printer.kv("observed state", &observation.state);
+            printer.kv("completeness", &observation.completeness);
+            printer.kv("derived role", &status.derived_role);
+            printer.kv(
+                "desired read enabled",
+                &spec.desired_read_enabled.to_string(),
+            );
+            printer.kv(
+                "effective read enabled",
+                &status.effective_read_enabled.to_string(),
+            );
+            printer.kv(
+                "effective write enabled",
+                &status.effective_write_enabled.to_string(),
+            );
+            printer.kv("read order", &spec.read_order.to_string());
             printer.kv("created at", &placement.created_at.to_string());
             printer.kv("updated at", &placement.updated_at.to_string());
             printer.kv("resource version", &placement.resource_version);
@@ -209,11 +388,13 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
             name,
             storage_binding,
             prefix,
-            role,
-            read_enabled,
-            write_enabled,
+            kind,
+            desired_state,
+            desired_read_enabled,
             read_order,
-            write_order,
+            hash_range_start,
+            hash_range_end,
+            requires_conditional_writes,
         } => {
             let surface: HubSurfaceRef = surface.parse()?;
             let client = hub_client(hub, token.as_deref())?;
@@ -224,17 +405,18 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
                         name: name.clone(),
                         storage_binding_name: storage_binding.clone(),
                         prefix: prefix.clone(),
-                        role: role.clone(),
-                        read_enabled: *read_enabled,
-                        write_enabled: *write_enabled,
+                        kind: kind.clone(),
+                        desired_state: desired_state.clone(),
+                        desired_read_enabled: desired_read_enabled.unwrap_or(kind != "archive"),
                         read_order: *read_order,
-                        write_order: *write_order,
+                        hash_range: (*hash_range_start).zip(*hash_range_end),
+                        requires_conditional_writes: *requires_conditional_writes,
                     },
                 )
                 .await?;
             if printer.json_if_active(&serde_json::json!({
                 "surface": surface.to_string(),
-                "placement": placement_json(&placement),
+                "placement": placement_json(&placement)?,
             })) {
                 return Ok(());
             }
@@ -247,10 +429,9 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
             surface,
             name,
             expected_resource_version,
-            read_enabled,
-            write_enabled,
+            desired_state,
+            desired_read_enabled,
             read_order,
-            write_order,
         } => {
             let surface: HubSurfaceRef = surface.parse()?;
             let client = hub_client(hub, token.as_deref())?;
@@ -260,16 +441,15 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
                     name,
                     &UpdatePlacementInput {
                         expected_resource_version: expected_resource_version.clone(),
-                        read_enabled: *read_enabled,
-                        write_enabled: *write_enabled,
+                        desired_state: desired_state.clone(),
+                        desired_read_enabled: *desired_read_enabled,
                         read_order: *read_order,
-                        write_order: *write_order,
                     },
                 )
                 .await?;
             if printer.json_if_active(&serde_json::json!({
                 "surface": surface.to_string(),
-                "placement": placement_json(&placement),
+                "placement": placement_json(&placement)?,
             })) {
                 return Ok(());
             }
@@ -299,7 +479,7 @@ async fn placement(printer: &Printer, command: &HubPlacementCmd) -> Result<()> {
                 "surface": surface.to_string(),
                 "applied": response.applied,
                 "plan": placement_plan_json(&plan),
-                "placement": placement_json(&placement),
+                "placement": placement_json(&placement)?,
             })) {
                 return Ok(());
             }

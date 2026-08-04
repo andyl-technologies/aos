@@ -43,5 +43,7 @@ pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
 pub use aos_proto_types::{
     AuditEntry, Binding, ChangeRequest, Changeset, Channel, DeletePlacementResponse,
     DrainPlacementResponse, GitCommit, InstanceSettings, Org, Package, PackageSummary, Placement,
-    PlacementMutationPlan, Project, Registry, Release, Webhook,
+    PlacementHashRange, PlacementMutationPlan, PlacementObservation, PlacementPromotionPlan,
+    PlacementSpec, PlacementStatus, Project, Registry, Release, RemoveWriteAuthorityPlan,
+    SurfaceWriteAuthority, Webhook,
 };

@@ -1597,7 +1597,8 @@ pub const MIGRATIONS: &[&str] = &[
         desired_state        KEYTEXT32 NOT NULL,
         desired_read_enabled INTEGER NOT NULL DEFAULT 1,
         read_order           INTEGER NOT NULL DEFAULT 0,
-        partition_rule_json  LONGTEXT,
+        hash_range_start     INTEGER,
+        hash_range_end       INTEGER,
         write_spec_version   INTEGER NOT NULL DEFAULT 1,
         requires_conditional_writes INTEGER NOT NULL DEFAULT 0,
         created_at           INTEGER NOT NULL,
@@ -1608,8 +1609,12 @@ pub const MIGRATIONS: &[&str] = &[
         CHECK (kind IN ('complete', 'shard', 'archive')),
         CHECK (desired_state IN ('active', 'draining', 'offline')),
         CHECK (desired_read_enabled IN (0, 1)),
-        CHECK ((kind = 'shard' AND partition_rule_json IS NOT NULL)
-            OR (kind <> 'shard' AND partition_rule_json IS NULL)),
+        CHECK ((kind = 'shard'
+                AND hash_range_start IS NOT NULL AND hash_range_end IS NOT NULL
+                AND hash_range_start >= 0 AND hash_range_start < hash_range_end
+                AND hash_range_end <= 65536)
+            OR (kind <> 'shard'
+                AND hash_range_start IS NULL AND hash_range_end IS NULL)),
         CHECK (kind <> 'archive' OR desired_read_enabled = 0),
         CHECK (write_spec_version > 0),
         CHECK (requires_conditional_writes IN (0, 1)),
@@ -1661,8 +1666,8 @@ pub const MIGRATIONS: &[&str] = &[
         binding_write_revision       INTEGER NOT NULL,
         created_at                   INTEGER NOT NULL,
         PRIMARY KEY (placement_id, placement_write_spec_version, binding_write_revision),
-        FOREIGN KEY (placement_id, storage_binding_id)
-            REFERENCES surface_placements(id, storage_binding_id)
+        FOREIGN KEY (placement_id, storage_binding_id, placement_write_spec_version)
+            REFERENCES surface_placements(id, storage_binding_id, write_spec_version)
             ON DELETE CASCADE ON UPDATE RESTRICT,
         FOREIGN KEY (storage_binding_id, binding_write_revision)
             REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
@@ -1671,6 +1676,7 @@ pub const MIGRATIONS: &[&str] = &[
 
     CREATE TABLE surface_write_authorities (
         id                              INTEGER PRIMARY KEY,
+        incarnation_id                  KEYTEXT64 NOT NULL UNIQUE,
         registry_id                     INTEGER REFERENCES registries(id) ON DELETE RESTRICT,
         cache_id                        INTEGER REFERENCES caches(id) ON DELETE RESTRICT,
         mode                            KEYTEXT32 NOT NULL DEFAULT 'single_writer',
@@ -1752,13 +1758,16 @@ pub const MIGRATIONS: &[&str] = &[
            p.prefix,
            CASE WHEN a.observed_placement_id = p.id THEN 'primary'
                 WHEN p.kind = 'complete' THEN 'replica'
-                ELSE p.kind END AS role,
+                ELSE p.kind END AS derived_role,
            COALESCE(o.state, 'provisioning') AS state,
            COALESCE(o.completeness, 'unknown') AS completeness,
-           p.partition_rule_json,
+           p.hash_range_start,
+           p.hash_range_end,
            w.mutable_publication_id,
            CASE WHEN p.desired_state = 'active' AND p.desired_read_enabled = 1
-                THEN 1 ELSE 0 END AS read_enabled,
+                  AND o.state IN ('ready', 'degraded')
+                  AND o.completeness = 'complete' AND p.kind <> 'archive'
+                THEN 1 ELSE 0 END AS effective_read_enabled,
            CASE WHEN a.observed_placement_id = p.id
                   AND a.observed_placement_id = a.desired_placement_id
                   AND a.observed_write_spec_version = a.desired_write_spec_version
@@ -1770,9 +1779,8 @@ pub const MIGRATIONS: &[&str] = &[
                   AND bwo.state = 'valid' AND bwr.writes_supported = 1
                   AND (p.requires_conditional_writes = 0
                     OR bwr.conditional_writes_supported = 1)
-                THEN 1 ELSE 0 END AS write_enabled,
+                THEN 1 ELSE 0 END AS effective_write_enabled,
            p.read_order,
-           0 AS write_order,
            p.created_at,
            p.updated_at,
            p.resource_version,
@@ -3317,23 +3325,23 @@ pub struct SurfacePlacementRecord {
     pub prefix: String,
     /// Derived placement role: observed authority is `primary`; otherwise the
     /// placement is a `replica`, `shard`, or `archive` according to its kind.
-    pub role: String,
+    pub derived_role: String,
     /// Latest observed operational state, defaulting to `provisioning` before observation.
     pub state: String,
     /// Inventory completeness: `complete`, `partial`, or `unknown`.
     pub completeness: String,
-    /// Serialized shard rule; present only for a `shard` placement.
-    pub partition_rule_json: Option<String>,
+    /// Inclusive start of the half-open shard range.
+    pub hash_range_start: Option<i64>,
+    /// Exclusive end of the half-open shard range.
+    pub hash_range_end: Option<i64>,
     /// Last completely published mutable-pointer publication.
     pub mutable_publication_id: Option<String>,
     /// Whether desired lifecycle and read configuration permit selection.
-    pub read_enabled: bool,
+    pub effective_read_enabled: bool,
     /// Whether the complete desired/observed authority and capability tuple is effective.
-    pub write_enabled: bool,
+    pub effective_write_enabled: bool,
     /// Lower ordinal is preferred for reads.
     pub read_order: i64,
-    /// Derived single-writer ordinal, currently always zero.
-    pub write_order: i64,
     /// Creation time in Unix seconds.
     pub created_at: i64,
     /// Last update time in Unix seconds.
@@ -3432,6 +3440,37 @@ pub fn surface_placement_create_failure(
     error
         .chain()
         .find_map(|cause| cause.downcast_ref::<SurfacePlacementCreateFailure>())
+}
+
+/// Caller-correctable write-authority mutation failure.
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub struct SurfaceWriteAuthorityMutationFailure {
+    message: String,
+}
+
+impl SurfaceWriteAuthorityMutationFailure {
+    /// Returns the stable, backend-independent public message.
+    #[must_use]
+    pub fn public_message(&self) -> &str {
+        &self.message
+    }
+
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// Finds a typed caller-correctable authority failure in an error chain.
+#[must_use]
+pub fn surface_write_authority_mutation_failure(
+    error: &anyhow::Error,
+) -> Option<&SurfaceWriteAuthorityMutationFailure> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<SurfaceWriteAuthorityMutationFailure>())
 }
 
 /// References that constrain a placement drain or metadata deletion.
@@ -3774,9 +3813,9 @@ pub struct UpdateDomain {
     pub access_provider_json: String,
 }
 
-/// Input for creating a physical surface placement.
+/// Desired specification for creating a physical surface placement.
 #[derive(Debug, Clone)]
-pub struct NewSurfacePlacement {
+pub struct NewSurfacePlacementSpec {
     /// Surface receiving the placement.
     pub surface: SurfaceTarget,
     /// Stable human-readable name within the surface.
@@ -3785,43 +3824,40 @@ pub struct NewSurfacePlacement {
     pub storage_binding_id: i64,
     /// Surface-relative prefix within the binding.
     pub prefix: String,
-    /// `primary`, `replica`, `shard`, or `archive`.
-    pub role: String,
-    /// Initial operational state.
-    pub state: String,
-    /// Initial inventory completeness.
-    pub completeness: String,
-    /// Serialized shard rule, required only for `shard`.
-    pub partition_rule_json: Option<String>,
+    /// Placement shape: `complete`, `shard`, or `archive`.
+    pub kind: String,
+    /// Desired lifecycle: `active` or `offline` at creation time.
+    pub desired_state: String,
+    /// Typed half-open shard range, required only for `shard`.
+    pub hash_range: Option<SurfacePlacementHashRange>,
     /// Whether reads may select the placement.
-    pub read_enabled: bool,
-    /// Whether writes may select the placement.
-    pub write_enabled: bool,
+    pub desired_read_enabled: bool,
     /// Lower ordinal is preferred for reads.
     pub read_order: i64,
-    /// Lower ordinal is preferred for writes.
-    pub write_order: i64,
+    /// Whether the placement's writer contract requires conditional writes.
+    pub requires_conditional_writes: bool,
 }
 
-/// Input for a version-checked placement update.
+/// Typed half-open range in the fixed 16-bit shard-key space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfacePlacementHashRange {
+    /// Inclusive range start.
+    pub start: i64,
+    /// Exclusive range end, at most 65536.
+    pub end: i64,
+}
+
+/// Desired fields for a version-checked placement update.
 #[derive(Debug, Clone)]
-pub struct UpdateSurfacePlacement {
+pub struct UpdateSurfacePlacementSpec {
     /// Expected optimistic-concurrency version.
     pub expected_version: i64,
-    /// New operational state.
-    pub state: String,
-    /// New inventory completeness.
-    pub completeness: String,
-    /// Serialized shard rule, required only for `shard`.
-    pub partition_rule_json: Option<String>,
-    /// Whether reads may select the placement.
-    pub read_enabled: bool,
-    /// Whether writes may select the placement.
-    pub write_enabled: bool,
+    /// New desired lifecycle state.
+    pub desired_state: String,
+    /// Whether desired read selection may use the placement.
+    pub desired_read_enabled: bool,
     /// Lower ordinal is preferred for reads.
     pub read_order: i64,
-    /// Lower ordinal is preferred for writes.
-    pub write_order: i64,
 }
 
 /// One immutable snapshot of a storage binding's write contract.
@@ -3897,6 +3933,8 @@ pub struct StorageBindingWriteObservationRecord {
 pub struct SurfaceWriteAuthorityRecord {
     /// Database id.
     pub id: i64,
+    /// Immutable globally unique identity for this authority lifetime.
+    pub incarnation_id: String,
     /// Registry target, or `None` for a binary cache.
     pub registry_id: Option<i64>,
     /// Binary-cache target, or `None` for a registry.
@@ -7449,6 +7487,24 @@ impl Database {
         row_to_storage_binding_write_observation(&row)
     }
 
+    /// Returns the controller observation for one binding-write revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn storage_binding_write_observation(
+        &self,
+        storage_binding_id: i64,
+        revision: i64,
+    ) -> Result<Option<StorageBindingWriteObservationRecord>> {
+        let row = self.backend.query_opt(
+            &format!("SELECT {BINDING_WRITE_OBSERVATION_COLUMNS} FROM storage_binding_write_observations WHERE storage_binding_id = ?1 AND revision = ?2"),
+            &vals![storage_binding_id, revision],
+        ).await?;
+        row.map(|row| row_to_storage_binding_write_observation(&row))
+            .transpose()
+    }
+
     /// Pins a placement write-spec version to one immutable binding revision.
     ///
     /// # Errors
@@ -7494,7 +7550,10 @@ impl Database {
             Ok(1) => {}
             Ok(_) => {
                 if existing().await?.is_none() {
-                    bail!("placement and binding-write revision must exist on the same storage binding");
+                    return Err(SurfaceWriteAuthorityMutationFailure::new(
+                        "the planned binding-write capability is no longer available",
+                    )
+                    .into());
                 }
             }
             Err(error) => {
@@ -7561,38 +7620,44 @@ impl Database {
     pub async fn create_surface_write_authority(
         &self,
         surface: SurfaceTarget,
+        authority_incarnation_id: &str,
         placement_id: i64,
         expected_placement_version: i64,
         expected_write_spec_version: i64,
         binding_write_revision: i64,
     ) -> Result<SurfaceWriteAuthorityRecord> {
+        validate_key_bytes(
+            authority_incarnation_id,
+            "write authority incarnation id",
+            64,
+        )?;
         let (registry_id, cache_id) = surface.ids();
         let now = unix_now();
         let inserted = self
             .backend
             .execute(
                 "INSERT INTO surface_write_authorities
-             (registry_id, cache_id, desired_placement_id, desired_write_spec_version,
+             (incarnation_id, registry_id, cache_id, desired_placement_id, desired_write_spec_version,
               desired_binding_write_revision, desired_generation,
               observed_placement_id, observed_write_spec_version,
               observed_binding_write_revision, observed_generation,
               reconciliation_state, created_at, updated_at)
-             SELECT p.registry_id, p.cache_id, p.id, p.write_spec_version, ?6, 1,
-                    p.id, p.write_spec_version, ?6, 1, 'ready', ?7, ?7
+             SELECT ?3, p.registry_id, p.cache_id, p.id, p.write_spec_version, ?7, 1,
+                    p.id, p.write_spec_version, ?7, 1, 'ready', ?8, ?8
              FROM surface_placements p
              JOIN surface_placement_observations po ON po.placement_id = p.id
              JOIN surface_placement_write_capabilities pc
                ON pc.placement_id = p.id
               AND pc.placement_write_spec_version = p.write_spec_version
-              AND pc.binding_write_revision = ?6
+              AND pc.binding_write_revision = ?7
              JOIN storage_binding_write_revisions br
                ON br.storage_binding_id = pc.storage_binding_id
               AND br.revision = pc.binding_write_revision
              JOIN storage_binding_write_observations bo
                ON bo.storage_binding_id = br.storage_binding_id
               AND bo.revision = br.revision
-             WHERE p.id = ?3 AND (p.registry_id = ?1 OR p.cache_id = ?2)
-               AND p.resource_version = ?4 AND p.write_spec_version = ?5
+             WHERE p.id = ?4 AND (p.registry_id = ?1 OR p.cache_id = ?2)
+               AND p.resource_version = ?5 AND p.write_spec_version = ?6
                AND p.kind = 'complete' AND p.desired_state = 'active'
                AND po.state = 'ready' AND po.completeness = 'complete'
                AND br.writes_supported = 1 AND bo.state = 'valid'
@@ -7601,6 +7666,7 @@ impl Database {
                 &vals![
                     registry_id,
                     cache_id,
+                    authority_incarnation_id,
                     placement_id,
                     expected_placement_version,
                     expected_write_spec_version,
@@ -7613,7 +7679,8 @@ impl Database {
             Ok(affected) => affected,
             Err(error) => {
                 if let Some(existing) = self.surface_write_authority(surface).await? {
-                    if existing.desired_placement_id == placement_id
+                    if existing.incarnation_id == authority_incarnation_id
+                        && existing.desired_placement_id == placement_id
                         && existing.observed_placement_id == Some(placement_id)
                         && existing.desired_write_spec_version == expected_write_spec_version
                         && existing.observed_write_spec_version == Some(expected_write_spec_version)
@@ -7623,12 +7690,19 @@ impl Database {
                     {
                         return Ok(existing);
                     }
+                    return Err(SurfaceWriteAuthorityMutationFailure::new(
+                        "the surface already has a different write authority",
+                    )
+                    .into());
                 }
                 return Err(error);
             }
         };
         if affected != 1 {
-            bail!("write authority requires one validated, ready, complete placement and capability pin");
+            return Err(SurfaceWriteAuthorityMutationFailure::new(
+                "write authority requires one validated, ready, complete placement and capability pin",
+            )
+            .into());
         }
         self.surface_write_authority(surface)
             .await?
@@ -7663,39 +7737,45 @@ impl Database {
     pub async fn request_surface_write_promotion(
         &self,
         authority_id: i64,
+        expected_incarnation_id: &str,
         expected_version: i64,
         expected_observed_placement_id: i64,
         placement_id: i64,
         expected_candidate_write_spec_version: i64,
         binding_write_revision: i64,
     ) -> Result<SurfaceWriteAuthorityRecord> {
+        validate_key_bytes(
+            expected_incarnation_id,
+            "write authority incarnation id",
+            64,
+        )?;
         let affected = self
             .backend
             .execute(
                 "UPDATE surface_write_authorities
-             SET desired_placement_id = ?4,
-                 desired_write_spec_version = ?5,
-                 desired_binding_write_revision = ?6,
+             SET desired_placement_id = ?5,
+                 desired_write_spec_version = ?6,
+                 desired_binding_write_revision = ?7,
                  desired_generation = desired_generation + 1,
                  reconciliation_state = 'pending', reconciliation_error = NULL,
-                 resource_version = resource_version + 1, updated_at = ?7
-             WHERE id = ?1 AND resource_version = ?2
-               AND observed_placement_id = ?3
+                 resource_version = resource_version + 1, updated_at = ?8
+             WHERE id = ?1 AND incarnation_id = ?2 AND resource_version = ?3
+               AND observed_placement_id = ?4
                AND desired_generation = observed_generation
                AND EXISTS (SELECT 1 FROM surface_placements p
                  JOIN surface_placement_observations po ON po.placement_id = p.id
                  JOIN surface_placement_write_capabilities pc
                    ON pc.placement_id = p.id
                   AND pc.placement_write_spec_version = p.write_spec_version
-                  AND pc.binding_write_revision = ?6
+                  AND pc.binding_write_revision = ?7
                  JOIN storage_binding_write_revisions br
                    ON br.storage_binding_id = pc.storage_binding_id
                   AND br.revision = pc.binding_write_revision
                  JOIN storage_binding_write_observations bo
                    ON bo.storage_binding_id = br.storage_binding_id
                   AND bo.revision = br.revision
-                 WHERE p.id = ?4
-                   AND p.write_spec_version = ?5
+                 WHERE p.id = ?5
+                   AND p.write_spec_version = ?6
                    AND (p.registry_id = surface_write_authorities.registry_id
                      OR p.cache_id = surface_write_authorities.cache_id)
                    AND p.kind = 'complete' AND p.desired_state = 'active'
@@ -7705,6 +7785,7 @@ impl Database {
                      OR br.conditional_writes_supported = 1))",
                 &vals![
                     authority_id,
+                    expected_incarnation_id,
                     expected_version,
                     expected_observed_placement_id,
                     placement_id,
@@ -7715,7 +7796,10 @@ impl Database {
             )
             .await?;
         if affected != 1 {
-            bail!("write authority is stale or the requested writer is ineligible");
+            return Err(SurfaceWriteAuthorityMutationFailure::new(
+                "write authority is stale or the requested writer is ineligible",
+            )
+            .into());
         }
         self.surface_write_authority_by_id(authority_id)
             .await?
@@ -7787,7 +7871,10 @@ impl Database {
             &vals![authority_id, expected_version, desired_generation, unix_now()],
         ).await?;
         if affected != 1 {
-            bail!("write authority reconciliation CAS is stale or no longer eligible");
+            return Err(SurfaceWriteAuthorityMutationFailure::new(
+                "write authority reconciliation CAS is stale or no longer eligible",
+            )
+            .into());
         }
         self.surface_write_authority_by_id(authority_id)
             .await?
@@ -7807,8 +7894,8 @@ impl Database {
         desired_generation: i64,
         error: &str,
     ) -> Result<SurfaceWriteAuthorityRecord> {
-        if error.trim().is_empty() {
-            bail!("write-authority reconciliation error cannot be empty");
+        if error.trim().is_empty() || error.len() > 4 * 1024 {
+            bail!("write-authority reconciliation error must contain 1-4096 UTF-8 bytes");
         }
         let affected = self
             .backend
@@ -7829,7 +7916,10 @@ impl Database {
             )
             .await?;
         if affected != 1 {
-            bail!("write authority reconciliation CAS is stale");
+            return Err(SurfaceWriteAuthorityMutationFailure::new(
+                "write authority reconciliation CAS is stale",
+            )
+            .into());
         }
         self.surface_write_authority_by_id(authority_id)
             .await?
@@ -7937,20 +8027,31 @@ impl Database {
     pub async fn remove_surface_write_authority(
         &self,
         authority_id: i64,
+        expected_incarnation_id: &str,
         expected_version: i64,
         expected_observed_generation: i64,
     ) -> Result<bool> {
+        validate_key_bytes(
+            expected_incarnation_id,
+            "write authority incarnation id",
+            64,
+        )?;
         Ok(self
             .backend
             .execute(
                 "DELETE FROM surface_write_authorities
-                 WHERE id = ?1 AND resource_version = ?2
+                 WHERE id = ?1 AND incarnation_id = ?2 AND resource_version = ?3
                    AND reconciliation_state = 'ready'
-                   AND desired_generation = ?3 AND observed_generation = ?3
+                   AND desired_generation = ?4 AND observed_generation = ?4
                    AND desired_placement_id = observed_placement_id
                    AND desired_write_spec_version = observed_write_spec_version
                    AND desired_binding_write_revision = observed_binding_write_revision",
-                &vals![authority_id, expected_version, expected_observed_generation],
+                &vals![
+                    authority_id,
+                    expected_incarnation_id,
+                    expected_version,
+                    expected_observed_generation
+                ],
             )
             .await?
             == 1)
@@ -8045,11 +8146,11 @@ impl Database {
     /// # Errors
     ///
     /// Returns a typed [`SurfacePlacementCreateFailure`] for invalid placement
-    /// fields, a duplicate name, an absent/cross-scope target, or a
-    /// primary/location conflict. Unclassified errors are database failures.
+    /// fields, a duplicate name, an absent/cross-scope target, or a physical
+    /// location conflict. Unclassified errors are database failures.
     pub async fn create_surface_placement(
         &self,
-        input: &NewSurfacePlacement,
+        input: &NewSurfacePlacementSpec,
     ) -> Result<SurfacePlacementRecord> {
         let invalid = |error: anyhow::Error| {
             SurfacePlacementCreateFailure::new(
@@ -8058,34 +8159,18 @@ impl Database {
             )
         };
         validate_stable_name(&input.name, "placement name").map_err(invalid)?;
-        validate_placement_fields(
-            input.role.as_str(),
-            input.state.as_str(),
-            input.completeness.as_str(),
-            input.partition_rule_json.as_deref(),
-            input.read_enabled,
-            input.write_enabled,
+        validate_placement_spec(
+            input.kind.as_str(),
+            input.desired_state.as_str(),
+            input.hash_range,
+            input.desired_read_enabled,
         )
         .map_err(invalid)?;
         let prefix = normalize_placement_prefix(&input.prefix).map_err(invalid)?;
-        if let Some(json) = input.partition_rule_json.as_deref() {
-            validate_json_object(json, "placement partition rule").map_err(invalid)?;
-        }
+        let (hash_range_start, hash_range_end) = input
+            .hash_range
+            .map_or((None, None), |range| (Some(range.start), Some(range.end)));
         let (registry_id, cache_id) = input.surface.ids();
-        let kind = match input.role.as_str() {
-            "primary" | "replica" => "complete",
-            other => other,
-        };
-        let desired_state = match input.state.as_str() {
-            "draining" => "draining",
-            "offline" => "offline",
-            _ => "active",
-        };
-        let observed_state = if input.state == "draining" {
-            "ready"
-        } else {
-            input.state.as_str()
-        };
         let now = unix_now();
         let affected = match self
             .backend
@@ -8093,8 +8178,9 @@ impl Database {
                 "INSERT INTO surface_placements
                 (registry_id, cache_id, name, storage_binding_id, prefix, kind,
                  desired_state, desired_read_enabled, read_order,
-                 partition_rule_json, write_spec_version, created_at, updated_at)
-             SELECT ?1, ?2, ?3, b.id, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?11
+                 hash_range_start, hash_range_end, write_spec_version,
+                 requires_conditional_writes, created_at, updated_at)
+             SELECT ?1, ?2, ?3, b.id, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12, ?13, ?13
              FROM storage_bindings b
              LEFT JOIN registries r ON r.id = ?1
              LEFT JOIN caches c ON c.id = ?2
@@ -8109,11 +8195,13 @@ impl Database {
                     input.name,
                     input.storage_binding_id,
                     prefix,
-                    kind,
-                    desired_state,
-                    input.read_enabled,
+                    input.kind,
+                    input.desired_state,
+                    input.desired_read_enabled,
                     input.read_order,
-                    input.partition_rule_json,
+                    hash_range_start,
+                    hash_range_end,
+                    input.requires_conditional_writes,
                     now
                 ],
             )
@@ -8147,17 +8235,6 @@ impl Database {
                     )
                     .into());
                 }
-                if input.role == "primary"
-                    && placements
-                        .iter()
-                        .any(|placement| placement.role == "primary")
-                {
-                    return Err(SurfacePlacementCreateFailure::new(
-                        SurfacePlacementCreateFailureKind::Conflict,
-                        "surface already has a primary placement",
-                    )
-                    .into());
-                }
                 return Err(error);
             }
         };
@@ -8176,8 +8253,8 @@ impl Database {
             .execute(
                 "INSERT INTO surface_placement_observations
                  (placement_id, state, completeness, observed_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                &vals![placement.id, observed_state, input.completeness, now],
+                 VALUES (?1, 'provisioning', 'unknown', ?2)",
+                &vals![placement.id, now],
             )
             .await?;
         self.backend
@@ -8312,10 +8389,10 @@ impl Database {
         requirement: PlacementReadRequirement<'_>,
     ) -> Result<PlacementReadPlan> {
         let (registry_id, cache_id) = surface.ids();
-        let eligibility = "p.read_enabled = 1
+        let eligibility = "p.effective_read_enabled = 1
             AND p.state IN ('ready', 'degraded')
             AND p.completeness = 'complete'
-            AND p.role <> 'archive'";
+            AND p.derived_role <> 'archive'";
         let (sql, values) = match requirement {
             PlacementReadRequirement::RegistryCurrentPublication(object_key) => {
                 let Some(registry_id) = registry_id else {
@@ -8430,45 +8507,27 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error for invalid fields, a stale version, a primary
-    /// collision, a missing placement, or database failure.
+    /// Returns an error for invalid fields, a stale version, an authority or
+    /// route pin, a missing placement, or database failure.
     pub async fn update_surface_placement(
         &self,
         id: i64,
-        input: &UpdateSurfacePlacement,
+        input: &UpdateSurfacePlacementSpec,
     ) -> Result<SurfacePlacementRecord> {
         let existing = self
             .surface_placement(id)
             .await?
             .context("placement does not exist")?;
-        let desired_state = match input.state.as_str() {
-            "draining" => "draining",
-            "offline" => "offline",
-            "provisioning" | "syncing" | "ready" | "degraded" => "active",
-            other => bail!("invalid placement state '{other}'"),
-        };
-        if (existing.kind == "shard") != input.partition_rule_json.is_some() {
-            bail!("only shard placements require a partition rule");
+        if !matches!(
+            input.desired_state.as_str(),
+            "active" | "draining" | "offline"
+        ) {
+            bail!("invalid desired placement state '{}'", input.desired_state);
         }
-        if existing.kind == "archive" && input.read_enabled {
+        if existing.kind == "archive" && input.desired_read_enabled {
             bail!("an archive placement cannot be read-enabled");
         }
-        if let Some(json) = input.partition_rule_json.as_deref() {
-            validate_json_object(json, "placement partition rule")?;
-        }
-        let affected = self
-            .backend
-            .execute(
-                "UPDATE surface_placements SET desired_state = ?3,
-                partition_rule_json = ?4, desired_read_enabled = ?5,
-                read_order = ?6,
-                write_spec_version = CASE
-                  WHEN desired_state = ?3
-                    AND (partition_rule_json = ?4
-                      OR (partition_rule_json IS NULL AND ?4 IS NULL))
-                  THEN write_spec_version ELSE write_spec_version + 1 END,
-                resource_version = resource_version + 1, updated_at = ?7
-             WHERE id = ?1 AND resource_version = ?2
+        let guard = "id = ?1 AND resource_version = ?2
                AND NOT EXISTS (SELECT 1 FROM surface_write_authorities a
                  WHERE (a.desired_placement_id = ?1 OR a.observed_placement_id = ?1)
                    AND ?3 <> 'active')
@@ -8477,24 +8536,48 @@ impl Database {
                  WHERE r.placement_id = ?1 OR EXISTS (
                    SELECT 1 FROM placement_policy_members pm
                    WHERE pm.policy_id = r.placement_policy_id
-                     AND pm.placement_id = ?1))",
-                &vals![
-                    id,
-                    input.expected_version,
-                    desired_state,
-                    input.partition_rule_json,
-                    input.read_enabled,
-                    input.read_order,
-                    unix_now()
-                ],
-            )
+                     AND pm.placement_id = ?1))";
+        let values = vals![
+            id,
+            input.expected_version,
+            input.desired_state,
+            input.desired_read_enabled,
+            input.read_order,
+            unix_now()
+        ]
+        .to_vec();
+        self.backend
+            .batch(&[
+                Statement::new(
+                    format!(
+                        "DELETE FROM surface_placement_write_capabilities
+                         WHERE placement_id = ?1 AND EXISTS (
+                           SELECT 1 FROM surface_placements
+                           WHERE {guard} AND desired_state <> ?3)"
+                    ),
+                    vals![id, input.expected_version, input.desired_state].to_vec(),
+                ),
+                Statement::new(
+                    format!(
+                        "UPDATE surface_placements SET desired_state = ?3,
+                desired_read_enabled = ?4, read_order = ?5,
+                write_spec_version = CASE WHEN desired_state = ?3
+                  THEN write_spec_version ELSE write_spec_version + 1 END,
+                resource_version = resource_version + 1, updated_at = ?6
+             WHERE {guard}"
+                    ),
+                    values,
+                ),
+            ])
             .await?;
-        if affected != 1 {
+        let updated = self.surface_placement(id).await?;
+        if !updated
+            .as_ref()
+            .is_some_and(|placement| placement.resource_version == input.expected_version + 1)
+        {
             bail!("placement is missing or its resource version is stale");
         }
-        self.surface_placement(id)
-            .await?
-            .context("updated placement disappeared")
+        updated.context("updated placement disappeared")
     }
 
     /// Deletes a placement at an expected version.
@@ -9170,7 +9253,7 @@ impl Database {
              WHERE pol.id = ?1
                AND ((pol.registry_id IS NOT NULL AND pol.registry_id = p.registry_id)
                  OR (pol.cache_id IS NOT NULL AND pol.cache_id = p.cache_id))
-               AND p.role <> 'archive' AND p.read_enabled = 1
+               AND p.derived_role <> 'archive' AND p.effective_read_enabled = 1
                AND p.completeness = 'complete'
                AND p.state IN ('ready', 'degraded')
                AND NOT EXISTS (SELECT 1 FROM delivery_routes
@@ -9393,7 +9476,7 @@ impl Database {
                    AND ((?5 IS NOT NULL AND p.registry_id = ?5 AND r.id IS NOT NULL)
                      OR (?6 IS NOT NULL AND p.cache_id = ?6 AND c.id IS NOT NULL))
                    AND (d.org_id IS NULL OR d.org_id = COALESCE(r.org_id, c.org_id))
-                   AND p.role <> 'archive' AND p.read_enabled = 1
+                   AND p.derived_role <> 'archive' AND p.effective_read_enabled = 1
                    AND p.completeness = 'complete'
                    AND p.state IN ('ready', 'degraded')
                    AND (?7 <> 'direct' OR ?2 IS NOT NULL OR b.access = 'public')
@@ -9449,7 +9532,7 @@ impl Database {
                         SELECT 1 FROM placement_policy_members pm
                         JOIN surface_placement_effective p ON p.id = pm.placement_id
                         WHERE pm.policy_id = pol.id
-                          AND (p.role = 'archive' OR p.read_enabled = 0
+                          AND (p.derived_role = 'archive' OR p.effective_read_enabled = 0
                             OR p.completeness <> 'complete'
                             OR p.state NOT IN ('ready', 'degraded')))
                    AND (?7 <> 'direct' OR ?2 IS NOT NULL OR NOT EXISTS (
@@ -10597,6 +10680,34 @@ impl Database {
             )
             .await?;
         rows.first().map(row_to_topology_plan).transpose()
+    }
+
+    /// Marks an unapplied topology plan as consumed.
+    ///
+    /// The guarded domain mutation remains the authoritative replay fence. A
+    /// Callers may mark an expired plan only after proving that its exact
+    /// intended mutation already happened. Expiration is checked before a new
+    /// mutation, while this method closes the recoverable mutation-to-mark gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure. A missing plan returns `false`.
+    pub async fn mark_topology_plan_applied(&self, plan_id: &str, applied_at: i64) -> Result<bool> {
+        let changed = self
+            .backend
+            .execute(
+                "UPDATE topology_plans SET applied_at = ?2
+                 WHERE plan_id = ?1 AND applied_at IS NULL",
+                &vals![plan_id, applied_at],
+            )
+            .await?;
+        if changed == 1 {
+            return Ok(true);
+        }
+        Ok(self
+            .topology_plan(plan_id)
+            .await?
+            .is_some_and(|plan| plan.applied_at.is_some()))
     }
 
     /// Lists plans in one authorization scope, newest first.
@@ -17955,40 +18066,28 @@ fn validate_json_object(json: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_placement_fields(
-    role: &str,
-    state: &str,
-    completeness: &str,
-    partition_rule_json: Option<&str>,
-    read_enabled: bool,
-    write_enabled: bool,
+fn validate_placement_spec(
+    kind: &str,
+    desired_state: &str,
+    hash_range: Option<SurfacePlacementHashRange>,
+    desired_read_enabled: bool,
 ) -> Result<()> {
-    if !matches!(role, "primary" | "replica" | "shard" | "archive") {
-        bail!("invalid placement role '{role}'");
+    if !matches!(kind, "complete" | "shard" | "archive") {
+        bail!("invalid placement kind '{kind}'");
     }
-    if !matches!(
-        state,
-        "provisioning" | "syncing" | "ready" | "degraded" | "draining" | "offline"
-    ) {
-        bail!("invalid placement state '{state}'");
+    if !matches!(desired_state, "active" | "offline") {
+        bail!("new placements must have desired state 'active' or 'offline'");
     }
-    if !matches!(completeness, "complete" | "partial" | "unknown") {
-        bail!("invalid placement completeness '{completeness}'");
+    if (kind == "shard") != hash_range.is_some() {
+        bail!("only shard placements require a hash range");
     }
-    if (role == "shard") != partition_rule_json.is_some() {
-        bail!("only shard placements require a partition rule");
+    if let Some(range) = hash_range {
+        if range.start < 0 || range.start >= range.end || range.end > 65_536 {
+            bail!("shard hash range must be non-empty and half-open within 0..65536");
+        }
     }
-    if role == "primary" && !write_enabled {
-        bail!("a primary placement must be write-enabled");
-    }
-    if role != "primary" && write_enabled {
-        bail!("only a primary placement may be write-enabled");
-    }
-    if role == "archive" && read_enabled {
+    if kind == "archive" && desired_read_enabled {
         bail!("an archive placement cannot be read-enabled");
-    }
-    if role == "shard" && completeness != "partial" {
-        bail!("a shard placement must declare partial completeness");
     }
     Ok(())
 }
@@ -18002,8 +18101,9 @@ fn surface_from_ids(registry_id: Option<i64>, cache_id: Option<i64>) -> Result<S
 }
 
 const PLACEMENT_COLUMNS: &str = "id, registry_id, cache_id, name, storage_binding_id,
-    prefix, role, state, completeness, partition_rule_json, mutable_publication_id,
-    read_enabled, write_enabled, read_order, write_order, created_at, updated_at,
+    prefix, derived_role, state, completeness, hash_range_start, hash_range_end,
+    mutable_publication_id, effective_read_enabled, effective_write_enabled, read_order,
+    created_at, updated_at,
     resource_version, kind, desired_state, desired_read_enabled, write_spec_version,
     requires_conditional_writes,
     observed_at, observation_version, watermark_resource_version,
@@ -18019,7 +18119,7 @@ const BINDING_WRITE_REVISION_COLUMNS: &str = "storage_binding_id, revision,
     revision_fingerprint, capability_fingerprint, created_at";
 const BINDING_WRITE_OBSERVATION_COLUMNS: &str = "storage_binding_id, revision, state,
     validated_at, error, observation_version";
-const WRITE_AUTHORITY_COLUMNS: &str = "id, registry_id, cache_id, mode,
+const WRITE_AUTHORITY_COLUMNS: &str = "id, incarnation_id, registry_id, cache_id, mode,
     desired_placement_id, desired_write_spec_version, desired_binding_write_revision,
     desired_generation, observed_placement_id, observed_write_spec_version,
     observed_binding_write_revision, observed_generation, reconciliation_state,
@@ -18074,15 +18174,15 @@ fn row_to_surface_placement(row: &Row) -> Result<SurfacePlacementRecord> {
         name: row.get(3)?,
         storage_binding_id: row.get(4)?,
         prefix: row.get(5)?,
-        role: row.get(6)?,
+        derived_role: row.get(6)?,
         state: row.get(7)?,
         completeness: row.get(8)?,
-        partition_rule_json: row.get(9)?,
-        mutable_publication_id: row.get(10)?,
-        read_enabled: row.get(11)?,
-        write_enabled: row.get(12)?,
-        read_order: row.get(13)?,
-        write_order: row.get(14)?,
+        hash_range_start: row.get(9)?,
+        hash_range_end: row.get(10)?,
+        mutable_publication_id: row.get(11)?,
+        effective_read_enabled: row.get(12)?,
+        effective_write_enabled: row.get(13)?,
+        read_order: row.get(14)?,
         created_at: row.get(15)?,
         updated_at: row.get(16)?,
         resource_version: row.get(17)?,
@@ -18137,22 +18237,23 @@ fn row_to_storage_binding_write_observation(
 fn row_to_surface_write_authority(row: &Row) -> Result<SurfaceWriteAuthorityRecord> {
     Ok(SurfaceWriteAuthorityRecord {
         id: row.get(0)?,
-        registry_id: row.get(1)?,
-        cache_id: row.get(2)?,
-        mode: row.get(3)?,
-        desired_placement_id: row.get(4)?,
-        desired_write_spec_version: row.get(5)?,
-        desired_binding_write_revision: row.get(6)?,
-        desired_generation: row.get(7)?,
-        observed_placement_id: row.get(8)?,
-        observed_write_spec_version: row.get(9)?,
-        observed_binding_write_revision: row.get(10)?,
-        observed_generation: row.get(11)?,
-        reconciliation_state: row.get(12)?,
-        reconciliation_error: row.get(13)?,
-        resource_version: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
+        incarnation_id: row.get(1)?,
+        registry_id: row.get(2)?,
+        cache_id: row.get(3)?,
+        mode: row.get(4)?,
+        desired_placement_id: row.get(5)?,
+        desired_write_spec_version: row.get(6)?,
+        desired_binding_write_revision: row.get(7)?,
+        desired_generation: row.get(8)?,
+        observed_placement_id: row.get(9)?,
+        observed_write_spec_version: row.get(10)?,
+        observed_binding_write_revision: row.get(11)?,
+        observed_generation: row.get(12)?,
+        reconciliation_state: row.get(13)?,
+        reconciliation_error: row.get(14)?,
+        resource_version: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
 
@@ -21872,20 +21973,18 @@ mod tests {
         name: &str,
         prefix: &str,
         read_order: i64,
-    ) -> NewSurfacePlacement {
-        NewSurfacePlacement {
+    ) -> NewSurfacePlacementSpec {
+        NewSurfacePlacementSpec {
             surface,
             name: name.to_string(),
             storage_binding_id: 0,
             prefix: prefix.to_string(),
-            role: "replica".to_string(),
-            state: "ready".to_string(),
-            completeness: "complete".to_string(),
-            partition_rule_json: None,
-            read_enabled: true,
-            write_enabled: false,
+            kind: "complete".to_string(),
+            desired_state: "active".to_string(),
+            hash_range: None,
+            desired_read_enabled: true,
             read_order,
-            write_order: 0,
+            requires_conditional_writes: false,
         }
     }
 
@@ -21981,6 +22080,10 @@ mod tests {
         let mut first = topology_placement(SurfaceTarget::Registry(registry), "one", "same", 0);
         first.storage_binding_id = binding;
         let first = db.create_surface_placement(&first).await.unwrap();
+        let first = db
+            .observe_surface_placement(first.id, "ready", "complete", 1)
+            .await
+            .unwrap();
         let mut duplicate_name =
             topology_placement(SurfaceTarget::Registry(registry), "one", "different", 1);
         duplicate_name.storage_binding_id = binding;
@@ -22058,6 +22161,7 @@ mod tests {
         let authority = db
             .create_surface_write_authority(
                 SurfaceTarget::Registry(registry),
+                "authority-registry-v1",
                 first.id,
                 first.resource_version,
                 first.write_spec_version,
@@ -22068,6 +22172,7 @@ mod tests {
         let authority_retry = db
             .create_surface_write_authority(
                 SurfaceTarget::Registry(registry),
+                "authority-registry-v1",
                 first.id,
                 first.resource_version,
                 first.write_spec_version,
@@ -22082,7 +22187,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .write_enabled
+                .effective_write_enabled
         );
 
         let rotated_revision = db
@@ -22123,6 +22228,7 @@ mod tests {
         let pending = db
             .request_surface_write_promotion(
                 authority.id,
+                &authority.incarnation_id,
                 authority.resource_version,
                 first.id,
                 first.id,
@@ -22137,7 +22243,7 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .write_enabled
+                .effective_write_enabled
         );
         let cancelled = db
             .cancel_surface_write_promotion(pending.id, pending.resource_version)
@@ -22155,6 +22261,7 @@ mod tests {
         let pending = db
             .request_surface_write_promotion(
                 restored.id,
+                &restored.incarnation_id,
                 restored.resource_version,
                 first.id,
                 first.id,
@@ -22186,6 +22293,7 @@ mod tests {
         assert!(!db
             .remove_surface_write_authority(
                 rotated.id,
+                &rotated.incarnation_id,
                 rotated.resource_version,
                 rotated.observed_generation.unwrap() + 1,
             )
@@ -22194,8 +22302,46 @@ mod tests {
         assert!(db
             .remove_surface_write_authority(
                 rotated.id,
+                &rotated.incarnation_id,
                 rotated.resource_version,
                 rotated.observed_generation.unwrap(),
+            )
+            .await
+            .unwrap());
+        let replacement = db
+            .create_surface_write_authority(
+                SurfaceTarget::Registry(registry),
+                "authority-registry-replacement",
+                first.id,
+                first.resource_version,
+                first.write_spec_version,
+                rotated_revision.revision,
+            )
+            .await
+            .unwrap();
+        assert!(!db
+            .remove_surface_write_authority(
+                rotated.id,
+                &rotated.incarnation_id,
+                rotated.resource_version,
+                rotated.observed_generation.unwrap(),
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            db.surface_write_authority(SurfaceTarget::Registry(registry))
+                .await
+                .unwrap()
+                .unwrap()
+                .incarnation_id,
+            replacement.incarnation_id
+        );
+        assert!(db
+            .remove_surface_write_authority(
+                replacement.id,
+                &replacement.incarnation_id,
+                replacement.resource_version,
+                replacement.observed_generation.unwrap(),
             )
             .await
             .unwrap());
@@ -22204,20 +22350,16 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .write_enabled
+                .effective_write_enabled
         );
         let drained = db
             .update_surface_placement(
                 first.id,
-                &UpdateSurfacePlacement {
+                &UpdateSurfacePlacementSpec {
                     expected_version: first.resource_version,
-                    state: "draining".to_string(),
-                    completeness: first.completeness.clone(),
-                    partition_rule_json: first.partition_rule_json.clone(),
-                    read_enabled: false,
-                    write_enabled: false,
+                    desired_state: "draining".to_string(),
+                    desired_read_enabled: false,
                     read_order: first.read_order,
-                    write_order: 0,
                 },
             )
             .await
@@ -22227,6 +22369,7 @@ mod tests {
         assert!(db
             .create_surface_write_authority(
                 SurfaceTarget::Registry(registry),
+                "authority-registry-v2",
                 first.id,
                 first.resource_version,
                 first.write_spec_version,
@@ -22242,19 +22385,12 @@ mod tests {
             4,
         );
         conditional.storage_binding_id = binding;
+        conditional.requires_conditional_writes = true;
         let conditional = db.create_surface_placement(&conditional).await.unwrap();
-        db.backend
-            .execute(
-                "UPDATE surface_placements
-                 SET requires_conditional_writes = 1,
-                     write_spec_version = write_spec_version + 1,
-                     resource_version = resource_version + 1
-                 WHERE id = ?1",
-                &vals![conditional.id],
-            )
+        let conditional = db
+            .observe_surface_placement(conditional.id, "ready", "complete", 1)
             .await
             .unwrap();
-        let conditional = db.surface_placement(conditional.id).await.unwrap().unwrap();
         let ordinary_only = db
             .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
                 storage_binding_id: binding,
@@ -22281,6 +22417,7 @@ mod tests {
         assert!(db
             .create_surface_write_authority(
                 SurfaceTarget::BinaryCache(cache),
+                "authority-cache-v1",
                 conditional.id,
                 conditional.resource_version,
                 conditional.write_spec_version,
@@ -22289,11 +22426,48 @@ mod tests {
             .await
             .is_err());
 
+        let mut invalid_shard = topology_placement(
+            SurfaceTarget::BinaryCache(cache),
+            "invalid-shard",
+            "invalid-shard",
+            5,
+        );
+        invalid_shard.storage_binding_id = binding;
+        invalid_shard.kind = "shard".to_string();
+        for range in [
+            None,
+            Some(SurfacePlacementHashRange { start: -1, end: 1 }),
+            Some(SurfacePlacementHashRange { start: 1, end: 1 }),
+            Some(SurfacePlacementHashRange {
+                start: 0,
+                end: 65_537,
+            }),
+        ] {
+            invalid_shard.hash_range = range;
+            let error = db
+                .create_surface_placement(&invalid_shard)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
+                Some(SurfacePlacementCreateFailureKind::InvalidArgument)
+            );
+        }
+        invalid_shard.kind = "complete".to_string();
+        invalid_shard.hash_range = Some(SurfacePlacementHashRange { start: 0, end: 1 });
+        let error = db
+            .create_surface_placement(&invalid_shard)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
+            Some(SurfacePlacementCreateFailureKind::InvalidArgument)
+        );
+
         let mut invalid = second.clone();
-        invalid.name = "invalid-role".to_string();
-        invalid.prefix = "invalid-role".to_string();
-        invalid.role = "writer".to_string();
-        invalid.write_enabled = false;
+        invalid.name = "invalid-kind".to_string();
+        invalid.prefix = "invalid-kind".to_string();
+        invalid.kind = "writer".to_string();
         let error = db.create_surface_placement(&invalid).await.unwrap_err();
         assert_eq!(
             surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
@@ -22817,15 +22991,11 @@ mod tests {
             ["alpha", "zeta", "middle", "binding-root"]
         );
         let selected = &placements[0];
-        let update = UpdateSurfacePlacement {
+        let update = UpdateSurfacePlacementSpec {
             expected_version: selected.resource_version,
-            state: "degraded".to_string(),
-            completeness: selected.completeness.clone(),
-            partition_rule_json: selected.partition_rule_json.clone(),
-            read_enabled: selected.read_enabled,
-            write_enabled: selected.write_enabled,
+            desired_state: selected.desired_state.clone(),
+            desired_read_enabled: selected.desired_read_enabled,
             read_order: selected.read_order,
-            write_order: selected.write_order,
         };
         let updated = db
             .update_surface_placement(selected.id, &update)
@@ -22885,25 +23055,41 @@ mod tests {
             topology_placement(SurfaceTarget::BinaryCache(cache), "second", "second", 1);
         second.storage_binding_id = binding;
         let second = db.create_surface_placement(&second).await.unwrap();
+        let second = db
+            .observe_surface_placement(second.id, "ready", "complete", 1)
+            .await
+            .unwrap();
         let mut first = topology_placement(SurfaceTarget::BinaryCache(cache), "first", "first", 0);
         first.storage_binding_id = binding;
         let first = db.create_surface_placement(&first).await.unwrap();
-        for (name, prefix, state, completeness, role, enabled) in [
+        let first = db
+            .observe_surface_placement(first.id, "ready", "complete", 1)
+            .await
+            .unwrap();
+        for (name, prefix, state, completeness, kind, desired_state, enabled) in [
             (
-                "disabled", "disabled", "ready", "complete", "replica", false,
+                "disabled", "disabled", "ready", "complete", "complete", "active", false,
             ),
-            ("offline", "offline", "offline", "complete", "replica", true),
-            ("partial", "partial", "ready", "partial", "replica", true),
-            ("archive", "archive", "ready", "complete", "archive", true),
+            (
+                "offline", "offline", "offline", "complete", "complete", "offline", true,
+            ),
+            (
+                "partial", "partial", "ready", "partial", "complete", "active", true,
+            ),
+            (
+                "archive", "archive", "ready", "complete", "archive", "active", false,
+            ),
         ] {
             let mut placement =
                 topology_placement(SurfaceTarget::BinaryCache(cache), name, prefix, 0);
             placement.storage_binding_id = binding;
-            placement.state = state.to_string();
-            placement.completeness = completeness.to_string();
-            placement.role = role.to_string();
-            placement.read_enabled = enabled;
-            db.create_surface_placement(&placement).await.unwrap();
+            placement.kind = kind.to_string();
+            placement.desired_state = desired_state.to_string();
+            placement.desired_read_enabled = enabled;
+            let placement = db.create_surface_placement(&placement).await.unwrap();
+            db.observe_surface_placement(placement.id, state, completeness, 1)
+                .await
+                .unwrap();
         }
 
         let bootstrap = db
@@ -23006,10 +23192,18 @@ mod tests {
         let mut stale = topology_placement(SurfaceTarget::Registry(registry), "stale", "stale", 0);
         stale.storage_binding_id = binding;
         let stale = db.create_surface_placement(&stale).await.unwrap();
+        let stale = db
+            .observe_surface_placement(stale.id, "ready", "complete", 1)
+            .await
+            .unwrap();
         let mut current =
             topology_placement(SurfaceTarget::Registry(registry), "current", "current", 1);
         current.storage_binding_id = binding;
         let current = db.create_surface_placement(&current).await.unwrap();
+        let current = db
+            .observe_surface_placement(current.id, "ready", "complete", 1)
+            .await
+            .unwrap();
         let now = unix_now();
         db.backend
             .batch(&[

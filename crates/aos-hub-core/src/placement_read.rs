@@ -338,7 +338,9 @@ mod tests {
     use anyhow::bail;
 
     use super::*;
-    use crate::db::{NewSurfacePlacement, RegistryRecord, SetObjectPlacement, SetSurfaceObject};
+    use crate::db::{
+        NewSurfacePlacementSpec, RegistryRecord, SetObjectPlacement, SetSurfaceObject,
+    };
 
     #[derive(Clone, Copy)]
     enum Behavior {
@@ -421,22 +423,24 @@ mod tests {
             .await
             .unwrap();
         for (name, order) in [("first", 0), ("second", 1), ("third", 2)] {
-            db.create_surface_placement(&NewSurfacePlacement {
-                surface: SurfaceTarget::BinaryCache(cache),
-                name: name.to_string(),
-                storage_binding_id: binding,
-                prefix: name.to_string(),
-                role: "replica".to_string(),
-                state: "ready".to_string(),
-                completeness: "complete".to_string(),
-                partition_rule_json: None,
-                read_enabled: true,
-                write_enabled: false,
-                read_order: order,
-                write_order: order,
-            })
-            .await
-            .unwrap();
+            let placement = db
+                .create_surface_placement(&NewSurfacePlacementSpec {
+                    surface: SurfaceTarget::BinaryCache(cache),
+                    name: name.to_string(),
+                    storage_binding_id: binding,
+                    prefix: name.to_string(),
+                    kind: "complete".to_string(),
+                    desired_state: "active".to_string(),
+                    hash_range: None,
+                    desired_read_enabled: true,
+                    read_order: order,
+                    requires_conditional_writes: false,
+                })
+                .await
+                .unwrap();
+            db.observe_surface_placement(placement.id, "ready", "complete", 1)
+                .await
+                .unwrap();
         }
         (db, cache)
     }

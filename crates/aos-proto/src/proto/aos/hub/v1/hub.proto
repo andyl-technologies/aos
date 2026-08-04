@@ -55,13 +55,11 @@ service StorageBindingService {
   rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
 }
 
-// Topology inventory and bounded placement lifecycle management for registry
-// and binary-cache surfaces.
+// Topology inventory and placement lifecycle management for registry and
+// binary-cache surfaces. Desired placement configuration, controller
+// observations, and single-writer authority are separate resources.
 // Placement identities are stable names within a typed surface; database ids
-// and backend-specific shard configuration are deliberately not public.
-// PromotePlacement is intentionally absent: promotion requires a portable,
-// single-row write-authority CAS before it can be exposed safely across native,
-// Worker/D1, and MySQL deployments.
+// are deliberately not public.
 // All placement writes temporarily require storage.manage on the owning org
 // (or root iam.admin for an org-less surface) until topology.manage exists.
 service TopologyService {
@@ -69,6 +67,12 @@ service TopologyService {
   rpc GetPlacement(GetPlacementRequest) returns (GetPlacementResponse);
   rpc CreatePlacement(CreatePlacementRequest) returns (CreatePlacementResponse);
   rpc UpdatePlacement(UpdatePlacementRequest) returns (UpdatePlacementResponse);
+  rpc GetWriteAuthority(GetWriteAuthorityRequest) returns (GetWriteAuthorityResponse);
+  rpc PlanPromotePlacement(PlanPromotePlacementRequest) returns (PlanPromotePlacementResponse);
+  rpc PromotePlacement(PromotePlacementRequest) returns (PromotePlacementResponse);
+  rpc ReconcileWriteAuthority(ReconcileWriteAuthorityRequest) returns (ReconcileWriteAuthorityResponse);
+  rpc PlanRemoveWriteAuthority(PlanRemoveWriteAuthorityRequest) returns (PlanRemoveWriteAuthorityResponse);
+  rpc RemoveWriteAuthority(RemoveWriteAuthorityRequest) returns (RemoveWriteAuthorityResponse);
   rpc DrainPlacement(DrainPlacementRequest) returns (DrainPlacementResponse);
   rpc DeletePlacement(DeletePlacementRequest) returns (DeletePlacementResponse);
 }
@@ -468,20 +472,70 @@ message SurfaceRef {
   }
 }
 
+// A typed half-open hash range in the fixed 16-bit shard space.
+message PlacementHashRange {
+  // Inclusive first bucket, in 0..65535.
+  uint32 start = 1;
+  // Exclusive last bucket, in 1..65536 and greater than start.
+  uint32 end = 2;
+}
+
+// Operator-owned desired placement configuration.
+message PlacementSpec {
+  // complete | shard | archive.
+  string kind = 1;
+  // active | draining | offline.
+  string desired_state = 2;
+  // Whether policy selection may consider the placement for reads.
+  bool desired_read_enabled = 3;
+  // Lower values are preferred for ordered reads.
+  int64 read_order = 4;
+  // Monotonic writer-critical specification version.
+  int64 write_spec_version = 5;
+  // Whether this placement's writer contract needs conditional object writes.
+  bool requires_conditional_writes = 6;
+  // Required exactly for shard placements.
+  PlacementHashRange hash_range = 7;
+}
+
+// Controller-owned placement health and inventory evidence.
+message PlacementObservation {
+  // provisioning | syncing | ready | degraded | offline.
+  string state = 1;
+  // complete | partial | unknown.
+  string completeness = 2;
+  int64 observed_at = 3;
+  string observation_version = 4;
+  // Registry-only publication fully materialized at this placement.
+  string mutable_publication_id = 5;
+  // Registry-only publication whose pointer update owns the watermark CAS.
+  string pending_publication_id = 6;
+  string watermark_resource_version = 7;
+}
+
+// Derived selection and authority facts; no field is directly mutable.
+message PlacementStatus {
+  // primary for the observed writer, otherwise replica, shard, or archive.
+  string derived_role = 1;
+  bool desired_writer = 2;
+  bool observed_writer = 3;
+  bool promotion_pending = 4;
+  // Coarse health/topology predicate before request-specific object evidence.
+  bool effective_read_enabled = 5;
+  // Complete authority/capability/health predicate for writes.
+  bool effective_write_enabled = 6;
+}
+
 message Placement {
   string name = 1;
   string storage_binding_name = 2;
   string prefix = 3;
-  string role = 4;
-  string state = 5;
-  string completeness = 6;
-  bool read_enabled = 7;
-  bool write_enabled = 8;
-  int64 read_order = 9;
-  int64 write_order = 10;
-  int64 created_at = 11;
-  int64 updated_at = 12;
-  string resource_version = 13;
+  PlacementSpec spec = 4;
+  PlacementObservation observation = 5;
+  PlacementStatus status = 6;
+  int64 created_at = 7;
+  int64 updated_at = 8;
+  string resource_version = 9;
 }
 
 message ListPlacementsRequest {
@@ -504,11 +558,8 @@ message GetPlacementResponse {
   Placement placement = 1;
 }
 
-// Creates one named placement on an existing storage binding. New placements
-// always begin with observed state `provisioning` and completeness `unknown`;
-// clients cannot assert observations they have not scanned. Shard roles are
-// reserved until the public API has a typed partition-rule contract; the
-// backend's partition-rule JSON is never accepted or exposed here.
+// Creates one desired placement on an existing storage binding. Creation never
+// grants write authority. Observation always begins provisioning/unknown.
 message CreatePlacementRequest {
   // Typed registry or binary-cache surface receiving the placement.
   SurfaceRef surface = 1;
@@ -518,16 +569,18 @@ message CreatePlacementRequest {
   string storage_binding_name = 3;
   // Binding-relative object prefix.
   string prefix = 4;
-  // primary | replica | archive. Shard is not public in this API revision.
-  string role = 5;
-  // Whether read selection may use this placement. Presence is required.
-  optional bool read_enabled = 6;
-  // Whether write selection may use this placement. Presence is required.
-  optional bool write_enabled = 7;
-  // Lower values are preferred for reads. Presence is required.
+  // complete | shard | archive.
+  string kind = 5;
+  // active | offline. Draining is entered through DrainPlacement.
+  string desired_state = 6;
+  // Whether policy selection may consider the placement for reads.
+  optional bool desired_read_enabled = 7;
+  // Lower values are preferred for reads.
   optional int64 read_order = 8;
-  // Lower values are preferred for writes. Presence is required.
-  optional int64 write_order = 9;
+  // Required exactly when kind is shard.
+  PlacementHashRange hash_range = 9;
+  // Whether the writer contract needs conditional object writes.
+  bool requires_conditional_writes = 10;
 }
 
 message CreatePlacementResponse {
@@ -535,11 +588,8 @@ message CreatePlacementResponse {
   Placement placement = 1;
 }
 
-// Replaces desired selection fields under one optimistic-concurrency check.
-// Observed lifecycle state and completeness, role, binding, prefix, and shard
-// rules are immutable through this bounded API. Disabling read selection uses
-// DrainPlacement; changing write authority awaits a future portable atomic
-// promotion operation.
+// Replaces mutable desired fields under one optimistic-concurrency check.
+// Observation, binding, prefix, kind, shard range, and authority are separate.
 message UpdatePlacementRequest {
   // Typed registry or binary-cache surface owning the placement.
   SurfaceRef surface = 1;
@@ -547,19 +597,122 @@ message UpdatePlacementRequest {
   string name = 2;
   // Opaque resource version returned by a preceding read.
   string expected_resource_version = 3;
-  // Replacement read-selection flag. Presence is required; disabling uses drain.
-  optional bool read_enabled = 4;
-  // Current write-selection flag. Presence is required and changes are rejected.
-  optional bool write_enabled = 5;
-  // Replacement read priority. Presence is required.
+  // active | offline. Draining is entered through DrainPlacement.
+  string desired_state = 4;
+  // Replacement desired read-selection flag.
+  optional bool desired_read_enabled = 5;
+  // Replacement read priority.
   optional int64 read_order = 6;
-  // Replacement write priority. Presence is required.
-  optional int64 write_order = 7;
 }
 
 message UpdatePlacementResponse {
   // Placement after the successful resource-version CAS.
   Placement placement = 1;
+}
+
+// Desired and observed single-writer authority for a surface.
+message SurfaceWriteAuthority {
+  string mode = 1;
+  string desired_placement_name = 2;
+  string observed_placement_name = 3;
+  int64 desired_write_spec_version = 4;
+  int64 observed_write_spec_version = 5;
+  int64 desired_binding_write_revision = 6;
+  int64 observed_binding_write_revision = 7;
+  int64 desired_generation = 8;
+  int64 observed_generation = 9;
+  string reconciliation_state = 10;
+  string reconciliation_error = 11;
+  string resource_version = 12;
+  // Immutable opaque identity of this authority lifetime.
+  string incarnation_id = 13;
+}
+
+message GetWriteAuthorityRequest {
+  SurfaceRef surface = 1;
+}
+
+message GetWriteAuthorityResponse {
+  // Absent for an explicitly read-only surface.
+  SurfaceWriteAuthority authority = 1;
+}
+
+// Immutable promotion preconditions captured for review.
+message PlacementPromotionPlan {
+  string plan_id = 1;
+  string candidate_placement_name = 2;
+  string authority_resource_version = 3;
+  string observed_placement_name = 4;
+  int64 candidate_write_spec_version = 5;
+  int64 candidate_binding_write_revision = 6;
+  bool creates_initial_authority = 7;
+  repeated string effects = 8;
+  int64 expires_at = 9;
+  // Authority lifetime that this plan creates or modifies.
+  string authority_incarnation_id = 10;
+}
+
+message PlanPromotePlacementRequest {
+  SurfaceRef surface = 1;
+  string candidate_placement_name = 2;
+}
+
+message PlanPromotePlacementResponse {
+  PlacementPromotionPlan plan = 1;
+}
+
+message PromotePlacementRequest {
+  SurfaceRef surface = 1;
+  string plan_id = 2;
+}
+
+message PromotePlacementResponse {
+  SurfaceWriteAuthority authority = 1;
+}
+
+// Service-account controller acknowledgement of exactly one desired authority
+// generation. Human operator tokens cannot call this method.
+message ReconcileWriteAuthorityRequest {
+  SurfaceRef surface = 1;
+  string expected_resource_version = 2;
+  int64 desired_generation = 3;
+  // ready | failed.
+  string state = 4;
+  // Required exactly for failed.
+  string error = 5;
+}
+
+message ReconcileWriteAuthorityResponse {
+  SurfaceWriteAuthority authority = 1;
+}
+
+// Immutable preconditions for removing a fully reconciled authority.
+message RemoveWriteAuthorityPlan {
+  string plan_id = 1;
+  string authority_resource_version = 2;
+  int64 observed_generation = 3;
+  string observed_placement_name = 4;
+  repeated string effects = 5;
+  int64 expires_at = 6;
+  // Authority lifetime that this plan is permitted to remove.
+  string authority_incarnation_id = 7;
+}
+
+message PlanRemoveWriteAuthorityRequest {
+  SurfaceRef surface = 1;
+}
+
+message PlanRemoveWriteAuthorityResponse {
+  RemoveWriteAuthorityPlan plan = 1;
+}
+
+message RemoveWriteAuthorityRequest {
+  SurfaceRef surface = 1;
+  string plan_id = 2;
+}
+
+message RemoveWriteAuthorityResponse {
+  bool removed = 1;
 }
 
 // A reviewable description returned by destructive placement operations.
@@ -575,8 +728,8 @@ message PlacementMutationPlan {
 }
 
 // Drain is plan-only unless apply is true. Applying revalidates the resource
-// version and route pins, transitions a non-primary placement to draining, and
-// disables both read and write selection.
+// version, route pins, and authority references, then transitions the placement
+// to draining and disables desired read selection.
 message DrainPlacementRequest {
   // Typed registry or binary-cache surface owning the placement.
   SurfaceRef surface = 1;

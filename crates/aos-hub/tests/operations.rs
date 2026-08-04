@@ -20,7 +20,7 @@ use std::sync::Arc;
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
-    Database, NewSurfacePlacement, OrgQuota, SignupPolicy, SurfaceTarget, TokenAuth,
+    Database, NewSurfacePlacementSpec, OrgQuota, SignupPolicy, SurfaceTarget, TokenAuth,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
@@ -153,22 +153,24 @@ async fn registry_route_streams_ranges_through_the_selected_placement() {
         .unwrap()
         .unwrap();
     let binding = registry.storage_binding_id.unwrap();
-    db.create_surface_placement(&NewSurfacePlacement {
-        surface: SurfaceTarget::Registry(registry.id),
-        name: "primary-read".to_string(),
-        storage_binding_id: binding,
-        prefix: "cdn".to_string(),
-        role: "replica".to_string(),
-        state: "ready".to_string(),
-        completeness: "complete".to_string(),
-        partition_rule_json: None,
-        read_enabled: true,
-        write_enabled: false,
-        read_order: 0,
-        write_order: 0,
-    })
-    .await
-    .unwrap();
+    let placement = db
+        .create_surface_placement(&NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry.id),
+            name: "primary-read".to_string(),
+            storage_binding_id: binding,
+            prefix: "cdn".to_string(),
+            kind: "complete".to_string(),
+            desired_state: "active".to_string(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await
+        .unwrap();
+    db.observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await
+        .unwrap();
     std::fs::create_dir_all(surface.join("nar")).unwrap();
     std::fs::write(surface.join("nar/range.nar"), b"0123456789").unwrap();
     std::fs::create_dir_all(surface.join("web")).unwrap();
@@ -266,22 +268,24 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
         (SurfaceTarget::Registry(registry_id), "registry", "registry"),
         (SurfaceTarget::BinaryCache(cache_id), "cache", "cache"),
     ] {
-        db.create_surface_placement(&NewSurfacePlacement {
-            surface,
-            name: name.to_string(),
-            storage_binding_id: binding,
-            prefix: prefix.to_string(),
-            role: "primary".to_string(),
-            state: "ready".to_string(),
-            completeness: "complete".to_string(),
-            partition_rule_json: None,
-            read_enabled: true,
-            write_enabled: true,
-            read_order: 0,
-            write_order: 0,
-        })
-        .await
-        .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface,
+                name: name.to_string(),
+                storage_binding_id: binding,
+                prefix: prefix.to_string(),
+                kind: "complete".to_string(),
+                desired_state: "active".to_string(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+        db.observe_surface_placement(placement.id, "ready", "complete", 1)
+            .await
+            .unwrap();
     }
     std::fs::create_dir_all(root.join("registry/nar")).unwrap();
     std::fs::write(root.join("registry/nar/private.nar"), b"registry-private").unwrap();

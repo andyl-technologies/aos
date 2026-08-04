@@ -134,6 +134,8 @@ pub enum Permission {
     RegistryConfigure,
     /// Manage storage bindings, buckets, and cache stores.
     StorageManage,
+    /// Reconcile controller-observed surface write authority.
+    TopologyReconcile,
     /// Run consistency-validation repair jobs.
     ValidationRepair,
     /// Read the audit log.
@@ -156,6 +158,7 @@ impl Permission {
             Permission::MembersManage => "members.manage",
             Permission::RegistryConfigure => "registry.configure",
             Permission::StorageManage => "storage.manage",
+            Permission::TopologyReconcile => "topology.reconcile",
             Permission::ValidationRepair => "validation.repair",
             Permission::AuditRead => "audit.read",
             Permission::IamAdmin => "iam.admin",
@@ -192,6 +195,7 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
             MembersManage,
             RegistryConfigure,
             StorageManage,
+            TopologyReconcile,
             ValidationRepair,
             AuditRead,
             IamAdmin,
@@ -203,6 +207,7 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
             MembersManage,
             RegistryConfigure,
             StorageManage,
+            TopologyReconcile,
             ValidationRepair,
             AuditRead,
         ],
@@ -515,6 +520,7 @@ mod tests {
             MembersManage,
             RegistryConfigure,
             StorageManage,
+            TopologyReconcile,
             ValidationRepair,
             AuditRead,
             IamAdmin,
@@ -538,6 +544,7 @@ mod tests {
             MembersManage,
             RegistryConfigure,
             StorageManage,
+            TopologyReconcile,
             ValidationRepair,
             AuditRead,
         ] {
