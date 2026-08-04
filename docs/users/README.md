@@ -1,5 +1,14 @@
 # AOS user documentation
 
+- [Install and operate AOS](aos/)
+  - [Build and boot a server](aos/quickstart.md)
+  - [Install an image](aos/installation.md)
+  - [Customize an image and first-boot storage](aos/configuration.md)
+  - [Understand and operate host.nix](aos/host-nix.md)
+  - [Use the repository CLI](aos/cli.md)
+  - [Manage packages](aos/packages.md)
+  - [Upgrade and roll back a host](aos/upgrades.md)
+  - [Troubleshoot a host](aos/troubleshooting.md)
 - [Operate AOS Hub](aos-hub/)
   - [Run a local Hub](aos-hub/quickstart.md)
   - [Deploy the native server](aos-hub/native.md)

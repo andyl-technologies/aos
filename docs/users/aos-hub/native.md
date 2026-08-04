@@ -39,10 +39,14 @@ Keep the listener on localhost when a reverse proxy owns the public address.
 
 ## Configure the AOS service module
 
-On an AOS system, enable the service in `host.nix`:
+On an AOS system, enable the service in the build-time system variant:
 
 ```nix
-{
+{pkgs, ...}: {
+  imports = [./server.nix];
+
+  environment.systemPackages = [pkgs.aos-hub];
+
   aos.registry-hub = {
     enable = true;
     listen = "127.0.0.1:8420";
@@ -50,6 +54,28 @@ On an AOS system, enable the service in `host.nix`:
   };
 }
 ```
+
+General runtime `host.nix` activation is not complete, so putting this setting
+in metadata does not start the service today. Rebuild and deploy the resulting
+system image. The [AOS customization guide](../aos/configuration.md) explains
+the distinction between image modules and first-boot `host.nix` policy.
+
+After deploying the image, initialize the database as the service account. The
+unit's first start creates `/var/lib/aos-hub`; stop it before initialization so
+SQLite has one writer:
+
+```sh
+systemctl stop aos-hub.service
+printf '%s\n' "$ROOT_PASSWORD" | \
+  runuser -u aos-hub -- \
+    aos-hub --root /var/lib/aos-hub init \
+      --root-email ops@example.com \
+      --root-password-stdin
+systemctl start aos-hub.service
+```
+
+Do not run `init` as root. Root-owned database or WAL files prevent the
+sandboxed service account from operating the instance.
 
 The module runs `aos-hub` under a dedicated service account and uses
 `/var/lib/aos-hub` for state. Initialize that directory as the service account
@@ -73,6 +99,9 @@ Stop the Hub and back up the complete state root. It contains:
 The secret key is created with mode `0600` on first production use. It may also
 be supplied from a protected file through `AOS_HUB_SECRET_KEY_FILE`. Losing it
 makes sealed values unusable.
+
+When `AOS_HUB_SECRET_KEY_FILE` points outside the Hub state root, back up that
+external key file with the same recovery point.
 
 Copy the complete stopped state root as one recovery point. If registry or cache
 bindings live elsewhere, include those paths as well. Include the reverse-proxy
@@ -128,9 +157,15 @@ curl -fsS http://127.0.0.1:8420/healthz
 Prometheus metrics are served at `/metrics`. They cover indexing, webhooks,
 caches, garbage collection, and build/version information.
 
-To update, build the new package, stop the service, take a recovery point, and
-start the new binary against the existing root. Startup applies pending schema
-migrations. Watch the service log and verify `/healthz` before returning traffic.
+For a manual binary deployment, build the new package, stop the service, take a
+recovery point, and start the new binary against the existing root. Startup
+applies pending schema migrations.
+
+For an AOS module deployment, update the containing system variant or sysroot
+generation and deploy it through the normal AOS image or userspace-generation
+workflow. The unit remains pinned to its old Nix store path until that system
+generation changes. After either update path, watch `aos-hub.service` and verify
+`/healthz` before returning traffic.
 
 Native magic-link mail currently writes links to the service log rather than
 delivering mail. Use password, passkey, or OIDC sign-in for production until an
