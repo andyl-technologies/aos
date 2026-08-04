@@ -1459,11 +1459,12 @@ pub const MIGRATIONS: &[&str] = &[
     "
     ALTER TABLE storage_bindings RENAME COLUMN public_base_url TO endpoint;
     ",
-    // v34: RFC-0012 topology foundation. This is intentionally additive: the
-    // existing runtime continues to use the v33 binding/frontend/cache-link
-    // representation until the coordinated hard cutover switches every
-    // interface and then removes those legacy objects. New code may build and
-    // test the final resource boundaries without a production dual-read path.
+    // v34: RFC-0012 topology foundation and normalized write authority. This
+    // migration is unreleased, so it defines the final model directly: desired
+    // placement configuration, controller observations, publication
+    // watermarks, immutable binding-write revisions, and write authority are
+    // independent resources. No v34 compatibility columns or dual-write path
+    // exist.
     "
     ALTER TABLE channels ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
 
@@ -1540,66 +1541,275 @@ pub const MIGRATIONS: &[&str] = &[
             REFERENCES registry_publications(publication_id, registry_id)
     );
 
+    CREATE TABLE storage_binding_write_revisions (
+        storage_binding_id         INTEGER NOT NULL REFERENCES storage_bindings(id) ON DELETE CASCADE ON UPDATE RESTRICT,
+        revision                   INTEGER NOT NULL,
+        write_credential_version_ref KEYTEXT128 NOT NULL,
+        writes_supported           INTEGER NOT NULL,
+        conditional_writes_supported INTEGER NOT NULL,
+        revision_fingerprint       KEYTEXT128 NOT NULL,
+        capability_fingerprint     KEYTEXT128 NOT NULL,
+        created_at                 INTEGER NOT NULL,
+        PRIMARY KEY (storage_binding_id, revision),
+        UNIQUE (storage_binding_id, revision_fingerprint),
+        CHECK (revision > 0),
+        CHECK (writes_supported IN (0, 1)),
+        CHECK (conditional_writes_supported IN (0, 1)),
+        CHECK (conditional_writes_supported = 0 OR writes_supported = 1)
+    );
+
+    CREATE TABLE storage_binding_write_state (
+        storage_binding_id INTEGER PRIMARY KEY REFERENCES storage_bindings(id) ON DELETE CASCADE ON UPDATE RESTRICT,
+        current_write_revision INTEGER,
+        resource_version   INTEGER NOT NULL DEFAULT 1,
+        updated_at         INTEGER NOT NULL,
+        FOREIGN KEY (storage_binding_id, current_write_revision)
+            REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+            ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE storage_binding_write_observations (
+        storage_binding_id INTEGER NOT NULL,
+        revision           INTEGER NOT NULL,
+        state              KEYTEXT32 NOT NULL,
+        validated_at       INTEGER,
+        error              LONGTEXT,
+        observation_version INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (storage_binding_id, revision),
+        FOREIGN KEY (storage_binding_id, revision)
+            REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+            ON DELETE CASCADE ON UPDATE RESTRICT,
+        CHECK (state IN ('unknown', 'validating', 'valid', 'invalid')),
+        CHECK ((state IN ('unknown', 'validating') AND validated_at IS NULL)
+            OR (state IN ('valid', 'invalid') AND validated_at IS NOT NULL)),
+        CHECK (state = 'invalid' OR error IS NULL),
+        CHECK (observation_version > 0)
+    );
+
     CREATE TABLE surface_placements (
         id                   INTEGER PRIMARY KEY,
         registry_id          INTEGER REFERENCES registries(id) ON DELETE CASCADE,
         cache_id             INTEGER REFERENCES caches(id) ON DELETE CASCADE,
-        primary_registry_id  INTEGER REFERENCES registries(id) ON DELETE CASCADE,
-        primary_cache_id     INTEGER REFERENCES caches(id) ON DELETE CASCADE,
         name                 KEYTEXT64 NOT NULL,
         storage_binding_id   INTEGER NOT NULL REFERENCES storage_bindings(id),
         prefix               KEYTEXT512 NOT NULL,
-        role                 KEYTEXT32 NOT NULL,
-        state                KEYTEXT32 NOT NULL,
-        completeness         KEYTEXT32 NOT NULL,
-        partition_rule_json  LONGTEXT,
-        mutable_publication_id KEYTEXT64,
-        read_enabled         INTEGER NOT NULL DEFAULT 1,
-        write_enabled        INTEGER NOT NULL DEFAULT 0,
+        kind                 KEYTEXT32 NOT NULL,
+        desired_state        KEYTEXT32 NOT NULL,
+        desired_read_enabled INTEGER NOT NULL DEFAULT 1,
         read_order           INTEGER NOT NULL DEFAULT 0,
-        write_order          INTEGER NOT NULL DEFAULT 0,
+        partition_rule_json  LONGTEXT,
+        write_spec_version   INTEGER NOT NULL DEFAULT 1,
+        requires_conditional_writes INTEGER NOT NULL DEFAULT 0,
         created_at           INTEGER NOT NULL,
         updated_at           INTEGER NOT NULL,
         resource_version     INTEGER NOT NULL DEFAULT 1,
         CHECK ((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
              + (CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
-        CHECK ((role = 'primary'
-                AND ((registry_id IS NOT NULL
-                      AND primary_registry_id = registry_id
-                      AND primary_cache_id IS NULL)
-                  OR (cache_id IS NOT NULL
-                      AND primary_cache_id = cache_id
-                      AND primary_registry_id IS NULL)))
-            OR (role <> 'primary'
-                AND primary_registry_id IS NULL
-                AND primary_cache_id IS NULL)),
-        CHECK (role IN ('primary', 'replica', 'shard', 'archive')),
-        CHECK (state IN ('provisioning', 'syncing', 'ready', 'degraded',
-                         'draining', 'offline')),
-        CHECK (completeness IN ('complete', 'partial', 'unknown')),
-        CHECK ((role = 'shard' AND partition_rule_json IS NOT NULL)
-            OR (role <> 'shard' AND partition_rule_json IS NULL)),
-        CHECK ((role = 'primary' AND write_enabled = 1)
-            OR (role <> 'primary' AND write_enabled = 0)),
-        CHECK (role <> 'archive' OR read_enabled = 0),
-        CHECK (role <> 'shard' OR completeness = 'partial'),
-        -- v34 deliberately rejects every physical-location collision. An
-        -- equivalence record is evidence, not authority to create an alias;
-        -- a later reviewed alias workflow can replace this with a canonical
-        -- physical-location resource without making ordinary writes unsafe.
+        CHECK (kind IN ('complete', 'shard', 'archive')),
+        CHECK (desired_state IN ('active', 'draining', 'offline')),
+        CHECK (desired_read_enabled IN (0, 1)),
+        CHECK ((kind = 'shard' AND partition_rule_json IS NOT NULL)
+            OR (kind <> 'shard' AND partition_rule_json IS NULL)),
+        CHECK (kind <> 'archive' OR desired_read_enabled = 0),
+        CHECK (write_spec_version > 0),
+        CHECK (requires_conditional_writes IN (0, 1)),
         UNIQUE (storage_binding_id, prefix),
         UNIQUE (registry_id, name),
         UNIQUE (cache_id, name),
-        UNIQUE (primary_registry_id),
-        UNIQUE (primary_cache_id),
         UNIQUE (id, registry_id),
-        FOREIGN KEY (mutable_publication_id, registry_id)
-            REFERENCES registry_publications(publication_id, registry_id)
+        UNIQUE (id, cache_id),
+        UNIQUE (id, registry_id, write_spec_version),
+        UNIQUE (id, cache_id, write_spec_version),
+        UNIQUE (id, storage_binding_id),
+        UNIQUE (id, storage_binding_id, write_spec_version)
     );
     CREATE INDEX surface_placements_registry_idx
         ON surface_placements (registry_id, read_order, id);
     CREATE INDEX surface_placements_cache_idx
         ON surface_placements (cache_id, read_order, id);
+
+    CREATE TABLE surface_placement_observations (
+        placement_id        INTEGER PRIMARY KEY REFERENCES surface_placements(id) ON DELETE CASCADE ON UPDATE RESTRICT,
+        state               KEYTEXT32 NOT NULL,
+        completeness        KEYTEXT32 NOT NULL,
+        observed_at         INTEGER NOT NULL,
+        observation_version INTEGER NOT NULL DEFAULT 1,
+        CHECK (state IN ('provisioning', 'syncing', 'ready', 'degraded', 'offline')),
+        CHECK (completeness IN ('complete', 'partial', 'unknown'))
+    );
+
+    CREATE TABLE registry_placement_publication_watermarks (
+        placement_id          INTEGER PRIMARY KEY REFERENCES surface_placements(id) ON DELETE CASCADE,
+        registry_id           INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
+        mutable_publication_id KEYTEXT64,
+        pending_publication_id KEYTEXT64,
+        observed_at           INTEGER NOT NULL,
+        resource_version      INTEGER NOT NULL DEFAULT 1,
+        CHECK (mutable_publication_id IS NULL OR pending_publication_id IS NULL),
+        FOREIGN KEY (placement_id, registry_id)
+            REFERENCES surface_placements(id, registry_id) ON DELETE CASCADE ON UPDATE RESTRICT,
+        FOREIGN KEY (mutable_publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+        FOREIGN KEY (pending_publication_id, registry_id)
+            REFERENCES registry_publications(publication_id, registry_id) ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE surface_placement_write_capabilities (
+        placement_id                 INTEGER NOT NULL,
+        placement_write_spec_version INTEGER NOT NULL,
+        storage_binding_id           INTEGER NOT NULL,
+        binding_write_revision       INTEGER NOT NULL,
+        created_at                   INTEGER NOT NULL,
+        PRIMARY KEY (placement_id, placement_write_spec_version, binding_write_revision),
+        FOREIGN KEY (placement_id, storage_binding_id)
+            REFERENCES surface_placements(id, storage_binding_id)
+            ON DELETE CASCADE ON UPDATE RESTRICT,
+        FOREIGN KEY (storage_binding_id, binding_write_revision)
+            REFERENCES storage_binding_write_revisions(storage_binding_id, revision)
+            ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    CREATE TABLE surface_write_authorities (
+        id                              INTEGER PRIMARY KEY,
+        registry_id                     INTEGER REFERENCES registries(id) ON DELETE RESTRICT,
+        cache_id                        INTEGER REFERENCES caches(id) ON DELETE RESTRICT,
+        mode                            KEYTEXT32 NOT NULL DEFAULT 'single_writer',
+        desired_placement_id            INTEGER NOT NULL,
+        desired_write_spec_version      INTEGER NOT NULL,
+        desired_binding_write_revision  INTEGER NOT NULL,
+        desired_generation              INTEGER NOT NULL,
+        observed_placement_id           INTEGER,
+        observed_write_spec_version     INTEGER,
+        observed_binding_write_revision INTEGER,
+        observed_generation             INTEGER,
+        reconciliation_state            KEYTEXT32 NOT NULL DEFAULT 'pending',
+        reconciliation_error            LONGTEXT,
+        resource_version                INTEGER NOT NULL DEFAULT 1,
+        created_at                      INTEGER NOT NULL,
+        updated_at                      INTEGER NOT NULL,
+        CHECK ((CASE WHEN registry_id IS NULL THEN 0 ELSE 1 END)
+             + (CASE WHEN cache_id IS NULL THEN 0 ELSE 1 END) = 1),
+        CHECK (mode = 'single_writer'),
+        CHECK (desired_generation > 0),
+        CHECK (desired_write_spec_version > 0),
+        CHECK (desired_binding_write_revision > 0),
+        CHECK (observed_generation IS NULL OR observed_generation >= 0),
+        CHECK (observed_generation IS NULL OR observed_generation <= desired_generation),
+        CHECK (reconciliation_state IN ('pending', 'ready', 'failed')),
+        CHECK ((observed_placement_id IS NULL
+                AND observed_write_spec_version IS NULL
+                AND observed_binding_write_revision IS NULL
+                AND observed_generation IS NULL)
+            OR (observed_placement_id IS NOT NULL
+                AND observed_write_spec_version IS NOT NULL
+                AND observed_binding_write_revision IS NOT NULL
+                AND observed_generation IS NOT NULL)),
+        CHECK (reconciliation_state <> 'ready'
+            OR (observed_placement_id = desired_placement_id
+                AND observed_write_spec_version = desired_write_spec_version
+                AND observed_binding_write_revision = desired_binding_write_revision
+                AND observed_generation = desired_generation)),
+        CHECK (reconciliation_state = 'ready'
+            OR observed_generation IS NULL
+            OR desired_generation > observed_generation),
+        CHECK ((reconciliation_state = 'failed' AND reconciliation_error IS NOT NULL)
+            OR (reconciliation_state <> 'failed' AND reconciliation_error IS NULL)),
+        UNIQUE (registry_id),
+        UNIQUE (cache_id),
+        FOREIGN KEY (desired_placement_id, registry_id, desired_write_spec_version)
+            REFERENCES surface_placements(id, registry_id, write_spec_version)
+            ON DELETE RESTRICT ON UPDATE RESTRICT,
+        FOREIGN KEY (desired_placement_id, cache_id, desired_write_spec_version)
+            REFERENCES surface_placements(id, cache_id, write_spec_version)
+            ON DELETE RESTRICT ON UPDATE RESTRICT,
+        FOREIGN KEY (desired_placement_id, desired_write_spec_version,
+                     desired_binding_write_revision)
+            REFERENCES surface_placement_write_capabilities
+                (placement_id, placement_write_spec_version, binding_write_revision)
+            ON DELETE RESTRICT ON UPDATE RESTRICT,
+        FOREIGN KEY (observed_placement_id, registry_id, observed_write_spec_version)
+            REFERENCES surface_placements(id, registry_id, write_spec_version)
+            ON DELETE RESTRICT ON UPDATE RESTRICT,
+        FOREIGN KEY (observed_placement_id, cache_id, observed_write_spec_version)
+            REFERENCES surface_placements(id, cache_id, write_spec_version)
+            ON DELETE RESTRICT ON UPDATE RESTRICT,
+        FOREIGN KEY (observed_placement_id, observed_write_spec_version,
+                     observed_binding_write_revision)
+            REFERENCES surface_placement_write_capabilities
+                (placement_id, placement_write_spec_version, binding_write_revision)
+            ON DELETE RESTRICT ON UPDATE RESTRICT
+    );
+
+    -- This projection is the one read model for placement selection. Role and
+    -- effective write eligibility are derived facts; neither can be mutated
+    -- independently of authority, observations, and immutable capability pins.
+    CREATE VIEW surface_placement_effective AS
+    SELECT p.id,
+           p.registry_id,
+           p.cache_id,
+           p.name,
+           p.storage_binding_id,
+           p.prefix,
+           CASE WHEN a.observed_placement_id = p.id THEN 'primary'
+                WHEN p.kind = 'complete' THEN 'replica'
+                ELSE p.kind END AS role,
+           COALESCE(o.state, 'provisioning') AS state,
+           COALESCE(o.completeness, 'unknown') AS completeness,
+           p.partition_rule_json,
+           w.mutable_publication_id,
+           CASE WHEN p.desired_state = 'active' AND p.desired_read_enabled = 1
+                THEN 1 ELSE 0 END AS read_enabled,
+           CASE WHEN a.observed_placement_id = p.id
+                  AND a.observed_placement_id = a.desired_placement_id
+                  AND a.observed_write_spec_version = a.desired_write_spec_version
+                  AND a.observed_binding_write_revision = a.desired_binding_write_revision
+                  AND a.observed_generation = a.desired_generation
+                  AND a.reconciliation_state = 'ready'
+                  AND p.kind = 'complete' AND p.desired_state = 'active'
+                  AND o.state = 'ready' AND o.completeness = 'complete'
+                  AND bwo.state = 'valid' AND bwr.writes_supported = 1
+                  AND (p.requires_conditional_writes = 0
+                    OR bwr.conditional_writes_supported = 1)
+                THEN 1 ELSE 0 END AS write_enabled,
+           p.read_order,
+           0 AS write_order,
+           p.created_at,
+           p.updated_at,
+           p.resource_version,
+           p.kind,
+           p.desired_state,
+           p.desired_read_enabled,
+           p.write_spec_version,
+           p.requires_conditional_writes,
+           o.observed_at,
+           o.observation_version,
+           w.resource_version AS watermark_resource_version,
+           w.pending_publication_id AS watermark_pending_publication_id,
+           a.id AS write_authority_id,
+           a.desired_placement_id AS authority_desired_placement_id,
+           a.observed_placement_id AS authority_observed_placement_id,
+           a.desired_write_spec_version AS authority_desired_write_spec_version,
+           a.observed_write_spec_version AS authority_observed_write_spec_version,
+           a.desired_binding_write_revision AS authority_desired_binding_write_revision,
+           a.observed_binding_write_revision AS authority_observed_binding_write_revision,
+           a.desired_generation AS authority_desired_generation,
+           a.observed_generation AS authority_observed_generation,
+           a.reconciliation_state AS authority_reconciliation_state
+    FROM surface_placements p
+    LEFT JOIN surface_placement_observations o ON o.placement_id = p.id
+    LEFT JOIN registry_placement_publication_watermarks w ON w.placement_id = p.id
+    LEFT JOIN surface_write_authorities a
+      ON (a.registry_id = p.registry_id OR a.cache_id = p.cache_id)
+    LEFT JOIN surface_placement_write_capabilities pc
+      ON pc.placement_id = a.observed_placement_id
+     AND pc.placement_write_spec_version = a.observed_write_spec_version
+     AND pc.binding_write_revision = a.observed_binding_write_revision
+    LEFT JOIN storage_binding_write_revisions bwr
+      ON bwr.storage_binding_id = pc.storage_binding_id
+     AND bwr.revision = pc.binding_write_revision
+    LEFT JOIN storage_binding_write_observations bwo
+      ON bwo.storage_binding_id = bwr.storage_binding_id
+     AND bwo.revision = bwr.revision;
 
     CREATE TABLE placement_policies (
         id               INTEGER PRIMARY KEY,
@@ -3105,9 +3315,10 @@ pub struct SurfacePlacementRecord {
     pub storage_binding_id: i64,
     /// Surface-relative prefix within the binding.
     pub prefix: String,
-    /// Placement role: `primary`, `replica`, `shard`, or `archive`.
+    /// Derived placement role: observed authority is `primary`; otherwise the
+    /// placement is a `replica`, `shard`, or `archive` according to its kind.
     pub role: String,
-    /// Operational state.
+    /// Latest observed operational state, defaulting to `provisioning` before observation.
     pub state: String,
     /// Inventory completeness: `complete`, `partial`, or `unknown`.
     pub completeness: String,
@@ -3115,13 +3326,13 @@ pub struct SurfacePlacementRecord {
     pub partition_rule_json: Option<String>,
     /// Last completely published mutable-pointer publication.
     pub mutable_publication_id: Option<String>,
-    /// Whether reads may select this placement.
+    /// Whether desired lifecycle and read configuration permit selection.
     pub read_enabled: bool,
-    /// Whether writes may select this placement.
+    /// Whether the complete desired/observed authority and capability tuple is effective.
     pub write_enabled: bool,
     /// Lower ordinal is preferred for reads.
     pub read_order: i64,
-    /// Lower ordinal is preferred for writes.
+    /// Derived single-writer ordinal, currently always zero.
     pub write_order: i64,
     /// Creation time in Unix seconds.
     pub created_at: i64,
@@ -3129,6 +3340,44 @@ pub struct SurfacePlacementRecord {
     pub updated_at: i64,
     /// Optimistic-concurrency version.
     pub resource_version: i64,
+    /// Desired placement shape: `complete`, `shard`, or `archive`.
+    pub kind: String,
+    /// Desired lifecycle: `active`, `draining`, or `offline`.
+    pub desired_state: String,
+    /// Desired read-selection switch before request-specific eligibility.
+    pub desired_read_enabled: bool,
+    /// Version of the placement's writer-critical topology.
+    pub write_spec_version: i64,
+    /// Whether this write contract requires conditional object writes.
+    pub requires_conditional_writes: bool,
+    /// Time of the latest controller observation, if any.
+    pub observed_at: Option<i64>,
+    /// Optimistic version of the controller observation, if any.
+    pub observation_version: Option<i64>,
+    /// Optimistic version of the registry publication watermark resource.
+    pub watermark_resource_version: Option<i64>,
+    /// Publication whose pointer advance currently owns the watermark CAS.
+    pub watermark_pending_publication_id: Option<String>,
+    /// Surface write-authority resource, if this surface has one.
+    pub write_authority_id: Option<i64>,
+    /// Placement currently requested as writer.
+    pub authority_desired_placement_id: Option<i64>,
+    /// Placement confirmed as writer by reconciliation.
+    pub authority_observed_placement_id: Option<i64>,
+    /// Placement write-spec version requested by authority.
+    pub authority_desired_write_spec_version: Option<i64>,
+    /// Placement write-spec version confirmed by reconciliation.
+    pub authority_observed_write_spec_version: Option<i64>,
+    /// Immutable binding-write revision requested by authority.
+    pub authority_desired_binding_write_revision: Option<i64>,
+    /// Immutable binding-write revision confirmed by reconciliation.
+    pub authority_observed_binding_write_revision: Option<i64>,
+    /// Requested authority generation.
+    pub authority_desired_generation: Option<i64>,
+    /// Confirmed authority generation.
+    pub authority_observed_generation: Option<i64>,
+    /// Authority reconciliation state, if authority exists.
+    pub authority_reconciliation_state: Option<String>,
 }
 
 /// Stable classification for caller-correctable placement-create failures.
@@ -3573,6 +3822,113 @@ pub struct UpdateSurfacePlacement {
     pub read_order: i64,
     /// Lower ordinal is preferred for writes.
     pub write_order: i64,
+}
+
+/// One immutable snapshot of a storage binding's write contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageBindingWriteRevisionRecord {
+    /// Storage binding whose credentials and capabilities were snapshotted.
+    pub storage_binding_id: i64,
+    /// Monotonically increasing binding-local revision.
+    pub revision: i64,
+    /// Opaque reference to one immutable credential version.
+    pub write_credential_version_ref: String,
+    /// Whether ordinary object writes are supported.
+    pub writes_supported: bool,
+    /// Whether conditional object writes are supported.
+    pub conditional_writes_supported: bool,
+    /// Fingerprint of the entire immutable revision.
+    pub revision_fingerprint: String,
+    /// Fingerprint of capability semantics, independent of credential identity.
+    pub capability_fingerprint: String,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+}
+
+/// Desired immutable storage-binding write revision.
+#[derive(Debug, Clone)]
+pub struct NewStorageBindingWriteRevision {
+    /// Storage binding receiving the revision.
+    pub storage_binding_id: i64,
+    /// Opaque reference to one immutable credential version.
+    pub write_credential_version_ref: String,
+    /// Whether ordinary object writes are supported.
+    pub writes_supported: bool,
+    /// Whether conditional object writes are supported.
+    pub conditional_writes_supported: bool,
+    /// Fingerprint of the entire immutable revision.
+    pub revision_fingerprint: String,
+    /// Fingerprint of capability semantics, independent of credential identity.
+    pub capability_fingerprint: String,
+}
+
+/// Desired default binding-write revision for new placement plans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageBindingWriteStateRecord {
+    /// Storage binding owning the pointer.
+    pub storage_binding_id: i64,
+    /// Validated revision selected for new plans, if configured.
+    pub current_write_revision: Option<i64>,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+    /// Last pointer update time in Unix seconds.
+    pub updated_at: i64,
+}
+
+/// Controller validation of one immutable binding-write revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageBindingWriteObservationRecord {
+    /// Storage binding owning the revision.
+    pub storage_binding_id: i64,
+    /// Validated immutable revision.
+    pub revision: i64,
+    /// `unknown`, `validating`, `valid`, or `invalid`.
+    pub state: String,
+    /// Validation completion time for terminal states.
+    pub validated_at: Option<i64>,
+    /// Failure detail for an invalid revision.
+    pub error: Option<String>,
+    /// Monotonic observation version.
+    pub observation_version: i64,
+}
+
+/// Desired and observed single-writer authority for one surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceWriteAuthorityRecord {
+    /// Database id.
+    pub id: i64,
+    /// Registry target, or `None` for a binary cache.
+    pub registry_id: Option<i64>,
+    /// Binary-cache target, or `None` for a registry.
+    pub cache_id: Option<i64>,
+    /// Authority mode; currently always `single_writer`.
+    pub mode: String,
+    /// Placement requested as writer.
+    pub desired_placement_id: i64,
+    /// Requested placement write-spec version.
+    pub desired_write_spec_version: i64,
+    /// Requested immutable binding-write revision.
+    pub desired_binding_write_revision: i64,
+    /// Requested reconciliation generation.
+    pub desired_generation: i64,
+    /// Placement confirmed as writer, if reconciliation has succeeded before.
+    pub observed_placement_id: Option<i64>,
+    /// Confirmed placement write-spec version.
+    pub observed_write_spec_version: Option<i64>,
+    /// Confirmed immutable binding-write revision.
+    pub observed_binding_write_revision: Option<i64>,
+    /// Confirmed reconciliation generation.
+    pub observed_generation: Option<i64>,
+    /// `pending`, `ready`, or `failed`.
+    pub reconciliation_state: String,
+    /// Reconciliation failure detail.
+    pub reconciliation_error: Option<String>,
+    /// Optimistic-concurrency version.
+    pub resource_version: i64,
+    /// Creation time in Unix seconds.
+    pub created_at: i64,
+    /// Last desired or observed transition time in Unix seconds.
+    pub updated_at: i64,
 }
 
 /// Input for creating a placement-selection policy.
@@ -5883,7 +6239,7 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn delete_frontend(&self, frontend_id: i64) -> Result<bool> {
-        let affected = self
+        let inserted = self
             .backend
             .execute("DELETE FROM frontends WHERE id = ?1", &vals![frontend_id])
             .await?;
@@ -6401,65 +6757,63 @@ impl Database {
         publication_id: &str,
         placement_id: i64,
         expected_placement_version: i64,
+        expected_watermark_version: i64,
         observed_at: i64,
     ) -> Result<SurfacePlacementRecord> {
-        let cleared = self
-            .backend
+        self.backend
             .execute(
-                "UPDATE surface_placements SET mutable_publication_id = NULL,
-                resource_version = CASE WHEN resource_version = ?3
-                  THEN resource_version + 1 ELSE resource_version END,
-                updated_at = ?4
-             WHERE id = ?2 AND registry_id = (
-               SELECT registry_id FROM registry_publications WHERE publication_id = ?1)
-               AND EXISTS (SELECT 1 FROM registry_publications pub
-                 WHERE pub.publication_id = ?1
-                   AND pub.state = 'writing_pointers')
-               AND ((resource_version = ?3 AND EXISTS (
-                 SELECT 1 FROM registry_publication_placements pp
-                 WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
-                   AND pp.state = 'preparing')) OR
-                 (resource_version = ?3 + 1 AND mutable_publication_id IS NULL
-                   AND updated_at = ?4
-                   AND EXISTS (SELECT 1 FROM registry_publication_placements pp
-                     WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
-                       AND pp.state IN ('preparing', 'writing_pointers'))))",
+                "UPDATE registry_placement_publication_watermarks
+                 SET mutable_publication_id = NULL, pending_publication_id = ?1,
+                     observed_at = ?5,
+                     resource_version = resource_version + 1
+                 WHERE placement_id = ?2 AND resource_version = ?4
+                   AND EXISTS (SELECT 1 FROM surface_placements p
+                     JOIN registry_publications pub ON pub.registry_id = p.registry_id
+                     JOIN registry_publication_placements pp
+                       ON pp.publication_id = pub.publication_id AND pp.placement_id = p.id
+                     WHERE p.id = ?2 AND p.resource_version = ?3
+                       AND pub.publication_id = ?1 AND pub.state = 'writing_pointers'
+                       AND pp.state = 'preparing')",
                 &vals![
                     publication_id,
                     placement_id,
                     expected_placement_version,
+                    expected_watermark_version,
                     observed_at
                 ],
             )
             .await?;
-        if cleared != 1
-            && self
-                .backend
-                .query_opt(
-                    "SELECT 1 FROM surface_placements p
+        if self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM surface_placements p
+                 JOIN registry_placement_publication_watermarks w ON w.placement_id = p.id
                  JOIN registry_publication_placements pp ON pp.placement_id = p.id
                  JOIN registry_publications pub ON pub.publication_id = pp.publication_id
                  WHERE p.id = ?2 AND pp.publication_id = ?1
-                   AND p.resource_version = ?3 + 1
-                   AND p.mutable_publication_id IS NULL AND p.updated_at = ?4
+                   AND p.resource_version = ?3
                    AND pp.state IN ('preparing', 'writing_pointers')
-                   AND pub.state = 'writing_pointers'",
-                    &vals![
-                        publication_id,
-                        placement_id,
-                        expected_placement_version,
-                        observed_at
-                    ],
-                )
-                .await?
-                .is_none()
+                   AND pub.state = 'writing_pointers'
+                   AND w.resource_version = ?4 + 1
+                   AND w.mutable_publication_id IS NULL
+                   AND w.pending_publication_id = ?1 AND w.observed_at = ?5",
+                &vals![
+                    publication_id,
+                    placement_id,
+                    expected_placement_version,
+                    expected_watermark_version,
+                    observed_at
+                ],
+            )
+            .await?
+            .is_none()
         {
             bail!("placement pointer advance is stale or cross-registry");
         }
         let moved = self.backend.execute(
             "UPDATE registry_publication_placements SET state = 'writing_pointers', observed_at = ?3
              WHERE publication_id = ?1 AND placement_id = ?2
-               AND state IN ('preparing', 'writing_pointers')
+               AND state = 'preparing'
                AND EXISTS (SELECT 1 FROM registry_publications pub
                  WHERE pub.publication_id = ?1 AND pub.state = 'writing_pointers')",
             &vals![publication_id, placement_id, observed_at],
@@ -6471,9 +6825,9 @@ impl Database {
                     "SELECT 1 FROM registry_publication_placements pp
                  JOIN registry_publications pub ON pub.publication_id = pp.publication_id
                  WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
-                   AND pp.state = 'writing_pointers'
+                   AND pp.state = 'writing_pointers' AND pp.observed_at = ?3
                    AND pub.state = 'writing_pointers'",
-                    &vals![publication_id, placement_id],
+                    &vals![publication_id, placement_id, observed_at],
                 )
                 .await?
                 .is_none()
@@ -6496,24 +6850,23 @@ impl Database {
         publication_id: &str,
         placement_id: i64,
         expected_placement_version: i64,
+        expected_watermark_version: i64,
         observed_at: i64,
     ) -> Result<SurfacePlacementRecord> {
         let published = self
             .backend
             .execute(
-                "UPDATE surface_placements SET
-                resource_version = CASE WHEN mutable_publication_id = ?1
-                  THEN resource_version ELSE resource_version + 1 END,
-                mutable_publication_id = ?1,
-                updated_at = ?4
-             WHERE id = ?2
-               AND (resource_version = ?3 OR
-                 (mutable_publication_id = ?1 AND resource_version = ?3 + 1))
-               AND registry_id = (
-               SELECT registry_id FROM registry_publications WHERE publication_id = ?1)
-               AND EXISTS (SELECT 1 FROM registry_publications pub
-                 WHERE pub.publication_id = ?1
-                   AND pub.state = 'writing_pointers')
+                "UPDATE registry_placement_publication_watermarks
+             SET mutable_publication_id = ?1, pending_publication_id = NULL,
+                 observed_at = ?5,
+                 resource_version = resource_version + 1
+             WHERE placement_id = ?2 AND resource_version = ?4
+               AND mutable_publication_id IS NULL
+               AND pending_publication_id = ?1
+               AND EXISTS (SELECT 1 FROM surface_placements p
+                 JOIN registry_publications pub ON pub.registry_id = p.registry_id
+                 WHERE p.id = ?2 AND p.resource_version = ?3
+               AND pub.publication_id = ?1 AND pub.state = 'writing_pointers'
                AND EXISTS (SELECT 1 FROM registry_publication_placements pp
                  WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
                    AND pp.state IN ('writing_pointers', 'ready'))
@@ -6525,11 +6878,12 @@ impl Database {
                    WHERE op.surface_object_id = po.surface_object_id
                      AND op.placement_id = ?2 AND op.state = 'present'
                      AND op.observed_hash = po.expected_hash
-                     AND op.observed_size = po.expected_size))",
+                     AND op.observed_size = po.expected_size)))",
                 &vals![
                     publication_id,
                     placement_id,
                     expected_placement_version,
+                    expected_watermark_version,
                     observed_at
                 ],
             )
@@ -6539,17 +6893,21 @@ impl Database {
                 .backend
                 .query_opt(
                     "SELECT 1 FROM surface_placements p
+                 JOIN registry_placement_publication_watermarks w ON w.placement_id = p.id
                  JOIN registry_publication_placements pp ON pp.placement_id = p.id
                  JOIN registry_publications pub ON pub.publication_id = pp.publication_id
                  WHERE p.id = ?2 AND pp.publication_id = ?1
-                   AND p.resource_version = ?3 + 1
-                   AND p.mutable_publication_id = ?1 AND p.updated_at = ?4
+                   AND p.resource_version = ?3
+                   AND w.resource_version = ?4 + 1
+                   AND w.mutable_publication_id = ?1 AND w.observed_at = ?5
+                   AND w.pending_publication_id IS NULL
                    AND pp.state IN ('writing_pointers', 'ready')
                    AND pub.state = 'writing_pointers'",
                     &vals![
                         publication_id,
                         placement_id,
                         expected_placement_version,
+                        expected_watermark_version,
                         observed_at
                     ],
                 )
@@ -6567,8 +6925,8 @@ impl Database {
                    AND state IN ('writing_pointers', 'ready')
                    AND EXISTS (SELECT 1 FROM registry_publications pub
                      WHERE pub.publication_id = ?1 AND pub.state = 'writing_pointers')
-                   AND EXISTS (SELECT 1 FROM surface_placements p
-                     WHERE p.id = ?2 AND p.mutable_publication_id = ?1)",
+                   AND EXISTS (SELECT 1 FROM registry_placement_publication_watermarks w
+                     WHERE w.placement_id = ?2 AND w.mutable_publication_id = ?1)",
                 &vals![publication_id, placement_id, observed_at],
             )
             .await?;
@@ -6577,10 +6935,10 @@ impl Database {
                 .backend
                 .query_opt(
                     "SELECT 1 FROM registry_publication_placements pp
-                 JOIN surface_placements p ON p.id = pp.placement_id
+                 JOIN registry_placement_publication_watermarks w ON w.placement_id = pp.placement_id
                  JOIN registry_publications pub ON pub.publication_id = pp.publication_id
                  WHERE pp.publication_id = ?1 AND pp.placement_id = ?2
-                   AND pp.state = 'ready' AND p.mutable_publication_id = ?1
+                   AND pp.state = 'ready' AND w.mutable_publication_id = ?1
                    AND pub.state = 'writing_pointers'",
                     &vals![publication_id, placement_id],
                 )
@@ -6630,7 +6988,7 @@ impl Database {
                  WHERE pp.publication_id = ?1 AND pp.required = 1)
                  AND NOT EXISTS (
                    SELECT 1 FROM registry_publication_placements pp
-                   JOIN surface_placements p ON p.id = pp.placement_id
+                   JOIN surface_placement_effective p ON p.id = pp.placement_id
                    WHERE pp.publication_id = ?1 AND pp.required = 1
                      AND (pp.state <> 'ready'
                        OR p.mutable_publication_id <> ?1
@@ -6731,7 +7089,7 @@ impl Database {
                      AND EXISTS (SELECT 1 FROM registry_publication_placements pp
                        WHERE pp.publication_id = pub.publication_id AND pp.required = 1)
                      AND NOT EXISTS (SELECT 1 FROM registry_publication_placements pp
-                       JOIN surface_placements p ON p.id = pp.placement_id
+                       JOIN surface_placement_effective p ON p.id = pp.placement_id
                        WHERE pp.publication_id = pub.publication_id AND pp.required = 1
                          AND (pp.state <> 'ready'
                            OR p.mutable_publication_id <> pub.publication_id
@@ -6751,7 +7109,7 @@ impl Database {
                    AND EXISTS (SELECT 1 FROM registry_publication_placements pp
                      WHERE pp.publication_id = pub.publication_id AND pp.required = 1)
                    AND NOT EXISTS (SELECT 1 FROM registry_publication_placements pp
-                     JOIN surface_placements p ON p.id = pp.placement_id
+                     JOIN surface_placement_effective p ON p.id = pp.placement_id
                      WHERE pp.publication_id = pub.publication_id AND pp.required = 1
                        AND (pp.state <> 'ready'
                          OR p.mutable_publication_id <> pub.publication_id
@@ -6775,6 +7133,911 @@ impl Database {
             resource_version: row.get(3)?,
             updated_at: row.get(4)?,
         })
+    }
+
+    /// Ensures the binding has a nullable, versioned write-state singleton.
+    async fn ensure_storage_binding_write_state(&self, storage_binding_id: i64) -> Result<()> {
+        if self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM storage_binding_write_state WHERE storage_binding_id = ?1",
+                &vals![storage_binding_id],
+            )
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let inserted = self
+            .backend
+            .execute(
+                "INSERT INTO storage_binding_write_state
+                 (storage_binding_id, current_write_revision, updated_at)
+                 SELECT id, NULL, ?2 FROM storage_bindings WHERE id = ?1",
+                &vals![storage_binding_id, unix_now()],
+            )
+            .await;
+        match inserted {
+            Ok(1) => Ok(()),
+            Ok(_) => bail!("storage binding does not exist"),
+            Err(error) => {
+                if self
+                    .backend
+                    .query_opt(
+                        "SELECT 1 FROM storage_binding_write_state
+                         WHERE storage_binding_id = ?1",
+                        &vals![storage_binding_id],
+                    )
+                    .await?
+                    .is_some()
+                {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    /// Creates a new immutable write revision without selecting it for use.
+    ///
+    /// A credential rotation always creates a distinct revision, even when its
+    /// capability fingerprint is unchanged. The revision fingerprint provides
+    /// retry idempotency without conflating two credential versions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid fingerprints, an absent binding, a reused
+    /// revision fingerprint, or a database failure.
+    pub async fn create_storage_binding_write_revision(
+        &self,
+        input: &NewStorageBindingWriteRevision,
+    ) -> Result<StorageBindingWriteRevisionRecord> {
+        validate_key_bytes(
+            &input.write_credential_version_ref,
+            "write credential version reference",
+            128,
+        )?;
+        validate_key_bytes(&input.revision_fingerprint, "revision fingerprint", 128)?;
+        validate_key_bytes(&input.capability_fingerprint, "capability fingerprint", 128)?;
+        if input.conditional_writes_supported && !input.writes_supported {
+            bail!("conditional writes require ordinary write capability");
+        }
+        self.ensure_storage_binding_write_state(input.storage_binding_id)
+            .await?;
+        let now = unix_now();
+        let matching_existing = |record: &StorageBindingWriteRevisionRecord| {
+            record.write_credential_version_ref == input.write_credential_version_ref
+                && record.writes_supported == input.writes_supported
+                && record.conditional_writes_supported == input.conditional_writes_supported
+                && record.capability_fingerprint == input.capability_fingerprint
+        };
+        let existing_by_fingerprint = async {
+            self.backend.query_opt(
+                &format!("SELECT {BINDING_WRITE_REVISION_COLUMNS} FROM storage_binding_write_revisions WHERE storage_binding_id = ?1 AND revision_fingerprint = ?2"),
+                &vals![input.storage_binding_id, input.revision_fingerprint],
+            ).await
+        };
+        if let Some(row) = existing_by_fingerprint.await? {
+            let existing = row_to_storage_binding_write_revision(&row)?;
+            if matching_existing(&existing) {
+                return Ok(existing);
+            }
+            bail!("revision fingerprint is already bound to different revision content");
+        }
+        let revision = loop {
+            let revision: i64 = self
+                .backend
+                .query_opt(
+                    "SELECT COALESCE((SELECT MAX(revision)
+                        FROM storage_binding_write_revisions r
+                        WHERE r.storage_binding_id = b.id), 0) + 1
+                     FROM storage_bindings b WHERE b.id = ?1",
+                    &vals![input.storage_binding_id],
+                )
+                .await?
+                .context("storage binding does not exist")?
+                .get(0)?;
+            let inserted = self
+                .backend
+                .execute(
+                    "INSERT INTO storage_binding_write_revisions
+                 (storage_binding_id, revision, write_credential_version_ref,
+                  writes_supported, conditional_writes_supported,
+                  revision_fingerprint, capability_fingerprint, created_at)
+                 SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+                 FROM storage_bindings WHERE id = ?1",
+                    &vals![
+                        input.storage_binding_id,
+                        revision,
+                        input.write_credential_version_ref,
+                        input.writes_supported,
+                        input.conditional_writes_supported,
+                        input.revision_fingerprint,
+                        input.capability_fingerprint,
+                        now
+                    ],
+                )
+                .await;
+            match inserted {
+                Ok(1) => break revision,
+                Ok(_) => bail!("storage binding does not exist"),
+                Err(error) => {
+                    if let Some(row) = self.backend.query_opt(
+                        &format!("SELECT {BINDING_WRITE_REVISION_COLUMNS} FROM storage_binding_write_revisions WHERE storage_binding_id = ?1 AND revision_fingerprint = ?2"),
+                        &vals![input.storage_binding_id, input.revision_fingerprint],
+                    ).await? {
+                        let existing = row_to_storage_binding_write_revision(&row)?;
+                        if matching_existing(&existing) {
+                            return Ok(existing);
+                        }
+                        bail!("revision fingerprint is already bound to different revision content");
+                    }
+                    // Retry only when a concurrent, different revision won
+                    // this local ordinal. Other database errors are stable and
+                    // must not become an unbounded retry loop.
+                    let latest: Option<i64> = self
+                        .backend
+                        .query_opt(
+                            "SELECT MAX(revision) FROM storage_binding_write_revisions
+                             WHERE storage_binding_id = ?1",
+                            &vals![input.storage_binding_id],
+                        )
+                        .await?
+                        .context("revision allocation query returned no row")?
+                        .get(0)?;
+                    if !latest.is_some_and(|latest| latest >= revision) {
+                        return Err(error);
+                    }
+                }
+            }
+        };
+        self.storage_binding_write_revision(input.storage_binding_id, revision)
+            .await?
+            .context("created binding-write revision disappeared")
+    }
+
+    /// Returns one immutable binding-write revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn storage_binding_write_revision(
+        &self,
+        storage_binding_id: i64,
+        revision: i64,
+    ) -> Result<Option<StorageBindingWriteRevisionRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {BINDING_WRITE_REVISION_COLUMNS}
+                     FROM storage_binding_write_revisions
+                     WHERE storage_binding_id = ?1 AND revision = ?2"
+                ),
+                &vals![storage_binding_id, revision],
+            )
+            .await?;
+        rows.first()
+            .map(row_to_storage_binding_write_revision)
+            .transpose()
+    }
+
+    /// Returns the binding's default write revision for new plans.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn storage_binding_write_state(
+        &self,
+        storage_binding_id: i64,
+    ) -> Result<Option<StorageBindingWriteStateRecord>> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT storage_binding_id, current_write_revision,
+                        resource_version, updated_at
+                 FROM storage_binding_write_state WHERE storage_binding_id = ?1",
+                &vals![storage_binding_id],
+            )
+            .await?;
+        row.map(|row| {
+            Ok(StorageBindingWriteStateRecord {
+                storage_binding_id: row.get(0)?,
+                current_write_revision: row.get(1)?,
+                resource_version: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })
+        .transpose()
+    }
+
+    /// Selects a validated immutable revision as the default for new plans.
+    ///
+    /// Existing surface authorities remain pinned to their exact desired and
+    /// observed revisions; moving this pointer does not rotate them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the revision has a `valid` observation and the
+    /// binding-write state resource version matches.
+    pub async fn set_current_storage_binding_write_revision(
+        &self,
+        storage_binding_id: i64,
+        revision: i64,
+        expected_version: i64,
+    ) -> Result<StorageBindingWriteStateRecord> {
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE storage_binding_write_state
+                 SET current_write_revision = ?2,
+                     resource_version = resource_version + 1, updated_at = ?4
+                 WHERE storage_binding_id = ?1 AND resource_version = ?3
+                   AND EXISTS (SELECT 1 FROM storage_binding_write_observations o
+                     WHERE o.storage_binding_id = ?1 AND o.revision = ?2
+                       AND o.state = 'valid')",
+                &vals![storage_binding_id, revision, expected_version, unix_now()],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("binding-write state is stale or the revision is not valid");
+        }
+        self.storage_binding_write_state(storage_binding_id)
+            .await?
+            .context("binding-write state disappeared")
+    }
+
+    /// Records controller validation for an immutable binding-write revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid state/error combination, an absent
+    /// revision, stale observation version, or database failure.
+    pub async fn observe_storage_binding_write_revision(
+        &self,
+        storage_binding_id: i64,
+        revision: i64,
+        state: &str,
+        error: Option<&str>,
+        expected_observation_version: Option<i64>,
+    ) -> Result<StorageBindingWriteObservationRecord> {
+        if !matches!(state, "unknown" | "validating" | "valid" | "invalid") {
+            bail!("invalid binding-write observation state '{state}'");
+        }
+        if state != "invalid" && error.is_some() {
+            bail!("only an invalid binding-write observation may carry an error");
+        }
+        let validated_at = matches!(state, "valid" | "invalid").then(unix_now);
+        let affected = if let Some(version) = expected_observation_version {
+            self.backend
+                .execute(
+                    "UPDATE storage_binding_write_observations
+                     SET state = ?4, validated_at = ?5, error = ?6,
+                         observation_version = observation_version + 1
+                     WHERE storage_binding_id = ?1 AND revision = ?2
+                       AND observation_version = ?3",
+                    &vals![
+                        storage_binding_id,
+                        revision,
+                        version,
+                        state,
+                        validated_at,
+                        error
+                    ],
+                )
+                .await?
+        } else {
+            self.backend
+                .execute(
+                    "INSERT INTO storage_binding_write_observations
+                     (storage_binding_id, revision, state, validated_at, error)
+                     SELECT storage_binding_id, revision, ?3, ?4, ?5
+                     FROM storage_binding_write_revisions
+                     WHERE storage_binding_id = ?1 AND revision = ?2",
+                    &vals![storage_binding_id, revision, state, validated_at, error],
+                )
+                .await?
+        };
+        if affected != 1 {
+            bail!("binding-write revision is missing or its observation version is stale");
+        }
+        let row = self.backend.query_opt(
+            &format!("SELECT {BINDING_WRITE_OBSERVATION_COLUMNS} FROM storage_binding_write_observations WHERE storage_binding_id = ?1 AND revision = ?2"),
+            &vals![storage_binding_id, revision],
+        ).await?.context("binding-write observation disappeared")?;
+        row_to_storage_binding_write_observation(&row)
+    }
+
+    /// Pins a placement write-spec version to one immutable binding revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the placement's current storage binding and
+    /// write-spec version match the requested immutable revision.
+    pub async fn bind_surface_placement_write_capability(
+        &self,
+        placement_id: i64,
+        binding_write_revision: i64,
+    ) -> Result<()> {
+        let inserted = self
+            .backend
+            .execute(
+                "INSERT INTO surface_placement_write_capabilities
+             (placement_id, placement_write_spec_version, storage_binding_id,
+              binding_write_revision, created_at)
+             SELECT p.id, p.write_spec_version, p.storage_binding_id, r.revision, ?3
+             FROM surface_placements p
+             JOIN storage_binding_write_revisions r
+               ON r.storage_binding_id = p.storage_binding_id AND r.revision = ?2
+             WHERE p.id = ?1
+               AND NOT EXISTS (SELECT 1 FROM surface_placement_write_capabilities existing
+                 WHERE existing.placement_id = p.id
+                   AND existing.placement_write_spec_version = p.write_spec_version
+                   AND existing.binding_write_revision = r.revision)",
+                &vals![placement_id, binding_write_revision, unix_now()],
+            )
+            .await;
+        let existing = || async {
+            self.backend
+                .query_opt(
+                    "SELECT 1 FROM surface_placement_write_capabilities pc
+                 JOIN surface_placements p ON p.id = pc.placement_id
+                 WHERE pc.placement_id = ?1
+                   AND pc.placement_write_spec_version = p.write_spec_version
+                   AND pc.binding_write_revision = ?2",
+                    &vals![placement_id, binding_write_revision],
+                )
+                .await
+        };
+        match inserted {
+            Ok(1) => {}
+            Ok(_) => {
+                if existing().await?.is_none() {
+                    bail!("placement and binding-write revision must exist on the same storage binding");
+                }
+            }
+            Err(error) => {
+                if existing().await?.is_none() {
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a controller observation without mutating desired topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid state, completeness, a stale observation,
+    /// an absent placement, or a database failure.
+    pub async fn observe_surface_placement(
+        &self,
+        placement_id: i64,
+        state: &str,
+        completeness: &str,
+        expected_observation_version: i64,
+    ) -> Result<SurfacePlacementRecord> {
+        if !matches!(
+            state,
+            "provisioning" | "syncing" | "ready" | "degraded" | "offline"
+        ) {
+            bail!("invalid placement observation state '{state}'");
+        }
+        if !matches!(completeness, "complete" | "partial" | "unknown") {
+            bail!("invalid placement observation completeness '{completeness}'");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_placement_observations
+             SET state = ?3, completeness = ?4, observed_at = ?5,
+                 observation_version = observation_version + 1
+             WHERE placement_id = ?1 AND observation_version = ?2",
+                &vals![
+                    placement_id,
+                    expected_observation_version,
+                    state,
+                    completeness,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("placement is missing or its observation version is stale");
+        }
+        self.surface_placement(placement_id)
+            .await?
+            .context("observed placement disappeared")
+    }
+
+    /// Creates initial single-writer authority from a validated complete placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the surface has no authority and the candidate,
+    /// capability pin, binding revision, and controller observations are ready.
+    pub async fn create_surface_write_authority(
+        &self,
+        surface: SurfaceTarget,
+        placement_id: i64,
+        expected_placement_version: i64,
+        expected_write_spec_version: i64,
+        binding_write_revision: i64,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        let (registry_id, cache_id) = surface.ids();
+        let now = unix_now();
+        let inserted = self
+            .backend
+            .execute(
+                "INSERT INTO surface_write_authorities
+             (registry_id, cache_id, desired_placement_id, desired_write_spec_version,
+              desired_binding_write_revision, desired_generation,
+              observed_placement_id, observed_write_spec_version,
+              observed_binding_write_revision, observed_generation,
+              reconciliation_state, created_at, updated_at)
+             SELECT p.registry_id, p.cache_id, p.id, p.write_spec_version, ?6, 1,
+                    p.id, p.write_spec_version, ?6, 1, 'ready', ?7, ?7
+             FROM surface_placements p
+             JOIN surface_placement_observations po ON po.placement_id = p.id
+             JOIN surface_placement_write_capabilities pc
+               ON pc.placement_id = p.id
+              AND pc.placement_write_spec_version = p.write_spec_version
+              AND pc.binding_write_revision = ?6
+             JOIN storage_binding_write_revisions br
+               ON br.storage_binding_id = pc.storage_binding_id
+              AND br.revision = pc.binding_write_revision
+             JOIN storage_binding_write_observations bo
+               ON bo.storage_binding_id = br.storage_binding_id
+              AND bo.revision = br.revision
+             WHERE p.id = ?3 AND (p.registry_id = ?1 OR p.cache_id = ?2)
+               AND p.resource_version = ?4 AND p.write_spec_version = ?5
+               AND p.kind = 'complete' AND p.desired_state = 'active'
+               AND po.state = 'ready' AND po.completeness = 'complete'
+               AND br.writes_supported = 1 AND bo.state = 'valid'
+               AND (p.requires_conditional_writes = 0
+                 OR br.conditional_writes_supported = 1)",
+                &vals![
+                    registry_id,
+                    cache_id,
+                    placement_id,
+                    expected_placement_version,
+                    expected_write_spec_version,
+                    binding_write_revision,
+                    now
+                ],
+            )
+            .await;
+        let affected = match inserted {
+            Ok(affected) => affected,
+            Err(error) => {
+                if let Some(existing) = self.surface_write_authority(surface).await? {
+                    if existing.desired_placement_id == placement_id
+                        && existing.observed_placement_id == Some(placement_id)
+                        && existing.desired_write_spec_version == expected_write_spec_version
+                        && existing.observed_write_spec_version == Some(expected_write_spec_version)
+                        && existing.desired_binding_write_revision == binding_write_revision
+                        && existing.observed_binding_write_revision == Some(binding_write_revision)
+                        && existing.reconciliation_state == "ready"
+                    {
+                        return Ok(existing);
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if affected != 1 {
+            bail!("write authority requires one validated, ready, complete placement and capability pin");
+        }
+        self.surface_write_authority(surface)
+            .await?
+            .context("created write authority disappeared")
+    }
+
+    /// Returns the write authority for one surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn surface_write_authority(
+        &self,
+        surface: SurfaceTarget,
+    ) -> Result<Option<SurfaceWriteAuthorityRecord>> {
+        let (registry_id, cache_id) = surface.ids();
+        let rows = self.backend.query(
+            &format!("SELECT {WRITE_AUTHORITY_COLUMNS} FROM surface_write_authorities WHERE registry_id = ?1 OR cache_id = ?2"),
+            &vals![registry_id, cache_id],
+        ).await?;
+        rows.first().map(row_to_surface_write_authority).transpose()
+    }
+
+    /// Requests promotion or credential rotation with an authority CAS.
+    ///
+    /// The candidate may equal the current placement when only the immutable
+    /// binding revision changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a stale authority or an ineligible candidate.
+    pub async fn request_surface_write_promotion(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+        expected_observed_placement_id: i64,
+        placement_id: i64,
+        expected_candidate_write_spec_version: i64,
+        binding_write_revision: i64,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_write_authorities
+             SET desired_placement_id = ?4,
+                 desired_write_spec_version = ?5,
+                 desired_binding_write_revision = ?6,
+                 desired_generation = desired_generation + 1,
+                 reconciliation_state = 'pending', reconciliation_error = NULL,
+                 resource_version = resource_version + 1, updated_at = ?7
+             WHERE id = ?1 AND resource_version = ?2
+               AND observed_placement_id = ?3
+               AND desired_generation = observed_generation
+               AND EXISTS (SELECT 1 FROM surface_placements p
+                 JOIN surface_placement_observations po ON po.placement_id = p.id
+                 JOIN surface_placement_write_capabilities pc
+                   ON pc.placement_id = p.id
+                  AND pc.placement_write_spec_version = p.write_spec_version
+                  AND pc.binding_write_revision = ?6
+                 JOIN storage_binding_write_revisions br
+                   ON br.storage_binding_id = pc.storage_binding_id
+                  AND br.revision = pc.binding_write_revision
+                 JOIN storage_binding_write_observations bo
+                   ON bo.storage_binding_id = br.storage_binding_id
+                  AND bo.revision = br.revision
+                 WHERE p.id = ?4
+                   AND p.write_spec_version = ?5
+                   AND (p.registry_id = surface_write_authorities.registry_id
+                     OR p.cache_id = surface_write_authorities.cache_id)
+                   AND p.kind = 'complete' AND p.desired_state = 'active'
+                   AND po.state = 'ready' AND po.completeness = 'complete'
+                   AND br.writes_supported = 1 AND bo.state = 'valid'
+                   AND (p.requires_conditional_writes = 0
+                     OR br.conditional_writes_supported = 1))",
+                &vals![
+                    authority_id,
+                    expected_version,
+                    expected_observed_placement_id,
+                    placement_id,
+                    expected_candidate_write_spec_version,
+                    binding_write_revision,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("write authority is stale or the requested writer is ineligible");
+        }
+        self.surface_write_authority_by_id(authority_id)
+            .await?
+            .context("updated write authority disappeared")
+    }
+
+    /// Returns a write authority by id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn surface_write_authority_by_id(
+        &self,
+        id: i64,
+    ) -> Result<Option<SurfaceWriteAuthorityRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {WRITE_AUTHORITY_COLUMNS} FROM surface_write_authorities WHERE id = ?1"
+                ),
+                &vals![id],
+            )
+            .await?;
+        rows.first().map(row_to_surface_write_authority).transpose()
+    }
+
+    /// Confirms the currently desired authority generation after reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the generation and resource version still match
+    /// and every effective-write prerequisite remains valid.
+    pub async fn confirm_surface_write_authority(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+        desired_generation: i64,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        let affected = self.backend.execute(
+            "UPDATE surface_write_authorities
+             SET observed_placement_id = desired_placement_id,
+                 observed_write_spec_version = desired_write_spec_version,
+                 observed_binding_write_revision = desired_binding_write_revision,
+                 observed_generation = desired_generation,
+                 reconciliation_state = 'ready', reconciliation_error = NULL,
+                 resource_version = resource_version + 1, updated_at = ?4
+             WHERE id = ?1 AND resource_version = ?2 AND desired_generation = ?3
+               AND reconciliation_state = 'pending'
+               AND EXISTS (SELECT 1 FROM surface_placements p
+                 JOIN surface_placement_observations po ON po.placement_id = p.id
+                 JOIN surface_placement_write_capabilities pc
+                   ON pc.placement_id = p.id
+                  AND pc.placement_write_spec_version = p.write_spec_version
+                  AND pc.binding_write_revision = surface_write_authorities.desired_binding_write_revision
+                 JOIN storage_binding_write_revisions br
+                   ON br.storage_binding_id = pc.storage_binding_id
+                  AND br.revision = pc.binding_write_revision
+                 JOIN storage_binding_write_observations bo
+                   ON bo.storage_binding_id = br.storage_binding_id
+                  AND bo.revision = br.revision
+                 WHERE p.id = surface_write_authorities.desired_placement_id
+                   AND p.write_spec_version = surface_write_authorities.desired_write_spec_version
+                   AND p.kind = 'complete' AND p.desired_state = 'active'
+                   AND po.state = 'ready' AND po.completeness = 'complete'
+                   AND br.writes_supported = 1 AND bo.state = 'valid'
+                   AND (p.requires_conditional_writes = 0
+                     OR br.conditional_writes_supported = 1))",
+            &vals![authority_id, expected_version, desired_generation, unix_now()],
+        ).await?;
+        if affected != 1 {
+            bail!("write authority reconciliation CAS is stale or no longer eligible");
+        }
+        self.surface_write_authority_by_id(authority_id)
+            .await?
+            .context("confirmed write authority disappeared")
+    }
+
+    /// Records a failed reconciliation for the current desired generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty message, stale generation/version, or
+    /// database failure.
+    pub async fn fail_surface_write_authority(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+        desired_generation: i64,
+        error: &str,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        if error.trim().is_empty() {
+            bail!("write-authority reconciliation error cannot be empty");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_write_authorities
+             SET reconciliation_state = 'failed', reconciliation_error = ?4,
+                 resource_version = resource_version + 1, updated_at = ?5
+             WHERE id = ?1 AND resource_version = ?2 AND desired_generation = ?3
+               AND reconciliation_state = 'pending'
+               AND (observed_generation IS NULL OR desired_generation > observed_generation)",
+                &vals![
+                    authority_id,
+                    expected_version,
+                    desired_generation,
+                    error,
+                    unix_now()
+                ],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("write authority reconciliation CAS is stale");
+        }
+        self.surface_write_authority_by_id(authority_id)
+            .await?
+            .context("failed write authority disappeared")
+    }
+
+    /// Retries a failed desired authority tuple under a new generation fence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the authority is failed at the expected version.
+    pub async fn retry_surface_write_authority(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_write_authorities
+                 SET desired_generation = desired_generation + 1,
+                     reconciliation_state = 'pending', reconciliation_error = NULL,
+                     resource_version = resource_version + 1, updated_at = ?3
+                 WHERE id = ?1 AND resource_version = ?2
+                   AND reconciliation_state = 'failed'",
+                &vals![authority_id, expected_version, unix_now()],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("write authority is not failed or its resource version is stale");
+        }
+        self.surface_write_authority_by_id(authority_id)
+            .await?
+            .context("retried write authority disappeared")
+    }
+
+    /// Cancels an unconfirmed promotion by requesting the observed writer again.
+    ///
+    /// Cancellation is itself reconciled under a new generation. Effective
+    /// writes therefore remain fenced until the controller confirms the
+    /// restored tuple at that generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when there is no previously observed writer or the
+    /// authority resource version is stale.
+    pub async fn cancel_surface_write_promotion(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_write_authorities
+             SET desired_placement_id = observed_placement_id,
+                 desired_write_spec_version = observed_write_spec_version,
+                 desired_binding_write_revision = observed_binding_write_revision,
+                 desired_generation = desired_generation + 1,
+                 reconciliation_state = 'pending', reconciliation_error = NULL,
+                 resource_version = resource_version + 1, updated_at = ?3
+             WHERE id = ?1 AND resource_version = ?2
+               AND observed_placement_id IS NOT NULL
+               AND reconciliation_state IN ('pending', 'failed')
+               AND EXISTS (SELECT 1 FROM surface_placements p
+                 JOIN surface_placement_observations po ON po.placement_id = p.id
+                 JOIN surface_placement_write_capabilities pc
+                   ON pc.placement_id = p.id
+                  AND pc.placement_write_spec_version = p.write_spec_version
+                  AND pc.binding_write_revision = surface_write_authorities.observed_binding_write_revision
+                 JOIN storage_binding_write_revisions br
+                   ON br.storage_binding_id = pc.storage_binding_id
+                  AND br.revision = pc.binding_write_revision
+                 JOIN storage_binding_write_observations bo
+                   ON bo.storage_binding_id = br.storage_binding_id
+                  AND bo.revision = br.revision
+                 WHERE p.id = surface_write_authorities.observed_placement_id
+                   AND p.write_spec_version = surface_write_authorities.observed_write_spec_version
+                   AND p.kind = 'complete' AND p.desired_state = 'active'
+                   AND po.state = 'ready' AND po.completeness = 'complete'
+                   AND br.writes_supported = 1 AND bo.state = 'valid'
+                   AND (p.requires_conditional_writes = 0
+                     OR br.conditional_writes_supported = 1))",
+                &vals![authority_id, expected_version, unix_now()],
+            )
+            .await?;
+        if affected != 1 {
+            bail!("write authority has no observed writer or its resource version is stale");
+        }
+        self.surface_write_authority_by_id(authority_id)
+            .await?
+            .context("cancelled write promotion disappeared")
+    }
+
+    /// Removes a fully reconciled authority to make the surface explicitly read-only.
+    ///
+    /// The observed generation is part of the delete fence so a stale plan
+    /// cannot erase a newly promoted or retried writer. Placement rows remain
+    /// intact and may continue serving eligible reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure. A stale, pending, failed, or
+    /// already-removed authority returns `false`.
+    pub async fn remove_surface_write_authority(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+        expected_observed_generation: i64,
+    ) -> Result<bool> {
+        Ok(self
+            .backend
+            .execute(
+                "DELETE FROM surface_write_authorities
+                 WHERE id = ?1 AND resource_version = ?2
+                   AND reconciliation_state = 'ready'
+                   AND desired_generation = ?3 AND observed_generation = ?3
+                   AND desired_placement_id = observed_placement_id
+                   AND desired_write_spec_version = observed_write_spec_version
+                   AND desired_binding_write_revision = observed_binding_write_revision",
+                &vals![authority_id, expected_version, expected_observed_generation],
+            )
+            .await?
+            == 1)
+    }
+
+    /// Lists authorities pinned to one immutable binding-write revision.
+    ///
+    /// The result is the fan-out set that credential rotation must move before
+    /// the old revision can be retired.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn surface_write_authorities_using_binding_revision(
+        &self,
+        storage_binding_id: i64,
+        binding_write_revision: i64,
+    ) -> Result<Vec<SurfaceWriteAuthorityRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {WRITE_AUTHORITY_COLUMNS} FROM surface_write_authorities a
+                 WHERE EXISTS (SELECT 1 FROM surface_placement_write_capabilities pc
+                   WHERE pc.storage_binding_id = ?1
+                     AND pc.binding_write_revision = ?2
+                     AND ((pc.placement_id = a.desired_placement_id
+                           AND pc.placement_write_spec_version = a.desired_write_spec_version)
+                       OR (pc.placement_id = a.observed_placement_id
+                           AND pc.placement_write_spec_version = a.observed_write_spec_version)))
+                 ORDER BY a.id"
+                ),
+                &vals![storage_binding_id, binding_write_revision],
+            )
+            .await?;
+        rows.iter().map(row_to_surface_write_authority).collect()
+    }
+
+    /// Retires an immutable binding-write revision after every authority moved away.
+    ///
+    /// Candidate capability pins are removed as part of retirement. Database
+    /// foreign keys reject the operation while any desired or observed
+    /// authority still references the revision, and the desired current
+    /// binding revision is never removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on a remaining authority/current-pointer pin or database failure.
+    pub async fn retire_storage_binding_write_revision(
+        &self,
+        storage_binding_id: i64,
+        revision: i64,
+    ) -> Result<bool> {
+        if !self
+            .surface_write_authorities_using_binding_revision(storage_binding_id, revision)
+            .await?
+            .is_empty()
+        {
+            bail!("binding-write revision remains pinned by surface authority");
+        }
+        if self
+            .storage_binding_write_state(storage_binding_id)
+            .await?
+            .is_some_and(|state| state.current_write_revision == Some(revision))
+        {
+            bail!("binding-write revision is still the binding's current revision");
+        }
+        self.backend
+            .batch(&[
+                Statement::new(
+                    "DELETE FROM surface_placement_write_capabilities
+                     WHERE storage_binding_id = ?1 AND binding_write_revision = ?2",
+                    vals![storage_binding_id, revision].to_vec(),
+                ),
+                Statement::new(
+                    "DELETE FROM storage_binding_write_revisions
+                     WHERE storage_binding_id = ?1 AND revision = ?2
+                       AND NOT EXISTS (SELECT 1 FROM storage_binding_write_state s
+                         WHERE s.storage_binding_id = ?1 AND s.current_write_revision = ?2)",
+                    vals![storage_binding_id, revision].to_vec(),
+                ),
+            ])
+            .await?;
+        Ok(self
+            .storage_binding_write_revision(storage_binding_id, revision)
+            .await?
+            .is_none())
     }
 
     /// Creates one physical placement after atomically checking binding ownership.
@@ -6809,26 +8072,33 @@ impl Database {
             validate_json_object(json, "placement partition rule").map_err(invalid)?;
         }
         let (registry_id, cache_id) = input.surface.ids();
-        let (primary_registry_id, primary_cache_id) = if input.role == "primary" {
-            (registry_id, cache_id)
+        let kind = match input.role.as_str() {
+            "primary" | "replica" => "complete",
+            other => other,
+        };
+        let desired_state = match input.state.as_str() {
+            "draining" => "draining",
+            "offline" => "offline",
+            _ => "active",
+        };
+        let observed_state = if input.state == "draining" {
+            "ready"
         } else {
-            (None, None)
+            input.state.as_str()
         };
         let now = unix_now();
         let affected = match self
             .backend
             .execute(
                 "INSERT INTO surface_placements
-                (registry_id, cache_id, primary_registry_id, primary_cache_id,
-                 name, storage_binding_id, prefix, role, state, completeness,
-                 partition_rule_json, read_enabled, write_enabled, read_order,
-                 write_order, created_at, updated_at)
-             SELECT ?1, ?2, ?3, ?4, ?5, b.id, ?7, ?8, ?9, ?10, ?11,
-                    ?12, ?13, ?14, ?15, ?16, ?16
+                (registry_id, cache_id, name, storage_binding_id, prefix, kind,
+                 desired_state, desired_read_enabled, read_order,
+                 partition_rule_json, write_spec_version, created_at, updated_at)
+             SELECT ?1, ?2, ?3, b.id, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11, ?11
              FROM storage_bindings b
              LEFT JOIN registries r ON r.id = ?1
              LEFT JOIN caches c ON c.id = ?2
-             WHERE b.id = ?6
+             WHERE b.id = ?4
                AND ((?1 IS NOT NULL AND r.id IS NOT NULL
                      AND (b.is_instance_default = 1 OR b.org_id = r.org_id))
                  OR (?2 IS NOT NULL AND c.id IS NOT NULL
@@ -6836,19 +8106,14 @@ impl Database {
                 &vals![
                     registry_id,
                     cache_id,
-                    primary_registry_id,
-                    primary_cache_id,
                     input.name,
                     input.storage_binding_id,
                     prefix,
-                    input.role,
-                    input.state,
-                    input.completeness,
-                    input.partition_rule_json,
+                    kind,
+                    desired_state,
                     input.read_enabled,
-                    input.write_enabled,
                     input.read_order,
-                    input.write_order,
+                    input.partition_rule_json,
                     now
                 ],
             )
@@ -6903,9 +8168,30 @@ impl Database {
             )
             .into());
         }
-        self.surface_placement_at(input.storage_binding_id, &prefix)
+        let placement = self
+            .surface_placement_at(input.storage_binding_id, &prefix)
             .await?
-            .context("created placement disappeared")
+            .context("created placement disappeared")?;
+        self.backend
+            .execute(
+                "INSERT INTO surface_placement_observations
+                 (placement_id, state, completeness, observed_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                &vals![placement.id, observed_state, input.completeness, now],
+            )
+            .await?;
+        self.backend
+            .execute(
+                "INSERT INTO registry_placement_publication_watermarks
+                 (placement_id, registry_id, mutable_publication_id, observed_at)
+                 SELECT id, registry_id, NULL, ?2 FROM surface_placements
+                 WHERE id = ?1 AND registry_id IS NOT NULL",
+                &vals![placement.id, now],
+            )
+            .await?;
+        self.surface_placement(placement.id)
+            .await?
+            .context("created placement disappeared after observation")
     }
 
     /// Returns a placement by id.
@@ -6917,7 +8203,9 @@ impl Database {
         let rows = self
             .backend
             .query(
-                &format!("SELECT {PLACEMENT_COLUMNS} FROM surface_placements WHERE id = ?1"),
+                &format!(
+                    "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective WHERE id = ?1"
+                ),
                 &vals![id],
             )
             .await?;
@@ -6934,7 +8222,7 @@ impl Database {
         binding_id: i64,
         prefix: &str,
     ) -> Result<Option<SurfacePlacementRecord>> {
-        let rows = self.backend.query(&format!("SELECT {PLACEMENT_COLUMNS} FROM surface_placements WHERE storage_binding_id = ?1 AND prefix = ?2"), &vals![binding_id, prefix]).await?;
+        let rows = self.backend.query(&format!("SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective WHERE storage_binding_id = ?1 AND prefix = ?2"), &vals![binding_id, prefix]).await?;
         rows.first().map(row_to_surface_placement).transpose()
     }
 
@@ -6952,7 +8240,7 @@ impl Database {
             .backend
             .query(
                 &format!(
-                    "SELECT {PLACEMENT_COLUMNS} FROM surface_placements
+                    "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective
              WHERE registry_id = ?1 OR cache_id = ?2
              ORDER BY read_order, name"
                 ),
@@ -7007,13 +8295,10 @@ impl Database {
     /// Every returned placement is read-enabled, ready or degraded, complete,
     /// and non-archive. Registry pointer reads additionally require the
     /// placement watermark to equal the registry's authoritative current
-    /// publication. Immutable reads use exact `present` hash-and-size evidence
-    /// whenever an object inventory row exists. A surface-relative key with no
-    /// inventory row uses the eligible placement set as a bootstrap fallback;
-    /// an incomplete or tombstoned inventory row fails closed instead of
-    /// silently bypassing recorded state. The returned plan also distinguishes
-    /// an ordinary bootstrap miss from a miss that contradicts authoritative
-    /// current object inventory.
+    /// publication. Mutable and immutable reads both require exact `present`
+    /// hash-and-size evidence. Missing, incomplete, or tombstoned inventory
+    /// fails closed. The returned plan distinguishes an unknown object from a
+    /// miss that contradicts authoritative current object inventory.
     ///
     /// Results are ordered by `read_order`, placement name, then database id.
     ///
@@ -7046,6 +8331,20 @@ impl Database {
                                SELECT ps.current_publication_id
                                FROM registry_publication_state ps
                                WHERE ps.registry_id = ?1)
+                             AND EXISTS (SELECT 1 FROM surface_objects o
+                               JOIN registry_publication_state ps
+                                 ON ps.registry_id = o.registry_id
+                               JOIN object_placements op
+                                 ON op.surface_object_id = o.id
+                                AND op.placement_id = p.id
+                               WHERE o.registry_id = ?1 AND o.object_key = ?2
+                                 AND o.object_kind = 'mutable_pointer'
+                                 AND o.lifecycle_state = 'active'
+                                 AND o.mutable_publication_id = ps.current_publication_id
+                                 AND o.content_hash IS NOT NULL AND o.size IS NOT NULL
+                                 AND op.state = 'present'
+                                 AND op.observed_hash = o.content_hash
+                                 AND op.observed_size = o.size)
                            THEN 1 ELSE 0 END,
                            CASE WHEN EXISTS (SELECT 1 FROM surface_objects o
                              JOIN registry_publication_state ps
@@ -7055,7 +8354,7 @@ impl Database {
                                AND o.lifecycle_state = 'active'
                                AND o.mutable_publication_id = ps.current_publication_id)
                            THEN 1 ELSE 0 END
-                         FROM surface_placements p
+                         FROM surface_placement_effective p
                          WHERE p.registry_id = ?1
                          ORDER BY p.read_order, p.name, p.id"
                     ),
@@ -7067,11 +8366,7 @@ impl Database {
                 (
                     format!(
                         "SELECT {PLACEMENT_COLUMNS},
-                           CASE WHEN {eligibility} AND (
-                               NOT EXISTS (SELECT 1 FROM surface_objects o
-                                 WHERE (o.registry_id = ?1 OR o.cache_id = ?2)
-                                   AND o.object_key = ?3)
-                               OR EXISTS (SELECT 1 FROM surface_objects o
+                           CASE WHEN {eligibility} AND EXISTS (SELECT 1 FROM surface_objects o
                                  JOIN object_placements op
                                    ON op.surface_object_id = o.id
                                   AND op.placement_id = p.id
@@ -7083,7 +8378,7 @@ impl Database {
                                    AND o.size IS NOT NULL
                                    AND op.state = 'present'
                                    AND op.observed_hash = o.content_hash
-                                   AND op.observed_size = o.size))
+                                   AND op.observed_size = o.size)
                            THEN 1 ELSE 0 END,
                            CASE WHEN EXISTS (SELECT 1 FROM surface_objects o
                              WHERE (o.registry_id = ?1 OR o.cache_id = ?2)
@@ -7091,7 +8386,7 @@ impl Database {
                                AND o.object_kind = 'immutable'
                                AND o.lifecycle_state = 'active')
                            THEN 1 ELSE 0 END
-                         FROM surface_placements p
+                         FROM surface_placement_effective p
                          WHERE (p.registry_id = ?1 OR p.cache_id = ?2)
                          ORDER BY p.read_order, p.name, p.id"
                     ),
@@ -7103,7 +8398,7 @@ impl Database {
                     "SELECT {PLACEMENT_COLUMNS},
                        CASE WHEN {eligibility} THEN 1 ELSE 0 END,
                        0
-                     FROM surface_placements p
+                     FROM surface_placement_effective p
                      WHERE (p.registry_id = ?1 OR p.cache_id = ?2)
                      ORDER BY p.read_order, p.name, p.id"
                 ),
@@ -7113,7 +8408,7 @@ impl Database {
         let rows = self.backend.query(&sql, &values).await?;
         let candidates = rows
             .iter()
-            .filter_map(|row| match row.get::<bool>(18) {
+            .filter_map(|row| match row.get::<bool>(PLACEMENT_COLUMN_COUNT) {
                 Ok(true) => Some(row_to_surface_placement(row)),
                 Ok(false) => None,
                 Err(error) => Some(Err(error)),
@@ -7121,7 +8416,7 @@ impl Database {
             .collect::<Result<Vec<_>>>()?;
         let miss_is_inconsistent = rows
             .first()
-            .map(|row| row.get::<bool>(19))
+            .map(|row| row.get::<bool>(PLACEMENT_COLUMN_COUNT + 1))
             .transpose()?
             .unwrap_or(false);
         Ok(PlacementReadPlan {
@@ -7146,26 +8441,37 @@ impl Database {
             .surface_placement(id)
             .await?
             .context("placement does not exist")?;
-        validate_placement_fields(
-            existing.role.as_str(),
-            input.state.as_str(),
-            input.completeness.as_str(),
-            input.partition_rule_json.as_deref(),
-            input.read_enabled,
-            input.write_enabled,
-        )?;
+        let desired_state = match input.state.as_str() {
+            "draining" => "draining",
+            "offline" => "offline",
+            "provisioning" | "syncing" | "ready" | "degraded" => "active",
+            other => bail!("invalid placement state '{other}'"),
+        };
+        if (existing.kind == "shard") != input.partition_rule_json.is_some() {
+            bail!("only shard placements require a partition rule");
+        }
+        if existing.kind == "archive" && input.read_enabled {
+            bail!("an archive placement cannot be read-enabled");
+        }
         if let Some(json) = input.partition_rule_json.as_deref() {
             validate_json_object(json, "placement partition rule")?;
         }
         let affected = self
             .backend
             .execute(
-                "UPDATE surface_placements SET state = ?3, completeness = ?4,
-                partition_rule_json = ?5,
-                read_enabled = ?6, write_enabled = ?7,
-                read_order = ?8, write_order = ?9,
-                resource_version = resource_version + 1, updated_at = ?10
+                "UPDATE surface_placements SET desired_state = ?3,
+                partition_rule_json = ?4, desired_read_enabled = ?5,
+                read_order = ?6,
+                write_spec_version = CASE
+                  WHEN desired_state = ?3
+                    AND (partition_rule_json = ?4
+                      OR (partition_rule_json IS NULL AND ?4 IS NULL))
+                  THEN write_spec_version ELSE write_spec_version + 1 END,
+                resource_version = resource_version + 1, updated_at = ?7
              WHERE id = ?1 AND resource_version = ?2
+               AND NOT EXISTS (SELECT 1 FROM surface_write_authorities a
+                 WHERE (a.desired_placement_id = ?1 OR a.observed_placement_id = ?1)
+                   AND ?3 <> 'active')
                AND NOT EXISTS (
                  SELECT 1 FROM delivery_routes r
                  WHERE r.placement_id = ?1 OR EXISTS (
@@ -7175,13 +8481,10 @@ impl Database {
                 &vals![
                     id,
                     input.expected_version,
-                    input.state,
-                    input.completeness,
+                    desired_state,
                     input.partition_rule_json,
                     input.read_enabled,
-                    input.write_enabled,
                     input.read_order,
-                    input.write_order,
                     unix_now()
                 ],
             )
@@ -7204,7 +8507,9 @@ impl Database {
             .backend
             .execute(
                 "DELETE FROM surface_placements
-                 WHERE id = ?1 AND resource_version = ?2 AND role <> 'primary'",
+                 WHERE id = ?1 AND resource_version = ?2
+                   AND NOT EXISTS (SELECT 1 FROM surface_write_authorities a
+                     WHERE a.desired_placement_id = ?1 OR a.observed_placement_id = ?1)",
                 &vals![id, expected_version],
             )
             .await?
@@ -7861,7 +9166,7 @@ impl Database {
         self.backend.batch(&[
             Statement::new("INSERT INTO placement_policy_members (policy_id, placement_id, member_order, required)
              SELECT pol.id, p.id, ?3, ?4 FROM placement_policies pol
-             JOIN surface_placements p ON p.id = ?2
+             JOIN surface_placement_effective p ON p.id = ?2
              WHERE pol.id = ?1
                AND ((pol.registry_id IS NOT NULL AND pol.registry_id = p.registry_id)
                  OR (pol.cache_id IS NOT NULL AND pol.cache_id = p.cache_id))
@@ -8077,7 +9382,7 @@ impl Database {
                      enabled, created_at, updated_at)
                  SELECT d.id, ?2, ?3, ?4, ?5, ?6, ?7, ?8, p.id, NULL,
                         ?11, ?12, ?13, ?14, ?15, ?15
-                 FROM domains d JOIN surface_placements p ON p.id = ?9
+                 FROM domains d JOIN surface_placement_effective p ON p.id = ?9
                  LEFT JOIN registries r ON r.id = ?5
                  LEFT JOIN caches c ON c.id = ?6
                  JOIN storage_bindings b ON b.id = p.storage_binding_id
@@ -8142,7 +9447,7 @@ impl Database {
                    AND EXISTS (SELECT 1 FROM placement_policy_members WHERE policy_id = pol.id)
                    AND NOT EXISTS (
                         SELECT 1 FROM placement_policy_members pm
-                        JOIN surface_placements p ON p.id = pm.placement_id
+                        JOIN surface_placement_effective p ON p.id = pm.placement_id
                         WHERE pm.policy_id = pol.id
                           AND (p.role = 'archive' OR p.read_enabled = 0
                             OR p.completeness <> 'complete'
@@ -8281,7 +9586,7 @@ impl Database {
                       AND g.enabled = 1 AND g.reconciliation_state = 'ready'
                       AND g.observed_generation = delivery_routes.gateway_generation))
                AND ((placement_id IS NOT NULL AND EXISTS (
-                    SELECT 1 FROM surface_placements p
+                    SELECT 1 FROM surface_placement_effective p
                     WHERE p.id = delivery_routes.placement_id
                       AND p.state IN ('ready', 'degraded')))
                  OR (placement_policy_id IS NOT NULL AND EXISTS (
@@ -8289,7 +9594,7 @@ impl Database {
                     WHERE pm.policy_id = delivery_routes.placement_policy_id)
                    AND NOT EXISTS (
                     SELECT 1 FROM placement_policy_members pm
-                    JOIN surface_placements p ON p.id = pm.placement_id
+                    JOIN surface_placement_effective p ON p.id = pm.placement_id
                     WHERE pm.policy_id = delivery_routes.placement_policy_id
                       AND p.state NOT IN ('ready', 'degraded'))))
                AND (?3 <> 'direct' OR storage_gateway_id IS NOT NULL
@@ -16699,7 +18004,26 @@ fn surface_from_ids(registry_id: Option<i64>, cache_id: Option<i64>) -> Result<S
 const PLACEMENT_COLUMNS: &str = "id, registry_id, cache_id, name, storage_binding_id,
     prefix, role, state, completeness, partition_rule_json, mutable_publication_id,
     read_enabled, write_enabled, read_order, write_order, created_at, updated_at,
-    resource_version";
+    resource_version, kind, desired_state, desired_read_enabled, write_spec_version,
+    requires_conditional_writes,
+    observed_at, observation_version, watermark_resource_version,
+    watermark_pending_publication_id, write_authority_id,
+    authority_desired_placement_id, authority_observed_placement_id,
+    authority_desired_write_spec_version, authority_observed_write_spec_version,
+    authority_desired_binding_write_revision, authority_observed_binding_write_revision,
+    authority_desired_generation, authority_observed_generation,
+    authority_reconciliation_state";
+const PLACEMENT_COLUMN_COUNT: usize = 37;
+const BINDING_WRITE_REVISION_COLUMNS: &str = "storage_binding_id, revision,
+    write_credential_version_ref, writes_supported, conditional_writes_supported,
+    revision_fingerprint, capability_fingerprint, created_at";
+const BINDING_WRITE_OBSERVATION_COLUMNS: &str = "storage_binding_id, revision, state,
+    validated_at, error, observation_version";
+const WRITE_AUTHORITY_COLUMNS: &str = "id, registry_id, cache_id, mode,
+    desired_placement_id, desired_write_spec_version, desired_binding_write_revision,
+    desired_generation, observed_placement_id, observed_write_spec_version,
+    observed_binding_write_revision, observed_generation, reconciliation_state,
+    reconciliation_error, resource_version, created_at, updated_at";
 const POLICY_COLUMNS: &str = "id, registry_id, cache_id, name, kind, config_json,
     resource_version, created_at, updated_at";
 const ROUTE_COLUMNS: &str = "id, domain_id, storage_gateway_id, gateway_generation,
@@ -16762,6 +18086,73 @@ fn row_to_surface_placement(row: &Row) -> Result<SurfacePlacementRecord> {
         created_at: row.get(15)?,
         updated_at: row.get(16)?,
         resource_version: row.get(17)?,
+        kind: row.get(18)?,
+        desired_state: row.get(19)?,
+        desired_read_enabled: row.get(20)?,
+        write_spec_version: row.get(21)?,
+        requires_conditional_writes: row.get(22)?,
+        observed_at: row.get(23)?,
+        observation_version: row.get(24)?,
+        watermark_resource_version: row.get(25)?,
+        watermark_pending_publication_id: row.get(26)?,
+        write_authority_id: row.get(27)?,
+        authority_desired_placement_id: row.get(28)?,
+        authority_observed_placement_id: row.get(29)?,
+        authority_desired_write_spec_version: row.get(30)?,
+        authority_observed_write_spec_version: row.get(31)?,
+        authority_desired_binding_write_revision: row.get(32)?,
+        authority_observed_binding_write_revision: row.get(33)?,
+        authority_desired_generation: row.get(34)?,
+        authority_observed_generation: row.get(35)?,
+        authority_reconciliation_state: row.get(36)?,
+    })
+}
+
+fn row_to_storage_binding_write_revision(row: &Row) -> Result<StorageBindingWriteRevisionRecord> {
+    Ok(StorageBindingWriteRevisionRecord {
+        storage_binding_id: row.get(0)?,
+        revision: row.get(1)?,
+        write_credential_version_ref: row.get(2)?,
+        writes_supported: row.get(3)?,
+        conditional_writes_supported: row.get(4)?,
+        revision_fingerprint: row.get(5)?,
+        capability_fingerprint: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
+fn row_to_storage_binding_write_observation(
+    row: &Row,
+) -> Result<StorageBindingWriteObservationRecord> {
+    Ok(StorageBindingWriteObservationRecord {
+        storage_binding_id: row.get(0)?,
+        revision: row.get(1)?,
+        state: row.get(2)?,
+        validated_at: row.get(3)?,
+        error: row.get(4)?,
+        observation_version: row.get(5)?,
+    })
+}
+
+fn row_to_surface_write_authority(row: &Row) -> Result<SurfaceWriteAuthorityRecord> {
+    Ok(SurfaceWriteAuthorityRecord {
+        id: row.get(0)?,
+        registry_id: row.get(1)?,
+        cache_id: row.get(2)?,
+        mode: row.get(3)?,
+        desired_placement_id: row.get(4)?,
+        desired_write_spec_version: row.get(5)?,
+        desired_binding_write_revision: row.get(6)?,
+        desired_generation: row.get(7)?,
+        observed_placement_id: row.get(8)?,
+        observed_write_spec_version: row.get(9)?,
+        observed_binding_write_revision: row.get(10)?,
+        observed_generation: row.get(11)?,
+        reconciliation_state: row.get(12)?,
+        reconciliation_error: row.get(13)?,
+        resource_version: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
     })
 }
 
@@ -20498,6 +21889,32 @@ mod tests {
         }
     }
 
+    async fn set_test_placement_watermark(
+        db: &Database,
+        placement_id: i64,
+        registry_id: i64,
+        publication_id: Option<&str>,
+        observed_at: i64,
+    ) {
+        db.backend
+            .execute(
+                "DELETE FROM registry_placement_publication_watermarks
+                 WHERE placement_id = ?1",
+                &vals![placement_id],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "INSERT INTO registry_placement_publication_watermarks
+                 (placement_id, registry_id, mutable_publication_id, observed_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                &vals![placement_id, registry_id, publication_id, observed_at],
+            )
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn topology_v34_opens_and_rejects_xor_and_location_collisions() {
         let db = Database::open_in_memory().await.unwrap();
@@ -20549,10 +21966,10 @@ mod tests {
             .backend
             .execute(
                 "INSERT INTO surface_placements (registry_id, cache_id, name,
-                storage_binding_id, prefix, role, state, completeness,
-                read_enabled, write_enabled, created_at, updated_at)
-             VALUES (?1, ?2, 'invalid-xor', ?3, 'invalid-xor', 'replica',
-                'ready', 'complete', 1, 0, ?4, ?4)",
+                storage_binding_id, prefix, kind, desired_state,
+                desired_read_enabled, read_order, created_at, updated_at)
+             VALUES (?1, ?2, 'invalid-xor', ?3, 'invalid-xor', 'complete',
+                'active', 1, 0, ?4, ?4)",
                 &vals![registry, cache, binding, unix_now()],
             )
             .await;
@@ -20563,7 +21980,7 @@ mod tests {
 
         let mut first = topology_placement(SurfaceTarget::Registry(registry), "one", "same", 0);
         first.storage_binding_id = binding;
-        db.create_surface_placement(&first).await.unwrap();
+        let first = db.create_surface_placement(&first).await.unwrap();
         let mut duplicate_name =
             topology_placement(SurfaceTarget::Registry(registry), "one", "different", 1);
         duplicate_name.storage_binding_id = binding;
@@ -20584,31 +22001,295 @@ mod tests {
             "physical-location aliases require a future reviewed equivalence workflow"
         );
 
-        let mut primary =
-            topology_placement(SurfaceTarget::Registry(registry), "primary", "primary", 2);
-        primary.storage_binding_id = binding;
-        primary.role = "primary".to_string();
-        primary.write_enabled = true;
-        db.create_surface_placement(&primary).await.unwrap();
-        let mut second_primary = topology_placement(
+        let mut second = topology_placement(
             SurfaceTarget::Registry(registry),
-            "second-primary",
-            "second-primary",
+            "second-complete",
+            "second-complete",
             3,
         );
-        second_primary.storage_binding_id = binding;
-        second_primary.role = "primary".to_string();
-        second_primary.write_enabled = true;
-        let error = db
-            .create_surface_placement(&second_primary)
+        second.storage_binding_id = binding;
+        db.create_surface_placement(&second).await.unwrap();
+
+        let revision = db
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding,
+                write_credential_version_ref: "secret://binding/write/v1".to_string(),
+                writes_supported: true,
+                conditional_writes_supported: true,
+                revision_fingerprint: "binding-write-v1".to_string(),
+                capability_fingerprint: "writes-and-conditional-writes".to_string(),
+            })
             .await
-            .unwrap_err();
-        assert_eq!(
-            surface_placement_create_failure(&error).map(SurfacePlacementCreateFailure::kind),
-            Some(SurfacePlacementCreateFailureKind::Conflict)
+            .unwrap();
+        let revision_retry = db
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding,
+                write_credential_version_ref: "secret://binding/write/v1".to_string(),
+                writes_supported: true,
+                conditional_writes_supported: true,
+                revision_fingerprint: "binding-write-v1".to_string(),
+                capability_fingerprint: "writes-and-conditional-writes".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(revision_retry, revision);
+        db.observe_storage_binding_write_revision(binding, revision.revision, "valid", None, None)
+            .await
+            .unwrap();
+        let binding_write_state = db
+            .storage_binding_write_state(binding)
+            .await
+            .unwrap()
+            .unwrap();
+        let binding_write_state = db
+            .set_current_storage_binding_write_revision(
+                binding,
+                revision.revision,
+                binding_write_state.resource_version,
+            )
+            .await
+            .unwrap();
+        db.bind_surface_placement_write_capability(first.id, revision.revision)
+            .await
+            .unwrap();
+        db.bind_surface_placement_write_capability(first.id, revision.revision)
+            .await
+            .unwrap();
+        let authority = db
+            .create_surface_write_authority(
+                SurfaceTarget::Registry(registry),
+                first.id,
+                first.resource_version,
+                first.write_spec_version,
+                revision.revision,
+            )
+            .await
+            .unwrap();
+        let authority_retry = db
+            .create_surface_write_authority(
+                SurfaceTarget::Registry(registry),
+                first.id,
+                first.resource_version,
+                first.write_spec_version,
+                revision.revision,
+            )
+            .await
+            .unwrap();
+        assert_eq!(authority_retry, authority);
+        assert_eq!(authority.observed_placement_id, Some(first.id));
+        assert!(
+            db.surface_placement(first.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .write_enabled
         );
 
-        let mut invalid = second_primary.clone();
+        let rotated_revision = db
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding,
+                write_credential_version_ref: "secret://binding/write/v2".to_string(),
+                writes_supported: true,
+                conditional_writes_supported: true,
+                revision_fingerprint: "binding-write-v2".to_string(),
+                capability_fingerprint: "writes-and-conditional-writes".to_string(),
+            })
+            .await
+            .unwrap();
+        db.observe_storage_binding_write_revision(
+            binding,
+            rotated_revision.revision,
+            "valid",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let binding_write_state = db
+            .set_current_storage_binding_write_revision(
+                binding,
+                rotated_revision.revision,
+                binding_write_state.resource_version,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            binding_write_state.current_write_revision,
+            Some(rotated_revision.revision)
+        );
+        db.bind_surface_placement_write_capability(first.id, rotated_revision.revision)
+            .await
+            .unwrap();
+        let pending = db
+            .request_surface_write_promotion(
+                authority.id,
+                authority.resource_version,
+                first.id,
+                first.id,
+                first.write_spec_version,
+                rotated_revision.revision,
+            )
+            .await
+            .unwrap();
+        assert_eq!(pending.reconciliation_state, "pending");
+        assert!(
+            !db.surface_placement(first.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .write_enabled
+        );
+        let cancelled = db
+            .cancel_surface_write_promotion(pending.id, pending.resource_version)
+            .await
+            .unwrap();
+        assert_eq!(cancelled.desired_binding_write_revision, revision.revision);
+        let restored = db
+            .confirm_surface_write_authority(
+                cancelled.id,
+                cancelled.resource_version,
+                cancelled.desired_generation,
+            )
+            .await
+            .unwrap();
+        let pending = db
+            .request_surface_write_promotion(
+                restored.id,
+                restored.resource_version,
+                first.id,
+                first.id,
+                first.write_spec_version,
+                rotated_revision.revision,
+            )
+            .await
+            .unwrap();
+        assert!(db
+            .retire_storage_binding_write_revision(binding, revision.revision)
+            .await
+            .is_err());
+        let rotated = db
+            .confirm_surface_write_authority(
+                authority.id,
+                pending.resource_version,
+                pending.desired_generation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rotated.observed_binding_write_revision,
+            Some(rotated_revision.revision)
+        );
+        assert!(db
+            .retire_storage_binding_write_revision(binding, revision.revision)
+            .await
+            .unwrap());
+        assert!(!db
+            .remove_surface_write_authority(
+                rotated.id,
+                rotated.resource_version,
+                rotated.observed_generation.unwrap() + 1,
+            )
+            .await
+            .unwrap());
+        assert!(db
+            .remove_surface_write_authority(
+                rotated.id,
+                rotated.resource_version,
+                rotated.observed_generation.unwrap(),
+            )
+            .await
+            .unwrap());
+        assert!(
+            !db.surface_placement(first.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .write_enabled
+        );
+        let drained = db
+            .update_surface_placement(
+                first.id,
+                &UpdateSurfacePlacement {
+                    expected_version: first.resource_version,
+                    state: "draining".to_string(),
+                    completeness: first.completeness.clone(),
+                    partition_rule_json: first.partition_rule_json.clone(),
+                    read_enabled: false,
+                    write_enabled: false,
+                    read_order: first.read_order,
+                    write_order: 0,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(drained.desired_state, "draining");
+        assert_eq!(drained.write_spec_version, first.write_spec_version + 1);
+        assert!(db
+            .create_surface_write_authority(
+                SurfaceTarget::Registry(registry),
+                first.id,
+                first.resource_version,
+                first.write_spec_version,
+                rotated_revision.revision,
+            )
+            .await
+            .is_err());
+
+        let mut conditional = topology_placement(
+            SurfaceTarget::BinaryCache(cache),
+            "conditional-writer",
+            "conditional-writer",
+            4,
+        );
+        conditional.storage_binding_id = binding;
+        let conditional = db.create_surface_placement(&conditional).await.unwrap();
+        db.backend
+            .execute(
+                "UPDATE surface_placements
+                 SET requires_conditional_writes = 1,
+                     write_spec_version = write_spec_version + 1,
+                     resource_version = resource_version + 1
+                 WHERE id = ?1",
+                &vals![conditional.id],
+            )
+            .await
+            .unwrap();
+        let conditional = db.surface_placement(conditional.id).await.unwrap().unwrap();
+        let ordinary_only = db
+            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+                storage_binding_id: binding,
+                write_credential_version_ref: "secret://binding/write/ordinary".to_string(),
+                writes_supported: true,
+                conditional_writes_supported: false,
+                revision_fingerprint: "binding-write-ordinary".to_string(),
+                capability_fingerprint: "ordinary-writes".to_string(),
+            })
+            .await
+            .unwrap();
+        db.observe_storage_binding_write_revision(
+            binding,
+            ordinary_only.revision,
+            "valid",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        db.bind_surface_placement_write_capability(conditional.id, ordinary_only.revision)
+            .await
+            .unwrap();
+        assert!(db
+            .create_surface_write_authority(
+                SurfaceTarget::BinaryCache(cache),
+                conditional.id,
+                conditional.resource_version,
+                conditional.write_spec_version,
+                ordinary_only.revision,
+            )
+            .await
+            .is_err());
+
+        let mut invalid = second.clone();
         invalid.name = "invalid-role".to_string();
         invalid.prefix = "invalid-role".to_string();
         invalid.role = "writer".to_string();
@@ -20620,13 +22301,10 @@ mod tests {
         );
 
         db.backend
-            .execute("DROP TABLE surface_placements", &[])
+            .execute("DROP VIEW surface_placement_effective", &[])
             .await
             .unwrap();
-        let error = db
-            .create_surface_placement(&second_primary)
-            .await
-            .unwrap_err();
+        let error = db.create_surface_placement(&second).await.unwrap_err();
         assert!(
             surface_placement_create_failure(&error).is_none(),
             "infrastructure failures must remain unclassified and internal"
@@ -21236,14 +22914,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!bootstrap.miss_is_inconsistent);
-        assert_eq!(
-            bootstrap
-                .candidates
-                .iter()
-                .map(|p| p.name.as_str())
-                .collect::<Vec<_>>(),
-            ["first", "second"]
-        );
+        assert!(bootstrap.candidates.is_empty());
 
         let object = db
             .create_surface_object(&SetSurfaceObject {
@@ -21357,20 +23028,34 @@ mod tests {
                     vals![registry, "publication-current", now],
                 ),
                 Statement::new(
-                    "UPDATE surface_placements SET mutable_publication_id = ?1
-                     WHERE id = ?2",
-                    vals!["publication-current", current.id],
+                    "UPDATE registry_placement_publication_watermarks
+                     SET mutable_publication_id = ?1, observed_at = ?4,
+                         resource_version = resource_version + 1
+                     WHERE placement_id = ?2 AND registry_id = ?3",
+                    vals!["publication-current", current.id, registry, now],
                 ),
             ])
             .await
             .unwrap();
-        db.create_surface_object(&SetSurfaceObject {
-            surface: SurfaceTarget::Registry(registry),
-            object_key: "HEAD".to_string(),
-            content_hash: Some("sha256:pointer".to_string()),
-            size: Some(24),
-            object_kind: "mutable_pointer".to_string(),
-            mutable_publication_id: Some("publication-current".to_string()),
+        let pointer = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry),
+                object_key: "HEAD".to_string(),
+                content_hash: Some("sha256:pointer".to_string()),
+                size: Some(24),
+                object_kind: "mutable_pointer".to_string(),
+                mutable_publication_id: Some("publication-current".to_string()),
+            })
+            .await
+            .unwrap();
+        db.set_object_placement(&SetObjectPlacement {
+            surface_object_id: pointer.id,
+            placement_id: current.id,
+            state: "present".to_string(),
+            observed_hash: Some("sha256:pointer".to_string()),
+            observed_size: Some(24),
+            etag: Some("head-etag".to_string()),
+            observed_at: now,
         })
         .await
         .unwrap();
@@ -21511,6 +23196,7 @@ mod tests {
                 "pub-first-1",
                 placement.id,
                 placement.resource_version,
+                placement.watermark_resource_version.unwrap(),
                 now,
             )
             .await
@@ -21570,6 +23256,7 @@ mod tests {
                 "pub-first-1",
                 placement.id,
                 placement.resource_version,
+                placement.watermark_resource_version.unwrap(),
                 now,
             )
             .await
@@ -21601,22 +23288,25 @@ mod tests {
             .get(0)
             .unwrap();
         assert_eq!(after_frozen_append, frozen_mutation_version);
-        // Simulate a process dying after the authoritative watermark clear and
-        // version bump but before placement progress leaves `preparing`.
-        db.backend
-            .execute(
-                "UPDATE surface_placements SET mutable_publication_id = NULL,
-                    resource_version = resource_version + 1, updated_at = ?2
-                 WHERE id = ?1",
-                &vals![placement.id, now],
+        // Simulate a process dying after the authoritative watermark clear but
+        // before placement progress leaves `preparing`.
+        set_test_placement_watermark(&db, placement.id, first, None, now).await;
+        assert!(db
+            .begin_registry_pointer_advance(
+                "pub-first-1",
+                placement.id,
+                placement.resource_version,
+                placement.watermark_resource_version.unwrap() + 10,
+                now,
             )
             .await
-            .unwrap();
+            .is_err());
         let cleared = db
             .begin_registry_pointer_advance(
                 "pub-first-1",
                 placement.id,
                 placement.resource_version,
+                placement.watermark_resource_version.unwrap(),
                 now,
             )
             .await
@@ -21627,16 +23317,28 @@ mod tests {
                 "pub-first-1",
                 placement.id,
                 placement.resource_version,
+                placement.watermark_resource_version.unwrap(),
                 now,
             )
             .await
             .unwrap();
         assert_eq!(recleared.resource_version, cleared.resource_version);
+        assert!(db
+            .finalize_registry_pointer_advance(
+                "pub-first-1",
+                placement.id,
+                cleared.resource_version,
+                cleared.watermark_resource_version.unwrap() + 10,
+                now,
+            )
+            .await
+            .is_err());
         let published = db
             .finalize_registry_pointer_advance(
                 "pub-first-1",
                 placement.id,
                 cleared.resource_version,
+                cleared.watermark_resource_version.unwrap(),
                 now,
             )
             .await
@@ -21650,53 +23352,28 @@ mod tests {
                 "pub-first-1",
                 placement.id,
                 cleared.resource_version,
+                cleared.watermark_resource_version.unwrap(),
                 now,
             )
             .await
             .unwrap();
         assert_eq!(republished.resource_version, published.resource_version);
-        db.backend
-            .execute(
-                "UPDATE surface_placements SET mutable_publication_id = NULL WHERE id = ?1",
-                &vals![placement.id],
-            )
-            .await
-            .unwrap();
+        set_test_placement_watermark(&db, placement.id, first, None, now).await;
         assert!(!db
             .advance_registry_publication("pub-first-1", "writing_pointers", "ready", now)
             .await
             .unwrap());
-        db.backend
-            .execute(
-                "UPDATE surface_placements SET mutable_publication_id = 'pub-first-1'
-                 WHERE id = ?1",
-                &vals![placement.id],
-            )
-            .await
-            .unwrap();
+        set_test_placement_watermark(&db, placement.id, first, Some("pub-first-1"), now).await;
         assert!(db
             .advance_registry_publication("pub-first-1", "writing_pointers", "ready", now)
             .await
             .unwrap());
-        db.backend
-            .execute(
-                "UPDATE surface_placements SET mutable_publication_id = NULL WHERE id = ?1",
-                &vals![placement.id],
-            )
-            .await
-            .unwrap();
+        set_test_placement_watermark(&db, placement.id, first, None, now).await;
         assert!(db
             .set_current_registry_publication(first, "pub-first-1", None)
             .await
             .is_err());
-        db.backend
-            .execute(
-                "UPDATE surface_placements SET mutable_publication_id = 'pub-first-1'
-                 WHERE id = ?1",
-                &vals![placement.id],
-            )
-            .await
-            .unwrap();
+        set_test_placement_watermark(&db, placement.id, first, Some("pub-first-1"), now).await;
         let current = db
             .set_current_registry_publication(first, "pub-first-1", None)
             .await
@@ -21725,26 +23402,12 @@ mod tests {
             )
             .await
             .unwrap();
-        db.backend
-            .execute(
-                "UPDATE surface_placements SET mutable_publication_id = 'pub-fork-4'
-                 WHERE id = ?1",
-                &vals![placement.id],
-            )
-            .await
-            .unwrap();
+        set_test_placement_watermark(&db, placement.id, first, Some("pub-fork-4"), now).await;
         assert!(db
             .set_current_registry_publication(first, "pub-fork-4", Some(current.resource_version),)
             .await
             .is_err());
-        db.backend
-            .execute(
-                "UPDATE surface_placements SET mutable_publication_id = 'pub-first-1'
-                 WHERE id = ?1",
-                &vals![placement.id],
-            )
-            .await
-            .unwrap();
+        set_test_placement_watermark(&db, placement.id, first, Some("pub-first-1"), now).await;
         assert!(db
             .set_current_registry_publication(second, "pub-first-1", None)
             .await
