@@ -334,14 +334,25 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
         },
     );
 
-    let outcome = adapter
+    let first = adapter
         .drive_quantum(QuantumRequest {
-            configuration,
+            configuration: configuration.clone(),
             control: Vec::new(),
         })
-        .unwrap_or_else(|error| panic!("guest output should route through the scheduler: {error}"));
+        .unwrap_or_else(|error| panic!("first live-network quantum should succeed: {error}"));
 
-    assert_eq!(adapter.backend().stepped, vec![source]);
+    assert!(first.decisions.is_empty());
+    let outcome = adapter
+        .drive_quantum(QuantumRequest {
+            configuration: first.configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| {
+            panic!("committed guest output should route through the scheduler: {error}")
+        });
+
+    assert_eq!(adapter.backend().stepped.len(), 2);
+    assert_eq!(adapter.backend().stepped[0], source);
     assert!(!outcome.decisions.is_empty());
     let link = adapter
         .loop_impl()
@@ -535,11 +546,20 @@ fn network_branch_fixture(
             ..NodeRecordingBackend::default()
         },
     );
-    let outcome = adapter
+    let first = adapter
         .drive_quantum(QuantumRequest {
-            configuration,
+            configuration: configuration.clone(),
             control: Vec::new(),
         })
-        .unwrap_or_else(|error| panic!("live network branch should execute: {error}"));
+        .unwrap_or_else(|error| {
+            panic!("first live-network branch quantum should execute: {error}")
+        });
+    assert!(first.decisions.is_empty());
+    let outcome = adapter
+        .drive_quantum(QuantumRequest {
+            configuration: first.configuration,
+            control: Vec::new(),
+        })
+        .unwrap_or_else(|error| panic!("committed live network branch should execute: {error}"));
     (outcome, adapter)
 }

@@ -2669,6 +2669,10 @@ in rec {
       attrPath = "checks.crucible.phase7.happyPathExample";
       taskIds = ["T-EX-1"];
     };
+    nginxCurlHttp200 = import ./phase7-nginx-curl-http-200.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.nginxCurlHttp200";
+    };
     partitionRecoveryExample = import ./phase7-partition-recovery-example.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.partitionRecoveryExample";

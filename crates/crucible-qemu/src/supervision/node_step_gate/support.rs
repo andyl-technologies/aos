@@ -100,10 +100,10 @@ pub(super) fn assert_runs_match(
 /// The node's own hot path does not exist yet -- it is built only after QMP
 /// connects -- so this maps a temporary hot path over the same shared-memory
 /// region. Publishing the first ceiling releases the boot barrier exactly as the
-/// M1 install gate does (`start_quantum` alone, no eventfd wake); the guest
-/// executes to the ceiling and parks between quanta, releasing the BQL so QEMU's
-/// main loop can service QMP. The temporary hot path is dropped before the node
-/// maps its own view of the region.
+/// M1 install gate does. The loop also pulses the plugin wake eventfd so QEMU's
+/// main loop can dispatch asynchronous device completion while the vCPU is
+/// parked. The temporary hot path is dropped before the node maps its own view
+/// of the region.
 ///
 /// # Errors
 ///
@@ -136,6 +136,9 @@ pub(super) fn prime_guest_off_boot_barrier(
     let max_polls = bounded_prime_polls(timeout);
     let mut reached = false;
     for _ in 0..max_polls {
+        setup
+            .signal_plugin_wake()
+            .map_err(|source| QemuLiveNodeStepGateError::prime("wake priming guest", source))?;
         let current = QemuShmemHotPathChannel::current_icount(&mut hot_path)
             .map_err(|source| QemuLiveNodeStepGateError::prime("poll priming icount", source))?
             .retired;
