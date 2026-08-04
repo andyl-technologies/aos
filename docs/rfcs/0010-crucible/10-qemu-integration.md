@@ -25,6 +25,12 @@ realization branches (boot/loadvm/replay) are the execution model of
 the protocol of [`14-protocol.md`](14-protocol.md), the shared-memory ABI of
 [`13-shmem-abi.md`](13-shmem-abi.md), and QMP defined here.
 
+`crucible-qemu` is Apache host-side code. It launches and supervises QEMU as a
+separate process and MUST NOT link to QEMU, include its headers, or expose QEMU
+callback entry points. All Crucible-specific communication crosses the public
+process protocols defined in 13/14 and constrained by
+[`37-licensing-process-boundary.md`](37-licensing-process-boundary.md).
+
 ## 10.1 Why QEMU TCG + `-icount`, not KVM
 
 Crucible's contract ([DET-1]) is that a guest produces a bit-identical

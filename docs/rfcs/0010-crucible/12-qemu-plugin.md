@@ -34,6 +34,12 @@ signatures, and call order so the spec is concrete, but the authoritative
 statement is always the prose requirement. A sketch that disagrees with a
 requirement is a defect in the sketch.
 
+The plugin is GPL-side code because it is dynamically loaded into QEMU and calls
+QEMU interfaces. It may depend on the dual-licensed `crucible-protocol` and
+`crucible-shmem` boundary crates under a GPL-compatible choice, but MUST NOT
+depend on Apache-only host crates. The process and dependency rules are
+normative in [`37-licensing-process-boundary.md`](37-licensing-process-boundary.md).
+
 ## 12.1 Role and the single-threaded execution context
 
 The plugin is the *only* piece of Crucible code that runs inside the QEMU
