@@ -35,7 +35,8 @@ contract. This does not change the license of either peer.
 `crucible-qemu-plugin` is loaded into QEMU and calls QEMU plugin interfaces. It
 is therefore part of the GPL side of the boundary and is licensed
 GPL-2.0-only. Its dependency on the dual-licensed boundary crates is taken
-under a GPL-compatible choice. Any other code compiled into, linked into, or
+under their MIT option, which is compatible with GPL-2.0-only. Any other code
+compiled into, linked into, or
 dynamically loaded by QEMU must remain within the applicable QEMU/GPL license
 scope. Apache-only host crates must not link to QEMU or include QEMU headers.
 

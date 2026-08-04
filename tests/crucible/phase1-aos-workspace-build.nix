@@ -47,17 +47,17 @@ in
             set -eu
 
             test -x ${packages.crucible}/bin/crucible
-            test -f ${packages.crucible}/nix-support/crucible-build-info
+            test -f ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^build_system=mkCargoPackage$' \
-              ${packages.crucible}/nix-support/crucible-build-info
+              ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^cargo_deps=fetchCargoDeps$' \
-              ${packages.crucible}/nix-support/crucible-build-info
+              ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^cargo_workspace_flags=--workspace' \
-              ${packages.crucible}/nix-support/crucible-build-info
+              ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q -- '--exclude aos' \
-              ${packages.crucible}/nix-support/crucible-build-info
-            grep -q -- 'cargo_member_flags=.*-p crucible-qemu-plugin' \
-              ${packages.crucible}/nix-support/crucible-build-info
+              ${packages.crucible-controller}/nix-support/crucible-build-info
+            grep -q -- 'cargo_workspace_flags=.*--exclude crucible-qemu-plugin' \
+              ${packages.crucible-controller}/nix-support/crucible-build-info
             grep -q '^qemu_package=qemu-crucible$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^qemu_path=${packages.qemu-crucible}/bin/qemu-system-x86_64$' \
@@ -66,7 +66,7 @@ in
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^plugin_path=${packages.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so$' \
               ${packages.crucible}/nix-support/crucible-build-info
-            grep -q '^discovery_hint=compile-time-aos-package-set$' \
+            grep -q '^discovery_hint=runtime-environment-wrapper$' \
               ${packages.crucible}/nix-support/crucible-build-info
             grep -q '^shmem_abi_version=5$' \
               ${packages.crucible}/nix-support/crucible-build-info
@@ -134,12 +134,12 @@ in
             PASS
             check=checks.crucible.phase1.aosWorkspaceBuild
             tasks=T-CRATE-14
-            packages=crucible,crucible-qemu-plugin,qemu-crucible
+            packages=crucible-controller,crucible,crucible-qemu-plugin,qemu-crucible
             cargo_deps=fetchCargoDeps
             plugin_headers=qemu-crucible
             plugin_library=lib/libcrucible_qemu_plugin.so
             plugin_search_path=lib/qemu/plugins/crucible-qemu-plugin.so
-            qemu_discovery_hint=compile-time-aos-package-set
+            qemu_discovery_hint=runtime-environment-wrapper
             qemu_plugin_abi=qemu-plugin-api-v4
             shmem_abi=crucible-shmem-abi-v5
             guest_host_protocol_abi=crucible-guest-host-channel-v1

@@ -228,6 +228,14 @@ in rec {
     timeSharedTimeline = import ./phase1-time-shared-timeline.nix {inherit pkgs lib;};
     timeVocabulary = import ./phase1-time-vocabulary.nix {inherit pkgs lib;};
     gates = rec {
+      licenseBoundary = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase1.gates.licenseBoundary";
+        gate = import ./phase1-license-boundary.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.licenseBoundary";
+        };
+        dependencies = [];
+      };
       harnessLint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.harnessLint";
         # lint needle: harnessLint = import ./phase1-harness-lint.nix

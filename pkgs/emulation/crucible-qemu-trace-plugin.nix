@@ -39,11 +39,15 @@ in
         script = ''
           mkdir -p "$out/lib/qemu/plugins"
           cp crucible-qemu-trace-plugin.so "$out/lib/qemu/plugins/"
+          mkdir -p "$out/share/licenses/crucible-qemu-trace-plugin"
+          cp ${../../LICENSES/GPL-2.0-only.txt} \
+            "$out/share/licenses/crucible-qemu-trace-plugin/GPL-2.0.txt"
         '';
       }
     ];
 
     meta = {
       description = "Crucible Phase 0 QEMU instruction-stream trace plugin";
+      license = "GPL-2.0-only";
     };
   }
