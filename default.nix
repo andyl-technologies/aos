@@ -970,9 +970,24 @@ in {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
-    eval = import ./lib/testing/eval.nix {
+    eval-standalone = import ./lib/testing/eval.nix {
       inherit pkgs lib mkSystem packagesWithExpose;
       system = serverSystem;
+    };
+    eval = pkgs.mkDerivation {
+      pname = "aos-eval-and-characterization-checks";
+      version = "0";
+      src = null;
+      buildDeps = [eval-standalone system-characterization];
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p $out
+            echo PASS > $out/result
+          '';
+        }
+      ];
     };
     build = let
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
@@ -1014,16 +1029,45 @@ in {
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
     crucible = crucibleChecks;
-    # System characterization golden. Buildable via
-    # `nix-build -A checks.system-characterization`, but not wired into the
-    # hard CI gate (flake.nix / build.all): it is RED until its baselines are
-    # generated on a Linux/KVM builder (`-A checks.system-characterization.regenerate`)
-    # and committed under tests/fixtures/system-characterization-goldens/server/. Wire it into the
-    # gate in the same diff that lands the baselines. See that dir's README.
-    system-characterization = import ./lib/testing/system-characterization.nix {
-      inherit pkgs lib mkSystem;
-      system = serverSystem;
-    };
+    system-characterization = let
+      variants = lib.mapAttrs (variant: system:
+        import ./lib/testing/system-characterization.nix {
+          inherit pkgs lib variant system;
+        })
+      discoverSystems;
+      check = pkgs.mkDerivation {
+        pname = "aos-system-characterization-all";
+        version = "0";
+        src = null;
+        buildDeps = builtins.attrValues variants;
+        phases = [
+          {
+            name = "check";
+            script = "mkdir -p $out; echo PASS > $out/result";
+          }
+        ];
+      };
+      regenerate = pkgs.mkDerivation {
+        pname = "aos-system-characterization-regenerate-all";
+        version = "0";
+        src = null;
+        buildDeps = builtins.map (entry: entry.regenerate) (builtins.attrValues variants);
+        phases = [
+          {
+            name = "collect";
+            script = ''
+              mkdir -p $out
+              ${lib.concatStringsSep "\n" (lib.mapAttrsToList (variant: entry: ''
+                  mkdir -p "$out/${variant}"
+                  cp -r "${entry.regenerate}"/. "$out/${variant}/"
+                '')
+                variants)}
+            '';
+          }
+        ];
+      };
+    in
+      check // {inherit variants regenerate;};
     systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
     package-expose = import ./lib/testing/package-expose.nix {

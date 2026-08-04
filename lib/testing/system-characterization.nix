@@ -35,15 +35,9 @@
 {
   pkgs,
   lib,
-  mkSystem,
   system,
+  variant ? "server",
 }: let
-  # The server variant is the canonical golden target today. `mkSystem` is
-  # accepted to match the sibling-check call convention (eval.nix); the
-  # already-evaluated `system` is the server variant and is what we snapshot.
-  variant = "server";
-  _ = mkSystem; # accepted for call-site symmetry; `system` is pre-evaluated.
-
   goldensDir = ../../tests/fixtures/system-characterization-goldens + "/${variant}";
 
   systemdUnits = system.config.system.build.systemdSystemUnits;
@@ -86,20 +80,6 @@
       EXEC_RE = re.compile(r"^(Exec[A-Za-z]*)=(.*)$")
       # systemd Exec line special prefixes that precede the executable path.
       EXEC_PREFIX_CHARS = set("@-:+!~")
-
-      # A Nix store-path hash: 32 chars of Nix's base32 alphabet (no e/o/t/u),
-      # the volatile prefix of `/nix/store/<hash>-<name>`. The characterization
-      # golden masks it to a placeholder so the snapshot is stable across pure
-      # rebuilds (a changed dependency hash with an unchanged name is noise),
-      # while the human-readable `-<name>` suffix is preserved so a genuinely
-      # different package or a renamed unit still surfaces as a diff.
-      STORE_HASH_RE = re.compile(r"/nix/store/[0-9a-df-np-sv-z]{32}-")
-
-
-      def mask_store_hashes(text):
-          """Replace `/nix/store/<hash>-` with `/nix/store/<HASH>-` throughout."""
-          return STORE_HASH_RE.sub("/nix/store/<HASH>-", text)
-
 
       def read_text(path):
           with open(path, "r", encoding="utf-8", errors="surrogateescape") as handle:
@@ -157,7 +137,7 @@
                   out_lines.append("<<aos-job-script-end>>")
               else:
                   out_lines.append(line)
-          return mask_store_hashes("\n".join(out_lines))
+          return "\n".join(out_lines)
 
 
       def snapshot_units(units_dir, out_dir):
@@ -185,7 +165,14 @@
                           # relative target is the stable, meaningful payload.
                           tree.append(("link", rel, target))
                   else:
-                      tree.append(("f", rel, None))
+                      # The P0 materializer may replace a store symlink with a
+                      # regular file carrying identical bytes. Treat both
+                      # representations as a semantic unit and snapshot the
+                      # body, so representation-only changes compare equal
+                      # while any unit-body change remains visible.
+                      tree.append(("unit", rel, None))
+                      body = normalize_unit_text(read_text(full))
+                      write_text(os.path.join(out_dir, "systemd-units", rel), body)
           tree.sort(key=lambda entry: (entry[1], entry[0]))
           lines = []
           for kind, rel, target in tree:
@@ -198,9 +185,9 @@
 
       def build_snapshot(args, out_dir):
           snapshot_units(args.units, out_dir)
-          write_text(os.path.join(out_dir, "etcDump.txt"), mask_store_hashes(read_text(args.etc_dump)))
-          write_text(os.path.join(out_dir, "os-release"), mask_store_hashes(read_text(args.os_release)))
-          write_text(os.path.join(out_dir, "activate-script.sh"), mask_store_hashes(read_text(args.activate)))
+          write_text(os.path.join(out_dir, "etcDump.txt"), read_text(args.etc_dump))
+          write_text(os.path.join(out_dir, "os-release"), read_text(args.os_release))
+          write_text(os.path.join(out_dir, "activate-script.sh"), read_text(args.activate))
 
 
       def self_test():

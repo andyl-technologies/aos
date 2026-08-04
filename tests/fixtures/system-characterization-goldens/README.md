@@ -26,7 +26,7 @@ Linux/KVM builder, not on darwin:
 
 ```sh
 nix-build -A checks.system-characterization.regenerate
-cp -r ./result/. tests/fixtures/system-characterization-goldens/server/
+cp -r ./result/. tests/fixtures/system-characterization-goldens/
 ```
 
 Then commit the regenerated tree as a standalone, reviewed diff. Until the
