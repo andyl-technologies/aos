@@ -7,7 +7,9 @@ Its bootstrap toolchain, userspace, packages, system images, and tests are built
 from source in this repository without nixpkgs dependencies.
 
 AOS uses read-only system images, systemd, and a Nix module system.
-Machine-specific policy is supplied as literal `host.nix`.
+System policy is built from modules in `systems/`. A literal `host.nix`
+supplies first-boot storage policy; broader runtime activation is still under
+development.
 
 ## Projects
 
@@ -89,6 +91,9 @@ VM and fleet checks require a Linux builder with KVM.
 
 ## Documentation
 
+- [Install and operate AOS](docs/users/aos/), including a
+  [first-boot tutorial](docs/users/aos/quickstart.md) and the
+  [`host.nix` guide](docs/users/aos/host-nix.md)
 - [AOS Hub operations](docs/users/aos-hub/), including a
   [local quickstart](docs/users/aos-hub/quickstart.md)
 - [Crucible operations](docs/users/crucible/), including the
