@@ -39,6 +39,8 @@ multicall binary, so `aos package` is equivalent to `apm` and
   metadata transports, and deployment checks.
 - [Customize AOS](configuration.md) separates build-time system modules from
   the narrower `host.nix` surface that is active today.
+- [Package an application for AOS](package-authoring.md) follows a service from
+  its derivation through image inclusion, registry publication, and upgrade.
 - [Understand and operate `host.nix`](host-nix.md) covers its complete
   lifecycle, trust policy, storage schema, examples, drift, and diagnostics.
 - [Use the repository CLI](cli.md) covers the `aos` development command,
