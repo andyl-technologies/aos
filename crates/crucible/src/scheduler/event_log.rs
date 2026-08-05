@@ -146,6 +146,29 @@ pub trait QuantumLoop {
         .into())
     }
 
+    /// Atomically replaces the live runtime at a resolved debugger coordinate.
+    ///
+    /// Implementations must leave the current runtime usable when candidate
+    /// instantiation, replay, verification, or replacement fails. A successful
+    /// return means the old runtime has been replaced and the new runtime is
+    /// paused at the requested target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the candidate runtime cannot be built,
+    /// replayed, verified, or installed. Loops without an owned live runtime
+    /// return an unsupported-capability error.
+    fn reposition_debug_runtime(
+        &mut self,
+        request: DebugRuntimeRepositionRequest,
+    ) -> Result<DebugRuntimeRepositionReport, SchedulerError> {
+        let _ = request;
+        Err(BackendError::Unsupported {
+            capability: "reposition_debug_runtime",
+        }
+        .into())
+    }
+
     /// Appends backend observations at the current completed boundary.
     ///
     /// Live backend adapters call this only after the scheduler quantum and the

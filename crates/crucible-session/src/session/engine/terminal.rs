@@ -48,6 +48,9 @@ impl<L> Engine<L> {
                 self.terminal_savepoint = None;
             }
         }
+        self.debug_attach = None;
+        self.debug_branch_required = false;
+        self.debug_coordinator.detached();
         self.state = EngineState::Stopped {
             outcome: Outcome::Crashed { detail },
         };
@@ -63,6 +66,9 @@ impl<L> Engine<L> {
         };
         let checkpoint = self.save_current_checkpoint()?;
         self.terminal_savepoint = Some(checkpoint);
+        self.debug_attach = None;
+        self.debug_branch_required = false;
+        self.debug_coordinator.detached();
         self.state = EngineState::Stopped { outcome };
         Ok(())
     }

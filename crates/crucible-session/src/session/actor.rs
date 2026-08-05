@@ -120,6 +120,56 @@ pub enum SessionError {
         /// Operation blocked until branch metadata is recorded.
         operation: &'static str,
     },
+    /// The runtime reported success for a different debug target than requested.
+    #[error("debug runtime reposition evidence mismatch: {0}")]
+    DebugRuntimeRepositionMismatch(Box<DebugRuntimeRepositionEvidenceMismatch>),
+}
+
+/// Expected and actual identities from a mismatched runtime replacement report.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugRuntimeRepositionEvidenceMismatch {
+    /// Node required by the session transaction.
+    pub expected_node: NodeId,
+    /// Current configuration required by the session transaction.
+    pub expected_previous_configuration: ContentHash,
+    /// Target configuration required by the session transaction.
+    pub expected_configuration: ContentHash,
+    /// Target checkpoint required by the session transaction.
+    pub expected_checkpoint: ContentHash,
+    /// Previous private QEMU endpoint that must not remain selected.
+    pub expected_previous_qemu_gdbstub: DebugGdbEndpoint,
+    /// Node claimed by the backend.
+    pub actual_node: NodeId,
+    /// Current configuration claimed by the backend.
+    pub actual_previous_configuration: ContentHash,
+    /// Target configuration claimed by the backend.
+    pub actual_configuration: ContentHash,
+    /// Checkpoint claimed by the backend.
+    pub actual_checkpoint: ContentHash,
+    /// Private QEMU endpoint claimed by the backend.
+    pub actual_qemu_gdbstub: DebugGdbEndpoint,
+    /// Gateway generation claimed by the backend.
+    pub actual_gateway_generation: u64,
+}
+
+impl fmt::Display for DebugRuntimeRepositionEvidenceMismatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "expected node={:?} previous={:?} configuration={:?} checkpoint={:?} previous_qemu_gdbstub={:?}, actual node={:?} previous={:?} configuration={:?} checkpoint={:?} qemu_gdbstub={:?} gateway_generation={}",
+            self.expected_node,
+            self.expected_previous_configuration,
+            self.expected_configuration,
+            self.expected_checkpoint,
+            self.expected_previous_qemu_gdbstub,
+            self.actual_node,
+            self.actual_previous_configuration,
+            self.actual_configuration,
+            self.actual_checkpoint,
+            self.actual_qemu_gdbstub,
+            self.actual_gateway_generation,
+        )
+    }
 }
 
 pub(super) fn is_recoverable_command_rejection(
@@ -146,7 +196,8 @@ pub(super) fn is_recoverable_command_rejection(
         | SessionError::ControlReplayBoundaryMismatch { .. }
         | SessionError::ControlReplayFrontierMismatch { .. }
         | SessionError::ControlReplayBatchMismatch { .. }
-        | SessionError::ControlReplayFinalSnapshotMismatch { .. } => false,
+        | SessionError::ControlReplayFinalSnapshotMismatch { .. }
+        | SessionError::DebugRuntimeRepositionMismatch(_) => false,
     }
 }
 
@@ -160,6 +211,7 @@ fn is_autonomous_actor_error(error: &SessionError) -> bool {
             | SessionError::BreakpointConditionPrefix { .. }
             | SessionError::UnsupportedBreakpointAction { .. }
             | SessionError::UnsupportedBreakpointFault { .. }
+            | SessionError::DebugRuntimeRepositionMismatch(_)
     )
 }
 

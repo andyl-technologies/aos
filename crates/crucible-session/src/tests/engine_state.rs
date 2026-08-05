@@ -693,6 +693,89 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
 }
 
 #[tokio::test]
+async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
+    let (_root, first, second, graph) = debug_time_travel_fixture();
+    let mut engine = Engine::new(second.clone(), graph, RejectingDebugRepositionLoop);
+
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("debug fixture should instantiate: {error}");
+    }
+    let (attach_reply, attach_receiver) = CommandReply::channel();
+    if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
+        node: node_id("guest-a"),
+        listen: gdb_listen("127.0.0.1:9000"),
+        reply: attach_reply,
+    }) {
+        panic!("attach-gdb should use the loop gdbstub capability: {error}");
+    }
+    let _attach = receive_reply(attach_receiver).await;
+
+    let before_snapshot = engine.snapshot();
+    let before_runtime = engine.runtime.clone();
+    let before_attach = engine.debug_attach.clone();
+    let before_graph = engine.graph.clone();
+    let error = engine
+        .apply_command(SessionCommand::DebugGoto {
+            request: DebugGotoRequest::at_configuration(second, first),
+            reply: CommandReply::discard(),
+        })
+        .expect_err("a rejected live-runtime replacement must fail the goto");
+
+    assert!(matches!(
+        error,
+        SessionError::Scheduler(SchedulerError::Backend(BackendError::Rejected { .. }))
+    ));
+    assert_eq!(engine.snapshot(), before_snapshot);
+    assert_eq!(engine.runtime, before_runtime);
+    assert_eq!(engine.debug_attach, before_attach);
+    assert_eq!(engine.graph, before_graph);
+    assert!(!engine.debug_branch_required());
+}
+
+#[tokio::test]
+async fn mismatched_debug_runtime_evidence_fails_closed_without_committing_model_state() {
+    let (_root, first, second, graph) = debug_time_travel_fixture();
+    let mut engine = Engine::new(second.clone(), graph, MismatchingDebugRepositionLoop);
+
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("debug fixture should instantiate: {error}");
+    }
+    let (attach_reply, attach_receiver) = CommandReply::channel();
+    if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
+        node: node_id("guest-a"),
+        listen: gdb_listen("127.0.0.1:9000"),
+        reply: attach_reply,
+    }) {
+        panic!("attach-gdb should use the loop gdbstub capability: {error}");
+    }
+    let _attach = receive_reply(attach_receiver).await;
+
+    let before_snapshot = engine.snapshot();
+    let before_runtime = engine.runtime.clone();
+    let before_attach = engine.debug_attach.clone();
+    let before_graph = engine.graph.clone();
+    let error = engine
+        .apply_command(SessionCommand::DebugGoto {
+            request: DebugGotoRequest::at_configuration(second, first),
+            reply: CommandReply::discard(),
+        })
+        .expect_err("mismatched replacement evidence must fail the goto");
+
+    assert!(matches!(
+        error,
+        SessionError::DebugRuntimeRepositionMismatch(_)
+    ));
+    assert_eq!(engine.snapshot(), before_snapshot);
+    assert_eq!(engine.runtime, before_runtime);
+    assert_eq!(engine.debug_attach, before_attach);
+    assert_eq!(engine.graph, before_graph);
+    assert!(matches!(
+        engine.debug_coordinator().state(),
+        DebugCoordinatorState::Failed { .. }
+    ));
+}
+
+#[tokio::test]
 async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     let (_root, first, second, graph) = debug_time_travel_fixture();
     let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
