@@ -134,10 +134,12 @@ existing race-free protocol exposes a reliable waiter state.
 
 ## 37.5 Guest assertions compatibility
 
-Ongoing guest-assertion work fits this boundary without changing the assertion
-model. Assertion definitions, evaluation, verdicts, and artifact semantics stay
-in the Apache host. The optional guest doorbell is an observation protocol, not
-an assertion evaluator.
+The structured guest-assertion implementation fits this boundary without
+changing the assertion model. Assertion definitions, evaluation, verdicts, and
+artifact semantics stay in the Apache host. The optional guest doorbell is an
+observation protocol, not an assertion evaluator. The GPL-side plugin validates
+and forwards versioned marker payloads; host-side `crucible` code owns their
+declarations, state transitions, verdicts, and evidence.
 
 - **[BOUND-12]** Guest assertion semantics and evaluation MUST remain host-side.
   Any QEMU/plugin change needed to trap, read, validate, or publish a guest
@@ -160,8 +162,8 @@ an assertion evaluator.
 - [x] **T-BOUND-3** Make packaging/release construction emit accurate aggregate
   metadata and matching QEMU corresponding source — satisfies [BOUND-3],
   [BOUND-10], [BOUND-11]; spec §37.1, §37.4.
-- [ ] **T-BOUND-4** Keep guest assertion evaluation host-side while gating the
-  observation protocol across the boundary. This task remains deferred to the
-  ongoing guest-assertions work; the checked boundary gate already enforces the
-  compatibility invariant for code merged before it. — satisfies [BOUND-12];
-  spec §37.5.
+- [x] **T-BOUND-4** Keep guest assertion evaluation host-side while gating the
+  observation protocol across the boundary. Structured assertion declarations,
+  evaluation, verdicts, and evidence are host-owned; the plugin exports only
+  versioned observations, and `gate:license-boundary` checks that ownership. —
+  satisfies [BOUND-12]; spec §37.5.

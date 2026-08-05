@@ -43,7 +43,7 @@ IO 16  QEMU 16  API 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11  DCE 10
 PAT 9  TIME 9  DBG 8  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:b2069b8c6d7b56c6`
+Checklist sync digest: `rfc0010-checklist-v1:9397b0d342e1654c`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -124,8 +124,7 @@ all land and are gated. Everything later is built on this.
 - Workspace + layer skeleton: `T-ARCH-1 … T-ARCH-5` ([`03`](03-architecture-overview.md)), `T-CRATE-1 … T-CRATE-16` ([`27`](27-crate-structure.md)).
 - Engineering standards + harness-lint: `T-STD-1 … T-STD-14` ([`28`](28-engineering-standards.md)).
 - Licensing and process boundary: `T-BOUND-1 … T-BOUND-4`
-  ([`37`](37-licensing-process-boundary.md)); `T-BOUND-4` remains deferred to
-  the ongoing guest-assertions work.
+  ([`37`](37-licensing-process-boundary.md)).
 - Determinism contract mechanisms (incl. the pure multi-vCPU and app-random
   determinism tasks `T-DET-29 … T-DET-31`): `T-DET-1 … T-DET-31` ([`04`](04-determinism-contract.md)).
 - Time / icount model: `T-TIME-1 … T-TIME-9` ([`09`](09-virtual-time-icount.md)).

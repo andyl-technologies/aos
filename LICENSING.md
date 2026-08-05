@@ -95,8 +95,11 @@ This repository document describes project policy and is not legal advice.
 
 ## Contributions
 
-Contributions follow the license applicable to the files changed. Original AOS
-contributions require the project contributor license agreement; commits to
-QEMU, its patch series, or in-QEMU code additionally require a Developer
-Certificate of Origin `Signed-off-by` line. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
-and the [`Contributor License Agreement`](CONTRIBUTOR_LICENSE_AGREEMENT.md).
+Contributions follow the license applicable to the files changed. External AOS
+contributors require the external contributor license agreement. Current Andyl,
+Inc. employees contributing within the scope of their employment are covered by
+Andyl's standard CIAA and internal contribution authorization instead. Commits
+to QEMU, its patch series, or in-QEMU code additionally require a Developer
+Certificate of Origin `Signed-off-by` line for both contribution paths. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) and the
+[`External Contributor License Agreement`](CONTRIBUTOR_LICENSE_AGREEMENT.md).

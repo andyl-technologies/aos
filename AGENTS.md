@@ -1,5 +1,31 @@
 # ANDYL OS — Build Principles
 
+## Contribution authorization
+
+These rules apply before merging changes, independently of the file licenses
+described below. The complete policy is in [`CONTRIBUTING.md`](CONTRIBUTING.md)
+and the
+[`maintainer contributor-authorization guide`](docs/maintainers/contributor-licensing.md).
+
+- Every external human contributor must have an active acceptance of the AOS
+  External Contributor License Agreement bound to the contributor's stable
+  GitHub user ID before merge.
+- Current Andyl, Inc. employees contributing within their authorized employment
+  scope are covered by Andyl's standard CIAA and a verified internal
+  authorization record. They do not accept the external agreement.
+- Contractors, former employees, and contributors whose employee authorization
+  cannot be verified use the external path. A company email address alone is
+  not proof of employee authorization.
+- AOS does not use a separate organization-level contributor agreement. An
+  external contributor must already have any employer permission needed to make
+  the external agreement's grants and representations.
+- The authorization check fails closed. Never merge when authorization is
+  missing, disabled, superseded, mismatched, unavailable, or indeterminate, and
+  never commit private employee or acceptance records to this repository.
+- QEMU-side changes additionally require the DCO sign-off documented in
+  [`CONTRIBUTING.md`](CONTRIBUTING.md); it does not replace contribution
+  authorization.
+
 ## Crucible/QEMU license boundary
 
 These invariants are mandatory for maintainers and automated agents. The

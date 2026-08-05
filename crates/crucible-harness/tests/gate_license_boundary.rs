@@ -20,8 +20,12 @@ const PLUGIN_LICENSE: &str = "GPL-2.0-only";
 const PLUGIN_PACKAGE: &str = "crucible-qemu-plugin";
 const BOUNDARY_PACKAGES: &[&str] = &["crucible-protocol", "crucible-shmem"];
 
+#[path = "gate_license_boundary/contributor_authorization.rs"]
+mod contributor_authorization;
 #[path = "gate_license_boundary/dependencies.rs"]
 mod dependencies;
+#[path = "gate_license_boundary/guest_assertions.rs"]
+mod guest_assertions;
 
 #[test]
 fn repository_publishes_each_declared_license_scope() -> Result<(), Box<dyn Error>> {

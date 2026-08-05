@@ -6,16 +6,55 @@ Thank you for contributing. Before opening a change, read
 
 ## Contributor agreement
 
-Original contributions to AOS are accepted only after the contributor agrees
-to the [AOS Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md).
-The contributor keeps copyright. If an employer or another organization owns
-the contribution, the contributor must obtain authority to contribute it and
-the project may require a separate corporate agreement.
+Every external human contributor must accept the
+[AOS External Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md)
+before a contribution is merged. The contributor keeps copyright. If an
+employer or another organization owns rights in the contribution, the external
+contributor must first obtain authority sufficient to make every grant and
+representation in the agreement. A contribution cannot be accepted without
+that authority; AOS does not provide a separate organization-level agreement
+path.
 
-CLA acceptance is not operational yet. Before collecting or relying on any CLA
-acceptance, maintainers must publish the current Project Steward's legal identity
-and contact details and designate the acceptance mechanism. Do not substitute an
-informal project name for the legal recipient on a signed agreement.
+Current Andyl, Inc. employees contributing within the scope of their employment
+are covered by Andyl's standard Confidential Information and Invention
+Assignment Agreement (CIAA) and internal contribution authorization. They do
+not accept the external agreement. Employee status and contribution authority
+must be verified from a private Andyl record tied to the contributor's stable
+GitHub user ID; a company-domain email address alone is not sufficient.
+Contractors, former employees, and anyone whose employee authorization cannot
+be verified follow the external-contributor path.
+
+The Project Steward is Andyl, Inc., a Delaware corporation. Its current contact
+and legal-notice instructions, agreement status, and designated acceptance
+mechanism are published at <https://cla.andyl.org/aos>.
+
+### Acceptance and enforcement
+
+An external contribution may be merged only when the canonical frontend above
+identifies the agreement and acceptance mechanism as active, the
+Andyl-operated service has recorded the contributor's acceptance, and its
+required repository check is passing. The service implementation and deployment
+are separate from this repository.
+
+The service and its private records must bind each acceptance to:
+
+- the exact agreement version, its content digest, and an archived copy of the
+  accepted text;
+- the signer's legal name, email address, contact address, authenticated stable
+  GitHub user ID, and current GitHub login;
+- an unambiguous act of assent or signature, UTC timestamp, and unique record
+  identifier; and
+- an active, superseded, or disabled status for future contributions and the
+  pull requests or commit
+  identities evaluated against it.
+
+The merge check must fail closed when an external acceptance or verified
+employee authorization is absent, an identity or agreement version does not
+match, an authorization is no longer active, or the verifier is unavailable or
+returns an error. Maintainers must not bypass a missing or indeterminate result.
+See the
+[maintainer contributor-authorization policy](docs/maintainers/contributor-licensing.md)
+for the complete intake and record-handling requirements.
 
 ## License by path
 
