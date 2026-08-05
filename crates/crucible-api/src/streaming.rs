@@ -1007,7 +1007,8 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::ControlReplayBoundaryMismatch { .. }
         | SessionError::ControlReplayFrontierMismatch { .. }
         | SessionError::ControlReplayBatchMismatch { .. }
-        | SessionError::ControlReplayFinalSnapshotMismatch { .. } => CommandRejectionKind::Internal,
+        | SessionError::ControlReplayFinalSnapshotMismatch { .. }
+        | SessionError::DebugRuntimeRepositionMismatch(_) => CommandRejectionKind::Internal,
     }
 }
 
