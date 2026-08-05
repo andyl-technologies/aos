@@ -127,8 +127,12 @@
         needle = "ReadyPoint::ConsoleMarker";
       }
       {
-        label = "network match assertion";
-        needle = "Predicate::network_match";
+        label = "client result console assertion";
+        needle = "CLIENT_RESULT requests=100 successful=100 failed=0";
+      }
+      {
+        label = "assertion-gated pass";
+        needle = "AssertionId::from_name(\"all-requests-succeed\")";
       }
       {
         label = "quiescence pass";

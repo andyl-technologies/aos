@@ -756,8 +756,7 @@ pub(super) fn save_selector_test_firing(
 pub(super) fn cli_resume_workflow_plans_handles_hashes_and_rejects_malformed_inputs()
 -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
-    let fixture = crucible::happy_path_scenario()?;
-    let form = fixture.scenario;
+    let form = valid_run_scenario_form()?;
     let scenario = form.scenario_def();
     let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
         crucible::DeliveryOrderDecision {
@@ -1160,8 +1159,7 @@ pub(super) fn cli_resume_terminal_oracle_rejects_non_descendant_snapshot()
 #[test]
 pub(super) fn cli_resume_workflow_executes_local_double_handle() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
-    let fixture = crucible::happy_path_scenario()?;
-    let form = fixture.scenario;
+    let form = valid_run_scenario_form()?;
     let scenario = form.scenario_def();
     let schedule = Schedule::empty().appended(crucible::Decision::DeliveryOrder(
         crucible::DeliveryOrderDecision {

@@ -148,38 +148,30 @@
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
-        label = "doorbell mem callback symbol exported";
-        needle = "QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL";
+        label = "doorbell execution callback symbol exported";
+        needle = "QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL";
       }
       {
         label = "guest-memory read symbol exported";
         needle = "QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL";
       }
-      {
-        label = "I/O address query symbol exported";
-        needle = "QEMU_PLUGIN_IO_ADDRESS_QUERY_SYMBOL";
-      }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
-        label = "upstream memory callback symbol";
-        needle = "qemu_plugin_register_vcpu_mem_cb";
+        label = "translated-instruction callback symbol";
+        needle = "qemu_plugin_register_vcpu_insn_exec_cb";
       }
       {
         label = "upstream read-memory symbol";
         needle = "qemu_plugin_read_memory_vaddr";
       }
       {
-        label = "upstream I/O address query symbol";
-        needle = "qemu_plugin_hwaddr_is_io";
-      }
-      {
         label = "trap alias does not require bespoke QEMU symbol";
         needle = "QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str =";
       }
       {
-        label = "trap alias points at upstream memory callback";
-        needle = "QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL";
+        label = "trap alias points at upstream execution callback";
+        needle = "QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL";
       }
       {
         label = "off-mode inert plan";
@@ -247,10 +239,7 @@ in
 
             for declaration in \
               'qemu_plugin_register_vcpu_tb_trans_cb(' \
-              'qemu_plugin_register_vcpu_mem_cb(' \
-              'qemu_plugin_get_hwaddr(' \
-              'qemu_plugin_hwaddr_is_io(' \
-              'qemu_plugin_hwaddr_phys_addr(' \
+              'qemu_plugin_register_vcpu_insn_exec_cb(' \
               'qemu_plugin_read_memory_vaddr(' \
               'qemu_plugin_read_register('
             do

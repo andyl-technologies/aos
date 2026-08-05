@@ -33,11 +33,18 @@ includes invariants and reachability-style quantifiers such as `Always`,
 `Sometimes`, `Eventually`, `AfterQuiescence`, and `Reachable`.
 
 The host assertion evaluator consumes deterministic observations such as node
-lifecycle, modeled network events, and guest console output. For application
-outcomes, especially when network payloads are encrypted, have the workload
-emit a stable result marker on its ordinary console and match it with a
-`ConsoleMatch` predicate. This does not require a Crucible agent: the production
-QEMU lifecycle captures serial output through an output-only host connection.
+lifecycle, modeled network events, guest console output, and structured
+guest-assertion markers. Application and test code should normally report its
+own semantic results with the static `crucible-guest` emitter (or its thin
+library) and a declared `GuestMarker` property. The QEMU plugin records the
+doorbell marker at its exact retired-instruction count and the same assertion
+evaluator publishes its `AssertionState` transition.
+
+Use `ConsoleMatch` when exercising an opaque or entirely prebuilt workload that
+already prints a stable result. Use `NetworkMatch` for transport and topology
+properties, not to infer an application result from plaintext protocol bytes.
+This distinction keeps application assertions valid for encrypted protocols
+while preserving a zero-guest-component black-box path.
 
 ### Seed
 

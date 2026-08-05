@@ -17,7 +17,7 @@ pub use crucible_protocol::{
     WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE,
     WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
     WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
-    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES,
+    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
     WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WhiteboxAssertionMarkerBody,
     WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellAbi,
     WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
@@ -27,7 +27,7 @@ pub use crucible_protocol::{
     WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError, WhiteboxMarkerPayloadEncodeError,
     WhiteboxMarkerPayloadGoldenVector, WhiteboxRandomRequestBody, decode_whitebox_marker_payload,
     encode_aarch64_hlt_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
-    encode_whitebox_marker_payload_body, encode_x86_64_out_dx_eax_instruction,
+    encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
 };
 use crucible_shmem::MAX_FRAME_DATA;
@@ -37,18 +37,12 @@ use crate::{PluginDeviceCallbackKind, PluginSwitch};
 
 /// QEMU plugin API label for translation-block instrumentation.
 pub const QEMU_PLUGIN_DOORBELL_TRANSLATION_SYMBOL: &str = "qemu_plugin_register_vcpu_tb_trans_cb";
-/// QEMU plugin API label for installing memory callbacks on translated instructions.
-pub const QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL: &str = "qemu_plugin_register_vcpu_mem_cb";
-/// QEMU plugin API label for resolving a memory callback's hardware address.
-pub const QEMU_PLUGIN_GET_HWADDR_SYMBOL: &str = "qemu_plugin_get_hwaddr";
-/// QEMU plugin API label for checking whether a memory callback targets I/O space.
-pub const QEMU_PLUGIN_IO_ADDRESS_QUERY_SYMBOL: &str = "qemu_plugin_hwaddr_is_io";
-/// QEMU plugin API label for extracting a hardware-address physical address.
-pub const QEMU_PLUGIN_HWADDR_PHYS_ADDR_SYMBOL: &str = "qemu_plugin_hwaddr_phys_addr";
+/// QEMU plugin API label for installing callbacks on translated instructions.
+pub const QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL: &str = "qemu_plugin_register_vcpu_insn_exec_cb";
 /// QEMU plugin API label for reading a register during a callback.
 pub const QEMU_PLUGIN_READ_REGISTER_SYMBOL: &str = "qemu_plugin_read_register";
 /// QEMU capability label for registering the reserved white-box doorbell trap.
-pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL;
+pub const QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL: &str = QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL;
 /// QEMU capability label for reading guest memory at the trap icount.
 pub const QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL: &str = "qemu_plugin_read_memory_vaddr";
 /// QEMU capability label for writing white-box replies into guest memory.
