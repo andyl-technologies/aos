@@ -7,8 +7,8 @@
 use crucible::{
     AssertionDef, AssertionId, BlackBoxHostOracle, GuestAssertionDetail, GuestAssertionKind,
     GuestAssertionMarker, HostAssertionEvaluator, HostAssertionOutcomeKind, Icount, NodeId,
-    NodeTemplate, ObservableEvent, Properties, ReadyPoint, VmArchitecture, WhiteBoxPolicy, World,
-    WorldNode,
+    NodeTemplate, ObservableEvent, Properties, ReachableDisposition, ReadyPoint, VmArchitecture,
+    WhiteBoxPolicy, World, WorldNode,
 };
 
 #[test]
@@ -76,6 +76,50 @@ fn declared_guest_assertion_rejects_marker_message_drift() {
     assert!(outcomes[0].reason.contains("differs"));
 }
 
+#[test]
+fn declared_guest_assertion_helpers_cover_every_guest_flavor() {
+    let world = world();
+    let properties = properties(
+        &world,
+        vec![
+            AssertionDef::guest_always(assertion_id("invariant"), "invariant message"),
+            AssertionDef::guest_reachable(
+                assertion_id("reachable"),
+                "reachable message",
+                ReachableDisposition::Fail,
+            ),
+            AssertionDef::guest_unreachable(assertion_id("unreachable"), "unreachable message"),
+        ],
+    );
+    let mut evaluator =
+        HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+    let mut oracle = BlackBoxHostOracle;
+
+    let outcomes = evaluator.observe_prefix(
+        &observable_prefix(
+            50,
+            vec![
+                guest_marker_with_kind(42, "invariant", GuestAssertionKind::Always, true),
+                guest_marker_with_kind(43, "reachable", GuestAssertionKind::Reachable, true),
+                guest_marker_with_kind(44, "unreachable", GuestAssertionKind::Unreachable, true),
+            ],
+        ),
+        &mut oracle,
+    );
+    assert!(outcomes.iter().any(|outcome| {
+        outcome.assertion.name == "reachable" && outcome.kind == HostAssertionOutcomeKind::Satisfied
+    }));
+    assert!(outcomes.iter().any(|outcome| {
+        outcome.assertion.name == "unreachable"
+            && outcome.kind == HostAssertionOutcomeKind::Violated
+    }));
+
+    let report = evaluator.finalize_prefix(&observable_prefix(51, Vec::new()), &mut oracle);
+    assert!(report.outcomes().iter().any(|outcome| {
+        outcome.assertion.name == "invariant" && outcome.kind == HostAssertionOutcomeKind::Passed
+    }));
+}
+
 fn world() -> World {
     World::from_nodes(vec![WorldNode {
         id: node("guest"),
@@ -107,14 +151,23 @@ fn observable_prefix(
 }
 
 fn guest_marker(ticks: u64, id: &str) -> ObservableEvent {
+    guest_marker_with_kind(ticks, id, GuestAssertionKind::Sometimes, true)
+}
+
+fn guest_marker_with_kind(
+    ticks: u64,
+    id: &str,
+    kind: GuestAssertionKind,
+    condition: bool,
+) -> ObservableEvent {
     ObservableEvent::guest_assertion_marker(
         icount(ticks),
         node("guest"),
         GuestAssertionMarker::new(
             assertion_id(id),
             format!("{id} message"),
-            GuestAssertionKind::Sometimes,
-            true,
+            kind,
+            condition,
             true,
             vec![GuestAssertionDetail::new("case", id)],
             format!("{id}.rs:1"),
