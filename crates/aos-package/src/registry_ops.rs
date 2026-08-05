@@ -2667,6 +2667,7 @@ fn scan_config_module_interface(
     requires.retain(|path| {
         let root = path.split_once('.').map_or(path.as_str(), |(root, _)| root);
         root != package_name
+            && root != "_module"
             && root != "assertions"
             && root != "warnings"
             && !owned.contains(root)
@@ -2682,7 +2683,7 @@ fn scan_config_module_interface(
         let Some((root, relative)) = path.split_once('.') else {
             continue;
         };
-        if matches!(root, "assertions" | "warnings") {
+        if matches!(root, "_module" | "assertions" | "warnings") {
             continue;
         }
         if root != package_name && !owned.contains(root) {
@@ -13223,6 +13224,23 @@ mod tests {
         fs::write(
             tmp.path().join("module.nix"),
             "{ config, ... }: { config.web.enable = true; }\n",
+        )
+        .expect("write module");
+
+        let (contributes, capabilities, requires) =
+            scan_config_module_interface(tmp.path(), "web", &[], &[]).expect("scan module");
+
+        assert!(contributes.is_empty());
+        assert!(capabilities.is_empty());
+        assert!(requires.is_empty());
+    }
+
+    #[test]
+    fn config_interface_scan_excludes_module_system_metadata() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::write(
+            tmp.path().join("module.nix"),
+            "{ config, ... }: {\n  config._module.strict = true;\n  config.web.port = config._module.args.port;\n}\n",
         )
         .expect("write module");
 
