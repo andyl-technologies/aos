@@ -43,7 +43,7 @@ without a host rebuild. The checked-in `wrangler.toml` exists for manual
 development and documents required binding names.
 
 ```sh
-nix-build -A pkgs.aos-hub-cloudflare
+nix build .#pkg-aos-hub-cloudflare
 ./result/bin/aos-hub worker install \
   --name aos-hub \
   --hardened-egress-url https://egress.example.com/v1/fetch \
@@ -57,3 +57,12 @@ The Worker feature is target-gated so native workspace checks do not compile
 Workers-only bindings. Runtime validation additionally requires workerd or a
 Cloudflare account; database and shared-domain behavior is exercised through
 the runtime-neutral core tests.
+
+The canonical user guide is [Deploy AOS Hub to
+Cloudflare](../../docs/users/aos-hub/cloudflare.md). It covers the supported
+installer, provider resources, secrets, domains, updates, email, and
+observability.
+
+This crate's checked-in `wrangler.toml` is an implementation fixture. The
+packaged installer generates deployment configuration from the current command
+options and bundled Worker artifact; it is the supported operational path.

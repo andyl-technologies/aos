@@ -3,6 +3,7 @@ name = "aos-hub-worker"
 version = "0.1.0"
 edition = "2021"
 description = "Cloudflare Worker shell for AOS Hub over HubDb colocated SQLite, R2 surfaces, and the shared runtime-neutral application"
+license.workspace = true
 
 # A `cdylib` for the wasm32 Workers runtime; an `rlib` so the pure modules
 # (sql, keymap, render, model) compile and test on the native host. The crate

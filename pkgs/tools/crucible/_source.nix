@@ -16,10 +16,15 @@ in
       && (
         pathString
         == repoRootString
-        || pathString == "${repoRootString}/.github"
-        || pathString == "${repoRootString}/.github/pull_request_template.md"
         || pathString == "${repoRootString}/CLAUDE.md"
         || pathString == "${repoRootString}/AGENTS.md"
+        || pathString == "${repoRootString}/LICENSE"
+        || pathString == "${repoRootString}/LICENSES"
+        || lib.hasPrefix "${repoRootString}/LICENSES" pathString
+        || pathString == "${repoRootString}/LICENSING.md"
+        || pathString == "${repoRootString}/README.md"
+        || pathString == "${repoRootString}/CONTRIBUTING.md"
+        || pathString == "${repoRootString}/CONTRIBUTOR_LICENSE_AGREEMENT.md"
         || lib.hasPrefix "${repoRootString}/crates" pathString
         || lib.hasPrefix "${repoRootString}/docs" pathString
         || pathString == "${repoRootString}/pkgs"

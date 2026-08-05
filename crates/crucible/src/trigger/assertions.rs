@@ -1005,13 +1005,10 @@ impl HostAssertionEvaluator {
     /// Builds an evaluator for the assertions in canonical property order.
     #[must_use]
     pub fn new(properties: &Properties) -> Self {
+        let (states, guest_marker_states) = partition_declared_assertions(properties);
         Self {
-            states: properties
-                .assertions()
-                .iter()
-                .map(HostAssertionState::new)
-                .collect(),
-            guest_marker_states: Vec::new(),
+            states,
+            guest_marker_states,
             once_latches: Vec::new(),
             white_box_policies: BTreeMap::new(),
             code_points: BTreeMap::new(),
@@ -1283,6 +1280,7 @@ pub(super) struct GuestMarkerAssertionState {
     pub(super) last_icount: Option<Icount>,
     pub(super) last_node: Option<NodeId>,
     pub(super) terminal: Option<HostAssertionTerminal>,
+    pub(super) declared_message: Option<String>,
 }
 
 impl GuestMarkerAssertionState {
@@ -1299,26 +1297,7 @@ impl GuestMarkerAssertionState {
             last_icount: None,
             last_node: None,
             terminal: None,
-        }
-    }
-
-    pub(super) fn observe_payload(
-        &mut self,
-        retired_icount: Icount,
-        node: &NodeId,
-        marker: &GuestAssertionMarker,
-    ) {
-        self.must_hit |= marker.must_hit;
-        self.message = marker.message.clone();
-        self.location = marker.location.clone();
-        self.details = marker.details.clone();
-        self.last_icount = Some(retired_icount);
-        self.last_node = Some(node.clone());
-        if self.lifecycle == PropertyLifecycleState::Declared {
-            self.lifecycle = PropertyLifecycleState::Passing;
-        }
-        if marker.condition {
-            self.observed_true = true;
+            declared_message: None,
         }
     }
 
@@ -1375,7 +1354,7 @@ impl GuestMarkerAssertionState {
 }
 
 impl HostAssertionState {
-    fn new(assertion: &AssertionDef) -> Self {
+    pub(super) fn new(assertion: &AssertionDef) -> Self {
         Self {
             assertion: assertion.clone(),
             lifecycle: PropertyLifecycleState::Declared,
@@ -1736,7 +1715,11 @@ where
     if property_satisfied {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
-        state.lifecycle = PropertyLifecycleState::Satisfied;
+        return state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            at,
+            "eventually predicate became true",
+        );
     } else if let Some(expired) = state
         .pending_eventually
         .iter()
@@ -1798,8 +1781,11 @@ where
     ) {
         state.pending_eventually.clear();
         state.eventually_satisfied_at = Some(at);
-        state.lifecycle = PropertyLifecycleState::Satisfied;
-        return None;
+        return state.terminal(
+            HostAssertionOutcomeKind::Satisfied,
+            at,
+            "eventually predicate became true",
+        );
     }
     let distance = host_condition_distance_to_satisfaction(
         prefix,

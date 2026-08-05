@@ -203,16 +203,16 @@
         needle = "crucible-qemu-plugin";
       }
       {
-        label = "compile-time QEMU hint";
-        needle = "CRUCIBLE_AOS_QEMU";
+        label = "runtime QEMU wrapper configuration";
+        needle = "CRUCIBLE_QEMU:=";
       }
       {
-        label = "compile-time plugin hint";
-        needle = "CRUCIBLE_AOS_PLUGIN";
+        label = "runtime plugin wrapper configuration";
+        needle = "CRUCIBLE_PLUGIN:=";
       }
       {
-        label = "runtime QEMU closure";
-        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures]";
+        label = "separate suite runtime closure";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [

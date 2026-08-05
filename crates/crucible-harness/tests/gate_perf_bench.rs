@@ -9,7 +9,8 @@
 //! independent per-TB overhead, rendezvous neutrality, boot amortization, the
 //! coverage cheap-on/free-off and observation-only properties, delta-bounded fork
 //! cost, suffix-bounded replay cost, the throughput and coverage ratchets, the
-//! fleet near-linear sweep, and peak-RSS scaling.
+//! fleet near-linear sweep, peak-RSS scaling, and the source-level absence of
+//! socket, QMP, or plugin-control I/O from the advance/delivery hot-path owners.
 //!
 //! The gate ASSERTS these properties and RECORDS the raw metrics. Absolute
 //! wall-clock thresholds are never hard-asserted on the shared builder; the one
@@ -20,17 +21,22 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+#[path = "gate_perf_bench/hot_path_io.rs"]
+mod hot_path_io;
+#[path = "gate_perf_bench/syscall_accounting.rs"]
+mod syscall_accounting;
+
 use std::time::Instant;
 
 use crucible_harness::perf::{
     BenchLink, BenchNode, BenchScenario, COVERAGE_ON_MIN_PCT, CoverageMode, DEVICE_WORK_OVERLAP,
     FINGERPRINT_DIGEST_OFFLOAD, HOST_WORKER_POOL, HostParallelismClass, PerfBenchError,
     RealizationConfig, SEGMENT_PARALLEL_REPLAY, SYNC_OVERHEAD_FAIL_PCT, TRANSLATION_PREFETCH,
-    advance_syscall_count, canonical_bench_corpus, canonical_host_parallelism_admissions,
-    canonical_host_profile, canonical_perf_bench_input, core_count_speedup_sweep,
-    evaluate_cost_model, fleet_host_sweep, latency_parallelism_sweep, perf_corpus_digest,
-    realized_parallelism, rendezvous_frequency_sweep, run_perf_bench_gate,
-    scenario_result_fingerprint, snapshot_latency_series,
+    canonical_bench_corpus, canonical_host_parallelism_admissions, canonical_host_profile,
+    canonical_perf_bench_input, core_count_speedup_sweep, evaluate_cost_model, fleet_host_sweep,
+    latency_parallelism_sweep, perf_corpus_digest, realized_parallelism,
+    rendezvous_frequency_sweep, run_perf_bench_gate, scenario_result_fingerprint,
+    snapshot_latency_series,
 };
 
 /// [PERF-1], [PERF-19] — the full gate passes over the canonical corpus, and the
@@ -363,24 +369,6 @@ fn gate_perf_bench_records_fork_replay_and_rss_evidence() {
         assert!(larger >= smaller, "replay cost must be monotone in suffix");
     }
     assert!(report.peak_rss_units > 0, "peak RSS must be recorded");
-}
-
-/// [PERF-8] — the advance path issues zero per-quantum IPC round-trips; the only
-/// syscalls charged are futex park/wakes, bounded by park events, not by quanta.
-#[test]
-fn gate_perf_bench_advance_path_has_no_per_quantum_ipc() {
-    let count = advance_syscall_count(10_000, 7);
-    assert_eq!(
-        count.per_quantum_ipc_round_trips, 0,
-        "the advance path must issue no per-quantum IPC round-trip"
-    );
-    assert!(
-        count.futex_park_wake <= count.quanta,
-        "futex park/wake must be bounded by park events, not the quantum count"
-    );
-    // The recorded report carries the same accounting.
-    let report = run_perf_bench_gate(&canonical_perf_bench_input()).expect("gate must pass");
-    assert_eq!(report.advance_syscalls.per_quantum_ipc_round_trips, 0);
 }
 
 /// [PERF-12], [PERF-17] — snapshot capture and restore latency scale with changed

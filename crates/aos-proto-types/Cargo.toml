@@ -3,6 +3,7 @@ name = "aos-proto-types"
 version = "0.1.0"
 edition = "2021"
 description = "wasm-clean message structs for the aos.hub.v1 API: generated from the .proto with prost-build + pbjson, the Connect-JSON lingua franca shared by the native hub, the Cloudflare Worker, and aos-remote — no connectrpc/buffa runtime"
+license.workspace = true
 
 [dependencies]
 prost = { workspace = true }

@@ -17,7 +17,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::future::Future;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 #[cfg(any(test, feature = "test-double"))]
 use std::sync::Arc;
@@ -103,6 +103,7 @@ const REAL_QEMU_SELFTEST_GATES: &[&str] = &[
 ];
 const CANONICAL_GATE_NAMES: &[&str] = &[
     "gate:harness-lint",
+    "gate:license-boundary",
     "gate:layer0-determinism",
     "gate:single-vm-fingerprint",
     "gate:layer1-injection",
@@ -155,15 +156,14 @@ struct Cli {
     /// Content-addressed store root (06, 07). Else default.
     #[arg(long, value_name = "path", global = true)]
     store: Option<PathBuf>,
-    /// Trace/report render format. Default: jsonl.
+    /// Trace/report render format. Default: table on a terminal, otherwise jsonl.
     #[arg(
         long,
         value_enum,
         value_name = "jsonl|json|table|markdown",
-        default_value_t = OutputFormat::Jsonl,
         global = true
     )]
-    format: OutputFormat,
+    format: Option<OutputFormat>,
     /// Write the event-log stream here. Default: stdout.
     #[arg(long, value_name = "path", global = true)]
     trace: Option<PathBuf>,
@@ -349,6 +349,7 @@ struct SelftestArgs {
     #[arg(long, value_name = "list")]
     gates: Option<String>,
     /// Execute the QEMU-backed gates.
+    #[cfg_attr(not(any(test, feature = "test-double")), arg(hide = true))]
     #[arg(long, action = ArgAction::SetTrue)]
     with_qemu: bool,
     /// Test-only manifest of built-in fixture names.

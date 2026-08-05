@@ -1,6 +1,14 @@
+//! SPDX-License-Identifier: GPL-2.0-only
 //! `crucible-qemu-plugin` owns the in-VM QEMU plugin.
 //!
 //! Spec index: RFC-0010 files 11, 12.
+//!
+//! License boundary: this crate is GPL-2.0-only because its `cdylib` is loaded
+//! into QEMU and directly implements QEMU plugin entry points and callbacks.
+//! It may depend on the permissively dual-licensed `crucible-protocol` and
+//! `crucible-shmem` boundary crates, but MUST NOT depend on Apache-licensed
+//! Crucible host/runtime crates in production. Host/plugin communication stays
+//! within the versioned socket control protocol and shared-memory process ABI.
 //!
 //! This L2 crate builds the `cdylib` loaded by QEMU. Later tasks will add the
 //! QEMU TCG plugin entry points, time-control hooks, and device callbacks
@@ -270,21 +278,20 @@ pub use whitebox_doorbell::{
     AppRandomDoorbellOutcome, AppRandomDoorbellRequest, AppRandomDoorbellService,
     GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS,
     GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
-    PluginWhiteboxDoorbell, QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL,
-    QEMU_PLUGIN_DOORBELL_TRANSLATION_SYMBOL, QEMU_PLUGIN_GET_HWADDR_SYMBOL,
-    QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL, QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL,
-    QEMU_PLUGIN_HWADDR_PHYS_ADDR_SYMBOL, QEMU_PLUGIN_IO_ADDRESS_QUERY_SYMBOL,
-    QEMU_PLUGIN_READ_REGISTER_SYMBOL, QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL,
-    WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES, WHITEBOX_DOORBELL_AARCH64_ABI,
-    WHITEBOX_DOORBELL_AARCH64_HLT_BYTES, WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE,
-    WHITEBOX_DOORBELL_ABIS, WHITEBOX_DOORBELL_FRAME_HEADER_LEN, WHITEBOX_DOORBELL_FRAME_MAGIC,
+    PluginWhiteboxDoorbell, QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL,
+    QEMU_PLUGIN_DOORBELL_TRANSLATION_SYMBOL, QEMU_PLUGIN_GUEST_MEMORY_READ_SYMBOL,
+    QEMU_PLUGIN_GUEST_MEMORY_WRITE_SYMBOL, QEMU_PLUGIN_READ_REGISTER_SYMBOL,
+    QEMU_PLUGIN_REGISTER_DOORBELL_TRAP_SYMBOL, WHITEBOX_APP_RANDOM_MAX_WIDTH_BYTES,
+    WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
+    WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
+    WHITEBOX_DOORBELL_FRAME_HEADER_LEN, WHITEBOX_DOORBELL_FRAME_MAGIC,
     WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE, WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
     WHITEBOX_DOORBELL_KIND_ASSERTION, WHITEBOX_DOORBELL_KIND_COVERAGE,
     WHITEBOX_DOORBELL_KIND_EVENT, WHITEBOX_DOORBELL_KIND_LIFECYCLE,
     WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE,
     WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
     WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
-    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES,
+    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
     WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WHITEBOX_GUEST_MEMORY_ADDRESSING_UNRESOLVED,
     WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK, WhiteboxAssertionMarkerBody,
     WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellAbi,
@@ -303,7 +310,7 @@ pub use whitebox_doorbell::{
     WhiteboxMarkerSinkError, WhiteboxPayloadAddressingMode, WhiteboxRandomRequestBody,
     decode_whitebox_marker_payload, encode_aarch64_hlt_instruction, encode_whitebox_doorbell_frame,
     encode_whitebox_marker_frame, encode_whitebox_marker_payload_body,
-    encode_x86_64_out_dx_eax_instruction, handle_whitebox_app_random_callback,
+    encode_x86_64_out_imm8_al_instruction, handle_whitebox_app_random_callback,
     handle_whitebox_doorbell_callback, handle_whitebox_guest_input_callback,
     whitebox_doorbell_abi_for_architecture,
 };

@@ -2,6 +2,7 @@
 name = "aos-hub"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "Multi-tenant AOS registry management WebUI and read index (RFC-0004)"
 
 [dependencies]

@@ -79,12 +79,12 @@
         needle = "pub const HAPPY_PATH_SCENARIO_NAME: &str = \"happy-path.scn\";";
       }
       {
-        label = "zero guest components invariant";
-        needle = "pub const EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS: bool = false;";
+        label = "corpus guest-component requirement";
+        needle = "pub const EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS: bool = true;";
       }
       {
-        label = "white-box not required invariant";
-        needle = "pub const EXAMPLE_CORPUS_WHITE_BOX_REQUIRED: bool = false;";
+        label = "corpus white-box requirement";
+        needle = "pub const EXAMPLE_CORPUS_WHITE_BOX_REQUIRED: bool = true;";
       }
       {
         label = "built-in corpus function";
@@ -127,8 +127,12 @@
         needle = "ReadyPoint::ConsoleMarker";
       }
       {
-        label = "network match assertion";
-        needle = "Predicate::network_match";
+        label = "client result console assertion";
+        needle = "CLIENT_RESULT requests=100 successful=100 failed=0";
+      }
+      {
+        label = "assertion-gated pass";
+        needle = "AssertionId::from_name(\"all-requests-succeed\")";
       }
       {
         label = "quiescence pass";
@@ -213,16 +217,6 @@
       {
         label = "byte-identical replay fingerprint comparison";
         needle = "candidate.replayed_fingerprint_stream != reference.replayed_fingerprint_stream";
-      }
-    ]
-    ++ forbiddenFor "crates/crucible/src/example_corpus.rs" exampleCorpus [
-      {
-        label = "guest-marker dependency";
-        needle = "Predicate::guest_marker";
-      }
-      {
-        label = "white-box enabled dependency";
-        needle = "WhiteBoxPolicy::Enabled";
       }
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [

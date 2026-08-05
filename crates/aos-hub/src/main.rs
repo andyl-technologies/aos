@@ -38,7 +38,6 @@ struct Cli {
     /// database; Worker administration uses the typed Hub API.
     #[arg(long, global = true, default_value = "local")]
     target: String,
-
     #[command(subcommand)]
     command: Command,
 }

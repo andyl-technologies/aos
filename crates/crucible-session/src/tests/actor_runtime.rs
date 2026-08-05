@@ -569,6 +569,43 @@ pub(super) async fn session_actor_steps_one_quantum_then_yields() {
 }
 
 #[tokio::test]
+pub(super) async fn session_actor_publishes_non_backend_scheduler_failure_as_terminal_crash() {
+    let scenario = generated_scenario(226);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let mut engine = Engine::new(config, graph, NonDenseShutdownLoop);
+    if let Err(error) = engine.apply_command(SessionCommand::Start) {
+        panic!("start should instantiate runtime: {error}");
+    }
+    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
+        panic!("continue should enter running state: {error}");
+    }
+    let (sender, receiver) = mpsc::channel(1);
+    let actor = SessionActor::new(engine, receiver);
+    let live = actor.live_snapshot();
+
+    let report = actor
+        .run()
+        .await
+        .unwrap_or_else(|error| panic!("actor failure should become a crash outcome: {error}"));
+
+    let EngineState::Stopped {
+        outcome: Outcome::Crashed { detail },
+    } = report.final_snapshot.state
+    else {
+        panic!("actor failure should stop with a crashed outcome");
+    };
+    assert!(
+        detail.contains("non-dense shutdown test must not drive a quantum"),
+        "unexpected crash detail: {detail}"
+    );
+    let status = live.read();
+    assert_eq!(status.state_kind, LiveStateKind::Stopped);
+    assert_eq!(status.outcome, Some(OutcomeKind::Crashed));
+    drop(sender);
+}
+
+#[tokio::test]
 pub(super) async fn session_actor_yields_after_command_driven_step() {
     let scenario = generated_scenario(16);
     let config = Configuration::genesis(scenario.clone());

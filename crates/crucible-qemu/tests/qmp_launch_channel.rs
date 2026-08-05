@@ -56,6 +56,48 @@ fn qmp_channel_adds_stable_unix_socket_to_launch_command() {
 }
 
 #[test]
+fn console_capture_uses_only_the_run_directory_output_socket() {
+    let command = QemuLaunchCommandBuilder::new(
+        default_profile(),
+        default_vm_config(),
+        default_qemu_binary(),
+        default_plugin_config(),
+    )
+    .with_qmp(
+        QemuQmpChannelConfig::new("crucible-qmp.sock")
+            .unwrap_or_else(|error| panic!("QMP socket config should be valid: {error}")),
+    )
+    .with_console_capture()
+    .build()
+    .unwrap_or_else(|error| panic!("console-capture launch command should build: {error}"));
+
+    assert!(
+        command
+            .args()
+            .windows(2)
+            .any(|window| { window == ["-serial", "chardev:crucible-console"] })
+    );
+    assert!(command.args().windows(2).any(|window| {
+        window
+            == [
+                "-chardev",
+                "socket,id=crucible-console,path=crucible-console.sock,server=on,wait=off",
+            ]
+    }));
+    assert!(validate_pre_spawn_qemu_launch_args(command.args()).is_ok());
+    let chardevs = command
+        .args()
+        .windows(2)
+        .filter(|window| window[0] == "-chardev")
+        .map(|window| window[1].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chardevs,
+        vec!["socket,id=crucible-console,path=crucible-console.sock,server=on,wait=off"]
+    );
+}
+
+#[test]
 fn qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels() {
     let qmp = QemuQmpChannelConfig::new("crucible-qmp.sock")
         .unwrap_or_else(|error| panic!("QMP socket config should be valid: {error}"));

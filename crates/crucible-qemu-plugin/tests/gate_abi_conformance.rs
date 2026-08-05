@@ -79,7 +79,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     assert_contains(&protocol_lib, "WhiteboxDoorbellTrapAbi");
     assert_contains(
         &protocol_doorbell,
-        "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 1;",
+        "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 3;",
     );
     assert_contains(
         &protocol_doorbell,
@@ -92,7 +92,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     assert_contains(&protocol_doorbell, "WhiteboxDoorbellTrapAbi::Aarch64Hlt");
     assert_contains(
         &protocol_doorbell,
-        "doorbell_abi_x86_64_vector_freezes_out_dx_eax",
+        "doorbell_abi_x86_64_vector_freezes_out_imm8_al",
     );
     assert_contains(
         &protocol_doorbell,
@@ -117,7 +117,7 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
     assert_contains(&phase_check, "checks.crucible.phase4.guestHostDoorbellAbi");
     assert_contains(&phase_check, "gate=gate:abi-conformance");
     assert_contains(&guest_host_spec, "- [x] **T-GHC-5**");
-    assert_contains(&guest_host_spec, "x86_64   out dx,eax, port 0x00e7");
+    assert_contains(&guest_host_spec, "x86_64   out 0xe7,al");
     assert_contains(&guest_host_spec, "aarch64  hlt #0x04c1");
 
     run_doorbell_abi_unit_targets(&root)?;

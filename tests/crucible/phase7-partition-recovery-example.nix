@@ -97,8 +97,8 @@
         needle = "Action::heal_fault";
       }
       {
-        label = "observable convergence frame";
-        needle = "reconcile_ack raft_log_match";
+        label = "structured guest convergence assertion";
+        needle = "AssertionDef::guest_sometimes";
       }
       {
         label = "pass waits for healed split";
@@ -130,14 +130,6 @@
       }
     ]
     ++ forbiddenFor "crates/crucible/src/example_corpus.rs" exampleCorpus [
-      {
-        label = "guest-marker dependency";
-        needle = "Predicate::guest_marker";
-      }
-      {
-        label = "white-box enabled dependency";
-        needle = "WhiteBoxPolicy::Enabled";
-      }
       {
         label = "reserved unsupported workload key";
         needle = "crucible.workload=replicated-store";

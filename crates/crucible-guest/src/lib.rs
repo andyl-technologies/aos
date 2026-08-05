@@ -13,12 +13,8 @@
 //! and the Linux guest instruction transport. `crucible-protocol` remains the
 //! owner of the wire format and instruction ABI.
 //!
-//! Unsafe boundary discipline: inline assembly is private to
-//! [`InstructionDoorbellTransport`]. Public callers pass typed [`GuestCommand`]
-//! values to a safe [`DoorbellTransport`] implementation; the transport receives
-//! a mutable frame buffer so reply-bearing app-random requests can be written
-//! back at the same guest-memory range the plugin reads; public callers use safe doorbell and marker accessors while the private transport code owns the
-//! guest/register and shared-region invariants.
+//! Unsafe boundary discipline: public callers use safe doorbell and marker accessors; private inline
+//! assembly owns the guest/register and shared-region invariants plus reply-bearing mutable frames.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
@@ -35,7 +31,7 @@ pub use crucible_protocol::{
     WHITEBOX_DOORBELL_LIFECYCLE_EVENT_COUNT, WHITEBOX_DOORBELL_LIFECYCLE_SETUP_COMPLETE,
     WHITEBOX_DOORBELL_LIFECYCLE_TEST_DONE, WHITEBOX_DOORBELL_MARKER_KIND_COUNT,
     WHITEBOX_DOORBELL_PROTOCOL_VERSION, WHITEBOX_DOORBELL_RANDOM_REQUEST_MAX_WIDTH_BYTES,
-    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES,
+    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
     WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WhiteboxAssertionMarkerBody,
     WhiteboxAssertionMarkerFlavor, WhiteboxCoverageMarkerBody, WhiteboxDoorbellAbi,
     WhiteboxDoorbellArchitecture, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
@@ -44,7 +40,7 @@ pub use crucible_protocol::{
     WhiteboxMarkerDetail, WhiteboxMarkerPayload, WhiteboxMarkerPayloadDecodeError,
     WhiteboxMarkerPayloadEncodeError, WhiteboxRandomRequestBody, decode_whitebox_marker_payload,
     encode_aarch64_hlt_instruction, encode_whitebox_doorbell_frame, encode_whitebox_marker_frame,
-    encode_whitebox_marker_payload_body, encode_x86_64_out_dx_eax_instruction,
+    encode_whitebox_marker_payload_body, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
 };
 
@@ -563,6 +559,11 @@ fn ring_doorbell(trap: WhiteboxDoorbellTrapAbi, frame: &mut [u8]) -> Result<(), 
 fn ring_x86_64(port: u16, frame: &mut [u8]) -> Result<(), GuestEmitterError> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
+        if port != WHITEBOX_DOORBELL_X86_64_RESERVED_PORT {
+            return Err(GuestEmitterError::Transport {
+                message: format!("x86_64 doorbell port {port:#x} does not match shared ABI"),
+            });
+        }
         enable_x86_64_port_io(port)?;
         let pointer = frame.as_mut_ptr() as usize;
         let len = frame.len();
@@ -572,10 +573,9 @@ fn ring_x86_64(port: u16, frame: &mut [u8]) -> Result<(), GuestEmitterError> {
         // reserved port comes from the shared ABI table.
         unsafe {
             core::arch::asm!(
-                "out dx, eax",
+                "out 0xe7, al",
                 in("rax") pointer,
                 in("rcx") len,
-                in("dx") port,
                 options(nostack)
             );
         }
@@ -592,7 +592,7 @@ fn ring_x86_64(port: u16, frame: &mut [u8]) -> Result<(), GuestEmitterError> {
 fn enable_x86_64_port_io(port: u16) -> Result<(), GuestEmitterError> {
     // SAFETY: `ioperm` is called with the single reserved doorbell port from the
     // shared ABI table and a one-port range. It changes the current process I/O
-    // permission bitmap before the immediately following `out dx,eax`.
+    // permission bitmap before the immediately following `out 0xe7,al`.
     let result = unsafe { libc::ioperm(u64::from(port), 1, 1) };
     if result == 0 {
         Ok(())

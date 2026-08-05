@@ -228,6 +228,14 @@ in rec {
     timeSharedTimeline = import ./phase1-time-shared-timeline.nix {inherit pkgs lib;};
     timeVocabulary = import ./phase1-time-vocabulary.nix {inherit pkgs lib;};
     gates = rec {
+      licenseBoundary = greenBeforeAdvance {
+        attrPath = "checks.crucible.phase1.gates.licenseBoundary";
+        gate = import ./phase1-license-boundary.nix {
+          inherit pkgs lib;
+          attrPath = "checks.crucible.phase1.gates.licenseBoundary";
+        };
+        dependencies = [];
+      };
       harnessLint = greenBeforeAdvance {
         attrPath = "checks.crucible.phase1.gates.harnessLint";
         # lint needle: harnessLint = import ./phase1-harness-lint.nix
@@ -2668,6 +2676,10 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.happyPathExample";
       taskIds = ["T-EX-1"];
+    };
+    nginxCurlHttp200 = import ./phase7-nginx-curl-http-200.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.nginxCurlHttp200";
     };
     partitionRecoveryExample = import ./phase7-partition-recovery-example.nix {
       inherit pkgs lib;

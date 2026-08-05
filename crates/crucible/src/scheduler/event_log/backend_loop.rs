@@ -8,6 +8,7 @@ use crate::BackendEffect;
 pub struct BackendQuantumLoop<L, B> {
     pub(super) loop_impl: L,
     pub(super) backend: B,
+    pending_network_outputs: Vec<BackendNetworkOutput>,
     pending_observations: Vec<ObservableEvent>,
     committed_frontier: VirtualTime,
 }
@@ -19,6 +20,7 @@ impl<L, B> BackendQuantumLoop<L, B> {
         Self {
             loop_impl,
             backend,
+            pending_network_outputs: Vec::new(),
             pending_observations: Vec::new(),
             committed_frontier: VirtualTime { ticks: 0 },
         }
@@ -102,7 +104,42 @@ where
                 backend_time,
             )?;
         }
-        let network_outputs = self.backend.drain_network_outputs()?;
+        self.pending_network_outputs
+            .extend(self.backend.drain_network_outputs()?);
+        let mut timed_network_outputs = std::mem::take(&mut self.pending_network_outputs)
+            .into_iter()
+            .map(|output| {
+                self.loop_impl
+                    .backend_network_output_time(&output.source, output.emit_icount)
+                    .map(|at| (at, output))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        timed_network_outputs.sort_by(|(left_at, left), (right_at, right)| {
+            (
+                left_at,
+                &left.source,
+                left.sequence,
+                &left.destination,
+                &left.payload,
+            )
+                .cmp(&(
+                    right_at,
+                    &right.source,
+                    right.sequence,
+                    &right.destination,
+                    &right.payload,
+                ))
+        });
+        let committed = timed_network_outputs
+            .partition_point(|(at, _output)| at.ticks <= outcome.frontier.ticks);
+        self.pending_network_outputs = timed_network_outputs
+            .drain(committed..)
+            .map(|(_at, output)| output)
+            .collect();
+        let network_outputs = timed_network_outputs
+            .into_iter()
+            .map(|(_at, output)| output)
+            .collect::<Vec<_>>();
         if !network_outputs.is_empty() {
             let (recorded, configuration, append) = self
                 .loop_impl
@@ -207,6 +244,14 @@ where
         self.loop_impl.append_backend_network_outputs(outputs)
     }
 
+    fn backend_network_output_time(
+        &self,
+        node: &NodeId,
+        at: Icount,
+    ) -> Result<VirtualTime, SchedulerError> {
+        self.loop_impl.backend_network_output_time(node, at)
+    }
+
     fn search_frontiers(&self) -> Result<Vec<SearchRuntimeFrontier>, SchedulerError> {
         self.loop_impl.search_frontiers()
     }
@@ -216,15 +261,45 @@ where
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        let final_network_outputs = self.backend.drain_network_outputs();
-        let final_network_append = match final_network_outputs {
-            Ok(outputs) if outputs.is_empty() => Ok(Vec::new()),
-            Ok(outputs) => self
-                .loop_impl
+        let final_network_append = self.backend.drain_network_outputs().and_then(|outputs| {
+            self.pending_network_outputs.extend(outputs);
+            let first_uncommitted = self
+                .pending_network_outputs
+                .iter()
+                .map(|output| {
+                    self.loop_impl
+                        .backend_network_output_time(&output.source, output.emit_icount)
+                        .map(|at| (at, output))
+                        .map_err(|error| BackendError::Rejected {
+                            message: error.to_string(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter(|(at, _output)| at.ticks > self.committed_frontier.ticks)
+                .min_by_key(|(at, _output)| at.ticks);
+            if let Some((at, output)) = first_uncommitted {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "{} live-backend network outputs remain uncommitted at shutdown; frame {} from `{}` has timestamp {}",
+                        self.pending_network_outputs.len(),
+                        output.sequence,
+                        output.source.name,
+                        at.ticks
+                    ),
+                });
+            }
+            if self.pending_network_outputs.is_empty() {
+                return Ok(Vec::new());
+            }
+            let outputs = std::mem::take(&mut self.pending_network_outputs);
+            self.loop_impl
                 .append_backend_network_outputs(outputs)
-                .map(|(_recorded, _configuration, append)| append.entries),
-            Err(error) => Err(SchedulerError::from(error)),
-        };
+                .map(|(_recorded, _configuration, append)| append.entries)
+                .map_err(|error| BackendError::Rejected {
+                    message: error.to_string(),
+                })
+        });
         let final_decisions = self.backend.drain_causal_decisions();
         let final_decision_append = match final_decisions {
             Ok(decisions) if decisions.is_empty() => Ok(Vec::new()),

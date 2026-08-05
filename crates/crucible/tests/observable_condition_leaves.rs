@@ -91,22 +91,22 @@ impl ConditionLeafOracle for NoNamedLeaves {
 fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
     let condition = Predicate::network_match(
         Some(link("client-server")),
-        FramePredicate::contains(b"HTTP/1.1 200".to_vec()),
+        FramePredicate::contains(b"transport-ack".to_vec()),
     );
     let matching = ObservableEvent::network_delivered(
         time(20),
         Some(link("client-server")),
-        b"GET / HTTP/1.1\r\nHTTP/1.1 200 OK\r\n".to_vec(),
+        b"request-bytes transport-ack".to_vec(),
     );
     let wrong_link = ObservableEvent::network_delivered(
         time(20),
         Some(link("replica-sync")),
-        b"HTTP/1.1 200 OK\r\n".to_vec(),
+        b"transport-ack".to_vec(),
     );
     let wrong_time = ObservableEvent::network_delivered(
         time(19),
         Some(link("client-server")),
-        b"HTTP/1.1 200 OK\r\n".to_vec(),
+        b"transport-ack".to_vec(),
     );
 
     assert!(
@@ -116,7 +116,7 @@ fn network_match_observes_delivered_frame_payload_at_the_evaluation_point() {
     let future = ObservableEvent::network_delivered(
         time(20),
         Some(link("client-server")),
-        b"HTTP/1.1 200 OK\r\n".to_vec(),
+        b"transport-ack".to_vec(),
     );
     assert_eq!(
         crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
@@ -292,7 +292,7 @@ fn event_graph_fires_from_observable_condition_without_guest_marker_support() {
 fn observable_leaves_round_trip_through_properties_serialization() {
     let world = observable_world();
     let predicate = Predicate::all_of(vec![
-        Predicate::network_match(None, FramePredicate::contains(b"HTTP/1.1 200".to_vec())),
+        Predicate::network_match(None, FramePredicate::contains(b"transport-ack".to_vec())),
         Predicate::console_match(node("server"), RegexProgram::from_pattern("ready")),
         Predicate::io_pattern(node("db-0"), IoEventKind::Fsync),
         Predicate::node_state(node("worker"), NodeLifecycle::Exited),

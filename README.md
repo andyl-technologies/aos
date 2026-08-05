@@ -1,121 +1,70 @@
 # `AOS // ANDYL OS`
 
-**EARLY PREVIEW**
+[![Status: early preview](https://img.shields.io/badge/status-early%20preview-orange)](#project-status)
+[![License: multi-license](https://img.shields.io/badge/license-multi--license-blue)](LICENSING.md)
 
-AOS is a Linux distribution tailored for headless environments like servers and IoT devices.
+AOS is an immutable Linux distribution for headless servers and edge systems. Its bootstrap toolchain, userspace, packages, system images, and tests are built from source in this repository without nixpkgs dependencies.
 
-## Purpose
+## Get started
 
-A lightweight operating system that runs on any host with a single image. AOS brings together all the great features of NixOS under a familiar package management system that users of `apt` or `yum` would be delighted to use.
+1. [Install the AOS image](docs/users/aos/installation.md) on a machine or
+   import it into a hypervisor.
+2. [Configure the host](docs/users/aos/host-nix.md) with first-boot
+   `host.nix` policy.
+3. [Install and manage packages](docs/users/aos/packages.md) with `apm`.
+4. [Operate the host](docs/users/aos/operations.md), apply
+   [upgrades](docs/users/aos/upgrades.md), and use the
+   [recovery guide](docs/users/aos/recovery.md) when needed.
 
-As a guiding principle, every AOS binary has a clear and reproducible provenance and is entirely bootstrapped from source.
+Check the [support-status matrix](docs/users/aos/support-status.md) before planning a deployment.
 
-## Components
+## Projects
 
-- **Universal image** for cloud and metal
-- **Host configuration** via `host.nix` delivered as cloud user-data
-- Runtime managed by **systemd**
-- Package management built with **Nix**
+- **[AOS](https://github.com/andyl-technologies/aos/blob/master/docs/users/aos/README.md)**
+  is the operating system, package manager, and host operating model.
+- **[AOS Hub](docs/users/aos-hub/)** hosts package registries and binary caches.
+  It runs as a native service or as a Cloudflare Worker and exposes a web
+  console, HTTP API, and the registry and cache protocols used by `apr`, `apm`,
+  Git, and Nix. It is also the planned distribution point for AOS system
+  images.
+- **[Crucible](docs/users/crucible/)** provides deterministic state-space
+  exploration and debugging for unmodified QEMU guests.
 
-## Install
+## Documentation
 
-<details>
-<summary>Bare-metal</summary>
+- [AOS user documentation](docs/users/aos/) covers installation,
+  configuration, packages, security, upgrades, operations, and recovery.
+- [AOS Hub documentation](docs/users/aos-hub/) covers its web, API, CLI,
+  native, and Cloudflare deployments.
+- [Registry operator documentation](docs/users/registry/) covers hosting,
+  signing, publishing, staged rollouts, and incident response.
+- [Crucible documentation](docs/users/crucible/) covers deterministic
+  exploration, reproduction, debugging, and CI.
+- [Maintainer documentation](docs/maintainers/) covers source builds, image
+  production, repository development, and tests.
 
-Requirements:
+## Contributing
 
-- x86-64 with UEFI enabled (CSM disabled);
-- A boot drive with 50GB of capacity or more;
-- A thumb drive or (virtual) CD to hold instance metadata/user-data;
-  - The commands below assume a thumb drive adapt them to your situation.
-- Your favorite Linux live CD with the following utilities installed:
-  - any kind of HTTP client (`curl`, `wget`…);
-  - `coreutils` (for `dd` & `base64`);
-  - `xorriso` (might be packaged under `libisoburn`);
-  - `sed`;
+Bug reports and feature proposals are welcome in
+[GitHub Issues](https://github.com/andyl-technologies/aos/issues). Before
+changing packages, images, or build tooling, read the
+[contribution requirements](CONTRIBUTING.md) and
+[maintainer guide](docs/maintainers/). The contribution requirements document
+the employee authorization, external CLA, DCO, and license-boundary checks that
+apply before a change is merged.
+AOS is built hermetically from source;
+new dependencies must be added to the AOS package graph rather than imported
+from nixpkgs.
 
-Boot your live CD then download the [AOS image] to flash it onto your boot drive:
+## Project status
 
-```bash
-printf "boot drive = %s\n" "${BOOT_DRIVE:?"Please set BOOT_DRIVE to the path of the block device for AOS"}"
-printf "image path = %s\n" "${AOS_IMAGE:?"Please set AOS_IMAGE to the path where the AOS disk image was downloaded}"
-dd if="$AOS_IMAGE" of="$BOOT_DRIVE" bs=128k conv=fsync status=progress
-```
+AOS is under active development. Interfaces and disk formats may change before
+the first stable release. Public installation images, a production
+external-signing workflow, durable kernel updates, and complete runtime
+`host.nix` activation are not available yet.
 
-Next, write the host policy as literal Nix. Storage lives under the one-time
-`aos.provisioning` lifecycle namespace; normal runtime policy uses its ordinary
-module namespaces:
-
-```bash
-printf "host.nix path = %s\n" "${HOST_NIX:?"Please set HOST_NIX to your host.nix"}"
-printf "aos-metadata iso path = %s\n" "${ISO_OUT:="./aos-metadata.iso"}"
-
-(
-    set -e
-
-    staging="$(mktemp --tmpdir -d aos-metadata-staging.XXXXXXXXXX)"
-    trap "rm -rf $staging" EXIT
-
-    cp "$HOST_NIX" "$staging/host.nix"
-
-    xorriso \
-        -as mkisofs \
-        -volid aos-metadata \
-        -output "$ISO_OUT" \
-        -r $staging/
-)
-```
-
-You may be able to use the ISO directly or you can write it to a thumb drive:
-
-```bash
-printf "metadata drive = %s\n" "${METADATA_DRIVE:?"Please set METADATA_DRIVE to the path of the block device for aos-metadata"}"
-
-dd \
-    if="${ISO_OUT:?"Please set ISO_OUT with the file produced at the previous step"}" \
-    of="$METADATA_DRIVE" \
-    bs=128k \
-    conv=fsync
-```
-
-Once your drives are ready, reboot the machine from the boot drive and into AOS.
-
-</details>
-
-<details>
-<summary>Vultr (Cloud/VPS)</summary>
-
-Pre-requisites:
-
-Create a `host.nix` containing the machine's storage and runtime policy, for
-example:
-
-```nix
-{
-  aos.provisioning.storage.partitions.var.sizeMin = "8G";
-}
-```
-
-Installation:
-
-- Login to console.vultr.com;
-- Expand *Storage* on the left and select *Snapshots*:
-- Click on *Create Snapshot* and select:
-  - [ ] *Remote Snapshot*;
-  - [ ] *Remote URL*: copy/paste the link to the [AOS image];
-  - [ ] *Mark this snapshot as UEFI*;
-  - [ ] Hit *Upload Snapshot*.
-- Back to the left hand side menu expand *Compute* and select *Instances*:
-- Click *Deploy Server* or *Create Instance* and select:
-  - [ ] Figure out an instance type with 50GB of storage or more;
-    - Shared CPU instances are gonna be the cheapest.
-  - [ ] Click *Configure Software* at the bottom once your form is ready;
-    - [ ] Select *Snapshot* as your image and use the uploaded snapshot;
-    - [ ] Enable *Cloud-Init User Data* and paste the literal contents of `host.nix`;
-    - [ ] Hit *Deploy*;
-      - This should redirect you to the *Instance* page/table.
-- You can access the server's console or lookup its IP from its detail page.
-
-</details>
-
-<!-- vim: set spell spelllang=en wrap: -->
+Original AOS code is generally licensed under the
+[Apache License 2.0](LICENSE). The repository and its distributions also contain
+separately licensed components, including QEMU and its Crucible integration.
+See the authoritative [license map](LICENSING.md) and complete license texts in
+[`LICENSES/`](LICENSES/).

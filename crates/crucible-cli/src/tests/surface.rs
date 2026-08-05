@@ -131,10 +131,20 @@ impl DeterminismErgonomicsRecorder for RecordingDeterminismErgonomicsRecorder {
 }
 
 pub(super) fn write_valid_run_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
-    let fixture = crucible::happy_path_scenario()?;
+    let form = valid_run_scenario_form()?;
     let path = temp.path().join("scenario.toml");
-    fs::write(&path, fixture.scenario.to_canonical_toml()?)?;
+    fs::write(&path, form.to_canonical_toml()?)?;
     Ok(path)
+}
+
+pub(super) fn valid_run_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
+    let fixture = crucible::happy_path_scenario()?;
+    Ok(crucible::ScenarioDefForm::from_components(
+        fixture.scenario.world(),
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        fixture.scenario.seed(),
+    )?)
 }
 
 pub(super) fn write_search_frontier_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
@@ -546,7 +556,7 @@ pub(super) fn property_selector_scenario_form() -> Result<crucible::ScenarioDefF
     )?;
     Ok(crucible::ScenarioDefForm::from_components(
         fixture.scenario.world(),
-        fixture.scenario.plan(),
+        &crucible::Plan::empty(),
         &properties,
         fixture.scenario.seed(),
     )?)
@@ -1133,6 +1143,23 @@ pub(super) fn cli_from_owned(args: Vec<String>) -> Cli {
 }
 
 #[test]
+fn cli_output_format_defaults_follow_stdout_destination() {
+    assert_eq!(resolve_output_format(None, true), OutputFormat::Table);
+    assert_eq!(resolve_output_format(None, false), OutputFormat::Jsonl);
+    assert_eq!(
+        resolve_output_format(Some(OutputFormat::Json), true),
+        OutputFormat::Json
+    );
+    assert_eq!(
+        resolve_output_format(Some(OutputFormat::Table), false),
+        OutputFormat::Table
+    );
+
+    let cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
+    assert_eq!(cli.format, None);
+}
+
+#[test]
 pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
     let mut names = Cli::command()
         .get_subcommands()
@@ -1203,7 +1230,7 @@ pub(super) fn cli_skeleton_parses_global_flag_block() {
         cli.store.as_ref().and_then(|path| path.to_str()),
         Some(".crucible-store")
     );
-    assert_eq!(cli.format, OutputFormat::Json);
+    assert_eq!(cli.format, Some(OutputFormat::Json));
     assert_eq!(
         cli.trace.as_ref().and_then(|path| path.to_str()),
         Some("trace.jsonl")
