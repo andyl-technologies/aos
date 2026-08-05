@@ -48,7 +48,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
-        leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
+        leases: std::sync::Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
         secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
@@ -119,7 +119,9 @@ async fn machine_get(
     cookie: Option<&str>,
     bearer: Option<&str>,
 ) -> (StatusCode, axum::body::Bytes) {
-    let mut request = Request::builder().uri(uri);
+    let mut request = Request::builder()
+        .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420");
     if let Some(cookie) = cookie {
         request = request.header(header::COOKIE, cookie);
     }
@@ -145,6 +147,9 @@ async fn empty_managed() -> (Arc<Database>, PathBuf, i64) {
     let root = tempfile::tempdir().unwrap().keep();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    db.create_project(org, "infra/prod", "Production")
+        .await
+        .unwrap();
     let binding = common::create_local_binding(&db, org, "primary", root.to_str().unwrap()).await;
     let registry = db
         .create_managed_registry(org, "infra/prod", "cdn", "public", &[], false)
@@ -428,6 +433,7 @@ async fn rpc(
     let mut req = Request::builder()
         .method("POST")
         .uri(format!("/aos.hub.v1.{method}"))
+        .header(header::HOST, "127.0.0.1:8420")
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {

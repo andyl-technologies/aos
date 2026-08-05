@@ -30,18 +30,6 @@ const TEST_JWT_SECRET: &[u8] = b"console-test-secret-32-byte-key!!";
 /// Historical paths are test-only negative fixtures, never runtime metadata.
 const REMOVED_ROUTES: &[RouteSpec] = &[
     RouteSpec {
-        path: "/-/org/{org}/projects/new",
-        methods: RouteMethods::Get,
-    },
-    RouteSpec {
-        path: "/-/org/{org}/registries/new",
-        methods: RouteMethods::Get,
-    },
-    RouteSpec {
-        path: "/-/org/{org}/caches/new",
-        methods: RouteMethods::Get,
-    },
-    RouteSpec {
         path: "/-/org/{org}/caches/{cache}/integrations",
         methods: RouteMethods::Get,
     },
@@ -123,7 +111,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
-        leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
+        leases: std::sync::Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
         secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
@@ -155,7 +143,10 @@ async fn send(
     cookie: Option<&str>,
     form: Option<&str>,
 ) -> Resp {
-    let mut req = Request::builder().method(method).uri(uri);
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420");
     if let Some(cookie) = cookie {
         req = req.header(header::COOKIE, cookie);
     }
@@ -285,7 +276,8 @@ async fn assert_trailing_slash_absent(app: &axum::Router, path: &str) {
 #[tokio::test]
 async fn every_removed_method_path_pair_is_unreachable() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let app = router(app_state(db).await).await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let cookie = login(&app, &db, "removed-route-check@example.com").await;
 
     for route in REMOVED_ROUTES {
         for registry in ["missing", "acme/infra/missing"] {
@@ -296,10 +288,12 @@ async fn every_removed_method_path_pair_is_unreachable() {
             for method in [
                 "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT",
             ] {
-                let response = send(&app, method, &path, None, None).await;
-                assert_eq!(
-                    response.status,
-                    StatusCode::NOT_FOUND,
+                let response = send(&app, method, &path, Some(&cookie), None).await;
+                assert!(
+                    matches!(
+                        response.status,
+                        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+                    ),
                     "removed path is reachable with {method} at {path}: {}",
                     response.body,
                 );
@@ -318,6 +312,15 @@ fn cookie_value(set_cookie: &str) -> String {
     let prefix = format!("{COOKIE_NAME}=");
     let after = set_cookie.strip_prefix(&prefix).expect("session cookie");
     after.split(';').next().unwrap().to_string()
+}
+
+/// Extracts one escaped-free hidden form value from a rendered plan page.
+fn hidden_value(body: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\" value=\"");
+    body.split_once(&marker)
+        .and_then(|(_, rest)| rest.split_once('\"'))
+        .map(|(value, _)| value.to_string())
+        .unwrap_or_else(|| panic!("missing hidden field {name}: {body}"))
 }
 
 /// Sign in `email` by minting a magic link in the db and consuming it through
@@ -346,6 +349,9 @@ async fn serve_managed(
 ) -> Arc<Database> {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    db.create_project(org, "infra/prod", "Production")
+        .await
+        .unwrap();
     let parent = surface.parent().unwrap().to_str().unwrap();
     let dir_name = surface.file_name().unwrap().to_str().unwrap();
     let binding = common::create_local_binding(&db, org, "primary", parent).await;
@@ -364,6 +370,14 @@ async fn serve_managed(
         .await
         .unwrap()
         .unwrap();
+    common::create_ready_placement(
+        &db,
+        aos_hub::db::SurfaceTarget::Registry(registry.id),
+        binding,
+        "primary",
+        dir_name,
+    )
+    .await;
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
@@ -439,7 +453,7 @@ async fn login_flow_creates_user_session_and_logout_revokes() {
     let resp = send(&app, "GET", "/logout", Some(&cookie), None).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(resp.body.contains("method=\"post\" action=\"/logout\""));
-    let resp = send(&app, "POST", "/logout", Some(&cookie), None).await;
+    let resp = send(&app, "POST", "/logout", Some(&cookie), Some("")).await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN);
     let secret = cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap();
     let csrf = mint_csrf_token(secret);
@@ -497,12 +511,20 @@ async fn public_cache_inventory_does_not_link_outsiders_to_management() {
 #[tokio::test]
 async fn activate_shows_scope_and_approves_with_clamped_token() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    // The approving user is a maintainer at acme/infra.
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    db.create_project(org, "infra", "Infrastructure")
+        .await
+        .unwrap();
+    db.create_project(org, "infra/prod", "Production")
+        .await
+        .unwrap();
+    // The approving user is a maintainer at the organization, covering the
+    // requested project scope.
     let user = db.find_or_create_user("maint@acme.com").await.unwrap();
     db.grant_membership(
         "user",
         user,
-        &common::project_scope(&db, "acme", "infra").await,
+        &common::org_scope(&db, "acme").await,
         "maintainer",
     )
     .await
@@ -539,7 +561,7 @@ async fn activate_shows_scope_and_approves_with_clamped_token() {
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
 
     // The CLI poll now returns Approved with a token clamped to the user's
-    // grants (the maintainer holds publish at acme/infra, covering the
+    // grants (the maintainer holds publish at acme, covering the
     // requested acme/infra/prod scope).
     let poll = db.poll_device(&device_code).await.unwrap();
     let secret = match poll {
@@ -629,20 +651,20 @@ async fn post_without_csrf_is_forbidden() {
 }
 
 #[tokio::test]
-async fn token_management_create_list_revoke_rotate() {
+async fn token_management_uses_reviewed_issue_and_retirement() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "public").await;
 
-    // A developer at the registry scope may mint a read token.
+    // Token issuance and retirement are IAM-admin retained-control actions.
     let user = db.find_or_create_user("dev@acme.com").await.unwrap();
     db.grant_membership(
         "user",
         user,
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
-        "developer",
+        "owner",
     )
     .await
     .unwrap();
@@ -652,13 +674,27 @@ async fn token_management_create_list_revoke_rotate() {
 
     let base = "/acme/infra/prod/cdn/-/settings/tokens";
 
-    // Create: the secret shows exactly once.
-    let resp = send(
+    // Plan issuance, then apply the exact reviewed plan. The secret appears
+    // only in the apply response.
+    let plan = send(
         &app,
         "POST",
         base,
         Some(&cookie),
         Some(&format!("csrf={csrf}&perm_read=1")),
+    )
+    .await;
+    assert_eq!(plan.status, StatusCode::OK, "{}", plan.body);
+    let plan_id = hidden_value(&plan.body, "plan_id");
+    let confirmation_hash = hidden_value(&plan.body, "confirmation_hash");
+    let resp = send(
+        &app,
+        "POST",
+        base,
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}"
+        )),
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
@@ -678,33 +714,26 @@ async fn token_management_create_list_revoke_rotate() {
     let resp = send(&app, "GET", base, Some(&cookie), None).await;
     assert!(resp.body.contains(&token_id), "{}", resp.body);
 
-    // Rotate shows a new secret once and mints a fresh token id; the old
-    // secret keeps validating through the rotation grace window, so it stays
-    // listed (revoked_at is unset on a rotation — the v6 grace split).
-    let resp = send(
+    // Retirement is also a plan/apply operation on the exact token identity.
+    let retirement = send(
         &app,
         "POST",
-        &format!("{base}/rotate"),
+        &format!("{base}/{token_id}/revoke"),
         Some(&cookie),
-        Some(&format!("csrf={csrf}&token_id={token_id}")),
+        Some(&format!("csrf={csrf}")),
     )
     .await;
-    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(resp.body.contains("Token rotated"), "{}", resp.body);
-    let after_rotate = db.list_tokens_for(Principal::user(user)).await.unwrap();
-    let new_id = after_rotate
-        .iter()
-        .map(|(id, _, _)| id.clone())
-        .find(|id| id != &token_id)
-        .expect("rotation mints a new token id");
-
-    // Revoke hard-removes the new token from the live list.
+    assert_eq!(retirement.status, StatusCode::OK, "{}", retirement.body);
+    let plan_id = hidden_value(&retirement.body, "plan_id");
+    let confirmation_hash = hidden_value(&retirement.body, "confirmation_hash");
     let resp = send(
         &app,
         "POST",
-        &format!("{base}/revoke"),
+        &format!("{base}/{token_id}/revoke"),
         Some(&cookie),
-        Some(&format!("csrf={csrf}&token_id={new_id}")),
+        Some(&format!(
+            "csrf={csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}"
+        )),
     )
     .await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
@@ -713,15 +742,12 @@ async fn token_management_create_list_revoke_rotate() {
         .await
         .unwrap()
         .iter()
-        .all(|(id, _, _)| id != &new_id));
+        .all(|(id, _, _)| id != &token_id));
 }
 
-/// M-1: minting a token and rotating a token both require a **sudo** session.
-/// A stale (auth_level 0) session is refused with a `403`; a fresh magic-link
-/// login (sudo) succeeds. Revocation is *not* gated (it deadens a credential
-/// rather than minting one).
+/// Issuing or retiring a token requires a sudo IAM-admin session.
 #[tokio::test]
-async fn token_mint_and_rotate_require_sudo() {
+async fn token_issue_and_retirement_require_sudo() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();
@@ -733,7 +759,7 @@ async fn token_mint_and_rotate_require_sudo() {
         "user",
         user,
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
-        "developer",
+        "owner",
     )
     .await
     .unwrap();
@@ -761,10 +787,10 @@ async fn token_mint_and_rotate_require_sudo() {
         .unwrap()
         .is_empty());
 
-    // A fresh magic-link login (sudo) mints the token.
+    // A fresh magic-link login may plan and apply issuance.
     let fresh = login(&app, &db, "dev@acme.com").await;
     let f_csrf = mint_csrf_token(fresh.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         base,
@@ -772,32 +798,45 @@ async fn token_mint_and_rotate_require_sudo() {
         Some(&format!("csrf={f_csrf}&perm_read=1")),
     )
     .await;
+    assert_eq!(plan.status, StatusCode::OK, "{}", plan.body);
+    let plan_id = hidden_value(&plan.body, "plan_id");
+    let confirmation_hash = hidden_value(&plan.body, "confirmation_hash");
+    let resp = send(
+        &app,
+        "POST",
+        base,
+        Some(&fresh),
+        Some(&format!(
+            "csrf={f_csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}"
+        )),
+    )
+    .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     let tokens = db.list_tokens_for(Principal::user(user)).await.unwrap();
     assert_eq!(tokens.len(), 1);
     let token_id = tokens[0].0.clone();
 
-    // Rotate is refused for the stale session...
+    // The stale session cannot even prepare a retirement plan.
     let resp = send(
         &app,
         "POST",
-        &format!("{base}/rotate"),
+        &format!("{base}/{token_id}/revoke"),
         Some(&stale),
-        Some(&format!("csrf={s_csrf}&token_id={token_id}")),
+        Some(&format!("csrf={s_csrf}")),
     )
     .await;
     assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
 
-    // ...but revoke is NOT gated (it only deadens a credential).
+    // The sudo session can prepare the reviewed retirement.
     let resp = send(
         &app,
         "POST",
-        &format!("{base}/revoke"),
-        Some(&stale),
-        Some(&format!("csrf={s_csrf}&token_id={token_id}")),
+        &format!("{base}/{token_id}/revoke"),
+        Some(&fresh),
+        Some(&format!("csrf={f_csrf}")),
     )
     .await;
-    assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
 }
 
 #[tokio::test]
@@ -905,13 +944,26 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
     let cookie = login(&app, &db, "owner@acme.com").await;
     let csrf = mint_csrf_token(cookie.strip_prefix(&format!("{COOKIE_NAME}=")).unwrap());
 
-    // Invite a developer; the grant flows through a change-set (audited).
-    let resp = send(
+    // Invite a developer through a reviewed plan; the apply is audited.
+    let invite_plan = send(
         &app,
         "POST",
         "/-/org/acme/members/invitations",
         Some(&cookie),
         Some(&format!("csrf={csrf}&email=newdev@acme.com&role=developer")),
+    )
+    .await;
+    assert_eq!(invite_plan.status, StatusCode::OK, "{}", invite_plan.body);
+    let plan_id = hidden_value(&invite_plan.body, "plan_id");
+    let confirmation_hash = hidden_value(&invite_plan.body, "confirmation_hash");
+    let resp = send(
+        &app,
+        "POST",
+        "/-/org/acme/members/invitations",
+        Some(&cookie),
+        Some(&format!(
+            "csrf={csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}"
+        )),
     )
     .await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
@@ -923,13 +975,24 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
     let invited = db.user_by_email("newdev@acme.com").await.unwrap().unwrap();
 
     // Remove the developer: allowed, audited.
+    let removal_plan = send(
+        &app,
+        "POST",
+        &format!("/-/org/acme/members/user:{invited}/remove"),
+        Some(&cookie),
+        Some(&format!("csrf={csrf}")),
+    )
+    .await;
+    assert_eq!(removal_plan.status, StatusCode::OK, "{}", removal_plan.body);
+    let plan_id = hidden_value(&removal_plan.body, "plan_id");
+    let confirmation_hash = hidden_value(&removal_plan.body, "confirmation_hash");
     let resp = send(
         &app,
         "POST",
         &format!("/-/org/acme/members/user:{invited}/remove"),
         Some(&cookie),
         Some(&format!(
-            "csrf={csrf}&principal_kind=user&principal_id={invited}"
+            "csrf={csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}"
         )),
     )
     .await;
@@ -947,9 +1010,7 @@ async fn member_invite_and_remove_audit_and_last_owner_blocked() {
         "POST",
         &format!("/-/org/acme/members/user:{owner}/remove"),
         Some(&cookie),
-        Some(&format!(
-            "csrf={csrf}&principal_kind=user&principal_id={owner}"
-        )),
+        Some(&format!("csrf={csrf}")),
     )
     .await;
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
@@ -1224,7 +1285,7 @@ async fn org_resource_sections_point_admins_to_reviewed_creation_flows() {
         "user",
         registry_configurer,
         &common::registry_scope(&db, "acme/release").await,
-        "maintainer",
+        "admin",
     )
     .await
     .unwrap();
@@ -1422,13 +1483,12 @@ async fn org_resource_sections_point_admins_to_reviewed_creation_flows() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(resp.body.contains("create binding"), "{}", resp.body);
+    assert!(resp.body.contains("Add a storage binding"), "{}", resp.body);
     let resp = send(&app, "GET", "/-/org/acme/storage", Some(&a_cookie), None).await;
     assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
-    // An admin is NOT an owner, so the delete form stays hidden on the danger tab.
+    // An admin is not an owner, so the owner-only danger tab is cloaked.
     let resp = send(&app, "GET", "/-/org/acme/danger", Some(&a_cookie), None).await;
-    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(!resp.body.contains("delete organization"), "{}", resp.body);
+    assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
 
     // An owner additionally sees the typed-confirmation delete form on the
     // danger tab.

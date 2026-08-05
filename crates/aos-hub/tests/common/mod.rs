@@ -94,10 +94,18 @@ pub async fn create_ready_placement(
 ) -> aos_hub::db::SurfacePlacementRecord {
     let consumer_scope = match surface {
         aos_hub::db::SurfaceTarget::Registry(id) => {
-            db.registry_authorization_scope(id).await.unwrap()
+            db.registry_by_id(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .owner_scope_key
         }
         aos_hub::db::SurfaceTarget::BinaryCache(id) => {
-            db.binary_cache_by_id(id).await.unwrap().unwrap().scope_key
+            db.binary_cache_by_id(id)
+                .await
+                .unwrap()
+                .unwrap()
+                .owner_scope_key
         }
     };
     let binding = db.storage_binding(binding_id).await.unwrap().unwrap();

@@ -20,7 +20,13 @@ use tower::ServiceExt;
 async fn get(app: &axum::Router, uri: &str) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
     let response = app
         .clone()
-        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(header::HOST, "127.0.0.1:8420")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let status = response.status();
@@ -39,7 +45,10 @@ async fn request(
     headers: &[(&str, &str)],
     body: Vec<u8>,
 ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420");
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }

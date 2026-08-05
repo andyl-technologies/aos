@@ -18272,6 +18272,38 @@ impl RpcService {
                 RpcError::internal(error)
             }
         })?;
+        let actor_id = claims_principal(&claims).map(|principal| principal.id);
+        let action = if input.desired_role.is_some() {
+            "membership.grant"
+        } else {
+            "membership.revoke"
+        };
+        let detail = input.desired_role.as_deref().map_or_else(
+            || format!("{}:{}", input.principal_kind, input.principal_ref),
+            |role| {
+                format!(
+                    "{}:{} role={role}",
+                    input.principal_kind, input.principal_ref
+                )
+            },
+        );
+        if let Err(error) = self
+            .db
+            .record_audit(
+                &claims.owner_kind,
+                actor_id,
+                &claims.sub,
+                action,
+                &input.scope,
+                Some(&plan.plan_id),
+                None,
+                None,
+                Some(&detail),
+            )
+            .await
+        {
+            tracing::warn!(error = %format!("{error:#}"), "recording membership audit");
+        }
         let response = pb::MembershipResponse {
             principal_kind: input.principal_kind,
             principal_ref: input.principal_ref,

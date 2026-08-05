@@ -60,6 +60,9 @@ async fn make_mirror_registry(
     binding_root: &std::path::Path,
 ) -> (i64, PathBuf) {
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    db.create_project(org, "infra/prod", "Production")
+        .await
+        .unwrap();
     let binding =
         common::create_local_binding(&db, org, "primary", &binding_root.to_string_lossy()).await;
     let reg = db

@@ -664,10 +664,11 @@ fn same_origin(left: &reqwest::Url, right: &reqwest::Url) -> bool {
 
 fn reject_insecure_bearer(hub: &str, token: Option<&str>) -> Result<()> {
     let url = reqwest::Url::parse(hub).context("invalid Hub URL")?;
-    let loopback = url
-        .host_str()
-        .and_then(|host| host.parse::<std::net::IpAddr>().ok())
-        .is_some_and(|address| address.is_loopback());
+    let loopback = match url.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(_)) | None => false,
+    };
     if token.is_some() && url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
         bail!("refusing to send an image bearer token over non-HTTPS, non-loopback Hub transport");
     }

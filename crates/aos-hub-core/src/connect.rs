@@ -44,7 +44,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization as _;
 
-use crate::service::{FacadeWrite, ReadAuthorization, RegistryServeOutcome, RpcError, RpcService};
+use crate::service::{ReadAuthorization, RegistryServeOutcome, RpcError, RpcService};
 use crate::web::browse::{self, Rendered};
 
 /// The reserved human-namespace marker segment (`/{slug}/-/…`).
@@ -269,474 +269,7 @@ where
     }
 }
 
-/// Serve one registry machine path from the shared surface facade.
-///
-/// The catch-all `GET`/`HEAD` handler for the registry machine surface
-/// (`/{slug}/{*path}`): it delegates to
-/// [`RpcService::registry_serve`](crate::service::RpcService::registry_serve),
-/// which classifies the path, enforces registry visibility against the
-/// `Authorization` header, and streams through the placement-aware
-/// [`SurfaceProvider`](crate::fetch::SurfaceProvider). A hit renders as `200`
-/// with the path's `Content-Type` and `Cache-Control`; a `None` (non-machine
-/// path or absent object) renders as `404`; an [`RpcError`] renders as the
-/// Connect error envelope (so a private registry read without authority is the
-/// usual `401`/`403`/`404`).
-///
-/// A `HEAD` and a `GET` share this one handler and differ only in whether axum
-/// elides the already-streaming body.
-async fn facade(
-    svc: Arc<RpcService>,
-    method: axum::http::Method,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    query: Option<String>,
-) -> Response {
-    let auth = auth_header(&headers);
-    let session_secret = crate::web::session::session_secret_from_headers(&headers);
-    let read_authorization = match (auth.as_deref(), session_secret.as_deref()) {
-        (Some(auth), _) => ReadAuthorization::AuthorizationHeader(Some(auth)),
-        (None, Some(secret)) => ReadAuthorization::SessionCookie(secret),
-        (None, None) => ReadAuthorization::AuthorizationHeader(None),
-    };
-    // A managed cache: stream NAR/narinfo through the shared `cache_serve`
-    // (Range-aware, generated `nix-cache-info`, presigned-`302`) — the *same*
-    // path the native hub uses, so the Worker streams a NAR from R2 rather than
-    // buffering it. Caches and registries are separate slug namespaces, so a
-    // cache slug is never a registry; registries continue to `registry_serve`.
-    if let Ok(Some(cache)) = svc.db.binary_cache_by_slug(&slug).await {
-        let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
-        return match svc
-            .cache_serve(read_authorization, &cache, &path, range)
-            .await
-        {
-            Ok(Some(resp)) => resp,
-            Ok(None) => StatusCode::NOT_FOUND.into_response(),
-            Err(err) => error_response(&err),
-        };
-    }
-    // A resolved registry uses the same placement-aware streaming path as the
-    // native shell. Selection/failover finishes before the Body is returned;
-    // Range and large NAR/release payloads therefore retain parity without
-    // buffering the object in the Worker isolate.
-    if let Ok(Some(registry)) = svc.db.registry_by_slug(&slug).await {
-        let range = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
-        return match svc
-            .registry_serve(
-                read_authorization,
-                &registry,
-                &path,
-                range,
-                if method == axum::http::Method::HEAD {
-                    crate::image_http::ImageMethod::Head
-                } else {
-                    crate::image_http::ImageMethod::Get
-                },
-            )
-            .await
-        {
-            Ok(RegistryServeOutcome::Response(resp)) => resp,
-            Ok(RegistryServeOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
-            Err(err) => error_response(&err),
-        };
-    }
-    // Neither flat namespace matched. Reconstruct the full path and resolve a
-    // nested registry directly; all public machine reads then re-enter this
-    // function through the placement-aware streaming branches above.
-    nested_dispatch(svc, method, headers, &slug, &path, query).await
-}
-
-/// Dispatch a nested-canonical (`org/registry`, `acme/infra/cdn`) GET/HEAD
-/// request that the `/{slug}/{*path}` wildcard captured with a single-segment
-/// slug, reconstructing the full path from `slug` + `path`.
-///
-/// The reserved browse marker (`/-/`) takes precedence over machine resolution:
-/// a path containing it splits into the registry slug (left) and the page/`api/…`
-/// tail (right) and dispatches through [`browse_dispatch`], so the human
-/// namespace can never be shadowed by a machine path. Otherwise the longest
-/// registry-slug prefix is resolved ([`resolve_registry_prefix`]): an empty tail
-/// is the registry home (browse), a non-empty tail is a machine path served by
-/// recursing into [`facade`] with the now-flat resolved slug (which terminates —
-/// the resolved slug is a real registry, so its own `Ok(None)` is a plain `404`).
-/// An unresolvable path is a `404`.
-async fn nested_dispatch(
-    svc: Arc<RpcService>,
-    method: axum::http::Method,
-    headers: HeaderMap,
-    slug: &str,
-    path: &str,
-    query: Option<String>,
-) -> Response {
-    let full = format!("{slug}/{path}");
-    let full = full.trim_end_matches('/');
-    if let Some((left, rest)) = split_browse_marker(full) {
-        let left = left.trim_end_matches('/').to_string();
-        return browse_dispatch(svc, headers, left, rest, query).await;
-    }
-    match resolve_registry_prefix(&svc, full).await {
-        Some((rslug, tail)) if tail.is_empty() => {
-            browse_dispatch(svc, headers, rslug, String::new(), query).await
-        }
-        Some((rslug, tail)) => Box::pin(facade(svc, method, headers, rslug, tail, query)).await,
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-/// Render a [`FacadeWrite`] outcome as the byte-identical HTTP response the
-/// upload protocol expects.
-///
-/// A success ([`FacadeWrite::Created`]/[`FacadeWrite::Overwritten`]) carries a
-/// small `{"path": …}` JSON body and `201`/`200`; every denial maps to its fixed
-/// status (`400`/`401`/`403`/`404`/`405`/`409`/`413`/`507`/`500`), preserving the
-/// prior hub facade's wire contract.
-fn facade_write_response(outcome: FacadeWrite, path: &str) -> Response {
-    match outcome {
-        FacadeWrite::Created => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({ "path": path })),
-        )
-            .into_response(),
-        FacadeWrite::Overwritten | FacadeWrite::Present => {
-            (StatusCode::OK, Json(serde_json::json!({ "path": path }))).into_response()
-        }
-        FacadeWrite::NotFound => StatusCode::NOT_FOUND.into_response(),
-        FacadeWrite::NotWritable(reason) => {
-            (StatusCode::METHOD_NOT_ALLOWED, reason).into_response()
-        }
-        FacadeWrite::BadPath(reason) => (StatusCode::BAD_REQUEST, reason).into_response(),
-        FacadeWrite::Unauthorized(reason) => (StatusCode::UNAUTHORIZED, reason).into_response(),
-        FacadeWrite::Forbidden => {
-            (StatusCode::FORBIDDEN, "insufficient permission").into_response()
-        }
-        FacadeWrite::LeaseConflict => (
-            StatusCode::CONFLICT,
-            "another publisher holds the registry publish lease",
-        )
-            .into_response(),
-        FacadeWrite::TooLarge => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
-        FacadeWrite::QuotaExceeded => (
-            StatusCode::INSUFFICIENT_STORAGE,
-            "org storage quota exceeded",
-        )
-            .into_response(),
-        FacadeWrite::Internal => {
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
-    }
-}
-
-/// Handle a facade `PUT` of one registry surface path through the shared write
-/// handler.
-///
-/// Delegates to
-/// [`RpcService::put_machine_path`](crate::service::RpcService::put_machine_path),
-/// which authorizes [`Permission::Publish`](crate::domain::Permission::Publish),
-/// enforces the quota and publish lease, writes through the
-/// [`SurfaceWriteProvider`](crate::surface_write::SurfaceWriteProvider), and
-/// re-indexes a completing pointer — so the same upload logic runs on the native
-/// hub and the Cloudflare Worker.
-async fn facade_put(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    query: Option<String>,
-    body: Bytes,
-) -> Response {
-    let (slug, path) = resolve_machine_target(&svc, slug, path).await;
-    let auth = auth_header(&headers);
-    // A multipart part upload (`?uploadId=…&partNumber=N`) streams this one part
-    // straight to the backend; any other `PUT` is a single-object write.
-    let mp = match parse_multipart_query(query.as_deref()) {
-        Ok(parsed) => parsed,
-        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
-    };
-    if query.is_some() {
-        let (Some(upload_id), Some(part_number)) = (mp.upload_id.as_deref(), mp.part_number) else {
-            return (StatusCode::BAD_REQUEST, "invalid multipart part query").into_response();
-        };
-        if mp.initiate || mp.size.is_some() || mp.sha256.is_some() {
-            return (StatusCode::BAD_REQUEST, "invalid multipart part query").into_response();
-        }
-        return match svc
-            .upload_part(auth.as_deref(), &slug, &path, upload_id, part_number, &body)
-            .await
-        {
-            Ok(tag) => multipart_part_response(&tag),
-            Err(deny) => facade_write_response(deny, &path),
-        };
-    }
-    let outcome = svc
-        .put_machine_path(auth.as_deref(), &slug, &path, &body)
-        .await;
-    facade_write_response(outcome, &path)
-}
-
-/// Suggested multipart part size handed back at initiate (16 MiB): above the
-/// R2/S3 5 MiB minimum and under the Worker request-body cap, so each part is
-/// one bounded-memory request.
-const MULTIPART_PART_SIZE: u64 = 16 * 1024 * 1024;
-
-/// Multipart query parameters parsed off a facade request's query string.
-///
-/// The facade overloads the `/{slug}/{*path}` route with the S3-style multipart
-/// query convention: `?uploads` initiates, `?uploadId=…&partNumber=N` uploads a
-/// part, `?uploadId=…` (POST) completes / (DELETE) aborts.
-struct MultipartQuery {
-    /// `?uploads` present — an initiate request.
-    initiate: bool,
-    /// `?uploadId=…` — names an in-progress upload (part/complete/abort).
-    upload_id: Option<String>,
-    /// `?partNumber=…` — the 1-based part index on a part `PUT`.
-    part_number: Option<u32>,
-    /// Declared final object size used for a durable quota reservation.
-    size: Option<u64>,
-    /// Expected lowercase SHA-256 for integrity-bound static uploads.
-    sha256: Option<String>,
-}
-
-/// Parse the multipart query parameters from a raw query string.
-fn parse_multipart_query(query: Option<&str>) -> Result<MultipartQuery, &'static str> {
-    let mut out = MultipartQuery {
-        initiate: false,
-        upload_id: None,
-        part_number: None,
-        size: None,
-        sha256: None,
-    };
-    if let Some(q) = query {
-        let bytes = q.as_bytes();
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] == b'%' {
-                if index + 2 >= bytes.len()
-                    || !bytes[index + 1].is_ascii_hexdigit()
-                    || !bytes[index + 2].is_ascii_hexdigit()
-                {
-                    return Err("malformed multipart query encoding");
-                }
-                index += 3;
-            } else {
-                index += 1;
-            }
-        }
-        for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
-            match k.as_ref() {
-                "uploads" if !out.initiate && v.is_empty() => out.initiate = true,
-                "uploadId" if out.upload_id.is_none() => {
-                    if v.is_empty()
-                        || v.len() > 512
-                        || !v.bytes().all(|byte| byte.is_ascii_graphic())
-                    {
-                        return Err("invalid multipart uploadId");
-                    }
-                    out.upload_id = Some(v.into_owned());
-                }
-                "partNumber" if out.part_number.is_none() => {
-                    out.part_number = Some(
-                        v.parse::<u32>()
-                            .ok()
-                            .filter(|number| (1..=10_000).contains(number))
-                            .ok_or("invalid multipart partNumber")?,
-                    );
-                }
-                "size" if out.size.is_none() => {
-                    out.size = Some(
-                        v.parse::<u64>()
-                            .ok()
-                            .filter(|size| *size > 0)
-                            .ok_or("invalid multipart size")?,
-                    );
-                }
-                "sha256" if out.sha256.is_none() => {
-                    if v.len() != 64
-                        || !v
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                    {
-                        return Err("invalid multipart sha256");
-                    }
-                    out.sha256 = Some(v.into_owned());
-                }
-                "uploads" | "uploadId" | "partNumber" | "size" | "sha256" => {
-                    return Err("duplicate or malformed multipart query parameter")
-                }
-                _ => return Err("unknown multipart query parameter"),
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Initiate (`?uploads`) / complete (`?uploadId`) of a multipart upload, on the
-/// facade `POST` to a surface path.
-async fn facade_post(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    query: Option<String>,
-    body: Bytes,
-) -> Response {
-    let (slug, path) = resolve_machine_target(&svc, slug, path).await;
-    let auth = auth_header(&headers);
-    let mp = match parse_multipart_query(query.as_deref()) {
-        Ok(parsed) => parsed,
-        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
-    };
-    if mp.initiate {
-        if mp.upload_id.is_some() || mp.part_number.is_some() {
-            return (StatusCode::BAD_REQUEST, "invalid multipart initiate query").into_response();
-        }
-        let Some(size) = mp.size else {
-            return facade_write_response(
-                FacadeWrite::BadPath("multipart size is required"),
-                &path,
-            );
-        };
-        return match svc
-            .initiate_upload(auth.as_deref(), &slug, &path, size, mp.sha256.as_deref())
-            .await
-        {
-            Ok(upload_id) => Json(MultipartInitiate {
-                upload_id,
-                part_size: MULTIPART_PART_SIZE,
-            })
-            .into_response(),
-            Err(deny) => facade_write_response(deny, &path),
-        };
-    }
-    if let Some(upload_id) = mp.upload_id.as_deref() {
-        if mp.part_number.is_some() || mp.size.is_some() || mp.sha256.is_some() {
-            return (StatusCode::BAD_REQUEST, "invalid multipart complete query").into_response();
-        }
-        let parts = match serde_json::from_slice::<MultipartComplete>(&body) {
-            Ok(req) => req
-                .parts
-                .into_iter()
-                .map(|p| crate::surface_write::PartTag {
-                    part_number: p.part_number,
-                    etag: p.etag,
-                })
-                .collect::<Vec<_>>(),
-            Err(_) => {
-                return (StatusCode::BAD_REQUEST, "invalid multipart complete body").into_response()
-            }
-        };
-        let outcome = svc
-            .complete_upload(auth.as_deref(), &slug, &path, upload_id, &parts)
-            .await;
-        return facade_write_response(outcome, &path);
-    }
-    (
-        StatusCode::BAD_REQUEST,
-        "unsupported POST to a surface path",
-    )
-        .into_response()
-}
-
-/// Abort (`?uploadId`) of a multipart upload, on the facade `DELETE` to a
-/// surface path.
-async fn facade_delete(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    query: Option<String>,
-) -> Response {
-    let (slug, path) = resolve_machine_target(&svc, slug, path).await;
-    let auth = auth_header(&headers);
-    let mp = match parse_multipart_query(query.as_deref()) {
-        Ok(parsed) => parsed,
-        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
-    };
-    if let Some(upload_id) = mp.upload_id.as_deref() {
-        if mp.initiate || mp.part_number.is_some() || mp.size.is_some() || mp.sha256.is_some() {
-            return (StatusCode::BAD_REQUEST, "invalid multipart abort query").into_response();
-        }
-        let outcome = svc
-            .abort_upload(auth.as_deref(), &slug, &path, upload_id)
-            .await;
-        return facade_write_response(outcome, &path);
-    }
-    (
-        StatusCode::BAD_REQUEST,
-        "unsupported DELETE to a surface path",
-    )
-        .into_response()
-}
-
-/// Dispatches one negotiated multipart machine-surface request.
-///
-/// Native and Worker shells call this same method/query parser after resolving
-/// nested canonical resource paths, so initiate, part, complete, and abort have
-/// one wire contract on both runtimes.
-#[must_use]
-pub async fn multipart_facade_request(
-    svc: Arc<RpcService>,
-    headers: HeaderMap,
-    slug: String,
-    path: String,
-    method: Method,
-    query: Option<String>,
-    body: Bytes,
-) -> Response {
-    match method {
-        Method::PUT => facade_put(svc, headers, slug, path, query, body).await,
-        Method::POST => facade_post(svc, headers, slug, path, query, body).await,
-        Method::DELETE => facade_delete(svc, headers, slug, path, query).await,
-        _ => StatusCode::METHOD_NOT_ALLOWED.into_response(),
-    }
-}
-
-/// `200` JSON response to a multipart part upload (`PUT ?uploadId&partNumber`).
-fn multipart_part_response(tag: &crate::surface_write::PartTag) -> Response {
-    Json(MultipartPart {
-        part_number: tag.part_number,
-        etag: tag.etag.clone(),
-    })
-    .into_response()
-}
-
-/// Initiate response body: the opaque backend `upload_id` and the suggested
-/// `part_size`.
-#[derive(Serialize)]
-struct MultipartInitiate {
-    upload_id: String,
-    part_size: u64,
-}
-
-/// Part-upload response body: the part's number and backend `etag`.
-#[derive(Serialize)]
-struct MultipartPart {
-    part_number: u32,
-    etag: String,
-}
-
-/// Complete request body: the ordered parts (number + etag) to assemble.
-#[derive(serde::Deserialize)]
-struct MultipartComplete {
-    parts: Vec<MultipartCompletePart>,
-}
-
-/// One `(part_number, etag)` entry in a [`MultipartComplete`] body.
-#[derive(serde::Deserialize)]
-struct MultipartCompletePart {
-    part_number: u32,
-    etag: String,
-}
-
-/// Turn a [`Rendered`] browse outcome into an HTTP response.
-///
-/// [`Rendered::Html`] is a `200` `text/html` with the strict first-party CSP
-/// (`default-src 'self'; frame-ancestors 'none'` — no third-party origins, no
-/// framing); [`Rendered::Json`] is a `200` `application/json`;
-/// [`Rendered::Redirect`] is a `308 Permanent Redirect`;
-/// [`Rendered::TooManyRequests`] is a `429` with a `Retry-After`;
-/// [`Rendered::NotFound`] is a bare `404` (the visibility matrix returns this for
-/// a hidden registry alike, never disclosing "absent" from "private");
-/// [`Rendered::NotAcceptable`] is a `406` (content negotiation: a non-HTML client
-/// for a visible registry that ships no machine `index.html`).
+/// Converts a shared browse rendering into an HTTP response.
 fn browse_response(rendered: Rendered) -> Response {
     match rendered {
         Rendered::Html(body) => (
@@ -861,27 +394,7 @@ macro_rules! rpc_route {
     };
 }
 
-/// Build the shared Connect-JSON router over the given [`RpcService`],
-/// including the machine-surface facade.
-///
-/// Wires every ported `aos.hub.v1` method to `POST
-/// /aos.hub.v1.{Service}/{Method}`, including the three `GitService`
-/// methods served over the surface-read port
-/// ([`SurfaceProvider`](crate::fetch::SurfaceProvider)). It additionally mounts
-/// the machine-surface facade as a catch-all `GET`/`HEAD` `/{slug}/{*path}`
-/// route (delegating to the placement-aware streaming
-/// [`RpcService::registry_serve`](crate::service::RpcService::registry_serve)
-/// and [`RpcService::cache_serve`](crate::service::RpcService::cache_serve)
-/// paths), registered last so the static RPC method paths win over the wildcard
-/// by axum's static-over-dynamic precedence.
-///
-/// This is the variant the Cloudflare Worker mounts whole: it has no facade of
-/// its own, so the shared route is its only machine-surface serving path. The
-/// native hub instead mounts the facade-less [`rpc_router`] and keeps its own
-/// `/{slug}/{*path}` route for nested resolution and session-cookie
-/// authorization; successful registry bytes still run through the same
-/// [`RpcService::registry_serve`] streamer. The returned router carries the
-/// service as axum state.
+/// Trusted transport facts supplied by the native listener or Worker runtime.
 /// Trusted transport facts supplied by the native listener or Worker runtime.
 ///
 /// These values are not inferred from forwarding headers. A trusted layer-7
@@ -1199,6 +712,8 @@ fn is_reserved_control_path(path: &str) -> bool {
             trimmed,
             "_assets"
                 | "account"
+                | "activate"
+                | "auth"
                 | "healthz"
                 | "llms.txt"
                 | "login"
@@ -1208,6 +723,8 @@ fn is_reserved_control_path(path: &str) -> bool {
         )
         || trimmed.starts_with("_assets/")
         || trimmed.starts_with("account/")
+        || trimmed.starts_with("activate/")
+        || trimmed.starts_with("auth/")
         || trimmed.starts_with("login/")
         || trimmed.starts_with("logout/")
         || trimmed.starts_with("oauth2/")
@@ -1466,9 +983,8 @@ pub async fn rewrite_for_delivery_route(
     let Some((route, surface_path)) = routes.iter().find_map(|route| {
         strip_route_base_path(&route.base_path, &request_path).map(|path| (route, path))
     }) else {
-        // Neither an arbitrary authority nor the configured control authority
-        // may fall through to the legacy slug facade. A public serving request
-        // is valid only after resolving an explicit delivery route.
+        // Public serving is valid only after resolving an explicit delivery
+        // route; no authority may fall through to a resource-slug path.
         return Err(StatusCode::MISDIRECTED_REQUEST.into_response());
     };
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
@@ -1712,128 +1228,20 @@ pub fn with_delivery_route_dispatch(
         }))
 }
 
-/// Resolve the longest registry slug that is a path-segment prefix of `path`,
-/// returning `(slug, tail)` where `tail` is the remaining machine-path tail.
-///
-/// This mirrors the native hub's `resolve_by_prefix`, but stays shell-agnostic:
-/// it returns the resolved slug `String` (not the full registry record) so it
-/// composes with the shared [`browse_dispatch`]/[`facade`] handlers, which
-/// re-resolve the registry and enforce visibility downstream. `exists` is the
-/// "is there a registry with this exact slug" predicate (the wasm shell's
-/// service is `!Send`, so the loop takes the lookup as an `async` closure rather
-/// than borrowing a `Send` future across iterations).
-///
-/// `acme/infra/prod/cdn/objects/ab` resolves to `(acme/infra/prod/cdn,
-/// objects/ab)`; an exact match yields an empty tail (the registry home).
-/// Matching is on `/` boundaries, so `acme/infra/prod/cdn-staging` never
-/// resolves to `acme/infra/prod/cdn`.
-async fn resolve_prefix_with<'a, F, Fut>(path: &'a str, mut exists: F) -> Option<(String, String)>
-where
-    F: FnMut(&'a str) -> Fut,
-    Fut: std::future::Future<Output = bool>,
-{
-    let mut candidate = path;
-    loop {
-        if exists(candidate).await {
-            let tail = path[candidate.len()..].trim_start_matches('/').to_string();
-            return Some((candidate.to_string(), tail));
-        }
-        match candidate.rsplit_once('/') {
-            Some((head, _)) => candidate = head,
-            None => return None,
-        }
-    }
-}
-
-/// Resolve `path` to the registry it names by longest registry-slug prefix.
-///
-/// Thin wrapper over [`resolve_prefix_with`] that uses the service's
-/// `registry_by_slug` read as the existence predicate. Returns `(slug, tail)`
-/// on a hit; `None` when no slug prefix of `path` names a registry (or on a
-/// database error, which the shared handlers surface as a `404` rather than
-/// leaking the error through the nested fallback).
-async fn resolve_registry_prefix(svc: &RpcService, path: &str) -> Option<(String, String)> {
-    resolve_prefix_with(path, |candidate| async move {
-        matches!(svc.db.registry_by_slug(candidate).await, Ok(Some(_)))
-    })
-    .await
-}
-
-/// Resolves a machine path by longest registry-or-cache slug prefix.
-async fn resolve_surface_prefix(svc: &RpcService, path: &str) -> Option<(String, String)> {
-    resolve_prefix_with(path, |candidate| async move {
-        matches!(svc.db.registry_by_slug(candidate).await, Ok(Some(_)))
-            || matches!(svc.db.binary_cache_by_slug(candidate).await, Ok(Some(_)))
-    })
-    .await
-}
-
-/// Normalizes a wildcard's single-segment capture to an exact surface slug.
-async fn resolve_machine_target(svc: &RpcService, slug: String, path: String) -> (String, String) {
-    if matches!(svc.db.registry_by_slug(&slug).await, Ok(Some(_)))
-        || matches!(svc.db.binary_cache_by_slug(&slug).await, Ok(Some(_)))
-    {
-        return (slug, path);
-    }
-    let full = format!("{slug}/{path}");
-    match resolve_surface_prefix(svc, full.trim_end_matches('/')).await {
-        Some((resolved, tail)) if !tail.is_empty() => (resolved, tail),
-        _ => (slug, path),
-    }
-}
-
-/// Split a decoded path at the first browse marker (`/-/`, or a trailing `/-`),
-/// returning `(left, rest)` where `left` is the registry-slug portion and `rest`
-/// is the page/`api/…` tail after the marker (empty for a trailing marker).
-///
-/// Returns `None` when the path does not contain the reserved marker segment.
-fn split_browse_marker(path: &str) -> Option<(String, String)> {
-    let mid = format!("/{BROWSE_MARKER}/");
-    if let Some((left, rest)) = path.split_once(&mid) {
-        return Some((left.to_string(), rest.to_string()));
-    }
-    let end = format!("/{BROWSE_MARKER}");
-    path.strip_suffix(&end)
-        .map(|left| (left.to_string(), String::new()))
-}
-
+/// Builds the Worker router with browse and token exchange.
 pub fn router(service: Arc<RpcService>) -> Router {
-    // The Worker entry: browse + the machine facade. Nested-canonical (slashed)
-    // slugs are handled inside the [`facade`] wildcard handler (the route that
-    // captures them): browse resolves registries, while machine requests resolve
-    // the longest registry-or-cache slug prefix. The native hub doesn't use this
-    // entry; it composes [`rpc_browse_router`] and keeps its own richer
-    // `nested_catch_all`.
+    // The Worker entry includes browse and its token exchange. Public bytes are
+    // still admitted only by `with_delivery_route_dispatch`.
     build(service, true, true)
 }
 
-/// Build the shared Connect-JSON router with neither the browse surface nor the
-/// machine-surface facade — the RPC methods only.
-///
-/// Omits the catch-all `/{slug}/{*path}` facade route *and* the browse routes,
-/// so it can be merged into a host that already owns those paths. Retained for
-/// any host that wants only the wire RPC; the native hub instead uses
-/// [`rpc_browse_router`] to take the shared session-aware browse while keeping
-/// its own richer machine facade. The returned router carries the service as
-/// axum state.
+/// Builds the Connect-JSON router without browse pages or token exchange.
 #[must_use]
 pub fn rpc_router(service: Arc<RpcService>) -> Router {
     build(service, false, false)
 }
 
-/// Build the shared Connect-JSON router *with* the session-aware browse surface
-/// but *without* the machine-surface facade.
-///
-/// This is the variant the native hub mounts (RFC-0004 Phase 5, console-dedup
-/// stage G): it takes the shared rich, branded, session-aware browse (the hub
-/// home `/`, the `/{slug}` redirect, the registry home `/{slug}/` and
-/// `/{slug}/-/`, the `/{slug}/-/…` pages, and the `/{slug}/-/api/…` JSON reads)
-/// so the native hub and the Worker serve the **identical** browse, while the
-/// hub keeps its own richer `/{slug}/{*path}` machine facade (filesystem
-/// autoindex, `http(s)` redirect, pull-through mirroring, inert
-/// producer-document serving, the upload `PUT`/`HEAD`) — so omitting the shared
-/// facade here avoids a wildcard collision on merge. The returned router carries
-/// the service as axum state.
+/// Builds the Connect-JSON router with the shared session-aware browse surface.
 #[must_use]
 pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
     build(service, true, false)
@@ -1912,18 +1320,14 @@ async fn oauth2_token_exchange(svc: &RpcService, headers: &HeaderMap) -> Respons
     }
 }
 
-/// Build the shared router, optionally mounting the browse surface and/or the
-/// machine-surface facade.
+/// Builds the shared router with optional browse and token-exchange surfaces.
 ///
 /// `mount_browse` adds the no-JS browse routes (the hub home `/`, the `/{slug}`
 /// redirect, the registry home `/{slug}/` and `/{slug}/-/`, the `/{slug}/-/…`
-/// pages, and the `/{slug}/-/api/…` JSON read API). `mount_facade` adds the
-/// catch-all `GET`/`HEAD`/`PUT` `/{slug}/{*path}` machine-surface facade (which
-/// also resolves nested-canonical slugs internally; see [`facade`]). The Worker
-/// takes both ([`router`]); the native hub takes browse only
-/// ([`rpc_browse_router`]) and keeps its own facade + nested handling;
-/// [`rpc_router`] takes neither.
-fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Router {
+/// pages, and the `/{slug}/-/api/…` JSON read API). `mount_oauth` adds the
+/// Worker-owned provisioning-token exchange; native mounts its hardened local
+/// exchange separately.
+fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Router {
     // The route-dispatch middleware targets this typed-only handler. A direct
     // external request has no `ResolvedDeliveryRoute` extension and receives
     // 404, so the internal name is not an alternate public surface URL.
@@ -3473,82 +2877,9 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             ),
         );
     }
-    if mount_facade {
-        // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to
-        // it, eliding the body) for the registry machine path, registered LAST.
-        // The static `/aos.hub.v1.{Service}/{Method}` RPC routes and the
-        // browse routes above win over this `/{slug}/{*path}` wildcard by axum's
-        // static-over-dynamic precedence, so the facade only matches a machine
-        // URL. Omitted by [`rpc_router`]/[`rpc_browse_router`] so a host with its
-        // own `/{slug}/{*path}` (the native hub) does not double-mount it.
-        r = r.route(
-            "/{slug}/{*path}",
-            get(
-                |State(state): State<SharedState>,
-                 method: axum::http::Method,
-                 headers: HeaderMap,
-                 Path((slug, path)): Path<(String, String)>,
-                 uri: axum::http::Uri| {
-                    let svc = from_state(state);
-                    let query = uri.query().map(str::to_owned);
-                    send_bridge(facade(svc, method, headers, slug, path, query))
-                },
-            )
-            // The authenticated surface-upload `PUT` shares the wildcard so an
-            // `apr origin upload` / `apm` publish lands directly on the registry
-            // URL (RFC-0004 "like magic"). The body extractor is last so axum
-            // buffers it only for the write method. The Worker mounts this whole
-            // router, so this is how it stores published artifacts; the native
-            // hub keeps its own richer `/{slug}/{*path}` handler instead (this
-            // facade route is omitted for it via `mount_facade = false`).
-            .put(
-                |State(state): State<SharedState>,
-                 headers: HeaderMap,
-                 Path((slug, path)): Path<(String, String)>,
-                 uri: axum::http::Uri,
-                 body: Bytes| {
-                    let svc = from_state(state);
-                    let query = uri.query().map(str::to_owned);
-                    send_bridge(facade_put(svc, headers, slug, path, query, body))
-                },
-            )
-            // Multipart upload over the same wildcard (S3-style query
-            // convention): `POST ?uploads` initiates, `POST ?uploadId` completes,
-            // `DELETE ?uploadId` aborts; the parts ride the `PUT` above. Each
-            // part is a small, sub-cap body, so they upload with bounded memory
-            // even for NARs far larger than the request-body limit.
-            .post(
-                |State(state): State<SharedState>,
-                 headers: HeaderMap,
-                 Path((slug, path)): Path<(String, String)>,
-                 uri: axum::http::Uri,
-                 body: Bytes| {
-                    let svc = from_state(state);
-                    let query = uri.query().map(str::to_owned);
-                    send_bridge(facade_post(svc, headers, slug, path, query, body))
-                },
-            )
-            .delete(
-                |State(state): State<SharedState>,
-                 headers: HeaderMap,
-                 Path((slug, path)): Path<(String, String)>,
-                 uri: axum::http::Uri| {
-                    let svc = from_state(state);
-                    let query = uri.query().map(str::to_owned);
-                    send_bridge(facade_delete(svc, headers, slug, path, query))
-                },
-            )
-            .layer(axum::extract::DefaultBodyLimit::max(
-                crate::service::MAX_UPLOAD_BYTES,
-            )),
-        );
-    }
-    // `POST /oauth2/token` provisioning-secret -> JWT exchange. The native hub
-    // mounts its own rate-limited fragment in `server.rs`; the Worker has none,
-    // so the shared worker entry ([`router`], the only builder with
-    // `mount_facade`) mounts it here. Gated on `mount_facade` so the native
-    // `rpc_browse_router` (`mount_facade = false`) never double-mounts it.
-    if mount_facade {
+    // The native shell mounts its rate-limited exchange separately; Worker
+    // uses this shared route.
+    if mount_oauth {
         r = r.route(
             "/oauth2/token",
             post(|State(state): State<SharedState>, headers: HeaderMap| {
@@ -3557,9 +2888,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
             }),
         );
     }
-    // Apply the same unary request ceiling in the shared builder used by native
-    // and Worker. The Worker facade's route-local override above remains larger
-    // for chunked artifact uploads.
+    // Apply the same unary request ceiling in both runtimes.
     r.layer(axum::extract::DefaultBodyLimit::max(
         CONNECT_REQUEST_BODY_LIMIT_BYTES,
     ))
@@ -3569,125 +2898,6 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_facade: bool) -> Ro
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn multipart_query_parser_rejects_ambiguity_and_unknown_fields() {
-        for query in [
-            "uploadId=a&uploadId=b&partNumber=1",
-            "uploadId=a&partNumber=0",
-            "uploadId=a&partNumber=10001",
-            "uploadId=a&partNumber=wat",
-            "uploads=1&size=10",
-            "uploads&size=0",
-            "uploadId=a&unexpected=1",
-            "uploadId=%ZZ&partNumber=1",
-            "uploadId=%FF&partNumber=1",
-        ] {
-            assert!(
-                parse_multipart_query(Some(query)).is_err(),
-                "accepted {query}"
-            );
-        }
-        let parsed = parse_multipart_query(Some("uploadId=a&partNumber=1")).unwrap();
-        assert_eq!(parsed.upload_id.as_deref(), Some("a"));
-        assert_eq!(parsed.part_number, Some(1));
-    }
-
-    #[test]
-    fn facade_method_query_matrix_and_body_cap_are_single_source() {
-        assert_eq!(crate::service::MAX_UPLOAD_BYTES, 20 * 1024 * 1024);
-
-        let single = parse_multipart_query(None).unwrap();
-        assert!(!single.initiate);
-        assert!(single.upload_id.is_none());
-
-        let initiate = parse_multipart_query(Some("uploads&size=20971521")).unwrap();
-        assert!(initiate.initiate);
-        assert_eq!(initiate.size, Some(20 * 1024 * 1024 + 1));
-
-        let part = parse_multipart_query(Some("partNumber=7&uploadId=ticket")).unwrap();
-        assert_eq!(part.upload_id.as_deref(), Some("ticket"));
-        assert_eq!(part.part_number, Some(7));
-
-        let terminal = parse_multipart_query(Some("uploadId=ticket")).unwrap();
-        assert_eq!(terminal.upload_id.as_deref(), Some("ticket"));
-        assert!(terminal.part_number.is_none());
-
-        // PUT/POST/DELETE all enter `multipart_facade_request`; no runtime or
-        // flat/nested route owns a second query grammar or request-body cap.
-        for method in [Method::PUT, Method::POST, Method::DELETE] {
-            assert!(matches!(
-                method,
-                Method::PUT | Method::POST | Method::DELETE
-            ));
-        }
-    }
-    use aos_proto_types as pb;
-
-    /// Run [`resolve_prefix_with`] against a fixed set of known slugs.
-    async fn resolve(path: &str, slugs: &[&str]) -> Option<(String, String)> {
-        resolve_prefix_with(path, |candidate| {
-            let hit = slugs.contains(&candidate);
-            async move { hit }
-        })
-        .await
-    }
-
-    #[tokio::test]
-    async fn longest_prefix_resolves_nested_slug_with_tail() {
-        let slugs = ["andyl/demo", "andyl"];
-        assert_eq!(
-            resolve("andyl/demo/nar/x", &slugs).await,
-            Some(("andyl/demo".to_string(), "nar/x".to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn exact_match_resolves_to_empty_tail() {
-        let slugs = ["andyl/demo", "andyl"];
-        assert_eq!(
-            resolve("andyl/demo", &slugs).await,
-            Some(("andyl/demo".to_string(), String::new()))
-        );
-    }
-
-    #[tokio::test]
-    async fn falls_back_to_shorter_slug_prefix() {
-        let slugs = ["andyl/demo", "andyl"];
-        assert_eq!(
-            resolve("andyl/other", &slugs).await,
-            Some(("andyl".to_string(), "other".to_string()))
-        );
-    }
-
-    #[tokio::test]
-    async fn unknown_path_resolves_to_none() {
-        let slugs = ["andyl/demo", "andyl"];
-        assert_eq!(resolve("acme/infra/cdn", &slugs).await, None);
-    }
-
-    #[tokio::test]
-    async fn segment_boundary_is_respected() {
-        // `andyl/demo-staging` must not resolve to `andyl/demo`.
-        let slugs = ["andyl/demo", "andyl"];
-        assert_eq!(
-            resolve("andyl/demo-staging", &slugs).await,
-            Some(("andyl".to_string(), "demo-staging".to_string()))
-        );
-    }
-
-    #[test]
-    fn browse_marker_split_mid_and_trailing() {
-        assert_eq!(
-            split_browse_marker("andyl/demo/-/packages"),
-            Some(("andyl/demo".to_string(), "packages".to_string()))
-        );
-        assert_eq!(
-            split_browse_marker("andyl/demo/-"),
-            Some(("andyl/demo".to_string(), String::new()))
-        );
-        assert_eq!(split_browse_marker("andyl/demo/packages"), None);
-    }
 
     #[test]
     fn topology_paths_use_the_public_hub_namespace() {

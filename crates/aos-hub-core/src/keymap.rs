@@ -132,6 +132,7 @@ pub fn image_object_sha256(path: &str) -> Option<&str> {
     let filename = |value: &str| {
         !value.is_empty()
             && value.is_ascii()
+            && !value.starts_with('.')
             && !value.contains("..")
             && value
                 .bytes()

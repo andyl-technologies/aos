@@ -1592,7 +1592,15 @@ pub(crate) async fn activate_form(
         None
     } else {
         match deps.db.pending_device_request(&user_code).await {
-            Ok(req) => req,
+            Ok(Some((scope, permissions))) => {
+                let display = match deps.db.authorization_scope_display_path(&scope).await {
+                    Ok(Some(display)) => display,
+                    Ok(None) => scope,
+                    Err(error) => return internal(error),
+                };
+                Some((display, permissions))
+            }
+            Ok(None) => None,
             Err(err) => return internal(err),
         }
     };
@@ -2088,8 +2096,8 @@ async fn org_view(
             .into_iter()
             .filter(|r| r.org_id == Some(org.id))
             .collect();
-        let mut domains = if matches!(active, "domains" | "delivery-endpoints") {
-            deps.db.list_domains(Some(org.id)).await?
+        let domains = if matches!(active, "domains" | "delivery-endpoints") {
+            deps.db.list_delivery_domains(&org.stable_id).await?
         } else {
             Vec::new()
         };
@@ -2103,18 +2111,6 @@ async fn org_view(
         } else {
             Vec::new()
         };
-        for domain_id in endpoints
-            .iter()
-            .filter_map(|endpoint| endpoint.domain_id)
-            .collect::<std::collections::BTreeSet<_>>()
-        {
-            if domains.iter().any(|domain| domain.id == domain_id) {
-                continue;
-            }
-            if let Some(domain) = deps.db.domain(domain_id).await? {
-                domains.push(domain);
-            }
-        }
         let gateways = if active == "storage-gateways" {
             deps.db
                 .list_storage_gateways(None)
@@ -8883,7 +8879,7 @@ async fn current_registry_toml(
         return Ok(String::new());
     };
     let head = aos_registry_surface::object::Oid::from_hex(&head_hex)?;
-    let fetch = crate::placement_read::TopologySurfaceFetch::new(
+    let fetch = crate::placement_read::TopologySurfaceFetch::for_verified_git_objects(
         Arc::clone(&deps.db),
         Arc::clone(&deps.surface),
         crate::db::SurfaceTarget::Registry(registry.id),

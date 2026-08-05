@@ -171,7 +171,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
-        leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
+        leases: std::sync::Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
         secret_versions: Arc::new(test_resolver([(
             RPC_SECRET_REF.to_string(),
@@ -212,6 +212,7 @@ async fn rpc(
     let mut req = Request::builder()
         .method("POST")
         .uri(format!("/aos.hub.v1.{method}"))
+        .header(header::HOST, "127.0.0.1:8420")
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {

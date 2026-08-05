@@ -49,7 +49,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
-        leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
+        leases: std::sync::Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
         secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
@@ -87,6 +87,7 @@ async fn rpc(
     let mut req = Request::builder()
         .method("POST")
         .uri(format!("/aos.hub.v1.{method}"))
+        .header(header::HOST, "127.0.0.1:8420")
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {
@@ -193,6 +194,9 @@ async fn seed_placement(
 async fn private_registry_inventory_is_denied_to_anonymous() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("victim", "Victim").await.unwrap();
+    db.create_project(org, "internal", "Internal")
+        .await
+        .unwrap();
     let binding = common::create_local_binding(&db, org, "b", "/var/lib/aos/storage/victim").await;
     let id = db
         .create_managed_registry(org, "internal", "secret", "private", &[], false)

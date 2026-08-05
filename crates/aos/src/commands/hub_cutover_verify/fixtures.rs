@@ -692,7 +692,8 @@ mod tests {
 
     #[test]
     fn pointer_rejects_noncanonical_escapes() {
-        assert!(parse_pointer("/a~01b").is_err());
+        assert_eq!(parse_pointer("/a~01b").unwrap(), ["a~1b"]);
+        assert!(parse_pointer("/a~2b").is_err());
         assert!(parse_pointer("relative").is_err());
     }
 }
