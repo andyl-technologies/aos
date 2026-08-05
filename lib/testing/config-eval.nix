@@ -190,12 +190,14 @@ in
             "$first_root/manifest.json" "$second_root/manifest.json"
           ${pkgs.diffutils}/bin/cmp \
             "$first_root/graph.json" "$second_root/graph.json"
-          ${pkgs.jq}/bin/jq -e '
+          ${pkgs.jq}/bin/jq -e \
+            --arg baseLib ${lib.escapeShellArg (toString baseLib)} '
             .schema == "aos.config-manifest/v1"
             and (.etc | type == "object")
             and (.units | type == "object")
             and (.jobScripts | type == "object")
             and (.inputs | type == "object")
+            and .inputs.base_lib.store_path == $baseLib
             and (.users | type == "array")
             and (.packages | type == "array")
             and .etc.hostname.text == "rfc0011-preflight\n"

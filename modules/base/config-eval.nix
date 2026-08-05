@@ -53,14 +53,16 @@ in {
     };
 
     baseLib = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
+      type = lib.types.nullOr (lib.types.oneOf [lib.types.package lib.types.str]);
       default = null;
       internal = true;
       readOnly = true;
       description = ''
         Store path of the in-image, ABI-pinned module library passed to the
-        evaluator as `--base-lib`. This is image-owned and cannot be replaced
-        by host.nix.
+        evaluator as `--base-lib`. Image construction supplies the derivation;
+        the library's on-host entrypoint supplies its own realized path as a
+        string so evaluation does not copy it to a new store path. This is
+        image-owned and cannot be replaced by host.nix.
       '';
     };
 
@@ -119,8 +121,12 @@ in {
     systemd.services.aos-firstboot-reeval = {
       description = "Detect a running-image change requiring host re-evaluation";
       wantedBy = ["multi-user.target"];
-      requires = ["aos-seed-profiles.service"];
-      after = ["aos-seed-profiles.service"];
+      # aos-seed-profiles is a stage-1 unit and is deliberately absent after
+      # switch-root. Depend on the durable /var substrate it produced instead;
+      # requiring the vanished initrd unit causes systemd to drop this job and,
+      # through aos-eval's Requires= edge, silently skips host activation.
+      requires = ["local-fs.target"];
+      after = ["local-fs.target"];
       before = [
         "aos-host-config-restore.service"
         "aos-eval.service"

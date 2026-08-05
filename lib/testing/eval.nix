@@ -82,6 +82,16 @@
         system.config.boot.initrd.systemd.services."aos-config-seed".requires)
     then throw "the initrd config lower must wait for credential transaction recovery"
     else if
+      builtins.elem
+      "aos-seed-profiles.service"
+      system.config.systemd.services.aos-firstboot-reeval.requires
+    then throw "stage-2 re-evaluation must not require a vanished initrd unit"
+    else if
+      !(builtins.elem
+        "local-fs.target"
+        system.config.systemd.services.aos-firstboot-reeval.requires)
+    then throw "stage-2 re-evaluation must require the durable local filesystem substrate"
+    else if
       !(containsStr
         "AOS_ROOT=/sysroot"
         system.config.boot.initrd.systemd.services."aos-credential-recovery".script)
@@ -204,12 +214,10 @@
     then throw "the stock system must restore its last fully evaluated host input"
     else if !(builtins.hasAttr "aos-host-config-cache" system.config.systemd.services)
     then throw "the stock system must cache fully evaluated host input"
-    else if
-      system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-metadata-fetch".unitConfig
       ? ConditionPathExists
     then throw "metadata acquisition must run on provisioned boots"
-    else if
-      system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
+    else if system.config.boot.initrd.systemd.services."aos-provisioning-eval".unitConfig
       ? ConditionPathExists
     then throw "the restricted storage projection must remain available as a post-commit advisory check"
     else if
@@ -236,8 +244,7 @@
       system.config.boot.initrd.systemd.network."80-dhcp".networkConfig.LinkLocalAddressing
       != "ipv4"
     then throw "DHCP-less metadata acquisition requires an initrd IPv4 link-local source address"
-    else if
-      !system.config.boot.initrd.systemd.network."80-dhcp".networkConfig.IPv4LLRoute
+    else if !system.config.boot.initrd.systemd.network."80-dhcp".networkConfig.IPv4LLRoute
     then throw "DHCP-less metadata acquisition requires an initrd route to link-local IMDS"
     else if
       !(builtins.elem
@@ -377,14 +384,17 @@
     inherit lib;
   };
   provisioningProjectionIsClosed =
-    if provisioningProjection.config.aos.provisioning.storage.partitions.var.sizeMin
-    != "8G"
+    if
+      provisioningProjection.config.aos.provisioning.storage.partitions.var.sizeMin
+      != "8G"
     then throw "restricted provisioning evaluation did not apply host storage"
-    else if provisioningProjection.config.aos.provisioning.storage.partitions.swap.type
-    != "swap"
+    else if
+      provisioningProjection.config.aos.provisioning.storage.partitions.swap.type
+      != "swap"
     then throw "partial host storage overrides discarded default partition fields"
-    else if provisioningProjection.config.aos.provisioning.storage.partitions.swap.format
-    != "swap"
+    else if
+      provisioningProjection.config.aos.provisioning.storage.partitions.swap.format
+      != "swap"
     then throw "partial host storage overrides discarded the default swap format"
     else "ok";
   provisioningProjectionJson =

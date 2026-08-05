@@ -449,7 +449,18 @@
         case "$slot_device" in
           /dev/disk/by-partlabel/root-a) boot_slot=A ;;
           /dev/disk/by-partlabel/root-b) boot_slot=B ;;
-          *) fail_image_identity "kernel command line does not identify root-a or root-b" ;;
+          *)
+            slot_real=$(readlink -f "$slot_device" 2>/dev/null || true)
+            root_a_real=$(readlink -f /dev/disk/by-partlabel/root-a 2>/dev/null || true)
+            root_b_real=$(readlink -f /dev/disk/by-partlabel/root-b 2>/dev/null || true)
+            if [ -n "$slot_real" ] && [ "$slot_real" = "$root_a_real" ]; then
+              boot_slot=A
+            elif [ -n "$slot_real" ] && [ "$slot_real" = "$root_b_real" ]; then
+              boot_slot=B
+            else
+              fail_image_identity "kernel command line does not identify root-a or root-b"
+            fi
+            ;;
         esac
         pcr11=
         if measured=$(read_pcr11); then
@@ -548,6 +559,7 @@
         fi
         mkdir -p "$image_dir/image-gen-$existing/baselib"
         ln -sfn "$base_lib" "$image_dir/image-gen-$existing/baselib/$abi"
+        mkdir -p "$profile_dir"
 
         # One-shot legacy migration. Every bundled record must both carry the
         # complete config-generation input/output binding and authenticate its
@@ -653,7 +665,10 @@
           # config-gen 1 with all authenticated input/output bindings present.
           ${pkgs.jq}/bin/jq -n \
             '{current: 0, next: 1, generations: []}' \
-            > "$profile_dir/state.json"
+            > "$profile_dir/.state.json.new"
+          ${pkgs.coreutils}/bin/sync -f "$profile_dir/.state.json.new"
+          mv "$profile_dir/.state.json.new" "$profile_dir/state.json"
+          ${pkgs.coreutils}/bin/sync -f "$profile_dir"
         fi
 
         link=$(readlink "$profile_dir/current" 2>/dev/null || true)

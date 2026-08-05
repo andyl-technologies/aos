@@ -38,7 +38,8 @@
   # Each UKI names its own immutable root slot. The root hash bytes are shared
   # because both slots receive the exact same reproducible root image; only the
   # DPS data/hash device hints differ.
-  kernelParamsB = builtins.replaceStrings
+  kernelParamsB =
+    builtins.replaceStrings
     ["/dev/disk/by-partlabel/root-a-hash" "/dev/disk/by-partlabel/root-a"]
     ["/dev/disk/by-partlabel/root-b-hash" "/dev/disk/by-partlabel/root-b"]
     kernelParams;
@@ -124,39 +125,39 @@
 
   mkUki = slotName: cmdline:
     pkgs.aos-uki {
-    name = "${name}-slot-${slotName}";
-    inherit version cmdline;
-    kernel = system.config.system.build.kernel;
-    initrd = system.config.system.build.initrd;
-    # The toplevel now ships a top-level `os-release` symlink (named-
-    # output layout from spec v12 §1); the previous `etc/os-release`
-    # path is gone along with the rest of `${toplevel}/etc/`.
-    osRelease = "${system.config.system.build.toplevel}/os-release";
-    secureBootKey =
-      if sb.enable
-      then sb.dbKey
-      else null;
-    secureBootCert =
-      if sb.enable
-      then sb.dbCert
-      else null;
-    # PCR-policy signing (RFC-0006 phase 3): when measured boot is on, the
-    # UKI carries a signed PCR policy so TPM-sealed /var unseals across OTA.
-    pcrPrivateKey =
-      if sb.measuredBoot.enable
-      then sb.measuredBoot.pcrPrivateKey
-      else null;
-    pcrPublicKey =
-      if sb.measuredBoot.enable
-      then sb.measuredBoot.pcrPublicKey
-      else null;
-    # Bake `roothash=<hex>` (a build output) into the measured
-    # .cmdline. `null` when verity is off, so non-verity UKIs are unchanged.
-    rootHashFile =
-      if verityEnabled
-      then "${rootfs}/root.roothash"
-      else null;
-  };
+      name = "${name}-slot-${slotName}";
+      inherit version cmdline;
+      kernel = system.config.system.build.kernel;
+      initrd = system.config.system.build.initrd;
+      # The toplevel now ships a top-level `os-release` symlink (named-
+      # output layout from spec v12 §1); the previous `etc/os-release`
+      # path is gone along with the rest of `${toplevel}/etc/`.
+      osRelease = "${system.config.system.build.toplevel}/os-release";
+      secureBootKey =
+        if sb.enable
+        then sb.dbKey
+        else null;
+      secureBootCert =
+        if sb.enable
+        then sb.dbCert
+        else null;
+      # PCR-policy signing (RFC-0006 phase 3): when measured boot is on, the
+      # UKI carries a signed PCR policy so TPM-sealed /var unseals across OTA.
+      pcrPrivateKey =
+        if sb.measuredBoot.enable
+        then sb.measuredBoot.pcrPrivateKey
+        else null;
+      pcrPublicKey =
+        if sb.measuredBoot.enable
+        then sb.measuredBoot.pcrPublicKey
+        else null;
+      # Bake `roothash=<hex>` (a build output) into the measured
+      # .cmdline. `null` when verity is off, so non-verity UKIs are unchanged.
+      rootHashFile =
+        if verityEnabled
+        then "${rootfs}/root.roothash"
+        else null;
+    };
 
   ukiA = mkUki "a" kernelParams;
   ukiB = mkUki "b" kernelParamsB;
@@ -302,7 +303,10 @@
             # root-verity-size-bytes and rounded up to a 1 MiB (2048-sector)
             # boundary. hash_sectors stays 0 (and the whole block is gated off)
             # on the non-verity path.
-            hash_start_sector=$(( root_start_sector + root_sectors ))
+            # sfdisk aligns implicit partition starts independently. Compute
+            # every start here instead so the partition table, image writes,
+            # and final disk size agree even when root.img is not MiB-sized.
+            hash_start_sector=$(( (root_start_sector + root_sectors + 2047) / 2048 * 2048 ))
             hash_sectors=0
             ${lib.optionalString verityEnabled ''
               verity_bytes=$(cat "$VERITY_SIZE_FILE")
@@ -312,8 +316,8 @@
             ''}
             # 1 MiB (2048 sectors) at the start for GPT header + alignment,
             # plus 1 MiB at the end for the backup GPT header.
-            root_b_start_sector=$(( hash_start_sector + hash_sectors ))
-            hash_b_start_sector=$(( root_b_start_sector + root_sectors ))
+            root_b_start_sector=$(( (hash_start_sector + hash_sectors + 2047) / 2048 * 2048 ))
+            hash_b_start_sector=$(( (root_b_start_sector + root_sectors + 2047) / 2048 * 2048 ))
             disk_sectors=$(( hash_b_start_sector + hash_sectors + 2048 ))
             disk_bytes=$(( disk_sectors * 512 ))
             echo "==> Assembling $(( disk_bytes / 1048576 )) MiB GPT image"
@@ -326,13 +330,13 @@
             # systemd-repart on first boot.
             sfdisk image.raw <<PTABLE
             label: gpt
-            size=$esp_sectors, type=${espGuid}, name="ESP"
-            size=$root_sectors, type=${rootGuid}, name="root-a"${lib.optionalString verityEnabled ''
+            start=${toString espStartSector}, size=$esp_sectors, type=${espGuid}, name="ESP"
+            start=$root_start_sector, size=$root_sectors, type=${rootGuid}, name="root-a"${lib.optionalString verityEnabled ''
 
-              size=$hash_sectors, type=${verityGuid}, name="root-a-hash"''}
-            size=$root_sectors, type=${rootGuid}, name="root-b"${lib.optionalString verityEnabled ''
+              start=$hash_start_sector, size=$hash_sectors, type=${verityGuid}, name="root-a-hash"''}
+            start=$root_b_start_sector, size=$root_sectors, type=${rootGuid}, name="root-b"${lib.optionalString verityEnabled ''
 
-              size=$hash_sectors, type=${verityGuid}, name="root-b-hash"''}
+              start=$hash_b_start_sector, size=$hash_sectors, type=${verityGuid}, name="root-b-hash"''}
             PTABLE
 
             echo "    Writing ESP at sector ${toString espStartSector}"
@@ -388,7 +392,11 @@
                 { "number": 1, "label": "ESP", "type": "esp", "filesystem": "vfat", "sizeMiB": $esp_size_mib },
                 { "number": 2, "label": "root-a", "type": "root", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
                               { "number": 3, "label": "root-a-hash", "type": "verity", "filesystem": "dm-verity", "sizeMiB": $hash_size_mib }''},
-                { "number": ${if verityEnabled then "4" else "3"}, "label": "root-b", "type": "root", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
+                { "number": ${
+              if verityEnabled
+              then "4"
+              else "3"
+            }, "label": "root-b", "type": "root", "filesystem": "${rootFsType}", "sizeMiB": $root_size_mib }${lib.optionalString verityEnabled ''                ,
                               { "number": 5, "label": "root-b-hash", "type": "verity", "filesystem": "dm-verity", "sizeMiB": $hash_size_mib }''}
               ],
               "esp": {

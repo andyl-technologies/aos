@@ -1,7 +1,8 @@
 # tests/fleet/rfc-0011-degraded-boot.nix — RFC-0011 soft/hard graph edges.
 #
-# The live machine first evaluates three genuine exposed packages. The test
-# then injects one unreachable, authenticated-output-shaped pin at the
+# The live machine first publishes three genuine exposed packages into an
+# authenticated test registry and evaluates them by name. The test then
+# injects one unreachable, authenticated-output-shaped pin at the
 # manifest/graph boundary and re-drives the production systemd graph. This is
 # intentionally below name resolution: the failure under test is the fetch
 # wing, not the evaluator. One independent package must still render and stay
@@ -36,6 +37,17 @@
         bundle = true;
         preset = false;
       };
+      # Bundling installs the runtime projections. The in-guest publisher also
+      # needs each package's registry-only expose and config outputs so it can
+      # construct the authenticated fixture catalog.
+      environment.systemPackages = [
+        pkgs.desired-config-test.expose
+        pkgs.desired-config-test.config
+        pkgs.desired-prune-test.expose
+        pkgs.desired-prune-test.config
+        pkgs.test-http-server.expose
+        pkgs.test-http-server.config
+      ];
     }
   ];
 
@@ -51,6 +63,10 @@
 in {
   name = "rfc-0011-degraded-boot";
   timeout = 1200;
+  # First boot provisions a multi-gigabyte /var; the test then publishes and
+  # evaluates three image-bundled fixtures. Leave headroom for slower KVM
+  # builders and for this check running inside the fleet aggregate.
+  bootTimeout = 300;
 
   machines = {
     degraded = {
@@ -66,12 +82,6 @@ in {
       metadata."host.nix" = ''
         {
           aos.provisioning.storage.partitions.var.sizeMin = "2G";
-          aos.apm.desiredPackages = [
-            "desired-config-test"
-            "desired-prune-test"
-            "test-http-server"
-          ];
-          desired-config-test.config.env.TOKEN = "desired-token";
         }
       '';
     };
@@ -90,6 +100,7 @@ in {
     ''
       import hashlib
       import json
+      import textwrap
       import time
       from pathlib import Path
 
@@ -141,13 +152,121 @@ in {
           return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
-      # Establish that the unmodified production eval and graph are healthy.
+      # Establish that the base-only production eval and graph are healthy
+      # before adding any registry-selected packages.
       degraded.wait_until_succeeds(
           "systemctl is-active --quiet aos-graph-compile.service", timeout=300
       )
       degraded.succeed("systemctl is-active --quiet aos-config.target")
       degraded.succeed("systemctl is-active --quiet multi-user.target")
       degraded.succeed("systemctl is-active --quiet sshd.service")
+
+      # Publish the exact image-bundled outputs into a signed local registry.
+      # Bundling makes the gen-0 host reachable, but RFC-0011 package selection
+      # still resolves names and pins closures from authenticated registry
+      # metadata. Keeping those trust paths distinct is load-bearing.
+      degraded.succeed(textwrap.dedent(r"""
+          set -eu
+          export HOME=/tmp/rfc0011-publisher
+          export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
+          export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR=/tmp/rfc0011-nix-conf
+          mkdir -p "$NIX_CONF_DIR"
+          printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
+            > "$NIX_CONF_DIR/nix.conf"
+
+          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release --registry rfc0011-reg 2>&1)
+          printf '%s\n' "$KEYGEN"
+          PUBKEY=
+          while IFS= read -r line; do
+            case "$line" in
+              *'Public key: '*) PUBKEY=''${line##* } ;;
+            esac
+          done <<EOF
+          $KEYGEN
+          EOF
+          test -n "$PUBKEY"
+          KEY=$HOME/.config/apm/keys/rfc0011-reg-release.key
+          ${pkgs.aos}/bin/apr create rfc0011-reg \
+            --trust-key "$PUBKEY" \
+            --trust-key-id release \
+            --key "$KEY"
+          REG_DIR=$HOME/.local/share/apm/registries/rfc0011-reg
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/rfc0011-reg.toml" <<EOF
+          [registry]
+          name = "rfc0011-reg"
+          url = "file://$REG_DIR"
+
+          [registry.signing_keys]
+          release = "$KEY"
+          EOF
+
+          publish() {
+            name=$1
+            output=$2
+            expose=$3
+            config=$4
+            ${pkgs.aos}/bin/apr publish "$output" \
+              --name "$name" \
+              --version 1.0.0 \
+              --description 'RFC-0011 degraded activation fixture' \
+              --license MIT \
+              --maintainer test \
+              --expose-manifest "$expose/manifest.json" \
+              --config-module "$config" \
+              --config-base-lib '${degradedSystem.config.aos.config.evalAtBoot.baseLib}' \
+              --registry rfc0011-reg \
+              --key-id release
+          }
+          publish desired-config-test \
+            '${pkgs.desired-config-test}' \
+            '${pkgs.desired-config-test.expose}' \
+            '${pkgs.desired-config-test.config}'
+          publish desired-prune-test \
+            '${pkgs.desired-prune-test}' \
+            '${pkgs.desired-prune-test.expose}' \
+            '${pkgs.desired-prune-test.config}'
+          publish test-http-server \
+            '${pkgs.test-http-server}' \
+            '${pkgs.test-http-server.expose}' \
+            '${pkgs.test-http-server.config}'
+
+          mkdir -p /var/lib/rfc0011-cache
+          ${pkgs.aos}/bin/apr release 1.0.0 \
+            --registry rfc0011-reg \
+            --key-id release \
+            --cache-url file:///var/lib/rfc0011-cache \
+            --upload-url file:///var/lib/rfc0011-cache
+          HOME=/tmp USER=root ${pkgs.aos}/bin/apm registry --system add \
+            "file://$REG_DIR" \
+            --name rfc0011-reg \
+            --version '=1.0.0' \
+            --trust-key "$PUBKEY"
+          HOME=/tmp USER=root ${pkgs.aos}/bin/apm update \
+            --system --registry rfc0011-reg
+      """), timeout=1200)
+
+      # Drive the porcelain through the same evaluator, graph compiler, fetch,
+      # render, and activation implementations used by the boot units.
+      degraded.succeed(r"""
+          cat > /run/rfc0011-degraded-host.nix <<'EOF'
+          {
+            aos.provisioning.storage.partitions.var.sizeMin = "2G";
+            aos.apm.desiredPackages = [
+              "desired-config-test"
+              "desired-prune-test"
+              "test-http-server"
+            ];
+            desired-config-test.config.env.TOKEN = "desired-token";
+          }
+          EOF
+          ${pkgs.aos}/bin/apm switch \
+            --from /run/rfc0011-degraded-host.nix \
+            --eval-root /run/rfc0011-degraded-eval
+      """, timeout=600)
+
       degraded.succeed("systemctl is-active --quiet desired-config-test.service")
       degraded.succeed("systemctl is-active --quiet desired-prune-test.service")
       degraded.succeed("systemctl is-active --quiet test-http-server.socket")
@@ -162,7 +281,7 @@ in {
       # identity, so manifest validation accepts the pin and the real fetch
       # subverb is what fails. desired-prune-test is made dependent on it;
       # desired-config-test remains an independent healthy package.
-      degraded.succeed(r'''
+      degraded.succeed(r"""
           set -eu
           bad=/nix/store/00000000000000000000000000000000-unreachable-output
           hash=00000000000000000000000000000000
@@ -197,7 +316,7 @@ in {
           mv /run/aos/graph.json.new /run/aos/graph.json
           rm -f /run/aos/activation.json /run/aos/source-manifest.json
           systemctl restart aos-graph-compile.service
-      ''', timeout=420)
+      """, timeout=420)
 
       # The template exhausted its real Restart=on-failure budget. Its failure
       # remained a soft Wants edge, so all umbrella targets and the compiler

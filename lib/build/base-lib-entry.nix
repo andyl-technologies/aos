@@ -69,9 +69,7 @@ in {
   ## or registry access exist. Only the provisioning schema module is declared,
   ## so unrelated `host.nix` definitions are dropped by the intentionally
   ## non-strict AOS module engine and are never forced.
-  evalProvisioningConfig = {
-    operatorModules ? [],
-  }: let
+  evalProvisioningConfig = {operatorModules ? []}: let
     evaluated = lib.evalModules {
       # This closed projection has no package modules to arbitrate. Append the
       # operator module at the normal tier so attrsOf/submodule values merge
@@ -107,9 +105,7 @@ in {
   };
 
   ## Evaluate the package-name seed required before registry module resolution.
-  evalHostSelection = {
-    operatorModules ? [],
-  }:
+  evalHostSelection = {operatorModules ? []}:
     lib.evalModules {
       modules = [./modules/base/host-selection.nix];
       pkgs = frozenPkgs;
@@ -138,10 +134,13 @@ in {
         ++ [
           {
             aos.config.frozenArtifacts = frozenArtifacts;
-            # Keep the full stage-2 projection self-referential: the generated
-            # service must continue to name this exact ABI-pinned base library,
-            # not the build-time default or an operator value.
-            aos.config.evalAtBoot.baseLib = ./.;
+            # Keep the full stage-2 projection self-referential. A path value
+            # asks the evaluator to import this already-realized directory as
+            # a new store object, yielding a nonexistent doubled-name path in
+            # the manifest. Discarding the path context records the exact
+            # immutable store path supplied via --base-lib instead.
+            aos.config.evalAtBoot.baseLib =
+              builtins.unsafeDiscardStringContext (builtins.toString ./.);
             aos.config.evalAtBoot.baseLibAbiHash = "@abiHash@";
           }
         ];
