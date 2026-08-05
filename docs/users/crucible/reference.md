@@ -8,13 +8,13 @@ binary.
 
 | Option | Purpose |
 | --- | --- |
-| `--seed <u64|hex>` | Set the root entropy. It overrides `CRUCIBLE_SEED`. |
-| `--backend <auto|qemu>` | Select local backend discovery. Production builds expose QEMU only. |
+| `--seed <u64\|hex>` | Set the root entropy. It overrides `CRUCIBLE_SEED`. |
+| `--backend <auto\|qemu>` | Select local backend discovery. Production builds expose QEMU only. |
 | `--daemon <addr>` | Send lifecycle operations to a daemon. |
 | `--qemu <path>` | Override the patched QEMU binary. |
 | `--plugin <path>` | Override the matching QEMU plugin. |
 | `--store <path>` | Set the content-addressed store root. |
-| `--format <jsonl|json|table|markdown>` | Fix report rendering. The default is table on a terminal and JSONL otherwise. |
+| `--format <jsonl\|json\|table\|markdown>` | Fix report rendering. The default is table on a terminal and JSONL otherwise. |
 | `--trace <path>` | Write the event stream to a file instead of standard output. |
 | `--artifact-dir <path>` | Set the failure-artifact directory; default `./.crucible`. |
 | `-v`, `--verbose` | Increase log verbosity; repeat for more detail. |
