@@ -740,7 +740,7 @@ sha256 = "{info_sha256}"
             .unwrap();
         assert_eq!(meta.images.len(), 1);
         assert!(meta.images[0].delivery.is_store_only());
-        assert_eq!(meta.images[0].store_path, "/aos/store/aos-system-raw");
+        assert_eq!(meta.images[0].store_path, "/aos/store/imagehash-server-raw");
     }
 
     #[test]

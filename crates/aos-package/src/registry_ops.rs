@@ -13624,8 +13624,8 @@ mod tests {
         let receipt_path = git_dir
             .join("aos-static-origin/publication-receipts")
             .join(format!("{}.json", head.id()));
-        let receipt: serde_json::Value =
-            serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        let receipt_bytes = fs::read(&receipt_path).unwrap();
+        let receipt: serde_json::Value = serde_json::from_slice(&receipt_bytes).unwrap();
         assert_eq!(receipt["commit"], head.id().to_string());
         assert_eq!(receipt["registry"], "test-registry");
         assert_eq!(receipt["catalogDigest"].as_str().unwrap().len(), 64);
@@ -13635,7 +13635,7 @@ mod tests {
         persist_image_publication_receipt(&repo_dir).unwrap();
         assert_eq!(
             fs::read(&receipt_path).unwrap(),
-            serde_json::to_vec(&receipt).unwrap(),
+            receipt_bytes,
             "same-commit retry must be byte-idempotent"
         );
 
@@ -13826,8 +13826,8 @@ mod tests {
             info["sha256"].as_str().unwrap(),
             "aos-test.img"
         ));
-        info["partitions"][0]["sizeMiB"] = serde_json::json!(2);
-        info["partitions"][0]["sizeBytes"] = serde_json::json!(sparse_size);
+        info["partitions"][1]["sizeMiB"] = serde_json::json!((sparse_size - 10) / (1024 * 1024));
+        info["partitions"][1]["sizeBytes"] = serde_json::json!(sparse_size - 10);
         fs::write(&info_path, serde_json::to_vec(&info).unwrap()).unwrap();
         let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
         assert_eq!(image.delivery.byte_size, sparse_size);
