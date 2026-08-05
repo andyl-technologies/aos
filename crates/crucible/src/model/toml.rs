@@ -31,8 +31,7 @@ pub(super) const SCENARIO_FORM_BINARY_MAGIC_V3: &[u8] = b"crucible.scenario-def-
 pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V3: &[u8] =
     b"crucible.reproduction-artifact.v3\0";
 pub(super) const SCHEDULE_BINARY_MAGIC: &[u8] = b"crucible.schedule.v1\0";
-pub(super) const WORLD_BINARY_MAGIC_V1: &[u8] = b"crucible.world.v1\0";
-pub(super) const WORLD_BINARY_MAGIC_V2: &[u8] = b"crucible.world.v2\0";
+pub(super) const WORLD_BINARY_MAGIC_V3: &[u8] = b"crucible.world.v3\0";
 pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v3\0";
 pub(super) const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
 pub(super) const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v1\0";
@@ -94,6 +93,30 @@ pub(super) struct WorldToml {
     pub(super) node: Vec<WorldNodeDefToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) link: Vec<LinkToml>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) fault_domain: Vec<WorldFaultDomain>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_interface: Vec<WorldNetworkInterface>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_segment: Vec<WorldNetworkSegment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_medium: Vec<WorldNetworkMedium>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_forwarder: Vec<WorldNetworkForwarder>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_queue: Vec<WorldNetworkQueue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_path: Vec<WorldNetworkPath>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_attachment: Vec<WorldNetworkAttachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) network_contact_plan: Vec<WorldNetworkContactPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) mobile_endpoint: Vec<WorldMobileEndpoint>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) storage_device: Vec<WorldStorageFaultDevice>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) node_fault_capabilities: Vec<WorldNodeFaultCapabilities>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -829,6 +852,7 @@ pub(super) fn scenario_form_from_toml(
 }
 
 pub(super) fn world_to_toml(world: &World) -> WorldToml {
+    let fault_topology = world.fault_topology();
     WorldToml {
         id: format_content_hash_ref(world.id()),
         node: world
@@ -837,10 +861,36 @@ pub(super) fn world_to_toml(world: &World) -> WorldToml {
             .map(world_node_def_to_toml)
             .collect(),
         link: world.links().iter().map(link_to_toml).collect(),
+        fault_domain: fault_topology.fault_domains.clone(),
+        network_interface: fault_topology.network_interfaces.clone(),
+        network_segment: fault_topology.network_segments.clone(),
+        network_medium: fault_topology.network_media.clone(),
+        network_forwarder: fault_topology.network_forwarders.clone(),
+        network_queue: fault_topology.network_queues.clone(),
+        network_path: fault_topology.network_paths.clone(),
+        network_attachment: fault_topology.network_attachments.clone(),
+        network_contact_plan: fault_topology.network_contact_plans.clone(),
+        mobile_endpoint: fault_topology.mobile_endpoints.clone(),
+        storage_device: fault_topology.storage_devices.clone(),
+        node_fault_capabilities: fault_topology.node_capabilities.clone(),
     }
 }
 
 pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
+    let fault_topology = WorldFaultTopology {
+        fault_domains: toml.fault_domain,
+        network_interfaces: toml.network_interface,
+        network_segments: toml.network_segment,
+        network_media: toml.network_medium,
+        network_forwarders: toml.network_forwarder,
+        network_queues: toml.network_queue,
+        network_paths: toml.network_path,
+        network_attachments: toml.network_attachment,
+        network_contact_plans: toml.network_contact_plan,
+        mobile_endpoints: toml.mobile_endpoint,
+        storage_devices: toml.storage_device,
+        node_capabilities: toml.node_fault_capabilities,
+    };
     let id = parse_content_hash_ref(&toml.id)?;
     let topology_nodes = toml
         .node
@@ -852,8 +902,10 @@ pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
         .into_iter()
         .map(link_from_toml)
         .collect::<Result<Vec<_>, _>>()?;
-    let world = World::from_recorded_node_defs_and_links(id, topology_nodes, links)?;
-    validate_world_serialized_identity(&world)?;
+    let world = World::from_recorded_node_defs_and_links(id, topology_nodes, links)?
+        .with_fault_topology(fault_topology)
+        .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    validate_serialized_id("world", id, serialized_world_identity(&world))?;
     Ok(world)
 }
 

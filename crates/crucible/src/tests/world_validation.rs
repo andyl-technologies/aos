@@ -2013,7 +2013,7 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() {
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_world.to_compact_binary()).to_hex(),
-        "d6b383bba7293f4ed649f2f2cded1d57a6117077fdbaeb29a3f9b989a5533c3b"
+        "f0957eef5db5c83edceef71cd8a8288d78c9a0aa05a220084e1487422585abed"
     );
     assert_eq!(
         authored_plan.content_hash().to_hex(),
@@ -2049,7 +2049,7 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() {
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_form.to_compact_binary()).to_hex(),
-        "ee461ca174c9fff45feb366c7b42a6e407d58fafe2534ea57e7adb982f9a395b"
+        "c024650301f5ecfc135e96f571336abc4a7a2170dfa3ee338799eb6b8fe6ff40"
     );
     assert_eq!(authored_world.id(), canonical_world.id());
     assert_eq!(authored_world.vm_nodes(), canonical_world.vm_nodes());
@@ -2057,7 +2057,7 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() {
     assert!(
         authored_world
             .to_compact_binary()
-            .starts_with(b"crucible.world.v1\0")
+            .starts_with(b"crucible.world.v3\0")
     );
     assert!(
         authored_plan

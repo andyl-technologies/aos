@@ -2,7 +2,9 @@ use super::*;
 use crate::model::{
     Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES, NodeId,
     Plan, ReadyPoint, ScenarioBinaryReader, ScenarioBinaryWriter, VmArchitecture, WhiteBoxPolicy,
-    World, WorldNode,
+    World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldNetworkInterface,
+    WorldNetworkPath, WorldNetworkPathHop, WorldNetworkSegment, WorldNetworkSegmentKind,
+    WorldNetworkTechnology, WorldNode,
 };
 
 fn test_link() -> LinkDef {
@@ -44,8 +46,56 @@ fn test_world() -> World {
             initrd: None,
         })
         .collect();
-    World::from_nodes_and_links(nodes, vec![test_link()])
-        .unwrap_or_else(|error| panic!("test world: {error}"))
+    let world = World::from_nodes_and_links(nodes, vec![test_link()])
+        .unwrap_or_else(|error| panic!("test world: {error}"));
+    let segment = SignalId::parse(test_segment_id().as_str())
+        .unwrap_or_else(|error| panic!("test segment signal ID: {error}"));
+    world
+        .with_fault_topology(WorldFaultTopology {
+            fault_domains: vec![WorldFaultDomain {
+                id: signal_id("campus-uplink"),
+                targets: vec![WorldFaultTargetRef::NetworkSegment {
+                    segment: segment.clone(),
+                    direction: FaultDirection::AToB,
+                }],
+            }],
+            network_interfaces: vec![
+                WorldNetworkInterface {
+                    id: signal_id("left-interface"),
+                    endpoint: signal_id("left"),
+                    technology: WorldNetworkTechnology::Ethernet,
+                    addresses: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+                WorldNetworkInterface {
+                    id: signal_id("right-interface"),
+                    endpoint: signal_id("right"),
+                    technology: WorldNetworkTechnology::Ethernet,
+                    addresses: Vec::new(),
+                    fault_domains: Vec::new(),
+                },
+            ],
+            network_segments: vec![WorldNetworkSegment {
+                id: segment.clone(),
+                kind: WorldNetworkSegmentKind::Ethernet,
+                interface_a: signal_id("left-interface"),
+                interface_b: signal_id("right-interface"),
+                minimum_latency_nanos: 1,
+                medium: None,
+                forwarders: Vec::new(),
+                fault_domains: Vec::new(),
+            }],
+            network_paths: vec![WorldNetworkPath {
+                id: signal_id("active-uplink"),
+                hops: vec![WorldNetworkPathHop::Segment {
+                    segment,
+                    direction: FaultDirection::AToB,
+                }],
+                mtu_bytes: 1500,
+            }],
+            ..WorldFaultTopology::default()
+        })
+        .unwrap_or_else(|error| panic!("test fault topology: {error}"))
 }
 
 fn signal_id(value: &str) -> SignalId {
@@ -88,6 +138,14 @@ fn binding_with_sampling(program: &SignalProgram, sampling: BindingSampling) -> 
         false,
     )
     .unwrap_or_else(|error| panic!("invalid test target: {error}"));
+    binding_with_selector(program, sampling, TargetSelector::Exact(target))
+}
+
+fn binding_with_selector(
+    program: &SignalProgram,
+    sampling: BindingSampling,
+    selector: TargetSelector,
+) -> FaultBinding {
     let effect = EffectRequest::new(
         EFFECT_SEMANTIC_VERSION,
         EffectLifetime::Persistent,
@@ -103,7 +161,7 @@ fn binding_with_sampling(program: &SignalProgram, sampling: BindingSampling) -> 
         program.exported_outputs().to_vec(),
         sampling,
         BindingMapping::ActiveWhenTrue { invert: false },
-        TargetSelector::Exact(target),
+        selector,
         [FaultPhase::Admit].into_iter().collect(),
         effect,
         None,
@@ -272,6 +330,115 @@ fn plan_toml_round_trips_a_complete_binding_contract() {
     assert!(encoded.contains("kind = \"network.availability\""));
     assert!(encoded.contains("kind = \"network_segment\""));
     assert!(!encoded.contains("parameters ="));
+}
+
+#[test]
+fn world_resolves_fault_domains_and_dynamic_paths_without_authored_caches() {
+    let base_program = program(true);
+    let binding = binding(&base_program);
+    let plan = Plan::empty().with_fault_signals(
+        FaultSignalPlan::new(vec![base_program], vec![binding])
+            .unwrap_or_else(|error| panic!("binding plan: {error}")),
+    );
+    let canonical = plan
+        .to_canonical_toml()
+        .unwrap_or_else(|error| panic!("encode binding plan: {error}"));
+
+    let resolved = ResolvedTargetSet::new(
+        vec![ResolvedFaultTarget::NetworkSegment {
+            segment: test_segment_id(),
+            direction: FaultDirection::AToB,
+        }],
+        false,
+    )
+    .unwrap_or_else(|error| panic!("resolved test path: {error}"));
+    for (selector_toml, selector, expected_kind) in [
+        (
+            "{ kind = \"fault_domain\", domain = \"campus-uplink\" }",
+            TargetSelector::FaultDomain {
+                domain: object_id("campus-uplink"),
+                resolved: resolved.clone(),
+            },
+            "fault_domain",
+        ),
+        (
+            "{ kind = \"dynamic_path\", path = \"active-uplink\", membership_semantic_version = 1 }",
+            TargetSelector::DynamicPath {
+                path: object_id("active-uplink"),
+                initial: resolved.clone(),
+                membership_semantic_version: 1,
+            },
+            "dynamic_path",
+        ),
+    ] {
+        let expected_program = program(true);
+        let expected_binding =
+            binding_with_selector(&expected_program, BindingSampling::AtBoundary, selector);
+        let expected = Plan::empty().with_fault_signals(
+            FaultSignalPlan::new(vec![expected_program], vec![expected_binding])
+                .unwrap_or_else(|error| panic!("expected selector plan: {error}")),
+        );
+        let mut value: toml::Value = toml::from_str(&canonical)
+            .unwrap_or_else(|error| panic!("parse canonical plan: {error}"));
+        value
+            .as_table_mut()
+            .unwrap_or_else(|| panic!("plan is a table"))
+            .insert(
+                String::from("id"),
+                toml::Value::String(format!("blake3:{}", expected.content_hash().to_hex())),
+            );
+        let bindings = value
+            .get_mut("fault_binding")
+            .and_then(toml::Value::as_array_mut)
+            .unwrap_or_else(|| panic!("canonical plan has bindings"));
+        let row = bindings[0]
+            .as_table_mut()
+            .unwrap_or_else(|| panic!("binding is a table"));
+        let selector_value: toml::Value = toml::from_str(&format!("selector = {selector_toml}"))
+            .unwrap_or_else(|error| panic!("parse selector: {error}"));
+        row.insert(
+            String::from("selector"),
+            selector_value
+                .get("selector")
+                .cloned()
+                .unwrap_or_else(|| panic!("selector value exists")),
+        );
+        let authored =
+            toml::to_string(&value).unwrap_or_else(|error| panic!("render authored plan: {error}"));
+        let decoded = Plan::from_canonical_toml_for_world(&test_world(), &authored)
+            .unwrap_or_else(|error| panic!("resolve {expected_kind}: {error}"));
+        assert_eq!(decoded, expected);
+        let emitted = decoded
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("emit {expected_kind}: {error}"));
+        assert!(emitted.contains(&format!("kind = \"{expected_kind}\"")));
+        assert!(!emitted.contains("resolved_targets"));
+        assert!(!emitted.contains("initial_targets"));
+    }
+}
+
+#[test]
+fn world_fault_topology_round_trips_through_only_v3_codecs() {
+    let world = test_world();
+    let toml = world
+        .to_canonical_toml()
+        .unwrap_or_else(|error| panic!("encode world TOML: {error}"));
+    let from_toml = World::from_canonical_toml(&toml)
+        .unwrap_or_else(|error| panic!("decode world TOML: {error}"));
+    assert_eq!(from_toml, world);
+    assert!(toml.contains("[[network_segment]]"));
+    assert!(toml.contains("[[fault_domain]]"));
+
+    let binary = world.to_compact_binary();
+    assert!(binary.starts_with(b"crucible.world.v3\0"));
+    assert_eq!(
+        World::from_compact_binary(&binary)
+            .unwrap_or_else(|error| panic!("decode world binary: {error}")),
+        world
+    );
+    let mut old_magic = binary.clone();
+    old_magic[..b"crucible.world.v2\0".len()].copy_from_slice(b"crucible.world.v2\0");
+    assert!(World::from_compact_binary(&old_magic).is_err());
 }
 
 #[test]

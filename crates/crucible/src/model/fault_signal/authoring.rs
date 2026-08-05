@@ -14,7 +14,9 @@ use std::fmt;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::model::{World, WorldIoNodeKind, format_content_hash_ref};
+use crate::model::{
+    World, WorldFaultTargetRef, WorldIoNodeKind, WorldNetworkPathHop, format_content_hash_ref,
+};
 
 use super::*;
 
@@ -1705,48 +1707,20 @@ fn selector_to_toml(selector: &TargetSelector) -> Result<toml::Value, FaultSigna
             );
             Ok(toml::Value::Table(value))
         }
-        TargetSelector::FaultDomain { domain, resolved } => {
+        TargetSelector::FaultDomain { domain, .. } => {
             let mut value = toml::map::Map::new();
             insert_string(&mut value, "kind", "fault_domain");
             insert(&mut value, "domain", domain)?;
-            value.insert(
-                String::from("resolved_targets"),
-                toml::Value::Array(
-                    resolved
-                        .targets()
-                        .iter()
-                        .map(|target| flatten_tagged(to_toml_value(target)?))
-                        .collect::<Result<Vec<_>, FaultSignalAuthoringError>>()?,
-                ),
-            );
-            value.insert(
-                String::from("allow_empty"),
-                toml::Value::Boolean(resolved.allow_empty()),
-            );
             Ok(toml::Value::Table(value))
         }
         TargetSelector::DynamicPath {
             path,
-            initial,
             membership_semantic_version,
+            ..
         } => {
             let mut value = toml::map::Map::new();
             insert_string(&mut value, "kind", "dynamic_path");
             insert(&mut value, "path", path)?;
-            value.insert(
-                String::from("initial_targets"),
-                toml::Value::Array(
-                    initial
-                        .targets()
-                        .iter()
-                        .map(|target| flatten_tagged(to_toml_value(target)?))
-                        .collect::<Result<Vec<_>, FaultSignalAuthoringError>>()?,
-                ),
-            );
-            value.insert(
-                String::from("allow_empty"),
-                toml::Value::Boolean(initial.allow_empty()),
-            );
             value.insert(
                 String::from("membership_semantic_version"),
                 toml::Value::Integer(i64::from(*membership_semantic_version)),
@@ -1773,26 +1747,62 @@ fn selector_from_toml(
             ))
         }
         "fault_domain" => {
-            let domain = take_typed(&mut value, "domain")?;
-            let targets = take_flat_targets(&mut value, "resolved_targets", world)?;
-            let allow_empty = take_optional_typed(&mut value, "allow_empty")?.unwrap_or(false);
+            let domain: FaultObjectId = take_typed(&mut value, "domain")?;
             ensure_empty(&value, "selector")?;
+            let declaration = world
+                .fault_topology()
+                .fault_domains
+                .iter()
+                .find(|candidate| candidate.id.as_str() == domain.as_str())
+                .ok_or_else(|| FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind: String::from("fault_domain"),
+                    id: domain.to_string(),
+                })?;
+            let targets = declaration
+                .targets
+                .iter()
+                .map(|target| resolve_world_target_ref(target, world))
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(TargetSelector::FaultDomain {
                 domain,
-                resolved: ResolvedTargetSet::new(targets, allow_empty)
+                resolved: ResolvedTargetSet::new(targets, false)
                     .map_err(|_| FaultSignalAuthoringError::InvalidSelector)?,
             })
         }
         "dynamic_path" => {
-            let path = take_typed(&mut value, "path")?;
-            let targets = take_flat_targets(&mut value, "initial_targets", world)?;
-            let allow_empty = take_optional_typed(&mut value, "allow_empty")?.unwrap_or(false);
+            let path: FaultObjectId = take_typed(&mut value, "path")?;
             let membership_semantic_version =
                 take_typed(&mut value, "membership_semantic_version")?;
             ensure_empty(&value, "selector")?;
+            let declaration = world
+                .fault_topology()
+                .network_paths
+                .iter()
+                .find(|candidate| candidate.id.as_str() == path.as_str())
+                .ok_or_else(|| FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind: String::from("dynamic_path"),
+                    id: path.to_string(),
+                })?;
+            let targets = declaration
+                .hops
+                .iter()
+                .map(|hop| match hop {
+                    WorldNetworkPathHop::Segment { segment, direction } => {
+                        Ok(ResolvedFaultTarget::NetworkSegment {
+                            segment: fault_object_id(segment)?,
+                            direction: *direction,
+                        })
+                    }
+                    WorldNetworkPathHop::Forwarder { forwarder } => {
+                        Ok(ResolvedFaultTarget::NetworkForwarder {
+                            forwarder: fault_object_id(forwarder)?,
+                        })
+                    }
+                })
+                .collect::<Result<Vec<_>, FaultSignalAuthoringError>>()?;
             Ok(TargetSelector::DynamicPath {
                 path,
-                initial: ResolvedTargetSet::new(targets, allow_empty)
+                initial: ResolvedTargetSet::new(targets, false)
                     .map_err(|_| FaultSignalAuthoringError::InvalidSelector)?,
                 membership_semantic_version,
             })
@@ -1810,6 +1820,121 @@ fn selector_from_toml(
             }
         }
     }
+}
+
+fn fault_object_id(id: &SignalId) -> Result<FaultObjectId, FaultSignalAuthoringError> {
+    FaultObjectId::parse(id.as_str()).map_err(|_| FaultSignalAuthoringError::InvalidSelector)
+}
+
+fn resolve_world_target_ref(
+    target: &WorldFaultTargetRef,
+    world: &World,
+) -> Result<ResolvedFaultTarget, FaultSignalAuthoringError> {
+    let topology = world.fault_topology();
+    Ok(match target {
+        WorldFaultTargetRef::NetworkInterface { interface } => {
+            let declaration = topology
+                .network_interfaces
+                .iter()
+                .find(|candidate| &candidate.id == interface)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            ResolvedFaultTarget::NetworkInterface {
+                endpoint: fault_object_id(&declaration.endpoint)?,
+                interface: fault_object_id(interface)?,
+            }
+        }
+        WorldFaultTargetRef::NetworkSegment { segment, direction } => {
+            ResolvedFaultTarget::NetworkSegment {
+                segment: fault_object_id(segment)?,
+                direction: *direction,
+            }
+        }
+        WorldFaultTargetRef::NetworkMedium { medium } => {
+            let declaration = topology
+                .network_media
+                .iter()
+                .find(|candidate| &candidate.id == medium)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            let resource = declaration
+                .resources
+                .first()
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            ResolvedFaultTarget::NetworkMedium {
+                medium: fault_object_id(medium)?,
+                resource: fault_object_id(resource)?,
+            }
+        }
+        WorldFaultTargetRef::NetworkForwarder { forwarder } => {
+            ResolvedFaultTarget::NetworkForwarder {
+                forwarder: fault_object_id(forwarder)?,
+            }
+        }
+        WorldFaultTargetRef::NetworkQueue { queue } => {
+            let declaration = topology
+                .network_queues
+                .iter()
+                .find(|candidate| &candidate.id == queue)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            ResolvedFaultTarget::NetworkQueue {
+                owner: fault_object_id(&declaration.owner)?,
+                queue: fault_object_id(queue)?,
+            }
+        }
+        WorldFaultTargetRef::NetworkPath { path } => ResolvedFaultTarget::NetworkPath {
+            path_version: fault_object_id(path)?,
+            direction: FaultDirection::AToB,
+        },
+        WorldFaultTargetRef::NetworkAttachment { attachment } => {
+            let declaration = topology
+                .network_attachments
+                .iter()
+                .find(|candidate| &candidate.id == attachment)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            let interface = topology
+                .network_interfaces
+                .iter()
+                .find(|candidate| candidate.id == declaration.interface)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            ResolvedFaultTarget::NetworkAttachment {
+                endpoint: fault_object_id(&interface.endpoint)?,
+                interface: fault_object_id(&interface.id)?,
+                attachment: fault_object_id(attachment)?,
+            }
+        }
+        WorldFaultTargetRef::NetworkContact { plan, contact } => {
+            let declaration = topology
+                .network_contact_plans
+                .iter()
+                .find(|candidate| &candidate.id == plan)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            ResolvedFaultTarget::NetworkContact {
+                endpoint_a: fault_object_id(&declaration.endpoint_a)?,
+                endpoint_b: fault_object_id(&declaration.endpoint_b)?,
+                contact: fault_object_id(contact)?,
+            }
+        }
+        WorldFaultTargetRef::BlockDevice { device } => {
+            let node = world
+                .io_nodes()
+                .find(|node| node.id.name == device.as_str())
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            ResolvedFaultTarget::BlockDevice {
+                device: node.fault_target_hash(),
+            }
+        }
+        WorldFaultTargetRef::NinePDevice { device } => {
+            let node = world
+                .io_nodes()
+                .find(|node| node.id.name == device.as_str())
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            ResolvedFaultTarget::NinePDevice {
+                device: node.fault_target_hash(),
+            }
+        }
+        WorldFaultTargetRef::Node { node } => ResolvedFaultTarget::Node {
+            node: fault_object_id(node)?,
+        },
+    })
 }
 
 fn take_flat_targets(
@@ -1835,14 +1960,38 @@ fn resolve_authored_target(
     let mut value = table(value, "selector target")?;
     let kind = take_string(&mut value, "kind")?;
     match kind.as_str() {
+        "network_interface" => {
+            let endpoint: FaultObjectId = take_typed(&mut value, "endpoint")?;
+            let interface: FaultObjectId = take_typed(&mut value, "interface")?;
+            ensure_empty(&value, "network interface selector")?;
+            let exists = world
+                .fault_topology()
+                .network_interfaces
+                .iter()
+                .any(|candidate| {
+                    candidate.id.as_str() == interface.as_str()
+                        && candidate.endpoint.as_str() == endpoint.as_str()
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: interface.to_string(),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::NetworkInterface {
+                endpoint,
+                interface,
+            }])
+        }
         "network_segment" => {
             let segment: FaultObjectId = take_typed(&mut value, "segment")?;
             let direction = take_string(&mut value, "direction")?;
             ensure_empty(&value, "network_segment selector")?;
-            let exists = world.links().iter().any(|link| {
-                link.fault_segment_id()
-                    .is_ok_and(|candidate| candidate == segment)
-            });
+            let exists = world
+                .fault_topology()
+                .network_segments
+                .iter()
+                .any(|candidate| candidate.id.as_str() == segment.as_str());
             if !exists {
                 return Err(FaultSignalAuthoringError::UnknownWorldTarget {
                     kind,
@@ -1862,6 +2011,142 @@ fn resolve_authored_target(
                     direction,
                 })
                 .collect())
+        }
+        "network_medium" => {
+            let medium: FaultObjectId = take_typed(&mut value, "medium")?;
+            let resource: FaultObjectId = take_typed(&mut value, "resource")?;
+            ensure_empty(&value, "network medium selector")?;
+            let exists = world
+                .fault_topology()
+                .network_media
+                .iter()
+                .any(|candidate| {
+                    candidate.id.as_str() == medium.as_str()
+                        && candidate
+                            .resources
+                            .iter()
+                            .any(|item| item.as_str() == resource.as_str())
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: format!("{medium}:{resource}"),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::NetworkMedium {
+                medium,
+                resource,
+            }])
+        }
+        "network_queue" => {
+            let owner: FaultObjectId = take_typed(&mut value, "owner")?;
+            let queue: FaultObjectId = take_typed(&mut value, "queue")?;
+            ensure_empty(&value, "network queue selector")?;
+            let exists = world
+                .fault_topology()
+                .network_queues
+                .iter()
+                .any(|candidate| {
+                    candidate.id.as_str() == queue.as_str()
+                        && candidate.owner.as_str() == owner.as_str()
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: queue.to_string(),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::NetworkQueue { owner, queue }])
+        }
+        "network_forwarder" => {
+            let forwarder: FaultObjectId = take_typed(&mut value, "forwarder")?;
+            ensure_empty(&value, "network forwarder selector")?;
+            let exists = world
+                .fault_topology()
+                .network_forwarders
+                .iter()
+                .any(|candidate| candidate.id.as_str() == forwarder.as_str());
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: forwarder.to_string(),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::NetworkForwarder { forwarder }])
+        }
+        "network_path" => {
+            let path_version: FaultObjectId = take_typed(&mut value, "path_version")?;
+            let direction: FaultDirection = take_typed(&mut value, "direction")?;
+            ensure_empty(&value, "network path selector")?;
+            let exists = world
+                .fault_topology()
+                .network_paths
+                .iter()
+                .any(|candidate| candidate.id.as_str() == path_version.as_str());
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: path_version.to_string(),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::NetworkPath {
+                path_version,
+                direction,
+            }])
+        }
+        "network_attachment" => {
+            let endpoint: FaultObjectId = take_typed(&mut value, "endpoint")?;
+            let interface: FaultObjectId = take_typed(&mut value, "interface")?;
+            let attachment: FaultObjectId = take_typed(&mut value, "attachment")?;
+            ensure_empty(&value, "network attachment selector")?;
+            let topology = world.fault_topology();
+            let exists = topology.network_attachments.iter().any(|candidate| {
+                candidate.id.as_str() == attachment.as_str()
+                    && candidate.interface.as_str() == interface.as_str()
+            }) && topology.network_interfaces.iter().any(|candidate| {
+                candidate.id.as_str() == interface.as_str()
+                    && candidate.endpoint.as_str() == endpoint.as_str()
+            });
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: attachment.to_string(),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::NetworkAttachment {
+                endpoint,
+                interface,
+                attachment,
+            }])
+        }
+        "network_contact" => {
+            let endpoint_a: FaultObjectId = take_typed(&mut value, "endpoint_a")?;
+            let endpoint_b: FaultObjectId = take_typed(&mut value, "endpoint_b")?;
+            let contact: FaultObjectId = take_typed(&mut value, "contact")?;
+            ensure_empty(&value, "network contact selector")?;
+            let exists = world
+                .fault_topology()
+                .network_contact_plans
+                .iter()
+                .any(|plan| {
+                    plan.endpoint_a.as_str() == endpoint_a.as_str()
+                        && plan.endpoint_b.as_str() == endpoint_b.as_str()
+                        && plan
+                            .contacts
+                            .iter()
+                            .any(|candidate| candidate.id.as_str() == contact.as_str())
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: contact.to_string(),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::NetworkContact {
+                endpoint_a,
+                endpoint_b,
+                contact,
+            }])
         }
         "block_device" | "nine_p_device" => {
             let device = take_string(&mut value, "device")?;
