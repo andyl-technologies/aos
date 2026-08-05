@@ -12,6 +12,7 @@
     sourceRoot = "source/crates";
     hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
   };
+  networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -394,6 +395,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.crucible
         pkgs.rust
         pkgs.sed
       ];
@@ -474,6 +476,83 @@ in
               -p crucible-cli \
               cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome \
               -- --test-threads=1
+
+            artifact_dir="$TMPDIR/crucible-live-replay-artifacts"
+            store_dir="$TMPDIR/crucible-live-replay-store"
+            producer_log="$TMPDIR/crucible-live-replay-producer.jsonl"
+            mkdir -p "$artifact_dir" "$store_dir"
+            set +e
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --seed 42 \
+              --format jsonl \
+              --trace "$producer_log" \
+              --artifact-dir "$artifact_dir" \
+              --store "$store_dir" \
+              run \
+              ../tests/crucible/fixtures/happy-path.scenario.toml \
+              --max-quanta 1 \
+              --save-on fail \
+              > "$TMPDIR/crucible-live-replay-producer.out"
+            producer_status=$?
+            set -e
+            test "$producer_status" -eq 2
+            artifact=$(find "$artifact_dir" -type f -name 'repro-timeout-*.crucible' -print -quit)
+            test -n "$artifact"
+            checkpoint=$(
+              sed -n \
+                's/.*checkpoint=\(blake3:[0-9a-f]*\).*/\1/p' \
+                "$TMPDIR/crucible-live-replay-producer.out"
+            )
+            test -n "$checkpoint"
+            # The artifact-owned canonical log ends before the CLI's
+            # self-referential final-outcome line, which names the completed
+            # artifact digest.
+            sed '$d' "$producer_log" > "$TMPDIR/crucible-live-replay-check.jsonl"
+
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --format jsonl \
+              --store "$store_dir" \
+              replay "$artifact" \
+              > "$TMPDIR/crucible-live-replay.out"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --format jsonl \
+              --store "$store_dir" \
+              replay "$artifact" \
+              --check "$TMPDIR/crucible-live-replay-check.jsonl" \
+              > "$TMPDIR/crucible-live-replay-check.out"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --format jsonl \
+              --store "$store_dir" \
+              replay "$artifact" \
+              --bisect "$artifact" \
+              > "$TMPDIR/crucible-live-replay-bisect.out"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --format jsonl \
+              --store "$store_dir" \
+              replay "$artifact" \
+              --to "$checkpoint" \
+              > "$TMPDIR/crucible-live-replay-to.out"
+
+            grep -q '"kind":"replay_reduction".*"status=reexecuted' \
+              "$TMPDIR/crucible-live-replay.out"
+            grep -q '"kind":"replay_live_qemu".*"status=validated.*producer=run' \
+              "$TMPDIR/crucible-live-replay.out"
+            grep -q '"kind":"replay_check".*"status=byte-identical' \
+              "$TMPDIR/crucible-live-replay-check.out"
+            grep -q '"kind":"replay_bisect".*"status=byte-identical' \
+              "$TMPDIR/crucible-live-replay-bisect.out"
+            grep -q '"kind":"replay_to_savepoint".*"status=target-validated' \
+              "$TMPDIR/crucible-live-replay-to.out"
           '';
         }
         {
@@ -487,13 +566,13 @@ in
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
             status=complete
-            evidence_scope=replay-model-and-process-validation
+            evidence_scope=replay-model-and-live-qemu-process-validation
             component=crucible-cli
             replay_check=byte-identical-canonical-log
             replay_to_schedule_prefix=typed-payload-backed
             replay_to_materialization=model-temporal-graph
             replay_machine_independent=mock-host-profile
-            replay_process=check-jsonl-success-mismatch,to-savepoint-jsonl-target-validation
+            replay_process=live-qemu-ordinary,check,both-bisect-sides,to-savepoint-target-validation
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

@@ -131,7 +131,7 @@ all land and are gated. Everything later is built on this.
 - Execution model (Configuration/step/instantiate, decision RNG; the `Decision`
   taxonomy extensions `T-EXEC-19` `Preemption` + `T-EXEC-20` `AppRandom`): `T-EXEC-1 … T-EXEC-20` ([`05`](05-execution-model.md)).
 - Temporal graph + content-addressed store (engine-independent parts): `T-TEMP-1 … T-TEMP-11` ([`07`](07-temporal-graph.md)).
-- Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-28` ([`24`](24-determinism-harness-testing.md)).
+- Harness, gate catalog, in-process QEMU double, fingerprint, divergence bisector: `T-HARN-1 … T-HARN-29` ([`24`](24-determinism-harness-testing.md)).
 - Patterns tracked here: `T-PAT-1, T-PAT-4, T-PAT-5, T-PAT-6, T-PAT-9`;
   the backend pattern is completed by the phase-5 backend and SimDouble suite
   ([`29`](29-patterns-and-sketches.md)).
@@ -376,7 +376,7 @@ long-held locks.
   a non-empty replayed causal event payload projection under quiet/noisy
   streaming observer load, and forbids wall-clock reads in the production API
   paths.
-- CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-20` ([`23`](23-cli.md)).
+- CLI (incl. the triage + debug subcommands `T-CLI-17, T-CLI-18`): `T-CLI-1 … T-CLI-21` ([`23`](23-cli.md)).
   `T-CLI-2` is green through `checks.crucible.phase5.cliThinWrapper`, which
   enforces a pre-dispatch thin-wrapper plan for every closed subcommand, records
   the emitted session/API/driver operations, limits routed control capabilities
@@ -572,9 +572,16 @@ long-held locks.
   materialization with runtime/reduced-state, single-VM-fingerprint, and
   fat/thin checkpoint agreement, plus host-profile machine-independent replay
   coverage in the same gate for quiet single-core vs loaded many-core artifact
-  reproduction. Ordinary replay re-executes the pure
-  `reduce(ScenarioDef, Schedule)` materialization and verifies the reconstructed
-  canonical bytes and fingerprint evidence.
+  reproduction. The pure `reduce(ScenarioDef, Schedule)` materialization is the
+  mandatory replay preflight; T-CLI-21 removes the production model-only path.
+  V3 artifacts from every local-QEMU producer add a compact live recipe plus
+  exact event and all-node fingerprint streams. Ordinary replay, `--check`, and
+  `--to` launch a fresh pinned QEMU/plugin pair, while `--bisect` launches both
+  sides independently before comparison. The live executor reapplies recorded
+  branch, fault, network, and applicable control inputs and rejects any terminal
+  tuple, event-byte, fingerprint-byte, or control-sequence divergence. The same
+  check creates and replays a real two-VM timeout artifact through ordinary,
+  `--check`, `--to`, and identical-artifact `--bisect`, completing T-HARN-29.
   `T-CLI-13` is completed through `checks.crucible.phase5.cliSearchFuzzWorkflow`,
   which covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,
   concrete scenario resolution for search, family reference resolution for fuzz,

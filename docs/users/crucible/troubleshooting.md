@@ -78,6 +78,10 @@ Replay requires the engine, artifact ABI, QEMU build, patch series, shared-memor
 ABI, guest-host protocol, RPC ABI, and plugin ABI recorded by the producer.
 Rebuild or recover the exact package revision that created the artifact.
 
+Production replay accepts the v3 live-QEMU artifact contract only. A v2 or
+model-only artifact must be reproduced with the older matching Crucible build;
+the current CLI will not silently reinterpret it.
+
 Do not bypass this check: replay under a different deterministic substrate is a
 different experiment.
 
@@ -116,6 +120,11 @@ Retain the emitted `.crucible` artifact and replay it before changing the test:
 
 Then save or fork immediately before the failure boundary if an alternate
 schedule needs investigation.
+
+If replay reports a terminal, event-stream, fingerprint-stream, or control
+sequence divergence, retain both the artifact and complete packaged QEMU
+closure. Those errors mean the fresh guest execution did not reproduce the
+recording; they are not ordinary assertion failures.
 
 ### Verify divergence
 

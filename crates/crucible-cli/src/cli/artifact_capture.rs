@@ -109,13 +109,27 @@ pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> (Vec<u64>,
     let decisions = schedule.decisions();
     let mut fault = Vec::new();
     let mut network = Vec::new();
+    let mut recorded_faults = std::collections::HashSet::new();
     for (index, decision) in decisions.iter().enumerate() {
-        if matches!(decision, crucible::Decision::RngDraw(_))
-            && decisions
-                .get(index.saturating_add(1))
-                .is_some_and(|next| matches!(next, crucible::Decision::FaultFires(_)))
+        if let (
+            crucible::Decision::RngDraw(draw),
+            Some(crucible::Decision::FaultFires(fault_decision)),
+        ) = (decision, decisions.get(index.saturating_add(1)))
         {
-            fault.push(index as u64);
+            // World-network RNG/fault pairs are replayed by their enclosing
+            // `live-world-network/` override. Installing them as scheduler
+            // fault choices leaves impossible, permanently pending choices.
+            if fault_decision.fault.name.contains("\nnetwork_direction=") {
+                continue;
+            }
+            let key = (
+                draw.stream.clone(),
+                fault_decision.at,
+                fault_decision.fault.clone(),
+            );
+            if recorded_faults.insert(key) {
+                fault.push(index as u64);
+            }
         }
         if matches!(
             decision,
