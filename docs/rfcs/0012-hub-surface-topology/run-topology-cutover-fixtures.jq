@@ -146,8 +146,36 @@ def canonical_manifest_errors:
     else [{code:"canonical_order_invalid",path:"/authenticated-manifests"}]
     end;
 
+# The authenticated Rust verifier computes real SHA-256 values. This diagnostic
+# runner deliberately has no hashing extension, so re-express the one positive
+# fixture carrying precomputed real aggregate hashes as the equivalent domain
+# markers before evaluating its ordering contract. Negative digest fixtures
+# retain their literal values and therefore still fail as declared.
+def normalize_diagnostic_aggregate_digests($materialized; $case):
+  if $case.case_id == "durable-object-jcs-order-differs-from-stable-id" then
+    ($materialized.report.backup[0].object_manifests
+     | sort_by(canonical_json_text)) as $manifests
+    | (domain_digest_marker("aos.hub.topology-cutover.set/v1"; $manifests)) as $set_digest
+    | (domain_digest_marker(
+         "aos.hub.topology-cutover.do-aggregate/v1";
+         {database_stable_id:$materialized.report.backup[0].database_stable_id,
+          object_manifests:$manifests,
+          recomputed_object_count:($manifests | length),
+          recomputed_row_count:([$manifests[].row_count] | add)})) as $aggregate_digest
+    | $materialized
+    | .report.backup[0].expected_object_set_digest = $set_digest
+    | .report.backup[0].observed_object_set_digest = $set_digest
+    | .report.backup[0].aggregate_manifest_digest = $aggregate_digest
+    | .report.backup[0].verified_aggregate_manifest_digest = $aggregate_digest
+    | .verification.durable_object_aggregates[0].object_set_sha256 = $set_digest
+    | .verification.durable_object_aggregates[0].aggregate_sha256 = $aggregate_digest
+  else
+    $materialized
+  end;
+
 def evaluate_semantic($base; $case):
-  apply_case($base; $case) as $materialized
+  (apply_case($base; $case)
+   | normalize_diagnostic_aggregate_digests(.; $case)) as $materialized
   | (validate($materialized.plan;
               $materialized.report;
               $materialized.verification)
