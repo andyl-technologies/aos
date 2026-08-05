@@ -12,6 +12,122 @@ pub(crate) struct ReproductionScenarioPayload<'a> {
     pub(crate) bytes: &'a [u8],
 }
 
+/// Exact producer evidence required to replay one v3 artifact through QEMU.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LiveQemuArtifactEvidence {
+    /// Canonical execution recipe and terminal target.
+    pub(crate) contract: LiveQemuReplayContract,
+    /// Canonical producer event stream compared with the replay.
+    pub(crate) event_stream: Vec<u8>,
+    /// Canonical producer fingerprint stream compared with the replay.
+    pub(crate) fingerprint_stream: Vec<u8>,
+}
+
+/// Builds the required v3 live-QEMU components from one completed run.
+pub(crate) fn live_qemu_artifact_evidence_from_run(
+    producer: &str,
+    terminal_condition: RunTerminalCondition,
+    max_virtual_time_ticks: Option<u64>,
+    max_quanta: Option<u64>,
+    coverage: bool,
+    branch: LiveQemuReplayBranch,
+    report: &RunWorkflowReport,
+) -> Result<LiveQemuArtifactEvidence, CliError> {
+    let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
+        artifact_error("live-QEMU artifact capture requires a terminal configuration")
+    })?;
+    let fingerprint_samples = run_fingerprint_samples(report);
+    if fingerprint_samples.is_empty() {
+        return Err(artifact_error(
+            "live-QEMU artifact capture requires execution fingerprint samples",
+        ));
+    }
+    let (fault_choice_indices, network_choice_indices) = replay_choice_indices(&terminal.schedule);
+    let controls = report
+        .acknowledged_commands
+        .iter()
+        .enumerate()
+        .map(|(sequence, command)| LiveQemuReplayControl {
+            sequence: sequence as u64,
+            configuration_decisions: 0,
+            frontier_ticks: 0,
+            command: session_command_name(*command).to_string(),
+        })
+        .collect();
+    let contract = LiveQemuReplayContract {
+        producer: producer.to_string(),
+        terminal_condition: terminal_condition.label().to_string(),
+        terminal_status: report.status.label().to_string(),
+        terminal_outcome: terminal_outcome_label(report.outcome).to_string(),
+        terminal_configuration: format_content_hash_ref(terminal.id()),
+        final_frontier_ticks: report.final_frontier_ticks,
+        final_quanta: report.final_quanta,
+        budget_timed_out: report.budget_timed_out,
+        max_virtual_time_ticks,
+        max_quanta,
+        coverage,
+        branch,
+        fault_choice_indices,
+        network_choice_indices,
+        controls,
+    };
+    Ok(LiveQemuArtifactEvidence {
+        contract,
+        event_stream: canonical_verify_log_stream_bytes(&[], &report.streamed_event_frames),
+        fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprint_samples),
+    })
+}
+
+/// Encodes the required live-QEMU evidence components for a v3 artifact.
+pub(crate) fn live_qemu_artifact_payloads(
+    evidence: &LiveQemuArtifactEvidence,
+) -> Vec<ReproductionArtifactComponentPayload> {
+    vec![
+        ReproductionArtifactComponentPayload {
+            kind: String::from("live_qemu_replay_contract"),
+            name: String::from("live-qemu-replay-contract.txt"),
+            media_type: String::from(LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE),
+            bytes: evidence.contract.encode(),
+        },
+        ReproductionArtifactComponentPayload {
+            kind: String::from("live_qemu_event_stream"),
+            name: String::from("live-qemu-event-stream.bin"),
+            media_type: String::from(LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE),
+            bytes: evidence.event_stream.clone(),
+        },
+        ReproductionArtifactComponentPayload {
+            kind: String::from("live_qemu_fingerprint_stream"),
+            name: String::from("live-qemu-fingerprint-stream.bin"),
+            media_type: String::from(LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE),
+            bytes: evidence.fingerprint_stream.clone(),
+        },
+    ]
+}
+
+/// Returns the typed schedule indices that must be forced during live replay.
+pub(crate) fn replay_choice_indices(schedule: &crucible::Schedule) -> (Vec<u64>, Vec<u64>) {
+    let decisions = schedule.decisions();
+    let mut fault = Vec::new();
+    let mut network = Vec::new();
+    for (index, decision) in decisions.iter().enumerate() {
+        if matches!(decision, crucible::Decision::RngDraw(_))
+            && decisions
+                .get(index.saturating_add(1))
+                .is_some_and(|next| matches!(next, crucible::Decision::FaultFires(_)))
+        {
+            fault.push(index as u64);
+        }
+        if matches!(
+            decision,
+            crucible::Decision::Override(override_decision)
+                if override_decision.point.key.starts_with("live-world-network/")
+        ) {
+            network.push(index as u64);
+        }
+    }
+    (fault, network)
+}
+
 pub(crate) fn model_reproduction_artifact_payloads(
     artifact: &crucible::ReproductionArtifact,
     replay_state: crucible::ContentHash,
@@ -75,11 +191,14 @@ pub(crate) fn verify_reproduction_artifact_bytes_with_components(
 pub(crate) fn run_failure_reproduction_artifact_bytes(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
-    scenario: &crucible::ScenarioDefForm,
-    terminal_configuration: &crucible::Configuration,
+    run_plan: &RunInvocationPlan,
+    report: &RunWorkflowReport,
     canonical_log: &[CanonicalLogEntry],
-    fingerprint_samples: &[VerifyFingerprintSample],
 ) -> Result<Vec<u8>, CliError> {
+    let scenario = run_plan.scenario.scenario_form();
+    let terminal_configuration = report.terminal_configuration.as_ref().ok_or_else(|| {
+        artifact_error("failed-run artifact capture requires a terminal configuration")
+    })?;
     if terminal_configuration.def.id() != scenario.id() {
         return Err(CliError::Identity(format!(
             "failed-run terminal scenario {} did not match captured scenario {}",
@@ -99,7 +218,20 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
             "failed-run model reproduction replay failed: {error}"
         ))
     })?;
-    let model_payloads = model_reproduction_artifact_payloads(&model_artifact, replay.state);
+    let mut model_payloads = model_reproduction_artifact_payloads(&model_artifact, replay.state);
+    if matches!(backend, Some(ResolvedLocalBackend::Qemu { .. })) {
+        let live_evidence = live_qemu_artifact_evidence_from_run(
+            "run",
+            run_plan.terminal_condition,
+            run_plan.max_virtual_time_ticks,
+            run_plan.max_quanta,
+            false,
+            LiveQemuReplayBranch::None,
+            report,
+        )?;
+        model_payloads.extend(live_qemu_artifact_payloads(&live_evidence));
+    }
+    let fingerprint_samples = run_fingerprint_samples(report);
     reproduction_artifact_bytes_with_scenario_payload(
         seed,
         backend,
@@ -109,37 +241,58 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
             bytes: &scenario.to_compact_binary(),
         },
         canonical_log,
-        fingerprint_samples,
+        &fingerprint_samples,
         &model_payloads,
     )
 }
 
-/// Encodes one search/fuzz finding as a CLI replay artifact.
+/// Encodes a live QEMU finding with the complete v3 replay evidence bundle.
 ///
 /// # Errors
 ///
-/// Returns [`CliError`] when the finding's embedded model reproduction or the
-/// selected backend identity cannot be encoded as a replayable artifact.
-pub(crate) fn finding_reproduction_artifact_bytes(
+/// Returns [`CliError`] when the live report, scenario identity, model proof, or
+/// artifact component encoding is incomplete or inconsistent.
+pub(crate) fn live_finding_reproduction_artifact_bytes(
     backend: Option<&ResolvedLocalBackend>,
     finding: &crucible::FindingReproductionArtifact,
     producer: &str,
+    run_plan: &RunInvocationPlan,
+    report: &RunWorkflowReport,
+    branch: LiveQemuReplayBranch,
 ) -> Result<Vec<u8>, CliError> {
-    let canonical_log = canonical_log_entries_from_engine_schedule(finding.artifact.schedule());
-    let fingerprint_samples = vec![VerifyFingerprintSample {
-        index: 0,
-        instruction: 0,
-        node: producer.to_owned(),
-        digest: cli_digest_from_engine_hash(finding.finding_fingerprint),
-    }];
-    let extra_payloads =
+    let scenario = run_plan.scenario.scenario_form();
+    if scenario.id() != finding.artifact.scenario_def().id() {
+        return Err(CliError::Identity(format!(
+            "{producer} finding scenario {} did not match live run scenario {}",
+            finding.artifact.scenario_def().id().to_hex(),
+            scenario.id().to_hex()
+        )));
+    }
+    let canonical_log = canonical_run_log_entries(run_plan, report);
+    let fingerprints = run_fingerprint_samples(report);
+    let live = live_qemu_artifact_evidence_from_run(
+        producer,
+        run_plan.terminal_condition,
+        run_plan.max_virtual_time_ticks,
+        run_plan.max_quanta,
+        true,
+        branch,
+        report,
+    )?;
+    let mut payloads =
         model_reproduction_artifact_payloads(&finding.artifact, finding.replay.state);
-    verify_reproduction_artifact_bytes_with_components(
+    payloads.extend(live_qemu_artifact_payloads(&live));
+    let scenario_bytes = scenario.to_compact_binary();
+    reproduction_artifact_bytes_with_scenario_payload(
         seed_to_u64(finding.artifact.seed()),
         backend,
-        &finding.artifact.scenario_def(),
+        ReproductionScenarioPayload {
+            name: "finding-scenario.crucible-scenario",
+            media_type: "application/vnd.crucible.scenario.compact-binary",
+            bytes: &scenario_bytes,
+        },
         &canonical_log,
-        &fingerprint_samples,
-        &extra_payloads,
+        &fingerprints,
+        &payloads,
     )
 }

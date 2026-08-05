@@ -333,8 +333,14 @@ fn execute_qemu_fuzz_iterations(
                 iteration.sequence,
             )));
         }
-        let finding =
-            qemu_fuzz_finding_evidence(&form, &report, phase, iteration.sequence, backend_plan)?;
+        let finding = qemu_fuzz_finding_evidence(
+            &form,
+            &report,
+            phase,
+            iteration.sequence,
+            iteration.schedule().len(),
+            backend_plan,
+        )?;
         execution.feedback.push(report.coverage_feedback);
         if let Some((evidence, reproduction)) = finding {
             let store = crucible::LocalDagStore::new(plan.store_root.clone());
@@ -361,6 +367,7 @@ fn qemu_fuzz_finding_evidence(
     report: &RunWorkflowReport,
     phase: &str,
     sequence: u64,
+    branch_decisions: usize,
     backend_plan: &BackendSelectionPlan,
 ) -> Result<Option<(crate::cli_report::TriageFindingEvidence, Vec<u8>)>, CliError> {
     if report.status == BackendCommandStatus::Passed {
@@ -427,10 +434,18 @@ fn qemu_fuzz_finding_evidence(
         BackendCommandStatus::Passed => return Ok(None),
     }
     .map_err(|error| backend_error(format!("build QEMU fuzz finding evidence: {error}")))?;
-    let reproduction = finding_reproduction_artifact_bytes(
+    let reproduction = live_finding_reproduction_artifact_bytes(
         backend_plan.resolved_backend.as_ref(),
         &evidence.finding,
         "fuzz",
+        &qemu_fuzz_iteration_plan(sequence, form.clone()),
+        report,
+        LiveQemuReplayBranch::PrefixOverrides {
+            base_decisions: 0,
+            frontier_ticks: 0,
+            decision_start: 0,
+            decision_end: branch_decisions as u64,
+        },
     )?;
     Ok(Some((evidence, reproduction)))
 }
@@ -769,7 +784,7 @@ fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> R
         initial_control_commands: vec![SessionCommandKind::Query],
         accepted_interactive_commands: Vec::new(),
         observer_profile: VERIFY_BASELINE_PROFILE,
-        collect_execution_fingerprints: false,
+        collect_execution_fingerprints: true,
         bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
         outcome_exit_codes: vec![
             (BackendCommandStatus::Passed, 0),
@@ -793,6 +808,8 @@ pub(crate) fn run_local_qemu_workflow(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     run_plan: &RunInvocationPlan,
 ) -> Result<BackendCommandOutcome, CliError> {
+    let mut run_plan = run_plan.clone();
+    run_plan.collect_execution_fingerprints = true;
     let config = production_qemu_lifecycle_config(backend)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -800,11 +817,204 @@ pub(crate) fn run_local_qemu_workflow(
     let control_plane = production_qemu_control_plane(config, run_plan.scenario.scenario_form());
     let client = InProcessLifecycleClient::new(control_plane);
     let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
-        runtime.block_on(run_control_client_workflow_stdin_async(&client, run_plan))?
+        runtime.block_on(run_control_client_workflow_stdin_async(&client, &run_plan))?
     } else {
-        runtime.block_on(run_control_client_workflow_async(&client, run_plan, &[]))?
+        runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?
     };
-    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)
+    finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, &run_plan, report)
+}
+
+/// Re-executes a v3 artifact through a fresh packaged-QEMU lifecycle session.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the contract is invalid, its branch recipe cannot
+/// be reconstructed from the typed schedule, or the QEMU lifecycle fails.
+pub(crate) fn run_live_qemu_artifact_replay(
+    backend: &ResolvedLocalBackend,
+    scenario: crucible::ScenarioDefForm,
+    schedule: &crucible::Schedule,
+    contract: &LiveQemuReplayContract,
+) -> Result<(RunInvocationPlan, RunWorkflowReport), CliError> {
+    let terminal_condition = match contract.terminal_condition.as_str() {
+        "quiescence" => RunTerminalCondition::Quiescence,
+        "virtual-time" => RunTerminalCondition::VirtualTime,
+        "property" => RunTerminalCondition::Property,
+        "stopped" => RunTerminalCondition::Stopped,
+        other => {
+            return Err(artifact_error(format!(
+                "live-QEMU replay contract has unknown terminal condition `{other}`"
+            )));
+        }
+    };
+    let scenario_def = scenario.scenario_def();
+    let run_plan = RunInvocationPlan {
+        request_seed: Some(scenario_def.seed()),
+        scenario: RunScenarioRef::BuiltInExample {
+            name: String::from("artifact-replay"),
+            form: scenario.clone(),
+            scenario: scenario_def.clone(),
+        },
+        terminal_condition,
+        max_virtual_time: contract
+            .max_virtual_time_ticks
+            .map(|ticks| ticks.to_string()),
+        max_virtual_time_ticks: contract.max_virtual_time_ticks,
+        max_quanta: contract.max_quanta,
+        execution_mode: RunExecutionMode::ToCompletion,
+        save_policy: RunSavePolicy::Never,
+        watch_streams_live_status: false,
+        startup_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
+        initial_control_commands: vec![SessionCommandKind::Query],
+        accepted_interactive_commands: Vec::new(),
+        observer_profile: VERIFY_BASELINE_PROFILE,
+        collect_execution_fingerprints: true,
+        bounded_ack_quanta: RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        outcome_exit_codes: vec![
+            (BackendCommandStatus::Passed, 0),
+            (BackendCommandStatus::Failed, 1),
+            (BackendCommandStatus::Timeout, 2),
+            (BackendCommandStatus::Crashed, 3),
+        ],
+        invalid_scenario_exit_code: 4,
+    };
+    let mut config = production_qemu_lifecycle_config(backend)?;
+    match &contract.branch {
+        LiveQemuReplayBranch::None => {}
+        LiveQemuReplayBranch::Reseed {
+            base_decisions,
+            frontier_ticks,
+            seed,
+        } => {
+            let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
+            config = config.with_branch_reseed(
+                base,
+                VirtualTime {
+                    ticks: *frontier_ticks,
+                },
+                crucible::Seed::from_u64(*seed),
+            );
+        }
+        LiveQemuReplayBranch::PrefixOverrides {
+            base_decisions,
+            frontier_ticks,
+            decision_start,
+            decision_end,
+        } => {
+            let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
+            let start = usize::try_from(*decision_start).map_err(|_| {
+                artifact_error("live-QEMU replay override start cannot be represented")
+            })?;
+            let end = usize::try_from(*decision_end).map_err(|_| {
+                artifact_error("live-QEMU replay override end cannot be represented")
+            })?;
+            if start != base.schedule.len() || end < start {
+                return Err(artifact_error(
+                    "live-QEMU replay override range is not contiguous with its branch base",
+                ));
+            }
+            let overrides = schedule.decisions().get(start..end).ok_or_else(|| {
+                artifact_error("live-QEMU replay override range exceeds the model schedule")
+            })?;
+            if overrides
+                .iter()
+                .any(|decision| !matches!(decision, crucible::Decision::Override(_)))
+            {
+                return Err(artifact_error(
+                    "live-QEMU replay branch recipe contains a non-override decision",
+                ));
+            }
+            config = config.with_branch_prefix_overrides(
+                base,
+                VirtualTime {
+                    ticks: *frontier_ticks,
+                },
+                overrides.to_vec(),
+            );
+        }
+    }
+    let fault_choices = replay_indexed_fault_choices(schedule, &contract.fault_choice_indices)?;
+    let network_choices =
+        replay_indexed_network_choices(schedule, &contract.network_choice_indices)?;
+    if !fault_choices.is_empty() {
+        config = config.with_branch_fault_choices(fault_choices);
+    }
+    if !network_choices.is_empty() {
+        config = config.with_branch_network_choices(network_choices);
+    }
+    if contract.coverage {
+        config = config.with_coverage(production_api::ProductionPluginSwitch::On);
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let control_plane = production_qemu_control_plane(config, &scenario);
+    let client = InProcessLifecycleClient::new(control_plane);
+    let report = runtime.block_on(run_control_client_workflow_async(&client, &run_plan, &[]))?;
+    Ok((run_plan, report))
+}
+
+fn replay_branch_base(
+    scenario: &crucible::ScenarioDef,
+    schedule: &crucible::Schedule,
+    decisions: u64,
+) -> Result<crucible::Configuration, CliError> {
+    let decisions = usize::try_from(decisions)
+        .map_err(|_| artifact_error("live-QEMU branch base length cannot be represented"))?;
+    let prefix = schedule.prefix(decisions).map_err(|error| {
+        artifact_error(format!("construct live-QEMU replay branch prefix: {error}"))
+    })?;
+    Ok(crucible::Configuration {
+        def: scenario.clone(),
+        schedule: prefix,
+    })
+}
+
+fn replay_indexed_fault_choices(
+    schedule: &crucible::Schedule,
+    indices: &[u64],
+) -> Result<Vec<crucible::Decision>, CliError> {
+    let mut choices = Vec::with_capacity(indices.len().saturating_mul(2));
+    for index in indices {
+        let index = usize::try_from(*index)
+            .map_err(|_| artifact_error("fault choice index cannot be represented"))?;
+        let pair = schedule
+            .decisions()
+            .get(index..index.saturating_add(2))
+            .ok_or_else(|| artifact_error("fault choice index exceeds the model schedule"))?;
+        if !matches!(pair[0], crucible::Decision::RngDraw(_))
+            || !matches!(pair[1], crucible::Decision::FaultFires(_))
+        {
+            return Err(artifact_error(
+                "fault choice index does not identify an RNG/fault decision pair",
+            ));
+        }
+        choices.extend_from_slice(pair);
+    }
+    Ok(choices)
+}
+
+fn replay_indexed_network_choices(
+    schedule: &crucible::Schedule,
+    indices: &[u64],
+) -> Result<Vec<crucible::OverrideDecision>, CliError> {
+    indices
+        .iter()
+        .map(|index| {
+            let index = usize::try_from(*index)
+                .map_err(|_| artifact_error("network choice index cannot be represented"))?;
+            match schedule.decisions().get(index) {
+                Some(crucible::Decision::Override(decision))
+                    if decision.point.key.starts_with("live-world-network/") =>
+                {
+                    Ok(decision.clone())
+                }
+                _ => Err(artifact_error(
+                    "network choice index does not identify a live-world network override",
+                )),
+            }
+        })
+        .collect()
 }
 
 /// Verifies every reduction through an independent packaged-QEMU session.
