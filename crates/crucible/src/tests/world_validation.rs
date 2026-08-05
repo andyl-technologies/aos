@@ -2017,15 +2017,15 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() {
     );
     assert_eq!(
         authored_plan.content_hash().to_hex(),
-        "f9e1e5c40ecbfce8d62e71476b59f2f207e6457ae947647c1e44ab1ad86f2e3a"
+        "3a4322d90df8bf9dfa627cf560df41c8387241947b8091e05b73296e093a26a0"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_plan.canonical_bytes()).to_hex(),
-        "a8c0faf32016e717da4e1cf3e8ac99ce59ca80262a363fbf23b714aa5e604579"
+        "07114e47046cf340432fe554cedd0b21c264fd7f4a6f280db77ed728c22e706a"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_plan.to_compact_binary()).to_hex(),
-        "28392e5c96b6e782ade455ceb679c1511d584a41a7b273afdd04a442480ae346"
+        "5e9e092984f1a7bc9017740af3482f0596413eb80afc481fb778383c3ee5affc"
     );
     assert_eq!(
         authored_properties.content_hash().to_hex(),
@@ -2041,15 +2041,15 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() {
     );
     assert_eq!(
         authored_form.id().to_hex(),
-        "e13a8e94a43857719319c913ba7036109d033e47263411799a8baee73a50ea94"
+        "025994020954701ef480fbab5fda12e62273f7d753d0028e89793f19146cfb64"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_form.canonical_bytes()).to_hex(),
-        "d74fc071677d443ee8263436ab9279169085b3e1e121815b902b53339b0f4bb0"
+        "b948c59b1d3e994606b14ce93bc22e93a54503eda3b677a7cdb45d36566d148a"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_form.to_compact_binary()).to_hex(),
-        "455912b3f3ad4878d8d40af3b41b75179d3ad06b7038081d2ed8993b42fa2a44"
+        "227e5e0082f1890ae6f4d58591d01a1a8d9bd9bda39996c25e17382464bdeb1c"
     );
     assert_eq!(authored_world.id(), canonical_world.id());
     assert_eq!(authored_world.vm_nodes(), canonical_world.vm_nodes());

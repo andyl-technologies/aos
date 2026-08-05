@@ -1007,7 +1007,15 @@ pub(super) fn world_link_material(link: &LinkDef) -> String {
 }
 
 pub(super) fn plan_material(plan: &Plan) -> String {
-    plan_kind_material(&plan.kind)
+    plan_parts_material(&plan.kind, &plan.fault_signals)
+}
+
+pub(super) fn plan_parts_material(kind: &PlanKind, fault_signals: &FaultSignalPlan) -> String {
+    format!(
+        "{}\nfault-signal-plan={}",
+        plan_kind_material(kind),
+        fault_signals.id().to_hex()
+    )
 }
 
 pub(super) fn plan_kind_material(kind: &PlanKind) -> String {
