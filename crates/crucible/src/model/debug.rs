@@ -2162,6 +2162,104 @@ impl DebugGotoReport {
     }
 }
 
+/// Backend request to replace the live debug runtime at a resolved graph coordinate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugRuntimeRepositionRequest {
+    /// Node whose live QEMU process and gateway backend are replaced.
+    pub node: NodeId,
+    /// Configuration currently owned by the live runtime.
+    pub current_configuration: ContentHash,
+    /// Private QEMU endpoint currently selected by the debugger gateway.
+    pub current_qemu_gdbstub: DebugGdbEndpoint,
+    /// Complete target configuration the backend must instantiate.
+    pub target: Configuration,
+    /// Configuration whose checkpoint must be restored before replay.
+    pub restore_configuration: ContentHash,
+    /// Fat checkpoint the backend must restore before replay.
+    pub restore_checkpoint: ContentHash,
+    /// Fat checkpoint expected after replay reaches the target.
+    pub target_checkpoint: ContentHash,
+}
+
+impl DebugRuntimeRepositionRequest {
+    /// Builds a backend request from a graph-level `goto` plan and its target configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::CheckpointConfigurationMismatch`] when `target`
+    /// does not match the configuration named by `goto`.
+    pub fn from_goto(
+        target: Configuration,
+        goto: &DebugGotoReport,
+        node: NodeId,
+        current_qemu_gdbstub: DebugGdbEndpoint,
+    ) -> Result<Self, EngineError> {
+        if target.id() != goto.target_configuration {
+            return Err(EngineError::CheckpointConfigurationMismatch {
+                checkpoint: goto.target_checkpoint,
+                expected: goto.target_configuration,
+                actual: target.id(),
+            });
+        }
+        Ok(Self {
+            node,
+            current_configuration: goto.current_configuration,
+            current_qemu_gdbstub,
+            target,
+            restore_configuration: goto.restore_configuration,
+            restore_checkpoint: goto.restore_checkpoint,
+            target_checkpoint: goto.target_checkpoint,
+        })
+    }
+}
+
+/// Backend evidence that an atomic live-runtime replacement completed.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DebugRuntimeRepositionReport {
+    /// Node whose replacement was promoted by the debugger gateway.
+    pub node: NodeId,
+    /// Configuration replaced by the operation.
+    pub previous_configuration: ContentHash,
+    /// Configuration now owned by the live runtime.
+    pub target_configuration: ContentHash,
+    /// Fat checkpoint verified after replay reached the target.
+    pub target_checkpoint: ContentHash,
+    /// Private QEMU endpoint promoted by the debugger gateway.
+    pub qemu_gdbstub: DebugGdbEndpoint,
+    /// Nonzero gateway generation returned by the committed prepare transaction.
+    pub gateway_generation: u64,
+}
+
+impl DebugRuntimeRepositionReport {
+    /// Builds a success report for a gateway promotion.
+    #[must_use]
+    pub fn completed(
+        request: &DebugRuntimeRepositionRequest,
+        qemu_gdbstub: DebugGdbEndpoint,
+        gateway_generation: u64,
+    ) -> Self {
+        Self {
+            node: request.node.clone(),
+            previous_configuration: request.current_configuration,
+            target_configuration: request.target.id(),
+            target_checkpoint: request.target_checkpoint,
+            qemu_gdbstub,
+            gateway_generation,
+        }
+    }
+
+    /// Returns whether this report proves completion of exactly `request`.
+    #[must_use]
+    pub fn proves(&self, request: &DebugRuntimeRepositionRequest) -> bool {
+        self.node == request.node
+            && self.previous_configuration == request.current_configuration
+            && self.target_configuration == request.target.id()
+            && self.target_checkpoint == request.target_checkpoint
+            && self.qemu_gdbstub != request.current_qemu_gdbstub
+            && self.gateway_generation != 0
+    }
+}
+
 /// Reverse-step grain mirrored from the forward debugger step surface.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DebugReverseStepGrain {

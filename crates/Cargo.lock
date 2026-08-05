@@ -2083,6 +2083,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "crucible-debug-gateway"
+version = "0.1.0"
+dependencies = [
+ "crucible-protocol",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "crucible-device"
 version = "0.1.0"
 dependencies = [

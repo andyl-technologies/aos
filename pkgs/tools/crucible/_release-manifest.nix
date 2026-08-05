@@ -6,6 +6,7 @@
   cargoDepsHash,
   controllerPackage ? null,
   pluginPackage ? null,
+  debugGatewayPackage ? null,
   qemuSourcePackage ? null,
 }: let
   packages = import ./_packages.nix;
@@ -131,6 +132,13 @@
         license = "GPL-2.0-only";
         boundary = "loaded-into-qemu-process";
       };
+      debugGateway = {
+        package = "crucible-debug-gateway";
+        path = componentPath debugGatewayPackage;
+        license = "GPL-2.0-only";
+        boundary = "separate-process-qemu-rsp-owner";
+        source = "crucible.workspace";
+      };
       boundaryCrates = {
         packages = ["crucible-protocol" "crucible-shmem"];
         license = "MIT";
@@ -223,6 +231,10 @@
     plugin_package=crucible-qemu-plugin
     plugin_path=${manifest.components.plugin.path}
     plugin_license=GPL-2.0-only
+    debug_gateway_package=crucible-debug-gateway
+    debug_gateway_path=${manifest.components.debugGateway.path}
+    debug_gateway_license=GPL-2.0-only
+    debug_gateway_boundary=separate-process-qemu-rsp-owner
     boundary_crates=crucible-protocol,crucible-shmem
     boundary_crates_license=MIT
     qemu_corresponding_source_package=qemu-crucible-source

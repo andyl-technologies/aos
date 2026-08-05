@@ -16,7 +16,8 @@ use serde_json::Value as JsonValue;
 use toml::Value;
 
 use super::{
-    APACHE_LICENSE, PLUGIN_LICENSE, PLUGIN_PACKAGE, declared_package_license, workspace_crates_dir,
+    APACHE_LICENSE, DEBUG_GATEWAY_PACKAGE, PLUGIN_LICENSE, PLUGIN_PACKAGE,
+    declared_package_license, workspace_crates_dir,
 };
 
 pub(super) fn forbidden_qemu_abi_surfaces(source: &str) -> impl Iterator<Item = &'static str> {
@@ -62,6 +63,26 @@ fn plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices()
     assert!(
         failures.is_empty(),
         "plugin dependency license/boundary drift:\n{}",
+        failures.join("\n")
+    );
+    Ok(())
+}
+
+#[test]
+fn debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choices()
+-> Result<(), Box<dyn Error>> {
+    let metadata = cargo_metadata()?;
+    let failures = resolved_production_graph_failures(
+        &metadata,
+        DEBUG_GATEWAY_PACKAGE,
+        &[DEBUG_GATEWAY_PACKAGE, "crucible-protocol"],
+        gpl2_compatible_external_license,
+        "debug gateway",
+    )?;
+
+    assert!(
+        failures.is_empty(),
+        "debug gateway dependency license/boundary drift:\n{}",
         failures.join("\n")
     );
     Ok(())
@@ -177,7 +198,7 @@ fn resolved_production_graph_failures(
                 failures.push(format!(
                     "{context}: reachable local package `{name}` is not an approved boundary dependency"
                 ));
-            } else if name != PLUGIN_PACKAGE && license != super::BOUNDARY_LICENSE {
+            } else if name != root_name && license != super::BOUNDARY_LICENSE {
                 failures.push(format!(
                     "{context}: local boundary package `{name}` must declare `{}`, found `{license}`",
                     super::BOUNDARY_LICENSE
@@ -466,6 +487,7 @@ pub(super) fn resolved_dependency_package<'a>(
 
 fn is_qemu_side_implementation_name(package: &str) -> bool {
     package == PLUGIN_PACKAGE
+        || package == "crucible-debug-gateway"
         || package.starts_with("crucible-qemu-plugin-")
         || package.ends_with("-qemu-plugin")
         || package.contains("-qemu-side-")

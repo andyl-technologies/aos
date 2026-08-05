@@ -172,6 +172,15 @@
     ++ lib.optionals (manifest.components.boundaryCrates.packages != ["crucible-protocol" "crucible-shmem"]) [
       "release manifest boundary-crate inventory is incomplete"
     ]
+    ++ lib.optionals (
+      manifest.components.debugGateway.package
+      != "crucible-debug-gateway"
+      || manifest.components.debugGateway.license != "GPL-2.0-only"
+      || manifest.components.debugGateway.boundary != "separate-process-qemu-rsp-owner"
+      || manifest.components.debugGateway.source != "crucible.workspace"
+    ) [
+      "release manifest debugger gateway component is incomplete"
+    ]
     ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"]) [
       "release manifest QEMU component license inventory is incomplete"
     ]
@@ -432,6 +441,14 @@
         needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later";
       }
       {
+        label = "debug gateway component";
+        needle = "debug_gateway_package=crucible-debug-gateway";
+      }
+      {
+        label = "debug gateway process boundary";
+        needle = "debug_gateway_boundary=separate-process-qemu-rsp-owner";
+      }
+      {
         label = "aggregate license scope";
         needle = "aggregate_license_scope=primary-project-components";
       }
@@ -456,6 +473,14 @@
       {
         label = "RPC build";
         needle = "\"build\":\"${rpcProtocolBuild}\"";
+      }
+      {
+        label = "debug gateway component";
+        needle = "\"debugGateway\":{";
+      }
+      {
+        label = "debug gateway GPL license";
+        needle = "\"license\":\"GPL-2.0-only\"";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

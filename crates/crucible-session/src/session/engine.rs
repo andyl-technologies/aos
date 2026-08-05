@@ -33,6 +33,7 @@ pub struct Engine<L> {
     pub(super) pending_control: Vec<ControlOperation>,
     pub(super) pending_event_log_entries: Vec<SchedulerEventLogEntry>,
     pub(super) debug_attach: Option<DebugAttachReport>,
+    pub(super) debug_coordinator: DebugCoordinator,
     pub(super) debug_branch_required: bool,
     pub(super) next_control_sequence: u64,
     pub(super) boundary_control_log: Vec<SessionControlLogEntry>,
@@ -65,6 +66,7 @@ impl<L> Engine<L> {
             pending_control: Vec::new(),
             pending_event_log_entries: Vec::new(),
             debug_attach: None,
+            debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
@@ -124,6 +126,7 @@ impl<L> Engine<L> {
             pending_control: Vec::new(),
             pending_event_log_entries: Vec::new(),
             debug_attach: None,
+            debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
@@ -208,6 +211,12 @@ impl<L> Engine<L> {
     #[must_use]
     pub fn debug_attach(&self) -> Option<&DebugAttachReport> {
         self.debug_attach.as_ref()
+    }
+
+    /// Returns the session-owned debugger lifecycle and lease coordinator.
+    #[must_use]
+    pub const fn debug_coordinator(&self) -> &DebugCoordinator {
+        &self.debug_coordinator
     }
 
     /// Returns whether forward or mutating use must first mark a debug branch.
@@ -478,23 +487,25 @@ impl<L> Engine<L> {
         Ok(())
     }
 
-    fn update_debug_position(
+    fn reposition_debug_runtime(
         &mut self,
         previous_attach: &DebugAttachReport,
+        mut candidate_graph: TemporalGraph,
         goto: &DebugGotoReport,
-    ) -> Result<DebugAttachReport, SessionError> {
-        let configuration = self
-            .graph
+    ) -> Result<DebugAttachReport, SessionError>
+    where
+        L: QuantumLoop,
+    {
+        let configuration = candidate_graph
             .checkpoint_configuration(goto.target_configuration)
-            .or_else(|| self.graph.checkpoint_configuration(goto.target_checkpoint))
+            .or_else(|| candidate_graph.checkpoint_configuration(goto.target_checkpoint))
             .cloned()
             .ok_or(SessionError::Engine(EngineError::CheckpointNotRecorded {
                 checkpoint: goto.target_configuration,
             }))?;
-        let frontier = self
-            .graph
+        let frontier = candidate_graph
             .checkpoint_record(goto.target_configuration)
-            .or_else(|| self.graph.checkpoint_record(goto.target_checkpoint))
+            .or_else(|| candidate_graph.checkpoint_record(goto.target_checkpoint))
             .map_or_else(
                 || {
                     let ticks = goto
@@ -509,6 +520,57 @@ impl<L> Engine<L> {
                 },
                 |checkpoint| checkpoint.virtual_time,
             );
+        let reposition = DebugRuntimeRepositionRequest::from_goto(
+            configuration.clone(),
+            goto,
+            previous_attach.gdbstub.node.clone(),
+            previous_attach.gdbstub.qemu_endpoint.clone(),
+        )?;
+        let attach_request = DebugAttachRequest {
+            configuration: configuration.clone(),
+            node: previous_attach.gdbstub.node.clone(),
+            qemu_gdbstub: previous_attach.gdbstub.qemu_endpoint.clone(),
+            gdb_listen: previous_attach.gdbstub.operator_listen.clone(),
+        };
+        let mut refreshed = candidate_graph.debug_attach(&attach_request)?;
+        let previous_coordinator_state = self.debug_coordinator.state().clone();
+        self.debug_coordinator
+            .begin_reposition(reposition.target.id());
+        let evidence = match self
+            .quantum_loop
+            .reposition_debug_runtime(reposition.clone())
+        {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                self.debug_coordinator
+                    .restore_state(previous_coordinator_state);
+                return Err(error.into());
+            }
+        };
+        if !evidence.proves(&reposition) {
+            self.debug_coordinator.failed(String::from(
+                "runtime replacement returned mismatched committed-backend evidence",
+            ));
+            return Err(SessionError::DebugRuntimeRepositionMismatch(Box::new(
+                DebugRuntimeRepositionEvidenceMismatch {
+                    expected_node: reposition.node,
+                    expected_previous_configuration: reposition.current_configuration,
+                    expected_configuration: reposition.target.id(),
+                    expected_checkpoint: reposition.target_checkpoint,
+                    expected_previous_qemu_gdbstub: reposition.current_qemu_gdbstub,
+                    actual_node: evidence.node,
+                    actual_previous_configuration: evidence.previous_configuration,
+                    actual_configuration: evidence.target_configuration,
+                    actual_checkpoint: evidence.target_checkpoint,
+                    actual_qemu_gdbstub: evidence.qemu_gdbstub,
+                    actual_gateway_generation: evidence.gateway_generation,
+                },
+            )));
+        }
+
+        refreshed.gdbstub.qemu_endpoint = evidence.qemu_gdbstub;
+
+        self.graph = candidate_graph;
         self.configuration = configuration.clone();
         self.runtime = Some(goto.runtime.runtime.clone());
         self.runtime_instantiated = true;
@@ -521,14 +583,9 @@ impl<L> Engine<L> {
             };
         }
         self.debug_branch_required = true;
-        let request = DebugAttachRequest {
-            configuration,
-            node: previous_attach.gdbstub.node.clone(),
-            qemu_gdbstub: previous_attach.gdbstub.qemu_endpoint.clone(),
-            gdb_listen: previous_attach.gdbstub.operator_listen.clone(),
-        };
-        let refreshed = self.graph.debug_attach(&request)?;
         self.debug_attach = Some(refreshed.clone());
+        self.debug_coordinator
+            .repositioned_canonical(configuration.id());
         Ok(refreshed)
     }
 
@@ -1389,6 +1446,8 @@ impl<L: QuantumLoop> Engine<L> {
                     self.pending_control.clear();
                     self.active_step = None;
                     self.debug_branch_required = false;
+                    self.debug_attach = None;
+                    self.debug_coordinator.detached();
                     self.enter_stopped(TerminalCause::OperatorStop)?;
                     Ok(self.snapshot())
                 }
@@ -1451,6 +1510,8 @@ impl<L: QuantumLoop> Engine<L> {
                     )?;
                     let attach = self.graph.debug_attach(&request)?;
                     self.debug_attach = Some(attach.clone());
+                    self.debug_coordinator
+                        .attached_canonical(self.configuration.id());
                     if matches!(self.state, EngineState::Running) {
                         self.active_step = None;
                         self.state = EngineState::Paused {
@@ -1467,8 +1528,10 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::DebugGoto { request, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-goto")?;
-                    let report = self.graph.debug_goto(&attach, request)?;
-                    let _refreshed = self.update_debug_position(&attach, &report)?;
+                    let mut candidate_graph = self.graph.clone();
+                    let report = candidate_graph.debug_goto(&attach, request)?;
+                    let _refreshed =
+                        self.reposition_debug_runtime(&attach, candidate_graph, &report)?;
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
@@ -1479,8 +1542,10 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::DebugReverseStep { request, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-reverse-step")?;
-                    let report = self.graph.debug_reverse_step(&attach, request)?;
-                    let _refreshed = self.update_debug_position(&attach, &report.goto)?;
+                    let mut candidate_graph = self.graph.clone();
+                    let report = candidate_graph.debug_reverse_step(&attach, request)?;
+                    let _refreshed =
+                        self.reposition_debug_runtime(&attach, candidate_graph, &report.goto)?;
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
                 }
@@ -1491,14 +1556,19 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::DebugReverseContinue { request, reply } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let attach = self.current_debug_attach("debug-reverse-continue")?;
-                    let report = self.graph.debug_reverse_continue(&attach, request)?;
+                    let mut candidate_graph = self.graph.clone();
+                    let report = candidate_graph.debug_reverse_continue(&attach, request)?;
                     if let Some(matched) = report.matched.as_ref() {
-                        let _refreshed = self.update_debug_position(&attach, &matched.goto)?;
+                        let _refreshed =
+                            self.reposition_debug_runtime(&attach, candidate_graph, &matched.goto)?;
                     } else if matches!(self.state, EngineState::Running) {
+                        self.graph = candidate_graph;
                         self.active_step = None;
                         self.state = EngineState::Paused {
                             reason: PauseReason::UserRequested,
                         };
+                    } else {
+                        self.graph = candidate_graph;
                     }
                     reply.complete(Ok(report));
                     Ok(self.snapshot())
@@ -1522,6 +1592,8 @@ impl<L: QuantumLoop> Engine<L> {
                         .collect::<Vec<_>>();
                     self.append_boundary_event_log_entries(entries)?;
                     self.debug_branch_required = false;
+                    self.debug_coordinator
+                        .forked_non_canonical(self.configuration.id());
                     if matches!(self.state, EngineState::Running) {
                         self.active_step = None;
                         self.state = EngineState::Paused {
