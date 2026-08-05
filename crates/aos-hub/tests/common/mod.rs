@@ -99,6 +99,24 @@ pub async fn configure_hub_delivery_route(
             (cache.org_id, cache.visibility)
         }
     };
+    let boundary = aos_hub::db::GrantResource::NetworkBoundary {
+        id: "instance:public",
+    };
+    let boundary_grants = db.list_consumer_scope_grants(boundary).await.unwrap();
+    if !boundary_grants
+        .iter()
+        .any(|grant| grant.consumer_scope_key == owner_scope && grant.state == "active")
+    {
+        db.grant_consumer_scope(
+            boundary,
+            owner_scope,
+            "explicit",
+            "test",
+            &format!("request:{endpoint_id}:boundary-grant"),
+        )
+        .await
+        .unwrap();
+    }
     if db.delivery_endpoint(endpoint_id).await.unwrap().is_none() {
         db.create_delivery_endpoint(
             endpoint_id,
@@ -199,9 +217,30 @@ pub async fn configure_hub_delivery_route(
     )
     .await
     .unwrap();
-    db.set_canonical_route(surface, audience, route_id, None)
+    let canonical_audiences: &[&str] = match surface {
+        aos_hub::db::SurfaceTarget::Registry(_) => &["git", "web"],
+        aos_hub::db::SurfaceTarget::BinaryCache(_) => &["nix_cache", "web"],
+    };
+    assert!(canonical_audiences.contains(&audience));
+    for canonical_audience in canonical_audiences {
+        db.set_canonical_route(surface, canonical_audience, route_id, None)
+            .await
+            .unwrap();
+    }
+    let inbound = db
+        .inbound_delivery_routes(
+            &aos_hub::db::InboundEndpointHost::Ipv4(vec![127, 0, 0, 1]),
+            8420,
+            "http",
+            "hub",
+        )
         .await
         .unwrap();
+    let configured = inbound
+        .iter()
+        .find(|candidate| candidate.id == route_id)
+        .unwrap();
+    assert!(configured.ready, "fixture delivery route is not ready");
 }
 
 /// Creates and validates the next immutable write-credential generation.
