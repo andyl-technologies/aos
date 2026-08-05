@@ -285,8 +285,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
         .route(
             "/oauth2/device_authorization",
             axum::routing::post(device_authorization),
-        )
-        .fallback(nested_console_route);
+        );
     // The shared producer-console router (RFC-0004 Phase 5, console-dedup stage
     // B): the wasm-clean management handlers, built over the hub's database,
     // JWT keys, rate limiter, mailer, sealer, the hardened reqwest `HttpClient`
@@ -299,6 +298,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // [`console_deps`] and `dispatch_nested` — so there is a single console
     // routing table for both flat and nested slugs.
     let console_deps = console_deps(&state);
+    let nested_console_deps = console_deps.clone();
     // Seed the editable site chrome (title/banner/footer) from the database at
     // startup so the masthead reflects persisted branding; a branding save
     // refreshes it live via `set_site_chrome`.
@@ -333,6 +333,12 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // state, so — like `rpc_router` — it is merged after `with_state`. Its
         // static console paths are wrapped by the same security layers.
         .merge(console_router)
+        // Dispatch nested registry settings before the shared browse wildcard
+        // can claim `/{org}/{registry}/-/{*rest}`. The middleware passes every
+        // non-console browse request through with its original body intact.
+        .layer(axum::middleware::from_fn(move |request, next| {
+            dispatch_nested_console(nested_console_deps.clone(), request, next)
+        }))
         // Bound every control-plane request. Large object transfer uses typed
         // placement write tickets and backend upload URLs, not this router.
         .layer(DefaultBodyLimit::max(RPC_MAX_BODY_BYTES))
@@ -356,6 +362,44 @@ pub async fn router(state: Arc<AppState>) -> Router {
         dispatch_service,
         state.delivery_attestation_verifier.clone(),
     )
+}
+
+/// Dispatches a nested registry console request ahead of browse wildcards.
+///
+/// Requests outside the shared console manifest continue through the normal
+/// router. Body collection is limited to the same control-plane maximum that
+/// wraps this middleware.
+async fn dispatch_nested_console(
+    deps: aos_hub_core::web::console::ConsoleDeps,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path().trim_start_matches('/');
+    let nested_candidate = path
+        .split_once("/-/")
+        .is_some_and(|(registry, _)| registry.contains('/'));
+    if !nested_candidate {
+        return next.run(request).await;
+    }
+
+    let (parts, body) = request.into_parts();
+    let body = match axum::body::to_bytes(body, RPC_MAX_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(_) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+    };
+    if let Some(response) = aos_hub_core::web::console::dispatch_nested(
+        deps,
+        parts.method.clone(),
+        parts.uri.clone(),
+        parts.headers.clone(),
+        body.clone(),
+    )
+    .await
+    {
+        return response;
+    }
+    next.run(axum::http::Request::from_parts(parts, body.into()))
+        .await
 }
 
 /// Resolve the current session and run the request with the user's email in
@@ -785,20 +829,4 @@ pub fn console_deps_for_worker_test(
     state: &Arc<AppState>,
 ) -> aos_hub_core::web::console::ConsoleDeps {
     console_deps(state)
-}
-
-/// Dispatches nested project and registry console paths.
-///
-/// Requests outside the shared console manifest are not interpreted as
-/// resource-slug delivery paths; they remain a plain `404`.
-async fn nested_console_route(
-    State(state): State<Arc<AppState>>,
-    method: axum::http::Method,
-    uri: axum::http::Uri,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    aos_hub_core::web::console::dispatch_nested(console_deps(&state), method, uri, headers, body)
-        .await
-        .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
