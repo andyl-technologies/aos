@@ -68,6 +68,7 @@ Initial unit enum:
 | `dimensionless` | i64/u64/ratio | Explicit decimal scale allowed. |
 | `virtual_nanoseconds` | u64/i64 | Scale must be zero. |
 | `millimetres` | i64 | Local coordinates; no implicit geographic conversion. |
+| `square_millimetres` | i64 | Squared Cartesian distance; no implicit conversion to length. |
 | `millimetres_per_second` | i64 | Local velocity. |
 | `millidegrees` | i64 | Normalize angles by operator-specific closed interval. |
 | `millicelsius` | i64 | Absolute temperature; conversions explicit. |
@@ -123,23 +124,49 @@ coordinates use the tables in §9.4.
 | `event_sequence` | `events = [{coordinate, sequence, payload}]` | None. |
 | `trace` | `artifact`, `raw_provenance`, `channel`, `interpolation`, `before`, `after`, `missing` | `quality_channel`; `quality_accept`; time mapping required for timestamped trace. |
 | `telemetry` | `adapter`, `target`, `field` | `boundary_delay = 1`; only value 1 is accepted in v1. |
-| `point_set` | `artifact`, `coordinate_frame`, `interpolation`, `outside` | None. |
+| `point_set` | `artifact`, `coordinate_frame`, `interpolation`, `outside` | Linear interpolation requires the artifact's canonical line/triangle/tetrahedron simplex mesh. |
 | `regular_grid` | `artifact`, `coordinate_frame`, `origin`, `cell_size`, `dimensions`, `interpolation`, `outside` | None. |
 | `tiled_grid` | `manifest`, `coordinate_frame`, `tile_size`, `interpolation`, `outside` | None. |
 | `zone_map` | `artifact`, `coordinate_frame`, `boundary`, `overlap` | None. |
 | `path_profile` | `artifact`, `path`, `interpolation`, `before`, `after` | None. |
 | `seeded_field` | `field_seed_domain`, `coordinate_frame`, `quantization`, `correlation`, `distribution` | Distribution parameters. |
-| `transmitter_field` | `transmitter`, `position_signal`, `model`, `lookup` | `orientation_signal`, `environment_signals`. |
+| `transmitter_field` | `transmitter`, `coordinate_frame`, `position_signal`, `model`, `lookup` | `orientation_signal`, `environment_signals`; all inputs share the output domain. |
 | `bernoulli` | `probability_millionths`, `key_domain` | `opportunity_filter`; Boolean output. |
 | `uniform_integer` | `minimum`, `maximum`, `key_domain` | `opportunity_filter`; inclusive bounds. |
-| `exponential_wait` | `rate` rational, `sampler_version`, `key_domain` | `maximum_nanos`; duration output. |
-| `weibull_wait` | `shape` rational, `scale_nanos`, `sampler_version`, `key_domain` | `maximum_nanos`; duration output. |
+| `exponential_wait` | `rate` rational, `sampler_version`, `sampler_table`, `key_domain` | `maximum_nanos`; duration output. |
+| `weibull_wait` | `shape` rational, `scale_nanos`, `sampler_version`, `sampler_table`, `key_domain` | `maximum_nanos`; duration output. |
 
-`interpolation` is `exact`, `hold_previous`, `nearest`, or `linear`. Boundary
+`interpolation` is `exact`, `hold_previous`, `nearest`, or `linear`. Every
+`linear` source also requires `rounding` and `overflow`; these fields are part
+of canonical identity. Boundary
 behavior is `error`, `hold`, `constant`, `repeat`, or `inactive`; `constant`
 requires `boundary_value`. Missing behavior is `error`, `hold`, `interpolate`,
 or `inactive`. `rounding` is `floor`, `ceiling`, `toward_zero`,
 `away_from_zero`, or `nearest_ties_to_even`.
+
+`repeat` is admitted for ordered time/counter/operation/state step and trace
+sources with a positive extent. Spatial outside policies reject `repeat`
+because a point set, grid, zone, or path has no unique periodic continuation.
+
+Normalized point-set artifacts store samples in lexicographic coordinate order
+and an optional canonical list of simplices. A simplex contains two, three, or
+four strictly increasing sample indexes and represents a line, triangle, or
+tetrahedron. Degenerate cells fail import. Linear sampling evaluates exact
+barycentric weights, chooses the first containing simplex on a shared boundary,
+and applies the declared rounding and overflow policy once to the weighted sum.
+
+Every tile referenced by a tiled-grid manifest is a regular grid in the same
+coordinate frame. Its origin equals the tile's inclusive minimum, its final
+sample coordinate equals the tile's exclusive maximum, and that final sample is
+the interpolation halo shared with the adjacent tile. The declared tile extent
+must equal `cell_size * (dimensions - 1)` on every axis; mismatches fail loudly.
+
+Transmitter lookup artifacts contain the transmitter position, a strictly
+ordered distance/value curve, an optional canonical receiver-orientation
+correction table, and one exact additive coefficient per environment signal.
+An authored `orientation_signal` requires a nonempty orientation table and an
+omitted orientation signal requires the table to be empty. Orientation rows are
+ordered yaw/pitch/roll millidegrees and nearest-row ties use row order.
 
 ### Pure operator fields
 
@@ -162,15 +189,15 @@ commutative.
 | `piecewise_linear` | `input`, ordered `points`, `rounding`, `overflow` | Strict keys; numeric output. |
 | `enum_map` | `input`, exhaustive `entries` | Every input variant exactly once. |
 | `unit_convert` | `input`, `from_unit`, `to_unit`, `ratio`, `offset`, `rounding`, `overflow` | Registered compatible dimension. |
-| `delay` | `input`, `delay` | Positive domain coordinate delay. |
-| `sample_hold` | `input`, `cadence`, `epoch` | Positive cadence. |
-| window operators | `input`, `window`, `sampling` | Bounded retained sample/change count. |
-| `distance` | `left`, `right`, `metric`, `rounding` | Same coordinate frame; metric `euclidean_squared`, `manhattan`, or lookup. |
+| `delay` | `input`, `delay`, `retained_samples` | Positive domain coordinate delay and positive hard history bound. |
+| `sample_hold` | `input`, `cadence`, `epoch`, `retained_samples` | Positive cadence and positive hard history bound. |
+| window operators | `input`, `window`, `sampling`, `retained_samples` | Bounded retained sample/change count. |
+| `distance` | `left`, `right`, `metric`, `rounding` | Same coordinate frame; metric `euclidean`, `euclidean-squared`, or `manhattan`; squared output uses `square_millimetres`. |
 | `zone_contains` | `position`, `zone_map`, `zone` | Matching frame. |
 | `field_sample` | `field`, `position` | Matching dimensions/frame. |
-| `orientation_delta` | `left`, `right`, `convention` | Convention `yaw_pitch_roll_millidegrees` or fixed quaternion table. |
+| `orientation_delta` | `left`, `right`, `convention` | Convention is `yaw-pitch-roll-millidegrees`; each component uses the signed shortest arc. |
 | edge operators | `input` | Boolean; emit typed edge event. |
-| `merge_events` | `inputs`, `same_coordinate_order` | Order is `source_then_sequence` in v1. |
+| `merge_events` | `inputs`, `source_sequence_limit` | Inputs canonicalize by source ID; merged sequence is `source_index * source_sequence_limit + source_sequence`. |
 | `gate_events` | `events`, `gate` | Typed events plus Boolean gate. |
 
 Every arithmetic/operator table requires `overflow = error/saturate`; default is
@@ -183,8 +210,8 @@ canonical material.
 | --- | --- |
 | `hysteresis` | `input`, `initial`, `set_when`, `clear_when`, `minimum_residence_nanos`; stores Boolean and last transition. |
 | `debounce` | `input`, `initial`, `residence_nanos`; stores committed/candidate values and candidate coordinate. |
-| `integrator` | `input`, `initial`, `cadence_or_change_points`, `rounding`, `overflow`; stores accumulator and last coordinate/value. |
-| `leaky_integrator` | `input`, `initial`, `cadence_nanos`, `decay_ratio`, `rounding`, `overflow`; stores accumulator and cadence coordinate. |
+| `integrator` | `input`, `initial`, `cadence_nanos`, `time_unit_nanos`, `rounding`, `overflow`; zero cadence selects source change points; stores accumulator and last coordinate/value. |
+| `leaky_integrator` | `input`, `initial`, `cadence_nanos`, `time_unit_nanos`, `decay_ratio`, `maximum_catch_up_steps`, `rounding`, `overflow`; stores accumulator, latest observed input, and cadence coordinate. Evaluation fails before mutation when the required catch-up exceeds the positive authored ceiling. |
 | `finite_state_machine` | `input_events`, `states`, `initial`, exhaustive transition table, unmatched-event policy; stores state and timers. |
 | `markov_chain` | `states`, `initial`, `opportunity`, exact probability rows; stores state and transition ordinal. |
 | `burst_process` | `initial`, good/bad transition probabilities, transition opportunity; stores state and ordinal. |

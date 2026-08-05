@@ -809,6 +809,23 @@ fn put_shape(output: &mut Vec<u8>, shape: &SignalShape) {
     output.push(shape.scale_decimal_exponent.to_be_bytes()[0]);
 }
 
+pub(super) fn encode_signal_shape(shape: &SignalShape) -> Result<Vec<u8>, TraceError> {
+    shape.validate().map_err(TraceError::Signal)?;
+    let mut output = Vec::new();
+    put_shape(&mut output, shape);
+    Ok(output)
+}
+
+pub(super) fn decode_signal_shape(bytes: &[u8]) -> Result<SignalShape, TraceError> {
+    let mut reader = Reader::new(bytes);
+    let shape = reader.shape()?;
+    reader.finish()?;
+    if encode_signal_shape(&shape)? != bytes {
+        return Err(TraceError::NonCanonicalCodec);
+    }
+    Ok(shape)
+}
+
 fn put_value_type(output: &mut Vec<u8>, value: &SignalValueType) {
     match value {
         SignalValueType::Bool => output.push(0),
@@ -861,6 +878,7 @@ fn unit_tag(unit: SignalUnit) -> u8 {
         SignalUnit::ProbabilityMillionths => 18,
         SignalUnit::MicrometresPerSecondSquared => 19,
         SignalUnit::MicrometresPerHour => 20,
+        SignalUnit::SquareMillimetres => 21,
     }
 }
 
@@ -919,6 +937,25 @@ fn put_value(output: &mut Vec<u8>, value: &SignalValue) {
             put_bytes(output, bytes);
         }
     }
+}
+
+pub(super) fn encode_signal_value(value: &SignalValue) -> Result<Vec<u8>, TraceError> {
+    if value.value_type().is_none() || !value_payloads_bounded(value) {
+        return Err(TraceError::InvalidValue);
+    }
+    let mut output = Vec::new();
+    put_value(&mut output, value);
+    Ok(output)
+}
+
+pub(super) fn decode_signal_value(bytes: &[u8]) -> Result<SignalValue, TraceError> {
+    let mut reader = Reader::new(bytes);
+    let value = reader.value()?;
+    reader.finish()?;
+    if encode_signal_value(&value)? != bytes {
+        return Err(TraceError::NonCanonicalCodec);
+    }
+    Ok(value)
 }
 
 fn put_bytes(output: &mut Vec<u8>, bytes: &[u8]) {
@@ -1175,6 +1212,7 @@ fn decode_unit(value: u8) -> Result<SignalUnit, TraceError> {
         SignalUnit::ProbabilityMillionths,
         SignalUnit::MicrometresPerSecondSquared,
         SignalUnit::MicrometresPerHour,
+        SignalUnit::SquareMillimetres,
     ];
     units
         .get(usize::from(value))

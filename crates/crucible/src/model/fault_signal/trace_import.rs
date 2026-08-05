@@ -11,6 +11,8 @@ use std::fmt;
 
 use serde_json::{Map, Value};
 
+use crate::model::{DagStore, DagStoreError};
+
 use super::*;
 
 /// Stable importer semantic version shared by the initial open formats.
@@ -72,6 +74,91 @@ pub struct ImportedSignalTrace {
     pub manifest: SignalTraceManifest,
     /// Canonical chunks in manifest order.
     pub chunks: Vec<SignalTraceChunk>,
+}
+
+/// Persists raw provenance, canonical chunks, and the manifest atomically by
+/// content identity from the caller's perspective.
+///
+/// # Errors
+///
+/// Returns [`TraceArtifactStoreError`] when raw provenance differs, a canonical
+/// object has stale identity, or the backing store rejects an object.
+pub fn store_imported_signal_trace(
+    store: &dyn DagStore,
+    raw_bytes: &[u8],
+    imported: &ImportedSignalTrace,
+) -> Result<ContentHash, TraceArtifactStoreError> {
+    let raw = ContentHash::from_bytes(raw_bytes);
+    if imported.manifest.provenance.raw_content != Some(raw) {
+        return Err(TraceArtifactStoreError::RawProvenanceMismatch);
+    }
+    let stored_raw = store
+        .put(raw_bytes)
+        .map_err(TraceArtifactStoreError::Store)?;
+    if stored_raw != raw {
+        return Err(TraceArtifactStoreError::ContentMismatch);
+    }
+    for chunk in &imported.chunks {
+        let bytes = chunk.encode();
+        if ContentHash::from_bytes(&bytes) != chunk.content
+            || store.put(&bytes).map_err(TraceArtifactStoreError::Store)? != chunk.content
+        {
+            return Err(TraceArtifactStoreError::ContentMismatch);
+        }
+    }
+    let bytes = imported.manifest.encode();
+    if ContentHash::from_bytes(&bytes) != imported.manifest.content
+        || store.put(&bytes).map_err(TraceArtifactStoreError::Store)? != imported.manifest.content
+    {
+        return Err(TraceArtifactStoreError::ContentMismatch);
+    }
+    Ok(imported.manifest.content)
+}
+
+/// Loads a complete canonical trace and verifies every dependency reference.
+///
+/// # Errors
+///
+/// Returns [`TraceArtifactStoreError`] when any object is absent, corrupt,
+/// malformed, or inconsistent with the manifest.
+pub fn load_stored_signal_trace(
+    store: &dyn DagStore,
+    manifest_content: ContentHash,
+) -> Result<ImportedSignalTrace, TraceArtifactStoreError> {
+    let manifest_bytes = store
+        .get(&manifest_content)
+        .map_err(TraceArtifactStoreError::Store)?;
+    if ContentHash::from_bytes(&manifest_bytes) != manifest_content {
+        return Err(TraceArtifactStoreError::ContentMismatch);
+    }
+    let manifest =
+        SignalTraceManifest::decode(&manifest_bytes).map_err(TraceArtifactStoreError::Trace)?;
+    let mut chunks = Vec::new();
+    for channel in &manifest.channels {
+        for reference in &channel.chunks {
+            let bytes = store
+                .get(&reference.content)
+                .map_err(TraceArtifactStoreError::Store)?;
+            if ContentHash::from_bytes(&bytes) != reference.content {
+                return Err(TraceArtifactStoreError::ContentMismatch);
+            }
+            let chunk = SignalTraceChunk::decode(&bytes).map_err(TraceArtifactStoreError::Trace)?;
+            if chunk.channel != channel.id
+                || chunk.event_channel != channel.event_channel
+                || chunk.reference() != *reference
+            {
+                return Err(TraceArtifactStoreError::ReferenceMismatch);
+            }
+            chunks.push(chunk);
+        }
+    }
+    if let Some(raw) = manifest.provenance.raw_content {
+        let bytes = store.get(&raw).map_err(TraceArtifactStoreError::Store)?;
+        if ContentHash::from_bytes(&bytes) != raw {
+            return Err(TraceArtifactStoreError::ContentMismatch);
+        }
+    }
+    Ok(ImportedSignalTrace { manifest, chunks })
 }
 
 /// Imports one raw byte stream into a canonical one-channel artifact.
@@ -920,6 +1007,37 @@ impl fmt::Display for TraceImportError {
 }
 
 impl Error for TraceImportError {}
+
+/// Persistence or dependency-closure failure for a normalized trace artifact.
+#[derive(Debug)]
+pub enum TraceArtifactStoreError {
+    /// Caller-supplied raw bytes differ from manifest provenance.
+    RawProvenanceMismatch,
+    /// Encoded bytes, declared content identity, and store identity differ.
+    ContentMismatch,
+    /// A chunk reference disagrees with decoded chunk metadata.
+    ReferenceMismatch,
+    /// Backing content-addressed store failed.
+    Store(DagStoreError),
+    /// Canonical trace codec failed.
+    Trace(TraceError),
+}
+
+impl fmt::Display for TraceArtifactStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "normalized trace persistence failed: {self:?}")
+    }
+}
+
+impl Error for TraceArtifactStoreError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Store(error) => Some(error),
+            Self::Trace(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

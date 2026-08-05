@@ -263,14 +263,16 @@ fn source_material(specification: &SignalSourceSpecification) -> String {
         ),
         SignalSourceSpecification::TransmitterField {
             transmitter,
+            coordinate_frame,
             position_signal,
             orientation_signal,
             model,
             lookup,
             environment_signals,
         } => format!(
-            "transmitter={};position_signal={};orientation_signal={};model={};lookup={};environment_signals={}",
+            "transmitter={};coordinate_frame={};position_signal={};orientation_signal={};model={};lookup={};environment_signals={}",
             transmitter.as_str(),
+            coordinate_frame.as_str(),
             position_signal.as_str(),
             optional_id_material(orientation_signal),
             model.as_str(),
@@ -299,12 +301,14 @@ fn source_material(specification: &SignalSourceSpecification) -> String {
         SignalSourceSpecification::ExponentialWait {
             rate,
             sampler_version,
+            sampler_table,
             key_domain,
             maximum_nanos,
         } => format!(
-            "rate={}/{};sampler_version={sampler_version};key_domain={};maximum_nanos={}",
+            "rate={}/{};sampler_version={sampler_version};sampler_table={};key_domain={};maximum_nanos={}",
             rate.numerator(),
             rate.denominator(),
+            sampler_table.to_hex(),
             key_domain_name(*key_domain),
             optional_u64_material(*maximum_nanos)
         ),
@@ -312,12 +316,14 @@ fn source_material(specification: &SignalSourceSpecification) -> String {
             shape,
             scale_nanos,
             sampler_version,
+            sampler_table,
             key_domain,
             maximum_nanos,
         } => format!(
-            "shape={}/{};scale_nanos={scale_nanos};sampler_version={sampler_version};key_domain={};maximum_nanos={}",
+            "shape={}/{};scale_nanos={scale_nanos};sampler_version={sampler_version};sampler_table={};key_domain={};maximum_nanos={}",
             shape.numerator(),
             shape.denominator(),
+            sampler_table.to_hex(),
             key_domain_name(*key_domain),
             optional_u64_material(*maximum_nanos)
         ),
@@ -400,9 +406,19 @@ fn pure_material(specification: &PureSignalSpecification) -> String {
             rounding_name(*rounding),
             overflow_name(*overflow)
         ),
-        PureSignalSpecification::Delay { delay } => format!("delay={delay}"),
-        PureSignalSpecification::SampleHold { cadence, epoch } => {
-            format!("cadence={cadence};epoch={}", coordinate_material(epoch))
+        PureSignalSpecification::Delay {
+            delay,
+            retained_samples,
+        } => format!("delay={delay};retained_samples={retained_samples}"),
+        PureSignalSpecification::SampleHold {
+            cadence,
+            epoch,
+            retained_samples,
+        } => {
+            format!(
+                "cadence={cadence};epoch={};retained_samples={retained_samples}",
+                coordinate_material(epoch)
+            )
         }
         PureSignalSpecification::Window {
             operator,
@@ -429,8 +445,12 @@ fn pure_material(specification: &PureSignalSpecification) -> String {
         PureSignalSpecification::OrientationDelta { convention } => {
             format!("convention={}", convention.as_str())
         }
-        PureSignalSpecification::MergeEvents => {
-            String::from("same_coordinate_order=source_then_sequence")
+        PureSignalSpecification::MergeEvents {
+            source_sequence_limit,
+        } => {
+            format!(
+                "same_coordinate_order=source_then_sequence;source_sequence_limit={source_sequence_limit}"
+            )
         }
         PureSignalSpecification::GateEvents => String::new(),
     }
@@ -458,10 +478,11 @@ fn stateful_material(specification: &StatefulSignalSpecification) -> String {
         StatefulSignalSpecification::Integrator {
             initial,
             cadence_nanos,
+            time_unit_nanos,
             rounding,
             overflow,
         } => format!(
-            "initial={};cadence_nanos={cadence_nanos};rounding={};overflow={}",
+            "initial={};cadence_nanos={cadence_nanos};time_unit_nanos={time_unit_nanos};rounding={};overflow={}",
             initial.material(),
             rounding_name(*rounding),
             overflow_name(*overflow)
@@ -469,11 +490,13 @@ fn stateful_material(specification: &StatefulSignalSpecification) -> String {
         StatefulSignalSpecification::LeakyIntegrator {
             initial,
             cadence_nanos,
+            time_unit_nanos,
             decay_ratio,
+            maximum_catch_up_steps,
             rounding,
             overflow,
         } => format!(
-            "initial={};cadence_nanos={cadence_nanos};decay_ratio={}/{};rounding={};overflow={}",
+            "initial={};cadence_nanos={cadence_nanos};time_unit_nanos={time_unit_nanos};decay_ratio={}/{};maximum_catch_up_steps={maximum_catch_up_steps};rounding={};overflow={}",
             initial.material(),
             decay_ratio.numerator(),
             decay_ratio.denominator(),
@@ -715,12 +738,16 @@ fn optional_u64_material(value: Option<u64>) -> String {
     value.map_or_else(|| String::from("none"), |value| format!("some:{value}"))
 }
 
-fn interpolation_name(value: SignalInterpolation) -> &'static str {
+fn interpolation_name(value: SignalInterpolation) -> String {
     match value {
-        SignalInterpolation::Exact => "exact",
-        SignalInterpolation::HoldPrevious => "hold_previous",
-        SignalInterpolation::Nearest => "nearest",
-        SignalInterpolation::Linear => "linear",
+        SignalInterpolation::Exact => String::from("exact"),
+        SignalInterpolation::HoldPrevious => String::from("hold_previous"),
+        SignalInterpolation::Nearest => String::from("nearest"),
+        SignalInterpolation::Linear { rounding, overflow } => format!(
+            "linear(rounding={},overflow={})",
+            rounding_name(rounding),
+            overflow_name(overflow)
+        ),
     }
 }
 
