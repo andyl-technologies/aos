@@ -443,7 +443,7 @@ async fn index_registry_inner(
                         platform
                             .images
                             .iter()
-                            .any(|image| !image.delivery.is_legacy_store_only())
+                            .any(|image| !image.delivery.is_store_only())
                     })
                 })
         });
@@ -875,7 +875,7 @@ async fn verify_system_image_objects(
         for version in &package.versions {
             for (platform, artifact) in &version.platforms {
                 for image in &artifact.images {
-                    if image.delivery.is_legacy_store_only() {
+                    if image.delivery.is_store_only() {
                         continue;
                     }
                     image.validate_delivery(&version.version, platform)?;

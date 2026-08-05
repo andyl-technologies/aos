@@ -291,8 +291,8 @@ pub struct ImageEntry {
     /// installable through their signed NAR/store metadata, but are not eligible
     /// for direct disk-byte discovery until republished with delivery metadata.
     #[serde(
-        default = "ImageDelivery::legacy_store_only",
-        skip_serializing_if = "ImageDelivery::is_legacy_store_only"
+        default = "ImageDelivery::store_only",
+        skip_serializing_if = "ImageDelivery::is_store_only"
     )]
     pub delivery: ImageDelivery,
     /// Lowercase hex SHA-256 of the signer leaf cert, when signed.
@@ -329,7 +329,7 @@ impl ImageEntry {
     pub fn validate_delivery(&self, release: &str, platform: &str) -> anyhow::Result<()> {
         let delivery = &self.delivery;
         anyhow::ensure!(
-            !delivery.is_legacy_store_only(),
+            !delivery.is_store_only(),
             "legacy store-only image has no direct-delivery contract"
         );
         delivery.validate(&self.format, release, platform)?;
@@ -398,7 +398,7 @@ impl ImageDelivery {
     /// This value is never a valid direct-download contract and is omitted
     /// again when serialized. Producers must emit schema v1 metadata.
     #[must_use]
-    pub fn legacy_store_only() -> Self {
+    pub fn store_only() -> Self {
         Self {
             schema_version: 0,
             release: String::new(),
@@ -437,7 +437,7 @@ impl ImageDelivery {
 
     /// Returns whether this value represents a pre-delivery store-only entry.
     #[must_use]
-    pub fn is_legacy_store_only(&self) -> bool {
+    pub fn is_store_only(&self) -> bool {
         self.schema_version == 0
     }
 }
@@ -985,12 +985,12 @@ nar_size = 1
     }
 
     #[test]
-    fn shared_parser_accepts_store_only_legacy_entries_but_rejects_duplicate_formats() {
+    fn shared_parser_accepts_store_only_entries_but_rejects_duplicate_formats() {
         let without_delivery = raw_image_block(false);
         let legacy = package_with_images(&without_delivery);
         let parsed = parse_package_file(&legacy).unwrap();
         let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
-        assert!(image.delivery.is_legacy_store_only());
+        assert!(image.delivery.is_store_only());
         assert!(!toml::to_string(&parsed).unwrap().contains("delivery"));
 
         let duplicate = package_with_images(&format!("{without_delivery}{without_delivery}"));
@@ -1090,8 +1090,8 @@ pub struct SysrootImageEntry {
     pub nar_size: u64,
     /// Immutable direct-download contract from the signed image catalog.
     #[serde(
-        default = "ImageDelivery::legacy_store_only",
-        skip_serializing_if = "ImageDelivery::is_legacy_store_only"
+        default = "ImageDelivery::store_only",
+        skip_serializing_if = "ImageDelivery::is_store_only"
     )]
     pub delivery: ImageDelivery,
     /// Lowercase hex SHA-256 of the signer leaf certificate found in the
@@ -1913,7 +1913,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                         image.format
                     );
                 }
-                if !image.delivery.is_legacy_store_only() {
+                if !image.delivery.is_store_only() {
                     image
                         .validate_delivery(&version.version, platform)
                         .with_context(|| {
@@ -1927,7 +1927,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
             let direct_images = entry
                 .images
                 .iter()
-                .filter(|image| !image.delivery.is_legacy_store_only())
+                .filter(|image| !image.delivery.is_store_only())
                 .collect::<Vec<_>>();
             if !direct_images.is_empty() {
                 let Some(first_image) = direct_images.first().copied() else {
