@@ -1506,6 +1506,13 @@
          "service" : "PublishService"
       },
       {
+         "method" : "AbortRegistryPublication",
+         "path" : "aos.hub.v1.PublishService/AbortRegistryPublication",
+         "request" : "AbortRegistryPublicationRequest",
+         "response" : "RegistryPublication",
+         "service" : "PublishService"
+      },
+      {
          "method" : "GitLog",
          "path" : "aos.hub.v1.GitService/GitLog",
          "request" : "GitLogRequest",
@@ -1856,10 +1863,31 @@
          "service" : "BinaryCacheService"
       },
       {
-         "method" : "MintCacheUploadCredentials",
-         "path" : "aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials",
-         "request" : "MintCacheUploadCredentialsRequest",
-         "response" : "MintCacheUploadCredentialsResponse",
+         "method" : "CreateCacheObjectUploads",
+         "path" : "aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+         "request" : "CreateCacheObjectUploadsRequest",
+         "response" : "CreateCacheObjectUploadsResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "BeginCacheMultipartUpload",
+         "path" : "aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
+         "request" : "BeginCacheMultipartUploadRequest",
+         "response" : "BeginCacheMultipartUploadResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "CompleteCacheMultipartUpload",
+         "path" : "aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload",
+         "request" : "CompleteCacheMultipartUploadRequest",
+         "response" : "CacheMultipartUploadResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
+         "method" : "AbortCacheMultipartUpload",
+         "path" : "aos.hub.v1.BinaryCacheService/AbortCacheMultipartUpload",
+         "request" : "AbortCacheMultipartUploadRequest",
+         "response" : "CacheMultipartUploadResponse",
          "service" : "BinaryCacheService"
       },
       {

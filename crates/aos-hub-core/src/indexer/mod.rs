@@ -169,10 +169,6 @@ pub async fn index_and_record(
 
 /// Indexes a registry from one known placement and records the resulting state.
 ///
-/// Only a successful index tied to `indexed_placement_id` may cover uncertain
-/// writes for that placement. Callers without an immutable placement identity
-/// can still index through [`index_and_record`], but cannot release GC fences.
-///
 /// # Errors
 ///
 /// Returns the indexing error after recording it.
@@ -182,19 +178,8 @@ pub async fn index_and_record_from_placement(
     registry: &RegistryRecord,
     indexed_placement_id: Option<i64>,
 ) -> Result<IndexOutcome> {
-    let index_started_at = crate::clock::now_unix_secs();
     match index_registry(db, fetch, registry, indexed_placement_id).await {
-        Ok(outcome) => {
-            // A pending run (no surface published yet) indexed nothing, so it
-            // raises no `index.completed`/`release.published` events.
-            if !outcome.pending {
-                if let Some(placement_id) = indexed_placement_id {
-                    db.cover_registry_write_tickets(registry.id, placement_id, index_started_at)
-                        .await?;
-                }
-            }
-            Ok(outcome)
-        }
+        Ok(outcome) => Ok(outcome),
         Err(err) => {
             let detail = format!("{err:#}");
             if crate::url_guard::is_fetch_error(&err) {
@@ -205,99 +190,6 @@ pub async fn index_and_record_from_placement(
             Err(err)
         }
     }
-}
-
-/// Indexes every exact placement that owns an outstanding registry-write fence.
-///
-/// This maintenance path deliberately ignores route visibility and effective
-/// read enablement. A ticket can be covered only by a successful read from the
-/// same physical placement that accepted its bytes.
-///
-/// # Errors
-///
-/// Returns an error when registry/placement discovery fails. Individual storage
-/// or index failures are logged and leave their ticket fences intact for retry.
-pub async fn index_outstanding_write_placements(
-    db: &Database,
-    surfaces: &dyn SurfaceProvider,
-) -> Result<usize> {
-    let registries = db.list_registries_with_write_tickets().await?;
-    let mut covered_placements = 0;
-    for registry in registries {
-        let authoritative = match db
-            .reconciled_surface_reader(crate::db::SurfaceTarget::Registry(registry.id))
-            .await
-        {
-            Ok(placement) => placement,
-            Err(error) => {
-                tracing::warn!(
-                    registry = %registry.slug,
-                    error = %format!("{error:#}"),
-                    "resolving authoritative registry reader failed"
-                );
-                continue;
-            }
-        };
-        let authoritative_fetch = match surfaces.placement_fetcher(&authoritative).await {
-            Ok(fetch) => fetch,
-            Err(error) => {
-                tracing::warn!(
-                    registry = %registry.slug,
-                    placement_id = authoritative.id,
-                    error = %format!("{error:#}"),
-                    "opening authoritative registry reader failed"
-                );
-                continue;
-            }
-        };
-        if let Err(error) = index_and_record_from_placement(
-            db,
-            authoritative_fetch.as_ref(),
-            &registry,
-            Some(authoritative.id),
-        )
-        .await
-        {
-            tracing::warn!(
-                registry = %registry.slug,
-                placement_id = authoritative.id,
-                error = %format!("{error:#}"),
-                "authoritative registry indexing failed"
-            );
-            continue;
-        }
-        let placements = db
-            .list_registry_write_ticket_placements(registry.id)
-            .await?;
-        for placement in placements {
-            if placement.id == authoritative.id {
-                covered_placements += 1;
-                continue;
-            }
-            let fetch = match surfaces.placement_fetcher(&placement).await {
-                Ok(fetch) => fetch,
-                Err(error) => {
-                    tracing::warn!(
-                        registry = %registry.slug,
-                        placement_id = placement.id,
-                        error = %format!("{error:#}"),
-                        "opening outstanding registry write placement failed"
-                    );
-                    continue;
-                }
-            };
-            match reconcile_registry_replica(db, fetch.as_ref(), &registry, placement.id).await {
-                Ok(_) => covered_placements += 1,
-                Err(error) => tracing::warn!(
-                    registry = %registry.slug,
-                    placement_id = placement.id,
-                    error = %format!("{error:#}"),
-                    "reconciling outstanding registry write placement failed"
-                ),
-            }
-        }
-    }
-    Ok(covered_placements)
 }
 
 /// Reconciles one replica against the already-published signed registry generation.
@@ -317,7 +209,6 @@ pub async fn reconcile_registry_replica(
     registry: &RegistryRecord,
     placement_id: i64,
 ) -> Result<usize> {
-    let started_at = crate::clock::now_unix_secs();
     let expected_refs = db
         .refs_digest(registry.id)
         .await?
@@ -351,8 +242,6 @@ pub async fn reconcile_registry_replica(
             )
             .await?;
         }
-        db.cover_registry_write_tickets(registry.id, placement_id, started_at)
-            .await?;
         Ok::<usize, anyhow::Error>(objects.len())
     }
     .await;

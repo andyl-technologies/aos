@@ -347,8 +347,6 @@ async fn configure_dialect_writers(
 async fn exercise_topology_multipart(
     db: &Database,
     org_id: i64,
-    registry_id: i64,
-    registry_placement: &SurfacePlacementRecord,
     cache_id: i64,
     cache_placement: &SurfacePlacementRecord,
     binding_revision: i64,
@@ -461,110 +459,6 @@ async fn exercise_topology_multipart(
     db.complete_cache_write_ticket(&completing.ticket_id, completing.resource_version, 105)
         .await
         .unwrap();
-
-    let observing = db
-        .begin_registry_write_ticket(
-            "dialect-registry-multipart",
-            registry_id,
-            registry_placement.id,
-            registry_placement.resource_version,
-            binding_revision,
-            credential_generation,
-            "objects/aa/multipart",
-            3,
-            "multipart",
-            Some(org_id),
-            0,
-            0,
-            1_000,
-            100,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    let active = db
-        .activate_registry_write_ticket(
-            &observing.ticket_id,
-            observing.resource_version,
-            Some(org_id),
-            3,
-            1,
-            None,
-            Some(&intended_hash),
-            101,
-        )
-        .await
-        .unwrap();
-    let active = db
-        .attach_registry_write_backend_upload(
-            &active.ticket_id,
-            active.resource_version,
-            "dialect-registry-backend-upload",
-            102,
-        )
-        .await
-        .unwrap();
-    let admitted = db
-        .admit_registry_write_part(
-            &active.ticket_id,
-            active.resource_version,
-            1,
-            3,
-            &body_digest,
-        )
-        .await
-        .unwrap();
-    let replay = db
-        .admit_registry_write_part(
-            &admitted.ticket_id,
-            admitted.resource_version,
-            1,
-            3,
-            &body_digest,
-        )
-        .await
-        .unwrap();
-    assert_eq!(replay.uploaded_size, 3, "exact replay cannot double-charge");
-    assert!(db
-        .admit_registry_write_part(
-            &replay.ticket_id,
-            replay.resource_version,
-            1,
-            3,
-            &other_digest,
-        )
-        .await
-        .is_err());
-    db.confirm_registry_write_part(
-        &replay.ticket_id,
-        replay.resource_version,
-        1,
-        "registry-part-etag",
-    )
-    .await
-    .unwrap();
-    let active = db
-        .registry_write_ticket(&replay.ticket_id)
-        .await
-        .unwrap()
-        .unwrap();
-    let completing = db
-        .begin_registry_multipart_completion(&active.ticket_id, active.resource_version, 103)
-        .await
-        .unwrap();
-    let completing = db
-        .reconcile_registry_write_ticket_size(
-            &completing.ticket_id,
-            completing.resource_version,
-            3,
-            104,
-        )
-        .await
-        .unwrap();
-    db.complete_registry_write_ticket(&completing.ticket_id, completing.resource_version, 105)
-        .await
-        .unwrap();
 }
 
 /// Drives the representative cross-section of the `Database` surface against an
@@ -574,7 +468,7 @@ async fn exercise_topology_multipart(
 /// Covers: org/user/service-account creation, membership grants and effective
 /// scope resolution, token mint + validation, managed-registry creation,
 /// multi-placement cache inventory publication + fail-closed GC, durable cache
-/// and registry multipart writes, a config change-set apply, audit record +
+/// multipart cache writes, a config change-set apply, audit record +
 /// scoped list, and the webhook enqueue/list path.
 async fn exercise(db: &Database) {
     // Mirror creation SSRF-validates its target; these
@@ -755,8 +649,6 @@ async fn exercise(db: &Database) {
     exercise_topology_multipart(
         db,
         org,
-        reg,
-        &registry_placement,
         cache,
         &cache_primary,
         binding_revision,

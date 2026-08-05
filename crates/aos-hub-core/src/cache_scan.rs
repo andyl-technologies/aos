@@ -15,8 +15,8 @@ use sha2::{Digest, Sha256};
 use crate::clock;
 use crate::db::{
     BinaryCache, CacheInventoryNarinfoCandidate, CacheObjectPresenceObservation,
-    CacheWriteTicketRecord, Database, RegistryWriteTicketRecord, SurfaceObjectRecord,
-    SurfacePlacementRecord, SurfaceTarget, WriteObjectIdentity,
+    CacheWriteTicketRecord, Database, SurfaceObjectRecord, SurfacePlacementRecord, SurfaceTarget,
+    WriteObjectIdentity,
 };
 use crate::fetch::{SurfaceListingBudget, SurfaceObjectEvidence, SurfaceProvider};
 use crate::surface_write::{MultipartAbortOutcome, SurfaceWriteProvider};
@@ -67,188 +67,6 @@ pub struct RescanStats {
     pub removed: usize,
     /// Logical narinfos present on at least one selected placement.
     pub unchanged: usize,
-}
-
-/// Cleans expired registry multipart state before releasing topology fences.
-///
-/// # Errors
-///
-/// Returns an error when page/cursor persistence fails. Per-ticket backend
-/// failures are durably deferred with backoff and leave their fence active.
-pub async fn recover_expired_registry_writes(
-    db: &Database,
-    surfaces: &dyn SurfaceProvider,
-    writers: &dyn SurfaceWriteProvider,
-    now: i64,
-) -> Result<()> {
-    let (after_expires_at, after_ticket_id, mut cursor_version) =
-        db.registry_write_recovery_cursor().await?;
-    let page = db
-        .list_expired_registry_write_tickets(
-            now,
-            after_expires_at,
-            &after_ticket_id,
-            MAX_CLEANUP_ITEMS_PER_PASS,
-        )
-        .await?;
-    if page.is_empty() {
-        if after_expires_at != i64::MIN || !after_ticket_id.is_empty() {
-            db.advance_registry_write_recovery_cursor(cursor_version, i64::MIN, "", now)
-                .await?;
-        }
-        return Ok(());
-    }
-    for ticket in &page {
-        if let Err(error) = recover_one_registry_write(db, surfaces, writers, ticket, now).await {
-            if let Some(current) = db.registry_write_ticket(&ticket.ticket_id).await? {
-                if matches!(
-                    current.state.as_str(),
-                    "observing" | "active" | "completing"
-                ) {
-                    let detail = format!("{error:#}");
-                    if let Err(defer_error) = db
-                        .defer_registry_write_recovery(
-                            &ticket.ticket_id,
-                            current.resource_version,
-                            now,
-                            &detail,
-                        )
-                        .await
-                    {
-                        tracing::warn!(ticket = %ticket.ticket_id, error = %format!("{defer_error:#}"), "deferring registry write recovery failed");
-                    }
-                }
-            }
-            tracing::warn!(ticket = %ticket.ticket_id, error = %format!("{error:#}"), "registry write recovery deferred");
-        }
-        db.advance_registry_write_recovery_cursor(
-            cursor_version,
-            ticket.expires_at,
-            &ticket.ticket_id,
-            now,
-        )
-        .await?;
-        cursor_version += 1;
-    }
-    Ok(())
-}
-
-async fn recover_one_registry_write(
-    db: &Database,
-    surfaces: &dyn SurfaceProvider,
-    writers: &dyn SurfaceWriteProvider,
-    ticket: &RegistryWriteTicketRecord,
-    now: i64,
-) -> Result<()> {
-    if ticket.state == "observing" {
-        return db
-            .abort_registry_write_ticket(&ticket.ticket_id, ticket.resource_version, "failed", now)
-            .await;
-    }
-    let placement = db
-        .surface_placement(ticket.placement_id)
-        .await?
-        .context("expired registry write ticket references a missing placement")?;
-    if ticket.state == "completing" {
-        let observed = surfaces
-            .placement_fetcher(&placement)
-            .await?
-            .inventory_evidence(&ticket.object_key)
-            .await?;
-        let classification = classify_expired_write(
-            ticket.prior_object.as_ref(),
-            ticket.intended_object_hash.as_deref(),
-            ticket.declared_size,
-            observed.as_ref(),
-        );
-        let observed = completing_replacement_evidence(classification, observed.as_ref())
-            .context("registry multipart completion remains ambiguous")?;
-        let observed = db
-            .observe_expired_registry_write_ticket_size(
-                &ticket.ticket_id,
-                ticket.resource_version,
-                observed.size,
-                now,
-            )
-            .await?;
-        return db
-            .recover_expired_registry_write_ticket(
-                &ticket.ticket_id,
-                observed.resource_version,
-                now,
-            )
-            .await;
-    }
-    let abort_outcome = if let Some(upload_id) = ticket.backend_upload_id.as_deref() {
-        Some(
-            writers
-                .placement_writer(&placement)
-                .await?
-                .abort_multipart(&ticket.object_key, upload_id)
-                .await
-                .with_context(|| {
-                    format!("aborting expired registry upload '{}'", ticket.ticket_id)
-                })?,
-        )
-    } else {
-        None
-    };
-    let observed = if matches!(
-        abort_outcome,
-        Some(MultipartAbortOutcome::Aborted | MultipartAbortOutcome::Absent)
-    ) {
-        None
-    } else {
-        surfaces
-            .placement_fetcher(&placement)
-            .await?
-            .inventory_evidence(&ticket.object_key)
-            .await?
-    };
-    let classification = classify_expired_write(
-        ticket.prior_object.as_ref(),
-        ticket.intended_object_hash.as_deref(),
-        ticket.declared_size,
-        observed.as_ref(),
-    );
-    match abort_outcome {
-        Some(MultipartAbortOutcome::Aborted | MultipartAbortOutcome::Absent) => {
-            db.abort_registry_write_ticket(
-                &ticket.ticket_id,
-                ticket.resource_version,
-                "failed",
-                now,
-            )
-            .await
-        }
-        Some(MultipartAbortOutcome::PossiblyCompleted) | None => {
-            if classification == ExpiredWriteClassification::Replacement {
-                if let Some(observed) = observed.as_ref() {
-                    let observed = db
-                        .observe_expired_registry_write_ticket_size(
-                            &ticket.ticket_id,
-                            ticket.resource_version,
-                            observed.size,
-                            now,
-                        )
-                        .await?;
-                    return db
-                        .recover_expired_registry_write_ticket(
-                            &ticket.ticket_id,
-                            observed.resource_version,
-                            now,
-                        )
-                        .await;
-                }
-            }
-            // Absence, an unchanged prior object, and opaque evidence are all
-            // negative evidence. Once a backend mutation may have happened,
-            // none proves nonapplication; retain the declared reservation and
-            // object fence until a later successful index covers it.
-            db.mark_registry_write_ticket_uncertain(&ticket.ticket_id, ticket.resource_version, now)
-                .await
-        }
-    }
 }
 
 /// Reaps a bounded set of old cache-object tombstones.
@@ -1224,15 +1042,9 @@ mod tests {
         recover_expired_cache_writes(db, surfaces, &writers, now, 1)
             .await
             .unwrap();
-        recover_expired_registry_writes(db, surfaces, &writers, now)
-            .await
-            .unwrap();
         // The first call advances beyond the one-item page. The empty second
         // call exercises the durable cursor wrap needed before the next retry.
         recover_expired_cache_writes(db, surfaces, &writers, now, 1)
-            .await
-            .unwrap();
-        recover_expired_registry_writes(db, surfaces, &writers, now)
             .await
             .unwrap();
     }
@@ -1307,18 +1119,7 @@ mod tests {
         db.prepare_ambiguous_recovery_test_tickets().await.unwrap();
         let replacement = evidence(b"x");
         let surfaces = RecoverySurfaces {
-            evidence: Mutex::new(
-                [
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(replacement.clone()),
-                    Some(replacement),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            evidence: Mutex::new([None, None, Some(replacement)].into_iter().collect()),
         };
 
         for attempt in 0..3 {
@@ -1334,23 +1135,7 @@ mod tests {
         assert_eq!(cache.active_slot, None);
         assert_eq!(cache.covered_inventory_generation, None);
         assert_eq!(cache.recovery_attempts, 2);
-        let registry = db
-            .test_registry_write_ticket_settlement("registry-multipart-post")
-            .await
-            .unwrap();
-        assert_eq!(registry.state, "completed_uncovered");
-        assert_eq!(registry.quota_state, "committed");
-        assert_eq!(registry.active_slot, Some(1));
-        assert_eq!(registry.recovery_attempts, 2);
-        assert_eq!(db.test_org_usage(1).await.unwrap(), (2, 2));
-
-        db.cover_registry_write_tickets(1, 2, 9_001).await.unwrap();
-        let registry = db
-            .test_registry_write_ticket_settlement("registry-multipart-post")
-            .await
-            .unwrap();
-        assert_eq!(registry.state, "completed");
-        assert_eq!(registry.active_slot, None);
+        assert_eq!(db.test_org_usage(1).await.unwrap(), (1, 1));
 
         let cache = db.binary_cache_by_id(1).await.unwrap().unwrap();
         let writers = RecoveryWriters;
@@ -1386,15 +1171,7 @@ mod tests {
         assert_eq!(cache.active_slot, None);
         assert_eq!(cache.covered_inventory_generation, None);
         assert_eq!(cache.recovery_attempts, 8);
-        let registry = db
-            .test_registry_write_ticket_settlement("registry-multipart-post")
-            .await
-            .unwrap();
-        assert_eq!(registry.state, "completed_uncovered");
-        assert_eq!(registry.quota_state, "committed");
-        assert_eq!(registry.active_slot, Some(1));
-        assert_eq!(registry.recovery_attempts, 8);
-        assert_eq!(db.test_org_usage(1).await.unwrap(), (2, 2));
+        assert_eq!(db.test_org_usage(1).await.unwrap(), (1, 1));
     }
 
     #[test]

@@ -661,24 +661,6 @@ async fn main() -> Result<()> {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
                 loop {
                     tick.tick().await;
-                    if let Err(error) = aos_hub_core::indexer::index_outstanding_write_placements(
-                        &inventory_db,
-                        &inventory_surfaces,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %format!("{error:#}"), "exact-placement registry write indexing failed");
-                    }
-                    if let Err(error) = aos_hub_core::cache_scan::recover_expired_registry_writes(
-                        &inventory_db,
-                        &inventory_surfaces,
-                        &inventory_writers,
-                        now_secs(),
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %format!("{error:#}"), "expired registry write recovery failed");
-                    }
                     if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
                         &inventory_db,
                         now_secs(),

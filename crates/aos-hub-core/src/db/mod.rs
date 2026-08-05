@@ -3221,58 +3221,6 @@ impl Database {
         rows.iter().map(row_to_registry).collect()
     }
 
-    /// Lists every registry that still owns an outstanding write fence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn list_registries_with_write_tickets(&self) -> Result<Vec<RegistryRecord>> {
-        let rows = self
-            .backend
-            .query(
-                &format!(
-                    "SELECT {REGISTRY_COLUMNS} FROM registries r
-                 WHERE EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                   WHERE ticket.registry_id = r.id AND ticket.active_object_slot = 1)
-                 ORDER BY r.slug"
-                ),
-                &[],
-            )
-            .await?;
-        rows.iter().map(row_to_registry).collect()
-    }
-
-    /// Lists the exact physical placements owning outstanding registry-write fences.
-    ///
-    /// The result is independent of serving visibility and read enablement: an
-    /// index pass must read the placement that accepted the write before it can
-    /// cover that placement's `completed_uncovered` ticket.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure or malformed placement state.
-    pub async fn list_registry_write_ticket_placements(
-        &self,
-        registry_id: i64,
-    ) -> Result<Vec<SurfacePlacementRecord>> {
-        let rows = self
-            .backend
-            .query(
-                &format!(
-                    "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective
-                     WHERE registry_id = ?1 AND EXISTS (
-                       SELECT 1 FROM registry_write_tickets ticket
-                       WHERE ticket.registry_id = ?1
-                         AND ticket.placement_id = surface_placement_effective.id
-                         AND ticket.active_object_slot = 1)
-                     ORDER BY id"
-                ),
-                &vals![registry_id],
-            )
-            .await?;
-        rows.iter().map(row_to_surface_placement).collect()
-    }
-
     /// List the registries owned by one org, ordered by slug.
     ///
     /// Unlike [`Database::list_registries`], this does **not** filter by the
@@ -5677,6 +5625,47 @@ impl Database {
             .transpose()
     }
 
+    /// Returns the publication that owns one registry generation identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn registry_publication_by_generation(
+        &self,
+        registry_id: i64,
+        generation: &str,
+    ) -> Result<Option<RegistryPublicationRecord>> {
+        validate_key_bytes(generation, "publication generation", 128)?;
+        self.backend
+            .query_opt(
+                "SELECT publication_id, registry_id, ordinal, generation,
+                        manifest_digest, refs_digest, default_commit,
+                        parent_publication_id, state, created_at, completed_at,
+                        retired_at
+                 FROM registry_publications
+                 WHERE registry_id = ?1 AND generation = ?2",
+                &vals![registry_id, generation],
+            )
+            .await?
+            .map(|row| {
+                Ok(RegistryPublicationRecord {
+                    publication_id: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    ordinal: row.get(2)?,
+                    generation: row.get(3)?,
+                    manifest_digest: row.get(4)?,
+                    refs_digest: row.get(5)?,
+                    default_commit: row.get(6)?,
+                    parent_publication_id: row.get(7)?,
+                    state: row.get(8)?,
+                    created_at: row.get(9)?,
+                    completed_at: row.get(10)?,
+                    retired_at: row.get(11)?,
+                })
+            })
+            .transpose()
+    }
+
     /// Lists the exact object manifest declared by a publication.
     ///
     /// # Errors
@@ -6398,6 +6387,39 @@ impl Database {
             )
             .await?
             == 1)
+    }
+
+    /// Fails an incomplete publication and every frozen placement atomically.
+    ///
+    /// A placement whose mutable pointers may have advanced remains failed and
+    /// therefore ineligible for reads until reconciliation restores a complete
+    /// ready publication. The method never rewinds a publication watermark.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed id, a terminal publication, or a
+    /// database failure.
+    pub async fn fail_registry_publication(&self, publication_id: &str, at: i64) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "UPDATE registry_publications
+                     SET state = 'failed', completed_at = ?2
+                     WHERE publication_id = ?1
+                       AND state IN ('preparing', 'writing_pointers')",
+                    vals![publication_id, at],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE registry_publication_placements
+                     SET state = 'failed', observed_at = ?2
+                     WHERE publication_id = ?1 AND state <> 'ready'",
+                    vals![publication_id, at],
+                )
+                .unchecked(),
+            ])
+            .await
     }
 
     /// Compare-and-sets the one authoritative current ready publication for a registry.
@@ -7182,9 +7204,7 @@ impl Database {
                  WHERE t.cache_id = surface_write_authorities.cache_id
                    AND (t.active_cache_slot = 1 OR
                      (t.state = 'completed' AND t.covered_inventory_generation IS NULL)))
-               AND NOT EXISTS (SELECT 1 FROM registry_write_tickets t
-                 WHERE t.registry_id = surface_write_authorities.registry_id
-                   AND t.active_object_slot = 1)",
+               ",
                 &vals![
                     authority_id,
                     expected_incarnation_id,
@@ -7274,9 +7294,7 @@ impl Database {
                  WHERE t.cache_id = surface_write_authorities.cache_id
                    AND (t.active_cache_slot = 1 OR
                      (t.state = 'completed' AND t.covered_inventory_generation IS NULL)))
-               AND NOT EXISTS (SELECT 1 FROM registry_write_tickets t
-                 WHERE t.registry_id = surface_write_authorities.registry_id
-                   AND t.active_object_slot = 1)",
+               ",
             &vals![authority_id, expected_version, desired_generation, unix_now()],
         ).await?;
         if affected != 1 {
@@ -7459,9 +7477,7 @@ impl Database {
                      WHERE t.cache_id = surface_write_authorities.cache_id
                        AND (t.active_cache_slot = 1 OR
                          (t.state = 'completed' AND t.covered_inventory_generation IS NULL)))
-                   AND NOT EXISTS (SELECT 1 FROM registry_write_tickets t
-                     WHERE t.registry_id = surface_write_authorities.registry_id
-                       AND t.active_object_slot = 1)",
+                   ",
                 &vals![
                     authority_id,
                     expected_incarnation_id,
@@ -8109,8 +8125,6 @@ impl Database {
                  WHERE ticket.placement_id = ?1 AND (ticket.active_cache_slot = 1 OR
                    (ticket.state = 'completed'
                      AND ticket.covered_inventory_generation IS NULL)))
-               AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                 WHERE ticket.placement_id = ?1 AND ticket.active_object_slot = 1)
                AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                  WHERE job.placement_id = ?1 AND job.active_slot = 1)
                AND NOT EXISTS (SELECT 1 FROM cache_inventory_placement_scans scan
@@ -8184,8 +8198,6 @@ impl Database {
                      WHERE ticket.placement_id = ?1 AND (ticket.active_cache_slot = 1 OR
                        (ticket.state = 'completed'
                          AND ticket.covered_inventory_generation IS NULL)))
-                   AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                     WHERE ticket.placement_id = ?1 AND ticket.active_object_slot = 1)
                    AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                      WHERE job.placement_id = ?1 AND job.active_slot = 1)
                    AND NOT EXISTS (SELECT 1 FROM cache_inventory_placement_scans scan
@@ -12003,9 +12015,6 @@ impl Database {
                  resource_version = resource_version + 1, updated_at = ?2,
                  mutation_plan_id = ?5 WHERE id = ?1 AND deleted_at IS NULL
                  AND resource_version = ?4
-                 AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                   JOIN registries registry ON registry.id = ticket.registry_id
-                   WHERE registry.org_id = ?1 AND ticket.active_object_slot = 1)
                  AND NOT EXISTS (SELECT 1 FROM cache_write_tickets ticket
                    JOIN binary_caches cache ON cache.id = ticket.cache_id
                    WHERE cache.org_id = ?1 AND (ticket.active_cache_slot = 1 OR
@@ -13719,9 +13728,7 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "DELETE FROM registries WHERE id = ?1 AND scope_key = ?2
-                       AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                         WHERE ticket.registry_id = ?1 AND ticket.active_object_slot = 1)",
+                    "DELETE FROM registries WHERE id = ?1 AND scope_key = ?2",
                     vals![registry_id, scope_key],
                 )
                 .expecting(1),
@@ -14628,10 +14635,6 @@ impl Database {
                        AND (ticket.active_cache_slot = 1 OR
                          (ticket.state = 'completed'
                            AND ticket.covered_inventory_generation IS NULL)))
-                   AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                     WHERE ticket.storage_binding_id = ?1
-                       AND ticket.write_credential_purpose = ?2
-                       AND ticket.active_object_slot = 1)
                    AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                      JOIN surface_placements placement
                        ON placement.id = job.placement_id
@@ -15709,9 +15712,6 @@ impl Database {
             .execute(
                 "UPDATE orgs SET deleted_at = ?2, purge_after = ?3
              WHERE id = ?1 AND deleted_at IS NULL
-               AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                 JOIN registries registry ON registry.id = ticket.registry_id
-                 WHERE registry.org_id = ?1 AND ticket.active_object_slot = 1)
                AND NOT EXISTS (SELECT 1 FROM cache_write_tickets ticket
                  JOIN binary_caches cache ON cache.id = ticket.cache_id
                  WHERE cache.org_id = ?1 AND (ticket.active_cache_slot = 1 OR
@@ -15974,9 +15974,6 @@ impl Database {
             Statement::new(
                 "DELETE FROM orgs WHERE id = ?1 AND stable_id = ?2 AND deleted_at IS NOT NULL
                AND purge_after IS NOT NULL AND purge_after <= ?3
-               AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                 JOIN registries registry ON registry.id = ticket.registry_id
-                 WHERE registry.org_id = ?1 AND ticket.active_object_slot = 1)
                AND NOT EXISTS (SELECT 1 FROM cache_write_tickets ticket
                  JOIN binary_caches cache ON cache.id = ticket.cache_id
                  WHERE cache.org_id = ?1 AND (ticket.active_cache_slot = 1 OR
@@ -18425,9 +18422,7 @@ impl Database {
                 Self::topology_event_statement(&event),
                 Statement::new(
                     "DELETE FROM registries WHERE id = ?1 AND scope_key = ?2
-                       AND resource_version = ?3
-                       AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                         WHERE ticket.registry_id = ?1 AND ticket.active_object_slot = 1)",
+                       AND resource_version = ?3",
                     vals![registry_id, current.scope_key, expected_version],
                 )
                 .expecting(1),
@@ -21082,121 +21077,6 @@ mod tests {
         .unwrap()
     }
 
-    #[derive(Clone)]
-    struct TicketPlacementBytes {
-        refs: Option<Vec<u8>>,
-        image: Option<Vec<u8>>,
-        snapshot_lease_id: Option<String>,
-    }
-
-    struct TicketPlacementFetch {
-        bytes: TicketPlacementBytes,
-    }
-
-    #[async_trait::async_trait]
-    impl SurfaceFetch for TicketPlacementFetch {
-        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-            Ok((path == "info/refs")
-                .then(|| self.bytes.refs.clone())
-                .flatten())
-        }
-
-        async fn fetch_stream(
-            &self,
-            path: &str,
-            _range: Option<(u64, u64)>,
-        ) -> Result<Option<StreamedRead>> {
-            let Some(bytes) = self.bytes.image.clone() else {
-                return Ok(None);
-            };
-            let etag = format!("\"fixture-{}\"", hex::encode(sha2::Sha256::digest(path)));
-            Ok(Some(StreamedRead {
-                total: bytes.len() as u64,
-                body: axum::body::Body::from(bytes),
-                range: None,
-                strong_etag: Some(etag),
-                snapshot_lease_id: self.bytes.snapshot_lease_id.clone(),
-            }))
-        }
-
-        async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
-            Ok(self
-                .bytes
-                .image
-                .as_ref()
-                .map(|_| format!("\"fixture-{}\"", hex::encode(sha2::Sha256::digest(path)))))
-        }
-
-        fn describe(&self) -> String {
-            "ticket-placement-fixture".into()
-        }
-    }
-
-    struct TicketPlacementProvider {
-        placements: Arc<Mutex<BTreeMap<i64, TicketPlacementBytes>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl SurfaceProvider for TicketPlacementProvider {
-        async fn placement_fetcher(
-            &self,
-            placement: &SurfacePlacementRecord,
-        ) -> Result<Box<dyn SurfaceFetch>> {
-            let bytes = self
-                .placements
-                .lock()
-                .map_err(|_| anyhow::anyhow!("ticket placement fixture lock poisoned"))?
-                .get(&placement.id)
-                .cloned()
-                .context("ticket placement fixture is missing")?;
-            Ok(Box::new(TicketPlacementFetch { bytes }))
-        }
-    }
-
-    async fn seed_uncovered_registry_ticket(
-        db: &Database,
-        ticket_id: &str,
-        object_key: &str,
-        registry_id: i64,
-        placement: &SurfacePlacementRecord,
-        binding: &StorageBindingRecord,
-        revision: &StorageBindingWriteRevisionRecord,
-        finished_at: i64,
-    ) {
-        db.backend
-            .execute(
-                "INSERT INTO registry_write_tickets
-                 (ticket_id, registry_id, object_key, declared_size, uploaded_size,
-                  upload_kind, placement_id, placement_resource_version,
-                  placement_write_spec_version, storage_binding_id,
-                  binding_resource_version, binding_write_revision,
-                  write_credential_purpose, write_credential_generation,
-                  quota_state, state, active_object_slot, expires_at, created_at,
-                  finished_at)
-                 VALUES (?1, ?2, ?3, 0, 0, 'single', ?4, ?5, ?6, ?7, ?8,
-                         ?9, ?10, ?11, 'none', 'completed_uncovered', 1,
-                         ?12, ?13, ?14)",
-                &vals![
-                    ticket_id,
-                    registry_id,
-                    object_key,
-                    placement.id,
-                    placement.resource_version,
-                    placement.write_spec_version,
-                    binding.id,
-                    binding.resource_version,
-                    revision.revision,
-                    revision.write_credential_purpose,
-                    revision.write_credential_generation,
-                    finished_at + 86_400,
-                    finished_at - 1,
-                    finished_at,
-                ],
-            )
-            .await
-            .unwrap();
-    }
-
     async fn create_valid_write_credential(
         db: &Database,
         binding_id: i64,
@@ -22166,255 +22046,6 @@ source_nar_hash = ""
             Some("2026.8.0"),
             "emptying derived discovery must preserve system-of-record floors"
         );
-    }
-
-    #[tokio::test]
-    async fn outstanding_registry_tickets_reconcile_each_exact_placement() {
-        let db = Database::open_in_memory().await.unwrap();
-        let registry_id = db
-            .register_registry("ticket-reconcile", &[], false)
-            .await
-            .unwrap();
-        let binding = db
-            .ensure_instance_default_binding("local_fs", Some("/tmp/aos-ticket-reconcile"), None)
-            .await
-            .unwrap();
-
-        let mut primary_spec = topology_placement(
-            SurfaceTarget::Registry(registry_id),
-            "primary",
-            "primary",
-            0,
-        );
-        primary_spec.storage_binding_id = binding.id;
-        let primary = db.create_surface_placement(&primary_spec).await.unwrap();
-        let primary = db
-            .observe_surface_placement(primary.id, "ready", "complete", 1)
-            .await
-            .unwrap();
-        let mut replica_spec = topology_placement(
-            SurfaceTarget::Registry(registry_id),
-            "replica",
-            "replica",
-            10,
-        );
-        replica_spec.storage_binding_id = binding.id;
-        let replica = db.create_surface_placement(&replica_spec).await.unwrap();
-        let replica = db
-            .observe_surface_placement(replica.id, "ready", "complete", 1)
-            .await
-            .unwrap();
-
-        let image = b"exact replica image bytes".to_vec();
-        let image_digest = hex::encode(sha2::Sha256::digest(&image));
-        let image_key = format!("images/sha256/{image_digest}/system.img");
-        let refs = Vec::new();
-        let snapshot = IndexSnapshot {
-            commit: "c".repeat(64),
-            name: "Ticket reconciliation".into(),
-            refs_digest: Some(hex::encode(sha2::Sha256::digest(&refs))),
-            releases: vec![ReleaseRow {
-                semver: "1.0.0".into(),
-                tag_oid: "a".repeat(64),
-                commit_oid: "c".repeat(64),
-                signer: None,
-                tagged_at: None,
-                pack_present: true,
-            }],
-            ..Default::default()
-        };
-        db.apply_snapshot_from_placement(registry_id, &snapshot, Some(primary.id))
-            .await
-            .unwrap();
-        let object_id = db
-            .backend
-            .execute_insert(
-                "INSERT INTO surface_objects
-                 (registry_id, cache_id, object_key, object_kind, partition_key,
-                  content_hash, size, created_at, updated_at)
-                 VALUES (?1, NULL, ?2, 'immutable', ?3, ?4, ?5, ?6, ?6)",
-                &vals![
-                    registry_id,
-                    image_key,
-                    sha2::Sha256::digest(image_key.as_bytes()).to_vec(),
-                    image_digest,
-                    image.len() as i64,
-                    unix_now(),
-                ],
-            )
-            .await
-            .unwrap();
-        db.backend
-            .execute(
-                "INSERT INTO registry_image_roots
-                 (registry_id, release, surface_object_id, object_role,
-                  expected_hash, expected_size)
-                 VALUES (?1, '1.0.0', ?2, 'disk', ?3, ?4)",
-                &vals![registry_id, object_id, image_digest, image.len() as i64],
-            )
-            .await
-            .unwrap();
-
-        let credential_generation =
-            create_valid_write_credential(&db, binding.id, "secret://ticket/write/v1").await;
-        let revision = db
-            .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
-                storage_binding_id: binding.id,
-                write_credential_generation: credential_generation,
-                writes_supported: true,
-                conditional_writes_supported: true,
-                revision_fingerprint: "ticket-write-v1".into(),
-                capability_fingerprint: "ticket-write-capabilities".into(),
-            })
-            .await
-            .unwrap();
-        db.observe_storage_binding_write_revision(
-            binding.id,
-            revision.revision,
-            "valid",
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-        let now = unix_now();
-        seed_uncovered_registry_ticket(
-            &db,
-            "primary-ticket",
-            "info/refs.primary",
-            registry_id,
-            &primary,
-            &binding,
-            &revision,
-            now - 10,
-        )
-        .await;
-        seed_uncovered_registry_ticket(
-            &db,
-            "replica-ticket",
-            "info/refs.replica",
-            registry_id,
-            &replica,
-            &binding,
-            &revision,
-            now - 10,
-        )
-        .await;
-
-        let placements = Arc::new(Mutex::new(BTreeMap::from([
-            (
-                primary.id,
-                TicketPlacementBytes {
-                    refs: Some(refs.clone()),
-                    image: None,
-                    snapshot_lease_id: None,
-                },
-            ),
-            (
-                replica.id,
-                TicketPlacementBytes {
-                    refs: Some(b"wrong refs".to_vec()),
-                    image: Some(image.clone()),
-                    snapshot_lease_id: None,
-                },
-            ),
-        ])));
-        let provider = TicketPlacementProvider {
-            placements: Arc::clone(&placements),
-        };
-
-        crate::indexer::index_outstanding_write_placements(&db, &provider)
-            .await
-            .unwrap();
-        assert_eq!(
-            db.registry_write_ticket("primary-ticket")
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            "completed"
-        );
-        assert_eq!(
-            db.registry_write_ticket("replica-ticket")
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            "completed_uncovered",
-            "wrong replica refs must retain only that placement's fence"
-        );
-
-        placements.lock().unwrap().insert(
-            replica.id,
-            TicketPlacementBytes {
-                refs: Some(refs.clone()),
-                image: Some(b"corrupt image bytes".to_vec()),
-                snapshot_lease_id: Some("failed-replica-index".into()),
-            },
-        );
-        for lease_id in ["failed-replica-index", "failed-replica-peer"] {
-            db.lease_image_snapshot(lease_id, &image_digest, image.len() as i64, unix_now() + 60)
-                .await
-                .unwrap();
-        }
-        crate::indexer::index_outstanding_write_placements(&db, &provider)
-            .await
-            .unwrap();
-        assert!(!db
-            .release_image_snapshot_lease("failed-replica-index")
-            .await
-            .unwrap());
-        assert!(db
-            .release_image_snapshot_lease("failed-replica-peer")
-            .await
-            .unwrap());
-        assert_eq!(
-            db.registry_write_ticket("replica-ticket")
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            "completed_uncovered",
-            "corrupt replica bytes must retain its fence"
-        );
-
-        placements.lock().unwrap().insert(
-            replica.id,
-            TicketPlacementBytes {
-                refs: Some(refs),
-                image: Some(image.clone()),
-                snapshot_lease_id: Some("successful-replica-index".into()),
-            },
-        );
-        for lease_id in ["successful-replica-index", "successful-replica-peer"] {
-            db.lease_image_snapshot(lease_id, &image_digest, image.len() as i64, unix_now() + 60)
-                .await
-                .unwrap();
-        }
-        crate::indexer::index_outstanding_write_placements(&db, &provider)
-            .await
-            .unwrap();
-        assert!(!db
-            .release_image_snapshot_lease("successful-replica-index")
-            .await
-            .unwrap());
-        assert!(db
-            .release_image_snapshot_lease("successful-replica-peer")
-            .await
-            .unwrap());
-        assert_eq!(
-            db.registry_write_ticket("replica-ticket")
-                .await
-                .unwrap()
-                .unwrap()
-                .state,
-            "completed"
-        );
-        assert!(db
-            .registry_image_placement_etag(registry_id, replica.id, &image_key)
-            .await
-            .unwrap()
-            .is_some());
     }
 
     #[tokio::test]

@@ -23,8 +23,6 @@ pub enum MethodExposure {
 pub enum MethodDurability {
     /// No authoritative state changes.
     ReadOnly,
-    /// Short-lived output changes no authoritative desired state.
-    Ephemeral,
     /// Authoritative or append-only durable state changes.
     Durable,
 }
@@ -72,8 +70,8 @@ pub enum MethodClass {
         /// Narrow, typed collaboration-event exception.
         event_kind: AppendOnlyEventKind,
     },
-    /// Ephemeral credential issuance with no durable desired-state change.
-    EphemeralCredential,
+    /// An admitted data-plane write with durable integrity and quota state.
+    DataPlaneWrite,
     /// A fenced observation reported by an internal controller.
     ControllerObservation,
     /// Cancellation or retry of an existing operation.
@@ -239,21 +237,26 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     ));
                 }
             }
-            MethodClass::EphemeralCredential => {
+            MethodClass::DataPlaneWrite => {
                 require_durability(
                     method,
-                    MethodDurability::Ephemeral,
-                    "credential issuance must not mutate desired state",
+                    MethodDurability::Durable,
+                    "data-plane admission and settlement are durable",
                     &mut violations,
                 );
                 if !matches!(
                     path.as_str(),
-                    "PublishService/MintUploadCredentials"
-                        | "BinaryCacheService/MintCacheUploadCredentials"
+                    "PublishService/BeginRegistryPublication"
+                        | "PublishService/CommitRegistryPublication"
+                        | "PublishService/AbortRegistryPublication"
+                        | "BinaryCacheService/CreateCacheObjectUploads"
+                        | "BinaryCacheService/BeginCacheMultipartUpload"
+                        | "BinaryCacheService/CompleteCacheMultipartUpload"
+                        | "BinaryCacheService/AbortCacheMultipartUpload"
                 ) {
                     violations.push(violation(
                         method,
-                        "ephemeral credential exception is limited to canonical upload-credential methods",
+                        "data-plane write exception is limited to canonical publication and cache-upload methods",
                     ));
                 }
             }
@@ -1409,25 +1412,23 @@ mod tests {
     }
 
     #[test]
-    fn ephemeral_credentials_use_an_exact_two_method_allowlist() {
-        let credential = |service: &str, method: &str| MethodDescriptor {
+    fn data_plane_writes_use_an_exact_method_allowlist() {
+        let write = |service: &str, method: &str| MethodDescriptor {
             service: service.into(),
             method: method.into(),
             exposure: MethodExposure::Public,
-            durability: MethodDurability::Ephemeral,
-            class: MethodClass::EphemeralCredential,
+            durability: MethodDurability::Durable,
+            class: MethodClass::DataPlaneWrite,
             external_effects: false,
         };
-        assert!(validate_method_manifest(&[
-            credential("PublishService", "MintUploadCredentials"),
-            credential("BinaryCacheService", "MintCacheUploadCredentials"),
-        ])
+        assert!(validate_method_manifest(&[write(
+            "BinaryCacheService",
+            "CreateCacheObjectUploads",
+        )])
         .is_empty());
         assert_eq!(
-            validate_method_manifest(&[
-                credential("IdentityService", &["Mint", "Token"].concat(),)
-            ])
-            .len(),
+            validate_method_manifest(&[write("IdentityService", &["Mint", "Token"].concat(),)])
+                .len(),
             1
         );
     }

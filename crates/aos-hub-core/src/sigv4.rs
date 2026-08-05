@@ -179,7 +179,7 @@ pub fn presign_list_url(
 /// Build a presigned `PUT` URL valid for [`PresignParams::expires_secs`].
 ///
 /// The upload sibling of [`presign_get_url`]: a client may `PUT` the object's
-/// bytes directly to this URL (the `mint` purpose — `MintCacheUploadCredentials`)
+/// bytes directly to this URL (the `presign` mode of `CreateCacheObjectUploads`)
 /// with no further credentials until it expires. Same signing rules; only the
 /// HTTP method in the canonical request differs.
 ///

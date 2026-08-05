@@ -459,6 +459,11 @@ pub enum HubPublishCmd {
         access: HubAccessArgs,
         publication_id: String,
     },
+    Abort {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        publication_id: String,
+    },
 }
 
 #[derive(Subcommand)]

@@ -142,12 +142,12 @@ pub trait CacheBackend: Send + Sync {
     ///
     /// Returns an error only on a hard transport failure; an unsupported or
     /// not-presignable cache is `Ok(None)`, not an error.
-    async fn mint_upload_url(&self, _path: &str, _size: u64) -> Result<Option<String>> {
+    async fn create_upload_url(&self, _path: &str, _size: u64) -> Result<Option<String>> {
         Ok(None)
     }
 
     /// Uploads bytes directly to a presigned `url` minted by
-    /// [`mint_upload_url`](CacheBackend::mint_upload_url), bypassing the hub.
+    /// [`create_upload_url`](CacheBackend::create_upload_url), bypassing the hub.
     ///
     /// The URL carries its own query-string authorization, so no credential
     /// headers are attached.
@@ -171,7 +171,7 @@ pub trait CacheBackend: Send + Sync {
     ///
     /// Returns an error only on a hard transport failure; a not-presignable
     /// cache yields an empty map, not an error.
-    async fn mint_upload_urls(
+    async fn create_upload_urls(
         &self,
         _uploads: &[(String, u64)],
     ) -> Result<std::collections::HashMap<String, String>> {

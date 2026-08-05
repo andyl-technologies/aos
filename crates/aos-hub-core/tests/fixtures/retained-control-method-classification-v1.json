@@ -60,6 +60,46 @@
     "external_effects": false
   },
   {
+    "service": "PublishService",
+    "method": "BeginRegistryPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "GetRegistryPublication",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "CommitRegistryPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "PublishService",
+    "method": "AbortRegistryPublication",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
     "service": "RegistryService",
     "method": "PlanCreateRegistry",
     "exposure": "public",
@@ -2039,16 +2079,6 @@
     "external_effects": false
   },
   {
-    "service": "PublishService",
-    "method": "MintUploadCredentials",
-    "exposure": "public",
-    "durability": "ephemeral",
-    "class": {
-      "class": "ephemeral_credential"
-    },
-    "external_effects": false
-  },
-  {
     "service": "GitService",
     "method": "GitLog",
     "exposure": "public",
@@ -2538,13 +2568,43 @@
   },
   {
     "service": "BinaryCacheService",
-    "method": "MintCacheUploadCredentials",
+    "method": "CreateCacheObjectUploads",
     "exposure": "public",
-    "durability": "ephemeral",
+    "durability": "durable",
     "class": {
-      "class": "ephemeral_credential"
+      "class": "data_plane_write"
     },
     "external_effects": false
+  },
+  {
+    "service": "BinaryCacheService",
+    "method": "BeginCacheMultipartUpload",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "BinaryCacheService",
+    "method": "CompleteCacheMultipartUpload",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "BinaryCacheService",
+    "method": "AbortCacheMultipartUpload",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
   },
   {
     "service": "CacheIntegrationService",

@@ -231,7 +231,7 @@ struct TokenResponse {
     access_token: String,
     token_type: String,
     expires_in: i64,
-    capabilities: [&'static str; 1],
+    capabilities: [&'static str; 2],
 }
 
 /// Returns a `Router` mounting `POST /oauth2/token`.
@@ -316,7 +316,7 @@ pub async fn oauth2_token_handler(State(state): State<Arc<AuthState>>, parts: Pa
                 access_token,
                 token_type: "Bearer".to_string(),
                 expires_in: state.access_token_ttl,
-                capabilities: ["aos.multipart.v1"],
+                capabilities: ["aos.hub.topology.v1", "aos.multipart.v1"],
             })
             .into_response()
         }

@@ -1913,6 +1913,7 @@ pub fn images_page(
     status: Option<&IndexStatus>,
     images: &[IndexedSystemImage],
     channels: &[ChannelSummary],
+    download_base: Option<&str>,
     browse: &ImageBrowse<'_>,
     started: Instant,
     session: &SessionIndicator,
@@ -2028,11 +2029,16 @@ pub fn images_page(
             human_size(image.delivery.byte_size),
             format!("<span class=\"{class}\">{verification}</span>"),
             format!("<code>{}</code>", escape(&image.delivery.sha256)),
-            format!(
-                "<a href=\"/{}/{}\" download=\"{}\">Download</a>",
-                escape(slug),
-                escape(&image.delivery.object_key),
-                escape(&image.delivery.filename),
+            download_base.map_or_else(
+                || "<span class=\"dim\">route unavailable</span>".to_string(),
+                |base| {
+                    format!(
+                        "<a href=\"{}/{}\" download=\"{}\">Download</a>",
+                        escape(base.trim_end_matches('/')),
+                        escape(&image.delivery.object_key),
+                        escape(&image.delivery.filename),
+                    )
+                },
             ),
         ]);
     }
@@ -2587,6 +2593,7 @@ mod tests {
             None,
             &images,
             &channels,
+            Some("https://download.example/demo"),
             &ImageBrowse::default(),
             Instant::now(),
             &anon(),
@@ -2605,6 +2612,7 @@ mod tests {
             None,
             &images,
             &channels,
+            Some("https://download.example/demo"),
             &ImageBrowse {
                 release: Some("2026.08"),
                 channel: Some("stable"),
@@ -2622,13 +2630,14 @@ mod tests {
     }
 
     #[test]
-    fn images_page_has_clear_empty_state_and_private_relative_downloads() {
+    fn images_page_has_clear_empty_state_and_canonical_downloads() {
         let image = indexed_image("raw", "2026.08");
         let empty = images_page(
             &registry(),
             None,
             std::slice::from_ref(&image),
             &image_channels(),
+            Some("https://download.example/demo"),
             &ImageBrowse {
                 target: Some("qemu-kvm"),
                 ..ImageBrowse::default()
@@ -2645,11 +2654,12 @@ mod tests {
             None,
             &[image],
             &image_channels(),
+            Some("https://download.example/demo"),
             &ImageBrowse::default(),
             Instant::now(),
             &anon(),
         );
-        assert!(html.contains("href=\"/demo/images/sha256/"));
+        assert!(html.contains("href=\"https://download.example/demo/images/sha256/"));
         assert!(!html.contains("access_token="));
         assert!(!html.contains("Authorization="));
     }

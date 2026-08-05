@@ -2752,83 +2752,8 @@ OR(quota_org_id IS NOT NULL AND quota_state <> 'none')),
   FOREIGN KEY(storage_binding_id, presign_credential_purpose, presign_credential_generation)
   REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation)
 );
-CREATE TABLE registry_write_tickets(
-  ticket_id KEYTEXT64 PRIMARY KEY,
-  registry_id INTEGER NOT NULL REFERENCES registries(id) ON DELETE CASCADE,
-  object_key KEYTEXT512 NOT NULL,
-  declared_size INTEGER NOT NULL,
-  observed_final_size INTEGER,
-  prior_object_size INTEGER,
-  prior_object_hash KEYTEXT64,
-  prior_object_etag KEYTEXT512,
-  intended_object_hash KEYTEXT64,
-  uploaded_size INTEGER NOT NULL DEFAULT 0,
-  upload_kind KEYTEXT16 NOT NULL,
-  placement_id INTEGER NOT NULL,
-  placement_resource_version INTEGER NOT NULL,
-  placement_write_spec_version INTEGER NOT NULL,
-  storage_binding_id INTEGER NOT NULL,
-  binding_resource_version INTEGER NOT NULL,
-  binding_write_revision INTEGER NOT NULL,
-  write_credential_purpose KEYTEXT16 NOT NULL,
-  write_credential_generation INTEGER NOT NULL,
-  backend_upload_id KEYTEXT512,
-  quota_org_id INTEGER REFERENCES orgs(id) ON DELETE RESTRICT,
-  quota_delta_bytes INTEGER NOT NULL DEFAULT 0,
-  quota_delta_objects INTEGER NOT NULL DEFAULT 0,
-  quota_state KEYTEXT16 NOT NULL DEFAULT 'none',
-  state KEYTEXT16 NOT NULL,
-  active_object_slot INTEGER,
-  expires_at INTEGER NOT NULL,
-  recovery_attempts INTEGER NOT NULL DEFAULT 0,
-  recovery_after INTEGER NOT NULL DEFAULT 0,
-  recovery_error LONGTEXT,
-  resource_version INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL,
-  finished_at INTEGER,
-  UNIQUE(ticket_id, registry_id),
-  UNIQUE(registry_id, object_key, active_object_slot),
-  CHECK(upload_kind IN('single', 'multipart')),
-  CHECK(declared_size >= 0 AND uploaded_size >= 0 AND uploaded_size <= declared_size
-  AND(observed_final_size IS NULL OR observed_final_size >= 0)
-  AND(prior_object_size IS NULL OR prior_object_size >= 0)
-  AND(prior_object_hash IS NULL OR length(prior_object_hash) = 64)
-  AND(intended_object_hash IS NULL OR length(intended_object_hash) = 64)),
-  CHECK((prior_object_size IS NULL AND prior_object_hash IS NULL AND prior_object_etag IS NULL)
-    OR(prior_object_size IS NOT NULL AND prior_object_hash IS NOT NULL)),
-  CHECK(state IN('observing', 'active', 'completing', 'completed_uncovered', 'completed', 'aborted', 'failed')),
-  CHECK((state IN('observing', 'active', 'completing', 'completed_uncovered') AND active_object_slot = 1)
-OR(state IN('completed', 'aborted', 'failed') AND active_object_slot IS NULL)),
-  CHECK((upload_kind = 'single' AND backend_upload_id IS NULL)
-OR upload_kind = 'multipart'),
-  CHECK(quota_state IN('none', 'pending', 'reserved', 'committed', 'released')),
-  CHECK((quota_org_id IS NULL AND quota_delta_bytes = 0
-AND quota_delta_objects = 0 AND quota_state = 'none')
-OR(quota_org_id IS NOT NULL AND quota_state <> 'none')),
-  CHECK(expires_at > created_at AND resource_version > 0),
-  CHECK(recovery_attempts >= 0 AND recovery_after >= 0),
-  FOREIGN KEY(placement_id, registry_id) REFERENCES surface_placements(id, registry_id),
-  FOREIGN KEY(storage_binding_id, binding_write_revision)
-  REFERENCES storage_binding_write_revisions(storage_binding_id, revision),
-  FOREIGN KEY(storage_binding_id, write_credential_purpose, write_credential_generation)
-  REFERENCES storage_binding_credential_revisions(storage_binding_id, purpose, generation)
-);
 CREATE TABLE cache_write_ticket_parts(
   ticket_id KEYTEXT64 NOT NULL REFERENCES cache_write_tickets(ticket_id) ON DELETE CASCADE,
-  part_number INTEGER NOT NULL,
-  admitted_size INTEGER NOT NULL,
-  body_digest KEYTEXT64 NOT NULL,
-  state KEYTEXT16 NOT NULL,
-  etag KEYTEXT512,
-  PRIMARY KEY(ticket_id, part_number),
-  CHECK(part_number BETWEEN 1 AND 10000
-    AND admitted_size > 0 AND length(body_digest) = 64),
-  CHECK(state IN('admitted', 'ambiguous', 'confirmed')),
-  CHECK((state = 'confirmed' AND etag IS NOT NULL)
-    OR(state IN('admitted', 'ambiguous') AND etag IS NULL))
-);
-CREATE TABLE registry_write_ticket_parts(
-  ticket_id KEYTEXT64 NOT NULL REFERENCES registry_write_tickets(ticket_id) ON DELETE CASCADE,
   part_number INTEGER NOT NULL,
   admitted_size INTEGER NOT NULL,
   body_digest KEYTEXT64 NOT NULL,
@@ -2847,15 +2772,12 @@ CREATE TABLE write_recovery_cursors(
   after_ticket_id KEYTEXT64 NOT NULL,
   resource_version INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL,
-  CHECK(recovery_kind IN('cache', 'registry')),
+  CHECK(recovery_kind = 'cache'),
   CHECK(resource_version > 0)
 );
 INSERT INTO write_recovery_cursors
   (recovery_kind, after_expires_at, after_ticket_id, updated_at)
 VALUES ('cache', -9223372036854775807 - 1, '', 0);
-INSERT INTO write_recovery_cursors
-  (recovery_kind, after_expires_at, after_ticket_id, updated_at)
-VALUES ('registry', -9223372036854775807 - 1, '', 0);
 CREATE TABLE cache_inventory_generations(
   cache_id INTEGER NOT NULL REFERENCES binary_caches(id) ON DELETE CASCADE,
   generation INTEGER NOT NULL,

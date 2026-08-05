@@ -435,15 +435,61 @@ do not exist after cutover.
 
 ## Writes
 
-Consumer delivery routes do not imply write authority. Producers upload
-through a separately authorized Hub upload facade or receive short-lived
-placement-scoped upload credentials.
+Consumer delivery routes do not imply write authority. Registry producers use
+`PublishService`: they declare an exact publication manifest, upload through
+object-id URLs bound to its frozen placement set, and commit only after every
+required placement verifies the immutable objects and mutable pointers.
+Binary-cache producers receive short-lived object tickets bound to an exact
+cache, placement, path, size, and credential generation. A client may identify
+that cache by stable id or by an exact ready delivery URL; the Hub resolves the
+URL through route state and never parses a resource identity from its path.
+
+### Registry publication transaction
+
+`BeginRegistryPublication` freezes the registry generation, declared object
+manifest, required placement set, and each placement's write authority. The
+returned object URLs contain opaque publication/object identities rather than
+registry slugs or storage paths. Each upload verifies the declared path, media
+type, byte size, and SHA-256 while streaming the same bytes to every required
+placement. A failed upload aborts unfinished backend multipart sessions and
+leaves the publication undiscoverable.
+
+`CommitRegistryPublication` is accepted only after exact presence evidence
+exists for every declared object on every frozen placement. It writes and
+verifies mutable pointers across that placement set before publishing the
+generation and release/channel discovery state. `AbortRegistryPublication`
+terminalizes any non-committed transaction; clients call it best-effort after
+an upload, response-verification, or commit failure. Retrying begin with the
+same generation and manifest is idempotent. Reusing a generation with a
+different manifest is rejected.
+
+The signed sysroot catalog and every referenced `image-info.json` and disk
+encoding participate in this transaction. Image discovery therefore cannot
+lead publication: raw, QCOW2, VMDK, and VHD bytes become visible only after the
+signed release metadata and all required placement copies are available.
+
+### Cache object uploads
+
+`CreateCacheObjectUploads` admits one or a batch of exact cache-relative paths.
+For a small object it returns either a short-lived direct-origin PUT capability
+or an authenticated typed Hub proxy URL. An empty URL means the object requires
+the `BeginCacheMultipartUpload`, typed part upload, and
+`CompleteCacheMultipartUpload` flow; clients call `AbortCacheMultipartUpload`
+after a failed multipart transfer. Direct capabilities receive no Hub bearer
+header. Typed proxy and multipart requests require the caller's normal Hub
+authorization.
+
+The cache client uses this API for NARs, narinfos, and arbitrary static cache
+artifacts. Consumer `PUT` on a delivery route is never an upload protocol, and
+there is no slug-shaped write fallback.
 
 For replicated surfaces, publishing is phase-major:
 
 1. write immutable objects to every required placement;
 2. verify required presence;
-3. update mutable pointers on placements that completed phase 1; and
-4. mark lagging placements degraded and repair them asynchronously.
+3. update and verify mutable pointers on every required placement; and
+4. atomically expose release/channel discovery only after all required
+   placements completed the first three phases.
 
-No placement exposes a pointer to objects it has not received.
+No placement exposes a pointer to objects it has not received, and no partial
+publication is discoverable.

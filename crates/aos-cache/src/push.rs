@@ -285,7 +285,7 @@ fn build_narinfo(
 ///
 /// Compression runs on a blocking thread (it is CPU-bound) so it never stalls
 /// the async runtime when many of these run concurrently. The NAR bytes go
-/// straight to a presigned origin URL when [`mint_upload_url`] offers one
+/// straight to a presigned origin URL when [`create_upload_url`] offers one
 /// (bypassing the hub entirely); otherwise they fall back to multipart or a
 /// single facade `PUT`. The narinfo is always written through the facade so the
 /// hub's index/GC remain authoritative.
@@ -296,7 +296,7 @@ fn build_narinfo(
 ///
 /// Returns an error if compression, minting, or any upload fails.
 ///
-/// [`mint_upload_url`]: CacheBackend::mint_upload_url
+/// [`create_upload_url`]: CacheBackend::create_upload_url
 async fn upload_one(
     backend: &dyn CacheBackend,
     info: &PathInfo,
@@ -328,7 +328,7 @@ async fn upload_one(
     let narinfo_text = build_narinfo(info, &file_hash, file_size, &nar_filename, compression);
     let nar_url = format!("nar/{nar_filename}");
 
-    match backend.mint_upload_url(&nar_url, file_size).await? {
+    match backend.create_upload_url(&nar_url, file_size).await? {
         Some(presigned) => backend.put_to_url(&presigned, &compressed).await?,
         None => {
             if compressed.len() > MULTIPART_THRESHOLD && backend.supports_multipart() {
