@@ -332,7 +332,7 @@ impl ResolvedFaultTarget {
         Ok(())
     }
 
-    fn append_canonical(&self, material: &mut String) {
+    pub(super) fn append_canonical(&self, material: &mut String) {
         material.push_str(self.kind().as_str());
         material.push(':');
         match self {
