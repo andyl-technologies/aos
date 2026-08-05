@@ -72,7 +72,7 @@ pub(super) fn replay_reproduction_artifact(
     let seed = artifact.seed;
     let scenario_digest = artifact.scenario.digest.clone();
     let reduction = replay_embedded_model_artifact(&artifact)?;
-    let live = if replay_uses_live_qemu(cli)? {
+    let live_qemu = if replay_uses_live_qemu(cli)? {
         if reduction.is_none() {
             return Err(artifact_error(
                 "v3 replay requires an embedded pure model reproduction proof",
@@ -88,10 +88,7 @@ pub(super) fn replay_reproduction_artifact(
         .map(|target| replay_to_savepoint(cli, target, &artifact))
         .transpose()?;
     let check = if let Some(path) = &args.check {
-        let replayed = match &live {
-            Some(live) => live.event_stream.clone(),
-            None => canonical_log_entry_bytes(&canonical_log_entries_from_artifact(&artifact)?),
-        };
+        let replayed = canonical_log_entry_bytes(&canonical_log_entries_from_artifact(&artifact)?);
         let original = fs::read(path)?;
         let mismatch = (original != replayed).then(|| ReplayCheckMismatchReport {
             original_digest: content_address_bytes(&original),
@@ -126,6 +123,7 @@ pub(super) fn replay_reproduction_artifact(
         seed,
         scenario_digest,
         reduction,
+        live_qemu,
         to_savepoint,
         check,
         bisect,
@@ -141,14 +139,10 @@ fn replay_uses_live_qemu(cli: &Cli) -> Result<bool, CliError> {
     ))
 }
 
-struct LiveQemuReplayEvidence {
-    event_stream: Vec<u8>,
-}
-
 fn replay_live_qemu_evidence(
     cli: &Cli,
     artifact: &CliReproductionArtifact,
-) -> Result<LiveQemuReplayEvidence, CliError> {
+) -> Result<ReplayLiveQemuProof, CliError> {
     let contract_bytes = required_single_component_payload(
         artifact,
         LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE,
@@ -241,7 +235,7 @@ fn replay_live_qemu_evidence(
         }
     }
     let replay_fingerprints = verify_fingerprint_stream_bytes(&replay_samples);
-    validate_live_qemu_terminal(&contract, &report)?;
+    validate_live_qemu_terminal(&contract, model.schedule(), &report)?;
     if replay_events != expected_events {
         return Err(CliError::ReplayCheck(format!(
             "live QEMU event stream diverged at byte {} (expected {} bytes, replayed {})",
@@ -258,8 +252,29 @@ fn replay_live_qemu_evidence(
             replay_fingerprints.len()
         )));
     }
-    Ok(LiveQemuReplayEvidence {
-        event_stream: replay_events,
+    if matches!(contract.producer.as_str(), "run" | "verify" | "fuzz") {
+        let actual_controls = report
+            .acknowledged_commands
+            .iter()
+            .map(|command| session_command_name(*command))
+            .collect::<Vec<_>>();
+        let expected_controls = contract
+            .controls
+            .iter()
+            .map(|control| control.command.as_str())
+            .collect::<Vec<_>>();
+        if actual_controls != expected_controls {
+            return Err(CliError::ReplayCheck(format!(
+                "live QEMU control sequence diverged: expected {expected_controls:?}, got {actual_controls:?}"
+            )));
+        }
+    }
+    Ok(ReplayLiveQemuProof {
+        producer: contract.producer,
+        terminal_configuration: contract.terminal_configuration,
+        event_stream_digest: content_address_bytes(expected_events),
+        fingerprint_stream_digest: content_address_bytes(expected_fingerprints),
+        controls: contract.controls.len(),
     })
 }
 
@@ -284,6 +299,7 @@ fn required_single_component_payload<'a>(
 
 fn validate_live_qemu_terminal(
     contract: &LiveQemuReplayContract,
+    expected_schedule: &crucible::Schedule,
     report: &RunWorkflowReport,
 ) -> Result<(), CliError> {
     let actual_configuration = report
@@ -299,20 +315,47 @@ fn validate_live_qemu_terminal(
         || report.final_quanta != contract.final_quanta
         || report.budget_timed_out != contract.budget_timed_out
     {
+        let actual_schedule = report
+            .terminal_configuration
+            .as_ref()
+            .map(|configuration| &configuration.schedule);
+        let first_different_decision = actual_schedule.and_then(|actual| {
+            expected_schedule
+                .decisions()
+                .iter()
+                .zip(actual.decisions())
+                .position(|(expected, actual)| expected != actual)
+                .or_else(|| {
+                    (expected_schedule.len() != actual.len())
+                        .then_some(expected_schedule.len().min(actual.len()))
+                })
+        });
+        let expected_decision = first_different_decision
+            .and_then(|index| expected_schedule.decisions().get(index))
+            .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
+        let actual_decision = first_different_decision
+            .and_then(|index| actual_schedule.and_then(|schedule| schedule.decisions().get(index)))
+            .map_or_else(|| String::from("none"), |decision| format!("{decision:?}"));
         return Err(CliError::ReplayCheck(format!(
-            "live QEMU terminal tuple diverged: expected status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={}, got status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={}",
+            "live QEMU terminal tuple diverged: expected status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={} decisions={}, got status={} outcome={} configuration={} frontier={} quanta={} budget_timeout={} decisions={} first_different_decision={} expected_decision={} actual_decision={}",
             contract.terminal_status,
             contract.terminal_outcome,
             contract.terminal_configuration,
             contract.final_frontier_ticks,
             contract.final_quanta,
             contract.budget_timed_out,
+            expected_schedule.len(),
             report.status.label(),
             actual_outcome,
             actual_configuration,
             report.final_frontier_ticks,
             report.final_quanta,
-            report.budget_timed_out
+            report.budget_timed_out,
+            actual_schedule.map_or(0, crucible::Schedule::len),
+            first_different_decision
+                .map_or_else(|| String::from("none"), |index| index.to_string()),
+            expected_decision,
+            actual_decision
         )));
     }
     Ok(())
@@ -437,7 +480,13 @@ pub(super) fn replay_to_savepoint(
     artifact: &CliReproductionArtifact,
 ) -> Result<ReplayToSavepointReport, CliError> {
     let savepoint = resolve_savepoint_ref("replay --to", Some(target))?;
-    let evidence = savepoint_evidence("replay --to", &savepoint, &default_run_store_root(cli))?;
+    let evidence = match savepoint_evidence("replay --to", &savepoint, &default_run_store_root(cli))
+    {
+        Ok(evidence) => evidence,
+        Err(store_error) => {
+            embedded_terminal_savepoint_evidence(artifact, &savepoint)?.ok_or(store_error)?
+        }
+    };
     validate_embedded_scenario_identity("replay --to savepoint", &evidence.scenario, artifact)
         .map_err(|error| match error {
             CliError::Identity(message) => CliError::Artifact(message),
@@ -461,6 +510,54 @@ pub(super) fn replay_to_savepoint(
         oracle,
         materialization,
     })
+}
+
+fn embedded_terminal_savepoint_evidence(
+    artifact: &CliReproductionArtifact,
+    savepoint: &ResumeSavepointRef,
+) -> Result<Option<ResumeHandleEvidence>, CliError> {
+    let ResumeSavepointRef::CheckpointHash(target) = savepoint else {
+        return Ok(None);
+    };
+    let contract_bytes = required_single_component_payload(
+        artifact,
+        LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE,
+        "live QEMU replay contract",
+    )?;
+    let contract = LiveQemuReplayContract::decode(contract_bytes)?;
+    if contract.terminal_configuration != format_content_hash_ref(*target) {
+        return Ok(None);
+    }
+    let model_bytes = required_single_component_payload(
+        artifact,
+        MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE,
+        "model reproduction",
+    )?;
+    let model = crucible::ReproductionArtifact::from_compact_binary(model_bytes)
+        .map_err(|error| artifact_error(format!("decode replay --to embedded model: {error}")))?;
+    let scenario_form = model.scenario_form().clone();
+    let scenario = model.scenario_def();
+    let schedule = model.schedule().clone();
+    let configuration = crucible::Configuration {
+        def: scenario.clone(),
+        schedule: schedule.clone(),
+    };
+    if configuration.id() != *target {
+        return Err(CliError::Identity(format!(
+            "replay --to embedded terminal configuration {} did not match target {}",
+            format_content_hash_ref(configuration.id()),
+            format_content_hash_ref(*target)
+        )));
+    }
+    let frontier = validate_resume_handle_frontier(&schedule, contract.final_frontier_ticks)?;
+    let checkpoint = checkpoint_for_resume_configuration(&configuration, frontier)?;
+    Ok(Some(ResumeHandleEvidence {
+        scenario_form,
+        scenario,
+        schedule,
+        configuration,
+        checkpoint,
+    }))
 }
 
 pub(super) fn prove_replay_schedule_prefix(

@@ -640,8 +640,12 @@ discovery/config; `64` = usage.
   content-addressed components (06 §7.1), verify the pinned engine/ABI/QEMU
   identities match the host and **fail loudly** (exit 3) on any mismatch rather
   than reproduce a different binary ([HARN-28]), then `reduce(ScenarioDef,
-  Schedule)` (05, [INV-1]) to a **bit-identical** canonical event log and
-  fingerprint stream. `--check <original-log>` MUST assert byte-identity to the
+  Schedule)` (05, [INV-1]) as a mandatory preflight. A production replay MUST
+  then launch fresh guests through the pinned QEMU/plugin pair and reproduce the
+  terminal configuration, terminal outcome, canonical event stream, and
+  all-node fingerprint stream exactly. It MUST fail closed when the live recipe
+  or evidence is absent; model-only success is not a production replay.
+  `--check <original-log>` MUST assert byte-identity to the
   supplied log and exit `1` on any difference, reporting the bisected first
   divergence (24 §5). Replay MUST be machine-independent: the same artifact on a
   different host profile MUST reproduce byte-identically ([HARN-28]). *Gate:*
@@ -1207,7 +1211,9 @@ branch on the verdict without parsing output:
   replay inputs, localizing the first differing canonical-log/fingerprint
   coordinate, and returning the replay-check failure exit path on divergence.
   `replay --to <SAVEPOINT>` now accepts a savepoint handle or local DAG-store
-  checkpoint hash, validates the target through savepoint evidence and the pure
+  checkpoint hash; a v3 artifact also resolves its own terminal checkpoint
+  hash from the embedded scenario, schedule, and live frontier. It validates
+  the target through savepoint evidence and the pure
   replay oracle, proves the savepoint scenario identity matches the artifact,
   builds a payload-backed typed schedule-prefix proof from the target `Schedule`,
   rejects equal-length non-prefix artifacts with deterministic mismatch
@@ -1228,6 +1234,8 @@ branch on the verdict without parsing output:
   carries the session-observed terminal `Configuration` as that typed
   scenario/schedule model reproduction; a process-independent regression
   replays an actual failed-run artifact through the same reduction path.
+  This task's original model-only completion is retained as the pure preflight;
+  T-CLI-21 completes the production QEMU execution half of [CLI-22].
 - [x] **T-CLI-13** Implement `search`/`fuzz` as drivers over the 22 exploration
   policies (pin one ScenarioDef per run, in-search oracle sampling, counterexamples
   to self-contained artifacts with repro commands; no policy in the CLI). —
@@ -1465,3 +1473,26 @@ branch on the verdict without parsing output:
     environment bypass and the `cfg(test)` empty-probe implementation were
     removed. Focused negative controls inject a mismatched QEMU build identity
     and divergent probe fingerprints, and both fail closed.
+
+- [x] **T-CLI-21** Complete production artifact replay through fresh QEMU
+  processes for every local-QEMU artifact producer (`run`, `verify`, `search`,
+  `fuzz`, and `fork`). — satisfies [CLI-22]; spec §12.
+  - The v3 artifact contract embeds one compact scenario, one typed model
+    reproduction and replay-state proof, one canonical live replay recipe, one
+    exact QEMU event stream, and one all-node execution-fingerprint stream.
+    Branch recipes record prefix-override or reseed coordinates; search records
+    typed fault/network choice indices; ordered acknowledged controls are part
+    of the replay comparison.
+  - The CLI rejects v2 in production and has no model-only fallback. It first
+    runs the pure reduction preflight, then launches the pinned packaged
+    QEMU/plugin pair and compares the terminal status/outcome/configuration,
+    frontier/quanta/budget tuple, canonical event bytes, fingerprint bytes, and
+    applicable control sequence.
+  - Ordinary replay and `--check` execute one fresh QEMU session;
+    `--to <savepoint>` performs the same live replay before typed-prefix and
+    replay-oracle target validation, including self-contained terminal hashes;
+    `--bisect <other-artifact>` live-replays both sides before locating evidence
+    divergence.
+  - Completed by `checks.crucible.phase5.cliReplayCheck`, including a real
+    two-VM packaged-QEMU timeout producer followed by ordinary, `--check`,
+    `--to`, and both-sided `--bisect` replay.
