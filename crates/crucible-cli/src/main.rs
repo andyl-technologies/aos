@@ -75,6 +75,7 @@ const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
 const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
+const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3: &str = "crucible.failure-triage.findings-ledger.v3";
 const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
     "application/vnd.crucible.recorded-decision-payload+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
@@ -505,9 +506,12 @@ struct SearchArgs {
     /// Budget on materialized states.
     #[arg(long, value_name = "n", default_value_t = 1)]
     max_states: u64,
-    /// Stop at the first counterexample, or collect all.
+    /// Stop at the first finding, or collect findings within the search bound.
     #[arg(long, value_enum, value_name = "stop|collect")]
     on_violation: Option<SearchOnViolationArg>,
+    /// Write the signed findings ledger to this path.
+    #[arg(long, value_name = "path")]
+    findings_out: Option<PathBuf>,
     /// Load schedule-named assertion truth data.
     #[arg(long, value_name = "path")]
     schedule_named_truths: Option<PathBuf>,
@@ -544,6 +548,12 @@ struct FuzzArgs {
     /// Seed/regression corpus directory.
     #[arg(long, value_name = "path")]
     corpus: Option<PathBuf>,
+    /// Stop at the first finding, or collect findings within the run bound.
+    #[arg(long, value_enum, value_name = "stop|collect")]
+    on_violation: Option<SearchOnViolationArg>,
+    /// Write the signed findings ledger to this path.
+    #[arg(long, value_name = "path")]
+    findings_out: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
