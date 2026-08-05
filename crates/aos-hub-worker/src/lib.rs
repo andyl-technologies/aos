@@ -176,7 +176,6 @@ mod entry {
 
     use std::sync::Arc;
 
-    use anyhow::Context as _;
     use wasm_bindgen::{JsCast, JsValue};
     use worker::{
         durable_object, Context, DurableObject, Env, Method, Request, RequestInit, Response,
@@ -728,7 +727,7 @@ mod entry {
             .durable_object(crate::handlers::bindings::HUB_DB)?
             .id_from_name("hub")
             .and_then(|id| id.get_stub_with_location_hint("wnam"))?;
-        let mut resp = stub.fetch_with_request(req).await?;
+        let resp = stub.fetch_with_request(req).await?;
 
         Ok(resp)
     }

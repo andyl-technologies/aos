@@ -145,6 +145,33 @@ fn hidden_value(html: &str, name: &str) -> String {
         .unwrap_or_else(|| panic!("missing hidden input {name}"))
 }
 
+/// Extracts the target of the reviewed plan's only apply form.
+fn reviewed_plan_action(html: &str) -> String {
+    html.split_once("<form class=\"console\" method=\"post\" action=\"")
+        .and_then(|(_, tail)| tail.split_once('"'))
+        .map(|(action, _)| action.to_string())
+        .unwrap_or_else(|| panic!("missing reviewed-plan apply form"))
+}
+
+/// Applies the reviewed topology plan returned by a successful planning POST.
+async fn apply_reviewed_plan(app: &axum::Router, cookie: &str, plan: Resp) -> Resp {
+    assert_eq!(plan.status, StatusCode::OK, "{}", plan.body);
+    let action = reviewed_plan_action(&plan.body);
+    let plan_id = hidden_value(&plan.body, "plan_id");
+    let confirmation_hash = hidden_value(&plan.body, "confirmation_hash");
+    let csrf = csrf_for(cookie);
+    send(
+        app,
+        "POST",
+        &action,
+        Some(cookie),
+        Some(&format!(
+            "csrf={csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}"
+        )),
+    )
+    .await
+}
+
 /// Serializes every test that reads or mutates the process-global
 /// `AOS_HUB_ALLOW_LOCAL_REMOTES` env var (the SSRF guard's test/dev hatch).
 ///
@@ -207,9 +234,9 @@ async fn create_org_open_signup_auto_owners_the_creator() {
         resp.body
     );
 
-    // Creating the org redirects to its dashboard, grants the creator owner,
-    // and audits.
-    let resp = send(
+    // Creating the org requires review and apply, then redirects to its
+    // dashboard, grants the creator owner, and audits.
+    let plan = send(
         &app,
         "POST",
         "/-/orgs/new",
@@ -217,6 +244,7 @@ async fn create_org_open_signup_auto_owners_the_creator() {
         Some(&format!("csrf={csrf}&slug=acme&name=Acme%2C+Inc.")),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert_eq!(resp.location.as_deref(), Some("/-/org/acme"));
 
@@ -233,7 +261,7 @@ async fn create_org_open_signup_auto_owners_the_creator() {
         .await
         .unwrap()
         .iter()
-        .any(|a| a.action == "org.create"));
+        .any(|a| a.action == "topology.organization.create"));
 
     // The dashboard now renders for the creator (owner reads it).
     let resp = send(&app, "GET", "/-/org/acme", Some(&cookie), None).await;
@@ -280,7 +308,7 @@ async fn create_org_invite_only_blocks_fresh_user_and_csrf_required() {
 }
 
 #[tokio::test]
-async fn admin_creates_project_binding_and_registry_then_browses() {
+async fn admin_creates_project_binding_and_registry_topology() {
     let dir = tempfile::tempdir().unwrap();
     // A pre-seeded surface the new registry will be bound to and indexed from.
     let surface = dir.path().join("acme/cdn");
@@ -323,32 +351,21 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
         .iter()
         .any(|p| p.path == "infra/prod"));
 
-    // Create a storage binding over the surface's parent dir.
-    let parent = surface.parent().unwrap().to_str().unwrap();
+    // Organization-owned bindings use external object storage. This test
+    // indexes the fixture directly after creating the topology identity.
     let resp = send(
         &app,
         "POST",
-        "/-/org/acme/storage-bindings",
+        "/-/org/acme/storage-bindings/plan-create",
         Some(&cookie),
         Some(&format!(
-            "csrf={csrf}&name=primary&root={}",
-            url::form_urlencoded::byte_serialize(parent.as_bytes()).collect::<String>()
+            "csrf={csrf}&name=primary&kind=s3&root=acme-fixtures/cdn&\
+             endpoint=https%3A%2F%2Fobjects.example.com&region=us-east-1&access=private"
         )),
     )
     .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    let plan_id = hidden_value(&resp.body, "plan_id");
-    let confirmation_hash = hidden_value(&resp.body, "confirmation_hash");
-    let resp = send(
-        &app,
-        "POST",
-        "/-/org/acme/storage-bindings/create",
-        Some(&cookie),
-        Some(&format!(
-            "csrf={csrf}&plan_id={plan_id}&confirmation_hash={confirmation_hash}"
-        )),
-    )
-    .await;
+    let resp = apply_reviewed_plan(&app, &cookie, resp).await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert!(db
         .storage_binding_by_name(org_id, "primary")
@@ -356,7 +373,8 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
         .unwrap()
         .is_some());
 
-    // Identity creation does not embed a binding or prefix selector.
+    // Identity creation is handled by the retained Registry API, not a second
+    // browser-only mutation surface.
     let resp = send(
         &app,
         "GET",
@@ -365,8 +383,7 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
         None,
     )
     .await;
-    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(!resp.body.contains("name=\"binding\""), "{}", resp.body);
+    assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
 
     // Create the registry identity, then attach its physical placement.
     let trust =
@@ -413,12 +430,16 @@ async fn admin_creates_project_binding_and_registry_then_browses() {
         "cdn",
     )
     .await;
-    index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
-        .await
-        .unwrap();
-    let resp = send(&app, "GET", "/acme/infra/prod/cdn/", None, None).await;
+    let resp = send(
+        &app,
+        "GET",
+        "/acme/infra/prod/cdn/-/settings",
+        Some(&cookie),
+        None,
+    )
+    .await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(resp.body.contains("Registry"), "{}", resp.body);
+    assert!(resp.body.contains("Registry · acme/infra/prod/cdn"));
 }
 
 #[tokio::test]
@@ -451,7 +472,7 @@ async fn create_under_org_authz_matrix() {
     )
     .await;
     assert_eq!(resp.status, StatusCode::METHOD_NOT_ALLOWED, "{}", resp.body);
-    // And cannot reach the create-registry form.
+    // The retired browser-only create-registry form is absent for every role.
     let resp = send(
         &app,
         "GET",
@@ -460,7 +481,7 @@ async fn create_under_org_authz_matrix() {
         None,
     )
     .await;
-    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
 
     // A non-member gets 404 (existence undisclosed) on every create path.
     let out_cookie = login(&app, &db, "out@x.com").await;
@@ -468,7 +489,7 @@ async fn create_under_org_authz_matrix() {
     let resp = send(
         &app,
         "POST",
-        "/-/org/acme/storage-bindings",
+        "/-/org/acme/storage-bindings/plan-create",
         Some(&out_cookie),
         Some(&format!("csrf={out_csrf}&name=x&root=/srv/x")),
     )
@@ -502,7 +523,8 @@ async fn create_registry_is_identity_only_and_invents_no_placement() {
     let cookie = login(&app, &db, "admin@acme.com").await;
     let csrf = csrf_for(&cookie);
 
-    // Identity creation remains available with no storage bindings.
+    // Registry identity creation is available only through the retained API;
+    // no browser-only form may invent an implicit placement.
     let resp = send(
         &app,
         "GET",
@@ -511,8 +533,7 @@ async fn create_registry_is_identity_only_and_invents_no_placement() {
         None,
     )
     .await;
-    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
-    assert!(!resp.body.contains("Default storage"), "{}", resp.body);
+    assert_eq!(resp.status, StatusCode::NOT_FOUND, "{}", resp.body);
 
     let resp = send(
         &app,
@@ -563,7 +584,7 @@ async fn binding_root_must_be_absolute() {
     let resp = send(
         &app,
         "POST",
-        "/-/org/acme/storage-bindings",
+        "/-/org/acme/storage-bindings/plan-create",
         Some(&cookie),
         Some(&format!("csrf={csrf}&name=rel&root=relative/path")),
     )
@@ -573,7 +594,7 @@ async fn binding_root_must_be_absolute() {
     let resp = send(
         &app,
         "POST",
-        "/-/org/acme/storage-bindings",
+        "/-/org/acme/storage-bindings/plan-create",
         Some(&cookie),
         Some(&format!(
             "csrf={csrf}&name=trav&root={}",
@@ -614,6 +635,14 @@ async fn serve_managed(
         .await
         .unwrap()
         .unwrap();
+    common::create_ready_placement(
+        &db,
+        aos_hub::db::SurfaceTarget::Registry(registry.id),
+        binding,
+        "primary",
+        dir_name,
+    )
+    .await;
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
@@ -676,11 +705,18 @@ async fn settings_page_renders_links_and_visibility_edit_audits() {
     )
     .await;
     assert_eq!(danger.status, StatusCode::OK, "{}", danger.body);
-    assert!(danger.body.contains("remove registry"), "delete form");
+    assert!(danger.body.contains("Remove registry"), "delete form");
 
-    // The registry home shows a manage link for this authorized session.
-    let resp = send(&app, "GET", "/acme/infra/prod/cdn/", Some(&cookie), None).await;
-    assert!(resp.body.contains("manage this registry"), "{}", resp.body);
+    // The organization inventory supplies the explicit management action
+    // instead of overloading the public registry home.
+    let resp = send(&app, "GET", "/-/org/acme/registries", Some(&cookie), None).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(
+        resp.body
+            .contains("/acme/infra/prod/cdn/-/settings\">Manage"),
+        "{}",
+        resp.body
+    );
 
     // In-place registry mutation is deliberately absent: the console must not
     // bypass the Registry API's sealed plan/apply and exact-version CAS.
@@ -724,7 +760,7 @@ async fn settings_visibility_forbidden_for_developer() {
     .unwrap();
     let cookie = login(&app, &db, "dev@acme.com").await;
 
-    // The settings page is forbidden (member, but no registry.configure).
+    // A reader can inspect the topology without receiving mutation controls.
     let resp = send(
         &app,
         "GET",
@@ -733,7 +769,8 @@ async fn settings_visibility_forbidden_for_developer() {
         None,
     )
     .await;
-    assert_eq!(resp.status, StatusCode::FORBIDDEN, "{}", resp.body);
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    assert!(!resp.body.contains("Apply reviewed plan"), "{}", resp.body);
 
     // The retired in-place visibility endpoint is not mounted for any role.
     let resp = send(
@@ -806,6 +843,7 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
     .await
     .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
+    let org_scope = common::org_scope(&db, "acme").await;
 
     let a_cookie = login(&app, &db, "admin@acme.com").await;
     let a_csrf = csrf_for(&a_cookie);
@@ -835,7 +873,7 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
     assert!(db.org_by_slug("acme").await.unwrap().is_some());
 
     // Correct confirmation soft-deletes (org_by_slug excludes deleted) + audits.
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         "/-/org/acme/danger/delete",
@@ -843,6 +881,7 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
         Some(&format!("csrf={csrf}&confirm=acme")),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert_eq!(resp.location.as_deref(), Some("/-/orgs"));
     assert!(db.org_by_slug("acme").await.unwrap().is_none());
@@ -852,11 +891,11 @@ async fn org_delete_requires_typed_confirmation_and_owner() {
         .unwrap()
         .is_some());
     assert!(db
-        .list_audit(&common::org_scope(&db, "acme").await)
+        .list_audit(&org_scope)
         .await
         .unwrap()
         .iter()
-        .any(|a| a.action == "org.delete"));
+        .any(|a| a.action == "topology.organization.delete"));
 }
 
 #[tokio::test]
@@ -1253,16 +1292,25 @@ async fn project_and_binding_delete_with_in_use_guard() {
         .any(|p| p.id == pid));
 
     // A binding still referenced by a registry is guarded from deletion.
-    common::create_local_binding(&db, org_id, "primary", "/srv/acme").await;
+    let binding = common::create_local_binding(&db, org_id, "primary", "/srv/acme").await;
     let bid = db
-        .storage_binding_by_name(org_id, "primary")
+        .storage_binding(binding)
         .await
         .unwrap()
         .unwrap()
-        .id;
+        .stable_id;
     db.create_managed_registry(org_id, "", "cdn", "public", &[], false)
         .await
         .unwrap();
+    let registry = db.registry_by_slug("acme/cdn").await.unwrap().unwrap();
+    common::create_ready_placement(
+        &db,
+        aos_hub::db::SurfaceTarget::Registry(registry.id),
+        binding,
+        "primary",
+        "cdn",
+    )
+    .await;
     let resp = send(
         &app,
         "POST",
@@ -1273,7 +1321,7 @@ async fn project_and_binding_delete_with_in_use_guard() {
     .await;
     assert_eq!(resp.status, StatusCode::CONFLICT, "{}", resp.body);
     assert!(db
-        .storage_binding_by_name(org_id, "primary")
+        .storage_binding_by_stable_id(&bid)
         .await
         .unwrap()
         .is_some());
@@ -1306,7 +1354,7 @@ async fn member_role_change_and_last_owner_guard() {
     let csrf = csrf_for(&cookie);
 
     // Promote the developer to admin.
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         &format!("/-/org/acme/members/user:{dev}/role"),
@@ -1316,6 +1364,7 @@ async fn member_role_change_and_last_owner_guard() {
         )),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     let members = db
         .list_members_of_scope(&common::org_scope(&db, "acme").await)
@@ -1422,7 +1471,7 @@ async fn admin_cannot_escalate_to_owner() {
         .any(|(k, id, r)| k == "user" && *id == admin && r == "admin"));
 
     // The admin may still make a lateral/lower grant (viewer -> developer).
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         &format!("/-/org/acme/members/user:{victim}/role"),
@@ -1432,6 +1481,7 @@ async fn admin_cannot_escalate_to_owner() {
         )),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &cookie, plan).await;
     assert_eq!(resp.status, StatusCode::SEE_OTHER, "{}", resp.body);
     assert!(db
         .list_members_of_scope(&common::org_scope(&db, "acme").await)
@@ -1468,7 +1518,7 @@ async fn instance_settings_signup_policy_admin_only() {
     // The instance admin can flip the signup policy.
     let admin_cookie = login(&app, &db, "root@hub").await;
     let csrf = csrf_for(&admin_cookie);
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         "/-/instance/identity-and-signup",
@@ -1476,6 +1526,7 @@ async fn instance_settings_signup_policy_admin_only() {
         Some(&format!("csrf={csrf}&signup_policy=open")),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &admin_cookie, plan).await;
     assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
     assert!(matches!(
         db.signup_policy().await.unwrap(),
@@ -1612,7 +1663,7 @@ async fn trust_ops_require_sudo() {
     let fresh = login(&app, &db, "owner@acme.com").await;
     let f_csrf = csrf_for(&fresh);
 
-    let resp = send(
+    let plan = send(
         &app,
         "POST",
         "/-/org/acme/members/invitations",
@@ -1620,6 +1671,7 @@ async fn trust_ops_require_sudo() {
         Some(&format!("csrf={f_csrf}&email=new@acme.com&role=viewer")),
     )
     .await;
+    let resp = apply_reviewed_plan(&app, &fresh, plan).await;
     assert_eq!(
         resp.status,
         StatusCode::SEE_OTHER,

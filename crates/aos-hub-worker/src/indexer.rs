@@ -71,16 +71,7 @@ pub async fn index_all(
 
     // Index every live registry. Private registries still need a fresh derived
     // index for retention and GC even when no unauthenticated route serves them.
-    let mut registries = db.list_registries().await.context("listing registries")?;
-    for registry in db
-        .list_registries_with_write_tickets()
-        .await
-        .context("listing registry write-fence cleanup")?
-    {
-        if !registries.iter().any(|existing| existing.id == registry.id) {
-            registries.push(registry);
-        }
-    }
+    let registries = db.list_registries().await.context("listing registries")?;
     for registry in registries {
         let placement = match db
             .reconciled_surface_reader(SurfaceTarget::Registry(registry.id))

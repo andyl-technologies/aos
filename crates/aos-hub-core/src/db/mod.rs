@@ -15596,12 +15596,11 @@ impl Database {
     ///
     /// Returns an error on database failure.
     /// The number of orgs a user currently *owns* (holds an `Owner`
-    /// membership on at an org-root scope).
+    /// membership on at an organization authorization scope).
     ///
     /// Used by the org-creation cap (the hub's `ratelimit::MAX_ORGS_PER_OWNER`) to bound namespace
-    /// pollution: an `Owner` membership's scope is the org slug (a single path
-    /// segment with no `/`), which is exactly what `CreateOrg` grants the
-    /// creator, so counting those rows counts the principal's owned orgs.
+    /// pollution. Scope identities are opaque, so the query joins their typed
+    /// authorization records instead of inferring resource kind from key text.
     ///
     /// # Errors
     ///
@@ -15609,9 +15608,10 @@ impl Database {
     pub async fn count_user_owned_orgs(&self, user_id: i64) -> Result<i64> {
         self.backend
             .query_opt(
-                "SELECT COUNT(*) FROM memberships
-                 WHERE principal_kind = 'user' AND principal_id = ?1
-                   AND role = 'owner' AND scope NOT LIKE '%/%'",
+                "SELECT COUNT(*) FROM memberships m
+                 JOIN authorization_scopes s ON s.scope_key = m.scope_key
+                 WHERE m.principal_kind = 'user' AND m.principal_id = ?1
+                   AND m.role = 'owner' AND s.kind = 'organization'",
                 &vals![user_id],
             )
             .await?
@@ -22606,6 +22606,13 @@ source_nar_hash = ""
             vec![("user".to_string(), user, "owner".to_string())]
         );
 
+        let successor = db
+            .find_or_create_user("successor@example.com")
+            .await
+            .unwrap();
+        db.grant_membership("user", successor, &org.stable_id, "owner")
+            .await
+            .unwrap();
         db.revoke_membership("user", user, &org.stable_id)
             .await
             .unwrap();
