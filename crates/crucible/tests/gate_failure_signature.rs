@@ -11,19 +11,21 @@ use crucible::test_support::condition_observation_entry_for_test;
 use crucible::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, ChoiceTag, Configuration, ContentHash,
     DagStore, Decision, EngineError, EventLogCausalDivergencePoint, EventLogIcountStamp,
-    EventLogOffset, EventPayload, EventSource, FailureCausalCone, FailureClusterFinding,
-    FailureClusterReport, FailureClusterReportDivergence, FailureClusterReportFailure,
-    FailureClusterReportFormat, FailureClusterReportSet, FailureClusteringResult,
-    FailureFindingsLedger, FailureKind, FailurePropertyViolationRecord, FailureRecordedEventLog,
-    FailureSignature, FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
-    FailureSignaturePreservingMinimizationRun, FailureTriageResult, FailureTriageResultIdentity,
-    FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath,
-    FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MemoryDagStore,
-    MinimizationConfig, MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
-    OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogPayload,
-    SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel, SymmetryClassId,
-    SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    EventLogOffset, EventLogTime, EventPayload, EventSource, FailureCausalCone,
+    FailureClusterFinding, FailureClusterReport, FailureClusterReportDivergence,
+    FailureClusterReportFailure, FailureClusterReportFormat, FailureClusterReportSet,
+    FailureClusteringResult, FailureFindingsLedger, FailureKind, FailureMinimizationDisposition,
+    FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
+    FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
+    FailureSignaturePreservingMinimizationRun, FailureTimeoutBudgetKind, FailureTimeoutRecord,
+    FailureTriageResult, FailureTriageResultIdentity, FailureTriageSignatureSelfCheck,
+    FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath, FindingReproductionArtifact,
+    HostAssertionViolation, Icount, MarkerId, MemoryDagStore, MinimizationConfig, MinimizationRun,
+    NodeId, NodeLifecycle, NodeTemplate, ObservableEvent, OverrideDecision, Plan, Properties,
+    ReadyPoint, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogClass,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulingPoint, Seed, SignaturePolicy,
+    SignaturePolicyLevel, SymmetryClassId, SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy,
+    World, WorldNode,
 };
 
 #[test]
@@ -158,6 +160,156 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
     assert!(signature.causal_slice_hash.is_some());
     assert_eq!(signature.content_hash(), signature.content_hash());
 
+    Ok(())
+}
+
+#[test]
+fn timeout_signature_keys_stable_budget_domain_not_numeric_counters() -> Result<(), Box<dyn Error>>
+{
+    let scenario = scenario_form()?;
+    let finding = finding_artifact(
+        &scenario,
+        Schedule::empty(),
+        FindingDiscoveryPath::CoverageGuidedFuzzing,
+        finding_hash("timeout"),
+    )?;
+    let at = VirtualTime { ticks: 41 };
+    let entries = vec![SchedulerEventLogEntry::execution_budget_exhausted(
+        0,
+        at,
+        "execution-quanta",
+    )];
+    let recorded_log = FailureRecordedEventLog::from_causal_entries_and_coverage(
+        &finding,
+        &entries,
+        finding_hash("timeout-coverage"),
+    )?;
+    let first = FailureTimeoutRecord::new(
+        FailureTimeoutBudgetKind::ExecutionQuanta,
+        Some(100),
+        100,
+        at,
+        None,
+        None,
+        finding.artifact.id(),
+    );
+    let second = FailureTimeoutRecord::new(
+        FailureTimeoutBudgetKind::ExecutionQuanta,
+        Some(200),
+        173,
+        at,
+        None,
+        None,
+        finding.artifact.id(),
+    );
+
+    let first_signature = FailureSignature::from_recorded_timeout(&finding, &recorded_log, &first)?;
+    let second_signature =
+        FailureSignature::from_recorded_timeout(&finding, &recorded_log, &second)?;
+
+    assert_eq!(first_signature.failure_kind, FailureKind::Timeout);
+    assert!(first_signature.property.is_none());
+    assert_eq!(first_signature, second_signature);
+    assert_eq!(
+        first_signature.first_failing_point.event_kind,
+        "execution_budget_exhausted"
+    );
+    Ok(())
+}
+
+#[test]
+fn timeout_signature_validates_boundary_and_normalizes_symmetric_nodes()
+-> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let finding = finding_artifact(
+        &scenario,
+        Schedule::empty(),
+        FindingDiscoveryPath::StateSpaceSearch,
+        finding_hash("timeout-normalization"),
+    )?;
+    let at = VirtualTime { ticks: 51 };
+    let replica_class = SymmetryClassId {
+        name: String::from("replicas"),
+    };
+    let normalization = FailureSignatureNormalization::identity().with_symmetry_classes(
+        SymmetryReductionClasses::new()
+            .with_node_class(node("replica-a"), replica_class.clone())
+            .with_node_class(node("replica-b"), replica_class),
+    );
+    let evidence_for = |node_id: NodeId| {
+        let time = EventLogTime {
+            virtual_time: at,
+            icount: EventLogIcountStamp {
+                node: Some(node_id.clone()),
+                icount: icount(71),
+            },
+        };
+        let entries = vec![
+            SchedulerEventLogEntry::execution_budget_exhausted_with_time(
+                0,
+                time,
+                "execution-quanta",
+            ),
+        ];
+        let log = FailureRecordedEventLog::from_causal_entries_and_coverage(
+            &finding,
+            &entries,
+            finding_hash("timeout-normalization-coverage"),
+        )?;
+        let timeout = FailureTimeoutRecord::new(
+            FailureTimeoutBudgetKind::ExecutionQuanta,
+            Some(100),
+            100,
+            at,
+            Some(icount(71)),
+            Some(node_id),
+            finding.artifact.id(),
+        );
+        Ok::<_, EngineError>((log, timeout))
+    };
+    let (replica_a_log, replica_a) = evidence_for(node("replica-a"))?;
+    let (replica_b_log, replica_b) = evidence_for(node("replica-b"))?;
+    let replica_a_signature = FailureSignature::from_recorded_timeout_with_normalization(
+        &finding,
+        &replica_a_log,
+        &replica_a,
+        &normalization,
+    )?;
+    let replica_b_signature = FailureSignature::from_recorded_timeout_with_normalization(
+        &finding,
+        &replica_b_log,
+        &replica_b,
+        &normalization,
+    )?;
+    assert_eq!(
+        replica_a_signature.first_failing_point.faulting_node,
+        replica_b_signature.first_failing_point.faulting_node
+    );
+
+    let wrong_kind = FailureTimeoutRecord::new(
+        FailureTimeoutBudgetKind::VirtualTime,
+        Some(51),
+        100,
+        at,
+        Some(icount(71)),
+        Some(node("replica-a")),
+        finding.artifact.id(),
+    );
+    assert!(
+        FailureSignature::from_recorded_timeout(&finding, &replica_a_log, &wrong_kind).is_err()
+    );
+    let wrong_node = FailureTimeoutRecord::new(
+        FailureTimeoutBudgetKind::ExecutionQuanta,
+        Some(100),
+        100,
+        at,
+        Some(icount(71)),
+        Some(node("replica-b")),
+        finding.artifact.id(),
+    );
+    assert!(
+        FailureSignature::from_recorded_timeout(&finding, &replica_a_log, &wrong_node).is_err()
+    );
     Ok(())
 }
 
@@ -1472,6 +1624,7 @@ fn no_op_minimization_run(
         representative_artifact: finding.artifact.id(),
         target_signature_key: signature_key.clone(),
         minimized_signature_key: signature_key,
+        disposition: FailureMinimizationDisposition::NotRequested,
         minimization: MinimizationRun {
             seed: Seed::from_u64(0x5452_4936),
             target_fingerprint: finding.finding_fingerprint,

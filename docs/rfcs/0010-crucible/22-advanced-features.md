@@ -800,8 +800,9 @@ store is shared, the artifact MAY reference stored checkpoints/log segments by
 content key to fetch-rather-than-recompute (07 [TEMP-23], 19 [OBS-30]), but the
 store MUST NOT be required for correctness.
 
-- **[ADV-28]** Every interesting finding (a property violation, a divergence, or a
-  retained corpus entry) MUST emit a self-contained reproduction artifact: the
+- **[ADV-28]** Every interesting finding (a property violation, a divergence, a
+  concrete execution timeout, or a retained corpus entry) MUST emit a
+  self-contained reproduction artifact: the
   pinned concrete `ScenarioDef` (with its `id`), the seed, and the recorded
   `Schedule` (06 §7.1, 23), reproducing the finding **bit-identically** by replay
   alone with no reference to the discovering campaign or family (06 [SPAT-27],

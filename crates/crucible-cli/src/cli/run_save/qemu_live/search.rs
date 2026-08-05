@@ -7,6 +7,11 @@ mod failure;
 
 use failure::*;
 
+struct QemuSearchFinding {
+    failure: crucible::SearchDiscoveredFailure,
+    evidence: crate::cli_report::TriageFindingEvidence,
+}
+
 pub(crate) fn run_local_qemu_search_workflow(
     thin_plan: &CliThinWrapperPlan,
     backend_plan: &BackendSelectionPlan,
@@ -29,7 +34,7 @@ pub(crate) fn run_local_qemu_search_workflow(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let (mut graph, root_configuration, root, mut discovered_failures) =
+    let (mut graph, root_configuration, root, mut discovered_findings) =
         runtime.block_on(qemu_search_root(&config, plan.scenario.scenario_form()))?;
     let mut pending = root
         .as_ref()
@@ -45,7 +50,10 @@ pub(crate) fn run_local_qemu_search_workflow(
     let mut expansions = Vec::new();
     let mut live_realizations = usize::from(root.is_some());
     let mut replay_oracle_validations = 0_usize;
-    while (expansions.len() as u64) < plan.budget.max_expansions {
+    'search: while (expansions.len() as u64) < plan.budget.max_expansions {
+        if plan.on_violation == SearchOnViolationArg::Stop && !discovered_findings.is_empty() {
+            break;
+        }
         let Some(index) =
             graph.select_strategy_frontier(&pending, plan.engine_strategy, plan.max_depth)
         else {
@@ -67,14 +75,17 @@ pub(crate) fn run_local_qemu_search_workflow(
                 &child.configuration,
             ))?;
             replay_oracle_validations = replay_oracle_validations.saturating_add(1);
-            if let Some(failure) = failure
-                && discovered_failures.iter().all(|existing| {
-                    existing.configuration != failure.configuration
-                        || existing.fingerprint != failure.fingerprint
+            if let Some(finding) = failure
+                && discovered_findings.iter().all(|existing| {
+                    existing.failure.configuration != finding.failure.configuration
+                        || existing.failure.fingerprint != finding.failure.fingerprint
                 })
             {
-                explored.insert(failure.configuration);
-                discovered_failures.push(failure);
+                explored.insert(finding.failure.configuration);
+                discovered_findings.push(finding);
+                if plan.on_violation == SearchOnViolationArg::Stop {
+                    break 'search;
+                }
             }
             if let Some(realized) = realized {
                 live_realizations = live_realizations.saturating_add(1);
@@ -99,7 +110,10 @@ pub(crate) fn run_local_qemu_search_workflow(
         budget: plan.budget,
         explored_graph: explored,
         expansions,
-        discovered_failures,
+        discovered_failures: discovered_findings
+            .iter()
+            .map(|finding| finding.failure.clone())
+            .collect(),
         exhausted,
     };
     let counterexample_artifact = run
@@ -121,6 +135,24 @@ pub(crate) fn run_local_qemu_search_workflow(
         expansions: run.expansions.len(),
         explored: run.explored_graph.len(),
         failures: run.discovered_failures.len(),
+        property_findings: discovered_findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding.evidence.failure,
+                    crucible_model::FailureClusterReportFailure::Property(_)
+                )
+            })
+            .count(),
+        timeout_findings: discovered_findings
+            .iter()
+            .filter(|finding| {
+                matches!(
+                    finding.evidence.failure,
+                    crucible_model::FailureClusterReportFailure::Timeout(_)
+                )
+            })
+            .count(),
         exhausted: run.exhausted,
         failure_oracle: String::from("live-qemu-scheduler"),
         schedule_named_truths: plan
@@ -154,6 +186,35 @@ pub(crate) fn run_local_qemu_search_workflow(
         outcome.reproduction_artifact = Some(artifact);
     }
     apply_local_double_search_report(&mut outcome, plan, &report);
+    let store = crucible::LocalDagStore::new(plan.store_root.clone());
+    let mut evidence = Vec::new();
+    let mut reproductions = Vec::new();
+    for finding in discovered_findings {
+        let stored = finding
+            .evidence
+            .finding
+            .store_artifact(&store)
+            .map_err(CliError::Store)?;
+        if stored != finding.evidence.finding.artifact.id() {
+            return Err(artifact_error(
+                "stored search finding artifact did not match its content identity",
+            ));
+        }
+        reproductions.push(finding_reproduction_artifact_bytes(
+            backend_plan.resolved_backend.as_ref(),
+            &finding.evidence.finding,
+            "search",
+        )?);
+        evidence.push(finding.evidence);
+    }
+    attach_qemu_findings_outputs(
+        &mut outcome,
+        &plan.store_root,
+        &plan.artifact_dir,
+        plan.findings_out.as_deref(),
+        evidence,
+        reproductions,
+    )?;
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
         virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -201,7 +262,7 @@ async fn qemu_search_root(
         // crucible-lint: allow host-nondeterminism-state -- the result is canonical scheduler state reconstructed through the lifecycle API.
         crucible::Configuration,
         Option<QemuSearchFrontier>,
-        Vec<crucible::SearchDiscoveredFailure>,
+        Vec<QemuSearchFinding>,
     ),
     CliError,
 > {
@@ -245,13 +306,7 @@ async fn qemu_search_realize(
     scenario: &crucible::ScenarioDefForm,
     // crucible-lint: allow host-nondeterminism-state -- requested search state is canonical input checked against every live replay prefix.
     requested: &crucible::Configuration,
-) -> Result<
-    (
-        Option<QemuSearchFrontier>,
-        Option<crucible::SearchDiscoveredFailure>,
-    ),
-    CliError,
-> {
+) -> Result<(Option<QemuSearchFrontier>, Option<QemuSearchFinding>), CliError> {
     let choices = branch_fault_choice_decisions(&requested.schedule);
     let network_choices = branch_network_choice_decisions(&requested.schedule);
     let branch_config = config
@@ -282,7 +337,7 @@ async fn qemu_search_realize(
     let mut event_cursor = 0_u64;
     let max_quanta = config.maximum_scheduler_quanta(scenario.world().vm_nodes().len());
     let mut captured = None;
-    let mut terminal_failure = None;
+    let mut terminal_snapshot = None;
     let mut completed_summary = None;
     let mut previous =
         wait_for_save_workflow_state(&client, created.session, LiveStateKind::Paused).await?;
@@ -329,7 +384,7 @@ async fn qemu_search_realize(
             }
         }
         if summary.state == LiveStateKind::Stopped {
-            terminal_failure = qemu_search_terminal_failure(scenario, &snapshot)?;
+            terminal_snapshot = Some(snapshot);
             completed_summary = Some(summary);
             break;
         }
@@ -352,6 +407,19 @@ async fn qemu_search_realize(
     )
     .await?;
     let coverage = coverage_feedback_from_streamed_events(coverage_events)?;
+    let terminal_failure = terminal_snapshot
+        .as_ref()
+        .map(|snapshot| {
+            qemu_search_terminal_finding(
+                scenario,
+                snapshot,
+                &streamed_frames,
+                &coverage,
+                max_quanta,
+            )
+        })
+        .transpose()?
+        .flatten();
     let _ = qemu_search_stop(&control, &mut command_id).await;
     Ok((
         captured.map(|frontier| QemuSearchFrontier {
@@ -363,6 +431,61 @@ async fn qemu_search_realize(
         }),
         terminal_failure,
     ))
+}
+
+fn qemu_search_terminal_finding(
+    scenario: &crucible::ScenarioDefForm,
+    snapshot: &crucible_session::EngineSnapshot,
+    streamed_frames: &[Vec<u8>],
+    coverage: &crucible::EventLogCoverageFeedback,
+    configured_quanta: u64,
+) -> Result<Option<QemuSearchFinding>, CliError> {
+    let Some(failure) = qemu_search_terminal_failure(scenario, snapshot)? else {
+        return Ok(None);
+    };
+    let evidence = match &snapshot.state {
+        crucible_session::EngineState::Stopped {
+            outcome: crucible_session::Outcome::Failed { .. },
+        } => {
+            let violation = qemu_property_violation_from_frames(
+                scenario,
+                streamed_frames,
+                failure.reproduction_artifact.artifact.id(),
+            )?;
+            crate::cli_triage_debug::triage_property_evidence_for_violation_with_recording(
+                failure.reproduction_artifact.clone(),
+                violation,
+                coverage.fingerprint(),
+                streamed_frames.to_vec(),
+            )
+        }
+        crucible_session::EngineState::Stopped {
+            outcome: crucible_session::Outcome::Timeout,
+        } => {
+            let timeout = crucible_model::FailureTimeoutRecord::new(
+                crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
+                Some(configured_quanta),
+                snapshot.quanta,
+                snapshot.frontier,
+                None,
+                None,
+                failure.reproduction_artifact.artifact.id(),
+            );
+            crate::cli_triage_debug::triage_timeout_evidence(
+                failure.reproduction_artifact.clone(),
+                timeout,
+                coverage.fingerprint(),
+                streamed_frames.to_vec(),
+            )
+        }
+        _ => {
+            return Err(backend_error(
+                "live QEMU search produced failure evidence for a non-finding outcome",
+            ));
+        }
+    }
+    .map_err(|error| backend_error(format!("build live QEMU search evidence: {error}")))?;
+    Ok(Some(QemuSearchFinding { failure, evidence }))
 }
 
 async fn qemu_search_query_snapshot(
