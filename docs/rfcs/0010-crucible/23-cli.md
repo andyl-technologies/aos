@@ -664,7 +664,8 @@ the CLI.
     --strategy <bfs|dfs|guided>   Frontier expansion strategy (22).
     --max-depth <n>               Decision-depth bound.
     --max-states <n>              Budget on materialized states.
-    --on-violation <stop|collect> Stop at the first counterexample, or collect all.
+    --on-violation <stop|collect> Stop at the first finding, or collect within budget.
+    --findings-out <path>         Override the signed findings-ledger path.
     --schedule-named-truths <path> Load schedule-named assertion truth data.
 
   crucible fuzz <FAMILY> [FLAGS]
@@ -672,20 +673,28 @@ the CLI.
     --runs <n>                    Number of family instances to run.
     --coverage <basic-block>      Coverage signal guiding sampling (22).
     --corpus <path>               Seed/regression corpus directory.
+    --on-violation <stop|collect> Stop at the first finding, or collect within budget.
+    --findings-out <path>         Override the signed findings-ledger path.
 ```
 
 `search` and `fuzz` walk the space, run each pinned `ScenarioDef` (06 §7,
 [SPAT-27]) as `run` would, and — on every materialized fat checkpoint —
 opportunistically run the replay oracle (24 §6, [HARN-13]) so the invariant is
 exercised on real explored states. Each discovered counterexample reduces to a
-self-contained reproduction artifact (06 §7.1) and is reported with the §4 repro
-command, so a fuzz-found failure is reproduced exactly like a hand-run one.
+self-contained reproduction artifact (06 §7.1), is entered in a signed findings
+ledger (§34.7), and is reported with the §4 repro command, so a fuzz-found
+failure is reproduced exactly like a hand-run one. `--on-violation` defaults to
+`stop`; `collect` retains every distinct property violation or concrete
+execution timeout encountered within the supplied campaign budget. Repeated
+discovery of the same reproduction artifact and identical evidence is
+deduplicated; conflicting evidence for that artifact is an artifact error.
 
-**Exit codes.** `0` = exploration completed within budget with no violation; `1` =
-at least one counterexample found (artifacts written, §4); `2` = budget exhausted
-before completion (with `--on-violation collect`, this is still `0`/`1` by
-findings); `3` = oracle violation during search (a data-model defect; 24 §6);
-`4` = discovery/config; `64` = usage.
+**Exit codes.** `0` = exploration completed within budget with no finding, or a
+`collect` campaign exhausted its campaign budget without retaining a finding;
+`1` = at least one property counterexample found (artifacts written, §4); `2` =
+at least one concrete execution timeout, or `stop`-mode campaign budget
+exhaustion without a property finding; `3` = oracle violation during search (a
+data-model defect; 24 §6); `4` = discovery/config; `64` = usage.
 
 - **[CLI-23]** `crucible search` and `crucible fuzz` MUST drive the exploration
   policies of `22-advanced-features.md` over the same fork/replay/oracle
@@ -1308,6 +1317,16 @@ branch on the verdict without parsing output:
   QEMU sessions. The fuzz family excludes pre-boot faults so a real guest
   quantum commits plugin coverage before feedback is evaluated; none of these
   bounds or traffic sources modify the Linux kernel.
+  Production-QEMU search and fuzz now classify terminal property violations and
+  concrete execution timeouts as findings, honor `--on-violation stop|collect`,
+  retain one replay artifact per selected finding, and emit a canonical signed
+  v3 findings ledger automatically (or at `--findings-out`). The ledger binds
+  each artifact to exact streamed event frames, coverage, typed evidence, and
+  its discovery signature so `triage --recompute-signatures` can verify the
+  discovery boundary offline. When one execution streams multiple violated
+  assertion transitions, the primary property signature is selected by stable
+  assertion id, virtual time, instruction count, and node ordering; the ledger
+  still binds the complete retained frame set.
   Both routes append pinned QEMU/plugin execution proof and preserve the
   backend-independent self-contained counterexample and corpus evidence.
 - [x] **T-CLI-14** Implement `serve` (bind the API, session-actor-per-scenario,
@@ -1367,13 +1386,16 @@ branch on the verdict without parsing output:
   §16; cross-ref 34.
   Completed under `checks.crucible.phase5.cliTriageWorkflow`: the CLI parses and
   plans the thin `triage <FINDINGS>` driver, loads empty and signed
-  engine-owned property findings ledgers through the local DagStore, clusters by
+  engine-owned property findings ledgers and signed v3 property/timeout ledgers
+  through the local DagStore, clusters by
   discovery-time signatures, elects/minimizes representatives through the triage
   engine, emits deterministic reports, stores findings/result artifacts,
   supports `--policy`, `--minimize`, `--report`, global `--format`,
   `--recompute-signatures`, and `--compare`, rejects live daemon routing,
   rejects CLI-local `finding.*` signature sidecars, and fails artifact-only
   ledgers instead of fabricating missing discovery-time signature evidence.
+  Requested minimization records timeout representatives as the deterministic
+  `not-applicable-timeout` no-op rather than attempting an assertion shrink.
 - [x] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
   the session read-only debugging commands (20 §4.4): instantiate +
   restore-nearest-checkpoint-replay to the coordinate

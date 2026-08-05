@@ -242,6 +242,17 @@ pub enum FailureKind {
     PropertyViolation,
     /// The recorded run diverged from deterministic replay and was localized by bisection.
     Divergence,
+    /// The recorded run exhausted a deterministic execution budget.
+    Timeout,
+}
+
+/// Closed execution-budget domains that can produce a timeout finding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FailureTimeoutBudgetKind {
+    /// The run exhausted its scheduler quantum allowance.
+    ExecutionQuanta,
+    /// The run reached its configured virtual-time boundary.
+    VirtualTime,
 }
 
 /// Stable property identity carried by a property-violation signature.
@@ -1455,6 +1466,7 @@ impl FailureClusteringResult {
                 representative_artifact: representative.reproduction_artifact,
                 target_signature_key,
                 minimized_signature_key,
+                disposition: FailureMinimizationDisposition::Minimized,
                 minimization,
             });
         }
@@ -1483,8 +1495,21 @@ pub struct FailureSignaturePreservingMinimizationRun {
     pub target_signature_key: FailureSignatureKey,
     /// Signature key observed for the emitted minimal representative.
     pub minimized_signature_key: FailureSignatureKey,
+    /// Whether a shrink pass ran or the failure kind is not safely minimizable.
+    pub disposition: FailureMinimizationDisposition,
     /// Underlying replay-validated minimization run from the base shrink pass.
     pub minimization: MinimizationRun,
+}
+
+/// Closed outcome of a signature-preserving minimization request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FailureMinimizationDisposition {
+    /// The deterministic candidate shrink pass was executed.
+    Minimized,
+    /// The caller requested clustering and reports without minimization.
+    NotRequested,
+    /// Timeout evidence retained the original representative without replaying candidates.
+    NotApplicableTimeout,
 }
 
 impl FailureSignaturePreservingMinimizationRun {
@@ -1613,6 +1638,8 @@ pub enum FailureClusterReportFailure {
     Property(FailurePropertyViolationRecord),
     /// Replay-oracle divergence localized by causal-log bisection.
     Divergence(FailureClusterReportDivergence),
+    /// Deterministic execution-budget exhaustion.
+    Timeout(FailureTimeoutRecord),
 }
 
 impl FailureClusterReportFailure {
@@ -1626,6 +1653,12 @@ impl FailureClusterReportFailure {
     #[must_use]
     pub fn divergence(detail: FailureClusterReportDivergence) -> Self {
         Self::Divergence(detail)
+    }
+
+    /// Builds report detail for an execution timeout.
+    #[must_use]
+    pub fn timeout(record: FailureTimeoutRecord) -> Self {
+        Self::Timeout(record)
     }
 }
 
@@ -2044,10 +2077,90 @@ pub struct FailureRecordedEventLog {
     pub(in crate::model) causal_subsequence: ContentHash,
     pub(in crate::model) causal_subsequence_events: usize,
     pub(in crate::model) coverage_fingerprint: ContentHash,
+    pub(in crate::model) evidence_binding: ContentHash,
     pub(in crate::model) projection: EventLogCausalProjection,
 }
 
+fn failure_recorded_evidence_binding(
+    projection: &EventLogCausalProjection,
+    coverage_fingerprint: ContentHash,
+    recorded_frames: &[Vec<u8>],
+) -> ContentHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"crucible.failure-recorded-evidence.v1\0");
+    bytes.extend_from_slice(&projection.content_hash().bytes);
+    bytes.extend_from_slice(&coverage_fingerprint.bytes);
+    bytes.extend_from_slice(&(recorded_frames.len() as u64).to_le_bytes());
+    for frame in recorded_frames {
+        bytes.extend_from_slice(&(frame.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(frame);
+    }
+    ContentHash::from_bytes(&bytes)
+}
+
 impl FailureRecordedEventLog {
+    /// Builds checked signature evidence from retained causal entries and an
+    /// independently reconstructed coverage fingerprint.
+    ///
+    /// This is the adapter boundary used when a remote event stream retains
+    /// exact causal events while coverage observations are transported through
+    /// the shared coverage-feedback projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] when the finding's
+    /// embedded reproduction identity is inconsistent.
+    pub fn from_causal_entries_and_coverage(
+        finding: &FindingReproductionArtifact,
+        causal_entries: &[SchedulerEventLogEntry],
+        coverage_fingerprint: ContentHash,
+    ) -> Result<Self, EngineError> {
+        Self::from_causal_entries_coverage_and_frames(
+            finding,
+            causal_entries,
+            coverage_fingerprint,
+            &[],
+        )
+    }
+
+    /// Builds checked signature evidence and binds the exact retained frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] when the finding's
+    /// embedded reproduction identity is inconsistent.
+    pub fn from_causal_entries_coverage_and_frames(
+        finding: &FindingReproductionArtifact,
+        causal_entries: &[SchedulerEventLogEntry],
+        coverage_fingerprint: ContentHash,
+        recorded_frames: &[Vec<u8>],
+    ) -> Result<Self, EngineError> {
+        validate_finding_static_identity(finding)?;
+        let projection = event_log_causal_projection(causal_entries);
+        let event_log_artifact = ReproductionEventLogArtifact::from_causal_projection(
+            finding.artifact.id(),
+            EventLogOffset::new(ContentHash::default(), 0, 0),
+            projection.content_hash(),
+            projection.canonical_bytes().len(),
+            projection.len(),
+            coverage_fingerprint,
+            Vec::new(),
+        );
+        Ok(Self {
+            artifact: finding.artifact.id(),
+            event_log_artifact: event_log_artifact.id(),
+            causal_subsequence: projection.content_hash(),
+            causal_subsequence_events: projection.len(),
+            coverage_fingerprint,
+            evidence_binding: failure_recorded_evidence_binding(
+                &projection,
+                coverage_fingerprint,
+                recorded_frames,
+            ),
+            projection,
+        })
+    }
+
     /// Builds checked signature evidence from recorded event-log entries.
     ///
     /// # Errors
@@ -2104,6 +2217,11 @@ impl FailureRecordedEventLog {
             causal_subsequence: projection.content_hash(),
             causal_subsequence_events: projection.len(),
             coverage_fingerprint: event_log_artifact.coverage_fingerprint,
+            evidence_binding: failure_recorded_evidence_binding(
+                &projection,
+                event_log_artifact.coverage_fingerprint,
+                &[],
+            ),
             projection,
         })
     }
@@ -2136,6 +2254,12 @@ impl FailureRecordedEventLog {
     #[must_use]
     pub fn coverage_fingerprint(&self) -> ContentHash {
         self.coverage_fingerprint
+    }
+
+    /// Returns the binding over causal evidence, coverage, and retained frames.
+    #[must_use]
+    pub fn evidence_binding(&self) -> ContentHash {
+        self.evidence_binding
     }
 
     /// Returns the bucketed failure coverage class for this recorded log.
@@ -2205,6 +2329,72 @@ impl FailurePropertyViolationRecord {
     }
 }
 
+/// Engine-owned timeout evidence consumed by failure-signature construction.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FailureTimeoutRecord {
+    /// Deterministic budget domain that stopped the run.
+    pub budget_kind: FailureTimeoutBudgetKind,
+    /// Configured budget limit, when the producer exposes one.
+    pub configured_limit: Option<u64>,
+    /// Scheduler quanta observed at the terminal boundary.
+    pub observed_quanta: u64,
+    /// Virtual time observed at the terminal boundary.
+    pub at_virtual_time: VirtualTime,
+    /// Retired instruction count at the boundary, when node-local evidence exists.
+    pub at_icount: Option<Icount>,
+    /// Node attributed to the boundary, when node-local evidence exists.
+    pub node: Option<NodeId>,
+    /// Stable event kind anchoring the timeout in the recorded causal log.
+    pub event_kind: String,
+    /// Content-addressed reproduction artifact for this run.
+    pub reproduction_artifact: ContentHash,
+}
+
+impl FailureTimeoutRecord {
+    /// Builds timeout evidence for an engine-owned execution-budget boundary.
+    #[must_use]
+    pub fn new(
+        budget_kind: FailureTimeoutBudgetKind,
+        configured_limit: Option<u64>,
+        observed_quanta: u64,
+        at_virtual_time: VirtualTime,
+        at_icount: Option<Icount>,
+        node: Option<NodeId>,
+        reproduction_artifact: ContentHash,
+    ) -> Self {
+        Self {
+            budget_kind,
+            configured_limit,
+            observed_quanta,
+            at_virtual_time,
+            at_icount,
+            node,
+            event_kind: String::from("execution_budget_exhausted"),
+            reproduction_artifact,
+        }
+    }
+
+    /// Returns the first attributable point recorded for this timeout.
+    #[must_use]
+    pub fn first_failing_point(&self) -> FailureFirstFailingPoint {
+        self.first_failing_point_with(&FailureSymmetryCanonicalizer::identity(
+            ContentHash::default(),
+        ))
+    }
+
+    /// Returns the first attributable point under a symmetry relabeling.
+    #[must_use]
+    pub fn first_failing_point_with(
+        &self,
+        canonicalizer: &FailureSymmetryCanonicalizer,
+    ) -> FailureFirstFailingPoint {
+        FailureFirstFailingPoint {
+            event_kind: self.event_kind.clone(),
+            faulting_node: canonicalizer.canonical_node_option(&self.node),
+        }
+    }
+}
+
 /// Deterministic, content-addressed root-cause signature for one finding.
 ///
 /// The tuple is computed from stored finding artifacts, violation records, and
@@ -2221,6 +2411,8 @@ pub struct FailureSignature {
     pub first_failing_point: FailureFirstFailingPoint,
     /// Bucketed class derived from the deterministic coverage fingerprint.
     pub coverage_class: FailureCoverageClass,
+    /// Discovery-evidence binding checked during offline recomputation.
+    pub evidence_binding: ContentHash,
     /// Optional digest of the cone-scoped recorded causal slice.
     ///
     /// This is computed over the causal prefix ending at the first failing
@@ -2286,6 +2478,7 @@ impl FailureSignature {
             property: Some(violation.property_key()),
             first_failing_point: violation.first_failing_point_with(&canonicalizer),
             coverage_class: event_log.coverage_class(),
+            evidence_binding: event_log.evidence_binding(),
             causal_slice_hash: Some(causal_cone.content_hash()),
             causal_cone: Some(causal_cone),
             at_icount_report_only: violation.violation.at_icount,
@@ -2344,9 +2537,69 @@ impl FailureSignature {
                     .canonical_node_option(&divergence_faulting_node(divergence)),
             },
             coverage_class: event_log.coverage_class(),
+            evidence_binding: event_log.evidence_binding(),
             causal_slice_hash: Some(causal_cone.content_hash()),
             causal_cone: Some(causal_cone),
             at_icount_report_only: Some(divergence.at.icount),
+        })
+    }
+
+    /// Builds a timeout signature from recorded execution-budget evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] when the finding, event
+    /// log, or timeout record names a different reproduction artifact. Returns
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when the timeout
+    /// boundary is absent from the checked causal projection.
+    pub fn from_recorded_timeout(
+        finding: &FindingReproductionArtifact,
+        event_log: &FailureRecordedEventLog,
+        timeout: &FailureTimeoutRecord,
+    ) -> Result<Self, EngineError> {
+        Self::from_recorded_timeout_with_normalization(
+            finding,
+            event_log,
+            timeout,
+            &FailureSignatureNormalization::identity(),
+        )
+    }
+
+    /// Builds a timeout signature with explicit symmetry normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] when the finding, event
+    /// log, or timeout record names a different reproduction artifact. Returns
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when the exact timeout
+    /// boundary is absent from the checked causal projection.
+    pub fn from_recorded_timeout_with_normalization(
+        finding: &FindingReproductionArtifact,
+        event_log: &FailureRecordedEventLog,
+        timeout: &FailureTimeoutRecord,
+        normalization: &FailureSignatureNormalization,
+    ) -> Result<Self, EngineError> {
+        validate_finding_static_identity(finding)?;
+        validate_recorded_event_log_for_finding(finding, event_log)?;
+        if timeout.reproduction_artifact != finding.artifact.id() {
+            return Err(EngineError::ReplayTargetMismatch {
+                expected: finding.artifact.id(),
+                actual: timeout.reproduction_artifact,
+            });
+        }
+        let causal_index = validate_timeout_point(event_log, timeout)?;
+        let canonicalizer = event_log.symmetry_canonicalizer(normalization);
+        let causal_cone =
+            failure_causal_cone_through_index(event_log, causal_index, &canonicalizer);
+        Ok(Self {
+            failure_kind: FailureKind::Timeout,
+            property: None,
+            first_failing_point: timeout.first_failing_point_with(&canonicalizer),
+            coverage_class: event_log.coverage_class(),
+            evidence_binding: event_log.evidence_binding(),
+            causal_slice_hash: Some(causal_cone.content_hash()),
+            causal_cone: Some(causal_cone),
+            at_icount_report_only: timeout.at_icount,
         })
     }
 
