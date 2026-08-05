@@ -135,11 +135,27 @@
         label = "QEMU plugin header installed";
         needle = "install -m 644 include/qemu/qemu-plugin.h \"$out/include/qemu/qemu-plugin.h\"";
       }
+      {
+        label = "QEMU output retains GPL-2.0-or-later text for its plugin header";
+        needle = "LICENSES/GPL-2.0-or-later.txt";
+      }
+      {
+        label = "QEMU output retains MIT text for the generated boundary header";
+        needle = "LICENSES/MIT.txt";
+      }
+      {
+        label = "QEMU package metadata inventories combined and per-file scopes";
+        needle = "license = [\"GPL-2.0-only\" \"GPL-2.0-or-later\" \"MIT\"];";
+      }
+      {
+        label = "patched QEMU is not a standalone publication root";
+        needle = "standalone_release=false";
+      }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
       {
         label = "suite carries the separate controller and matched QEMU/plugin runtime deps";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
       }
       {
         label = "suite wrapper configures QEMU at runtime";

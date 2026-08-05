@@ -21,11 +21,21 @@ informal project name for the legal recipient on a signed agreement.
 
 - Original AOS files use Apache-2.0 unless a more specific notice applies.
 - `crucible-protocol` and `crucible-shmem` use `MIT OR Apache-2.0`.
-- `crucible-qemu-plugin`, QEMU integration loaded into QEMU, and new
-  GPL-covered QEMU-side files use `GPL-2.0-only`.
+- `crucible-qemu-plugin` and `crucible-qemu-trace-plugin` use
+  `GPL-2.0-only`.
 - Existing QEMU files and patches to them retain the applicable upstream file
   license. Never replace a more specific upstream notice with a blanket notice.
+- New QEMU files follow an explicit compatible file notice when present.
+  Otherwise they inherit QEMU's documented default, currently
+  `GPL-2.0-or-later`. Update
+  [`pkgs/emulation/qemu-patches/LICENSES.md`](pkgs/emulation/qemu-patches/LICENSES.md)
+  whenever the patch series starts creating or deleting a file.
 - Third-party code retains its own license and notices.
+- The patched `qemu-crucible` package is not a standalone release root. Use the
+  `crucible` aggregate when publishing; its release policy must retain the
+  matching `qemu-crucible-source` output in the published closure. The
+  publisher scans transitive closure members, so a plugin or wrapper does not
+  bypass this requirement.
 
 Every contribution is licensed under the license that applies to the files it
 changes. A change that moves code across a license boundary needs explicit

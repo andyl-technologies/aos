@@ -56,24 +56,32 @@ things:
 A single shared-memory region — one `mmap` of an anonymous or `memfd`-backed
 file, mapped into every participating process — carries all three. Cross-node
 synchronization therefore happens through **atomic reads and writes of shared
-memory plus one cross-process futex**, not through IPC round-trips. There is no
+memory, a cross-process futex, and a plugin eventfd wake**, not through socket
+or control-protocol round-trips. There is no
 request/response on the hot path: a VM advancing virtual time reads its ceiling
 with a single relaxed-or-acquire load; the scheduler raising a ceiling does a
 single store plus the current unconditional non-private futex wake. A future
-waiter-armed optimization may make the wake conditional when it can reliably
-prove that no peer is parked.
+waiter-armed optimization may make the futex wake conditional when it can
+reliably prove that no peer is parked. The host additionally writes the plugin
+eventfd at least once per quantum, with further writes for unchanged-icount
+retries and serviced host I/O. Eventfd carries only a wake counter, never timing
+state or payload.
 
 - **[SHM-1]** Crucible MUST carry all hot-path cross-node synchronization state
   (per-node clocks, per-node status, per-node advance ceilings, and frame queues)
   in a single shared-memory region mapped into the host engine process and every
   participant process. The hot path (a node reading its ceiling, advancing its
   clock, enqueueing/dequeueing frames) MUST NOT require an IPC round-trip; it MUST
-  be expressible as atomic memory operations plus, at most, one futex syscall to
-  park or wake a node. *Gate:* `gate:layer1-injection`. *Spec:* §13.1.
+  be expressible as atomic memory operations, the current unconditional
+  non-private ceiling futex wake, additional frame-delivery and
+  service/backpressure producer-release futex wakes, actual futex waits when
+  parking or re-waiting, and host plugin-eventfd wake writes. *Gate:*
+  `gate:layer1-injection`. *Spec:* §13.1.
 
-- **[SHM-2]** The shared-memory region MUST be the *only* channel through which
-  virtual-time advancement and cross-node frame delivery are coordinated; there is
-  no second source of timing truth ([INV-8]). The IPC protocol
+- **[SHM-2]** The shared-memory region MUST be the *only* channel carrying
+  virtual-time advancement state and cross-node frame payloads; there is no
+  second source of timing truth ([INV-8]). The plugin eventfd MAY carry only a
+  counter wake directing QEMU to re-read shared memory. The IPC protocol
   ([`14-protocol.md`](14-protocol.md)) MAY carry control-plane setup, teardown,
   and the region handle, but MUST NOT carry per-quantum timing or per-frame
   delivery decisions. *Gate:* `gate:layer1-injection`. *Spec:* §13.1.
@@ -941,12 +949,17 @@ bounds a VM's advancement to its horizon. The handshake, per quantum, is:
   fail loudly, never deliver late. *Gate:* `gate:layer1-injection`,
   `gate:divergence-bisect`. *Spec:* §13.6, §4.4.
 
-## 13.7 Cross-process futex wake
+## 13.7 Cross-process futex and eventfd wake
 
 A node that reaches its ceiling with nothing else to do parks. It must be woken
-when, and only when, something actionable happens for it: the scheduler raises its
-ceiling, or a frame is delivered into one of its inbound rings. The wake mechanism
-is a **cross-process futex** on the slot's `wake_signal` word.
+to re-check shared state when the scheduler raises its ceiling or a frame is
+delivered into one of its inbound rings. The current scheduler issues the futex
+wake unconditionally on ceiling publication and writes the plugin eventfd at
+least once per quantum. Retry and serviced-I/O eventfd writes may repeat the
+nudge without representing a new timing decision. Frame delivery and
+service/backpressure producer release can issue additional futex wakes. The shared wake mechanism is
+a **cross-process futex** on the slot's `wake_signal` word plus the QEMU-facing
+eventfd counter.
 
 The futex is *non-private* (`FUTEX_WAKE`/`FUTEX_WAIT` without `FUTEX_PRIVATE_FLAG`)
 because the waiter (the in-VM plugin / node process) and the waker (the host
@@ -973,6 +986,7 @@ word no longer equals `v`.
   if runnable: skip wait
   FUTEX_WAIT(&wake_signal, v) -----> fetch_add(wake_signal, 1) (release)
                             <-------- FUTEX_WAKE(&wake_signal, 1)
+                            <-------- EVENTFD_WRITE(1) (at least once/quantum)
   status := STATUS_RUNNING
   reload max_advance_icount (acq)
 ```
@@ -982,15 +996,19 @@ word no longer equals `v`.
   read-counter / re-check / wait idiom in §13.7 so there is no lost-wake window.
   The futex MUST be the **non-private** (cross-process) variant, because the
   waiter and waker are different processes sharing the word through the mapping.
-  The `wake_signal` futex is the **source of truth** for the wake; an auxiliary
-  primitive (e.g. the wake eventfd of [`14-protocol.md`](14-protocol.md) §3.4) MAY
-  be used to integrate the wait with a host event loop but MUST NOT replace it —
-  a futex-only waiter and an eventfd-driven waiter rendezvous on the same
-  `wake_signal`. *Gate:* `gate:layer1-injection`. *Spec:* §13.7.
+  The `wake_signal` futex and shared actionable state remain the **source of
+  truth**. The host MUST also write the wake eventfd of
+  [`14-protocol.md`](14-protocol.md) §3.4 at least once per quantum to rouse
+  QEMU's between-quantum idle wait; unchanged-icount retries and serviced host
+  I/O MAY cause additional eventfd writes. The production plugin MUST arm and
+  register the eventfd with QEMU before acknowledging readiness so QEMU consumes
+  those counter nudges. Eventfd MUST NOT replace or carry the shared state.
+  *Gate:* `gate:layer1-injection`. *Spec:* §13.7.
 
 - **[SHM-27]** Every event that can make a parked node runnable — the scheduler
   raising `max_advance_icount` to or past `idle_wake_icount`, or a frame being
-  enqueued into one of the node's inbound rings — MUST increment the target node's
+  enqueued into one of the node's inbound rings, or a service/backpressure
+  consumer releasing a producer's full ring — MUST increment the target node's
   `wake_signal` with a release add and issue `FUTEX_WAKE`. A wake MUST be issued
   even if no waiter is currently parked (the increment makes a concurrent
   about-to-wait return immediately); the wake is cheap when no one waits. *Gate:*
@@ -1126,7 +1144,7 @@ by when the producer's store landed in shared memory.
   [SHM-36]; spec §13.6, §13.3.4.
 - [x] **T-SHM-9** Implement the cross-process (non-private) futex
   `wait`/`wake` on `wake_signal` with the race-free idiom, plus the
-  raise-ceiling and frame-delivered wake triggers. — satisfies [SHM-26],
+  raise-ceiling, frame-delivered, and producer-release wake triggers. — satisfies [SHM-26],
   [SHM-27]; spec §13.7.
 - [x] **T-SHM-10** Implement the off-Linux no-op shim for the futex path so the
   pure atomic/SPSC logic unit-tests off-Linux. — satisfies [SHM-28]; spec §13.7.

@@ -33,6 +33,10 @@ fn repository_publishes_each_declared_license_scope() -> Result<(), Box<dyn Erro
         ("LICENSES/Apache-2.0.txt", "Apache License"),
         ("LICENSES/MIT.txt", "Permission is hereby granted"),
         ("LICENSES/GPL-2.0-only.txt", "GNU GENERAL PUBLIC LICENSE"),
+        (
+            "LICENSES/GPL-2.0-or-later.txt",
+            "GNU GENERAL PUBLIC LICENSE",
+        ),
     ] {
         let content = fs::read_to_string(root.join(relative))?;
         assert!(
@@ -45,12 +49,69 @@ fn repository_publishes_each_declared_license_scope() -> Result<(), Box<dyn Erro
     for marker in [
         "`crucible-protocol` and `crucible-shmem` | MIT OR Apache-2.0",
         "`crucible-qemu-plugin` | GPL-2.0-only",
+        "`crucible-qemu-trace-plugin` | GPL-2.0-only",
+        "unmarked files default to GPL-2.0-or-later",
         "shared memory is the high-throughput data plane",
         "complete corresponding source",
     ] {
         assert!(
             licensing.contains(marker),
             "LICENSING.md must contain `{marker}`"
+        );
+    }
+    let readme = fs::read_to_string(root.join("README.md"))?;
+    assert!(readme.contains("license-multi--license"));
+    assert!(readme.contains("[contribution requirements](CONTRIBUTING.md)"));
+    Ok(())
+}
+
+#[test]
+fn qemu_patch_created_files_match_license_inventory() -> Result<(), Box<dyn Error>> {
+    let root = workspace_crates_dir()?
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or("crates/ must be inside the repository")?;
+    let patch_dir = root.join("pkgs/emulation/qemu-patches");
+    let mut created = BTreeSet::new();
+
+    for entry in fs::read_dir(&patch_dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("patch") {
+            continue;
+        }
+        let patch = fs::read_to_string(path)?;
+        let mut lines = patch.lines();
+        while let Some(line) = lines.next() {
+            if line != "--- /dev/null" {
+                continue;
+            }
+            let created_line = lines.next().ok_or("new-file patch lacks +++ path")?;
+            let path = created_line
+                .strip_prefix("+++ b/")
+                .ok_or("new-file patch has an unexpected +++ path")?;
+            created.insert(path.to_owned());
+        }
+    }
+
+    let expected = BTreeSet::from([
+        "accel/tcg/crucible-translation-prefetch.c".to_owned(),
+        "accel/tcg/tcg-accel-ops-preemption.c".to_owned(),
+        "accel/tcg/tcg-accel-ops-sim-shmem.c".to_owned(),
+        "accel/tcg/tcg-accel-ops-sim-shmem.h".to_owned(),
+        "accel/tcg/tcg-accel-ops-sim.c".to_owned(),
+        "block/crucible-shmem.c".to_owned(),
+        "include/system/crucible-plugin-wake.h".to_owned(),
+        "include/system/crucible-sim-ipi.h".to_owned(),
+        "include/system/crucible-sim-preemption.h".to_owned(),
+    ]);
+    assert_eq!(created, expected, "QEMU patch-created file set drifted");
+
+    let inventory = fs::read_to_string(patch_dir.join("LICENSES.md"))?;
+    for path in expected {
+        let row = format!("| `{path}` | GPL-2.0-or-later |");
+        assert!(
+            inventory.contains(&row),
+            "QEMU patch license inventory must contain `{row}`"
         );
     }
     Ok(())
@@ -100,7 +161,8 @@ fn cargo_metadata_preserves_component_licenses() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn plugin_depends_only_on_permissive_boundary_crates() -> Result<(), Box<dyn Error>> {
+fn plugin_internal_dependencies_are_only_permissive_boundary_crates() -> Result<(), Box<dyn Error>>
+{
     let crates = workspace_crates_dir()?;
     let workspace: Value = fs::read_to_string(crates.join("Cargo.toml"))?.parse()?;
     let workspace_dependencies = workspace["workspace"]["dependencies"]
@@ -171,20 +233,14 @@ fn apache_host_crates_do_not_define_qemu_plugin_abi() -> Result<(), Box<dyn Erro
             continue;
         }
         let package = entry.file_name().to_string_lossy().into_owned();
-        if expected_license(&package) != APACHE_LICENSE {
+        if package == PLUGIN_PACKAGE {
             continue;
         }
         visit_rust_sources(&package_dir.join("src"), &mut |path, source| {
-            for forbidden in [
-                "extern \"C\" fn qemu_plugin_",
-                "qemu-plugin.h",
-                "libloading::Library",
-                "libc::dlopen(",
-                "::dlopen(",
-            ] {
+            for forbidden in dependencies::forbidden_qemu_abi_surfaces(source) {
                 if source.contains(forbidden) {
                     failures.push(format!(
-                        "{}: Apache host source contains forbidden QEMU ABI surface `{forbidden}`",
+                        "{}: non-plugin source contains forbidden QEMU ABI surface `{forbidden}`",
                         display_repo_path(path)
                     ));
                 }
@@ -194,7 +250,7 @@ fn apache_host_crates_do_not_define_qemu_plugin_abi() -> Result<(), Box<dyn Erro
 
     assert!(
         failures.is_empty(),
-        "QEMU ABI leaked into Apache host code:\n{}",
+        "QEMU ABI leaked into non-plugin workspace code:\n{}",
         failures.join("\n")
     );
     Ok(())
@@ -235,6 +291,25 @@ fn public_shmem_interface_is_process_shaped() -> Result<(), Box<dyn Error>> {
         interface["transport"]["scheduler_ceiling_futex_wake"].as_str(),
         Some("unconditional-currently")
     );
+    let additional_futex = string_set(&interface["transport"]["additional_futex_wake_categories"])?;
+    assert!(additional_futex.contains("service-or-backpressure-producer-release"));
+    assert!(additional_futex.contains("frame-delivery"));
+    assert_eq!(
+        interface["transport"]["wakeup"].as_str(),
+        Some("non-private-futex+plugin-eventfd")
+    );
+    assert_eq!(
+        interface["transport"]["plugin_eventfd_quantum_wake_write"].as_str(),
+        Some("minimum-one")
+    );
+    assert_eq!(
+        interface["transport"]["plugin_eventfd_qemu_registration"].as_str(),
+        Some("required-before-ready")
+    );
+    let eventfd_additional =
+        string_set(&interface["transport"]["plugin_eventfd_additional_writes"])?;
+    assert!(eventfd_additional.contains("unchanged-icount-retry"));
+    assert!(eventfd_additional.contains("host-io-service"));
     assert_eq!(
         interface["transport"]["future_waiter_armed_wake_optimization"].as_str(),
         Some("documented-not-implemented")

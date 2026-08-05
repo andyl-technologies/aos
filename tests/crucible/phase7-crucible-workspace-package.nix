@@ -88,8 +88,16 @@
         needle = "cargo test \\\n        --doc";
       }
       {
-        label = "suite runtime closure uses controller/QEMU/plugin/kernel/fixtures";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
+        label = "suite runtime closure co-retains controller/QEMU/plugin/source/kernel/fixtures";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
+      }
+      {
+        label = "suite is the aggregate release root";
+        needle = "artifact_role=aggregate-release-root";
+      }
+      {
+        label = "suite release root names corresponding source";
+        needle = "pair_1_corresponding_source_path=" + "$" + "{qemu-crucible-source}";
       }
       {
         label = "suite installs the MIT boundary-crate notice";
@@ -97,7 +105,7 @@
       }
       {
         label = "suite build info inventories every project component license";
-        needle = "component_licenses=Apache-2.0,MIT,GPL-2.0-only";
+        needle = "component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later";
       }
       {
         label = "suite build info names the MIT boundary crates";
@@ -105,7 +113,7 @@
       }
       {
         label = "suite metadata inventories every project component license";
-        needle = "license = [\"Apache-2.0\" \"MIT\" \"GPL-2.0-only\"];";
+        needle = "license = [\"Apache-2.0\" \"MIT\" \"GPL-2.0-only\" \"GPL-2.0-or-later\"];";
       }
       {
         label = "workspace build info";

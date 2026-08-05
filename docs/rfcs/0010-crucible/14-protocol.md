@@ -28,25 +28,28 @@ The protocol carries **control**, never **data**. Concretely:
   shmem file descriptor and the wake file descriptor, the assignment of the
   node's slot index, and the shutdown command. These messages happen once at
   connection setup and once at teardown; the channel is otherwise silent.
-- **Data (not this file):** virtual-time advancement, idle/resume signalling,
-  per-frame queue delivery, status, and the per-node clock cell. All of it lives
-  in the shmem region ([`13-shmem-abi.md`](13-shmem-abi.md)) and is exchanged via
-  lock-free atomics and SPSC ring queues, with a wake fd
-  ([`13-shmem-abi.md`](13-shmem-abi.md) §wake) used only as an edge-triggered
-  "look at shmem now" nudge.
+- **Data (not this file):** virtual-time advancement state, per-frame queue
+  delivery, status, and the per-node clock cell. All timing decisions and
+  payloads live in the shmem region ([`13-shmem-abi.md`](13-shmem-abi.md)) and
+  are exchanged via lock-free atomics and SPSC ring queues. The host also writes
+  the wake eventfd at least once per quantum, with extra writes for an
+  unchanged-icount retry or serviced host I/O. Its counter is only a "look at
+  shmem now" nudge; it carries no timing decision or payload.
 
 - **[PROTO-1]** The control protocol MUST carry only handshake, fd/slot setup,
   and shutdown messages. It MUST NOT carry virtual time, frame payloads, idle
-  state, status, or any per-quantum synchronization; all of those MUST flow
-  through the shmem region of [`13-shmem-abi.md`](13-shmem-abi.md). *Gate:*
+  state, status, or per-quantum payload; all timing and delivery state MUST flow
+  through the shmem region of [`13-shmem-abi.md`](13-shmem-abi.md). The separate
+  eventfd MAY carry only a counter wake. *Gate:*
   `gate:abi-conformance`. *Spec:* §1, §3.
 
   *Rationale.* Splitting control from data keeps the hot path free of socket
   round trips, payload copies, and serialization: a quantum advances by writing
-  a u64 to a shmem cell and issuing the current non-private futex wake, not by
-  sending a socket message. The wake is currently unconditional, so this is not
-  a zero-syscall claim; a future waiter-armed optimization may skip it when no
-  peer is parked. The split also keeps the
+  a u64 to a shmem cell, issuing the current non-private futex wake, and writing
+  the plugin eventfd at least once, not by sending a socket message. Frame
+  delivery and service/backpressure release may add futex wakes; retry and
+  host-I/O service may add eventfd writes. None carries payload, so this is a
+  no-socket-round-trip claim, not a zero-syscall claim. The split also keeps the
   protocol tiny — a few message types with fixed-size payloads — which is what
   makes it cheaply fuzzable and golden-vector-checkable ([G-8]). And it isolates
   the determinism-critical machinery (time, ordering) into a single audited

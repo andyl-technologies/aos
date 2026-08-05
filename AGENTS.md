@@ -16,6 +16,15 @@ normative policy is [`LICENSING.md`](LICENSING.md) and RFC-0010
 - Code compiled into, linked into, or dynamically loaded by QEMU belongs to the
   applicable QEMU/GPL-compatible scope. Apache-only crates MUST NOT link QEMU,
   include QEMU headers, or expose QEMU callback entry points.
+- Preserve QEMU's per-file licenses. The emulator is GPL-2.0-only as a combined
+  work, while unmarked QEMU 10.0 source files default to GPL-2.0-or-later.
+  Changes that create or remove QEMU files MUST update
+  `pkgs/emulation/qemu-patches/LICENSES.md`.
+- Do not publish `qemu-crucible` as a standalone store-path root. Publish the
+  `crucible` suite, whose enforced release policy co-retains the matching
+  `qemu-crucible-source` output. Publication checks scan the full closure, so
+  plugin or unmarked wrapper roots are not valid bypasses. Keep generic
+  unpatched QEMU unrestricted.
 - `crucible-protocol` and `crucible-shmem` are permissive boundary components;
   neither may acquire a dependency on a QEMU implementation or QEMU headers.
 - Boundary changes MUST pass `gate:abi-conformance` and

@@ -46,7 +46,7 @@
       }
       {
         label = "suite runtime closure keeps controller and QEMU-side outputs separate";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
       }
       {
         label = "runtime QEMU wrapper configuration";

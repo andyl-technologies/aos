@@ -347,12 +347,24 @@ in
           qemu_shmem_abi=${shmemAbi}
           qemu_shmem_header=${shmemHeaderInstallPath}
           qemu_shmem_header_hash=${shmemHeaderHash}
+          qemu_combined_work_license=GPL-2.0-only
+          qemu_unmarked_source_default_license=GPL-2.0-or-later
+          qemu_plugin_header_license=GPL-2.0-or-later
+          qemu_shmem_header_license_option=MIT
           qemu_build_id=${qemuBuildIdentity}
           QEMU_BUILD_IDENTITY
 
           mkdir -p "$out/share/licenses/${pname}"
           install -m 644 COPYING "$out/share/licenses/${pname}/COPYING"
           install -m 644 LICENSE "$out/share/licenses/${pname}/LICENSE"
+          install -m 644 ${../../LICENSES/GPL-2.0-or-later.txt} \
+            "$out/share/licenses/${pname}/GPL-2.0-or-later.txt"
+          install -m 644 ${../../LICENSES/MIT.txt} \
+            "$out/share/licenses/${pname}/MIT.txt"
+          ${lib.optionalString applyCruciblePatches ''
+            install -m 644 ${./qemu-patches/LICENSES.md} \
+              "$out/share/licenses/${pname}/AOS-PATCH-LICENSES.md"
+          ''}
           cat > "$out/share/licenses/${pname}/AOS-MODIFICATIONS" <<'MODIFICATIONS'
           AOS package: ${pname}
           Upstream version: ${version}
@@ -360,12 +372,32 @@ in
           Ordered patch count: ${toString patchCount}
           Patch series identity: ${patchSeriesHash}
           Corresponding source package: qemu-crucible-source
+          QEMU combined work: GPL-2.0-only
+          Unmarked QEMU source default: GPL-2.0-or-later
+          Installed qemu-plugin.h: GPL-2.0-or-later
+          Installed crucible_shmem_abi.h: MIT option of MIT OR Apache-2.0
           MODIFICATIONS
+          ${lib.optionalString applyCruciblePatches ''
+            mkdir -p "$out/nix-support"
+            cat > "$out/nix-support/aos-release-policy" <<'RELEASE_POLICY'
+            policy_version=1
+            artifact_role=internal-component
+            standalone_release=false
+            release_via=crucible
+            corresponding_source_required=true
+            corresponding_source_identity=${qemuBuildIdentity}
+            RELEASE_POLICY
+          ''}
         '';
       }
     ];
 
     passthru = {
+      standaloneRelease = !applyCruciblePatches;
+      releaseVia =
+        if applyCruciblePatches
+        then "crucible"
+        else null;
       inherit
         qemuBuildIdentity
         qemuBuildIdentityMaterial
@@ -421,6 +453,6 @@ in
     meta = {
       description = "qemu — machine emulator and virtualizer (minimal KVM build)";
       homepage = "https://www.qemu.org";
-      license = "GPL-2.0-only";
+      license = ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"];
     };
   }
