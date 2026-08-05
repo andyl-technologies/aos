@@ -258,6 +258,26 @@ in
               done < store-paths
               echo ""
 
+              # Merge dependency-provided udev rules into the conventional
+              # vendor directory. The Nix store keeps each package isolated,
+              # but udev does not discover rule directories through PATH.
+              # In particular, device-mapper's rules publish /dev/mapper/*
+              # nodes to systemd after dm-verity and dm-crypt activation.
+              mkdir -p rootfs/usr/lib/udev/rules.d
+              for rules_dir in rootfs/nix.lower/store/*/lib/udev/rules.d; do
+                [ -d "$rules_dir" ] || continue
+                for rule in "$rules_dir"/*.rules; do
+                  [ -e "$rule" ] || continue
+                  name=$(basename "$rule")
+                  target="/nix/store/''${rule#rootfs/nix.lower/store/}"
+                  if [ -e "rootfs/usr/lib/udev/rules.d/$name" ]; then
+                    echo "rootfs-builder: duplicate udev rule $name" >&2
+                    exit 1
+                  fi
+                  ln -s "$target" "rootfs/usr/lib/udev/rules.d/$name"
+                done
+              done
+
               # ── 3. PID 1 and compat symlinks ────────────────────────────────
               # /sbin/init (via merged-usr: /sbin → usr/bin) → systemd.
               ln -sfn "$SYSTEMD/lib/systemd/systemd" rootfs/usr/bin/init
@@ -333,12 +353,14 @@ in
                 #     the size/read-amplification curve for a RAM-ample, read-mostly
                 #     server root (a cold page fault decompresses one 256 KiB cluster;
                 #     the hot path is served from the page cache regardless).
-                #   * -Efragments,ztailpacking — packs the many small-file tails the
-                #     /nix store is full of into shared fragment blocks / inode
-                #     metadata. The single biggest win (~18 MiB) and, unlike a bigger
-                #     cluster, it adds no read amplification.
-                # Together: ~200 MiB (plain zstd-19) -> ~160 MiB. (Block dedupe was
-                # measured at 0 bytes saved — nix store paths are content-addressed.)
+                #   * -Eztailpacking — packs compressed tails into inode metadata
+                #     without sharing a fragment block between unrelated files.
+                #     Do not enable `fragments` with parallel compression here:
+                #     erofs-utils 1.8 can occasionally publish one small file at
+                #     another file's fragment offset. `fsck.erofs` validates that
+                #     structurally sound image, but the extracted bytes are corrupt.
+                # Block dedupe was measured at 0 bytes saved — Nix store paths are
+                # content-addressed.
                 #
                 # --workers parallelizes the otherwise single-threaded zstd-19
                 # compression (hours on one core for the whole server closure).
@@ -361,11 +383,11 @@ in
                   --workers="$NIX_BUILD_CORES" \
                   -z zstd,level=${toString erofsCompressionLevel} \
                   -C262144 \
-                  -Efragments,ztailpacking \
+                  -Eztailpacking \
                   -L ${label} root.img rootfs
                 fsck.erofs root.img >/dev/null
                 final_bytes=$(stat -c %s root.img)
-                echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 256K cluster, fragments)"
+                echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 256K cluster, ztailpacking)"
                 echo "$final_bytes" > rootfs-size-bytes
               ''
               else ''

@@ -1,22 +1,22 @@
 //! System sysroot management (`apm install --system`, `apm upgrade --system`,
 //! `apm rollback --system`).
 //!
-//! A sysroot package is a regular package with `sysroot = true` whose store
-//! path is a system toplevel. Installing it as the system sysroot creates a
-//! numbered **generation** under `/var/lib/profiles/system/`: a `gen-N/`
-//! directory holding a materialized configuration, recorded in `state.json`
-//! (see [`ConfigGenerationState`]) alongside a `current` symlink that always
-//! points at the live generation.
+//! A sysroot package is a regular package with `sysroot = true` whose metadata
+//! names both a system toplevel and an authenticated raw OTA payload. Installing
+//! it stages a numbered image generation under `/var/lib/profiles/image/` in
+//! the inactive A/B slot. Configuration generations remain independent under
+//! `/var/lib/profiles/system/` (see [`ConfigGenerationState`]).
 //!
 //! # Install / upgrade / rollback flow
 //!
-//! [`install_system`] resolves the package, downloads and imports any
-//! missing closure paths, writes the new generation, then runs the
-//! toplevel's `activate` script with the generation number. [`upgrade_system`]
-//! checks the registries for a newer sysroot version and delegates to
-//! [`install_system`]; [`rollback_system`] re-activates a previous
-//! generation's toplevel. Only after a successful activation is the
-//! generation committed as `current`.
+//! [`install_system`] resolves and verifies the package, imports its closure and
+//! image payload, writes the inactive root/hash partitions, publishes the UKI,
+//! and selects it as the counted next boot. [`upgrade_system`] checks registries
+//! for a different sysroot version and delegates to [`install_system`]. After
+//! reboot, the boot services evaluate and activate a configuration bound to the
+//! image that actually booted. [`rollback_image_generation`] selects another
+//! A/B image for the next boot, while [`rollback_system`] rolls back only the
+//! configuration axis on the running image.
 //!
 //! # Activation exit-code contract
 //!
@@ -34,15 +34,12 @@
 //! 4      swap incomplete; /etc indeterminate -- operator must intervene
 //! ```
 //!
-//! # Kernel upgrade modes
+//! # Image transition modes
 //!
-//! When the new generation ships a different kernel, [`KernelUpgradeMode`]
-//! selects what happens after activation: `Advisory` (default) updates the
-//! boot loader and advises a reboot, `Kexec` hot-loads the new kernel,
-//! `Reboot` queues a full reboot via systemd, and `Live` applies userspace
-//! only, deferring the kernel to the next reboot. `--drain` runs the
-//! toplevel's drain script (or isolates `drain.target`) before a disruptive
-//! switch.
+//! [`KernelUpgradeMode`] controls what happens after staging: `Advisory`
+//! (default) and `Live` leave the transition pending and advise a reboot,
+//! `Reboot` drains when requested and queues a full reboot, and `Kexec` is
+//! rejected because it cannot change the immutable root slot.
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs::OpenOptions;
@@ -319,6 +316,12 @@ fn parse_kernel_cmdline(path: &Path) -> Result<std::collections::BTreeMap<String
         let Some((key, value)) = word.split_once('=') else {
             continue;
         };
+        // Linux permits repeatable parameters such as `console=` and AOS
+        // deliberately configures both a serial and a virtual console. Only
+        // the image-identity fields consumed below must be unambiguous.
+        if !matches!(key, "roothash" | "root" | "systemd.verity_root_data") {
+            continue;
+        }
         if fields.insert(key.to_string(), value.to_string()).is_some() {
             bail!("kernel command line repeats {key}");
         }
@@ -350,17 +353,16 @@ fn parse_os_release(path: &Path) -> Result<std::collections::BTreeMap<String, St
 // Public API
 // ---------------------------------------------------------------------------
 
-/// `apm install <pkg> --system` — install a sysroot package as a system generation.
+/// Installs a sysroot package as a pending A/B image generation.
 ///
 /// When `--image <FMT>` is specified, downloads the pre-compiled image instead
 /// of the toplevel closure.
 ///
-/// Otherwise runs the full pipeline: resolve the package, download/verify/
-/// import missing closure paths, create the next `gen-N` directory, run the
-/// toplevel's `activate` script (see the module docs for the exit-code
-/// contract), commit the generation as `current`, and apply the chosen
-/// [`KernelUpgradeMode`]. Note that in `Kexec` and `Reboot` modes a
-/// successful kernel switch does not return.
+/// Otherwise resolves and verifies the package, imports its closure and raw OTA
+/// payload, writes the inactive root/hash slot, publishes its UKI, and records
+/// the image as the durable counted next boot. It does not mutate the live
+/// configuration generation. In `Reboot` mode a successful staging operation
+/// requests a reboot and does not return; `Kexec` is rejected.
 ///
 /// # Errors
 ///
@@ -369,11 +371,10 @@ fn parse_os_release(path: &Path) -> Result<std::collections::BTreeMap<String, St
 /// - `packages` does not contain exactly one name, the package cannot be
 ///   resolved, or it is not marked `sysroot = true`;
 /// - downloading, hash verification, or store import of a closure path fails;
-/// - generation state cannot be read or written;
-/// - the activate script fails before the `/etc` swap (previous generation
-///   stays live), leaves the swap incomplete (exit 4), or completes with
-///   failed units (exit 6 — the new generation *is* live, but the error
-///   surfaces the degraded state);
+/// - the package lacks an authenticated raw OTA payload or its Secure Boot,
+///   root-hash, UKI, slot, or measurement metadata fails validation;
+/// - image state, the inactive slot, or the boot-loader default cannot be
+///   updated durably;
 /// - the user declines the confirmation prompt
 ///   ([`aos_core::error::AosError::UserCancelled`]).
 #[allow(clippy::too_many_arguments)]
@@ -863,18 +864,17 @@ fn publish_reactivation_record(
     write_atomic_durable(Path::new("/run/aos/activation.json"), &bytes)
 }
 
-/// `apm upgrade --system` — check for newer sysroot version and apply.
+/// Checks for a different sysroot version and stages its A/B image.
 ///
 /// Looks up the current generation's package in the configured registries;
 /// when a different sysroot version is published, delegates to
-/// [`install_system`] (with confirmation auto-accepted) to perform the
-/// switch.
+/// [`install_system`] (with confirmation auto-accepted) to stage the inactive
+/// slot. The running image and configuration remain unchanged until reboot.
 ///
 /// # Errors
 ///
-/// Returns an error when there is no active system generation, when
-/// generation state or registries cannot be loaded, or when the delegated
-/// [`install_system`] call fails.
+/// Returns an error when the running image generation cannot be authenticated,
+/// registries cannot be loaded, or the delegated [`install_system`] call fails.
 pub async fn upgrade_system(
     config: &ApmConfig,
     dry_run: bool,
@@ -937,13 +937,13 @@ pub async fn upgrade_system(
     .await
 }
 
-/// `apm rollback --system [--generation N] [--list]`
+/// Rolls back a configuration generation on the running image.
 ///
-/// With `--list`, prints the recorded system generations and returns.
-/// Otherwise re-activates the target generation's toplevel (the explicit
-/// `--generation N`, or the most recent generation before the current one),
-/// commits it as `current`, and applies the chosen [`KernelUpgradeMode`] —
-/// the same activation exit-code contract as [`install_system`] applies.
+/// With `--list`, prints the recorded configuration generations and returns.
+/// Otherwise validates and re-activates the explicit `--generation N`, or the
+/// most recent generation before the current one. A cross-ABI rollback instead
+/// re-evaluates the retained inputs against the running image and commits a new
+/// child generation. Use [`rollback_image_generation`] for the A/B image axis.
 ///
 /// # Errors
 ///
@@ -4354,6 +4354,37 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("root slot"));
+    }
+
+    #[test]
+    fn running_image_allows_repeatable_non_identity_kernel_parameters() {
+        let (_tmp, image_profile, toplevel_link, os_release, cmdline) = running_identity_fixture();
+        std::fs::write(
+            &cmdline,
+            "console=ttyS0,115200 console=tty0 root=/dev/disk/by-partlabel/root-a roothash=deadbeef\n",
+        )
+        .unwrap();
+        load_running_image_generation_from(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap();
+
+        std::fs::write(
+            &cmdline,
+            "root=/dev/disk/by-partlabel/root-a roothash=deadbeef roothash=bad\n",
+        )
+        .unwrap();
+        let error = load_running_image_generation_from(
+            &image_profile,
+            &os_release,
+            &toplevel_link,
+            &cmdline,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("repeats roothash"));
     }
 
     #[test]

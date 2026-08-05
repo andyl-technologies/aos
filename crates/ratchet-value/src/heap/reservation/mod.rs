@@ -41,8 +41,17 @@ static NEXT_ARENA_DOMAIN: AtomicU32 = AtomicU32::new(1);
 #[cfg(any(target_os = "android", target_os = "linux"))]
 const MAP_ANONYMOUS_FLAG: libc::c_int = libc::MAP_ANONYMOUS;
 
+// Candidate C reserves an offset domain, not 4 GiB of committed memory. Linux
+// otherwise charges the entire writable mapping against strict overcommit and
+// cgroup commit limits even though only the two bump lanes are faulted in.
+#[cfg(any(target_os = "android", target_os = "linux"))]
+const MAP_NORESERVE_FLAG: libc::c_int = libc::MAP_NORESERVE;
+
 #[cfg(not(any(target_os = "android", target_os = "linux")))]
 const MAP_ANONYMOUS_FLAG: libc::c_int = libc::MAP_ANON;
+
+#[cfg(not(any(target_os = "android", target_os = "linux")))]
+const MAP_NORESERVE_FLAG: libc::c_int = 0;
 
 /// A byte offset into a Candidate-C reservation.
 #[repr(transparent)]
@@ -974,7 +983,7 @@ pub(super) fn map_anonymous_reservation(
             ptr::null_mut(),
             capacity,
             libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | MAP_ANONYMOUS_FLAG,
+            libc::MAP_PRIVATE | MAP_ANONYMOUS_FLAG | MAP_NORESERVE_FLAG,
             -1,
             0,
         )
