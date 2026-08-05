@@ -1232,6 +1232,15 @@ complete from model-double evidence.
   parsing, and scheduler-routed `continue`/`step`/`vCont`. Prove split/coalesced
   packets, acknowledgements, async output/stops, EOF, and unsupported mutations.
   — satisfies [DBG-6], [DBG-41], [DBG-42]; spec §36.2.2, §36.9.1.
+  In progress: the standalone gateway and Apache control client now negotiate over
+  the versioned Unix protocol; prepare/commit are reconnect-recoverable and
+  state-epoch checked; semantic `OK` responses, not transport acknowledgements,
+  define replayable thread/breakpoint state. A process-boundary gate keeps one GDB
+  connection across two QEMU Unix RSP backends, including asynchronous console
+  output and atomic commit barriers. No unauthenticated TCP listener exists by
+  default; the component-only loopback listener requires an explicit trusted-host
+  launch policy. Scheduler-routed run control, the authenticated daemon relay, and
+  production lifecycle replacement remain open, so this task is not complete.
 - [ ] **T-DBG-10** Implement production whole-world candidate instantiate/replay,
   gateway prepare/hydrate/commit, verified endpoint/generation evidence, rollback
   before promotion, and stable GDB state across goto/reverse/fork. — satisfies
