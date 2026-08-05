@@ -126,6 +126,23 @@ plus cell load.
 
 ## 2.5 Mapping and activation rules
 
+Bindings use one closed sampling vocabulary:
+
+| `sampling` | Required fields | Deterministic coordinate |
+| --- | --- | --- |
+| `at_boundary` | none | Current global virtual-time boundary. |
+| `at_opportunity` | opportunity filter | Current adapter opportunity coordinate. |
+| `at_change` | none | Exact discovered input-change boundary. |
+| `cadence_nanos` | positive cadence | Exact multiples of the cadence. |
+| `at_event` | `event_parent` | Typed event coordinate projected from the declared parent. |
+
+`event_parent` is exactly `virtual_time`, `opportunity_operation`,
+`opportunity_state`, or `node_counter` with an explicit node signal ID. Event
+bindings accept only event-domain inputs. Opportunity parents require and
+inherit the matching opportunity filter; node-counter parents require an exact
+retired-instruction coordinate. The parent kind and node ID are canonical
+binding identity, so replay never guesses an event's coordinate domain.
+
 Bindings use a closed mapping vocabulary:
 
 | `kind` | Meaning |

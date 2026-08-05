@@ -286,7 +286,12 @@ state = "down"
 
 `signal = "id"` is accepted only as canonical input syntax for exactly one
 signal and serializes as `signals = ["id"]`. `sampling` is `at_boundary`,
-`at_opportunity`, `at_change`, or an explicit positive `cadence_nanos`. Search is
+`at_opportunity`, `at_change`, an explicit positive `cadence_nanos`, or
+`at_event`. An `at_event` binding requires an `event_parent` table whose kind is
+exactly `virtual_time`, `opportunity_operation`, `opportunity_state`, or
+`node_counter`; `node_counter` also requires a stable node signal ID. Event
+inputs and their declared parent projection are canonical identity, and an
+opportunity parent requires the ordinary opportunity filter. Search is
 `fixed`, `branch_outcome`, `branch_transition`, `branch_parameter`,
 `mutate_trace_window`, or `mutate_mapping`; non-fixed forms require a bounded
 `[plan.fault_binding.search_policy]` table.
@@ -302,7 +307,7 @@ Mapping schemas:
 | `piecewise_parameter` | signal, `parameter`, points/table, rounding, overflow | Effect field value. |
 | `hazard` | probability signal or `probability_millionths`, opportunity filter | Keyed opportunity outcome. |
 | `impulse_on_event` | typed event, optional payload-field mapping | One impulse per event identity. |
-| `state_transition` | event/enum signal, exhaustive event-to-transition table | Adapter transition request. |
+| `state_transition` | event/enum signal, exact request overrides, mandatory default transition | Exhaustive adapter transition request; unknown requests take the typed default and never fail during execution. |
 | `service_profile` | rate/capacity signals, service kind and exact parameters | Service-curve contribution. |
 
 An opportunity-filter table contains adapter, operation, phase, and optional

@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use super::*;
 
@@ -20,9 +21,11 @@ pub const HARD_SEARCH_OVERRIDES: usize = 262_144;
 pub const HARD_RESOLVED_EFFECT_RECORDS: usize = 4_194_304;
 /// Maximum bytes in one adapter checkpoint payload.
 pub const HARD_ADAPTER_CHECKPOINT_BYTES: usize = 268_435_456;
+/// Maximum consumed opportunity scopes retained by one run.
+pub const HARD_CONSUMED_OPPORTUNITY_SCOPES: usize = 4_194_304;
 
 /// Mutable activation state for one binding.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BindingRuntimeState {
     /// Whether a persistent contribution is currently active.
     pub active: bool,
@@ -34,6 +37,133 @@ pub struct BindingRuntimeState {
     pub pending_since_nanos: Option<u64>,
     /// Last mapped parameter digest.
     pub mapped_parameters: Option<ContentHash>,
+    /// Last mapped values required for later dynamic membership changes.
+    pub mapped_values: Vec<SignalValue>,
+    /// Last typed mapping result required for adapter reconciliation.
+    pub mapping_output: Option<ResolvedMappingOutput>,
+    /// Last sample identity, including event coordinates where applicable.
+    pub last_sample_identity: Option<ContentHash>,
+    /// Last event identity consumed by an impulse mapping.
+    pub last_event_identity: Option<ContentHash>,
+    /// Last virtual coordinate at which this binding sampled its inputs.
+    pub last_sample_nanos: Option<u64>,
+    /// Total admitted samples, including explicit inactive results.
+    pub sample_count: u64,
+    /// Consecutive samples with the same canonical identity.
+    pub unchanged_sample_count: u64,
+    /// Number of finite runtime search choices emitted by this binding.
+    pub search_choice_count: u64,
+}
+
+/// Stable scope for monotone adapter opportunity delivery.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ConsumedOpportunityKey {
+    /// Binding consuming the adapter opportunities.
+    pub binding: FaultObjectId,
+    /// Concrete adapter target.
+    pub target: ResolvedFaultTarget,
+    /// Exact adapter phase.
+    pub phase: FaultPhase,
+    /// Adapter operation sequence domain.
+    pub operation: FaultOperation,
+}
+
+/// Last accepted opportunity identity in one stable scope.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConsumedOpportunityState {
+    /// Monotone adapter-owned sequence.
+    pub sequence: u64,
+    /// Full immutable opportunity identity at that sequence.
+    pub identity: ContentHash,
+    /// Exact scheduler coordinate at which the opportunity was consumed.
+    pub coordinate: FaultCoordinate,
+    /// Stable work sequence at that scheduler coordinate.
+    pub same_coordinate_sequence: u64,
+}
+
+/// Last committed global scheduler boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultSchedulerCursor {
+    /// Global virtual time in nanoseconds.
+    pub virtual_nanos: u64,
+    /// Stable sequence among scheduler work at the same virtual time.
+    pub same_coordinate_sequence: u64,
+}
+
+/// Canonical dynamic-path membership transition supplied by network state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DynamicMembershipTransition {
+    /// Authored dynamic path identity.
+    pub path: FaultObjectId,
+    /// Exact membership state-machine semantic version.
+    pub semantic_version: u16,
+    /// Next monotone path-owned transition sequence.
+    pub sequence: u64,
+    /// Content-addressed route/association evidence.
+    pub evidence: ContentHash,
+    /// New canonical resolved link membership.
+    pub targets: ResolvedTargetSet,
+}
+
+/// Last accepted state of one dynamic selector.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DynamicMembershipState {
+    /// Authored dynamic path identity.
+    pub path: FaultObjectId,
+    /// Exact membership state-machine semantic version.
+    pub semantic_version: u16,
+    /// Last accepted transition sequence.
+    pub sequence: u64,
+    /// Evidence for the current membership.
+    pub evidence: ContentHash,
+    /// Current canonical resolved link membership.
+    pub targets: ResolvedTargetSet,
+}
+
+/// Complete mutable state owned by [`FaultBindingRuntime`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BindingRuntimeCheckpoint {
+    /// Exact runtime codec semantic version.
+    pub semantic_version: u16,
+    /// Exact signal-program identity.
+    pub signal_program: ContentHash,
+    /// Scenario-wide deterministic seed.
+    pub scenario_seed: ContentHash,
+    /// Complete canonical evaluator continuation.
+    pub evaluator: SignalEvaluatorCheckpoint,
+    /// Complete per-binding state.
+    pub bindings: BTreeMap<FaultObjectId, BindingRuntimeState>,
+    /// Exact admitted binding and named-declaration contracts.
+    pub binding_contracts: Vec<FaultBinding>,
+    /// Active persistent contributions.
+    pub active: ActiveContributionTable,
+    /// Current dynamic selector membership.
+    pub dynamic_membership: BTreeMap<FaultObjectId, DynamicMembershipState>,
+    /// Last accepted opportunity in every consumed scope.
+    pub consumed_opportunities: BTreeMap<ConsumedOpportunityKey, ConsumedOpportunityState>,
+    /// Concrete finite explorer overrides available to this continuation.
+    pub search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
+    /// One-shot override identities already consumed by execution.
+    pub consumed_search_overrides: BTreeSet<SearchChoiceId>,
+    /// Last committed scheduler boundary.
+    pub scheduler_cursor: Option<FaultSchedulerCursor>,
+    /// Last scheduler cursor whose non-opportunity bindings completed.
+    pub boundary_completed_cursor: Option<FaultSchedulerCursor>,
+}
+
+/// One finite search decision exposed by binding evaluation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BindingSearchChoice {
+    /// Stable decision identity.
+    pub id: SearchChoiceId,
+    /// Exact candidate-set identity.
+    pub candidates_digest: ContentHash,
+    /// Number of finite candidates.
+    pub candidate_count: u32,
+    /// Chosen zero-based candidate index, or `None` for the unmodified model result.
+    pub selected_index: Option<u32>,
+    /// Whether a replay/explorer override selected the result.
+    pub overridden: bool,
 }
 
 impl BindingRuntimeState {
@@ -72,9 +202,11 @@ pub struct ActiveContributionKey {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveEffectContribution {
     /// Typed validated request.
-    pub request: EffectRequest,
+    pub request: Arc<EffectRequest>,
     /// Digest of canonical parameters after mapping.
     pub mapped_parameters: ContentHash,
+    /// Closed typed mapping result consumed by the adapter.
+    pub mapping_output: Arc<ResolvedMappingOutput>,
     /// Binding transition sequence which installed this contribution.
     pub transition_sequence: u64,
 }
@@ -137,6 +269,7 @@ impl ActiveContributionTable {
                 group.contributors.push(CompositionContributor {
                     binding: key.binding.clone(),
                     parameters: contribution.mapped_parameters,
+                    mapping_output: (*contribution.mapping_output).clone(),
                 });
                 group.recompute_digest();
             } else {
@@ -147,6 +280,7 @@ impl ActiveContributionTable {
                     CompositionContributor {
                         binding: key.binding.clone(),
                         parameters: contribution.mapped_parameters,
+                        mapping_output: (*contribution.mapping_output).clone(),
                     },
                 ));
             }
@@ -177,6 +311,8 @@ pub struct CompositionContributor {
     pub binding: FaultObjectId,
     /// Canonical mapped-parameter digest.
     pub parameters: ContentHash,
+    /// Closed typed mapping result consumed by the registered algebra.
+    pub mapping_output: ResolvedMappingOutput,
 }
 
 /// Canonical group passed to the owning production adapter for composition.
@@ -274,13 +410,15 @@ impl SearchChoiceId {
         program: ContentHash,
         binding: &FaultObjectId,
         opportunity: Option<ContentHash>,
+        sample: ContentHash,
         candidates: ContentHash,
     ) -> Self {
         let material = format!(
-            "program={};binding={};opportunity={};candidates={};",
+            "program={};binding={};opportunity={};sample={};candidates={};",
             program.to_hex(),
             binding.as_str(),
             opportunity.map_or_else(|| String::from("none"), |value| value.to_hex()),
+            sample.to_hex(),
             candidates.to_hex()
         );
         Self(ContentHash::from_canonical_material(
@@ -450,22 +588,12 @@ impl AdapterCheckpointState {
 pub struct FaultRuntimeCheckpoint {
     /// Exact runtime codec semantic version.
     pub semantic_version: u16,
-    /// Signal-program content identity.
-    pub signal_program: ContentHash,
-    /// Exact evaluator semantic version.
-    pub evaluator_version: u16,
-    /// Complete canonical evaluator checkpoint.
-    pub evaluator: SignalEvaluatorCheckpoint,
-    /// Per-binding transition and mapping state.
-    pub bindings: BTreeMap<FaultObjectId, BindingRuntimeState>,
-    /// Active persistent contributions.
-    pub active: ActiveContributionTable,
+    /// Sole complete signal/binding runtime continuation.
+    pub binding_runtime: BindingRuntimeCheckpoint,
     /// Production-adapter mutable state.
     pub adapters: BTreeMap<FaultAdapter, AdapterCheckpointState>,
     /// Replay trace and cursor, when replaying.
     pub replay: Option<ResolvedEffectTrace>,
-    /// Concrete keyed explorer overrides.
-    pub search_overrides: BTreeMap<SearchChoiceId, SearchOverride>,
     /// Resolved-effect objects retained as checkpoint dependencies.
     pub retained_effects: BTreeSet<ContentHash>,
     /// Parent branch provenance for debugger edits.
@@ -483,25 +611,37 @@ impl FaultRuntimeCheckpoint {
         &self,
         program: &SignalProgram,
         bindings: &[FaultBinding],
+        scenario_seed: ContentHash,
     ) -> Result<(), FaultRuntimeError> {
         if self.semantic_version != FAULT_RUNTIME_STATE_VERSION
-            || self.evaluator_version != SIGNAL_EVALUATOR_VERSION
-            || self.signal_program != program.id()
+            || self.binding_runtime.semantic_version != FAULT_RUNTIME_STATE_VERSION
+            || self.binding_runtime.signal_program != program.id()
+            || self.binding_runtime.binding_contracts != bindings
         {
             return Err(FaultRuntimeError::VersionOrIdentityMismatch);
         }
-        if self.active.entries().len() > HARD_ACTIVE_CONTRIBUTIONS
-            || self.search_overrides.len() > HARD_SEARCH_OVERRIDES
+        self.binding_runtime
+            .validate(program, bindings, scenario_seed)
+            .map_err(|_| FaultRuntimeError::VersionOrIdentityMismatch)?;
+        if self.binding_runtime.active.entries().len() > HARD_ACTIVE_CONTRIBUTIONS
+            || self.binding_runtime.search_overrides.len() > HARD_SEARCH_OVERRIDES
         {
             return Err(FaultRuntimeError::StateLimit {
                 field: "runtime_collections",
-                actual: u64::try_from(self.active.entries().len().max(self.search_overrides.len()))
-                    .map_err(|_| FaultRuntimeError::CountOverflow("runtime_collections"))?,
+                actual: u64::try_from(
+                    self.binding_runtime
+                        .active
+                        .entries()
+                        .len()
+                        .max(self.binding_runtime.search_overrides.len()),
+                )
+                .map_err(|_| FaultRuntimeError::CountOverflow("runtime_collections"))?,
                 configured: u64::try_from(HARD_ACTIVE_CONTRIBUTIONS.max(HARD_SEARCH_OVERRIDES))
                     .map_err(|_| FaultRuntimeError::CountOverflow("runtime_collections"))?,
             });
         }
-        self.evaluator
+        self.binding_runtime
+            .evaluator
             .validate_for_program(program)
             .map_err(|_| FaultRuntimeError::InvalidEvaluatorCheckpoint)?;
         let required_bindings = bindings
@@ -509,7 +649,12 @@ impl FaultRuntimeCheckpoint {
             .map(FaultBinding::id)
             .collect::<BTreeSet<_>>();
         if required_bindings.len() != bindings.len()
-            || self.bindings.keys().collect::<BTreeSet<_>>() != required_bindings
+            || self
+                .binding_runtime
+                .bindings
+                .keys()
+                .collect::<BTreeSet<_>>()
+                != required_bindings
         {
             return Err(FaultRuntimeError::IncompleteBindingState);
         }
@@ -523,9 +668,10 @@ impl FaultRuntimeCheckpoint {
         for state in self.adapters.values() {
             state.validate()?;
         }
-        for (key, contribution) in self.active.entries() {
+        for (key, contribution) in self.binding_runtime.active.entries() {
             validate_contribution_key(key, contribution.request.kind())?;
             if !self
+                .binding_runtime
                 .bindings
                 .get(&key.binding)
                 .is_some_and(|state| state.active)
@@ -688,8 +834,9 @@ mod tests {
                     binding: object_id(name),
                 },
                 ActiveEffectContribution {
-                    request: request.clone(),
+                    request: Arc::new(request.clone()),
                     mapped_parameters: ContentHash::from_bytes(name.as_bytes()),
+                    mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
                     transition_sequence: 1,
                 },
             );
@@ -724,6 +871,7 @@ mod tests {
         let contributor = CompositionContributor {
             binding: object_id("binding-a"),
             parameters: ContentHash::from_bytes(b"same"),
+            mapping_output: ResolvedMappingOutput::Activation { active: true },
         };
         let first = EffectComposition::new(
             ResolvedFaultTarget::NetworkSegment {

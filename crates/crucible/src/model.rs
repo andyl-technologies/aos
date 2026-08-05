@@ -95,7 +95,7 @@ const GUIDANCE_SCORE_ONE_MICRO: u64 = 1_000_000;
 const ADAPTIVE_CONFIRMED_FAILURE_REWARD: u64 = 1_000_000_000_000;
 
 /// A stable content address used by the execution-model spine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct ContentHash {
     /// The canonical hash bytes for the addressed content.
     pub bytes: [u8; 32],
