@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{Database, TokenAuth};
+use aos_hub::db::{Database, SurfaceTarget, TokenAuth};
 use aos_hub::domain::{Permission, Principal, Role, Scope};
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::indexer::index_and_record;
@@ -188,6 +188,25 @@ async fn serve_managed(
         .unwrap()
         .unwrap();
     assert_eq!(registry.id, id);
+    let placement = common::create_ready_placement(
+        &db,
+        SurfaceTarget::Registry(id),
+        binding,
+        "primary",
+        dir_name,
+    )
+    .await;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::Registry(id),
+        placement.id,
+        &registry.owner_scope_key,
+        "endpoint:tenancy-fixture",
+        "route:tenancy-fixture",
+        "/acme/infra/prod/cdn",
+        "git",
+    )
+    .await;
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
@@ -227,7 +246,7 @@ async fn nested_registry_home_packages_and_machine_path_resolve() {
 }
 
 #[tokio::test]
-async fn flat_phase1_slug_still_resolves() {
+async fn flat_explicit_route_resolves() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();
@@ -238,6 +257,27 @@ async fn flat_phase1_slug_still_resolves() {
         .await
         .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
+    let binding =
+        common::create_instance_local_binding(&db, "flat-origin", surface.to_str().unwrap()).await;
+    let placement = common::create_ready_placement(
+        &db,
+        SurfaceTarget::Registry(registry.id),
+        binding,
+        "primary",
+        "",
+    )
+    .await;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::Registry(registry.id),
+        placement.id,
+        &registry.owner_scope_key,
+        "endpoint:flat-fixture",
+        "route:flat-fixture",
+        "/demo",
+        "git",
+    )
+    .await;
     index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
         .await
         .unwrap();

@@ -1209,7 +1209,7 @@ async fn dispatch_delivery_route(
 ///
 /// Both shells apply this to their outermost router: the Worker over the shared
 /// [`router`], the native hub over its merged router (which carries its own
-/// machine facade). The middleware captures `service` directly, so it composes
+/// typed delivery handler). The middleware captures `service` directly, so it composes
 /// regardless of the wrapped router's axum state type.
 ///
 /// Native-only (see [`dispatch_delivery_route`]); the Worker bridges
@@ -2843,18 +2843,14 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
         "/aos.hub.v1.OperationService/RetryOperation",
         retry_operation
     );
-    // The machine-surface facade: a catch-all `GET` (axum routes `HEAD` to it,
-    // eliding the body) for the registry machine path, registered LAST. The
-    // static `/aos.hub.v1.{Service}/{Method}` RPC routes above win over
-    // this `/{slug}/{*path}` wildcard by axum's static-over-dynamic precedence,
-    // so the facade only matches a registry URL. Omitted by [`rpc_router`] so a
-    // host with its own `/{slug}/{*path}` (the native hub) does not double-mount
-    // it.
+    // Browse and static control-plane routes are mounted only when requested.
+    // Machine bytes are never selected by a slug wildcard; the outer typed
+    // delivery dispatcher resolves an exact endpoint and route before
+    // rewriting to the private delivery handler.
     if mount_browse {
         // First-party static assets (`/_assets/*`) the browse pages + console
         // link. Served from the shared router so the Worker exposes them too
-        // (otherwise its CSS/JS/fonts 404). Static-prefixed, so they outrank the
-        // facade wildcard.
+        // (otherwise its CSS/JS/fonts 404).
         use crate::web::assets;
         r = r
             .route("/_assets/style.css", get(assets::stylesheet))
@@ -2866,8 +2862,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
             .route("/_assets/jetbrains-mono-bold.woff2", get(assets::font_bold))
             .route("/_assets/OFL.txt", get(assets::font_license));
         // Crawler-control and LLM-summary documents, served from the shared
-        // router so both shells expose identical output. Static-prefixed, so
-        // they outrank the facade wildcard. The per-registry forms gate on
+        // router so both shells expose identical output. The per-registry forms gate on
         // public visibility inside the service (a non-public registry's document
         // is a `404`). Each is `text/plain` with a one-hour cache.
         r = r
@@ -2926,10 +2921,9 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
                 ),
             );
         // The no-JS browse surface: the hub home, the `/{slug}/-/…` pages, and
-        // the `/{slug}/-/api/…` JSON read API. These static-prefixed routes win
-        // over the facade wildcard below by axum's static-over-dynamic
-        // precedence, so the reserved `/-/` namespace can never be shadowed by a
-        // machine path. The bare `/{slug}/-/` registry-home route is registered
+        // the `/{slug}/-/api/…` JSON read API. The reserved `/-/` namespace is
+        // control-plane-only and cannot be shadowed by a delivery route. The
+        // bare `/{slug}/-/` registry-home route is registered
         // alongside the `/{slug}/-/{*rest}` wildcard because axum does not match
         // an empty `{*rest}` capture.
         r = r.route(

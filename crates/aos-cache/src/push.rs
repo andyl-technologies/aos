@@ -213,8 +213,8 @@ pub async fn run_push(
         // uploads independently, up to `effective_jobs` in flight at once — the
         // earlier semaphore loop awaited each path serially, so `--jobs` had no
         // effect. NAR bytes go straight to a presigned origin URL when the cache
-        // offers one (bypassing the hub); the narinfo always goes through the
-        // facade so the hub index/GC stay authoritative.
+        // offers one (bypassing the Hub data proxy); narinfo admission always
+        // goes through the typed Hub API so inventory and GC stay authoritative.
         let work: Vec<&PathInfo> = infos
             .iter()
             .filter(|info| missing_hashes.contains(&narinfo::store_hash(&info.path).to_string()))
@@ -285,10 +285,10 @@ fn build_narinfo(
 ///
 /// Compression runs on a blocking thread (it is CPU-bound) so it never stalls
 /// the async runtime when many of these run concurrently. The NAR bytes go
-/// straight to a presigned origin URL when [`create_upload_url`] offers one
-/// (bypassing the hub entirely); otherwise they fall back to multipart or a
-/// single facade `PUT`. The narinfo is always written through the facade so the
-/// hub's index/GC remain authoritative.
+/// straight to an admitted direct or proxy URL when [`create_object_upload`] offers one
+/// (bypassing the Hub data proxy); otherwise they use typed multipart or an
+/// authenticated typed upload URL. Narinfo admission always passes through the
+/// Hub API so inventory and GC remain authoritative.
 ///
 /// Returns the compressed NAR size in bytes.
 ///
@@ -296,7 +296,7 @@ fn build_narinfo(
 ///
 /// Returns an error if compression, minting, or any upload fails.
 ///
-/// [`create_upload_url`]: CacheBackend::create_upload_url
+/// [`create_object_upload`]: CacheBackend::create_object_upload
 async fn upload_one(
     backend: &dyn CacheBackend,
     info: &PathInfo,
@@ -304,7 +304,7 @@ async fn upload_one(
     compression_level: i32,
     limiter: &bandwidth::BandwidthLimiter,
 ) -> Result<u64> {
-    /// Compressed NARs larger than this upload via multipart (facade fallback).
+    /// Compressed NARs larger than this upload through typed multipart.
     const MULTIPART_THRESHOLD: usize = 16 * 1024 * 1024;
 
     let hash = narinfo::store_hash(&info.path).to_string();
@@ -328,8 +328,12 @@ async fn upload_one(
     let narinfo_text = build_narinfo(info, &file_hash, file_size, &nar_filename, compression);
     let nar_url = format!("nar/{nar_filename}");
 
-    match backend.create_upload_url(&nar_url, file_size).await? {
-        Some(presigned) => backend.put_to_url(&presigned, &compressed).await?,
+    match backend.create_object_upload(&nar_url, file_size).await? {
+        Some(upload_url) => {
+            backend
+                .upload_to_admitted_url(&upload_url, &compressed)
+                .await?
+        }
         None => {
             if compressed.len() > MULTIPART_THRESHOLD && backend.supports_multipart() {
                 upload_nar_multipart(backend, &nar_filename, &compressed).await?;
@@ -350,7 +354,7 @@ async fn upload_one(
 const PART_CONCURRENCY: usize = 8;
 /// S3's minimum non-final part size.
 const MIN_MULTIPART_PART_SIZE: usize = 5 * 1024 * 1024;
-/// Largest part the AOS facade v1 capability permits.
+/// Largest part the AOS multipart v1 capability permits.
 const MAX_MULTIPART_PART_SIZE: usize = 16 * 1024 * 1024;
 /// Maximum duplicate request-body memory held by one multipart window.
 const MAX_MULTIPART_WINDOW_BYTES: usize = 64 * 1024 * 1024;

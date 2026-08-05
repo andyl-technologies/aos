@@ -19530,7 +19530,7 @@ impl RpcService {
         cache: &crate::db::BinaryCache,
     ) -> Result<(), RpcError> {
         // A soft-deleted (tombstoned) cache is invisible to reads — symmetric
-        // with `list_binary_caches`, which filters `deleted_at`, and with the facade.
+        // with `list_binary_caches`, which filters `deleted_at`, and with typed delivery.
         // Unconditional: a standalone cache (org_id = None) has no org-activity
         // check to fall back on, and registries rely on org-level soft-delete
         // only (they carry no per-row tombstone), so this guard is cache-specific.
@@ -19811,8 +19811,8 @@ impl RpcService {
             });
         }
         // Only canonical machine paths are mintable — a presigned PUT bypasses the
-        // facade's narinfo signing, so an arbitrary key would land unvalidated.
-        // Mirrors the facade `write_cache_object` machine-path guard.
+        // typed upload path's narinfo signing, so an arbitrary key would land
+        // unvalidated. Mirrors the `write_cache_object` machine-path guard.
         if !keymap::is_machine_path(&req.path) {
             return Err(RpcError::invalid("not a cache machine path"));
         }
@@ -20184,8 +20184,8 @@ impl RpcService {
     /// presigned URLs: the client sends the (small) narinfos and the hub writes
     /// each to the surface and updates the index in one round-trip, so a bulk
     /// push is bounded by direct-to-origin NAR throughput rather than per-object
-    /// Worker round-trips. Each narinfo goes through the same write path as a
-    /// facade `PUT` ([`Self::write_cache_object`]): auth, server-side signing for a
+    /// Worker round-trips. Each narinfo goes through the same admitted write
+    /// path as [`Self::write_cache_object`]: auth, server-side signing for a
     /// key-bearing cache, surface write, quota, and index write-through.
     ///
     /// # Errors
@@ -21923,16 +21923,14 @@ impl RpcService {
         })
     }
 
-    /// Serve one machine path for a registry from the surface store.
+    /// Reads one machine path from a logical registry or cache surface.
     ///
-    /// The shared machine-surface facade, single-sourced across both deployment
-    /// targets (the native hub's `compat` serve path and the Cloudflare Worker's
-    /// R2 facade): every registry URL is simultaneously a dumb-HTTP git origin
-    /// and a Nix binary cache (RFC-0004 "URL design"), and this reads that
-    /// surface through the shared placement planner and [`SurfaceProvider`] port
-    /// so selection, failover, and the byte-and-header contract are written once.
-    /// A surface without an active placement is unavailable; reads never bypass
-    /// the topology model.
+    /// Typed delivery-route handlers and server-rendered browse pages share this
+    /// placement-aware read primitive. It does not resolve an external URL or
+    /// create a slug route: callers have already selected the logical resource.
+    /// Selection, failover, and the byte/header contract remain single-sourced
+    /// through the [`SurfaceProvider`] port. A surface without an active
+    /// placement is unavailable.
     ///
     /// Returns `Ok(None)` — which the transport renders as a `404` — when
     /// `machine_path` is not part of the machine surface ([`keymap::is_machine_path`])
@@ -21943,7 +21941,7 @@ impl RpcService {
     /// Reads follow registry visibility exactly as the other read RPCs do (see
     /// [`Self::require_read`]): a `public` registry serves anonymously, while an
     /// `internal`/`private` registry requires a bearer JWT granting
-    /// [`Permission::Read`] on the registry scope — so the facade never
+    /// [`Permission::Read`] on the registry scope — so the read primitive never
     /// discloses a hidden registry's bytes to an unauthorized caller.
     ///
     /// # Errors
@@ -22827,9 +22825,8 @@ impl RpcService {
         }
     }
 
-    /// Write one object (`<hash>.narinfo` or `nar/<file>`) into a managed cache's
-    /// surface — the cache half of the upload facade, so `nix copy --to
-    /// <hub>/<cache>` works on both shells.
+    /// Writes one admitted object (`<hash>.narinfo` or `nar/<file>`) into a
+    /// managed cache surface.
     ///
     /// Simpler than the registry write: NARs/narinfo are content-addressed and
     /// immutable, so there is no publish lease and no re-index. Requires cache
@@ -30550,7 +30547,7 @@ fn write_object_identity(
 
 /// Logs an internal error and maps it to [`SurfaceWriteOutcome::Internal`] (`500`).
 fn internal_write(err: anyhow::Error) -> SurfaceWriteOutcome {
-    tracing::error!(error = %format!("{err:#}"), "facade write failed");
+    tracing::error!(error = %format!("{err:#}"), "surface write failed");
     SurfaceWriteOutcome::Internal
 }
 
