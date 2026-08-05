@@ -10,8 +10,12 @@ fn factory_restores_probe_snapshot_without_runtime_admission() -> Result<(), Box
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::WaitForQuit)
     });
-    let setup =
-        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let setup = crate::complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        config,
+        0,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )?;
     let child = Command::new("sleep").arg("60").spawn()?;
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,

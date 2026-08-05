@@ -206,6 +206,8 @@ const _: () = assert!(MAX_FRAME_DATA <= u16::MAX as usize);
 mod delivery_errors;
 #[path = "shmem/fault_command.rs"]
 mod fault_command;
+#[path = "shmem/fault_memory.rs"]
+mod fault_memory;
 #[path = "shmem/fingerprint_sample.rs"]
 mod fingerprint_sample;
 #[path = "shmem/frame_node.rs"]
@@ -219,6 +221,7 @@ mod ring_whitebox_marker;
 
 pub use delivery_errors::*;
 pub use fault_command::*;
+pub use fault_memory::*;
 pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;

@@ -683,9 +683,13 @@ pub(super) fn build_live_node(
     )
     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
     let (child, resources) = spawned.into_parts();
-    let setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| QemuLiveNodeStepGateError::HostSetup { source })?;
+    let setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        GATE_SLOT,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )
+    .map_err(|source| QemuLiveNodeStepGateError::HostSetup { source })?;
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLiveNodeStepGateError::SetupAckNotReady);
     }

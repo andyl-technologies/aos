@@ -334,6 +334,62 @@ pub const FAULT_COMMAND_FLAG_NONE: u16 = 0;
 /// The only bit mask accepted for command flags in ABI v1.
 pub const FAULT_COMMAND_FLAGS_V1_MASK: u16 = FAULT_COMMAND_FLAG_NONE;
 
+/// Closed capability scope shared by the host, plugin, and QEMU dispatcher.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u16)]
+pub enum FaultCapabilityScope {
+    /// Capability is architecture-independent.
+    All = 1,
+    /// Capability applies only to x86-64 targets.
+    X86_64 = 2,
+    /// Capability applies only to AArch64 targets.
+    Aarch64 = 3,
+    /// Capability applies to an explicitly identified virtio device class.
+    Virtio = 4,
+}
+
+impl FaultCapabilityScope {
+    /// Decodes one exact registered scope tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError::CapabilityInvariant`] for an unknown scope.
+    pub fn from_u16(value: u16) -> Result<Self, FaultAbiError> {
+        match value {
+            1 => Ok(Self::All),
+            2 => Ok(Self::X86_64),
+            3 => Ok(Self::Aarch64),
+            4 => Ok(Self::Virtio),
+            _ => Err(FaultAbiError::CapabilityInvariant),
+        }
+    }
+}
+
+/// Memory-mutation patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION: u64 = 1 << 0;
+/// Memory-access patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS: u64 = 1 << 1;
+/// Register-mutation patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION: u64 = 1 << 2;
+/// Instruction-fault patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_INSTRUCTION: u64 = 1 << 3;
+/// Interrupt-fault patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_INTERRUPT: u64 = 1 << 4;
+/// Hardware-error patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR: u64 = 1 << 5;
+/// vCPU-service patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_VCPU_SERVICE: u64 = 1 << 6;
+/// Node-lifecycle patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_NODE_LIFECYCLE: u64 = 1 << 7;
+/// Guest-clock patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_GUEST_CLOCK: u64 = 1 << 8;
+/// Accelerator-device patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_ACCELERATOR: u64 = 1 << 9;
+/// Fault-VMState patch feature requirement.
+pub const FAULT_CAPABILITY_FEATURE_VMSTATE: u64 = 1 << 10;
+/// Every feature bit understood by capability ABI v1.
+pub const FAULT_CAPABILITY_FEATURES_V1_MASK: u64 = (1 << 11) - 1;
+
 /// Closed command kind registry shared by the host, plugin, and QEMU patches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
@@ -817,7 +873,7 @@ pub struct FaultCapabilityRowV1 {
     /// Exact command semantic version.
     pub semantic_version: u32,
     /// Architecture or device scope tag from the closed boundary registry.
-    pub scope: u16,
+    pub scope: FaultCapabilityScope,
     /// Bit set for every supported [`FaultBoundaryPhase`].
     pub phase_mask: u32,
     /// Maximum accepted payload bytes.
@@ -837,7 +893,7 @@ impl FaultCapabilityRowV1 {
         let mut bytes = [0_u8; FAULT_CAPABILITY_ROW_V1_BYTES];
         let mut writer = FaultByteWriter::new(&mut bytes);
         writer.u16(self.command_kind as u16);
-        writer.u16(self.scope);
+        writer.u16(self.scope as u16);
         writer.u32(self.semantic_version);
         writer.u32(self.phase_mask);
         writer.u32(self.maximum_payload_bytes);
@@ -860,7 +916,7 @@ impl FaultCapabilityRowV1 {
         let mut reader = FaultByteReader::new(bytes);
         let value = Self {
             command_kind: FaultCommandKind::from_u16(reader.u16()?)?,
-            scope: reader.u16()?,
+            scope: FaultCapabilityScope::from_u16(reader.u16()?)?,
             semantic_version: reader.u32()?,
             phase_mask: reader.u32()?,
             maximum_payload_bytes: reader.u32()?,
@@ -875,6 +931,7 @@ impl FaultCapabilityRowV1 {
             || value.maximum_payload_bytes > HARD_FAULT_PAYLOAD_BYTES
             || value.maximum_pending_commands == 0
             || value.maximum_pending_commands > HARD_FAULT_COMMAND_CAPACITY
+            || value.required_feature_bits & !FAULT_CAPABILITY_FEATURES_V1_MASK != 0
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
@@ -1208,6 +1265,36 @@ pub fn enqueue_fault_result(
     ring.write_idx
         .store(tail.wrapping_add(1), Ordering::Release);
     Ok(())
+}
+
+/// Reports whether one result payload can be published without mutation.
+///
+/// This preflight is exact for the single plugin producer: it checks the same
+/// ring slot and contiguous arena reservation used by [`enqueue_fault_result`]
+/// but advances no cursor. The caller must serialize preflight and enqueue.
+///
+/// # Errors
+///
+/// Returns [`FaultTransportError`] for invalid capacities, corrupt cursors,
+/// payloads above the hard bound, or arithmetic overflow. Ordinary ring or
+/// arena backpressure returns `Ok(false)`.
+pub fn can_enqueue_fault_result(
+    ring: &RingHeader,
+    slots: &[FaultResultSlotV1],
+    arena_header: &FaultPayloadArenaHeader,
+    arena: &[u8],
+    payload_len: usize,
+) -> Result<bool, FaultTransportError> {
+    match producer_ring_slot(ring, slots.len()) {
+        Ok((_tail, _slot)) => {}
+        Err(FaultTransportError::RingFull { .. }) => return Ok(false),
+        Err(error) => return Err(error),
+    }
+    match reserve_arena(arena_header, arena.len(), payload_len) {
+        Ok(_reservation) => Ok(true),
+        Err(FaultTransportError::PayloadArenaFull { .. }) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 /// Removes one result, copies its payload, and releases its transport space.
@@ -1689,7 +1776,7 @@ pub enum FaultTransportError {
 
 pub(crate) fn emit_fault_command_c_header(out: &mut String) {
     macro_rules! define {
-        ($name:literal, $value:expr) => {
+        ($name:expr, $value:expr) => {
             let _ = writeln!(out, "#define {} {}", $name, $value);
         };
     }
@@ -1741,6 +1828,74 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
         "CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES",
         FAULT_PAYLOAD_ARENA_HEADER_BYTES
     );
+    define!(
+        "CRUCIBLE_FAULT_CAPABILITY_SCOPE_ALL",
+        FaultCapabilityScope::All as u16
+    );
+    define!(
+        "CRUCIBLE_FAULT_CAPABILITY_SCOPE_X86_64",
+        FaultCapabilityScope::X86_64 as u16
+    );
+    define!(
+        "CRUCIBLE_FAULT_CAPABILITY_SCOPE_AARCH64",
+        FaultCapabilityScope::Aarch64 as u16
+    );
+    define!(
+        "CRUCIBLE_FAULT_CAPABILITY_SCOPE_VIRTIO",
+        FaultCapabilityScope::Virtio as u16
+    );
+    define!(
+        "CRUCIBLE_FAULT_CAPABILITY_FEATURES_V1_MASK",
+        FAULT_CAPABILITY_FEATURES_V1_MASK
+    );
+    for (name, value) in [
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION",
+            FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS",
+            FAULT_CAPABILITY_FEATURE_MEMORY_ACCESS,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION",
+            FAULT_CAPABILITY_FEATURE_REGISTER_MUTATION,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_INSTRUCTION",
+            FAULT_CAPABILITY_FEATURE_INSTRUCTION,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_INTERRUPT",
+            FAULT_CAPABILITY_FEATURE_INTERRUPT,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR",
+            FAULT_CAPABILITY_FEATURE_HARDWARE_ERROR,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_VCPU_SERVICE",
+            FAULT_CAPABILITY_FEATURE_VCPU_SERVICE,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_NODE_LIFECYCLE",
+            FAULT_CAPABILITY_FEATURE_NODE_LIFECYCLE,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_GUEST_CLOCK",
+            FAULT_CAPABILITY_FEATURE_GUEST_CLOCK,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_ACCELERATOR",
+            FAULT_CAPABILITY_FEATURE_ACCELERATOR,
+        ),
+        (
+            "CRUCIBLE_FAULT_CAPABILITY_FEATURE_VMSTATE",
+            FAULT_CAPABILITY_FEATURE_VMSTATE,
+        ),
+    ] {
+        define!(name, value);
+    }
 
     for (name, value) in [
         (
@@ -2294,8 +2449,8 @@ mod tests {
             capability_hash: hash(b"capability"),
         };
         let rows = [
-            row(FaultCommandKind::NodeLifecycle, 1),
-            row(FaultCommandKind::MemoryMutation, 1),
+            row(FaultCommandKind::NodeLifecycle, FaultCapabilityScope::All),
+            row(FaultCommandKind::MemoryMutation, FaultCapabilityScope::All),
         ];
         let first = fault_capability_manifest_digest(&rows)
             .unwrap_or_else(|error| panic!("capability manifest: {error}"));
@@ -2317,6 +2472,83 @@ mod tests {
         assert_eq!(
             fault_capability_manifest_digest(&[rows[1].clone(), rows[0].clone()]),
             Err(FaultAbiError::CapabilityInvariant)
+        );
+
+        let mut unknown_features = rows[0].clone();
+        unknown_features.required_feature_bits = FAULT_CAPABILITY_FEATURES_V1_MASK + 1;
+        assert_eq!(
+            FaultCapabilityRowV1::decode(&unknown_features.encode()),
+            Err(FaultAbiError::CapabilityInvariant)
+        );
+    }
+
+    #[test]
+    fn result_preflight_reports_backpressure_without_mutating_transport() {
+        let ring = RingHeader::new();
+        let arena_header = FaultPayloadArenaHeader::new();
+        let mut slots = vec![FaultResultSlotV1::new(); 2];
+        let mut arena = vec![0_u8; 16];
+        let rejected_result = |sequence| FaultResultHeaderV1 {
+            abi_major: FAULT_COMMAND_ABI_MAJOR,
+            abi_minor: FAULT_COMMAND_ABI_MINOR,
+            command_kind: FaultCommandKind::BoundaryProbe as u16,
+            status: FaultResultStatus::InvalidTarget,
+            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+            command_sequence: sequence,
+            observed_icount: 4,
+            applied_icount: 0,
+            capability_version: 1,
+            phase: FaultBoundaryPhase::NodeBoundary,
+            before_hash: [0; 32],
+            after_hash: [0; 32],
+            evidence_hash: hash(b"rejected"),
+            result_payload_hash: [0; 32],
+            result_offset: 0,
+            result_length: 0,
+        };
+
+        enqueue_fault_result(
+            &ring,
+            &mut slots,
+            &arena_header,
+            &mut arena,
+            8_192,
+            rejected_result(1),
+            b"0123456789abcdef",
+        )
+        .unwrap_or_else(|error| panic!("fill result arena: {error}"));
+        let indices_before = (ring.read_index(), ring.write_index());
+        let cursors_before = (arena_header.read_cursor(), arena_header.write_cursor());
+        assert_eq!(
+            can_enqueue_fault_result(&ring, &slots, &arena_header, &arena, 1),
+            Ok(false)
+        );
+        assert_eq!((ring.read_index(), ring.write_index()), indices_before);
+        assert_eq!(
+            (arena_header.read_cursor(), arena_header.write_cursor()),
+            cursors_before
+        );
+
+        enqueue_fault_result(
+            &ring,
+            &mut slots,
+            &arena_header,
+            &mut arena,
+            8_192,
+            rejected_result(2),
+            &[],
+        )
+        .unwrap_or_else(|error| panic!("fill result ring: {error}"));
+        let indices_before = (ring.read_index(), ring.write_index());
+        let cursors_before = (arena_header.read_cursor(), arena_header.write_cursor());
+        assert_eq!(
+            can_enqueue_fault_result(&ring, &slots, &arena_header, &arena, 0),
+            Ok(false)
+        );
+        assert_eq!((ring.read_index(), ring.write_index()), indices_before);
+        assert_eq!(
+            (arena_header.read_cursor(), arena_header.write_cursor()),
+            cursors_before
         );
     }
 

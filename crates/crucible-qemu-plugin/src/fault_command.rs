@@ -13,11 +13,12 @@ use std::ptr::NonNull;
 
 use crucible_shmem::{
     DequeuedFaultCommand, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultCommandHeaderV1, FaultCommandKind, FaultCommandSlotV1, FaultPayloadArenaHeader,
-    FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus, FaultTransportError,
-    HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut, MappedFaultResultTransportMut,
-    MappedSetupRegion, MappedSetupRegionAccessError, RingHeader, dequeue_fault_command,
-    encode_fault_capability_manifest, enqueue_fault_result, fault_capability_manifest_digest,
+    FaultCapabilityScope, FaultCommandHeaderV1, FaultCommandKind, FaultCommandSlotV1,
+    FaultPayloadArenaHeader, FaultResultHeaderV1, FaultResultSlotV1, FaultResultStatus,
+    FaultTransportError, HARD_FAULT_PAYLOAD_BYTES, MappedFaultCommandTransportMut,
+    MappedFaultResultTransportMut, MappedSetupRegion, MappedSetupRegionAccessError, RingHeader,
+    can_enqueue_fault_result, dequeue_fault_command, encode_fault_capability_manifest,
+    enqueue_fault_result, fault_capability_manifest_digest,
 };
 use thiserror::Error;
 
@@ -28,12 +29,15 @@ pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CAPABILITIES_SYMBOL: &str =
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_SUBMIT_SYMBOL: &str = "qemu_plugin_crucible_fault_submit";
 /// QEMU symbol that cancels one not-yet-applied command.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_CANCEL_SYMBOL: &str = "qemu_plugin_crucible_fault_cancel";
+/// QEMU symbol that non-destructively describes the oldest completed result.
+pub const QEMU_PLUGIN_CRUCIBLE_FAULT_PEEK_SYMBOL: &str = "qemu_plugin_crucible_fault_peek";
 /// QEMU symbol that copies one completed fault result.
 pub const QEMU_PLUGIN_CRUCIBLE_FAULT_POLL_SYMBOL: &str = "qemu_plugin_crucible_fault_poll";
 
 const CAPABILITIES_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_capabilities\0";
 const SUBMIT_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_submit\0";
 const CANCEL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_cancel\0";
+const PEEK_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_peek\0";
 const POLL_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_fault_poll\0";
 const CAPABILITY_HASH_DOMAIN: &[u8] = b"crucible.qemu-fault-capability.v1\0";
 
@@ -57,7 +61,7 @@ struct QemuFaultCommand {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct QemuFaultResult {
     command_kind: u16,
     status: u16,
@@ -90,6 +94,7 @@ struct QemuFaultCapability {
 type QemuFaultCapabilitiesFn = extern "C" fn(*mut QemuFaultCapability, usize) -> usize;
 type QemuFaultSubmitFn = extern "C" fn(*const QemuFaultCommand, *const u8, usize) -> c_int;
 type QemuFaultCancelFn = extern "C" fn(u64) -> c_int;
+type QemuFaultPeekFn = extern "C" fn(*mut QemuFaultResult, *mut usize) -> c_int;
 type QemuFaultPollFn = extern "C" fn(*mut QemuFaultResult, *mut u8, usize, *mut usize) -> c_int;
 
 /// Resolved, closed QEMU fault registry operations.
@@ -99,6 +104,7 @@ pub(crate) struct QemuFaultCommandApis {
     submit: QemuFaultSubmitFn,
     #[allow(dead_code, reason = "cancellation is used by restore rollback wiring")]
     cancel: QemuFaultCancelFn,
+    peek: QemuFaultPeekFn,
     poll: QemuFaultPollFn,
 }
 
@@ -113,6 +119,7 @@ impl QemuFaultCommandApis {
             )?,
             submit: resolve_symbol(SUBMIT_SYMBOL_C, QEMU_PLUGIN_CRUCIBLE_FAULT_SUBMIT_SYMBOL)?,
             cancel: resolve_symbol(CANCEL_SYMBOL_C, QEMU_PLUGIN_CRUCIBLE_FAULT_CANCEL_SYMBOL)?,
+            peek: resolve_symbol(PEEK_SYMBOL_C, QEMU_PLUGIN_CRUCIBLE_FAULT_PEEK_SYMBOL)?,
             poll: resolve_symbol(POLL_SYMBOL_C, QEMU_PLUGIN_CRUCIBLE_FAULT_POLL_SYMBOL)?,
         })
     }
@@ -163,6 +170,7 @@ impl QemuFaultCommandApis {
             capabilities: test_capabilities,
             submit: test_submit,
             cancel: test_cancel,
+            peek: test_peek,
             poll: test_poll,
         }
     }
@@ -216,6 +224,25 @@ extern "C" fn test_cancel(_command_sequence: u64) -> c_int {
 }
 
 #[cfg(test)]
+extern "C" fn test_peek(result: *mut QemuFaultResult, payload_length: *mut usize) -> c_int {
+    if result.is_null() || payload_length.is_null() {
+        return -libc::EINVAL;
+    }
+    TEST_CAPABILITY_RESULT_PENDING.with(|pending| {
+        let Some(command) = pending.get() else {
+            return 0;
+        };
+        // SAFETY: the bridge supplies complete writable output objects for
+        // this synchronous, non-consuming ABI call.
+        unsafe {
+            *payload_length = 0;
+            *result = test_result_for_command(command);
+        }
+        1
+    })
+}
+
+#[cfg(test)]
 extern "C" fn test_poll(
     result: *mut QemuFaultResult,
     _payload: *mut u8,
@@ -233,23 +260,28 @@ extern "C" fn test_poll(
         // this synchronous ABI call.
         unsafe {
             *payload_length = 0;
-            *result = QemuFaultResult {
-                command_kind: command.command_kind,
-                status: FaultResultStatus::Applied as u16,
-                phase: command.phase,
-                reserved: 0,
-                semantic_version: command.semantic_version,
-                capability_version: 1,
-                command_sequence: command.command_sequence,
-                observed_icount: command.target_icount,
-                applied_icount: command.target_icount,
-                before_hash: [0; 32],
-                after_hash: [0; 32],
-                evidence_hash: [0; 32],
-            };
+            *result = test_result_for_command(command);
         }
         1
     })
+}
+
+#[cfg(test)]
+fn test_result_for_command(command: QemuFaultCommand) -> QemuFaultResult {
+    QemuFaultResult {
+        command_kind: command.command_kind,
+        status: FaultResultStatus::Applied as u16,
+        phase: command.phase,
+        reserved: 0,
+        semantic_version: command.semantic_version,
+        capability_version: 1,
+        command_sequence: command.command_sequence,
+        observed_icount: command.target_icount,
+        applied_icount: command.target_icount,
+        before_hash: [0; 32],
+        after_hash: [0; 32],
+        evidence_hash: [0; 32],
+    }
 }
 
 #[cfg(test)]
@@ -291,7 +323,8 @@ fn capability_row(
     let row = FaultCapabilityRowV1 {
         command_kind: command_kind(raw.command_kind)?,
         semantic_version: raw.semantic_version,
-        scope: raw.scope,
+        scope: FaultCapabilityScope::from_u16(raw.scope)
+            .map_err(|source| FaultCommandBridgeError::CapabilityAbi { source })?,
         phase_mask: raw.phase_mask,
         maximum_payload_bytes: raw.maximum_payload_bytes,
         maximum_pending_commands: raw.maximum_pending_commands,
@@ -426,6 +459,21 @@ impl StableFaultResultTransport {
         )
         .map_err(|source| FaultCommandBridgeError::Transport { source })
     }
+
+    fn can_enqueue(&self, payload_len: usize) -> Result<bool, FaultCommandBridgeError> {
+        // SAFETY: the validated setup mapping owns these addresses and the
+        // callback mutex serializes this producer's preflight and enqueue.
+        let (ring, slots, arena_header, arena) = unsafe {
+            (
+                self.ring.as_ref(),
+                core::slice::from_raw_parts(self.slots.as_ptr(), self.slot_count),
+                self.arena_header.as_ref(),
+                core::slice::from_raw_parts(self.arena.as_ptr(), self.arena_len),
+            )
+        };
+        can_enqueue_fault_result(ring, slots, arena_header, arena, payload_len)
+            .map_err(|source| FaultCommandBridgeError::Transport { source })
+    }
 }
 
 /// Live bridge for one VM's bounded command and result transports.
@@ -494,8 +542,16 @@ impl FaultCommandBridge {
         let logical_icount = raw_icount
             .checked_add(logical_icount_offset)
             .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
-        self.poll_results(logical_icount_offset)?;
-        while let Some(command) = self.commands.dequeue()? {
+        if !self.poll_results(logical_icount_offset)? {
+            return Ok(());
+        }
+        loop {
+            if !self.results.can_enqueue(0)? {
+                return Ok(());
+            }
+            let Some(command) = self.commands.dequeue()? else {
+                break;
+            };
             match command {
                 DequeuedFaultCommand::Valid { header, payload } => {
                     self.submit(header, &payload, logical_icount_offset, logical_icount)?;
@@ -519,9 +575,11 @@ impl FaultCommandBridge {
             }
             // Preserve the earliest QEMU completion point before a later
             // locally rejected command can publish ahead of it.
-            self.poll_results(logical_icount_offset)?;
+            if !self.poll_results(logical_icount_offset)? {
+                return Ok(());
+            }
         }
-        self.poll_results(logical_icount_offset)
+        self.poll_results(logical_icount_offset).map(|_drained| ())
     }
 
     fn submit(
@@ -603,38 +661,71 @@ impl FaultCommandBridge {
         Ok(())
     }
 
-    fn poll_results(&mut self, logical_icount_offset: u64) -> Result<(), FaultCommandBridgeError> {
+    fn poll_results(
+        &mut self,
+        logical_icount_offset: u64,
+    ) -> Result<bool, FaultCommandBridgeError> {
         let payload_capacity = usize::try_from(HARD_FAULT_PAYLOAD_BYTES)
             .map_err(|_source| FaultCommandBridgeError::PayloadCapacity)?;
-        let mut payload = vec![0_u8; payload_capacity];
         loop {
+            let mut peeked = QemuFaultResult::default();
+            let mut peeked_payload_len = 0_usize;
+            let status = (self.apis.peek)(&mut peeked, &mut peeked_payload_len);
+            if status == 0 {
+                return Ok(true);
+            }
+            if status != 1 {
+                return Err(FaultCommandBridgeError::QemuPeek { status });
+            }
+            if peeked_payload_len > payload_capacity {
+                return Err(FaultCommandBridgeError::QemuPayloadLength {
+                    length: peeked_payload_len,
+                    capacity: payload_capacity,
+                });
+            }
+            let is_capability_query = self.capability_queries.contains(&peeked.command_sequence)
+                && peeked.status == FaultResultStatus::Applied as u16;
+            let result_payload_len = if is_capability_query {
+                self.capability_payload.len()
+            } else {
+                peeked_payload_len
+            };
+            if !self.results.can_enqueue(result_payload_len)? {
+                return Ok(false);
+            }
+            let mut payload = vec![0_u8; peeked_payload_len];
             let mut result = QemuFaultResult::default();
             let mut payload_len = 0_usize;
+            let payload_pointer = if payload.is_empty() {
+                std::ptr::null_mut()
+            } else {
+                payload.as_mut_ptr()
+            };
             let status = (self.apis.poll)(
                 &mut result,
-                payload.as_mut_ptr(),
+                payload_pointer,
                 payload.len(),
                 &mut payload_len,
             );
-            if status == 0 {
-                return Ok(());
-            }
             if status != 1 {
                 return Err(FaultCommandBridgeError::QemuPoll { status });
             }
-            if payload_len > payload.len() {
-                return Err(FaultCommandBridgeError::QemuPayloadLength {
-                    length: payload_len,
-                    capacity: payload.len(),
+            if result.command_sequence != peeked.command_sequence || result != peeked {
+                return Err(FaultCommandBridgeError::QemuPeekChanged {
+                    expected_sequence: peeked.command_sequence,
+                    observed_sequence: result.command_sequence,
                 });
             }
-            let mut result_payload = &payload[..payload_len];
-            let query_payload;
-            if self.capability_queries.remove(&result.command_sequence)
-                && result.status == FaultResultStatus::Applied as u16
-            {
-                query_payload = self.capability_payload.clone();
-                result_payload = &query_payload;
+            if payload_len != peeked_payload_len {
+                return Err(FaultCommandBridgeError::QemuPayloadLengthChanged {
+                    expected: peeked_payload_len,
+                    observed: payload_len,
+                });
+            }
+            let mut result_payload = &payload[..];
+            if is_capability_query {
+                self.capability_queries.remove(&result.command_sequence);
+                result_payload = &self.capability_payload;
                 result.evidence_hash = *blake3::hash(result_payload).as_bytes();
             }
             let observed_icount = result
@@ -820,6 +911,32 @@ pub enum FaultCommandBridgeError {
         /// Negative errno-style status.
         status: c_int,
     },
+    /// QEMU result peeking failed without consuming the result.
+    #[error("QEMU fault result peek failed with status {status}")]
+    QemuPeek {
+        /// Negative errno-style status.
+        status: c_int,
+    },
+    /// The single-consumer result head changed between peek and poll.
+    #[error(
+        "QEMU fault result changed after peek: expected sequence {expected_sequence}, observed {observed_sequence}"
+    )]
+    QemuPeekChanged {
+        /// Sequence observed non-destructively.
+        expected_sequence: u64,
+        /// Sequence returned by consuming poll.
+        observed_sequence: u64,
+    },
+    /// QEMU changed the result payload length between peek and poll.
+    #[error(
+        "QEMU fault payload length changed after peek: expected {expected}, observed {observed}"
+    )]
+    QemuPayloadLengthChanged {
+        /// Length observed non-destructively.
+        expected: usize,
+        /// Length returned by consuming poll.
+        observed: usize,
+    },
     /// QEMU claimed a result larger than the hard buffer.
     #[error("QEMU fault result payload length {length} exceeds buffer {capacity}")]
     QemuPayloadLength {
@@ -976,5 +1093,87 @@ mod tests {
                         && payload.is_empty()
             ));
         }
+
+        let pending_command = QemuFaultCommand {
+            abi_major: FAULT_COMMAND_ABI_MAJOR,
+            abi_minor: FAULT_COMMAND_ABI_MINOR,
+            command_kind: FaultCommandKind::QueryCapabilities as u16,
+            command_flags: FAULT_COMMAND_FLAG_NONE,
+            phase: FaultBoundaryPhase::NodeBoundary as u16,
+            reserved: 0,
+            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+            command_sequence: 99,
+            target_node_hash,
+            target_icount: 40,
+            authorization_ceiling_icount: 40,
+            binding_hash: [0; 32],
+            opportunity_hash: [0; 32],
+            expected_precondition_hash: [0; 32],
+        };
+        assert_eq!(test_submit(&pending_command, std::ptr::null(), 0), 0);
+        for command_sequence in 10..14 {
+            enqueue_fault_result(
+                &result_ring,
+                &mut result_slots,
+                &result_arena_header,
+                &mut result_arena,
+                RESULT_ARENA_OFFSET,
+                FaultResultHeaderV1 {
+                    abi_major: FAULT_COMMAND_ABI_MAJOR,
+                    abi_minor: FAULT_COMMAND_ABI_MINOR,
+                    command_kind: FaultCommandKind::BoundaryProbe as u16,
+                    status: FaultResultStatus::InvalidTarget,
+                    semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                    command_sequence,
+                    observed_icount: 52,
+                    applied_icount: 0,
+                    capability_version: 1,
+                    phase: FaultBoundaryPhase::NodeBoundary,
+                    before_hash: [0; 32],
+                    after_hash: [0; 32],
+                    evidence_hash: [0; 32],
+                    result_payload_hash: [0; 32],
+                    result_offset: 0,
+                    result_length: 0,
+                },
+                &[],
+            )
+            .unwrap_or_else(|error| panic!("fill result ring: {error}"));
+        }
+
+        bridge
+            .pump(40, 12)
+            .unwrap_or_else(|error| panic!("pump under backpressure: {error}"));
+        TEST_CAPABILITY_RESULT_PENDING.with(|pending| assert!(pending.get().is_some()));
+        let _released = dequeue_fault_result(
+            &result_ring,
+            &result_slots,
+            &result_arena_header,
+            &result_arena,
+            RESULT_ARENA_OFFSET,
+        )
+        .unwrap_or_else(|error| panic!("release result capacity: {error}"));
+        bridge
+            .pump(40, 12)
+            .unwrap_or_else(|error| panic!("pump after backpressure: {error}"));
+        TEST_CAPABILITY_RESULT_PENDING.with(|pending| assert!(pending.get().is_none()));
+        let mut saw_pending_result = false;
+        while let Some(result) = dequeue_fault_result(
+            &result_ring,
+            &result_slots,
+            &result_arena_header,
+            &result_arena,
+            RESULT_ARENA_OFFSET,
+        )
+        .unwrap_or_else(|error| panic!("drain result: {error}"))
+        {
+            if matches!(
+                result,
+                DequeuedFaultResult::Valid { header, .. } if header.command_sequence == 99
+            ) {
+                saw_pending_result = true;
+            }
+        }
+        assert!(saw_pending_result);
     }
 }

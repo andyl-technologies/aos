@@ -84,8 +84,12 @@ fn factory_assembles_node_from_completed_setup_with_shutdown_only_qmp() -> Resul
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::WaitForQuit)
     });
-    let setup =
-        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let setup = crate::complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        config,
+        0,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )?;
     let child = Command::new("sleep").arg("60").spawn()?;
     let qmp = QemuQmpVmStateControlChannel::connect(scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
@@ -141,8 +145,12 @@ fn factory_restores_vmstate_before_reducing_qmp_to_shutdown_only() -> Result<(),
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::WaitForQuit)
     });
-    let setup =
-        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let setup = crate::complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        config,
+        0,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )?;
     let child = Command::new("sleep").arg("60").spawn()?;
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
@@ -214,8 +222,12 @@ fn factory_restores_baked_genesis_without_oracle_admission() -> Result<(), Box<d
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::WaitForQuit)
     });
-    let setup =
-        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let setup = crate::complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        config,
+        0,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )?;
     let child = Command::new("sleep").arg("60").spawn()?;
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
@@ -310,8 +322,12 @@ fn factory_rejects_baked_authorization_for_replay_oracle_restore() -> Result<(),
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
     });
-    let setup =
-        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let setup = crate::complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        config,
+        0,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )?;
     let child = Command::new("sleep").arg("60").spawn()?;
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
@@ -360,8 +376,12 @@ fn factory_rejects_restore_slot_mismatch_before_vmstate_restore() -> Result<(), 
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
     });
-    let setup =
-        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let setup = crate::complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        config,
+        0,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )?;
     let child = Command::new("sleep").arg("60").spawn()?;
     let (qmp_stream, qmp_written) = scripted_qmp_with_written([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
@@ -411,8 +431,12 @@ fn factory_rejects_setup_slot_mismatch_before_binding_hot_path() -> Result<(), B
     let plugin_peer = thread::spawn(move || {
         plugin_peer_complete_setup(plugin_socket, PluginPeerAfterRun::Return)
     });
-    let setup =
-        crate::complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+    let setup = crate::complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        config,
+        0,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )?;
     let child = Command::new("sleep").arg("60").spawn()?;
     let qmp = QemuQmpVmStateControlChannel::connect(scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,

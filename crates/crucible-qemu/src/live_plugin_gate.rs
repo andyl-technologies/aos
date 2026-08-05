@@ -328,9 +328,13 @@ pub fn run_live_plugin_install_gate(
     .map_err(|source| LivePluginInstallGateError::Spawn { source })?;
     let (mut child, resources) = spawned.into_parts();
 
-    let mut setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| LivePluginInstallGateError::HostSetup { source })?;
+    let mut setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        GATE_SLOT,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )
+    .map_err(|source| LivePluginInstallGateError::HostSetup { source })?;
     let handshake = setup.negotiated_handshake();
     let negotiated_proto_version = handshake.proto_version;
     let negotiated_abi_version = handshake.abi_version;

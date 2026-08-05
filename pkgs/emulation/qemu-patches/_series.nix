@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "4a9a33ca20cf1dd2024df8b0eebb8ed355bc7146a0f9f8924ec6c9239e66ea52";
+  patchBranchBundleSha256 = "86d1e7f93e404a5783a2d77051d9a31045d67aa7d144473b1a1d4cb28756446a";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "1a4a0ef97f4d3538a5f4ddca542368e21a86dc2b";
+  patchBranchHeadCommit = "8fc9a7f0938954564f2aeb0773d7fecd7f0f78ac";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -432,8 +432,8 @@ let
     }
     {
       file = "0047-crucible-fault-command-abi.patch";
-      branchCommit = "f8df9f7257aa5aaf322a049feffea025a189fb88";
-      branchTree = "4e32342b54a8ec5e24e0038472d05b1fc5904ecb";
+      branchCommit = "c5968ac9d219bedce631d3ed005fec3ca74eb3cd";
+      branchTree = "b6db1acf5033613f5908c354e896738160f48cdf";
       catalogName = "crucible-fault-command-abi";
       class = "F";
       enforces = "FAULT-ABI,FAULT-CAP,FAULT-ORDER";
@@ -441,8 +441,8 @@ let
     }
     {
       file = "0048-crucible-fault-safe-boundary.patch";
-      branchCommit = "1a4a0ef97f4d3538a5f4ddca542368e21a86dc2b";
-      branchTree = "52a7a1e0ebc0aff6eabb9baac3823ef0c40e99f1";
+      branchCommit = "8fc9a7f0938954564f2aeb0773d7fecd7f0f78ac";
+      branchTree = "8926fd161f68a5ed955868d4c6ca805f17ce6001";
       catalogName = "crucible-fault-safe-boundary";
       class = "D";
       enforces = "FAULT-BOUNDARY,FAULT-AUTH,DET-1";
