@@ -15,7 +15,7 @@ use crucible_api::{
     ProductionRootImageFormat, ProductionVmLifecycleConfig, build_production_vm_lifecycle_loop,
 };
 
-const MAX_QUANTA: u64 = 10_000;
+const MAX_QUANTA: u64 = 30_000;
 const QUANTUM_BUDGET: u64 = MAX_QUANTA;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
