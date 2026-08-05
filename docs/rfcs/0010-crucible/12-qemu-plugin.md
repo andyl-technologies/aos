@@ -1067,7 +1067,7 @@ component that makes that purity true *inside* the QEMU process.
   `checks.crucible.phase2.qemuLiveWhiteboxDoorbell`: the packaged production
   Rust plugin preflights the stock QEMU translation, instruction-execution,
   register-read, and virtual-memory-read APIs; recognizes only the frozen
-  `out dx,eax` encoding and reserved `0x00e7` port; reads `rax`/`rcx` at the
+  `out 0xe7,al` encoding and reserved `0x00e7` port; reads `rax`/`rcx` at the
   callback's exact raw icount; and decodes the guest's golden coverage marker
   through the bounded callback core. The loaded-QEMU run records the live marker
   before reaching its exact scheduler ceiling and exits through the normal

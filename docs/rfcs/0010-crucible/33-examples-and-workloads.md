@@ -163,7 +163,7 @@ deadline = "60s"
 [[event]]
 id = "pass-on-quiescence"
 trigger = { all_of = [
-  { assertion_state = { name = "all-requests-succeed", state = "satisfied" } },
+  { once = { assertion_state = { name = "all-requests-succeed", state = "satisfied" } } },
   { quiescent = {} },
 ] }
 action  = { pass = {} }
@@ -198,7 +198,10 @@ let scenario = ScenarioBuilder::new()
     .plan(EventGraph::builder()
         .event("pass-on-quiescence")
             .when(Condition::all_of([
-                Condition::assertion_state("all-requests-succeed", AssertionPhase::Satisfied),
+                Condition::assertion_state(
+                    "all-requests-succeed",
+                    AssertionPhase::Satisfied,
+                ).once(),
                 Condition::quiescent(),
             ]))
             .action(Action::pass())
@@ -230,8 +233,10 @@ emitted artifact lands at the same state ([EX-2]).
 Implementation note (T-EX-1): `crucible::example_corpus` ships the
 `happy-path.scn` corpus fixture as a content-addressed `ScenarioDefForm` with two
 unmodified guest images, in-guest `httpd`/`httpget` workload command-line
-parameters, console-marker readiness, black-box network/lifecycle/quiescence
-predicates, and no `GuestMarker` or white-box dependency. The local corpus runner
+parameters, console-marker readiness, black-box console/lifecycle/quiescence
+predicates, and no `GuestMarker` or white-box dependency. Application success is
+read from the client program's ordinary console result rather than inferred from
+network payload bytes. The local corpus runner
 uses the checked `EventLog` condition-prefix path to append deterministic
 observable events, fires the `pass-on-quiescence` graph event, captures a
 reproduction artifact whose schedule carries the canonical observation script,
@@ -1098,7 +1103,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   §A.1.
   Completed by `checks.crucible.phase7.happyPathExample`: the built-in
   `happy-path.scn` fixture is exported from `crucible::example_corpus`, uses only
-  black-box console/network/lifecycle/quiescence predicates with white-box
+  black-box console/lifecycle/quiescence predicates with white-box
   disabled, runs to the `pass-on-quiescence` event, captures a replayable
   reproduction artifact with the canonical observation script in its schedule,
   is exercised by `crucible selftest`, and verifies five independent local

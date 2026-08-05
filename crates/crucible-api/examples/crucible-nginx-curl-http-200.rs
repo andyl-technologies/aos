@@ -8,8 +8,8 @@ use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, ContentAddressedBlobRef, ContentHash,
     EventGraph, GuestWorkloadBinary, Icount, LinkDef, LinkLossProbability, NodeId, NodeLifecycle,
     NodeTemplate, Plan, Predicate, Properties, Property, QuantumLoop, QuantumRequest,
-    QuantumTerminalVerdict, ReadyPoint, RegexProgram, ScenarioDefForm, Seed, SimDuration,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    QuantumTerminalVerdict, ReadyPoint, ScenarioDefForm, Seed, SimDuration, VirtualTime,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_api::{
     ProductionRootImageFormat, ProductionVmLifecycleConfig, build_production_vm_lifecycle_loop,
@@ -118,11 +118,13 @@ fn nginx_curl_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
     let nginx = node(
         "nginx",
         GuestWorkloadBinary::Httpd.selected_cmdline("console=ttyS0 address=10.0.0.2 port=8080"),
+        WhiteBoxPolicy::Disabled,
     );
     let curl = node(
         "curl",
         GuestWorkloadBinary::ClientLoop
             .selected_cmdline("console=ttyS0 address=10.0.0.3 target=10.0.0.2:8080 count=1"),
+        WhiteBoxPolicy::Enabled,
     );
     let link = LinkDef::with_transport(
         node_id("curl"),
@@ -135,16 +137,10 @@ fn nginx_curl_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
         None,
     )?;
     let world = World::from_nodes_and_links(vec![nginx, curl], vec![link])?;
-    let assertion = AssertionDef {
-        id: AssertionId::from_name("curl-receives-http-200"),
-        message: String::from("Curl receives an HTTP 200 response from Nginx"),
-        property: Property::Sometimes {
-            predicate: Predicate::console_match(
-                node_id("curl"),
-                RegexProgram::from_pattern("(^|\\n)CURL_STATUS=200(\\r?\\n|$)"),
-            ),
-        },
-    };
+    let assertion = AssertionDef::guest_sometimes(
+        AssertionId::from_name("curl-receives-http-200"),
+        "Curl receives an HTTP 200 response from Nginx",
+    );
     let no_crashes = AssertionDef {
         id: AssertionId::from_name("no-crashes"),
         message: String::from("Nginx and Curl must not crash"),
@@ -175,11 +171,11 @@ fn nginx_curl_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
         &plan,
         &properties,
         Seed::from_u64(0x200),
-        10,
+        0,
     )?)
 }
 
-fn node(name: &str, cmdline: String) -> WorldNode {
+fn node(name: &str, cmdline: String, white_box: WhiteBoxPolicy) -> WorldNode {
     WorldNode {
         id: node_id(name),
         arch: VmArchitecture::X86_64,
@@ -188,7 +184,7 @@ fn node(name: &str, cmdline: String) -> WorldNode {
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 0 },
         },
-        white_box: WhiteBoxPolicy::Disabled,
+        white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
         icount_shift: 7,
         kernel: Some(blob("aos-linux-crucible")),

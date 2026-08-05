@@ -5,14 +5,14 @@
 //! by the guest-host channel spec and decoded by the plugin.
 
 /// Version of the architecture-specific doorbell instruction ABI.
-pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 1;
+pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 3;
 /// Reserved x86_64 port used by the canonical white-box doorbell ABI.
 pub const WHITEBOX_DOORBELL_X86_64_RESERVED_PORT: u16 = 0x00e7;
 /// Reserved aarch64 immediate used by the canonical white-box doorbell ABI.
 pub const WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE: u16 = 0x04c1;
-/// Frozen x86_64 trap instruction bytes for `out dx, eax`.
-pub const WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES: [u8; 1] =
-    encode_x86_64_out_dx_eax_instruction();
+/// Frozen x86_64 trap instruction bytes for `out 0xe7, al`.
+pub const WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES: [u8; 2] =
+    encode_x86_64_out_imm8_al_instruction(WHITEBOX_DOORBELL_X86_64_RESERVED_PORT as u8);
 /// Frozen aarch64 trap instruction bytes for `hlt #0x04c1`.
 pub const WHITEBOX_DOORBELL_AARCH64_HLT_BYTES: [u8; 4] =
     encode_aarch64_hlt_instruction(WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE);
@@ -20,15 +20,15 @@ pub const WHITEBOX_DOORBELL_AARCH64_HLT_BYTES: [u8; 4] =
 pub const WHITEBOX_DOORBELL_X86_64_ABI: WhiteboxDoorbellAbi = WhiteboxDoorbellAbi {
     version: WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION,
     architecture: WhiteboxDoorbellArchitecture::X86_64,
-    instruction: WhiteboxDoorbellInstruction::X86OutDxEax,
+    instruction: WhiteboxDoorbellInstruction::X86OutImm8Al,
     trap: WhiteboxDoorbellTrapAbi::X86PortIo {
         port: WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
     },
     payload_pointer_register: "rax",
     payload_length_register: "rcx",
-    assembly: "out dx, eax",
-    instruction_bytes: &WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES,
-    vector_name: "x86_64-out-dx-eax-port-e7",
+    assembly: "out 0xe7, al",
+    instruction_bytes: &WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
+    vector_name: "x86_64-out-imm8-al-port-e7",
 };
 /// Canonical aarch64 doorbell ABI entry used by plugin and guest code.
 pub const WHITEBOX_DOORBELL_AARCH64_ABI: WhiteboxDoorbellAbi = WhiteboxDoorbellAbi {
@@ -71,8 +71,8 @@ impl WhiteboxDoorbellArchitecture {
 /// The precise trapped instruction selected by a doorbell ABI entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WhiteboxDoorbellInstruction {
-    /// x86-64 `out dx, eax`.
-    X86OutDxEax,
+    /// x86-64 `out imm8, al` with the reserved port encoded in the instruction.
+    X86OutImm8Al,
     /// AArch64 `hlt #imm16`.
     Aarch64Hlt,
 }
@@ -82,7 +82,7 @@ impl WhiteboxDoorbellInstruction {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::X86OutDxEax => "out-dx-eax",
+            Self::X86OutImm8Al => "out-imm8-al",
             Self::Aarch64Hlt => "hlt-imm16",
         }
     }
@@ -184,10 +184,10 @@ pub const fn whitebox_doorbell_abi_for_architecture(
     }
 }
 
-/// Encodes the x86_64 `out dx, eax` trap instruction.
+/// Encodes the x86_64 `out imm8, al` trap instruction.
 #[must_use]
-pub const fn encode_x86_64_out_dx_eax_instruction() -> [u8; 1] {
-    [0xef]
+pub const fn encode_x86_64_out_imm8_al_instruction(port: u8) -> [u8; 2] {
+    [0xe6, port]
 }
 
 /// Encodes the aarch64 `hlt #imm16` trap instruction as little-endian bytes.
@@ -214,7 +214,7 @@ mod tests {
                 .iter()
                 .map(|abi| abi.vector_name())
                 .collect::<Vec<_>>(),
-            vec!["x86_64-out-dx-eax-port-e7", "aarch64-hlt-imm-04c1"]
+            vec!["x86_64-out-imm8-al-port-e7", "aarch64-hlt-imm-04c1"]
         );
         assert_eq!(
             whitebox_doorbell_abi_for_architecture(WhiteboxDoorbellArchitecture::X86_64),
@@ -227,12 +227,12 @@ mod tests {
     }
 
     #[test]
-    fn doorbell_abi_x86_64_vector_freezes_out_dx_eax() {
+    fn doorbell_abi_x86_64_vector_freezes_out_imm8_al() {
         let abi = WHITEBOX_DOORBELL_X86_64_ABI;
 
         assert_eq!(abi.version(), WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION);
         assert_eq!(abi.architecture().as_str(), "x86_64");
-        assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::X86OutDxEax);
+        assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::X86OutImm8Al);
         assert_eq!(
             abi.trap(),
             WhiteboxDoorbellTrapAbi::X86PortIo {
@@ -242,10 +242,10 @@ mod tests {
         assert_eq!(abi.payload_pointer_register(), "rax");
         assert_eq!(abi.payload_length_register(), "rcx");
         assert_eq!(
-            encode_x86_64_out_dx_eax_instruction(),
-            WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES
+            encode_x86_64_out_imm8_al_instruction(WHITEBOX_DOORBELL_X86_64_RESERVED_PORT as u8),
+            WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES
         );
-        assert_eq!(abi.instruction_bytes(), &[0xef]);
+        assert_eq!(abi.instruction_bytes(), &[0xe6, 0xe7]);
     }
 
     #[test]

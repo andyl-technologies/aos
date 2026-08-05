@@ -42,6 +42,7 @@ use crate::trigger::{
 };
 
 mod canonical;
+mod guest_assertion;
 
 static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
