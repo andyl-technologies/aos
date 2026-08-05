@@ -430,6 +430,17 @@ pub enum HubChannelCmd {
 
 #[derive(Subcommand)]
 pub enum HubPublishCmd {
+    Upload {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: String,
+        /// Read the exact publication manifest from this JSON file.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Read every declared object below this surface root.
+        #[arg(long)]
+        root: PathBuf,
+    },
     Begin {
         #[command(flatten)]
         access: HubAccessArgs,

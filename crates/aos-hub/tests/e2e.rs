@@ -211,6 +211,37 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
             prefix,
         )
         .await;
+        if public_placement_id.is_none() {
+            common::configure_write_authority(
+                &db,
+                SurfaceTarget::Registry(registry_id),
+                binding,
+                &placement,
+                &format!("image-publication-{prefix}"),
+            )
+            .await;
+        } else {
+            let revision = db
+                .storage_binding_write_state(binding)
+                .await
+                .unwrap()
+                .unwrap()
+                .current_write_revision
+                .unwrap();
+            db.bind_surface_placement_write_capability(placement.id, revision)
+                .await
+                .unwrap();
+            db.create_surface_write_authority(
+                SurfaceTarget::Registry(registry_id),
+                &format!("image-publication-{prefix}"),
+                placement.id,
+                placement.resource_version,
+                placement.write_spec_version,
+                revision,
+            )
+            .await
+            .unwrap();
+        }
         let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
         let outcome = index_and_record_from_placement(
             &db,
@@ -331,7 +362,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         .await
         .unwrap();
     let org_scope = common::org_scope(&db, "images").await;
-    db.grant_membership("user", user, &org_scope, "viewer")
+    db.grant_membership("user", user, &org_scope, "owner")
         .await
         .unwrap();
     let session = db.create_session(user, 3600, 0).await.unwrap();
@@ -347,12 +378,123 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
                 token_id: "image-reader".into(),
                 owner: Principal::user(user),
                 scope: Scope::parse(&org_scope),
-                permissions: vec![Permission::Read],
+                permissions: vec![Permission::Read, Permission::Publish],
             },
             900,
         )
         .unwrap();
     let app = router(state).await;
+
+    // Publish the signed image-bearing surface through the typed producer API.
+    // The manifest declares disk bytes directly; no NAR/store indirection or
+    // slug upload facade participates in publication.
+    let refs = std::fs::read(public_surface.join("info/refs")).unwrap();
+    let raw_info = std::fs::read(public_surface.join(&public_fixture.raw_info_key)).unwrap();
+    let qcow2_info = std::fs::read(public_surface.join(&public_fixture.qcow2_info_key)).unwrap();
+    let publication_files = [
+        (
+            public_fixture.raw_key.as_str(),
+            public_fixture.raw.as_slice(),
+            "immutable",
+        ),
+        (
+            public_fixture.qcow2_key.as_str(),
+            public_fixture.qcow2.as_slice(),
+            "immutable",
+        ),
+        (
+            public_fixture.raw_info_key.as_str(),
+            raw_info.as_slice(),
+            "immutable",
+        ),
+        (
+            public_fixture.qcow2_info_key.as_str(),
+            qcow2_info.as_slice(),
+            "immutable",
+        ),
+        ("info/refs", refs.as_slice(), "mutable_pointer"),
+    ];
+    let objects = publication_files
+        .iter()
+        .map(|(path, bytes, kind)| {
+            serde_json::json!({
+                "path": path,
+                "sha256": hex::encode(Sha256::digest(bytes)),
+                "byteSize": bytes.len(),
+                "kind": kind,
+                "mediaType": if path.ends_with(".json") {
+                    "application/json"
+                } else {
+                    "application/octet-stream"
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let authorization = format!("Bearer {token}");
+    let (status, _, body) = request(
+        &app,
+        Method::POST,
+        "/aos.hub.v1.PublishService/BeginRegistryPublication",
+        &[
+            ("content-type", "application/json"),
+            ("authorization", &authorization),
+        ],
+        serde_json::to_vec(&serde_json::json!({
+            "registry": "images/public",
+            "generation": "signed-images-e2e-v1",
+            "refsDigest": hex::encode(Sha256::digest(&refs)),
+            "defaultCommit": divergent_head.to_hex(),
+            "objects": objects,
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let publication: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(publication["placements"].as_array().unwrap().len(), 1);
+    for object in publication["objects"].as_array().unwrap() {
+        let object_path = object["path"].as_str().unwrap();
+        let (_, bytes, _) = publication_files
+            .iter()
+            .find(|(path, _, _)| *path == object_path)
+            .unwrap();
+        let upload_path = url::Url::parse(object["uploadUrl"].as_str().unwrap())
+            .unwrap()
+            .path()
+            .to_string();
+        let (status, _, body) = request(
+            &app,
+            Method::PUT,
+            &upload_path,
+            &[("authorization", &authorization)],
+            bytes.to_vec(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "{}: {}",
+            object_path,
+            String::from_utf8_lossy(&body)
+        );
+    }
+    let (status, _, body) = request(
+        &app,
+        Method::POST,
+        "/aos.hub.v1.PublishService/CommitRegistryPublication",
+        &[
+            ("content-type", "application/json"),
+            ("authorization", &authorization),
+        ],
+        serde_json::to_vec(&serde_json::json!({
+            "publicationId": publication["publicationId"],
+        }))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    let committed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(committed["state"], "ready");
 
     let list_body = br#"{"slug":"images/public","channel":"stable"}"#.to_vec();
     let (status, _, body) = request(
