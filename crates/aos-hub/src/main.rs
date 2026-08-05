@@ -693,7 +693,6 @@ async fn main() -> Result<()> {
                         if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
                             &inventory_db,
                             &inventory_surfaces,
-                            &inventory_writers,
                             &cache,
                         )
                         .await
@@ -1182,20 +1181,13 @@ async fn state_brand(app_state: &AppState) -> Result<String> {
 /// each successful index is followed by presence validation of the
 /// registry's committed caches.
 async fn index_all(db: &Database, surfaces: &dyn aos_hub_core::fetch::SurfaceProvider) {
-    let mut registries = match db.list_registries().await {
+    let registries = match db.list_registries().await {
         Ok(regs) => regs,
         Err(err) => {
             tracing::error!(error = %format!("{err:#}"), "listing registries");
             return;
         }
     };
-    if let Ok(cleanup) = db.list_registries_with_write_tickets().await {
-        for registry in cleanup {
-            if !registries.iter().any(|existing| existing.id == registry.id) {
-                registries.push(registry);
-            }
-        }
-    }
     for registry in registries {
         let placement = match db
             .reconciled_surface_reader(aos_hub_core::db::SurfaceTarget::Registry(registry.id))

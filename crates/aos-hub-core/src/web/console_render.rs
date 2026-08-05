@@ -2084,9 +2084,7 @@ pub fn org_dashboard(
     gateways: &[crate::db::StorageGatewayRecord],
     topology_defaults: Option<&crate::web::console::ports::TopologyDefaultsOverview>,
     can_manage_members: bool,
-    can_read_audit: bool,
     can_configure: bool,
-    can_manage_keys: bool,
     // Backend locations and binding mutations require the narrower storage
     // authority used by the binding-detail handlers. Registry configuration
     // alone must not reveal host paths or object-store endpoints.
@@ -6833,9 +6831,7 @@ mod cache_render_tests {
             &[],
             None,
             false,
-            false,
             can_configure,
-            false,
             can_manage_storage,
             false,
             1,

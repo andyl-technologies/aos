@@ -2673,7 +2673,6 @@ struct ValidatedImageFile {
     path: PathBuf,
     file: fs::File,
     identity: FileIdentity,
-    sha256: String,
     path_bound: bool,
 }
 
@@ -3135,28 +3134,24 @@ where
             path: image_path,
             file: image_file,
             identity: image_identity,
-            sha256: actual_sha256,
             path_bound: true,
         },
         image_info: ValidatedImageFile {
             path: PathBuf::from("<canonical image-info.json>"),
             file: canonical_info_file,
             identity: canonical_info_identity,
-            sha256: info_sha256,
             path_bound: false,
         },
         producer_image_info: ValidatedImageFile {
             path: info_path,
             file: info_file,
             identity: info_identity,
-            sha256: sha256_hex(&info_bytes),
             path_bound: true,
         },
         uki: ValidatedImageFile {
             path: uki_path.to_path_buf(),
             file: uki_file,
             identity: uki_identity,
-            sha256: uki_sha256,
             path_bound: true,
         },
         esp_offset_bytes,
@@ -13534,15 +13529,13 @@ mod tests {
         assert_eq!(image.delivery.filename, "aos-test.qcow2");
         assert_eq!(image.delivery.image_info.filename, "image-info.json");
         assert!(image.delivery.object_key.contains(&image.delivery.sha256));
-        assert_eq!(image.disk.sha256, image.delivery.sha256);
         assert_eq!(image.disk.identity.len, image.delivery.byte_size);
-        assert_eq!(image.image_info.sha256, image.delivery.image_info.sha256);
         assert_eq!(
             image.uki.path.extension().and_then(|value| value.to_str()),
             Some("efi")
         );
         assert_eq!(image.uki.identity.len, 23);
-        assert_eq!(image.uki.sha256.len(), 64);
+        assert_eq!(image.delivery.uki.sha256.len(), 64);
         let mut public_info_file = image.image_info.file.try_clone().unwrap();
         public_info_file.seek(SeekFrom::Start(0)).unwrap();
         let mut public_info = String::new();

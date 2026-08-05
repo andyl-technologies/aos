@@ -173,7 +173,7 @@ pub async fn rescan_all(
         if cache.deleted_at.is_some() {
             continue;
         }
-        match aos_hub_core::cache_scan::rescan_cache(&db, &provider, &writers, &cache).await {
+        match aos_hub_core::cache_scan::rescan_cache(&db, &provider, &cache).await {
             Ok(stats) => {
                 if stats.added > 0 || stats.removed > 0 {
                     worker::console_log!(

@@ -15012,8 +15012,7 @@ impl RpcService {
         ),
         RpcError,
     > {
-        let claims = self
-            .require_control_plan_permission(auth, &req.plan_id, Permission::PlacementManage)
+        self.require_control_plan_permission(auth, &req.plan_id, Permission::PlacementManage)
             .await?;
         self.begin_control_plan_apply(
             auth,
@@ -15186,7 +15185,7 @@ impl RpcService {
                 .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?
         };
         for group in &input.groups {
-            let (existing_groups, existing_members) = self
+            let (existing_groups, _) = self
                 .db
                 .placement_policy_revision_shape(&revision.id)
                 .await
@@ -19439,35 +19438,6 @@ impl RpcService {
         Ok(pb::RegistryResponse {
             registry: Some(self.registry_message(&record, status).await?),
         })
-    }
-
-    /// Resolve a storage-binding name to its id within `org_id`.
-    ///
-    /// An empty name resolves to `None` (the deployment default store).
-    ///
-    /// # Errors
-    ///
-    /// [`RpcError::InvalidArgument`] when a non-empty name names no binding in
-    /// the org, or when the resource has no org; [`RpcError::Internal`] on a DB
-    /// failure.
-    async fn resolve_storage_binding(
-        &self,
-        org_id: Option<i64>,
-        name: &str,
-    ) -> Result<Option<i64>, RpcError> {
-        let name = name.trim();
-        if name.is_empty() {
-            return Ok(None);
-        }
-        let org_id =
-            org_id.ok_or_else(|| RpcError::invalid("resource has no organization".to_string()))?;
-        let binding = self
-            .db
-            .storage_binding_by_name(org_id, name)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::invalid(format!("unknown storage binding '{name}'")))?;
-        Ok(Some(binding.id))
     }
 
     // -- BinaryCacheService (RFC-0004 "11-caches") ---------------------------------
@@ -30442,30 +30412,6 @@ fn topology_target_read_permission(target_kind: &str) -> Permission {
     }
 }
 
-/// Resolves the permission needed to control an operation's secondary target.
-///
-/// The persisted permission describes the primary target. A cross-resource
-/// operation must use the secondary resource's own manage verb. Cache targets
-/// retain the persisted verb because cache control is intentionally split into
-/// retention, GC planning, and GC execution capabilities.
-fn topology_target_control_permission(
-    target_kind: &str,
-    primary_permission: Permission,
-) -> Permission {
-    match target_kind {
-        "registry" => Permission::RegistryConfigure,
-        "placement" => Permission::PlacementManage,
-        "placement_policy" => Permission::PlacementPolicyManage,
-        "domain" => Permission::DomainManage,
-        "network_boundary" => Permission::NetworkBoundaryManage,
-        "delivery_endpoint" => Permission::DeliveryEndpointManage,
-        "storage_gateway" => Permission::StorageGatewayManage,
-        "storage_binding" => Permission::StorageBindingManage,
-        "delivery_route" => Permission::RouteManage,
-        _ => primary_permission,
-    }
-}
-
 fn parse_resource_version(value: &str, default: i64) -> Result<i64, RpcError> {
     if value.is_empty() {
         return Ok(default);
@@ -30697,7 +30643,7 @@ mod cache_upload_tests {
     use super::{
         collect_plan_pin_impacts, multipart_completion_matches, narinfo_store_hash,
         parse_cache_narinfo, pb, render_nix_cache_info,
-        validate_signing_key_consumer_compatibility, RpcError, RpcService, SurfaceWriteOutcome,
+        validate_signing_key_consumer_compatibility, RpcError, RpcService,
     };
     use crate::auth::jwt::JwtKeys;
     use crate::auth::seal::SecretSealer;
@@ -30710,7 +30656,7 @@ mod cache_upload_tests {
     };
     use crate::domain::{Permission, Principal, Role, Scope};
     use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
-    use crate::lease::{InMemoryLease, PublishLease};
+    use crate::lease::InMemoryLease;
     use crate::ratelimit::CoordinatorRateLimiter;
     use crate::reindex::Reindexer;
     use crate::surface_write::{

@@ -542,6 +542,9 @@ dependencies = [
  "rustls-native-certs",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
  "webpki-roots",
 ]
 

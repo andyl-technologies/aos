@@ -19,7 +19,7 @@ use aos_hub::indexer::index_and_record;
 use aos_hub::probe::{probe_caches, ProbeStatus};
 use aos_hub::server::{router, AppState};
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
 
 /// Build an [`AppState`] over `db`.

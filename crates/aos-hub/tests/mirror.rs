@@ -18,7 +18,7 @@ use aos_hub::mirror::{fetch_through, sync_full_mirror};
 use aos_hub::server::{router, AppState};
 use axum::body::Body;
 use axum::extract::{Path as AxPath, State};
-use axum::http::{Request, StatusCode};
+use axum::http::{header, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tower::ServiceExt;

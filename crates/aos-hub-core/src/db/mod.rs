@@ -20317,26 +20317,6 @@ fn normalize_topology_hostname(hostname: &str) -> Result<String> {
     Ok(hostname)
 }
 
-/// Normalizes a delivery base path to empty-at-root and no trailing slash.
-fn normalize_topology_base_path(base_path: &str) -> Result<String> {
-    let path = base_path.trim();
-    if path.is_empty() || path == "/" {
-        return Ok(String::new());
-    }
-    if !path.starts_with('/') || path.contains(['?', '#']) || path.contains("//") {
-        bail!("delivery base path must be empty or a simple rooted path");
-    }
-    if path
-        .split('/')
-        .any(|component| matches!(component, "." | ".."))
-    {
-        bail!("delivery base path cannot contain '.' or '..' components");
-    }
-    let normalized = path.trim_end_matches('/');
-    validate_key_bytes(normalized, "delivery base path", 512)?;
-    Ok(normalized.to_string())
-}
-
 /// Normalizes a safe binding-relative placement prefix.
 fn normalize_placement_prefix(prefix: &str) -> Result<String> {
     if prefix != prefix.trim() {
@@ -20351,17 +20331,6 @@ fn normalize_placement_prefix(prefix: &str) -> Result<String> {
     }
     validate_key_bytes(prefix, "placement prefix", 512)?;
     Ok(prefix.to_string())
-}
-
-/// Joins a normalized rooted gateway base with a binding-relative placement prefix.
-fn join_topology_paths(base_path: &str, placement_prefix: &str) -> Result<String> {
-    let joined = match (base_path.is_empty(), placement_prefix.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => format!("/{placement_prefix}"),
-        (false, true) => base_path.to_string(),
-        (false, false) => format!("{base_path}/{placement_prefix}"),
-    };
-    normalize_topology_base_path(&joined)
 }
 
 fn validate_key_bytes(value: &str, label: &str, capacity: usize) -> Result<()> {
@@ -20423,14 +20392,6 @@ fn validate_placement_spec(
         bail!("an archive placement cannot be read-enabled");
     }
     Ok(())
-}
-
-fn surface_from_ids(registry_id: Option<i64>, cache_id: Option<i64>) -> Result<SurfaceTarget> {
-    match (registry_id, cache_id) {
-        (Some(id), None) => Ok(SurfaceTarget::Registry(id)),
-        (None, Some(id)) => Ok(SurfaceTarget::BinaryCache(id)),
-        _ => bail!("corrupt topology row: surface target must satisfy XOR"),
-    }
 }
 
 const PLACEMENT_COLUMNS: &str = "id, registry_id, cache_id, name, storage_binding_id,
@@ -20581,21 +20542,6 @@ fn row_to_surface_write_authority(row: &Row) -> Result<SurfaceWriteAuthorityReco
         resource_version: row.get(15)?,
         created_at: row.get(16)?,
         updated_at: row.get(17)?,
-    })
-}
-
-fn row_to_topology_defaults(row: &Row) -> Result<TopologyDefaultsRecord> {
-    Ok(TopologyDefaultsRecord {
-        id: row.get(0)?,
-        scope_kind: row.get(1)?,
-        org_id: row.get(2)?,
-        scope_key: row.get(3)?,
-        storage_binding_id: row.get(4)?,
-        domain_id: row.get(5)?,
-        storage_gateway_id: row.get(6)?,
-        resource_version: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
     })
 }
 
@@ -20982,12 +20928,9 @@ fn sanitize_log_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::Arc;
-    use std::sync::Mutex;
 
     use super::*;
-    use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceProvider};
     use rusqlite::Connection;
     use uuid::Uuid;
 
@@ -25208,11 +25151,6 @@ source_nar_hash = ""
 
     #[tokio::test]
     async fn topology_orders_named_placements_and_rejects_stale_versions() {
-        assert_eq!(join_topology_paths("", "").unwrap(), "");
-        assert_eq!(
-            join_topology_paths("/cdn", "registry/main").unwrap(),
-            "/cdn/registry/main"
-        );
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("ordered", "Ordered").await.unwrap();
         let binding = create_local_binding(&db, org, "ordered", "/tmp/ordered").await;
@@ -25380,7 +25318,7 @@ source_nar_hash = ""
     /// local_fs binding, so serving queries can exclude it on soft-delete.
     impl Database {
         async fn register_owned(&self, org_id: i64, slug: &str) {
-            let binding = create_local_binding(self, org_id, "primary", "/tmp/aos-hub-test").await;
+            create_local_binding(self, org_id, "primary", "/tmp/aos-hub-test").await;
             // The slug is `org/name`; split off the name for the canonical path.
             let name = slug.rsplit('/').next().unwrap();
             self.create_managed_registry(org_id, "", name, "public", &[], false)
