@@ -2977,6 +2977,7 @@ fn plan_validation_reports_precise_fault_heal_and_time_errors() {
     );
     let negative_time_toml = r#"
 id = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+fault_signal_semantic_version = 1
 
 [[entry]]
 kind = "activate"
@@ -2990,6 +2991,7 @@ restart = "stay_down"
 "#;
     let unknown_direction_toml = r#"
 id = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+fault_signal_semantic_version = 1
 
 [[entry]]
 kind = "activate"
@@ -3004,6 +3006,7 @@ direction = "sideways"
 "#;
     let unsupported_fault_param_toml = r#"
 id = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+fault_signal_semantic_version = 1
 
 [[entry]]
 kind = "activate"

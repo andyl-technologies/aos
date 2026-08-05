@@ -243,6 +243,7 @@ predicate = "no_active_faults"
         r#"
 id = "blake3:{}"
 kind = "event_graph"
+fault_signal_semantic_version = 1
 
 [[event]]
 id = "pass-on-quiet"

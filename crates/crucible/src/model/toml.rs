@@ -27,16 +27,13 @@ pub(super) fn validate_link_transport(link: &LinkDef) -> Result<(), EngineError>
     Ok(())
 }
 
-pub(super) const SCENARIO_FORM_BINARY_MAGIC_V1: &[u8] = b"crucible.scenario-def-form.v1\0";
-pub(super) const SCENARIO_FORM_BINARY_MAGIC_V2: &[u8] = b"crucible.scenario-def-form.v2\0";
-pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V1: &[u8] =
-    b"crucible.reproduction-artifact.v1\0";
-pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V2: &[u8] =
-    b"crucible.reproduction-artifact.v2\0";
+pub(super) const SCENARIO_FORM_BINARY_MAGIC_V3: &[u8] = b"crucible.scenario-def-form.v3\0";
+pub(super) const REPRODUCTION_ARTIFACT_BINARY_MAGIC_V3: &[u8] =
+    b"crucible.reproduction-artifact.v3\0";
 pub(super) const SCHEDULE_BINARY_MAGIC: &[u8] = b"crucible.schedule.v1\0";
 pub(super) const WORLD_BINARY_MAGIC_V1: &[u8] = b"crucible.world.v1\0";
 pub(super) const WORLD_BINARY_MAGIC_V2: &[u8] = b"crucible.world.v2\0";
-pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v1\0";
+pub(super) const PLAN_BINARY_MAGIC: &[u8] = b"crucible.plan.v3\0";
 pub(super) const PROPERTIES_BINARY_MAGIC: &[u8] = b"crucible.properties.v1\0";
 pub(super) const PREDICATE_BINARY_MAGIC: &[u8] = b"crucible.predicate.v1\0";
 pub(super) const ACTION_BINARY_MAGIC: &[u8] = b"crucible.action.v1\0";
@@ -47,6 +44,8 @@ pub(super) const CHECKPOINT_BINARY_MAGIC: &[u8] = b"crucible.checkpoint.v1\0";
 pub(super) const MAX_SCENARIO_BINARY_COLLECTION_ITEMS: usize = 1_000_000;
 pub(super) const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;
+pub(super) const MAX_REPRODUCTION_SCENARIO_BLOB_BYTES: usize =
+    MAX_SCENARIO_BINARY_BLOB_BYTES + HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,6 +175,11 @@ pub(super) struct LinkToml {
 #[serde(deny_unknown_fields)]
 pub(super) struct PlanToml {
     pub(super) id: String,
+    pub(super) fault_signal_semantic_version: u16,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) signal_program: Vec<toml::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) fault_binding: Vec<toml::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) kind: Option<PlanKindToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -755,17 +759,19 @@ where
     deserializer.deserialize_any(NumberOrStringVisitor)
 }
 
-pub(super) fn scenario_form_to_toml(form: &ScenarioDefForm) -> ScenarioDefToml {
-    ScenarioDefToml {
+pub(super) fn scenario_form_to_toml(
+    form: &ScenarioDefForm,
+) -> Result<ScenarioDefToml, EngineError> {
+    Ok(ScenarioDefToml {
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
             seed: format_seed_ref(form.seed),
             app_random_draw_cap: form.app_random_draw_cap,
         },
         world: world_to_toml(&form.world),
-        plan: plan_to_toml(&form.plan),
+        plan: plan_to_toml(&form.plan)?,
         properties: properties_to_toml(&form.properties),
-    }
+    })
 }
 
 pub(super) fn scenario_form_from_toml(
@@ -1047,10 +1053,17 @@ pub(super) fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
     )
 }
 
-pub(super) fn plan_to_toml(plan: &Plan) -> PlanToml {
-    match &plan.kind {
+pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
+    let fault_signals = FaultSignalPlanWire::from_plan(plan.fault_signals());
+    let (signal_program, fault_binding) = fault_signals
+        .to_toml_rows()
+        .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    Ok(match &plan.kind {
         PlanKind::ScheduledEntries { entries } => PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
+            fault_signal_semantic_version: fault_signals.semantic_version,
+            signal_program,
+            fault_binding,
             kind: None,
             entry: entries.iter().map(plan_entry_to_toml).collect(),
             fault_entry: Vec::new(),
@@ -1058,6 +1071,9 @@ pub(super) fn plan_to_toml(plan: &Plan) -> PlanToml {
         },
         PlanKind::FaultPlan { plan: fault_plan } => PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
+            fault_signal_semantic_version: fault_signals.semantic_version,
+            signal_program,
+            fault_binding,
             kind: Some(PlanKindToml::FaultPlan),
             entry: Vec::new(),
             fault_entry: fault_plan
@@ -1069,12 +1085,15 @@ pub(super) fn plan_to_toml(plan: &Plan) -> PlanToml {
         },
         PlanKind::EventGraph { graph } => PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
+            fault_signal_semantic_version: fault_signals.semantic_version,
+            signal_program,
+            fault_binding,
             kind: Some(PlanKindToml::EventGraph),
             entry: Vec::new(),
             fault_entry: Vec::new(),
             event: graph.events().iter().map(event_to_toml).collect(),
         },
-    }
+    })
 }
 
 pub(super) fn plan_from_toml(world: &World, toml: PlanToml) -> Result<Plan, EngineError> {
@@ -1087,7 +1106,16 @@ pub(super) fn plan_from_toml_with_assertions(
     toml: PlanToml,
 ) -> Result<Plan, EngineError> {
     let id = parse_content_hash_ref(&toml.id)?;
-    let plan = match serialized_plan_kind(&toml)? {
+    let serialized_kind = serialized_plan_kind(&toml)?;
+    let fault_signals = FaultSignalPlanWire::from_toml_rows(
+        toml.fault_signal_semantic_version,
+        toml.signal_program,
+        toml.fault_binding,
+    )
+    .map_err(|error| scenario_serialization_error(error.to_string()))?
+    .admit()
+    .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    let plan = match serialized_kind {
         SerializedPlanKind::ScheduledEntries => {
             let entries = toml
                 .entry
@@ -1113,7 +1141,8 @@ pub(super) fn plan_from_toml_with_assertions(
             let graph = EventGraph::from_unchecked_events_for_model(events);
             Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
         }
-    };
+    }
+    .with_fault_signals(fault_signals);
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
 }

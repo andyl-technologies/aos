@@ -26,8 +26,12 @@ seed = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 - Hex payloads are lowercase, even length, and contain no prefix or separators.
 - Required fields have no default. The only defaults are listed explicitly in
   this file and enter canonical material as their expanded values.
-- `u32`, `u64`, and `i64` fields use TOML integers and their full named range
-  subject to field bounds. A value outside the type is rejected while parsing.
+- `u32`, `i64`, and `u64` values through `i64::MAX` use TOML integers. Because
+  TOML has no unsigned integer type, `u64` values from `i64::MAX + 1` through
+  `u64::MAX` use the reserved canonical string `"u64:<unsigned-decimal>"`.
+  Leading signs, leading zeroes, malformed decimals, using that string below
+  the threshold, and using it for a non-`u64` field are rejected. A value
+  outside the field's type or semantic bounds is rejected while parsing.
 - Rational tables contain `numerator: i64` and `denominator: u64`; denominator
   is positive and the pair must already be in lowest terms with a positive
   denominator.

@@ -9,11 +9,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::io;
 
 use super::*;
 
 /// Maximum distinct signal programs in one scenario.
 pub const HARD_FAULT_SIGNAL_PROGRAM_LIMIT: usize = 16_384;
+/// Maximum deterministic persistence bytes for one admitted fault layer.
+pub const HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES: usize = 256 * 1024 * 1024;
 
 /// Canonical, immutable signal-driven fault layer for one scenario.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,6 +24,7 @@ pub struct FaultSignalPlan {
     programs: Vec<SignalProgram>,
     bindings: Vec<FaultBinding>,
     id: ContentHash,
+    wire_bytes: Vec<u8>,
 }
 
 impl Default for FaultSignalPlan {
@@ -40,6 +44,8 @@ impl FaultSignalPlan {
                 "crucible.fault-signal-plan.v1",
                 "programs=0\nbindings=0",
             ),
+            wire_bytes: b"{\"semantic_version\":1,\"signal_program\":[],\"fault_binding\":[]}"
+                .to_vec(),
         }
     }
 
@@ -101,11 +107,18 @@ impl FaultSignalPlan {
             material.push(':');
             material.push_str(&digest.to_hex());
         }
-        Ok(Self {
+        let mut plan = Self {
             programs,
             bindings,
             id: ContentHash::from_canonical_material("crucible.fault-signal-plan.v1", &material),
-        })
+            wire_bytes: Vec::new(),
+        };
+        plan.wire_bytes = encode_wire_bounded(
+            &FaultSignalPlanWire::from_plan(&plan),
+            HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES,
+        )
+        .map_err(FaultSignalPlanError::WireCodec)?;
+        Ok(plan)
     }
 
     /// Returns the fault-layer content identity.
@@ -124,6 +137,31 @@ impl FaultSignalPlan {
     #[must_use]
     pub fn bindings(&self) -> &[FaultBinding] {
         &self.bindings
+    }
+
+    /// Returns the versioned deterministic persistence bytes.
+    #[must_use]
+    pub(crate) fn wire_bytes(&self) -> &[u8] {
+        &self.wire_bytes
+    }
+
+    /// Decodes and re-admits versioned deterministic persistence bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultSignalPlanDecodeError`] for malformed JSON or any wire
+    /// contract that fails semantic admission.
+    pub(crate) fn from_wire_bytes(bytes: &[u8]) -> Result<Self, FaultSignalPlanDecodeError> {
+        if bytes.len() > HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES {
+            return Err(FaultSignalPlanDecodeError::WireLimit {
+                actual: bytes.len(),
+                hard: HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES,
+            });
+        }
+        serde_json::from_slice::<FaultSignalPlanWire>(bytes)
+            .map_err(FaultSignalPlanDecodeError::Json)?
+            .admit()
+            .map_err(FaultSignalPlanDecodeError::Admission)
     }
 
     /// Returns bindings grouped by their exact admitted program identity.
@@ -191,6 +229,8 @@ pub enum FaultSignalPlanError {
     },
     /// Canonical binding encoding failed.
     BindingCodec(serde_json::Error),
+    /// Complete plan persistence encoding failed.
+    WireCodec(serde_json::Error),
     /// A compiled registry capability ID was malformed.
     Capability(FaultContractError),
 }
@@ -205,10 +245,88 @@ impl Error for FaultSignalPlanError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::BindingCodec(error) => Some(error),
+            Self::WireCodec(error) => Some(error),
             Self::Capability(error) => Some(error),
             _ => None,
         }
     }
+}
+
+/// Failure to parse or semantically admit persisted fault-signal bytes.
+#[derive(Debug)]
+pub(crate) enum FaultSignalPlanDecodeError {
+    /// The encoded plan exceeds the compiled persistence bound.
+    WireLimit {
+        /// Submitted byte count.
+        actual: usize,
+        /// Compiled byte ceiling.
+        hard: usize,
+    },
+    /// JSON syntax or structural decoding failed.
+    Json(serde_json::Error),
+    /// The decoded contract failed semantic admission.
+    Admission(FaultSignalWireError),
+}
+
+impl fmt::Display for FaultSignalPlanDecodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WireLimit { actual, hard } => write!(
+                formatter,
+                "fault signal plan wire bytes {actual} exceed hard limit {hard}"
+            ),
+            Self::Json(error) => write!(formatter, "decode fault signal plan JSON: {error}"),
+            Self::Admission(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for FaultSignalPlanDecodeError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::WireLimit { .. } => None,
+            Self::Json(error) => Some(error),
+            Self::Admission(error) => Some(error),
+        }
+    }
+}
+
+struct BoundedWireWriter {
+    bytes: Vec<u8>,
+    hard: usize,
+}
+
+impl io::Write for BoundedWireWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let next = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .ok_or_else(|| io::Error::other("fault signal wire length overflow"))?;
+        if next > self.hard {
+            return Err(io::Error::other(
+                "fault signal wire exceeds compiled byte limit",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn encode_wire_bounded<T: serde::Serialize>(
+    value: &T,
+    hard: usize,
+) -> Result<Vec<u8>, serde_json::Error> {
+    let mut writer = BoundedWireWriter {
+        bytes: Vec::new(),
+        hard,
+    };
+    serde_json::to_writer(&mut writer, value)?;
+    Ok(writer.bytes)
 }
 
 #[cfg(test)]

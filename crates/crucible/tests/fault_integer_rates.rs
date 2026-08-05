@@ -199,6 +199,7 @@ fn scheduled_plan_toml_is_float_free_for_fault_entries() {
 fn scheduled_plan_toml_rejects_decimal_fault_parameters() {
     let input = r#"
 id = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
+fault_signal_semantic_version = 1
 
 [[entry]]
 kind = "activate"

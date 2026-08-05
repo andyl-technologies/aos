@@ -972,6 +972,7 @@ fn fault_plan_toml_rejects_out_of_range_integer_params() {
     let input = r#"
 id = "blake3:0000000000000000000000000000000000000000000000000000000000000000"
 kind = "fault_plan"
+fault_signal_semantic_version = 1
 
 [[fault_entry]]
 kind = "permanent_at"

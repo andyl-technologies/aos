@@ -388,6 +388,30 @@ fn limits_and_domain_crossings_fail_closed() {
 }
 
 #[test]
+fn authored_payload_limits_apply_before_canonical_material_is_built() {
+    let oversized = SignalValue::Bytes(vec![0; HARD_SIGNAL_LITERAL_BYTES_PER_VALUE + 1]);
+    assert_eq!(oversized.value_type(), None);
+
+    let mut node = constant("payload", true);
+    node.output = SignalShape::new(SignalValueType::Bytes, SignalUnit::Dimensionless, 0)
+        .unwrap_or_else(|error| panic!("bytes shape: {error}"));
+    node.kind = SignalNodeKind::Constant {
+        value: SignalValue::Bytes(vec![0; 256]),
+    };
+    let limits = SignalResourceLimits {
+        authored_payload_bytes: 32,
+        ..SignalResourceLimits::default()
+    };
+    assert!(matches!(
+        SignalProgram::new(vec![node], vec![id("payload")], limits),
+        Err(SignalProgramError::ResourceExceeded {
+            field: "signal_authored_payload_bytes",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn malformed_literals_and_invalid_source_schemas_fail() {
     let bad_probability = SignalNode {
         id: id("bad"),

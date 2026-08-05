@@ -48,6 +48,16 @@ impl FaultCapabilityId {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for FaultCapabilityId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for FaultCapabilityId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -55,7 +65,11 @@ impl fmt::Display for FaultCapabilityId {
 }
 
 /// A production adapter family that can apply an effect.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum FaultAdapter {
     /// Network links, queues, forwarding state, radio media, and contacts.
     Network,
@@ -66,7 +80,11 @@ pub enum FaultAdapter {
 }
 
 /// A closed kind of object to which an executable fault may bind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum FaultTargetKind {
     /// One endpoint interface.
     NetworkInterface,
@@ -167,7 +185,11 @@ impl FaultTargetKind {
 }
 
 /// A stable point in an adapter operation at which an effect may apply.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum FaultPhase {
     /// The adapter constructs a new operation or value.
     Produce,
@@ -289,7 +311,11 @@ impl FaultPhase {
 }
 
 /// How long an applied effect contribution remains meaningful.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum EffectLifetime {
     /// The contribution remains active until its binding deactivates it.
     Persistent,
@@ -302,7 +328,11 @@ pub enum EffectLifetime {
 }
 
 /// The deterministic algebra used to combine simultaneous contributions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum CompositionAlgebra {
     /// Any active outage makes the target unavailable.
     OutageOr,
@@ -389,7 +419,8 @@ macro_rules! effect_registry {
         evidence: [$($evidence:literal),+ $(,)?]
     }),+ $(,)?) => {
         /// The closed set of executable network, storage/9p, and node effects.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
         pub enum EffectKind {
             $(#[$doc] $variant,)+
         }

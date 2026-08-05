@@ -39,6 +39,16 @@ impl FaultObjectId {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for FaultObjectId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for FaultObjectId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -67,7 +77,11 @@ fn valid_id(value: &str) -> bool {
 }
 
 /// A direction attached to an opportunity when the operation is directional.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum FaultDirection {
     /// From endpoint A toward endpoint B.
     AToB,
@@ -99,7 +113,11 @@ impl FaultDirection {
 }
 
 /// A fully resolved, capability-checked target identity.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum ResolvedFaultTarget {
     /// One endpoint interface.
     NetworkInterface {
@@ -448,7 +466,11 @@ fn push_u64(material: &mut String, value: u64) {
 }
 
 /// A closed production-adapter operation that can expose fault opportunities.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum FaultOperation {
     /// A network transmission.
     NetworkTransmit,
@@ -733,7 +755,10 @@ impl FaultOperation {
 }
 
 /// A scheduler coordinate included in a fault-opportunity identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct FaultCoordinate {
     /// Global virtual time in nanoseconds.
     pub virtual_nanos: u64,
@@ -742,7 +767,9 @@ pub struct FaultCoordinate {
 }
 
 /// Bounded immutable metadata needed to distinguish and validate an operation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum OpportunityPayload {
     /// No additional identity-bearing metadata is required.
     None,

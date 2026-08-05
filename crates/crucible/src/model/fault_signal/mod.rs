@@ -36,6 +36,7 @@ mod storage_effect;
 mod tests;
 mod trace;
 mod trace_import;
+mod wire;
 
 pub use binding::*;
 pub use binding_runtime::*;
@@ -56,6 +57,7 @@ pub use spatial::*;
 pub use storage_effect::*;
 pub use trace::*;
 pub use trace_import::*;
+pub(crate) use wire::*;
 
 /// Semantic version of the signal evaluator implemented by this crate.
 pub const SIGNAL_EVALUATOR_VERSION: u16 = 1;
@@ -75,6 +77,12 @@ pub const HARD_SIGNAL_GRAPH_DEPTH_LIMIT: u16 = 4_096;
 /// Hard maximum bytes retained by all stateful signal nodes.
 pub const HARD_SIGNAL_STATE_BYTES_LIMIT: u64 = 268_435_456;
 
+/// Hard maximum encoded authored parameters retained by one signal program.
+pub const HARD_SIGNAL_AUTHORED_PAYLOAD_BYTES_LIMIT: u64 = 67_108_864;
+
+/// Hard maximum opaque bytes carried by one literal value.
+pub const HARD_SIGNAL_LITERAL_BYTES_PER_VALUE: usize = 16_777_216;
+
 /// Hard maximum state count in one finite state machine or Markov chain.
 pub const HARD_SIGNAL_STATES_PER_NODE_LIMIT: u32 = 65_536;
 
@@ -85,7 +93,8 @@ pub const HARD_SIGNAL_TRANSITIONS_PER_NODE_LIMIT: u32 = 262_144;
 pub const HARD_SIGNAL_LOOKUP_POINTS_PER_NODE_LIMIT: u32 = 1_048_576;
 
 /// Default admission limits for a signal program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignalResourceLimits {
     /// Maximum number of nodes.
     pub nodes: u32,
@@ -97,6 +106,8 @@ pub struct SignalResourceLimits {
     pub graph_depth: u16,
     /// Maximum aggregate state retained by stateful nodes.
     pub state_bytes: u64,
+    /// Maximum aggregate encoded authored node parameters.
+    pub authored_payload_bytes: u64,
     /// Maximum states in one finite state machine or Markov chain.
     pub states_per_node: u32,
     /// Maximum transitions in one finite state machine.
@@ -113,6 +124,7 @@ impl Default for SignalResourceLimits {
             inputs_per_node: 64,
             graph_depth: HARD_SIGNAL_GRAPH_DEPTH_LIMIT,
             state_bytes: 67_108_864,
+            authored_payload_bytes: 16_777_216,
             states_per_node: 4_096,
             transitions_per_node: 16_384,
             lookup_points_per_node: 65_536,
@@ -153,6 +165,11 @@ impl SignalResourceLimits {
             "signal_state_bytes",
             self.state_bytes,
             HARD_SIGNAL_STATE_BYTES_LIMIT,
+        )?;
+        check_limit(
+            "signal_authored_payload_bytes",
+            self.authored_payload_bytes,
+            HARD_SIGNAL_AUTHORED_PAYLOAD_BYTES_LIMIT,
         )?;
         check_limit(
             "state_machine_states_per_node",
@@ -215,6 +232,16 @@ impl SignalId {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for SignalId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for SignalId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -247,6 +274,22 @@ fn valid_signal_id(value: &str) -> bool {
 pub struct ExactRatio {
     numerator: i64,
     denominator: u64,
+}
+
+impl<'de> serde::Deserialize<'de> for ExactRatio {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            numerator: i64,
+            denominator: u64,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.numerator, wire.denominator).map_err(serde::de::Error::custom)
+    }
 }
 
 impl ExactRatio {
@@ -292,7 +335,11 @@ fn gcd(mut left: u64, mut right: u64) -> u64 {
 }
 
 /// Closed scalar and aggregate value types understood by signal programs.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalValueType {
     /// Boolean state.
     Bool,
@@ -358,7 +405,11 @@ impl SignalValueType {
 }
 
 /// Closed physical units accepted by signal schema version 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalUnit {
     /// Unitless quantity.
     Dimensionless,
@@ -446,6 +497,24 @@ pub struct SignalShape {
     pub scale_decimal_exponent: i8,
 }
 
+impl<'de> serde::Deserialize<'de> for SignalShape {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            value_type: SignalValueType,
+            unit: SignalUnit,
+            scale_decimal_exponent: i8,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.value_type, wire.unit, wire.scale_decimal_exponent)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 impl SignalShape {
     /// Builds and validates a signal shape.
     ///
@@ -512,7 +581,11 @@ impl SignalShape {
 }
 
 /// Canonical literal carried by a constant or analytic signal node.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum SignalValue {
     /// Boolean value.
     Bool(bool),
@@ -566,11 +639,19 @@ impl SignalValue {
             }
             Self::ProbabilityMillionths(_) => None,
             Self::Enum { schema, .. } => Some(SignalValueType::Enum(schema.clone())),
-            Self::Event { schema, .. } => Some(SignalValueType::Event(schema.clone())),
+            Self::Event { schema, payload }
+                if payload.len() <= HARD_SIGNAL_LITERAL_BYTES_PER_VALUE =>
+            {
+                Some(SignalValueType::Event(schema.clone()))
+            }
+            Self::Event { .. } => None,
             Self::Vector2(values) if values.len() == 2 => homogeneous_vector_type(values, true),
             Self::Vector3(values) if values.len() == 3 => homogeneous_vector_type(values, false),
             Self::Vector2(_) | Self::Vector3(_) => None,
-            Self::Bytes(_) => Some(SignalValueType::Bytes),
+            Self::Bytes(value) if value.len() <= HARD_SIGNAL_LITERAL_BYTES_PER_VALUE => {
+                Some(SignalValueType::Bytes)
+            }
+            Self::Bytes(_) => None,
         }
     }
 
@@ -636,7 +717,11 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Coordinate domain in which a signal node may be evaluated.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalDomain {
     /// Global virtual nanoseconds.
     VirtualTime,
@@ -666,7 +751,11 @@ impl SignalDomain {
 }
 
 /// Explicit behavior when fixed-width arithmetic would overflow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalOverflow {
     /// Stop evaluation with an error.
     Error,
@@ -675,7 +764,11 @@ pub enum SignalOverflow {
 }
 
 /// Exact rounding rule for rational arithmetic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalRounding {
     /// Round toward negative infinity.
     Floor,
@@ -690,7 +783,11 @@ pub enum SignalRounding {
 }
 
 /// Closed pure operator vocabulary for evaluator version 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum PureSignalOperator {
     /// Adds equal-shaped inputs.
     Add,
@@ -767,7 +864,11 @@ pub enum PureSignalOperator {
 }
 
 /// Closed stateful operator vocabulary for evaluator version 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum StatefulSignalOperator {
     /// Boolean hysteresis with optional minimum residence.
     Hysteresis,
@@ -790,7 +891,11 @@ pub enum StatefulSignalOperator {
 }
 
 /// Closed source vocabulary for evaluator version 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalSourceKind {
     /// One immutable literal.
     Constant,
@@ -837,7 +942,11 @@ pub enum SignalSourceKind {
 }
 
 /// Behavior before or after the defined extent of an ordered source.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalBoundaryBehavior {
     /// Reject evaluation outside the source extent.
     Error,
@@ -852,7 +961,11 @@ pub enum SignalBoundaryBehavior {
 }
 
 /// Behavior when a normalized trace has no sample at a requested coordinate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum MissingSampleBehavior {
     /// Reject evaluation.
     Error,
@@ -865,7 +978,11 @@ pub enum MissingSampleBehavior {
 }
 
 /// Interpolation used by traces, spatial samples, and lookup tables.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SignalInterpolation {
     /// Require an exact coordinate match.
     Exact,
@@ -883,7 +1000,11 @@ pub enum SignalInterpolation {
 }
 
 /// Stable coordinate for an analytic signal point.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum SignalCoordinate {
     /// Global virtual nanoseconds.
     VirtualTime {
@@ -946,7 +1067,10 @@ pub enum SignalCoordinate {
 }
 
 /// One ordered coordinate/value point.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct SignalPoint {
     /// Point coordinate.
     pub coordinate: SignalCoordinate,
@@ -957,7 +1081,10 @@ pub struct SignalPoint {
 }
 
 /// Exact affine mapping from trace coordinates to virtual nanoseconds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct TraceTimeMapping {
     /// Source coordinate corresponding to `virtual_epoch_nanos`.
     pub source_epoch: i64,
@@ -970,7 +1097,9 @@ pub struct TraceTimeMapping {
 }
 
 /// Closed source-node schemas for evaluator version 1.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum SignalSourceSpecification {
     /// Piecewise-constant ordered points.
     Step {
@@ -1235,7 +1364,11 @@ pub enum SignalSourceSpecification {
 }
 
 /// Stable identity domain for a stochastic keyed choice.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum StochasticKeyDomain {
     /// Stable hardware opportunity identity.
     Opportunity,
@@ -1246,7 +1379,9 @@ pub enum StochasticKeyDomain {
 }
 
 /// Closed pure-node schemas for evaluator version 1.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum PureSignalSpecification {
     /// Operator requiring no parameters beyond its inputs.
     Simple {
@@ -1373,7 +1508,9 @@ pub enum PureSignalSpecification {
 }
 
 /// Closed stateful-node schemas for evaluator version 1.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum StatefulSignalSpecification {
     /// Boolean hysteresis.
     Hysteresis {
@@ -1479,7 +1616,10 @@ pub enum StatefulSignalSpecification {
 }
 
 /// One finite-state-machine transition.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct StateMachineTransition {
     /// Source state.
     pub from: SignalId,
@@ -1496,7 +1636,11 @@ pub struct StateMachineTransition {
 }
 
 /// One closed finite-state-machine timer operation.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum StateMachineTimerOperation {
     /// Starts or replaces a named timer.
     Start {
@@ -1513,7 +1657,9 @@ pub enum StateMachineTimerOperation {
 }
 
 /// Parameters shared by source, pure, and stateful node variants.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum SignalNodeKind {
     /// Literal constant source.
     Constant {
@@ -1534,7 +1680,8 @@ pub enum SignalNodeKind {
 }
 
 /// One node in a typed signal program.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SignalNode {
     /// Stable node identifier.
     pub id: SignalId,
@@ -1670,6 +1817,7 @@ fn validate_and_order(
     let mut by_id = BTreeMap::new();
     let mut edge_count = 0_u64;
     let mut state_bytes = 0_u64;
+    let mut authored_payload_bytes = 0_u64;
     for mut node in nodes {
         canonicalize_node_inputs(&mut node);
         node.output.validate()?;
@@ -1692,6 +1840,12 @@ fn validate_and_order(
                     field: "signal_edges",
                 })?;
         validate_node_contract(&node, limits)?;
+        let node_payload_bytes = encoded_node_parameter_bytes(&node)?;
+        authored_payload_bytes = authored_payload_bytes
+            .checked_add(node_payload_bytes)
+            .ok_or(SignalProgramError::CountOverflow {
+                field: "signal_authored_payload_bytes",
+            })?;
         if let SignalNodeKind::Stateful {
             state_bytes: node_state_bytes,
             ..
@@ -1720,6 +1874,12 @@ fn validate_and_order(
         limits.state_bytes,
         HARD_SIGNAL_STATE_BYTES_LIMIT,
     )?;
+    check_resource(
+        "signal_authored_payload_bytes",
+        authored_payload_bytes,
+        limits.authored_payload_bytes,
+        HARD_SIGNAL_AUTHORED_PAYLOAD_BYTES_LIMIT,
+    )?;
 
     for export in exports {
         if !by_id.contains_key(export) {
@@ -1744,6 +1904,45 @@ fn validate_and_order(
         return Err(SignalProgramError::UnreferencedNode { id: (*id).clone() });
     }
     topological_order(by_id, limits.graph_depth)
+}
+
+fn encoded_node_parameter_bytes(node: &SignalNode) -> Result<u64, SignalProgramError> {
+    struct Counter {
+        bytes: u64,
+    }
+
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let length = u64::try_from(bytes.len()).map_err(|_| {
+                std::io::Error::other("signal authored payload byte count overflowed")
+            })?;
+            self.bytes = self.bytes.checked_add(length).ok_or_else(|| {
+                std::io::Error::other("signal authored payload byte count overflowed")
+            })?;
+            if self.bytes > HARD_SIGNAL_AUTHORED_PAYLOAD_BYTES_LIMIT {
+                return Err(std::io::Error::other(
+                    "signal authored payload exceeds compiled hard ceiling",
+                ));
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut counter = Counter { bytes: 0 };
+    serde_json::to_writer(&mut counter, &node.kind).map_err(|_| {
+        SignalProgramError::ResourceExceeded {
+            field: "signal_authored_payload_bytes",
+            current: counter.bytes,
+            requested: counter.bytes,
+            configured: HARD_SIGNAL_AUTHORED_PAYLOAD_BYTES_LIMIT,
+            hard: HARD_SIGNAL_AUTHORED_PAYLOAD_BYTES_LIMIT,
+        }
+    })?;
+    Ok(counter.bytes)
 }
 
 fn canonicalize_node_inputs(node: &mut SignalNode) {

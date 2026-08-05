@@ -7,7 +7,9 @@ use super::{
 };
 
 /// The complete closed parameter union accepted by production adapters.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "adapter", content = "parameters", rename_all = "snake_case")]
 pub enum EffectSpecification {
     /// A network effect.
     Network(NetworkEffectSpecification),
@@ -111,7 +113,10 @@ impl EffectRequest {
 }
 
 /// One contributor to a resolved, combined effect.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct EffectContributor {
     /// Binding identity used for deterministic ordering.
     pub binding: FaultObjectId,

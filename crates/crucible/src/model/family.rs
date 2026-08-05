@@ -1298,22 +1298,16 @@ impl ReproductionArtifact {
     /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
     /// scenario, or schedule bytes.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let (mut reader, includes_io_nodes) = scenario_binary_reader_for_versions(
-            bytes,
-            REPRODUCTION_ARTIFACT_BINARY_MAGIC_V1,
-            REPRODUCTION_ARTIFACT_BINARY_MAGIC_V2,
+        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V3)?;
+        let scenario_bytes = reader.read_binary_blob_bounded(
+            "reproduction-artifact.scenario",
+            MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
         )?;
-        let scenario_bytes = reader.read_binary_blob("reproduction-artifact.scenario")?;
         let schedule_bytes = reader.read_binary_blob("reproduction-artifact.schedule")?;
         reader.finish()?;
 
         let scenario = ScenarioDefForm::from_compact_binary(scenario_bytes)?;
         let schedule = Schedule::from_compact_binary(schedule_bytes)?;
-        if includes_io_nodes != scenario.world().io_nodes().next().is_some() {
-            return Err(scenario_serialization_error(
-                "reproduction artifact version does not match nested world node kinds",
-            ));
-        }
         Ok(Self::from_recorded_parts(scenario, schedule))
     }
 

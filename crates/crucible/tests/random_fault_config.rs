@@ -459,7 +459,7 @@ fn mixed_device_weights_and_fixed_draw_order_have_a_golden_plan() {
         .expect("generated plan should validate");
     assert_eq!(
         ContentHash::from_bytes(&plan.canonical_bytes()).to_hex(),
-        "3ee11b1ca171ff20296f5e687ed632223d0212e51c606424d062adae9810c279"
+        "06e0549955b12fd55f3337328f87364fb992f3671765ee231d4f3b4ab940cd0e"
     );
 }
 

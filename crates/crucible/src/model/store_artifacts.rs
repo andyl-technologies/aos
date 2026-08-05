@@ -116,12 +116,7 @@ pub(super) fn reproduction_artifact_canonical_bytes(
     scenario: &ScenarioDefForm,
     schedule: &Schedule,
 ) -> Vec<u8> {
-    let magic = if scenario.world.io_nodes().next().is_some() {
-        REPRODUCTION_ARTIFACT_BINARY_MAGIC_V2
-    } else {
-        REPRODUCTION_ARTIFACT_BINARY_MAGIC_V1
-    };
-    let mut writer = ScenarioBinaryWriter::new(magic);
+    let mut writer = ScenarioBinaryWriter::new(REPRODUCTION_ARTIFACT_BINARY_MAGIC_V3);
     writer.write_binary_blob(&scenario.to_compact_binary());
     writer.write_binary_blob(&schedule.to_compact_binary());
     writer.finish()

@@ -1,5 +1,5 @@
 [scenario]
-id = "blake3:dd9956d21ecd402ff847e0f6858640ee1abcfc52e2b468baa44581f2a6411333"
+id = "blake3:e8e8e65e4c9d31e53f171e26a0caec5fda8016b5c0f24cfcb50a988def38f57d"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 10
 
@@ -44,7 +44,8 @@ jitter_nanos = 1000000
 loss_millionths = 0
 
 [plan]
-id = "blake3:14c2e657cc57addfb612ed58161750fb7ed34f24a713c1e7e6487a7513d116e0"
+id = "blake3:e64b44878f108559c509898b160985667b1755a80717b83430d4e60a9682cd28"
+fault_signal_semantic_version = 1
 kind = "event_graph"
 
 [[plan.event]]
