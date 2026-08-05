@@ -1,5 +1,5 @@
 [Unit]
-After=aos-provisioning-persist.service
+After=aos-provisioning-persist.service aos-firstboot-reeval.service
 Before=aos-eval.service multi-user.target
 Description=Restore the last fully evaluated host input
 
@@ -9,10 +9,43 @@ ExecStart=<<aos-job-script>>
 #!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
 set -e
 
+set -eu
 if [ ! -e "/run/aos-metadata/host.nix" ]; then
-  /nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/aos metadata restore-runtime \
-    --state-dir /var/lib/aos-provisioning \
-    || echo "aos-eval: cached host input is unavailable or invalid; retaining the active generation" >&2
+  if ! /nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/aos metadata restore-runtime \
+    --state-dir /var/lib/aos-provisioning; then
+    echo "aos-eval: cached host input is invalid; retaining the active generation" >&2
+    exit 1
+  fi
+fi
+
+# A missing operator input is legitimate only when no operator-backed
+# generation has ever been committed. If fresh metadata and the
+# authenticated cache are both absent after a platform/signed
+# generation, fail closed instead of evaluating `{}` and silently
+# erasing the host's policy.
+if [ ! -e "/run/aos-metadata/host.nix" ] && [ -s /var/lib/profiles/system/state.json ]; then
+  current=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.current' /var/lib/profiles/system/state.json)
+  # The seeded image state deliberately has no config generation yet.
+  # Its first stage-2 transaction must be allowed to evaluate the
+  # authenticated image-default empty module and create gen-1.
+  if [ "$current" -eq 0 ] && /nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -e '.generations == []' \
+    /var/lib/profiles/system/state.json >/dev/null; then
+    :
+  else
+    manifest="/var/lib/profiles/system/gen-$current/manifest.json"
+    [ -s "$manifest" ] || {
+      echo "aos-eval: current generation has no retained host provenance; retaining it" >&2
+      exit 1
+    }
+    trust=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.inputs.host_nix.trust_mode' "$manifest")
+    case "$trust" in
+      image|image-default) ;;
+      *)
+        echo "aos-eval: operator-backed host input is unavailable; retaining generation $current" >&2
+        exit 1
+        ;;
+    esac
+  fi
 fi
 <<aos-job-script-end>>
 RemainAfterExit=true

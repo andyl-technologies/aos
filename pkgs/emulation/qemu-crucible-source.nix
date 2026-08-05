@@ -9,21 +9,28 @@
   qemu = qemu-crucible.passthru;
   series = qemu.series;
   version = series.qemuVersion;
-  patchCopyCommand = file:
-    "cp ${./qemu-patches + "/${file}"} \"$source_root/patches/${file}\"";
+  patchCopyCommand = file: "cp ${./qemu-patches + "/${file}"} \"$source_root/patches/${file}\"";
   patchCopyCommands = builtins.concatStringsSep "\n" (map patchCopyCommand series.patchFiles);
   crucibleSource = import ../tools/crucible/_source.nix {inherit lib;};
   repoRoot = ../..;
+  characterizationGoldens = "${toString repoRoot}/tests/fixtures/system-characterization-goldens";
   aosBuildSource = builtins.path {
     path = repoRoot;
     name = "aos-qemu-build-source";
     filter = path: _type: let
       base = baseNameOf path;
+      pathString = toString path;
     in
-      base != ".git"
+      base
+      != ".git"
       && base != ".worktrees"
       && base != "target"
-      && base != "result";
+      && base != "result"
+      # Characterization goldens are review fixtures, not corresponding source
+      # required to rebuild QEMU. Excluding them also prevents the base-lib's
+      # frozen package inventory from feeding this package back into its own
+      # characterization store paths.
+      && !lib.hasPrefix characterizationGoldens pathString;
   };
   cargoDepsHash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   crucibleCargoDeps = fetchCargoVendor {

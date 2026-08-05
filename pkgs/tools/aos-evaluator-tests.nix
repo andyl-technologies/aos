@@ -12,7 +12,10 @@
   zstd,
 }: let
   version = "0.1.0";
-  src = import ./aos/_workspace-source.nix {inherit lib;};
+  src = import ./aos/_workspace-source.nix {
+    inherit lib;
+    evaluatorFixtures = true;
+  };
   componentPackages = [
     "aos-nix"
     "aos-nix-compat"

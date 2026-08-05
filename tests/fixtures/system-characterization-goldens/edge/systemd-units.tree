@@ -1,12 +1,16 @@
+unit	aos-activate.service
 unit	aos-attest.service
 unit	aos-config-render.target
 unit	aos-config.target
+unit	aos-credential-recovery.service
 unit	aos-ebpf-lsm-policies.service
 unit	aos-eval.service
 unit	aos-fetch.target
+unit	aos-firstboot-reeval.service
 unit	aos-graph-compile.service
 unit	aos-host-config-cache.service
 unit	aos-host-config-restore.service
+unit	aos-image-boot-commit.service
 unit	aos-install-baked-packages.service
 unit	aos-nix-db.service
 unit	aos-pkg-fetch@.service
@@ -16,7 +20,6 @@ unit	aos-provisioning-persist.service
 unit	aos-sysctl-late-apply.service
 unit	audit-rules.service
 unit	auditd.service
-unit	chronyd.service
 unit	cryptswap.service
 unit	dbus.service
 unit	dbus.socket
@@ -24,9 +27,11 @@ link	messagebus.service	dbus.service
 d	multi-user.target.wants
 link	multi-user.target.wants/aos-ebpf-lsm-policies.service	../aos-ebpf-lsm-policies.service
 link	multi-user.target.wants/aos-eval.service	../aos-eval.service
+link	multi-user.target.wants/aos-firstboot-reeval.service	../aos-firstboot-reeval.service
 link	multi-user.target.wants/aos-graph-compile.service	../aos-graph-compile.service
 link	multi-user.target.wants/aos-host-config-cache.service	../aos-host-config-cache.service
 link	multi-user.target.wants/aos-host-config-restore.service	../aos-host-config-restore.service
+link	multi-user.target.wants/aos-image-boot-commit.service	../aos-image-boot-commit.service
 link	multi-user.target.wants/aos-install-baked-packages.service	../aos-install-baked-packages.service
 link	multi-user.target.wants/aos-nix-db.service	../aos-nix-db.service
 link	multi-user.target.wants/aos-preset.service	../aos-preset.service
@@ -34,19 +39,17 @@ link	multi-user.target.wants/aos-provisioning-persist.service	../aos-provisionin
 link	multi-user.target.wants/aos-sysctl-late-apply.service	../aos-sysctl-late-apply.service
 link	multi-user.target.wants/audit-rules.service	../audit-rules.service
 link	multi-user.target.wants/auditd.service	../auditd.service
-link	multi-user.target.wants/chronyd.service	../chronyd.service
 link	multi-user.target.wants/dbus.service	../dbus.service
 link	multi-user.target.wants/nftables.service	../nftables.service
-link	multi-user.target.wants/sshd.service	../sshd.service
 link	multi-user.target.wants/systemd-networkd.service	../systemd-networkd.service
 link	multi-user.target.wants/systemd-resolved.service	../systemd-resolved.service
 unit	nftables.service
 d	sockets.target.wants
 link	sockets.target.wants/dbus.socket	../dbus.socket
-unit	sshd-keygen.service
-unit	sshd.service
 d	swap.target.wants
 link	swap.target.wants/cryptswap.service	../cryptswap.service
+d	sysinit.target.requires
+link	sysinit.target.requires/aos-credential-recovery.service	../aos-credential-recovery.service
 d	systemd-modules-load.service.d
 unit	systemd-modules-load.service.d/overrides.conf
 d	systemd-networkd.service.d

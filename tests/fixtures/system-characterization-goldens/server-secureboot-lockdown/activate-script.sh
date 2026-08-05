@@ -66,6 +66,7 @@ cleanup_partial_gen() {
   # upper lifetime is owned by generation GC and reboot (tmpfs), not this trap.
   /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
   /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
+  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "${ign:-/nonexistent}/etc"      2>/dev/null || true
   /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -rf "/run/etc/system-${N:-_}" \
                          "/run/etc/config-${N:-_}" 2>/dev/null || true
 }
@@ -102,7 +103,20 @@ if [ $# -ne 1 ]; then
   exit "$EX_PREFLIGHT"
 fi
 N=$1
-new_top=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlink /var/lib/profiles/system/gen-${N}/toplevel)
+new_top=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlink /aos-toplevel)
+
+# Each activation intent carries a one-shot nonce. Recovery accepts only the
+# marker for that exact transaction, so a marker left by an earlier activation
+# of the same generation can never publish a pre-swap retry.
+if [ -z "${AOS_ACTIVATION_NONCE:-}" ]; then
+  echo "activate: missing AOS_ACTIVATION_NONCE" >&2
+  exit "$EX_PREFLIGHT"
+fi
+case "$AOS_ACTIVATION_NONCE" in
+  *[!A-Za-z0-9._-]*)
+    echo "activate: invalid AOS_ACTIVATION_NONCE" >&2
+    exit "$EX_PREFLIGHT" ;;
+esac
 
 sys=/run/etc/system-${N}
 ign=/run/etc/config-${N}
@@ -112,16 +126,38 @@ upper_root=/run/etc/upper-${N}
 
 # Determine the config backend for this generation's per-host /etc.
 #
-# Per-host /etc comes from the on-host configuration manifest
-# (/run/aos/manifest.json), applied by `apm __materialize` below. When the
-# manifest is absent the generation's /etc is exactly the baked image /etc.
+# Per-host /etc comes from this generation's retained, content-addressed EROFS
+# lower. `apm __materialize` creates it atomically from the retained manifest
+# and validates it on every reuse. Legacy image generations without a retained
+# manifest remain an empty configuration lower.
 
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p /run/apm
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/chmod 0700 /run/apm
-exec {LOCK_FD}>/run/apm/switch.lock
-if ! /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/flock -n "$LOCK_FD"; then
-  echo "activate: another system switch holds /run/apm/switch.lock" >&2
-  exit "$EX_PREFLIGHT"
+parent_holds_switch_lock() {
+  lock_inode=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/stat -Lc '%i' /run/apm/switch.lock 2>/dev/null) || return 1
+  while read -r _lock_id lock_type _advisory lock_mode lock_pid lock_device _range; do
+    case "$lock_device" in
+      *:"$lock_inode")
+        if [ "$lock_type" = FLOCK ] && [ "$lock_mode" = WRITE ] && [ "$lock_pid" = "$PPID" ]; then
+          return 0
+        fi
+        ;;
+    esac
+  done < /proc/locks
+  return 1
+}
+
+if [ "${AOS_SWITCH_LOCK_HELD:-0}" = 1 ]; then
+  if ! parent_holds_switch_lock; then
+    echo "activate: caller did not hold /run/apm/switch.lock" >&2
+    exit "$EX_PREFLIGHT"
+  fi
+else
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p /run/apm
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/chmod 0700 /run/apm
+  exec {LOCK_FD}>/run/apm/switch.lock
+  if ! /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/flock -n "$LOCK_FD"; then
+    echo "activate: another system switch holds /run/apm/switch.lock" >&2
+    exit "$EX_PREFLIGHT"
+  fi
 fi
 
 # Warn if the currently-live generation has runtime /etc writes in its
@@ -154,24 +190,35 @@ fi
 # tears down the partial generation and the previous gen stays live.
 STAGE="$STAGE_PREPARE"
 
+# Detach any stale inspection mounts from an earlier failed retry or a
+# same-generation reactivation. A live overlay holds its own lower-mount
+# references, so lazy-detaching these names cannot perturb the current /etc;
+# it only prevents mount stacking at the reusable /run inspection paths.
+/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "$sys/metadata" 2>/dev/null || true
+/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "$sys/content"  2>/dev/null || true
+/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "$ign/etc"      2>/dev/null || true
+
 /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p "$sys/metadata" "$sys/content" "$ign/etc"
 /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount --bind \
   "$new_top/etc-basedir" "$sys/content"
 /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
   "$new_top/etc-metadata.erofs" "$sys/metadata"
 
-# Render this generation's per-host /etc writes into the candidate lower
-# ($ign/etc).
-#
-# When a converged configuration manifest exists, apply it with
-# `apm __materialize`, which writes the manifest's text/symlink /etc entries
-# and job scripts into $ign/etc and rewrites unit-body job-script
-# placeholders. When the manifest is absent, $ign/etc stays empty and the
-# generation's /etc is exactly the baked image /etc.
-if [ -f /run/aos/manifest.json ]; then
-  /nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/apm __materialize \
-    --manifest /run/aos/manifest.json \
-    --etc-root "$ign/etc"
+# Materialize the retained manifest into the generation directory before any
+# candidate overlay exists. Publication inside gen-N is an fsync + atomic
+# rename; a crash or malformed/tampered retained artifact fails before swap.
+# The EROFS mount makes this layer immutable at runtime. Its retained
+# `etc-tree` records the exact regular-file/symlink assembly for inspection.
+generation_dir="/var/lib/profiles/system/gen-${N}"
+generation_manifest="/var/lib/profiles/system/gen-${N}/manifest.json"
+if [ -f "$generation_manifest" ]; then
+  /nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/.apm-unwrapped __materialize \
+    --manifest "$generation_manifest" \
+    --generation-dir "$generation_dir" \
+    --mkfs-erofs /nix/store/645rfyrr4rax1ymsrgkw7anvrqyg00yk-erofs-utils-1.8.10/bin/mkfs.erofs \
+    --fsck-erofs /nix/store/645rfyrr4rax1ymsrgkw7anvrqyg00yk-erofs-utils-1.8.10/bin/fsck.erofs
+  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
+    "$generation_dir/config-lower/etc.erofs" "$ign/etc"
 fi
 
 # --- compose ---
@@ -213,19 +260,31 @@ upperdir="$upper_root/dir",\
 workdir="$upper_root/work" \
   "$tmpEtc"
 
+# Validate package-authored sealed credential sources against the fully
+# composed candidate view before the pre-swap reconciler can stop a live unit.
+# Failure or EOF here leaves /etc, credential files, and consumer states
+# untouched; the compose-stage trap tears down only the candidate mounts.
+if [ "${AOS_CREDENTIAL_BARRIER:-0}" = 1 ]; then
+  printf 'AOS_CREDENTIAL_STAGED_VIEW_READY %s\n' "$tmpEtc"
+  if ! IFS= read -r staged_ack || [ "$staged_ack" != AOS_CREDENTIAL_STAGED_VIEW_CONTINUE ]; then
+    echo "activate: credential validation failed in staged configuration view" >&2
+    exit "$EX_COMPOSE"
+  fi
+fi
+
 # --- pre-swap reconcile ---
 # Hand off to apm before the swap: diff live /etc against the candidate, stop
 # old-definition units, and capture the post-swap plan path. The path is the
 # command's only stdout; diagnostics go to stderr via Printer.
 STAGE="$STAGE_PRESWAP"
 set +e
-# Invoke the UNWRAPPED binary directly, not /nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/apm. The `apm` wrapper
+# Invoke the UNWRAPPED binary directly, not /nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/apm. The `apm` wrapper
 # runs `exec "$(dirname "$0")/.apm-unwrapped"`, which needs `dirname` on PATH —
 # but this script runs with `PATH=` (empty), so the wrapper would die with
 # "dirname: command not found". The activate subcommands do pure filesystem +
 # D-Bus work and shell out to neither git nor nix-store, so they need none of
 # the git/nix PATH the wrapper sets up.
-plan=$(/nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/.apm-unwrapped activate-pre-etc-swap \
+plan=$(/nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/.apm-unwrapped activate-pre-etc-swap \
   --gen="$N" \
   --candidate-etc="$tmpEtc")
 pre_rc=$?
@@ -267,6 +326,14 @@ done
 /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "$tmpEtc"
 /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rmdir "$tmpEtc"
 
+# Durable evidence for Rust's activation-intent recovery. The intent is
+# published before this script runs; this marker is written immediately after
+# the atomic mount swap, closing the crash window before pointer publication.
+live_marker="/var/lib/profiles/system/gen-${N}/.etc-live-${AOS_ACTIVATION_NONCE}"
+printf '%s %s\n' "$N" "$AOS_ACTIVATION_NONCE" > "$live_marker"
+/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f "$live_marker"
+/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f /var/lib/profiles/system/gen-${N}
+
 # Retarget inspection symlinks.
 prev_gen=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlink /run/etc/system \
            | /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cut -d- -f2-)
@@ -274,12 +341,69 @@ prev_gen=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlin
 /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn config-${N} /run/etc/config
 /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn upper-${N}    /run/etc/upper
 
+# When apm owns the switch, pause after the atomic /etc swap and before any
+# new unit can start. The parent publishes all resolved credential files as a
+# transaction, folds their consumers into this plan, and acknowledges over the
+# private pipe. EOF, a malformed acknowledgement, or publication failure is an
+# indeterminate post-swap transaction and therefore uses the rescue exit.
+if [ "${AOS_CREDENTIAL_BARRIER:-0}" = 1 ]; then
+  printf 'AOS_CREDENTIAL_BARRIER_READY %s\n' "$plan"
+  if ! IFS= read -r barrier_ack || [ "$barrier_ack" != AOS_CREDENTIAL_BARRIER_CONTINUE ]; then
+    echo "FATAL: credential publication barrier failed after /etc swap" >&2
+    exit "$EX_SWAP"
+  fi
+fi
+
 # --- post-swap reconcile ---
 # The /etc swap is now the commit point. Any post-swap reconcile problem is
 # reported as degraded, never as a rollback/cleanup of the new live /etc.
 STAGE="$STAGE_POSTSWAP"
+
+# A static-network metadata seed lives in the persistent /var/etc lower so the
+# box can reach stage 2. Retiring it globally would make rollback to a
+# pre-authoritative generation lose networking. Preserve a durable copy and a
+# generation-local copy for the generation being switched away from; when a
+# non-authoritative generation is activated, restore its copy (or the durable
+# fallback) before asking networkd to reconfigure links.
+#
+# The target marker is derived solely from the strict manifest ownership index:
+# at least one systemd/network/*.network artifact must have authenticated
+# `@host` provenance. Package- or image-owned files never set it and therefore
+# cannot retire the substrate seed.
+network_seed=/var/etc/systemd/network/10-aos-seed.network
+network_seed_fallback=/var/lib/profiles/system/metadata-network-seed.network
+target_seed_archive=/var/lib/profiles/system/gen-${N}/metadata-network-seed.network
+network_seed_changed=0
+if [ -f "/var/lib/profiles/system/gen-${N}/host-network-authoritative" ]; then
+  if [ -f "$network_seed" ]; then
+    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/install -D -m 0600 "$network_seed" "$network_seed_fallback"
+    if [ -n "${prev_gen:-}" ] && [ -d "/var/lib/profiles/system/gen-${prev_gen}" ]; then
+      /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/install -D -m 0600 "$network_seed" \
+        "/var/lib/profiles/system/gen-${prev_gen}/metadata-network-seed.network"
+    fi
+    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -f "$network_seed"
+    network_seed_changed=1
+  fi
+else
+  seed_source=
+  if [ -f "$target_seed_archive" ]; then
+    seed_source=$target_seed_archive
+  elif [ -f "$network_seed_fallback" ]; then
+    seed_source=$network_seed_fallback
+    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/install -D -m 0600 "$seed_source" "$target_seed_archive"
+    seed_source=$target_seed_archive
+  fi
+  if [ -n "$seed_source" ]; then
+    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/install -D -m 0644 "$seed_source" "$network_seed"
+    network_seed_changed=1
+  fi
+fi
+if [ "$network_seed_changed" = 1 ]; then
+  /nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin/networkctl reload
+  /nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin/networkctl reconfigure --all
+fi
 set +e
-/nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
+/nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
 post_rc=$?
 set -e
 
@@ -310,6 +434,7 @@ STAGE="$STAGE_CLEANUP"
 if [ -n "${prev_gen:-}" ] && [ "$prev_gen" != "$N" ]; then
   /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/metadata" || true
   /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/content"  || true
+  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "/run/etc/config-${prev_gen}/etc"      || true
   /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -rf "/run/etc/system-${prev_gen}" \
                          "/run/etc/config-${prev_gen}"
 fi

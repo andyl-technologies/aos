@@ -7,3 +7,4 @@ HOME_URL="https://aos.dev"
 BUG_REPORT_URL="https://aos.dev/issues"
 AOS_STATE_VERSION=1
 AOS_MODULE_ABI=1
+AOS_BASELIB_DIGEST=sha256:3facc3a427c9f1cb7d172264a6fca8b7ae46ffc5f8e78ad9e9e1a0a0587f94d7

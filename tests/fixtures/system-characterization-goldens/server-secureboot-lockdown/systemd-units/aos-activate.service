@@ -1,0 +1,34 @@
+[Unit]
+After=aos-config-render.target aos-fetch.target aos-seed-profiles.service
+Before=aos-preset.service
+ConditionPathExists=/run/aos/manifest.json
+Description=Commit the evaluated AOS host configuration
+StartLimitBurst=3
+StartLimitIntervalSec=30s
+Wants=aos-config-render.target aos-fetch.target
+
+[Service]
+Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/sbin"
+ExecStart=<<aos-job-script>>
+#!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
+set -e
+
+set +e
+/nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/apm __activate-config \
+  --manifest /run/aos/manifest.json \
+  --graph /run/aos/graph.json \
+  --module-abi 1 
+rc=$?
+set -e
+if [ "$rc" -eq 4 ]; then
+  echo "aos-activate: /etc swap is indeterminate; entering rescue mode" >&2
+  /nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin/systemctl --no-block isolate rescue.target
+fi
+exit "$rc"
+<<aos-job-script-end>>
+RemainAfterExit=true
+Restart=on-failure
+RestartPreventExitStatus=4 6
+RestartSec=2s
+TimeoutStartSec=180s
+Type=oneshot

@@ -1457,16 +1457,7 @@ fn read_base_lib_abi_hash(base_lib: &Path, expected_abi: u32) -> Result<String> 
 
 /// Derives the RFC-0011 evaluator identity from its Nix store-path component.
 fn evaluator_store_hash(executable: &Path) -> Result<String> {
-    let store_dir = Path::new("/nix/store");
-    let root = executable
-        .ancestors()
-        .find(|candidate| candidate.parent() == Some(store_dir))
-        .with_context(|| {
-            format!(
-                "evaluator {} is not contained in a canonical /nix/store path",
-                executable.display()
-            )
-        })?;
+    let root = evaluator_store_root(executable)?;
     let basename = root
         .file_name()
         .and_then(std::ffi::OsStr::to_str)
@@ -1485,6 +1476,20 @@ fn evaluator_store_hash(executable: &Path) -> Result<String> {
         );
     }
     Ok(format!("sha256:{}", hex::encode(decoded)))
+}
+
+/// Returns the canonical store root containing the evaluator executable.
+fn evaluator_store_root(executable: &Path) -> Result<&Path> {
+    let store_dir = Path::new("/nix/store");
+    executable
+        .ancestors()
+        .find(|candidate| candidate.parent() == Some(store_dir))
+        .with_context(|| {
+            format!(
+                "evaluator {} is not contained in a canonical /nix/store path",
+                executable.display()
+            )
+        })
 }
 
 /// Hashes the authenticated config-output set independently of evaluator order.
@@ -1644,6 +1649,7 @@ fn enrich_manifest(
     let host_bytes = std::fs::read(&cmd.host_nix)
         .with_context(|| format!("reading host input {}", cmd.host_nix.display()))?;
     let evaluator = std::env::current_exe().context("resolving evaluator executable")?;
+    let evaluator_store_path = evaluator_store_root(&evaluator)?;
     let (
         config_outputs,
         config_nar_hashes,
@@ -1652,20 +1658,20 @@ fn enrich_manifest(
         config_authorizations,
     ) = config_module_inputs(&outcome.working_set)?;
 
-    let (facts, retained_facts_bytes) =
+    let (facts, retained_facts_bytes, facts_input_path) =
         match cmd.facts_json.as_deref().filter(|path| path.is_file()) {
             Some(path) => {
                 let bytes = std::fs::read(path)
                     .with_context(|| format!("reading facts {}", path.display()))?;
                 let facts = serde_json::from_slice::<crate::metadata::fetcher::Facts>(&bytes)
                     .with_context(|| format!("parsing facts {}", path.display()))?;
-                (facts, bytes)
+                (facts, bytes, Some(path))
             }
             None => {
                 let facts = crate::metadata::fetcher::Facts::default();
                 let bytes =
                     serde_json::to_vec(&facts).context("serializing default instance facts")?;
-                (facts, bytes)
+                (facts, bytes, None)
             }
         };
 
@@ -1676,7 +1682,13 @@ fn enrich_manifest(
         .with_context(|| format!("creating eval root {}", cmd.eval_root.display()))?;
     std::fs::write(&retained_facts, &retained_facts_bytes)
         .with_context(|| format!("writing retained facts {}", retained_facts.display()))?;
-    let facts_store_path = add_fixed_input_to_store(&retained_facts)?;
+    // Reuse an already immutable facts input instead of asking Nix to import an
+    // identical copy. Besides avoiding needless store traffic on-host, this
+    // keeps hermetic preflight checks independent of a writable Nix state dir.
+    let facts_store_source = facts_input_path
+        .filter(|path| path.starts_with("/nix/store"))
+        .unwrap_or(&retained_facts);
+    let facts_store_path = add_fixed_input_to_store(facts_store_source)?;
 
     let provisioning = cmd
         .facts_json
@@ -1727,7 +1739,7 @@ fn enrich_manifest(
                 "module_abi": cmd.module_abi,
             },
             "evaluator": {
-                "store_path": evaluator,
+                "store_path": evaluator_store_path,
                 "store_hash": evaluator_store_hash,
             },
             "config_modules": {
@@ -2129,11 +2141,12 @@ pub fn reeval_cross_abi(
     );
 
     let evaluator_path = std::env::current_exe().context("resolving evaluator executable")?;
+    let evaluator_store_path = evaluator_store_root(&evaluator_path)?;
     let mut inputs = source.inputs.clone();
     inputs.base_lib.store_path = running_base_lib.to_string_lossy().into_owned();
     inputs.base_lib.module_abi = retained.to_module_abi;
     inputs.base_lib.abi_hash = read_base_lib_abi_hash(running_base_lib, retained.to_module_abi)?;
-    inputs.evaluator.store_path = evaluator_path.to_string_lossy().into_owned();
+    inputs.evaluator.store_path = evaluator_store_path.to_string_lossy().into_owned();
     inputs.evaluator.store_hash = evaluator_store_hash(&evaluator_path)?;
     object.insert("inputs".into(), serde_json::to_value(inputs)?);
 

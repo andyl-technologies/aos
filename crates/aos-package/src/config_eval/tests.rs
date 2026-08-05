@@ -1165,9 +1165,14 @@ fn retained_manifest_abi_bands_gate_cross_abi_rollback() {
 fn evaluator_identity_uses_decoded_store_path_hash() {
     let path = PathBuf::from(format!("/nix/store/{}-aos/bin/apm", "0".repeat(32)));
     assert_eq!(
+        evaluator_store_root(&path).expect("valid store root"),
+        Path::new(&format!("/nix/store/{}-aos", "0".repeat(32)))
+    );
+    assert_eq!(
         evaluator_store_hash(&path).expect("valid store identity"),
         format!("sha256:{}", "0".repeat(40))
     );
+    assert!(evaluator_store_root(Path::new("/tmp/apm")).is_err());
     assert!(evaluator_store_hash(Path::new("/tmp/apm")).is_err());
 }
 

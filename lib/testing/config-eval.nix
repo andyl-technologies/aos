@@ -92,7 +92,8 @@
     !(builtins.tryEval mismatchSystem.config.system.build.toplevel.name).success;
 
   defaultTrustsPlatform =
-    systemA.config.aos.config.evalAtBoot.trust == "platform"
+    systemA.config.aos.config.evalAtBoot.trust
+    == "platform"
     && systemA.config.aos.config.evalAtBoot.hostNix == "/run/aos-metadata/host.nix";
   signedModeRequiresSignature =
     builtins.match
@@ -143,7 +144,7 @@ in
     pname = "config-eval-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.aos pkgs.coreutils pkgs.jq];
+    buildDeps = [pkgs.aos pkgs.coreutils pkgs.diffutils pkgs.jq];
     phases = [
       {
         name = "check";
@@ -185,9 +186,9 @@ in
             --out "$second_root/manifest.json" \
             --eval-root "$second_root"
 
-          ${pkgs.coreutils}/bin/cmp \
+          ${pkgs.diffutils}/bin/cmp \
             "$first_root/manifest.json" "$second_root/manifest.json"
-          ${pkgs.coreutils}/bin/cmp \
+          ${pkgs.diffutils}/bin/cmp \
             "$first_root/graph.json" "$second_root/graph.json"
           ${pkgs.jq}/bin/jq -e '
             .schema == "aos.config-manifest/v1"
