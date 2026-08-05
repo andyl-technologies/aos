@@ -41,7 +41,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::auth::jwt::{Claims, JwtKeys};
 use crate::clock;
-use crate::db::{Database, IndexStatus, RegistryRecord, SurfaceTarget};
+use crate::db::{Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget};
 use crate::domain::iam::{self, claims_principal, token_allows};
 use crate::domain::{Permission, Principal, PrincipalKind, Role, Scope};
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
@@ -22655,12 +22655,25 @@ impl RpcService {
                 .await;
         }
         let requested = parse_byte_range(range_header);
-        let read = match placement_read::stream_from_placements(
+        let mirror = self
+            .db
+            .registry_mirror(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        let read = match placement_read::stream_from_placements_with_requirement(
             self.db.as_ref(),
             self.surface.as_ref(),
             SurfaceTarget::Registry(registry.id),
             path,
             requested,
+            if mirror
+                .as_ref()
+                .is_some_and(|mirror| mirror.mode == "pull_through")
+            {
+                PlacementReadRequirement::Untracked
+            } else {
+                placement_read::requirement_for_path(SurfaceTarget::Registry(registry.id), path)
+            },
         )
         .await
         .map_err(RpcError::surface_read)?

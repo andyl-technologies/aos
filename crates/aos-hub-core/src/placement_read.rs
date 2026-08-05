@@ -319,9 +319,37 @@ pub async fn stream_from_placements(
     path: &str,
     range: Option<(u64, u64)>,
 ) -> Result<PlacementReadOutcome<StreamedRead>> {
-    let plan = db
-        .readable_surface_placements(surface, requirement_for_path(surface, path))
-        .await?;
+    stream_from_placements_with_requirement(
+        db,
+        provider,
+        surface,
+        path,
+        range,
+        requirement_for_path(surface, path),
+    )
+    .await
+}
+
+/// Opens a streaming object using an explicit consistency requirement.
+///
+/// This is reserved for flows whose integrity contract is enforced by the
+/// selected backend adapter rather than by previously recorded inventory. A
+/// pull-through mirror is the primary example: the object does not exist in
+/// local inventory until the native adapter fetches, verifies, and persists it.
+///
+/// # Errors
+///
+/// Returns an error when placement selection fails, a terminal backend failure
+/// occurs, or every candidate fails retryably before streaming begins.
+pub async fn stream_from_placements_with_requirement(
+    db: &Database,
+    provider: &dyn SurfaceProvider,
+    surface: SurfaceTarget,
+    path: &str,
+    range: Option<(u64, u64)>,
+    requirement: PlacementReadRequirement<'_>,
+) -> Result<PlacementReadOutcome<StreamedRead>> {
+    let plan = db.readable_surface_placements(surface, requirement).await?;
     if !plan.has_configured_placements {
         return Err(terminal_read_error(
             "surface has no configured storage placements",

@@ -601,6 +601,52 @@ pub struct HubSurfaceProvider {
     image_snapshot_indexing: bool,
 }
 
+/// A local mirror placement with a verified upstream fallback.
+///
+/// Delivery remains placement-planned in the shared core. The native adapter
+/// adds pull-through semantics only after that planner selects the mirror's
+/// local placement: local bytes win, and an upstream miss is verified and
+/// persisted by the mirror implementation before it is returned.
+struct PullThroughFetch {
+    local: crate::fetch::LocalFsFetch,
+    upstream: crate::fetch::HttpFetch,
+    root: PathBuf,
+    trust_keys: Vec<String>,
+    verify: bool,
+}
+
+#[async_trait]
+impl core_fetch::SurfaceFetch for PullThroughFetch {
+    async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(result) = crate::mirror::fetch_through(
+            &self.local,
+            &self.root,
+            path,
+            &self.trust_keys,
+            self.verify,
+        )
+        .await
+        .map_err(native_placement_read_error)?
+        {
+            return Ok(Some(result.bytes));
+        }
+        crate::mirror::fetch_through(
+            &self.upstream,
+            &self.root,
+            path,
+            &self.trust_keys,
+            self.verify,
+        )
+        .await
+        .map(|result| result.map(|result| result.bytes))
+        .map_err(native_placement_read_error)
+    }
+
+    fn describe(&self) -> String {
+        format!("pull-through mirror at {}", self.root.display())
+    }
+}
+
 impl HubSurfaceProvider {
     /// Build a provider over the hub database and its hardened outbound client.
     ///
@@ -718,18 +764,41 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
                     .as_deref()
                     .context("local placement binding has no localRootPath")?;
                 let root = PathBuf::from(root).join(&placement.prefix);
-                let fetch = crate::fetch::LocalFsFetch::new(root);
+                let fetch = crate::fetch::LocalFsFetch::new(&root);
                 let fetch = match &self.image_snapshots {
                     Some(store) => fetch
                         .with_image_snapshots(Arc::clone(store))
                         .with_image_snapshot_db(Arc::clone(&self.db)),
                     None => fetch,
                 };
-                Ok(Box::new(if self.image_snapshot_indexing {
+                let fetch = if self.image_snapshot_indexing {
                     fetch.with_image_snapshot_indexing()
                 } else {
                     fetch
-                }))
+                };
+                let mirror = match placement.registry_id {
+                    Some(registry_id) => self.db.mirror_source(registry_id).await?,
+                    None => None,
+                };
+                if let Some(mirror) = mirror.filter(|mirror| mirror.mode == "pullthrough") {
+                    let registry = self
+                        .db
+                        .registry_by_id(
+                            placement
+                                .registry_id
+                                .context("pull-through placement has no registry identity")?,
+                        )
+                        .await?
+                        .context("pull-through placement references a missing registry")?;
+                    return Ok(Box::new(PullThroughFetch {
+                        local: fetch,
+                        upstream: crate::fetch::HttpFetch::new(mirror.upstream_url).await,
+                        root,
+                        trust_keys: registry.trust_keys,
+                        verify: mirror.verify,
+                    }));
+                }
+                Ok(Box::new(fetch))
             }
             Some(BindingKind::DeploymentR2) => {
                 Err(aos_hub_core::placement_read::terminal_read_error(format!(
