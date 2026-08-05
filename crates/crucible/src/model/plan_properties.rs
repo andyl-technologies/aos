@@ -277,6 +277,11 @@ impl Plan {
         world: &World,
         assertions: impl IntoIterator<Item = AssertionId>,
     ) -> Result<(), EngineError> {
+        self.fault_signals.validate_for_world(world).map_err(|error| {
+            scenario_serialization_error(format!(
+                "fault signal plan validation failed: {error}"
+            ))
+        })?;
         match &self.kind {
             PlanKind::ScheduledEntries { entries } => {
                 validate_plan_entries_for_world(world, entries)

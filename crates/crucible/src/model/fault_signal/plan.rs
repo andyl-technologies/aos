@@ -183,6 +183,27 @@ impl FaultSignalPlan {
         for binding in &self.bindings {
             validate_selector_for_world(binding.selector(), world)?;
         }
+        let expected_trajectory_shape = SignalShape {
+            value_type: SignalValueType::Vector3(Box::new(SignalValueType::I64)),
+            unit: SignalUnit::Millimetres,
+            scale_decimal_exponent: 0,
+        };
+        for endpoint in &world.fault_topology().mobile_endpoints {
+            let node = self
+                .programs
+                .iter()
+                .find_map(|program| program.exported_node(&endpoint.truth_trajectory))
+                .ok_or_else(|| FaultSignalAuthoringError::MissingTrajectorySignal {
+                    endpoint: endpoint.id.as_str().to_owned(),
+                    signal: endpoint.truth_trajectory.as_str().to_owned(),
+                })?;
+            if node.domain != SignalDomain::VirtualTime || node.output != expected_trajectory_shape {
+                return Err(FaultSignalAuthoringError::InvalidTrajectorySignal {
+                    endpoint: endpoint.id.as_str().to_owned(),
+                    signal: endpoint.truth_trajectory.as_str().to_owned(),
+                });
+            }
+        }
         Ok(())
     }
 
