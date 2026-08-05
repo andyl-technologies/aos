@@ -430,10 +430,23 @@ pub enum HubChannelCmd {
 
 #[derive(Subcommand)]
 pub enum HubPublishCmd {
-    MintUpload {
+    Begin {
         #[command(flatten)]
         access: HubAccessArgs,
         registry: String,
+        /// Read the exact publication manifest from this JSON file.
+        #[arg(long)]
+        manifest: PathBuf,
+    },
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        publication_id: String,
+    },
+    Commit {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        publication_id: String,
     },
 }
 

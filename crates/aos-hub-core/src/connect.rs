@@ -38,7 +38,7 @@ use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 #[cfg(not(target_arch = "wasm32"))]
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -2287,8 +2287,43 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
     // PublishService
     r = rpc_route!(
         r,
-        "/aos.hub.v1.PublishService/MintUploadCredentials",
-        mint_upload_credentials
+        "/aos.hub.v1.PublishService/BeginRegistryPublication",
+        begin_registry_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/GetRegistryPublication",
+        get_registry_publication
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/CommitRegistryPublication",
+        commit_registry_publication
+    );
+    r = r.route(
+        "/aos.hub.v1.PublishService/UploadObject/{publication_id}/{object_id}",
+        put(
+            |State(state): State<SharedState>,
+             Path((publication_id, object_id)): Path<(String, i64)>,
+             headers: HeaderMap,
+             body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    match svc
+                        .upload_registry_publication_object(
+                            auth_header(&headers).as_deref(),
+                            &publication_id,
+                            object_id,
+                            &body,
+                        )
+                        .await
+                    {
+                        Ok(()) => StatusCode::CREATED.into_response(),
+                        Err(error) => error_response(&error),
+                    }
+                })
+            },
+        ),
     );
     // GitService
     r = rpc_route!(r, "/aos.hub.v1.GitService/GitLog", git_log);
@@ -2959,6 +2994,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+    use aos_proto_types as pb;
 
     #[test]
     fn topology_paths_use_the_public_hub_namespace() {

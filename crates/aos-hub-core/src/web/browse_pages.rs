@@ -2741,7 +2741,7 @@ mod tests {
             &[("https://cache.example".into(), 40)],
             &[("alice".into(), "demo:Ed25519:<k>".into(), "active".into())],
             &[],
-            "http://127.0.0.1:8420/demo",
+            Some("http://127.0.0.1:8420/demo"),
             false,
             Instant::now(),
             &anon(),

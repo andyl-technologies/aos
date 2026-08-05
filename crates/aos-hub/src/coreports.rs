@@ -792,12 +792,16 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
         &self,
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn core_sw::SurfaceWrite>> {
-        if !placement.effective_write_enabled {
-            bail!(
-                "placement '{}' is not the reconciled write authority",
-                placement.name
-            );
-        }
+        let revision = self
+            .db
+            .placement_publication_write_revision(placement.id)
+            .await?
+            .with_context(|| {
+                format!(
+                    "placement '{}' has no validated publication write capability",
+                    placement.name
+                )
+            })?;
         let binding = self
             .db
             .storage_binding(placement.storage_binding_id)
@@ -814,14 +818,6 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
                     .credentials
                     .as_ref()
                     .context("object-store placement writes require a credential resolver")?;
-                let binding_revision = placement
-                    .authority_observed_binding_write_revision
-                    .context("write authority has no observed binding revision")?;
-                let revision = self
-                    .db
-                    .storage_binding_write_revision(binding.id, binding_revision)
-                    .await?
-                    .context("write authority binding revision does not exist")?;
                 let credential = resolver
                     .resolve_exact(
                         binding.id,

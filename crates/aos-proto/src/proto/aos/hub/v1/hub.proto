@@ -331,16 +331,17 @@ service ImageService {
   rpc ResolveImage(ResolveImageRequest) returns (GetImageResponse);
 }
 
-// The managed write path (RFC-0012 "API: aos.hub.v1"). This phase
-// implements credential minting: a producer with publish rights requests a
-// short-lived, registry-scoped upload credential instead of using the upload
-// facade directly. Requires publish on the registry's canonical scope.
+// The managed, placement-aware registry publication path. Producers declare an
+// exact manifest, upload bytes through object-id URLs, and commit only after
+// every required placement has verified every immutable object and mutable
+// pointer. No resource-slug upload facade exists.
 service PublishService {
-  // Mint a short-lived provisioning credential scoped to one registry with
-  // only the publish permission, plus the canonical upload URL to push the
-  // surface to. Requires publish on the registry's canonical scope.
-  rpc MintUploadCredentials(MintUploadCredentialsRequest)
-      returns (MintUploadCredentialsResponse);
+  rpc BeginRegistryPublication(BeginRegistryPublicationRequest)
+      returns (RegistryPublication);
+  rpc GetRegistryPublication(GetRegistryPublicationRequest)
+      returns (RegistryPublication);
+  rpc CommitRegistryPublication(CommitRegistryPublicationRequest)
+      returns (RegistryPublication);
 }
 
 // Git read API for the UI and remote `apr` (RFC-0012 "API: aos.hub.v1"
@@ -1488,22 +1489,66 @@ message GetChangesetResponse {
   repeated Revision revisions = 2;
 }
 
-// -- Publish: upload-credential minting ------------------------------------
+// -- Publish: placement-aware registry publications -----------------------
 
-message MintUploadCredentialsRequest {
-  // Canonical registry slug to mint an upload credential for.
-  string slug = 1;
+message RegistryPublicationObjectInput {
+  string path = 1;
+  string sha256 = 2;
+  int64 byte_size = 3;
+  // immutable | mutable_pointer
+  string kind = 4;
+  string media_type = 5;
 }
 
-message MintUploadCredentialsResponse {
-  // The provisioning-token secret (aos_-prefixed), shown exactly once. Hand
-  // it to `apr origin upload --token <token>` or exchange it at
-  // /oauth2/token for a bearer JWT.
-  string token = 1;
-  // Canonical facade base URL to upload the registry surface to.
-  string upload_url = 2;
-  // Unix seconds the credential expires.
-  int64 expires_at = 3;
+message BeginRegistryPublicationRequest {
+  string registry = 1;
+  string generation = 2;
+  string refs_digest = 3;
+  string default_commit = 4;
+  string parent_publication_id = 5;
+  repeated RegistryPublicationObjectInput objects = 6;
+}
+
+message GetRegistryPublicationRequest {
+  string publication_id = 1;
+}
+
+message CommitRegistryPublicationRequest {
+  string publication_id = 1;
+}
+
+message RegistryPublicationObject {
+  int64 object_id = 1;
+  string path = 2;
+  string sha256 = 3;
+  int64 byte_size = 4;
+  string kind = 5;
+  string media_type = 6;
+  // Exact Hub proxy URL accepting the disk/metadata bytes for this object.
+  string upload_url = 7;
+}
+
+message RegistryPublicationPlacement {
+  int64 placement_id = 1;
+  string name = 2;
+  bool required = 3;
+  string state = 4;
+}
+
+message RegistryPublication {
+  string publication_id = 1;
+  string registry = 2;
+  int64 ordinal = 3;
+  string generation = 4;
+  string manifest_digest = 5;
+  string refs_digest = 6;
+  string default_commit = 7;
+  string parent_publication_id = 8;
+  string state = 9;
+  repeated RegistryPublicationObject objects = 10;
+  repeated RegistryPublicationPlacement placements = 11;
+  int64 created_at = 12;
+  int64 completed_at = 13;
 }
 
 // -- Webhooks (phase 4) ----------------------------------------------------

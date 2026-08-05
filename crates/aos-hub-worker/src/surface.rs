@@ -340,13 +340,10 @@ async fn placement_s3_surface(
     }
     let credential = if binding.access_mode.as_deref() == Some("private") {
         if write {
-            let binding_revision = placement
-                .authority_observed_binding_write_revision
-                .context("write authority has no observed binding revision")?;
             let revision = db
-                .storage_binding_write_revision(binding.id, binding_revision)
+                .placement_publication_write_revision(placement.id)
                 .await?
-                .context("write authority binding revision does not exist")?;
+                .context("placement has no validated publication write revision")?;
             Some(
                 credentials
                     .resolve_exact(
@@ -1209,12 +1206,15 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         &self,
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceWrite>> {
-        if !placement.effective_write_enabled {
-            anyhow::bail!(
-                "placement '{}' is not the reconciled write authority",
-                placement.name
-            );
-        }
+        self.db
+            .placement_publication_write_revision(placement.id)
+            .await?
+            .with_context(|| {
+                format!(
+                    "placement '{}' has no validated publication write capability",
+                    placement.name
+                )
+            })?;
         if let Some(surface) =
             placement_s3_surface(&self.db, self.credentials.as_ref(), placement, true).await?
         {
