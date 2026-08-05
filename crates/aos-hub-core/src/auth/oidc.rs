@@ -192,7 +192,19 @@ pub fn validate_idp_config_record(record: &IdpConfigRecord) -> Result<()> {
             "{label} length is invalid"
         );
         let url = url::Url::parse(raw).with_context(|| format!("{label} is not a valid URL"))?;
-        anyhow::ensure!(url.scheme() == "https", "{label} must use https");
+        let debug_loopback_http = cfg!(debug_assertions)
+            && url.scheme() == "http"
+            && matches!(
+                std::env::var("AOS_HUB_ALLOW_LOCAL_REMOTES").as_deref(),
+                Ok("1" | "true" | "yes")
+            )
+            && url
+                .host_str()
+                .is_some_and(|host| matches!(host, "127.0.0.1" | "::1" | "localhost"));
+        anyhow::ensure!(
+            url.scheme() == "https" || debug_loopback_http,
+            "{label} must use https"
+        );
         anyhow::ensure!(
             url.username().is_empty()
                 && url.password().is_none()

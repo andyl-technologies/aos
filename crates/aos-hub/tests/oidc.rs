@@ -195,6 +195,11 @@ fn jsonwebtoken_now() -> i64 {
 
 /// Stand up the fake IdP on an ephemeral port; returns `(base_url, state)`.
 async fn spawn_idp() -> (String, IdpState) {
+    // The persisted OIDC contract is HTTPS-only. Debug builds expose the same
+    // explicit loopback escape hatch as the outbound URL guard so this in-test
+    // cleartext listener can exercise the real flow without weakening release
+    // builds or accepting non-loopback HTTP issuers.
+    std::env::set_var("AOS_HUB_ALLOW_LOCAL_REMOTES", "1");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let idp = IdpState::new(&base);
