@@ -186,7 +186,10 @@ impl BindingRuntimeState {
 }
 
 /// Stable key for one active persistent contribution.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct ActiveContributionKey {
     /// Concrete adapter target.
     pub target: ResolvedFaultTarget,
@@ -739,6 +742,18 @@ pub struct FaultObservation {
 /// Runtime, replay, capability, or checkpoint failure.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FaultRuntimeError {
+    /// A capability manifest names a different adapter family.
+    AdapterManifestMismatch,
+    /// An action crossed adapter, target, phase, or lifetime contracts.
+    AdapterActionMismatch,
+    /// The adapter already owns one uncommitted transaction.
+    AdapterTransactionPending,
+    /// A commit or abort named no prepared transaction.
+    UnknownAdapterTransaction,
+    /// One atomic batch repeated an exact action identity.
+    DuplicateAdapterAction,
+    /// Rolling back a partially prepared cross-adapter batch failed.
+    AdapterTransactionRollback,
     /// A collection count could not fit the canonical counter.
     CountOverflow(&'static str),
     /// Bounded mutable state exceeded its limit.
@@ -758,6 +773,8 @@ pub enum FaultRuntimeError {
     IncompleteAdapterState,
     /// Adapter payload digest does not authenticate its bytes.
     AdapterCheckpointDigest,
+    /// Adapter checkpoint bytes are not the exact supported canonical schema.
+    AdapterCheckpointCodec,
     /// A monotone runtime sequence overflowed.
     SequenceOverflow(&'static str),
     /// A non-persistent effect entered the active table.

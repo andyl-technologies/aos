@@ -46,10 +46,26 @@ impl EffectSpecification {
 }
 
 /// A validated effect template selected by one fault binding.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "EffectRequestWire", deny_unknown_fields)]
 pub struct EffectRequest {
     specification: EffectSpecification,
     lifetime: EffectLifetime,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EffectRequestWire {
+    specification: EffectSpecification,
+    lifetime: EffectLifetime,
+}
+
+impl TryFrom<EffectRequestWire> for EffectRequest {
+    type Error = FaultContractError;
+
+    fn try_from(value: EffectRequestWire) -> Result<Self, Self::Error> {
+        Self::new(EFFECT_SEMANTIC_VERSION, value.lifetime, value.specification)
+    }
 }
 
 impl EffectRequest {

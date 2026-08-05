@@ -483,7 +483,9 @@ pub enum BindingMapping {
 }
 
 /// Closed, fully typed mapping result passed to production adapters.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum ResolvedMappingOutput {
     /// A Boolean, enum, or threshold mapping changed persistent activation.
     Activation {
