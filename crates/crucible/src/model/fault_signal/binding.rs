@@ -4,7 +4,7 @@
 //! Selectors, sampling, mapping, search, and observability are closed enums so
 //! scenario data cannot invoke arbitrary adapter behavior.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
@@ -12,11 +12,19 @@ use super::*;
 
 /// Maximum concrete targets produced by one selector.
 pub const HARD_BINDING_TARGET_LIMIT: usize = 65_536;
+/// Maximum admitted fault bindings in one scenario.
+pub const HARD_FAULT_BINDING_LIMIT: usize = 131_072;
+/// Maximum exported signal inputs consumed by one binding.
+pub const HARD_BINDING_SIGNAL_INPUT_LIMIT: usize = 128;
 /// Maximum finite candidates in one search policy or transfer function.
 pub const HARD_SEARCH_CANDIDATE_LIMIT: usize = 4_096;
+/// Maximum search decisions retained in one materialized runtime state.
+pub const HARD_SEARCH_CHOICES_PER_STATE: u64 = 262_144;
+/// Maximum named transition tables or service profiles in one registry.
+pub const HARD_MAPPING_DECLARATIONS: usize = 4_096;
 
 /// When a binding samples its signal inputs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum BindingSampling {
     /// Samples at scheduler boundaries.
     AtBoundary,
@@ -26,10 +34,34 @@ pub enum BindingSampling {
     AtChange,
     /// Samples on an exact positive virtual-time cadence.
     CadenceNanos(PositiveU64),
+    /// Samples a typed event with explicit parent-coordinate provenance.
+    AtEvent(BindingEventParent),
+}
+
+/// Explicit parent coordinate for one event-domain binding sample.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+pub enum BindingEventParent {
+    /// Event is scheduled directly on global virtual time.
+    VirtualTime,
+    /// Event is scheduled on one explicit node retired-instruction counter.
+    NodeCounter {
+        /// Stable node-counter identity.
+        node: SignalId,
+    },
+    /// Event is emitted by the current adapter operation.
+    OpportunityOperation,
+    /// Event is emitted by the current adapter state boundary.
+    OpportunityState,
+}
+
+impl BindingEventParent {
+    const fn requires_opportunity(&self) -> bool {
+        matches!(self, Self::OpportunityOperation | Self::OpportunityState)
+    }
 }
 
 /// A finite, homogeneous, already-resolved selector result.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct ResolvedTargetSet {
     targets: Vec<ResolvedFaultTarget>,
     allow_empty: bool,
@@ -95,7 +127,7 @@ impl ResolvedTargetSet {
 }
 
 /// Closed selector provenance retained after world resolution.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum TargetSelector {
     /// One explicitly named target.
     Exact(ResolvedTargetSet),
@@ -159,7 +191,7 @@ impl TargetSelector {
 }
 
 /// Closed comparison vocabulary used by threshold activation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum ThresholdComparison {
     /// Activates below the threshold.
     LessThan,
@@ -172,7 +204,7 @@ pub enum ThresholdComparison {
 }
 
 /// Effect fields which a signal may drive dynamically.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum MappedEffectParameter {
     /// Probability in millionths.
     Probability,
@@ -330,7 +362,7 @@ impl MappedEffectParameter {
         }
     }
 
-    fn accepts_value(self, value: &SignalValue) -> bool {
+    pub(super) fn accepts_value(self, value: &SignalValue) -> bool {
         match self {
             Self::Probability => {
                 matches!(value, SignalValue::ProbabilityMillionths(value) if *value <= 1_000_000)
@@ -347,7 +379,7 @@ impl MappedEffectParameter {
 }
 
 /// One exact piecewise mapping point.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct BindingMapPoint {
     /// Strictly increasing input value.
     pub input: SignalValue,
@@ -356,7 +388,7 @@ pub struct BindingMapPoint {
 }
 
 /// Closed signal-to-effect mapping vocabulary.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum BindingMapping {
     /// A Boolean signal controls persistent activation.
     ActiveWhenTrue {
@@ -411,8 +443,225 @@ pub enum BindingMapping {
     },
 }
 
-/// Typed predicate for matching adapter opportunities.
+/// Closed, fully typed mapping result passed to production adapters.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolvedMappingOutput {
+    /// A Boolean, enum, or threshold mapping changed persistent activation.
+    Activation {
+        /// Resulting persistent activation state.
+        active: bool,
+    },
+    /// One dynamic effect parameter was resolved to a canonical value.
+    Parameter {
+        /// Destination field contract.
+        parameter: MappedEffectParameter,
+        /// Canonical mapped value.
+        value: SignalValue,
+    },
+    /// A keyed hazard fired with this admitted probability.
+    Hazard {
+        /// Probability used for the deterministic opportunity decision.
+        probability_millionths: u32,
+    },
+    /// One typed event produced an impulse.
+    Impulse {
+        /// Exact typed event value.
+        event: SignalValue,
+    },
+    /// One registered adapter transition was requested.
+    StateTransition {
+        /// Closed transition table identity.
+        transition_table: FaultObjectId,
+        /// Typed event or enum request.
+        request: SignalValue,
+        /// Exhaustively resolved adapter transition, possibly explorer-selected.
+        selected_transition: FaultObjectId,
+    },
+    /// A registered time-varying service model received canonical inputs.
+    ServiceProfile {
+        /// Closed service-profile identity.
+        service_profile: FaultObjectId,
+        /// Canonically signal-ID-ordered numeric inputs.
+        inputs: Vec<SignalValue>,
+    },
+}
+
+/// One versioned exhaustive adapter state-transition table declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct StateTransitionTableDeclaration {
+    /// Stable table identity.
+    pub id: FaultObjectId,
+    /// Exact declaration semantic version.
+    pub semantic_version: u16,
+    /// Required event or enum input schema.
+    pub input: SignalValueType,
+    /// Exact owning effect family.
+    pub effect: EffectKind,
+    /// Exhaustive finite request-to-adapter-transition table.
+    #[serde(serialize_with = "serialize_transition_map")]
+    pub transitions: BTreeMap<SignalValue, FaultObjectId>,
+    /// Mandatory transition for every request not present in `transitions`.
+    pub default_transition: FaultObjectId,
+}
+
+fn serialize_transition_map<S>(
+    transitions: &BTreeMap<SignalValue, FaultObjectId>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeSeq;
+
+    let mut sequence = serializer.serialize_seq(Some(transitions.len()))?;
+    for transition in transitions {
+        sequence.serialize_element(&transition)?;
+    }
+    sequence.end()
+}
+
+/// One versioned time-varying service-profile declaration.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub struct ServiceProfileDeclaration {
+    /// Stable profile identity.
+    pub id: FaultObjectId,
+    /// Exact declaration semantic version.
+    pub semantic_version: u16,
+    /// Exact owning effect family.
+    pub effect: EffectKind,
+    /// Canonical signal-ID-ordered input contracts.
+    pub inputs: Vec<SignalShape>,
+    /// Dynamic effect fields produced by the profile.
+    pub parameters: Vec<MappedEffectParameter>,
+}
+
+/// Closed declarations referenced by binding mappings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BindingMappingRegistry {
+    transition_tables: BTreeMap<FaultObjectId, StateTransitionTableDeclaration>,
+    service_profiles: BTreeMap<FaultObjectId, ServiceProfileDeclaration>,
+}
+
+impl BindingMappingRegistry {
+    /// Validates and canonicalizes every named mapping declaration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BindingError`] for duplicate IDs, unsupported versions,
+    /// empty/noncanonical transition sets, or malformed service profiles.
+    pub fn new(
+        transition_tables: Vec<StateTransitionTableDeclaration>,
+        service_profiles: Vec<ServiceProfileDeclaration>,
+    ) -> Result<Self, BindingError> {
+        if transition_tables.len() > HARD_MAPPING_DECLARATIONS
+            || service_profiles.len() > HARD_MAPPING_DECLARATIONS
+        {
+            return Err(BindingError::InvalidMappingRegistry);
+        }
+        let mut tables = BTreeMap::new();
+        for declaration in transition_tables {
+            if declaration.semantic_version != 1
+                || !matches!(
+                    declaration.input,
+                    SignalValueType::Event(_) | SignalValueType::Enum(_)
+                )
+                || declaration.transitions.is_empty()
+                || declaration.transitions.len() > HARD_SEARCH_CANDIDATE_LIMIT
+                || declaration
+                    .transitions
+                    .keys()
+                    .any(|request| request.value_type() != Some(declaration.input.clone()))
+                || !declaration
+                    .effect
+                    .descriptor()
+                    .lifetimes
+                    .iter()
+                    .any(|lifetime| {
+                        matches!(
+                            lifetime,
+                            EffectLifetime::Impulse | EffectLifetime::StateMachine
+                        )
+                    })
+                || tables.insert(declaration.id.clone(), declaration).is_some()
+            {
+                return Err(BindingError::InvalidMappingRegistry);
+            }
+        }
+        let mut profiles = BTreeMap::new();
+        for mut declaration in service_profiles {
+            declaration.parameters.sort();
+            if declaration.semantic_version != 1
+                || declaration.inputs.is_empty()
+                || declaration.inputs.len() > HARD_BINDING_SIGNAL_INPUT_LIMIT
+                || declaration.parameters.is_empty()
+                || declaration.parameters.len() > HARD_BINDING_SIGNAL_INPUT_LIMIT
+                || declaration
+                    .parameters
+                    .windows(2)
+                    .any(|pair| pair[0] == pair[1])
+                || declaration
+                    .inputs
+                    .iter()
+                    .any(|shape| !shape.value_type.is_numeric())
+                || declaration
+                    .parameters
+                    .iter()
+                    .any(|parameter| !parameter.belongs_to(declaration.effect))
+                || profiles
+                    .insert(declaration.id.clone(), declaration)
+                    .is_some()
+            {
+                return Err(BindingError::InvalidMappingRegistry);
+            }
+        }
+        Ok(Self {
+            transition_tables: tables,
+            service_profiles: profiles,
+        })
+    }
+
+    fn validate_mapping(
+        &self,
+        mapping: &BindingMapping,
+        shapes: &[&SignalShape],
+        effect: EffectKind,
+    ) -> Result<(), BindingError> {
+        match mapping {
+            BindingMapping::StateTransition { transition_table } => {
+                let declaration = self
+                    .transition_tables
+                    .get(transition_table)
+                    .ok_or(BindingError::UnknownMappingDeclaration)?;
+                if shapes.len() != 1
+                    || shapes[0].value_type != declaration.input
+                    || declaration.effect != effect
+                {
+                    return Err(BindingError::InvalidMappingRegistry);
+                }
+            }
+            BindingMapping::ServiceProfile { service_profile } => {
+                let declaration = self
+                    .service_profiles
+                    .get(service_profile)
+                    .ok_or(BindingError::UnknownMappingDeclaration)?;
+                if declaration.effect != effect
+                    || shapes.len() != declaration.inputs.len()
+                    || shapes
+                        .iter()
+                        .zip(&declaration.inputs)
+                        .any(|(actual, expected)| *actual != expected)
+                {
+                    return Err(BindingError::InvalidMappingRegistry);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// Typed predicate for matching adapter opportunities.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct OpportunityFilter {
     /// Owning adapter.
     pub adapter: FaultAdapter,
@@ -456,7 +705,7 @@ impl OpportunityFilter {
 }
 
 /// Bounded search behavior for one binding.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum BindingSearchPolicy {
     /// Always uses the model result.
     Fixed,
@@ -504,7 +753,12 @@ impl BindingSearchPolicy {
     ) -> Result<(), BindingError> {
         match self {
             Self::Fixed => Ok(()),
-            Self::BranchOutcome { .. } if matches!(mapping, BindingMapping::Hazard) => Ok(()),
+            Self::BranchOutcome { maximum_branches }
+                if matches!(mapping, BindingMapping::Hazard)
+                    && maximum_branches.get() <= HARD_SEARCH_CHOICES_PER_STATE =>
+            {
+                Ok(())
+            }
             Self::BranchOutcome { .. } => Err(BindingError::InvalidSearchPolicy),
             Self::BranchTransition { candidates } => {
                 if !matches!(mapping, BindingMapping::StateTransition { .. }) {
@@ -535,7 +789,7 @@ impl BindingSearchPolicy {
             Self::MutateTraceWindow {
                 start_nanos,
                 end_nanos,
-                ..
+                maximum_mutations,
             } => {
                 let trace_input = signals.iter().any(|signal| {
                     program.nodes().iter().any(|node| {
@@ -546,7 +800,10 @@ impl BindingSearchPolicy {
                             )
                     })
                 });
-                if *start_nanos >= *end_nanos || !trace_input {
+                if *start_nanos >= *end_nanos
+                    || maximum_mutations.get() > HARD_SEARCH_CHOICES_PER_STATE
+                    || !trace_input
+                {
                     Err(BindingError::InvalidSearchPolicy)
                 } else {
                     Ok(())
@@ -587,7 +844,7 @@ fn validate_candidates<T: PartialEq>(values: &[T]) -> Result<(), BindingError> {
 }
 
 /// Sampling-event retention policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SampleObservation {
     /// Records every sample.
     EverySample,
@@ -601,7 +858,7 @@ pub enum SampleObservation {
 }
 
 /// Stable observability choices for one binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct BindingObservabilityPolicy {
     /// Signal-sample retention.
     pub samples: SampleObservation,
@@ -612,20 +869,64 @@ pub struct BindingObservabilityPolicy {
 }
 
 /// One fully admitted signal-to-effect binding.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct FaultBinding {
     id: FaultObjectId,
+    program: ContentHash,
     signals: Vec<SignalId>,
     sampling: BindingSampling,
     mapping: BindingMapping,
     selector: TargetSelector,
+    phases: BTreeSet<FaultPhase>,
     effect: EffectRequest,
     opportunity_filter: Option<OpportunityFilter>,
     search: BindingSearchPolicy,
     observability: BindingObservabilityPolicy,
+    transition_declaration: Option<StateTransitionTableDeclaration>,
+    service_declaration: Option<ServiceProfileDeclaration>,
 }
 
 impl FaultBinding {
+    /// Validates a binding that references no named mapping declarations.
+    ///
+    /// Use [`Self::new_with_registry`] for `state_transition` and
+    /// `service_profile` mappings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BindingError`] under the same conditions as
+    /// [`Self::new_with_registry`]. Named mappings fail closed because the
+    /// implicit registry is empty.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        id: FaultObjectId,
+        signals: Vec<SignalId>,
+        sampling: BindingSampling,
+        mapping: BindingMapping,
+        selector: TargetSelector,
+        phases: BTreeSet<FaultPhase>,
+        effect: EffectRequest,
+        opportunity_filter: Option<OpportunityFilter>,
+        search: BindingSearchPolicy,
+        observability: BindingObservabilityPolicy,
+        program: &SignalProgram,
+    ) -> Result<Self, BindingError> {
+        Self::new_with_registry(
+            id,
+            signals,
+            sampling,
+            mapping,
+            selector,
+            phases,
+            effect,
+            opportunity_filter,
+            search,
+            observability,
+            program,
+            &BindingMappingRegistry::default(),
+        )
+    }
+
     /// Validates a binding against one canonical signal program.
     ///
     /// # Errors
@@ -633,22 +934,24 @@ impl FaultBinding {
     /// Returns [`BindingError`] for an unexported input, incompatible shape,
     /// illegal target, missing filter, or unbounded search policy.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub fn new_with_registry(
         id: FaultObjectId,
         mut signals: Vec<SignalId>,
         sampling: BindingSampling,
         mapping: BindingMapping,
         selector: TargetSelector,
+        phases: BTreeSet<FaultPhase>,
         effect: EffectRequest,
         opportunity_filter: Option<OpportunityFilter>,
         mut search: BindingSearchPolicy,
         observability: BindingObservabilityPolicy,
         program: &SignalProgram,
+        mapping_registry: &BindingMappingRegistry,
     ) -> Result<Self, BindingError> {
         if signals.is_empty() {
             return Err(BindingError::NoSignals);
         }
-        if signals.len() > usize::from(HARD_SIGNAL_INPUTS_PER_NODE_LIMIT) {
+        if signals.len() > HARD_BINDING_SIGNAL_INPUT_LIMIT {
             return Err(BindingError::TooManySignals);
         }
         signals.sort();
@@ -663,7 +966,99 @@ impl FaultBinding {
                     .ok_or_else(|| BindingError::MissingSignal(signal.clone()))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        let opportunity_sampling = sampling == BindingSampling::AtOpportunity
+            || matches!(
+                &sampling,
+                BindingSampling::AtEvent(parent) if parent.requires_opportunity()
+            );
+        if signals.iter().any(|signal| {
+            program.exported_node(signal).is_some_and(|node| {
+                (matches!(
+                    node.domain,
+                    SignalDomain::Operation | SignalDomain::State | SignalDomain::NodeCounter
+                ) && !opportunity_sampling)
+                    || (node.domain == SignalDomain::Event
+                        && !matches!(&sampling, BindingSampling::AtEvent(_)))
+                    || node.domain == SignalDomain::Spatial
+            })
+        }) || matches!(&sampling, BindingSampling::AtEvent(_))
+            && !signals.iter().all(|signal| {
+                program
+                    .exported_node(signal)
+                    .is_some_and(|node| node.domain == SignalDomain::Event)
+            })
+        {
+            return Err(BindingError::InvalidSignalDomain);
+        }
         validate_mapping(&mapping, &shapes, effect.kind(), effect.lifetime())?;
+        mapping_registry.validate_mapping(&mapping, &shapes, effect.kind())?;
+        let transition_declaration = match &mapping {
+            BindingMapping::StateTransition { transition_table } => mapping_registry
+                .transition_tables
+                .get(transition_table)
+                .cloned(),
+            _ => None,
+        };
+        let service_declaration = match &mapping {
+            BindingMapping::ServiceProfile { service_profile } => mapping_registry
+                .service_profiles
+                .get(service_profile)
+                .cloned(),
+            _ => None,
+        };
+        if let (BindingSearchPolicy::BranchTransition { candidates }, Some(declaration)) =
+            (&search, &transition_declaration)
+            && candidates.iter().any(|candidate| {
+                candidate != &declaration.default_transition
+                    && !declaration
+                        .transitions
+                        .values()
+                        .any(|transition| transition == candidate)
+            })
+        {
+            return Err(BindingError::InvalidSearchPolicy);
+        }
+        if phases.is_empty()
+            || phases
+                .iter()
+                .any(|phase| !effect.kind().descriptor().phases.contains(phase))
+        {
+            return Err(BindingError::InvalidBindingPhases);
+        }
+        if opportunity_sampling && effect.lifetime() == EffectLifetime::Persistent {
+            return Err(BindingError::PersistentOpportunitySampling);
+        }
+        if let BindingMapping::Threshold {
+            comparison,
+            threshold,
+            clear_threshold: Some(clear_threshold),
+            residence_nanos,
+        } = &mapping
+        {
+            let ordering = compare_numeric(threshold, clear_threshold)
+                .map_err(|_| BindingError::InvalidHysteresis)?;
+            let valid_deadband = match comparison {
+                ThresholdComparison::LessThan | ThresholdComparison::LessThanOrEqual => {
+                    ordering.is_lt()
+                }
+                ThresholdComparison::GreaterThan | ThresholdComparison::GreaterThanOrEqual => {
+                    ordering.is_gt()
+                }
+            };
+            if !valid_deadband || (sampling == BindingSampling::AtChange && *residence_nanos > 0) {
+                return Err(BindingError::InvalidHysteresis);
+            }
+        }
+        if matches!(
+            mapping,
+            BindingMapping::Threshold {
+                residence_nanos: 1..,
+                ..
+            }
+        ) && sampling == BindingSampling::AtChange
+        {
+            return Err(BindingError::InvalidHysteresis);
+        }
         selector.validate()?;
         for target in selector.resolved().targets() {
             if !effect.kind().descriptor().targets.contains(&target.kind()) {
@@ -685,25 +1080,35 @@ impl FaultBinding {
         {
             return Err(BindingError::DynamicSelectorAdapter);
         }
-        if (sampling == BindingSampling::AtOpportunity || matches!(mapping, BindingMapping::Hazard))
-            && opportunity_filter.is_none()
-        {
-            return Err(BindingError::MissingOpportunityFilter);
+        match (opportunity_sampling, opportunity_filter.is_some()) {
+            (true, false) => return Err(BindingError::MissingOpportunityFilter),
+            (false, true) => return Err(BindingError::UnexpectedOpportunityFilter),
+            _ => {}
+        }
+        if matches!(mapping, BindingMapping::Hazard) && !opportunity_sampling {
+            return Err(BindingError::HazardSampling);
         }
         if let Some(filter) = &opportunity_filter {
             filter.validate(effect.kind())?;
+            if filter.phases != phases {
+                return Err(BindingError::InvalidBindingPhases);
+            }
         }
         search.validate(&mapping, &signals, program)?;
         Ok(Self {
             id,
+            program: program.id(),
             signals,
             sampling,
             mapping,
             selector,
+            phases,
             effect,
             opportunity_filter,
             search,
             observability,
+            transition_declaration,
+            service_declaration,
         })
     }
 
@@ -711,6 +1116,12 @@ impl FaultBinding {
     #[must_use]
     pub const fn id(&self) -> &FaultObjectId {
         &self.id
+    }
+
+    /// Returns the exact signal program against which this binding was admitted.
+    #[must_use]
+    pub const fn program(&self) -> ContentHash {
+        self.program
     }
 
     /// Returns canonical input signal IDs.
@@ -721,8 +1132,8 @@ impl FaultBinding {
 
     /// Returns the sampling rule.
     #[must_use]
-    pub const fn sampling(&self) -> BindingSampling {
-        self.sampling
+    pub const fn sampling(&self) -> &BindingSampling {
+        &self.sampling
     }
 
     /// Returns the mapping rule.
@@ -735,6 +1146,12 @@ impl FaultBinding {
     #[must_use]
     pub const fn selector(&self) -> &TargetSelector {
         &self.selector
+    }
+
+    /// Returns the nonempty canonical adapter phases authored for this binding.
+    #[must_use]
+    pub const fn phases(&self) -> &BTreeSet<FaultPhase> {
+        &self.phases
     }
 
     /// Returns the typed effect request.
@@ -759,6 +1176,50 @@ impl FaultBinding {
     #[must_use]
     pub const fn observability(&self) -> BindingObservabilityPolicy {
         self.observability
+    }
+
+    /// Returns the admitted exhaustive state-transition declaration.
+    #[must_use]
+    pub const fn transition_declaration(&self) -> Option<&StateTransitionTableDeclaration> {
+        self.transition_declaration.as_ref()
+    }
+
+    /// Returns the admitted service-profile declaration.
+    #[must_use]
+    pub const fn service_declaration(&self) -> Option<&ServiceProfileDeclaration> {
+        self.service_declaration.as_ref()
+    }
+
+    /// Encodes and hashes every executable field using the versioned wire form.
+    pub(crate) fn contract_digest(&self) -> Result<ContentHash, serde_json::Error> {
+        let mut material = b"crucible.fault-binding-contract.json.v1\0".to_vec();
+        material.extend_from_slice(&serde_json::to_vec(self)?);
+        Ok(ContentHash::from_bytes(&material))
+    }
+
+    pub(crate) fn materialize_fixed(
+        &self,
+        program: &SignalProgram,
+        mapping: BindingMapping,
+    ) -> Result<Self, BindingError> {
+        let registry = BindingMappingRegistry::new(
+            self.transition_declaration.clone().into_iter().collect(),
+            self.service_declaration.clone().into_iter().collect(),
+        )?;
+        Self::new_with_registry(
+            self.id.clone(),
+            self.signals.clone(),
+            self.sampling.clone(),
+            mapping,
+            self.selector.clone(),
+            self.phases.clone(),
+            self.effect.clone(),
+            self.opportunity_filter.clone(),
+            BindingSearchPolicy::Fixed,
+            self.observability,
+            program,
+            &registry,
+        )
     }
 }
 
@@ -926,12 +1387,28 @@ pub enum BindingError {
     },
     /// Selector and effect use different adapters.
     EffectAdapter,
+    /// Binding phase set is empty or outside the effect registry contract.
+    InvalidBindingPhases,
     /// Per-opportunity sampling lacks a filter.
     MissingOpportunityFilter,
+    /// Non-opportunity sampling supplied an unusable opportunity filter.
+    UnexpectedOpportunityFilter,
+    /// A keyed hazard was not configured for per-opportunity sampling.
+    HazardSampling,
+    /// A persistent effect cannot use operation-triggered global binding state.
+    PersistentOpportunitySampling,
+    /// Threshold deadband ordering or residence sampling is invalid.
+    InvalidHysteresis,
+    /// A signal domain cannot be projected at the selected sampling boundary.
+    InvalidSignalDomain,
     /// Opportunity filter contradicts the registry.
     InvalidOpportunityFilter,
     /// Search candidates or mutation bounds are invalid.
     InvalidSearchPolicy,
+    /// A named state-transition table or service profile is absent.
+    UnknownMappingDeclaration,
+    /// A mapping declaration is malformed or incompatible with its binding.
+    InvalidMappingRegistry,
 }
 
 impl fmt::Display for BindingError {
@@ -1043,6 +1520,7 @@ mod tests {
                 initial: targets,
                 membership_semantic_version: 1,
             },
+            [FaultPhase::Admit].into_iter().collect(),
             effect,
             None,
             BindingSearchPolicy::Fixed,
@@ -1074,5 +1552,137 @@ mod tests {
             ),
             Err(BindingError::MappingShape)
         );
+    }
+
+    #[test]
+    fn binding_contract_codec_is_golden_and_covers_every_top_level_field() {
+        let program = boolean_program();
+        let target = ResolvedTargetSet::new(
+            vec![ResolvedFaultTarget::NetworkSegment {
+                segment: object_id("segment-a"),
+                direction: FaultDirection::AToB,
+            }],
+            false,
+        )
+        .unwrap_or_else(|error| panic!("test target must be valid: {error}"));
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Persistent,
+            EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                state: NetworkAvailabilityState::Down,
+                queued_policy: NetworkInFlightPolicy::Drop,
+                in_flight_policy: NetworkInFlightPolicy::Drop,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test effect must be valid: {error}"));
+        let binding = FaultBinding::new(
+            object_id("binding-golden"),
+            vec![signal_id("active")],
+            BindingSampling::AtBoundary,
+            BindingMapping::ActiveWhenTrue { invert: false },
+            TargetSelector::Exact(target),
+            [FaultPhase::Admit].into_iter().collect(),
+            effect,
+            None,
+            BindingSearchPolicy::Fixed,
+            BindingObservabilityPolicy {
+                samples: SampleObservation::ChangesAndEffects,
+                record_inactive_opportunities: false,
+                retain_mapped_values: false,
+            },
+            &program,
+        )
+        .unwrap_or_else(|error| panic!("test binding must be valid: {error}"));
+        let golden = binding
+            .contract_digest()
+            .unwrap_or_else(|error| panic!("binding encoding must succeed: {error}"));
+        assert_eq!(
+            golden.to_hex(),
+            "07e49ddb56171dd59ce240d1d6aaf42bdb762667c62239f67133c51a7eea00d8"
+        );
+
+        let mut mutations = Vec::new();
+        let mut changed = binding.clone();
+        changed.id = object_id("binding-changed");
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.program = ContentHash::from_bytes(b"changed-program");
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.signals.push(signal_id("other-signal"));
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.sampling = BindingSampling::AtChange;
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.mapping = BindingMapping::ActiveWhenTrue { invert: true };
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.selector = TargetSelector::TargetSet(changed.selector.resolved().clone());
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.phases.insert(FaultPhase::Resolve);
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Persistent,
+            EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                state: NetworkAvailabilityState::ReceiveOnly,
+                queued_policy: NetworkInFlightPolicy::Drop,
+                in_flight_policy: NetworkInFlightPolicy::Drop,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("changed effect must be valid: {error}"));
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.opportunity_filter = Some(OpportunityFilter {
+            adapter: FaultAdapter::Network,
+            operations: OperationSet::new(vec![FaultOperation::NetworkTransmit])
+                .unwrap_or_else(|error| panic!("operation set must be valid: {error}")),
+            phases: [FaultPhase::Admit].into_iter().collect(),
+            target_kinds: BTreeSet::new(),
+        });
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.search = BindingSearchPolicy::BranchOutcome {
+            maximum_branches: PositiveU64::new("maximum_branches", 2)
+                .unwrap_or_else(|error| panic!("search bound must be valid: {error}")),
+        };
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.observability.record_inactive_opportunities = true;
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.transition_declaration = Some(StateTransitionTableDeclaration {
+            id: object_id("transition-table"),
+            semantic_version: 1,
+            input: SignalValueType::Event(signal_id("transition-request")),
+            effect: EffectKind::NetworkAvailability,
+            transitions: [(SignalValue::Bool(true), object_id("transition-a"))]
+                .into_iter()
+                .collect(),
+            default_transition: object_id("transition-default"),
+        });
+        mutations.push(changed);
+        let mut changed = binding.clone();
+        changed.service_declaration = Some(ServiceProfileDeclaration {
+            id: object_id("service-profile"),
+            semantic_version: 1,
+            effect: EffectKind::NetworkAvailability,
+            inputs: vec![
+                SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
+                    .unwrap_or_else(|error| panic!("service input must be valid: {error}")),
+            ],
+            parameters: vec![MappedEffectParameter::UnsignedCount],
+        });
+        mutations.push(changed);
+
+        for changed in mutations {
+            let changed_digest = changed
+                .contract_digest()
+                .unwrap_or_else(|error| panic!("changed binding must encode: {error}"));
+            assert_ne!(changed_digest, golden);
+        }
     }
 }

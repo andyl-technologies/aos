@@ -13,7 +13,7 @@ pub const HARD_EFFECT_PAYLOAD_BYTES: usize = 16_777_216;
 
 /// A probability represented as integer millionths in the inclusive range
 /// `0..=1_000_000`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct ProbabilityMillionths(u32);
 
 impl ProbabilityMillionths {
@@ -38,14 +38,14 @@ impl ProbabilityMillionths {
 }
 
 /// A positive count whose semantic hard ceiling is checked at construction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct BoundedCount {
     value: NonZeroU32,
     limit: CountLimit,
 }
 
 /// An implementation-owned semantic ceiling for a positive count field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum CountLimit {
     /// Network lanes or node vCPUs: 4,096.
     LanesOrVcpus,
@@ -119,7 +119,7 @@ impl BoundedCount {
 }
 
 /// A positive quantity represented by `u64`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct PositiveU64(NonZeroU64);
 
 impl PositiveU64 {
@@ -142,7 +142,7 @@ impl PositiveU64 {
 }
 
 /// A validated half-open byte range `[start, start + length)`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct ByteRange {
     start: u64,
     length: NonZeroU64,
@@ -187,7 +187,7 @@ impl ByteRange {
 }
 
 /// Lowercase even-length hexadecimal bytes with an explicit size ceiling.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct HexBytes(String);
 
 impl HexBytes {
@@ -229,7 +229,7 @@ impl HexBytes {
 }
 
 /// A non-empty canonical set of operations used by an effect filter.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct OperationSet(Vec<FaultOperation>);
 
 impl OperationSet {
@@ -279,7 +279,7 @@ impl OperationSet {
 }
 
 /// A non-empty canonical set of object identities.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct ObjectIdSet(Vec<FaultObjectId>);
 
 impl ObjectIdSet {

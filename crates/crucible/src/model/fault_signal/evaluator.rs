@@ -666,7 +666,7 @@ fn trace_request_coordinate(coordinate: &SignalCoordinate) -> Result<u64, Signal
     }
 }
 
-fn map_trace_coordinate(
+pub(super) fn map_trace_coordinate(
     coordinate: u64,
     mapping: Option<&TraceTimeMapping>,
 ) -> Result<u64, SignalEvaluationError> {
@@ -2673,7 +2673,7 @@ fn negate_value(
     }
 }
 
-fn compare_numeric(
+pub(super) fn compare_numeric(
     left: &SignalValue,
     right: &SignalValue,
 ) -> Result<std::cmp::Ordering, SignalEvaluationError> {
@@ -2935,7 +2935,7 @@ fn evaluate_lookup_step(
     Ok(EvaluatedSignal::Value(selected.clone()))
 }
 
-fn evaluate_piecewise_linear(
+pub(super) fn evaluate_piecewise_linear(
     input: &SignalValue,
     points: &[(SignalValue, SignalValue)],
     rounding: SignalRounding,

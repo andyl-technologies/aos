@@ -16,6 +16,7 @@ use std::fmt;
 use super::ContentHash;
 
 mod binding;
+mod binding_runtime;
 mod canonical;
 mod effect;
 mod effect_parameters;
@@ -27,6 +28,7 @@ mod node_effect;
 mod opportunity;
 mod runtime;
 mod sampler;
+mod search_materialization;
 mod spatial;
 mod storage_effect;
 #[cfg(test)]
@@ -35,6 +37,7 @@ mod trace;
 mod trace_import;
 
 pub use binding::*;
+pub use binding_runtime::*;
 use canonical::program_material;
 pub use effect::*;
 pub use effect_parameters::*;
@@ -46,6 +49,7 @@ pub use node_effect::*;
 pub use opportunity::*;
 pub use runtime::*;
 pub use sampler::*;
+pub use search_materialization::*;
 pub use spatial::*;
 pub use storage_effect::*;
 pub use trace::*;
@@ -79,7 +83,7 @@ pub const HARD_SIGNAL_TRANSITIONS_PER_NODE_LIMIT: u32 = 262_144;
 pub const HARD_SIGNAL_LOOKUP_POINTS_PER_NODE_LIMIT: u32 = 1_048_576;
 
 /// Default admission limits for a signal program.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct SignalResourceLimits {
     /// Maximum number of nodes.
     pub nodes: u32,
@@ -181,7 +185,7 @@ fn check_limit(field: &'static str, configured: u64, hard: u64) -> Result<(), Si
 }
 
 /// Stable author-supplied identifier used by signal nodes and exported outputs.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct SignalId(String);
 
 impl SignalId {
@@ -237,7 +241,7 @@ fn valid_signal_id(value: &str) -> bool {
 }
 
 /// An exact reduced rational number with a positive denominator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct ExactRatio {
     numerator: i64,
     denominator: u64,
@@ -286,7 +290,7 @@ fn gcd(mut left: u64, mut right: u64) -> u64 {
 }
 
 /// Closed scalar and aggregate value types understood by signal programs.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalValueType {
     /// Boolean state.
     Bool,
@@ -352,7 +356,7 @@ impl SignalValueType {
 }
 
 /// Closed physical units accepted by signal schema version 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalUnit {
     /// Unitless quantity.
     Dimensionless,
@@ -430,7 +434,7 @@ impl SignalUnit {
 }
 
 /// Complete static shape of one signal output.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct SignalShape {
     /// Value representation.
     pub value_type: SignalValueType,
@@ -506,7 +510,7 @@ impl SignalShape {
 }
 
 /// Canonical literal carried by a constant or analytic signal node.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalValue {
     /// Boolean value.
     Bool(bool),
@@ -630,7 +634,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Coordinate domain in which a signal node may be evaluated.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalDomain {
     /// Global virtual nanoseconds.
     VirtualTime,
@@ -660,7 +664,7 @@ impl SignalDomain {
 }
 
 /// Explicit behavior when fixed-width arithmetic would overflow.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalOverflow {
     /// Stop evaluation with an error.
     Error,
@@ -669,7 +673,7 @@ pub enum SignalOverflow {
 }
 
 /// Exact rounding rule for rational arithmetic.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalRounding {
     /// Round toward negative infinity.
     Floor,
@@ -684,7 +688,7 @@ pub enum SignalRounding {
 }
 
 /// Closed pure operator vocabulary for evaluator version 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum PureSignalOperator {
     /// Adds equal-shaped inputs.
     Add,
@@ -761,7 +765,7 @@ pub enum PureSignalOperator {
 }
 
 /// Closed stateful operator vocabulary for evaluator version 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum StatefulSignalOperator {
     /// Boolean hysteresis with optional minimum residence.
     Hysteresis,
@@ -784,7 +788,7 @@ pub enum StatefulSignalOperator {
 }
 
 /// Closed source vocabulary for evaluator version 1.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalSourceKind {
     /// One immutable literal.
     Constant,
@@ -831,7 +835,7 @@ pub enum SignalSourceKind {
 }
 
 /// Behavior before or after the defined extent of an ordered source.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalBoundaryBehavior {
     /// Reject evaluation outside the source extent.
     Error,
@@ -846,7 +850,7 @@ pub enum SignalBoundaryBehavior {
 }
 
 /// Behavior when a normalized trace has no sample at a requested coordinate.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum MissingSampleBehavior {
     /// Reject evaluation.
     Error,
@@ -859,7 +863,7 @@ pub enum MissingSampleBehavior {
 }
 
 /// Interpolation used by traces, spatial samples, and lookup tables.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalInterpolation {
     /// Require an exact coordinate match.
     Exact,
@@ -877,7 +881,7 @@ pub enum SignalInterpolation {
 }
 
 /// Stable coordinate for an analytic signal point.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum SignalCoordinate {
     /// Global virtual nanoseconds.
     VirtualTime {
@@ -940,7 +944,7 @@ pub enum SignalCoordinate {
 }
 
 /// One ordered coordinate/value point.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct SignalPoint {
     /// Point coordinate.
     pub coordinate: SignalCoordinate,
@@ -951,7 +955,7 @@ pub struct SignalPoint {
 }
 
 /// Exact affine mapping from trace coordinates to virtual nanoseconds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct TraceTimeMapping {
     /// Source coordinate corresponding to `virtual_epoch_nanos`.
     pub source_epoch: i64,
@@ -964,7 +968,7 @@ pub struct TraceTimeMapping {
 }
 
 /// Closed source-node schemas for evaluator version 1.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum SignalSourceSpecification {
     /// Piecewise-constant ordered points.
     Step {
@@ -1229,7 +1233,7 @@ pub enum SignalSourceSpecification {
 }
 
 /// Stable identity domain for a stochastic keyed choice.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum StochasticKeyDomain {
     /// Stable hardware opportunity identity.
     Opportunity,
@@ -1240,7 +1244,7 @@ pub enum StochasticKeyDomain {
 }
 
 /// Closed pure-node schemas for evaluator version 1.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum PureSignalSpecification {
     /// Operator requiring no parameters beyond its inputs.
     Simple {
@@ -1367,7 +1371,7 @@ pub enum PureSignalSpecification {
 }
 
 /// Closed stateful-node schemas for evaluator version 1.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum StatefulSignalSpecification {
     /// Boolean hysteresis.
     Hysteresis {
@@ -1473,7 +1477,7 @@ pub enum StatefulSignalSpecification {
 }
 
 /// One finite-state-machine transition.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct StateMachineTransition {
     /// Source state.
     pub from: SignalId,
@@ -1490,7 +1494,7 @@ pub struct StateMachineTransition {
 }
 
 /// One closed finite-state-machine timer operation.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum StateMachineTimerOperation {
     /// Starts or replaces a named timer.
     Start {
@@ -1507,7 +1511,7 @@ pub enum StateMachineTimerOperation {
 }
 
 /// Parameters shared by source, pure, and stateful node variants.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum SignalNodeKind {
     /// Literal constant source.
     Constant {
@@ -1528,7 +1532,7 @@ pub enum SignalNodeKind {
 }
 
 /// One node in a typed signal program.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct SignalNode {
     /// Stable node identifier.
     pub id: SignalId,
@@ -1628,6 +1632,15 @@ impl SignalProgram {
             .iter()
             .find(|node| &node.id == id)
             .map(|node| &node.output)
+    }
+
+    /// Returns an exported node's complete validated declaration.
+    #[must_use]
+    pub fn exported_node(&self, id: &SignalId) -> Option<&SignalNode> {
+        if self.exported_outputs.binary_search(id).is_err() {
+            return None;
+        }
+        self.nodes.iter().find(|node| &node.id == id)
     }
 }
 

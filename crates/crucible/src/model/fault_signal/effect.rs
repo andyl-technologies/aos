@@ -7,7 +7,7 @@ use super::{
 };
 
 /// The complete closed parameter union accepted by production adapters.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum EffectSpecification {
     /// A network effect.
     Network(NetworkEffectSpecification),
@@ -44,7 +44,7 @@ impl EffectSpecification {
 }
 
 /// A validated effect template selected by one fault binding.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct EffectRequest {
     specification: EffectSpecification,
     lifetime: EffectLifetime,
@@ -111,7 +111,7 @@ impl EffectRequest {
 }
 
 /// One contributor to a resolved, combined effect.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct EffectContributor {
     /// Binding identity used for deterministic ordering.
     pub binding: FaultObjectId,

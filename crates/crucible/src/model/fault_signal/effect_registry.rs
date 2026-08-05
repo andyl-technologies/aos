@@ -12,7 +12,7 @@ use std::fmt;
 pub const EFFECT_SEMANTIC_VERSION: u16 = 1;
 
 /// A canonical fine-grained production-backend capability identifier.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct FaultCapabilityId(String);
 
 impl FaultCapabilityId {
@@ -20,7 +20,7 @@ impl FaultCapabilityId {
     ///
     /// # Errors
     ///
-    /// Returns [`FaultContractError::InvalidCapabilityId`] when `value` is
+    /// Returns [`super::FaultContractError::InvalidCapabilityId`] when `value` is
     /// empty, longer than 160 bytes, or has a malformed component.
     pub fn parse(value: impl Into<String>) -> Result<Self, super::FaultContractError> {
         let value = value.into();
@@ -55,7 +55,7 @@ impl fmt::Display for FaultCapabilityId {
 }
 
 /// A production adapter family that can apply an effect.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum FaultAdapter {
     /// Network links, queues, forwarding state, radio media, and contacts.
     Network,
@@ -66,7 +66,7 @@ pub enum FaultAdapter {
 }
 
 /// A closed kind of object to which an executable fault may bind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum FaultTargetKind {
     /// One endpoint interface.
     NetworkInterface,
@@ -167,7 +167,7 @@ impl FaultTargetKind {
 }
 
 /// A stable point in an adapter operation at which an effect may apply.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum FaultPhase {
     /// The adapter constructs a new operation or value.
     Produce,
@@ -289,7 +289,7 @@ impl FaultPhase {
 }
 
 /// How long an applied effect contribution remains meaningful.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum EffectLifetime {
     /// The contribution remains active until its binding deactivates it.
     Persistent,
@@ -302,7 +302,7 @@ pub enum EffectLifetime {
 }
 
 /// The deterministic algebra used to combine simultaneous contributions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum CompositionAlgebra {
     /// Any active outage makes the target unavailable.
     OutageOr,
@@ -389,7 +389,7 @@ macro_rules! effect_registry {
         evidence: [$($evidence:literal),+ $(,)?]
     }),+ $(,)?) => {
         /// The closed set of executable network, storage/9p, and node effects.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
         pub enum EffectKind {
             $(#[$doc] $variant,)+
         }

@@ -13,7 +13,7 @@ use super::{ContentHash, EffectKind, EffectLifetime, FaultAdapter, FaultPhase, F
 pub const FAULT_ID_MAX_BYTES: usize = 96;
 
 /// A canonical identifier used by targets, bindings, and adapter-owned objects.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct FaultObjectId(String);
 
 impl FaultObjectId {
@@ -67,7 +67,7 @@ fn valid_id(value: &str) -> bool {
 }
 
 /// A direction attached to an opportunity when the operation is directional.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum FaultDirection {
     /// From endpoint A toward endpoint B.
     AToB,
@@ -99,7 +99,7 @@ impl FaultDirection {
 }
 
 /// A fully resolved, capability-checked target identity.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum ResolvedFaultTarget {
     /// One endpoint interface.
     NetworkInterface {
@@ -448,7 +448,7 @@ fn push_u64(material: &mut String, value: u64) {
 }
 
 /// A closed production-adapter operation that can expose fault opportunities.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub enum FaultOperation {
     /// A network transmission.
     NetworkTransmit,
@@ -733,7 +733,7 @@ impl FaultOperation {
 }
 
 /// A scheduler coordinate included in a fault-opportunity identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct FaultCoordinate {
     /// Global virtual time in nanoseconds.
     pub virtual_nanos: u64,
@@ -742,7 +742,7 @@ pub struct FaultCoordinate {
 }
 
 /// Bounded immutable metadata needed to distinguish and validate an operation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum OpportunityPayload {
     /// No additional identity-bearing metadata is required.
     None,
