@@ -7507,13 +7507,12 @@ impl Database {
             .query(
                 &format!(
                     "SELECT {WRITE_AUTHORITY_COLUMNS} FROM surface_write_authorities a
-                 WHERE EXISTS (SELECT 1 FROM surface_placement_write_capabilities pc
-                   WHERE pc.storage_binding_id = ?1
-                     AND pc.binding_write_revision = ?2
-                     AND ((pc.placement_id = a.desired_placement_id
-                           AND pc.placement_write_spec_version = a.desired_write_spec_version)
-                       OR (pc.placement_id = a.observed_placement_id
-                           AND pc.placement_write_spec_version = a.observed_write_spec_version)))
+                 WHERE (a.desired_binding_write_revision = ?2
+                    AND EXISTS (SELECT 1 FROM surface_placements p
+                      WHERE p.id = a.desired_placement_id AND p.storage_binding_id = ?1))
+                    OR (a.observed_binding_write_revision = ?2
+                    AND EXISTS (SELECT 1 FROM surface_placements p
+                      WHERE p.id = a.observed_placement_id AND p.storage_binding_id = ?1))
                  ORDER BY a.id"
                 ),
                 &vals![storage_binding_id, binding_write_revision],
@@ -8147,7 +8146,7 @@ impl Database {
         ]
         .to_vec();
         self.backend
-            .batch(&[
+            .checked_batch(&[
                 Statement::new(
                     format!(
                         "DELETE FROM surface_placement_write_capabilities
@@ -8156,7 +8155,8 @@ impl Database {
                            WHERE {guard} AND desired_state <> ?3)"
                     ),
                     vals![id, input.expected_version, input.desired_state].to_vec(),
-                ),
+                )
+                .unchecked(),
                 Statement::new(
                     format!(
                         "UPDATE surface_placements SET desired_state = ?3,
@@ -8167,7 +8167,8 @@ impl Database {
              WHERE {guard}"
                     ),
                     values,
-                ),
+                )
+                .expecting(1),
             ])
             .await?;
         let updated = self.surface_placement(id).await?;
@@ -13394,6 +13395,7 @@ impl Database {
              JOIN authorization_scopes a ON a.scope_key = m.scope_key
              LEFT JOIN orgs o ON o.id = a.org_id
              WHERE m.principal_kind = ?1 AND m.principal_id = ?2
+               AND a.retired_at IS NULL
                AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                AND ((?1 = 'user' AND EXISTS (
                       SELECT 1 FROM users u
@@ -20997,23 +20999,23 @@ mod tests {
         }
     }
 
-    async fn create_local_binding(db: &Database, org_id: i64, name: &str, path: &str) -> i64 {
+    async fn create_test_binding(db: &Database, org_id: i64, name: &str, path: &str) -> i64 {
         let owner = db.org_by_id(org_id).await.unwrap().unwrap();
         db.create_topology_storage_binding(
             Some(org_id),
             &Uuid::new_v4().simple().to_string(),
             &owner.stable_id,
             name,
-            "local_fs",
-            Some(path),
+            "r2",
             None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            Some("test-bucket"),
+            Some(path.trim_start_matches('/')),
+            Some("https"),
+            Some("dns"),
+            Some(b"storage.example.invalid"),
+            Some(443),
+            Some("auto"),
+            Some("private"),
         )
         .await
         .unwrap()
@@ -21122,6 +21124,11 @@ mod tests {
         let mut images = String::new();
         for format in ["raw", "qcow2"] {
             let delivery = delivery(format);
+            let store_hash = if format == "raw" {
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            } else {
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            };
             let encoded = toml::to_string(&DeliveryWrapper {
                 delivery: &delivery,
             })
@@ -21142,7 +21149,7 @@ mod tests {
                 r#"
 [[versions.platforms.x86_64-linux.images]]
 format = "{format}"
-store_path = "/aos/store/aos-system-{format}"
+store_path = "/aos/store/{store_hash}-aos-system-{format}"
 nar_hash = "sha256:nar"
 nar_size = 1
 {encoded}
@@ -21352,8 +21359,8 @@ source_nar_hash = ""
             "id",
             "endpoint_id",
             "endpoint_generation",
-            "configuration_generation",
-            "configuration_digest",
+            "consumer_scope_key",
+            "access_policy_digest",
             "placement_policy_revision_id",
         ] {
             assert!(
@@ -21506,17 +21513,6 @@ source_nar_hash = ""
             .unwrap()
             .get(0)
             .unwrap();
-        db.backend
-            .execute(
-                "INSERT INTO release_artifacts
-             (release_id, package_name, package_version, platform, artifact_kind,
-              store_path, store_hash)
-             VALUES (?1, 'curl', '8.5.0', 'x86_64-linux', 'output',
-                     '/nix/store/abc-curl', 'abc')",
-                &vals![release_id],
-            )
-            .await
-            .unwrap();
         db.apply_snapshot(id, &snapshot).await.unwrap();
         let stable_release_id: i64 = db
             .backend
@@ -21660,7 +21656,7 @@ source_nar_hash = ""
             .create_managed_registry(org_id, "", "system", "public", &[], false)
             .await
             .unwrap();
-        let binding_id = create_local_binding(&db, org_id, "images", "/tmp/image-roots").await;
+        let binding_id = create_test_binding(&db, org_id, "images", "/tmp/image-roots").await;
         let mut placement =
             topology_placement(SurfaceTarget::Registry(registry_id), "primary", "system", 0);
         placement.storage_binding_id = binding_id;
@@ -21905,8 +21901,8 @@ source_nar_hash = ""
             .await
             .unwrap();
         assert!(
-            db.list_system_images(registry_id).await.unwrap().is_empty(),
-            "desired offline must override stale ready/degraded observations"
+            db.list_system_images(registry_id).await.unwrap().len() == 2,
+            "taking one placement offline must preserve a healthy verified replica"
         );
         db.update_surface_placement(
             offline.id,
@@ -23611,12 +23607,14 @@ source_nar_hash = ""
     async fn storage_bindings_use_only_the_typed_topology_shape() {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("acme", "Acme").await.unwrap();
-        let id = create_local_binding(&db, org, "primary", "/srv/aos-hub").await;
+        let id = create_test_binding(&db, org, "primary", "/srv/aos-hub").await;
         let binding = db.storage_binding(id).await.unwrap().unwrap();
         assert_eq!(binding.name, "primary");
-        assert_eq!(binding.kind, "local_fs");
-        assert_eq!(binding.local_root_path.as_deref(), Some("/srv/aos-hub"));
-        assert_eq!(binding.access_mode, None);
+        assert_eq!(binding.kind, "r2");
+        assert_eq!(binding.local_root_path, None);
+        assert_eq!(binding.object_bucket.as_deref(), Some("test-bucket"));
+        assert_eq!(binding.object_prefix.as_deref(), Some("srv/aos-hub"));
+        assert_eq!(binding.access_mode.as_deref(), Some("private"));
         assert_eq!(
             db.storage_binding_by_name(org, "primary")
                 .await
@@ -23631,7 +23629,7 @@ source_nar_hash = ""
             .unwrap()
             .is_none());
 
-        create_local_binding(&db, org, "secondary", "/srv/other").await;
+        create_test_binding(&db, org, "secondary", "/srv/other").await;
         let all = db.list_storage_bindings(org).await.unwrap();
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].name, "primary");
@@ -23642,6 +23640,7 @@ source_nar_hash = ""
     async fn registry_identity_creation_does_not_invent_storage() {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("acme", "Acme").await.unwrap();
+        db.create_project(org, "team", "Team").await.unwrap();
         let id = db
             .create_managed_registry(org, "team", "cdn", "public", &[], false)
             .await
@@ -23659,7 +23658,7 @@ source_nar_hash = ""
     async fn cache_fixture() -> (Database, i64, i64) {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("acme", "Acme").await.unwrap();
-        let binding = create_local_binding(&db, org, "primary", "/srv/aos-hub").await;
+        let binding = create_test_binding(&db, org, "primary", "/srv/aos-hub").await;
         (db, org, binding)
     }
 
@@ -23743,6 +23742,12 @@ source_nar_hash = ""
     async fn managed_registry_canonical_slug_and_scope_lookup() {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("acme", "Acme").await.unwrap();
+        db.create_project(org, "infra", "Infrastructure")
+            .await
+            .unwrap();
+        db.create_project(org, "infra/prod", "Production")
+            .await
+            .unwrap();
 
         // With a project path.
         let cdn = db
@@ -24208,6 +24213,12 @@ source_nar_hash = ""
         assert!(std::env::var_os("AOS_HUB_ALLOW_LOCAL_REMOTES").is_none());
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("acme", "Acme").await.unwrap();
+        db.create_project(org, "infra", "Infrastructure")
+            .await
+            .unwrap();
+        db.create_project(org, "infra/prod", "Production")
+            .await
+            .unwrap();
         let reg = db
             .create_managed_registry(org, "infra/prod", "cdn", "public", &[], false)
             .await
@@ -24429,11 +24440,13 @@ source_nar_hash = ""
 
         let old_scope = first.scope_key;
         assert!(db.seed_delete_registry_for_test(first_id).await.unwrap());
-        assert!(db
-            .authorization_context(&old_scope)
+        let grants_after_delete = db
+            .effective_scopes(crate::domain::Principal::user(user))
             .await
-            .unwrap()
-            .is_none());
+            .unwrap();
+        assert!(grants_after_delete
+            .iter()
+            .all(|(scope, _)| scope.as_str() != old_scope));
         let replacement_id = db
             .create_managed_registry(org_id, "infra", "packages", "private", &[], true)
             .await
@@ -24444,10 +24457,6 @@ source_nar_hash = ""
             .authorization_context(&replacement.scope_key)
             .await
             .unwrap()
-            .unwrap();
-        let grants_after_delete = db
-            .effective_scopes(crate::domain::Principal::user(user))
-            .await
             .unwrap();
         assert!(!crate::domain::iam::allow(
             &grants_after_delete,
@@ -24668,6 +24677,7 @@ source_nar_hash = ""
         }
     }
 
+    #[allow(dead_code)]
     async fn set_test_placement_watermark(
         db: &Database,
         placement_id: i64,
@@ -24708,7 +24718,7 @@ source_nar_hash = ""
         assert_eq!(version, MIGRATIONS.len() as i64);
 
         let org = db.create_org("topology", "Topology").await.unwrap();
-        let binding = create_local_binding(&db, org, "placement", "/tmp/topology").await;
+        let binding = create_test_binding(&db, org, "placement", "/tmp/topology").await;
         let registry = db
             .create_managed_registry(org, "", "registry", "public", &[], false)
             .await
@@ -25146,10 +25156,21 @@ source_nar_hash = ""
         );
 
         db.backend
-            .execute("DROP VIEW surface_placement_effective", &[])
+            .execute(
+                "CREATE TRIGGER reject_placement_infrastructure
+                 BEFORE INSERT ON surface_placements
+                 BEGIN SELECT RAISE(ABORT, 'injected infrastructure failure'); END",
+                &[],
+            )
             .await
             .unwrap();
-        let error = db.create_surface_placement(&second).await.unwrap_err();
+        let mut infrastructure = second;
+        infrastructure.name = "infrastructure-error".to_string();
+        infrastructure.prefix = "infrastructure-error".to_string();
+        let error = db
+            .create_surface_placement(&infrastructure)
+            .await
+            .unwrap_err();
         assert!(
             surface_placement_create_failure(&error).is_none(),
             "infrastructure failures must remain unclassified and internal"
@@ -25160,7 +25181,7 @@ source_nar_hash = ""
     async fn topology_orders_named_placements_and_rejects_stale_versions() {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("ordered", "Ordered").await.unwrap();
-        let binding = create_local_binding(&db, org, "ordered", "/tmp/ordered").await;
+        let binding = create_test_binding(&db, org, "ordered", "/tmp/ordered").await;
         let registry = db
             .create_managed_registry(org, "", "registry", "public", &[], false)
             .await
@@ -25325,7 +25346,7 @@ source_nar_hash = ""
     /// local_fs binding, so serving queries can exclude it on soft-delete.
     impl Database {
         async fn register_owned(&self, org_id: i64, slug: &str) {
-            create_local_binding(self, org_id, "primary", "/tmp/aos-hub-test").await;
+            create_test_binding(self, org_id, "primary", "/tmp/aos-hub-test").await;
             // The slug is `org/name`; split off the name for the canonical path.
             let name = slug.rsplit('/').next().unwrap();
             self.create_managed_registry(org_id, "", name, "public", &[], false)

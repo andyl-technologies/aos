@@ -1067,12 +1067,8 @@ mod tests {
         let replacement = Scope::parse("registry:22222222222222222222222222222222");
         let org = Scope::parse("org:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
         let replacement_context = AuthorizationContext::try_new(
-            replacement,
-            vec![
-                org,
-                Scope::root(),
-                Scope::parse("registry:22222222222222222222222222222222"),
-            ],
+            replacement.clone(),
+            vec![replacement, org, Scope::root()],
         )
         .unwrap();
         assert!(!allow(

@@ -4722,8 +4722,12 @@ mod tests {
             logical_id: "prod".to_owned(),
         };
         assert_eq!(
-            hex::encode(source.fingerprint("org:acme").unwrap()),
-            "f6d31e77254aa21beee6d7b82c8db4190092253a353a614fd809b95d10e60bf4"
+            hex::encode(
+                source
+                    .fingerprint("org:00000000000000000000000000000001")
+                    .unwrap()
+            ),
+            "a9b44e3f188c15c96b985c1746d7f6a990e6dce473c6879b66e5189cc324a4f3"
         );
         let vpc = NetworkBoundaryIdentitySpec::Vpc {
             provider: "aws".to_owned(),
@@ -4917,14 +4921,15 @@ mod tests {
             .unwrap();
         assert_eq!(seed_event_count, 1);
 
-        db.create_org("seeded", "Seeded").await.unwrap();
+        let org_id = db.create_org("seeded", "Seeded").await.unwrap();
+        let org_scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
         let org_grant = db
             .backend
             .query_opt(
                 "SELECT grant_kind, state FROM network_boundary_consumer_scopes
                  WHERE boundary_id = 'instance:public'
-                   AND consumer_scope_key = 'org:seeded'",
-                &[],
+                   AND consumer_scope_key = ?1",
+                &vals![org_scope],
             )
             .await
             .unwrap()
@@ -4937,10 +4942,10 @@ mod tests {
                 "SELECT COUNT(*) FROM consumer_scope_grant_events
                  WHERE resource_kind = 'network_boundary'
                    AND resource_stable_id = 'instance:public'
-                   AND consumer_scope_key = 'org:seeded'
+                   AND consumer_scope_key = ?1
                    AND grant_generation = 1 AND transition = 'granted'
                    AND resulting_state = 'active'",
-                &[],
+                &vals![org_scope],
             )
             .await
             .unwrap()
@@ -5211,7 +5216,7 @@ mod tests {
             boundary_revision: 1,
             ingress_kind: "hub".to_owned(),
             listener_configuration: "listener:test".to_owned(),
-            tls_configuration: "{\"certificate_ref\":\"secret:test\",\"provider\":\"external\",\"require_client_certificate\":false}".to_owned(),
+            tls_configuration: "{\"provider\":\"external\",\"certificate_ref\":\"secret:test\",\"require_client_certificate\":false}".to_owned(),
             probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_owned(),
         };
         let endpoint = db

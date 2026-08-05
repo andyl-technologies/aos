@@ -332,9 +332,13 @@ mod tests {
         let mk = || NewBinding {
             org_id: org,
             name: "dup",
-            kind: BindingKind::LocalFs,
-            root: "/srv/x",
-            origin: None,
+            kind: BindingKind::R2,
+            root: "test-bucket/dup",
+            origin: Some(OriginInput {
+                endpoint: "https://storage.example.invalid",
+                region: "auto",
+                private: true,
+            }),
         };
         provision_binding(&db, mk()).await.unwrap();
         let err = provision_binding(&db, mk()).await.unwrap_err();

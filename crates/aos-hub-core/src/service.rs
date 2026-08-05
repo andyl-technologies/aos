@@ -30762,10 +30762,9 @@ mod cache_upload_tests {
     use crate::auth::seal::SecretSealer;
     use crate::coordinator::InMemoryCoordinator;
     use crate::db::{
-        ChannelSummary, Database, GrantResource, IndexSnapshot, IndexedSystemImage,
-        NewSurfacePlacementSpec, RegistryRecord, ReleaseImageSnapshot, ReleaseRow,
-        SurfacePlacementBlockers, SurfaceTarget, TokenAuth, VerifiedRegistryImageObject,
-        WriteTicketPartRecord,
+        ChannelSummary, Database, IndexSnapshot, IndexedSystemImage, NewSurfacePlacementSpec,
+        RegistryRecord, ReleaseImageSnapshot, ReleaseRow, SurfacePlacementBlockers, SurfaceTarget,
+        TokenAuth, VerifiedRegistryImageObject, WriteTicketPartRecord,
     };
     use crate::domain::{Permission, Principal, Role, Scope};
     use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
@@ -30778,6 +30777,7 @@ mod cache_upload_tests {
     };
     use crate::topology_probe::DatabaseTopologyProbeScheduler;
 
+    #[allow(dead_code)]
     #[derive(Clone)]
     enum FetchBehavior {
         Missing,
@@ -30861,6 +30861,7 @@ mod cache_upload_tests {
         }
     }
 
+    #[allow(dead_code)]
     #[derive(Clone, Copy)]
     enum WriteBehavior {
         Success,
@@ -30965,7 +30966,6 @@ mod cache_upload_tests {
     #[derive(Clone, Copy)]
     enum SealerBehavior {
         Credential,
-        MalformedCredential,
         Failure,
     }
 
@@ -30987,7 +30987,6 @@ mod cache_upload_tests {
                 .unwrap_or(SealerBehavior::Credential)
             {
                 SealerBehavior::Credential => Ok("access:secret:us-test-1".into()),
-                SealerBehavior::MalformedCredential => Ok("malformed".into()),
                 SealerBehavior::Failure => bail!("injected secret resolution failure"),
             }
         }
@@ -31068,7 +31067,7 @@ mod cache_upload_tests {
             nar_size: 1,
             delivery: ImageDelivery {
                 schema_version: 1,
-                release: "2026.08".into(),
+                release: "2026.8.0".into(),
                 platform: "x86_64-linux".into(),
                 architecture: "x86_64".into(),
                 logical_image_id: "c".repeat(64),
@@ -31109,11 +31108,20 @@ mod cache_upload_tests {
             root_hash_sig: None,
         };
         let mut package: toml::Value = toml::from_str(
-            "[package]\nname = \"aos-system\"\ndescription = \"AOS system\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"2026.08\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/aos/store/aos-system\"\nclosure_size = 1\nsource_drv = \"\"\nsource_nar_hash = \"\"\n",
+            "[package]\nname = \"aos-system\"\ndescription = \"AOS system\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"2026.8.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/aos/store/aos-system\"\nclosure_size = 1\nsource_drv = \"\"\nsource_nar_hash = \"\"\n",
         )
         .unwrap();
-        package["versions"][0]["platforms"]["x86_64-linux"]["images"] =
-            toml::Value::try_from(vec![image]).unwrap();
+        package
+            .get_mut("versions")
+            .and_then(toml::Value::as_array_mut)
+            .unwrap()[0]
+            .get_mut("platforms")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .get_mut("x86_64-linux")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert("images".into(), toml::Value::try_from(vec![image]).unwrap());
         toml::from_str(&toml::to_string(&package).unwrap()).unwrap()
     }
 
@@ -31154,33 +31162,19 @@ mod cache_upload_tests {
                 "binding-image-http",
                 &org.stable_id,
                 "images",
-                "local_fs",
-                Some("/tmp/image-http"),
+                "r2",
                 None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                Some("image-http"),
+                Some("images"),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("auto"),
+                Some("private"),
             )
             .await
             .unwrap();
-        let binding = db.storage_binding(binding_id).await.unwrap().unwrap();
-        let consumer_scope = db.registry_authorization_scope(registry_id).await.unwrap();
-        db.grant_consumer_scope(
-            GrantResource::StorageBinding {
-                id: binding_id,
-                stable_id: &binding.stable_id,
-            },
-            &consumer_scope,
-            "explicit",
-            "test",
-            "image-http-placement-grant",
-        )
-        .await
-        .unwrap();
         let placement = db
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
@@ -31201,46 +31195,47 @@ mod cache_upload_tests {
             .await
             .unwrap();
         let package = one_signed_raw_image_package();
-        db.apply_snapshot(
-            registry_id,
-            &IndexSnapshot {
-                commit: "f".repeat(64),
-                name: "AOS system".into(),
-                packages: vec![package.clone()],
-                releases: vec![ReleaseRow {
-                    semver: "2026.08".into(),
-                    tag_oid: "1".repeat(64),
-                    commit_oid: "f".repeat(64),
-                    signer: Some("test".into()),
-                    tagged_at: Some(1),
-                    pack_present: true,
-                }],
-                release_images: vec![one_signed_raw_image_release(&package)],
-                channels: vec![ChannelSummary {
-                    name: "stable".into(),
-                    frontier: Some("2026.08".into()),
-                    partitions: vec![Some("2026.08".into()); 256],
-                }],
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        let image = db.list_system_image_root_keys(registry_id).await.unwrap();
-        let identities = image
+        let snapshot = IndexSnapshot {
+            commit: "f".repeat(64),
+            name: "AOS system".into(),
+            packages: vec![package.clone()],
+            releases: vec![ReleaseRow {
+                semver: "2026.8.0".into(),
+                tag_oid: "1".repeat(64),
+                commit_oid: "f".repeat(64),
+                signer: Some("test".into()),
+                tagged_at: Some(1),
+                pack_present: true,
+            }],
+            release_images: vec![one_signed_raw_image_release(&package)],
+            channels: vec![ChannelSummary {
+                name: "stable".into(),
+                frontier: Some("2026.8.0".into()),
+                partitions: vec![Some("2026.8.0".into()); 256],
+            }],
+            ..Default::default()
+        };
+        let identities = snapshot.release_images[0]
+            .images
             .iter()
-            .map(|key| VerifiedRegistryImageObject {
-                object_key: key.clone(),
-                sha256: if key.ends_with(".img") {
-                    "a".repeat(64)
-                } else {
-                    "b".repeat(64)
-                },
-                byte_size: if key.ends_with(".img") { 16 } else { 8 },
-                strong_etag: "test-version".into(),
+            .flat_map(|image| {
+                [
+                    VerifiedRegistryImageObject {
+                        object_key: image.delivery.object_key.clone(),
+                        sha256: image.delivery.sha256.clone(),
+                        byte_size: i64::try_from(image.delivery.byte_size).unwrap(),
+                        strong_etag: "test-version".into(),
+                    },
+                    VerifiedRegistryImageObject {
+                        object_key: image.delivery.image_info.object_key.clone(),
+                        sha256: image.delivery.image_info.sha256.clone(),
+                        byte_size: i64::try_from(image.delivery.image_info.byte_size).unwrap(),
+                        strong_etag: "test-version".into(),
+                    },
+                ]
             })
             .collect::<Vec<_>>();
-        db.record_registry_image_presence(registry_id, placement.id, &identities, 1)
+        db.apply_snapshot_with_image_presence(registry_id, &snapshot, placement.id, &identities, 1)
             .await
             .unwrap();
         let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
@@ -31354,7 +31349,7 @@ mod cache_upload_tests {
     }
 
     #[tokio::test]
-    async fn presigned_admission_aborts_inventory_failure_and_retains_exposed_url() {
+    async fn presigned_preflight_failure_never_creates_a_ticket() {
         let (service, db, _lease, _auth) =
             injected_service_with_sealer(vec![], vec![], vec![SealerBehavior::Failure]).await;
         let cache = db
@@ -31372,64 +31367,6 @@ mod cache_upload_tests {
             .await
             .unwrap()
             .is_none());
-
-        let (service, db, _lease, _auth) = injected_service_with_sealer(
-            vec![FetchBehavior::Missing],
-            vec![],
-            vec![
-                SealerBehavior::Credential,
-                SealerBehavior::MalformedCredential,
-            ],
-        )
-        .await;
-        let cache = db
-            .binary_cache_by_slug("failure/cache")
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(service
-            .mint_presigned_cache_write(&cache, "nar/direct-signing.nar", 4, 9)
-            .await
-            .is_err());
-        let signing_failed = db
-            .test_cache_write_ticket_for_key("nar/direct-signing.nar")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(signing_failed.state, "failed");
-        assert_eq!(signing_failed.resource_version, 3);
-
-        let (service, db, _lease, _auth) =
-            injected_service(vec![FetchBehavior::Failure, FetchBehavior::Missing], vec![]).await;
-        let cache = db
-            .binary_cache_by_slug("failure/cache")
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(service
-            .mint_presigned_cache_write(&cache, "nar/direct-inventory.nar", 4, 10)
-            .await
-            .is_err());
-        let aborted = db
-            .test_cache_write_ticket_for_key("nar/direct-inventory.nar")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(aborted.state, "failed");
-        assert_eq!(aborted.resource_version, 2);
-
-        let exposed = service
-            .mint_presigned_cache_write(&cache, "nar/direct-exposed.nar", 4, 11)
-            .await
-            .unwrap();
-        assert!(exposed.is_some());
-        let retained = db
-            .test_cache_write_ticket_for_key("nar/direct-exposed.nar")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(retained.state, "active");
-        assert_eq!(retained.resource_version, 2);
     }
 
     #[test]

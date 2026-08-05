@@ -832,7 +832,7 @@ mod tests {
     fn home_page_lists_registries() {
         let html = home_page(&PageChrome::anonymous(), &[demo_registry()]);
         assert!(html.contains("/demo/-/"));
-        assert!(html.contains("https://cdn.example/demo"));
+        assert!(!html.contains("cdn.example"));
     }
 
     #[test]

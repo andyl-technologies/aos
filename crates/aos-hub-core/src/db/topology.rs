@@ -4477,16 +4477,16 @@ mod tests {
                 "binding:route-probes",
                 &org.stable_id,
                 "route-probes",
-                "local_fs",
-                Some("/tmp/aos-route-probes"),
+                "r2",
                 None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                Some("route-probes"),
+                Some("routes"),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("auto"),
+                Some("private"),
             )
             .await
             .unwrap();
@@ -4513,7 +4513,7 @@ mod tests {
             boundary_revision: 1,
             ingress_kind: "hub".to_string(),
             listener_configuration: "listener:route-probes".to_string(),
-            tls_configuration: "{\"certificate_ref\":\"secret:test\",\"provider\":\"external\",\"require_client_certificate\":false}".to_string(),
+            tls_configuration: "{\"provider\":\"external\",\"certificate_ref\":\"secret:test\",\"require_client_certificate\":false}".to_string(),
             probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
         };
         db.create_delivery_endpoint(

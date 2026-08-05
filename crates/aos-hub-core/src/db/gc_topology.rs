@@ -10292,6 +10292,27 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
+                    "INSERT INTO cache_gc_deletion_capacity (cache_id, running_count)
+                     VALUES (1, 0)",
+                    vec![],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO cache_gc_heads (cache_id, resource_version, updated_at)
+                     VALUES (1, 1, 1)",
+                    vec![],
+                )
+                .expecting(1),
+                Statement::new(
+                    "INSERT INTO cache_gc_policies
+                     (cache_id, unreferenced_grace_secs, schedule_secs,
+                      deletion_concurrency, retry_initial_secs, retry_max_secs,
+                      retry_max_attempts, tombstone_retention_secs, resource_version)
+                     VALUES (1, 604800, 86400, 4, 60, 3600, 10, 2592000, 1)",
+                    vec![],
+                )
+                .expecting(1),
+                Statement::new(
                     "INSERT INTO cache_write_tickets
                      (ticket_id, cache_id, object_key, declared_size, upload_kind,
                       placement_id, placement_resource_version,
@@ -10332,10 +10353,16 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
+                    "DELETE FROM cache_write_tickets
+                     WHERE ticket_id <> 'cache-multipart-post'",
+                    vec![],
+                )
+                .expecting(5),
+                Statement::new(
                     "UPDATE cache_write_tickets SET expires_at = 1000000000",
                     vec![],
                 )
-                .expecting(6),
+                .expecting(1),
                 Statement::new(
                     "UPDATE cache_write_tickets
                      SET state = 'completing', expires_at = 100,

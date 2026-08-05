@@ -690,16 +690,16 @@ mod tests {
                 "planner-binding",
                 &owner.stable_id,
                 "planner",
-                "local_fs",
-                Some("/tmp/planner"),
+                "r2",
                 None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                Some("planner-bucket"),
+                Some("planner"),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("auto"),
+                Some("private"),
             )
             .await
             .unwrap();
@@ -746,7 +746,7 @@ mod tests {
             &db,
             &provider,
             SurfaceTarget::BinaryCache(cache),
-            "nar/unindexed.nar",
+            "nix-cache-info",
         )
         .await
         .unwrap()
@@ -784,7 +784,7 @@ mod tests {
             &db,
             &provider,
             SurfaceTarget::BinaryCache(cache),
-            "nar/unindexed.nar",
+            "nix-cache-info",
         )
         .await
         .unwrap_err();
@@ -811,7 +811,7 @@ mod tests {
             &db,
             &provider,
             SurfaceTarget::BinaryCache(cache),
-            "nar/unindexed.nar",
+            "nix-cache-info",
         )
         .await
         {
@@ -838,7 +838,7 @@ mod tests {
             &db,
             &provider,
             SurfaceTarget::BinaryCache(cache),
-            "nar/unindexed.nar",
+            "nix-cache-info",
             Some((0, 3)),
         )
         .await
