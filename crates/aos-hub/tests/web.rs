@@ -718,6 +718,7 @@ async fn cache_browse_and_nar_explorer_over_plain_http() {
         .oneshot(
             Request::builder()
                 .uri("/acme-cache/nar/test.nar")
+                .header(header::HOST, "127.0.0.1:8420")
                 .header(header::RANGE, "bytes=0-3")
                 .body(Body::empty())
                 .unwrap(),

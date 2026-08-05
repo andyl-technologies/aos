@@ -3315,9 +3315,7 @@ CREATE TABLE cache_gc_epoch_assertions(
   UNIQUE(mutation_id, cache_id),
   CHECK(resulting_epoch = expected_epoch + 1),
   CHECK(mutation_kind IN('root', 'object_graph', 'inventory', 'topology', 'policy', 'fence')),
-  CHECK(ok = 1),
-  FOREIGN KEY(cache_id, resulting_epoch, epoch_owner_token)
-  REFERENCES cache_gc_state(cache_id, epoch, epoch_owner_token)
+  CHECK(ok = 1)
 );
 CREATE TABLE cache_object_mutation_fences(
   cache_id INTEGER NOT NULL REFERENCES binary_caches(id) ON DELETE CASCADE,

@@ -441,7 +441,7 @@ pub struct DeliveryAccessEvidence {
 /// Capability selected by the shared path classifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryAudience {
-    /// Registry Git protocol and immutable release paths.
+    /// Registry Git protocol, immutable releases, and signed image objects.
     Git,
     /// Nix binary-cache protocol.
     NixCache,
@@ -697,7 +697,8 @@ fn delivery_audience(surface: crate::db::SurfaceTarget, path: &str) -> DeliveryA
         && (matches!(path, "HEAD" | "info/refs")
             || path.starts_with("objects/")
             || path.starts_with("releases/")
-            || path.starts_with("channels/"))
+            || path.starts_with("channels/")
+            || path.starts_with("images/"))
     {
         return DeliveryAudience::Git;
     }
@@ -2845,6 +2846,23 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
                 send_bridge(async move { browse_response(Rendered::Redirect(format!("/{slug}/"))) })
             }),
         );
+        r = r.route(
+            "/{org}/{registry}",
+            get(
+                |State(state): State<SharedState>,
+                 Path((org, registry)): Path<(String, String)>| {
+                    let svc = from_state(state);
+                    send_bridge(async move {
+                        let slug = format!("{org}/{registry}");
+                        match svc.db.registry_by_slug(&slug).await {
+                            Ok(Some(_)) => browse_response(Rendered::Redirect(format!("/{slug}/"))),
+                            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+                            Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                        }
+                    })
+                },
+            ),
+        );
         // The registry home is served both at `/{slug}/` (the canonical,
         // slash-terminated root the rich pages link to) and at the marker form
         // `/{slug}/-/`; both dispatch to the registry-home browse read, which
@@ -2876,6 +2894,43 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
                         svc,
                         headers,
                         slug,
+                        rest,
+                        uri.query().map(str::to_owned),
+                    ))
+                },
+            ),
+        );
+        let organization_registry_home =
+            |State(state): State<SharedState>,
+             headers: HeaderMap,
+             Path((org, registry)): Path<(String, String)>,
+             uri: axum::http::Uri| {
+                let svc = from_state(state);
+                send_bridge(browse_dispatch(
+                    svc,
+                    headers,
+                    format!("{org}/{registry}"),
+                    String::new(),
+                    uri.query().map(str::to_owned),
+                ))
+            };
+        r = r.route("/{org}/{registry}/", get(organization_registry_home));
+        r = r.route(
+            &format!("/{{org}}/{{registry}}/{BROWSE_MARKER}/"),
+            get(organization_registry_home),
+        );
+        r = r.route(
+            &format!("/{{org}}/{{registry}}/{BROWSE_MARKER}/{{*rest}}"),
+            get(
+                |State(state): State<SharedState>,
+                 headers: HeaderMap,
+                 Path((org, registry, rest)): Path<(String, String, String)>,
+                 uri: axum::http::Uri| {
+                    let svc = from_state(state);
+                    send_bridge(browse_dispatch(
+                        svc,
+                        headers,
+                        format!("{org}/{registry}"),
                         rest,
                         uri.query().map(str::to_owned),
                     ))

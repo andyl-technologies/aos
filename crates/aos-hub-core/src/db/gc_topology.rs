@@ -1951,7 +1951,7 @@ impl Database {
                AND active_cache_slot = 1 AND expires_at > ?6
                AND declared_size = ?5
                AND direct_upload_acknowledged_at IS NULL
-               AND EXISTS (SELECT 1 FROM surface_placements placement
+               AND EXISTS (SELECT 1 FROM surface_placement_effective placement
                  JOIN storage_bindings binding ON binding.id = placement.storage_binding_id
                  JOIN storage_binding_credential_revisions write_credential
                    ON write_credential.storage_binding_id = binding.id
@@ -2417,7 +2417,7 @@ impl Database {
                        WHERE part.ticket_id = cache_write_tickets.ticket_id
                          AND part.state = 'confirmed')))
                    AND expires_at > ?3
-                   AND EXISTS (SELECT 1 FROM surface_placements placement
+                   AND EXISTS (SELECT 1 FROM surface_placement_effective placement
                      JOIN storage_bindings binding
                        ON binding.id = placement.storage_binding_id
                      JOIN storage_binding_credential_revisions credential
@@ -2765,7 +2765,7 @@ impl Database {
                     ticket.prior_object_hash, ticket.prior_object_etag,
                     ticket.intended_object_hash
              FROM registry_write_tickets ticket
-             JOIN surface_placements placement ON placement.id = ticket.placement_id
+             JOIN surface_placement_effective placement ON placement.id = ticket.placement_id
                AND placement.registry_id = ticket.registry_id
              JOIN storage_bindings binding ON binding.id = ticket.storage_binding_id
              JOIN storage_binding_credential_revisions credential
@@ -3125,7 +3125,7 @@ impl Database {
                    FROM registry_write_ticket_parts part
                    WHERE part.ticket_id = registry_write_tickets.ticket_id
                      AND part.state = 'confirmed')))
-               AND EXISTS (SELECT 1 FROM surface_placements placement
+               AND EXISTS (SELECT 1 FROM surface_placement_effective placement
                  JOIN storage_bindings binding ON binding.id = placement.storage_binding_id
                  JOIN storage_binding_credential_revisions credential
                    ON credential.storage_binding_id = binding.id
@@ -3653,7 +3653,7 @@ impl Database {
                  WHERE cache_id = ?1 AND epoch = ?2
                    AND destructive_enabled = 0
                    AND NOT EXISTS (
-                     SELECT 1 FROM surface_placements placement
+                     SELECT 1 FROM surface_placement_effective placement
                      LEFT JOIN storage_bindings binding
                        ON binding.id = placement.storage_binding_id
                      LEFT JOIN storage_binding_write_revisions revision
@@ -6965,7 +6965,7 @@ impl Database {
                    AND head.current_mark_generation_id = generation.generation_id
                    AND state.destructive_enabled = 1
                    AND NOT EXISTS (
-                     SELECT 1 FROM surface_placements placement
+                     SELECT 1 FROM surface_placement_effective placement
                      LEFT JOIN storage_bindings binding
                        ON binding.id = placement.storage_binding_id
                      LEFT JOIN storage_binding_write_revisions revision

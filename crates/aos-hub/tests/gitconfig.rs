@@ -119,6 +119,22 @@ async fn managed_indexed(message: &str) -> (Arc<Database>, tempfile::TempDir, Re
     .await
     .unwrap();
     let registry = db.registry_by_slug("acme/cdn").await.unwrap().unwrap();
+    let placement = common::create_ready_placement(
+        &db,
+        aos_hub::db::SurfaceTarget::Registry(registry.id),
+        binding,
+        "primary",
+        "cdn",
+    )
+    .await;
+    common::configure_write_authority(
+        &db,
+        aos_hub::db::SurfaceTarget::Registry(registry.id),
+        binding,
+        &placement,
+        "gitconfig-fixture-writer",
+    )
+    .await;
 
     let fetch = LocalFsFetch::new(&surface);
     indexer::index_and_record(&db, &fetch, &registry)
@@ -293,13 +309,14 @@ async fn indexer_trailer_marks_known_change_request_applied() {
     )
     .await
     .unwrap();
-    let org_scope = common::org_scope(&db, "acme").await;
+    let registry = db.registry_by_slug("acme/cdn").await.unwrap().unwrap();
+    let registry_scope = db.registry_authorization_scope(registry.id).await.unwrap();
     db.create_git_changeset(
         change_id,
         "user",
         Some(7),
         "alice@acme.com",
-        &org_scope,
+        &registry_scope,
         Some("edit registry.toml"),
         &format!("refs/hub/changes/{change_id}"),
         "draftoid",
@@ -309,7 +326,6 @@ async fn indexer_trailer_marks_known_change_request_applied() {
     .await
     .unwrap();
 
-    let registry = db.registry_by_slug("acme/cdn").await.unwrap().unwrap();
     let fetch = LocalFsFetch::new(&surface);
     let outcome = indexer::index_and_record(&db, &fetch, &registry)
         .await
@@ -413,7 +429,7 @@ async fn indexer_synthesizes_external_audit_once() {
 
     // The first index synthesized exactly one external-commit audit row.
     let externals = db
-        .list_audit(&common::org_scope(&db, "acme").await)
+        .list_audit(&db.registry_authorization_scope(registry.id).await.unwrap())
         .await
         .unwrap()
         .into_iter()
@@ -425,7 +441,7 @@ async fn indexer_synthesizes_external_audit_once() {
 
     // The actor resolves to the fixture's roster id (the commit signer).
     let row = db
-        .list_audit(&common::org_scope(&db, "acme").await)
+        .list_audit(&db.registry_authorization_scope(registry.id).await.unwrap())
         .await
         .unwrap()
         .into_iter()

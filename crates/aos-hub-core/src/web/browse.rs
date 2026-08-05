@@ -541,9 +541,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         .collect();
     let roster = roster.unwrap_or_default();
     let validations = validations.unwrap_or_default();
-    let Ok(external) = svc.registry_consumer_url(&registry).await else {
-        return Rendered::ServiceUnavailable;
-    };
+    let external = svc.registry_consumer_url(&registry).await.ok();
     Rendered::Html(pages::registry_home(
         &registry,
         status.as_ref(),
@@ -552,7 +550,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         &caches,
         &roster,
         &validations,
-        &external,
+        external.as_deref(),
         can_manage,
         started,
         &session,

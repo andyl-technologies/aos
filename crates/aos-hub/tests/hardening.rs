@@ -241,21 +241,30 @@ async fn presence_validation_records_coverage_and_findings() {
     let summaries = validate_presence(&db, &registry).await.unwrap();
     assert_eq!(summaries.len(), 3);
 
-    let good = &summaries[0];
+    let good = summaries
+        .iter()
+        .find(|summary| summary.cache_url == good_url)
+        .unwrap();
     assert_eq!(good.cache_url, good_url);
     assert!(good.reachable);
     assert_eq!(good.checked, 1);
     assert_eq!(good.missing, 0);
     assert_eq!(good.coverage_percent, 100.0);
 
-    let bad = &summaries[1];
+    let bad = summaries
+        .iter()
+        .find(|summary| summary.cache_url == bad_url)
+        .unwrap();
     assert_eq!(bad.cache_url, bad_url);
     assert!(bad.reachable);
     assert_eq!(bad.checked, 1);
     assert_eq!(bad.missing, 1);
     assert_eq!(bad.coverage_percent, 0.0);
 
-    let dead = &summaries[2];
+    let dead = summaries
+        .iter()
+        .find(|summary| summary.cache_url == "http://127.0.0.1:1/")
+        .unwrap();
     assert_eq!(dead.cache_url, "http://127.0.0.1:1/");
     assert!(!dead.reachable);
     assert_eq!(dead.checked, 0);

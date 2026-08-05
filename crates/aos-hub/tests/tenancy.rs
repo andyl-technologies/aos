@@ -286,6 +286,7 @@ async fn static_routes_still_resolve_alongside_catch_all() {
             Request::builder()
                 .method("POST")
                 .uri("/oauth2/token")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )

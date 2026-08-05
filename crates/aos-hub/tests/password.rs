@@ -674,6 +674,7 @@ async fn enforced_user_cannot_enroll_passkey() {
     let req = Request::builder()
         .method("POST")
         .uri("/-/account/passkeys/finish")
+        .header(header::HOST, "127.0.0.1:8420")
         .header(header::COOKIE, &cookie)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
