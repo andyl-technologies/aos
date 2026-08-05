@@ -1,6 +1,7 @@
 //! Quantum-loop contracts plus canonical scheduler event-log storage and projections.
 
 use super::*;
+use crate::RuntimeState;
 mod backend_loop;
 mod observation_append;
 pub use backend_loop::BackendQuantumLoop;
@@ -103,6 +104,24 @@ pub trait QuantumLoop {
             capability: "sample_fingerprint",
         }
         .into())
+    }
+
+    /// Binds the completed backend boundary to its exact graph runtime identity.
+    ///
+    /// Live debugger implementations use this post-materialization hook to seal
+    /// backend fingerprints to the content-addressed node blobs and runtime ID
+    /// produced by the temporal graph. Pure loops may retain the no-op default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the supplied runtime does not describe
+    /// the loop's most recently completed boundary.
+    fn bind_debug_runtime_evidence(
+        &mut self,
+        runtime: &RuntimeState,
+    ) -> Result<(), SchedulerError> {
+        let _ = runtime;
+        Ok(())
     }
 
     /// Applies scheduler-owned control at the current boundary.

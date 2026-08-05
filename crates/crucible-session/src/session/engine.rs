@@ -1497,6 +1497,10 @@ impl<L: QuantumLoop> Engine<L> {
                 reply,
             } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
+                    let runtime = self.runtime.as_ref().ok_or_else(|| {
+                        self.invalid_engine_state("bind debugger runtime evidence")
+                    })?;
+                    self.quantum_loop.bind_debug_runtime_evidence(runtime)?;
                     let info = self
                         .quantum_loop
                         .open_gdbstub(node.clone(), listen.clone())?;
@@ -1664,6 +1668,7 @@ impl<L: QuantumLoop> Engine<L> {
             None
         };
         let runtime = self.graph.resume(&outcome.configuration)?.runtime;
+        self.quantum_loop.bind_debug_runtime_evidence(&runtime)?;
 
         self.configuration = outcome.configuration.clone();
         self.runtime = Some(runtime);

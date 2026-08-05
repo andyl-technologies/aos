@@ -46,13 +46,19 @@ fn stable_gdb_connection_survives_backend_replacement() {
     let mut process = DebugGatewayProcess::launch_with_trusted_loopback(executable, trusted_listen)
         .unwrap_or_else(|error| panic!("gateway should launch: {error}"));
     let first_generation = process
-        .client_mut()
-        .prepare_backend(&first_path)
-        .unwrap_or_else(|error| panic!("first backend should prepare: {error}"));
+        .promote_backend(&first_path)
+        .unwrap_or_else(|error| panic!("first backend should promote: {error}"));
     process
+        .reconnect_control()
+        .unwrap_or_else(|error| panic!("control channel should reconnect: {error}"));
+    let status = process
         .client_mut()
-        .commit_backend(first_generation)
-        .unwrap_or_else(|error| panic!("first backend should commit: {error}"));
+        .backend_status()
+        .unwrap_or_else(|error| panic!("reconnected gateway should report status: {error}"));
+    assert_eq!(
+        status.active.as_ref().map(|active| active.generation),
+        Some(first_generation)
+    );
 
     let operator_listen = process
         .operator_listen()
@@ -71,14 +77,9 @@ fn stable_gdb_connection_survives_backend_replacement() {
 
     let second_path = directory.path().join("second.sock");
     let second_backend = spawn_fake_qemu_backend(second_path.clone(), b"m1000,1", b"ff");
-    let second_generation = process
-        .client_mut()
-        .prepare_backend(&second_path)
-        .unwrap_or_else(|error| panic!("second backend should prepare: {error}"));
     process
-        .client_mut()
-        .commit_backend(second_generation)
-        .unwrap_or_else(|error| panic!("second backend should commit: {error}"));
+        .promote_backend(&second_path)
+        .unwrap_or_else(|error| panic!("second backend should promote: {error}"));
 
     assert_eq!(read_rsp_payload(&mut gdb), b"T05");
     gdb.write_all(b"+")

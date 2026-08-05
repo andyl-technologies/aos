@@ -4,6 +4,7 @@ use super::*;
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
         self.reconcile_backend_membership()?;
         let pre_quantum_trigger_appends = self.settle_trigger_graph()?;
         self.reconcile_backend_membership()?;
@@ -145,6 +146,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     scheduler_quiescence,
                 };
                 prepend_event_log_appends(&mut outcome, pre_quantum_trigger_appends);
+                self.capture_debug_runtime_evidence()?;
                 return Ok(outcome);
             }
             if request.configuration.schedule.len() > branch.base.schedule.len()
@@ -175,6 +177,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 .record_node_checkpoint_at(&node, crucible::NodeCounter { ticks: counter })?;
         }
         self.reconcile_backend_membership()?;
+        self.capture_debug_runtime_evidence()?;
         Ok(outcome)
     }
 
@@ -189,6 +192,13 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.inner.sample_fingerprint(node)
     }
 
+    fn bind_debug_runtime_evidence(
+        &mut self,
+        runtime: &RuntimeState,
+    ) -> Result<(), SchedulerError> {
+        self.bind_latest_debug_runtime_evidence(runtime)
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,
@@ -201,6 +211,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         node: NodeId,
         listen: GdbListen,
     ) -> Result<GdbAttachInfo, SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
         if let Some(attach) = &self.debug_attach {
             if attach.node == node && attach.operator_listen == listen {
                 return Ok(attach.clone());
@@ -265,18 +276,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("launch production debugger gateway: {error}"),
             })?;
-        let generation = gateway
-            .client_mut()
-            .prepare_backend(&backend_path)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("prepare production QEMU debugger backend: {error}"),
-            })?;
-        gateway
-            .client_mut()
-            .commit_backend(generation)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("commit production QEMU debugger backend: {error}"),
-            })?;
+        gateway.promote_backend(&backend_path).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("promote production QEMU debugger backend: {error}"),
+            }
+        })?;
         let actual =
             gateway
                 .operator_listen()
@@ -295,6 +299,13 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.debug_gateway = Some(gateway);
         self.debug_attach = Some(info.clone());
         Ok(info)
+    }
+
+    fn reposition_debug_runtime(
+        &mut self,
+        request: DebugRuntimeRepositionRequest,
+    ) -> Result<DebugRuntimeRepositionReport, SchedulerError> {
+        self.reposition_debug_world(request)
     }
 
     fn append_backend_observable_events(
@@ -340,6 +351,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
         let pending = self.inner.loop_impl().pending_branch_fault_choice_count();
         let pending_error = (pending != 0).then(|| SchedulerError::BoundaryViolation {
             message: format!(

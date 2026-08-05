@@ -796,6 +796,20 @@ acknowledgement permits the same generation to be committed again with the same
 success result. Malformed, truncated, or disconnected control clients close only
 their connection and never terminate the gateway or discard the active backend.
 
+Production replacement is whole-world and proof-carrying. At each completed
+scheduler boundary, the lifecycle samples every live node's execution fingerprint;
+after the temporal graph materializes that boundary, the session seals those
+samples to the exact `RuntimeState` identity, including its node-blob set,
+instruction counters, scheduler state, and event-log offset. A replacement must
+both reproduce that original live evidence and agree with an independently replayed
+candidate before promotion. Coordinate equality alone is insufficient. If a lost
+commit or abort acknowledgement leaves gateway ownership indeterminate, Crucible
+quarantines every possibly selected whole-world or single-node candidate and
+rejects further scheduler/debugger work until gateway process termination is
+observed. Retiring the previous world revokes scheduler and gateway authority
+immediately; cleanup reporting distinguishes observed reap from detached cleanup
+whose process exit was not observed.
+
 The gateway parses RSP as a bounded byte stream: acknowledgements, interrupts,
 split packets, coalesced packets, asynchronous output, and stop packets are not
 modeled as synchronous request/reply frames. Canonical policy is allow-by-exception.
@@ -1245,6 +1259,16 @@ complete from model-double evidence.
   gateway prepare/hydrate/commit, verified endpoint/generation evidence, rollback
   before promotion, and stable GDB state across goto/reverse/fork. — satisfies
   [DBG-14]–[DBG-19], [DBG-41]; spec §36.4, §36.9.1.
+  In progress: the production lifecycle replays two independent whole-world
+  candidates to the exact scheduler/event-log/node-counter target, requires both
+  candidates to agree, and compares the selected candidate with original live
+  fingerprints sealed to the graph's complete `RuntimeState`. The standalone
+  gateway promotes the candidate's private Unix RSP endpoint with reconnect/status
+  reconciliation. Indeterminate prepare/commit/abort outcomes quarantine possibly
+  selected worlds or nodes until gateway termination is observed; successful
+  promotion transfers gateway ownership before revoking the retired world's
+  scheduler authority, and cleanup evidence does not claim an unobserved reap.
+  Completion remains open for live end-to-end gates across goto, reverse, and fork.
 - [ ] **T-DBG-11** Enforce debugger identities, capability roles, one-controller
   leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
   unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];
