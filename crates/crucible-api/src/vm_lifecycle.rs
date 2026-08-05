@@ -430,6 +430,7 @@ pub fn build_production_vm_lifecycle_loop(
             }
             _ => vm.cmdline.clone(),
         };
+        let whitebox = production_whitebox_switch(vm.white_box);
         let mut launch = ProductionLiveNodeStepGateConfig::new_with_root_image(
             &config.executable,
             &config.plugin,
@@ -441,17 +442,19 @@ pub fn build_production_vm_lifecycle_loop(
         .with_kernel_cmdline(kernel_cmdline)
         .with_vm_shape(vm.memory_mib, vm.smp_vcpus, vm.icount_shift)
         .with_scenario_seed(launch_seed)
-        .with_whitebox(ProductionPluginSwitch::On)
-        .with_app_random(production_app_random_launch_config(
-            scenario,
-            config.branch.as_ref(),
-            &vm.id,
-        ))
+        .with_whitebox(whitebox)
         .with_coverage(config.coverage)
         .with_queue_capacity(PRODUCTION_QUEUE_CAPACITY)
         .with_completion_timeout(config.completion_timeout)
         .with_console_capture()
         .with_second_run_host_load(false);
+        if vm.white_box == crucible::WhiteBoxPolicy::Enabled {
+            launch = launch.with_app_random(production_app_random_launch_config(
+                scenario,
+                config.branch.as_ref(),
+                &vm.id,
+            ));
+        }
         if !source.world().links().is_empty() {
             launch = launch.with_shmem_network_mac(crucible::deterministic_node_mac_string(&vm.id));
         }

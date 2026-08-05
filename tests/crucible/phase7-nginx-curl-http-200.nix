@@ -67,6 +67,16 @@ in
           runner="$TMPDIR/nginx-curl-target/debug/examples/crucible-nginx-curl-http-200"
           "$runner" --emit-scenario > "$TMPDIR/generated.scenario.toml"
           diff -u ${scenario} "$TMPDIR/generated.scenario.toml"
+          grep -Fq 'white_box = "enabled"' "$TMPDIR/generated.scenario.toml"
+          grep -Fq 'kind = "guest_marker"' "$TMPDIR/generated.scenario.toml"
+          if grep -Fq 'kind = "console_match"' "$TMPDIR/generated.scenario.toml"; then
+            echo "application result unexpectedly uses ConsoleMatch" >&2
+            exit 1
+          fi
+          if grep -Eq 'HTTP/1\\.1 200|GET /|CURL_STATUS' "$TMPDIR/generated.scenario.toml"; then
+            echo "application result unexpectedly parses protocol or console text" >&2
+            exit 1
+          fi
 
           vmlinuz=$(ls ${pkgs.linux}/boot/vmlinuz-* | head -1)
           test -n "$vmlinuz"
