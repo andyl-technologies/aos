@@ -8965,7 +8965,7 @@ impl Database {
     /// Resolves a deterministic representative store hash for a deletion job.
     ///
     /// Shared NAR actions may belong to multiple store objects; the lowest
-    /// canonical hash is returned for the singular legacy display field while
+    /// canonical hash is returned for the singular display field while
     /// the plan manifest retains every association.
     ///
     /// # Errors

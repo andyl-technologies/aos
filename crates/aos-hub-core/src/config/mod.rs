@@ -785,7 +785,7 @@ pub async fn change_membership(
 /// sign the partition tags locally, and push. The preparation is audited.
 ///
 /// Returns the new [`ChangeId`]; the change-set stays in `draft` status (it
-/// is never applied by this legacy draft mechanism).
+/// is never applied by the generic draft-change mechanism).
 ///
 /// # Errors
 ///

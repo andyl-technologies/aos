@@ -388,7 +388,7 @@ async fn security_headers(
     // Producer machine-surface documents likewise set their own `sandbox` CSP
     // (which already forbids framing). Every other response gets the strict
     // default. `frame-ancestors` is the modern control; `X-Frame-Options:
-    // DENY` is set unconditionally below as the legacy belt-and-braces, so even
+    // DENY` is set unconditionally below as defense in depth, so even
     // a handler that supplies its own CSP without `frame-ancestors` stays
     // unframeable.
     headers

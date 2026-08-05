@@ -293,7 +293,7 @@ mod tests {
             owner_id: 42,
             scope: PROJECT_SCOPE.to_string(),
             perms: vec!["read".to_string()],
-            authz_version: "path-scope-legacy".to_string(),
+            authz_version: "obsolete-path-scope-v0".to_string(),
             iat: now,
             exp: now + 900,
         };

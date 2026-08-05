@@ -28,7 +28,7 @@ use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceProvider};
 /// Git walkers and configuration loaders perform many logical reads through a
 /// single reader. This adapter keeps that convenient interface while planning
 /// every object read from the current placement inventory; it never captures a
-/// legacy binding or resource-level prefix.
+/// binding-wide or resource-level fallback prefix.
 pub struct TopologySurfaceFetch {
     db: Arc<Database>,
     provider: Arc<dyn SurfaceProvider>,

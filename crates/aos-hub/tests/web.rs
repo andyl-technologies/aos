@@ -193,7 +193,7 @@ async fn security_headers_on_every_route_class() {
             Some("nosniff"),
             "nosniff missing on {uri}"
         );
-        // Legacy belt-and-braces framing protection alongside frame-ancestors.
+        // Defense-in-depth framing protection alongside frame-ancestors.
         assert_eq!(
             headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
             Some("DENY"),

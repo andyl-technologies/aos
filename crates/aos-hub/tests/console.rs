@@ -419,7 +419,7 @@ async fn removed_nested_settings_path_is_absent_for_every_method() {
     }
 
     // The final placement route still rejects undeclared methods instead of
-    // falling through to the machine facade.
+    // falling through to the machine delivery surface.
     let resp = send(
         &app,
         "HEAD",
