@@ -345,15 +345,6 @@ pub(super) struct DebugInvocationPlan {
 }
 
 impl DebugInvocationPlan {
-    fn proves_read_only_default(&self) -> bool {
-        !self.allow_mutate
-            && self.read_only
-            && self.non_canonical_branch_label.is_none()
-            && !self
-                .engine_operations
-                .contains(&DebugEngineOperation::NonCanonicalBranchFork)
-    }
-
     fn proves_thin_wrapper(&self) -> bool {
         !self.owns_debug_state
             && self.surface_contract.delegates_to_session_commands
@@ -382,8 +373,9 @@ impl DebugInvocationPlan {
     }
 
     fn proves_read_mutate_boundary(&self) -> bool {
-        if self.allow_mutate {
-            !self.read_only
+        if matches!(self.verb, DebugInteractiveVerbPlan::ForkDebug) {
+            self.allow_mutate
+                && !self.read_only
                 && self.non_canonical_branch_label.as_deref() == Some("NON-CANONICAL debug branch")
                 && self
                     .session_commands
@@ -392,7 +384,14 @@ impl DebugInvocationPlan {
                     .engine_operations
                     .contains(&DebugEngineOperation::NonCanonicalBranchFork)
         } else {
-            self.proves_read_only_default()
+            self.read_only
+                && self.non_canonical_branch_label.is_none()
+                && !self
+                    .session_commands
+                    .contains(&SessionCommand::fork_current())
+                && !self
+                    .engine_operations
+                    .contains(&DebugEngineOperation::NonCanonicalBranchFork)
         }
     }
 
@@ -426,6 +425,7 @@ pub(super) enum DebugPlanCoordinate {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum DebugInteractiveVerbPlan {
     AttachGdb,
+    ForkDebug,
     Goto(crucible::DebugCoordinate),
     ReverseStep {
         grain: crucible::DebugReverseStepGrain,

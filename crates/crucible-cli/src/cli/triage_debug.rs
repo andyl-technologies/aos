@@ -819,7 +819,13 @@ pub(super) fn plan_debug_invocation(
         .map_err(|error| usage_error(format!("invalid --gdb-listen: {error}")))?;
 
     let verb = debug_verb(args)?;
-    let read_only = args.read_only || !args.allow_mutate;
+    let explicit_fork = matches!(verb, DebugInteractiveVerbPlan::ForkDebug);
+    if explicit_fork && !args.allow_mutate {
+        return Err(usage_error(
+            "fork-debug requires --allow-mutate authorization",
+        ));
+    }
+    let read_only = !explicit_fork;
     let mut session_commands = vec![SessionCommand::query_snapshot(), SessionCommand::Snapshot];
     let mut engine_operations = vec![
         DebugEngineOperation::ResolveTarget,
@@ -838,6 +844,10 @@ pub(super) fn plan_debug_invocation(
         DebugInteractiveVerbPlan::AttachGdb => {
             engine_operations.push(DebugEngineOperation::AttachGdbProxy);
         }
+        DebugInteractiveVerbPlan::ForkDebug => {
+            session_commands.push(SessionCommand::fork_current());
+            engine_operations.push(DebugEngineOperation::NonCanonicalBranchFork);
+        }
         DebugInteractiveVerbPlan::Goto(_) => {
             engine_operations.push(DebugEngineOperation::Goto);
         }
@@ -852,10 +862,6 @@ pub(super) fn plan_debug_invocation(
         }
     }
 
-    if args.allow_mutate {
-        session_commands.push(SessionCommand::fork_current());
-        engine_operations.push(DebugEngineOperation::NonCanonicalBranchFork);
-    }
     if checkpoint_stride.is_some() {
         engine_operations.push(DebugEngineOperation::CheckpointCadence);
     }
@@ -874,9 +880,7 @@ pub(super) fn plan_debug_invocation(
         surface_contract: crucible::DebugCliSurfaceContract::rfc0010(),
         owns_debug_state: false,
         raw_gdb_single_step_allowed: false,
-        non_canonical_branch_label: args
-            .allow_mutate
-            .then(|| "NON-CANONICAL debug branch".to_string()),
+        non_canonical_branch_label: explicit_fork.then(|| "NON-CANONICAL debug branch".to_string()),
     };
     if !plan.proves_t_dbg_8() {
         return Err(CliError::Backend(
@@ -994,6 +998,7 @@ pub(super) fn validate_debug_checkpoint_stride(stride: u64) -> Result<u64, CliEr
 pub(super) fn debug_verb(args: &DebugArgs) -> Result<DebugInteractiveVerbPlan, CliError> {
     match &args.verb {
         None | Some(DebugVerbArgs::AttachGdb) => Ok(DebugInteractiveVerbPlan::AttachGdb),
+        Some(DebugVerbArgs::ForkDebug) => Ok(DebugInteractiveVerbPlan::ForkDebug),
         Some(DebugVerbArgs::Goto { coord }) => {
             parse_debug_at_coordinate(coord).map(DebugInteractiveVerbPlan::Goto)
         }
