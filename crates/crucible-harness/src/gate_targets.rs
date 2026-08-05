@@ -30,6 +30,13 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
         placeholder: false,
     },
     GateTargetSpec {
+        gate: "gate:license-boundary",
+        package: "crucible-harness",
+        test_target: "gate_license_boundary",
+        required_features: &[],
+        placeholder: false,
+    },
+    GateTargetSpec {
         gate: "gate:layer0-determinism",
         package: "crucible-sim",
         test_target: "gate_layer0_determinism",

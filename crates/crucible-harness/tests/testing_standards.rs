@@ -78,6 +78,13 @@ const GATE_TESTING_STANDARDS: &[GateTestingStandard] = &[
         backend: TestBackend::StaticLint,
     },
     GateTestingStandard {
+        gate: "gate:license-boundary",
+        owner_packages: &["crucible-harness"],
+        layers: &[Layer::CrossCutting],
+        shape: TestShape::StaticLint,
+        backend: TestBackend::StaticLint,
+    },
+    GateTestingStandard {
         gate: "gate:layer0-determinism",
         owner_packages: &["crucible-sim", "crucible-assert", "crucible"],
         layers: &[Layer::L0, Layer::L3],
@@ -309,6 +316,7 @@ const CRATE_TESTING_OWNERSHIP: &[CrateTestingOwnership] = &[
         package: "crucible-harness",
         gates: &[
             "gate:harness-lint",
+            "gate:license-boundary",
             "gate:abi-conformance",
             "gate:divergence-bisect",
             "gate:perf-bench",

@@ -2105,6 +2105,7 @@ dependencies = [
 name = "crucible-harness"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "toml 0.8.23",
 ]
 

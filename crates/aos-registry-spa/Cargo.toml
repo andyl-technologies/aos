@@ -2,6 +2,7 @@
 name = "aos-registry-spa"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "The registry web-surface SPA (RFC-0004): a Leptos client-side-rendered WASM app that progressively enhances a registry's static no-JS pages and verifies channel partitions in the browser using the hub's own surface reader"
 
 [lib]

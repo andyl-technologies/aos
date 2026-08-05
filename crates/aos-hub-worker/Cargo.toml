@@ -2,6 +2,7 @@
 name = "aos-hub-worker"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "The Cloudflare Workers read-path target for the AOS registry hub (RFC-0004): an R2-backed machine facade, a D1-backed browse UI and JSON read API, and a Cron-triggered indexer — reusing the pure, wasm-clean aos-registry-surface reader"
 
 # A `cdylib` for the wasm32 Workers runtime; an `rlib` so the pure modules
