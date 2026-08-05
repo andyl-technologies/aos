@@ -8011,19 +8011,57 @@ async fn channel(printer: &Printer, command: &HubChannelCmd) -> Result<()> {
 
 async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
     match command {
+        HubPublishCmd::Upload {
+            access,
+            registry,
+            manifest,
+            root,
+        } => {
+            let request = publication_manifest_request(manifest, registry)?;
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            let publication: hub_types::RegistryPublication = client
+                .call_topology(HubTopologyMethod::BeginRegistryPublication, &request)
+                .await?;
+            anyhow::ensure!(
+                publication.objects.len() == request.objects.len(),
+                "Hub publication response changed the declared object count"
+            );
+            for object in &publication.objects {
+                let declared = request
+                    .objects
+                    .iter()
+                    .find(|declared| declared.path == object.path)
+                    .context("Hub publication response introduced an undeclared path")?;
+                anyhow::ensure!(
+                    declared.sha256 == object.sha256
+                        && declared.byte_size == object.byte_size
+                        && declared.kind == object.kind,
+                    "Hub publication response changed the identity of {}",
+                    object.path
+                );
+                let path = root.join(&object.path);
+                verify_publication_file(&path, object)?;
+                client
+                    .upload_publication_object(&object.upload_url, &path)
+                    .await
+                    .with_context(|| format!("uploading publication path {}", object.path))?;
+            }
+            let committed: hub_types::RegistryPublication = client
+                .call_topology(
+                    HubTopologyMethod::CommitRegistryPublication,
+                    &hub_types::CommitRegistryPublicationRequest {
+                        publication_id: publication.publication_id,
+                    },
+                )
+                .await?;
+            print_topology_message(printer, &committed)
+        }
         HubPublishCmd::Begin {
             access,
             registry,
             manifest,
         } => {
-            let bytes = std::fs::read(manifest)
-                .with_context(|| format!("reading publication manifest {}", manifest.display()))?;
-            let mut request: hub_types::BeginRegistryPublicationRequest =
-                serde_json::from_slice(&bytes).context("decoding publication manifest")?;
-            if !request.registry.is_empty() && request.registry != *registry {
-                anyhow::bail!("manifest registry does not match the command registry");
-            }
-            request.registry.clone_from(registry);
+            let request = publication_manifest_request(manifest, registry)?;
             let client = hub_client(&access.hub, access.token.as_deref())?;
             topology_read::<_, hub_types::RegistryPublication>(
                 printer,
@@ -8064,6 +8102,63 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             .await
         }
     }
+}
+
+fn publication_manifest_request(
+    manifest: &std::path::Path,
+    registry: &str,
+) -> Result<hub_types::BeginRegistryPublicationRequest> {
+    let bytes = std::fs::read(manifest)
+        .with_context(|| format!("reading publication manifest {}", manifest.display()))?;
+    let mut request: hub_types::BeginRegistryPublicationRequest =
+        serde_json::from_slice(&bytes).context("decoding publication manifest")?;
+    if !request.registry.is_empty() && request.registry != registry {
+        anyhow::bail!("manifest registry does not match the command registry");
+    }
+    request.registry = registry.to_string();
+    Ok(request)
+}
+
+fn verify_publication_file(
+    path: &std::path::Path,
+    object: &hub_types::RegistryPublicationObject,
+) -> Result<()> {
+    use sha2::{Digest as _, Sha256};
+    use std::io::Read as _;
+
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("opening publication object {}", path.display()))?;
+    let size = file
+        .metadata()
+        .with_context(|| format!("reading publication object metadata {}", path.display()))?
+        .len();
+    anyhow::ensure!(
+        i64::try_from(size).ok() == Some(object.byte_size),
+        "publication object {} has size {}, expected {}",
+        object.path,
+        size,
+        object.byte_size
+    );
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("hashing publication object {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    let actual = format!("{:x}", digest.finalize());
+    anyhow::ensure!(
+        actual == object.sha256,
+        "publication object {} has SHA-256 {}, expected {}",
+        object.path,
+        actual,
+        object.sha256
+    );
+    Ok(())
 }
 
 async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<()> {

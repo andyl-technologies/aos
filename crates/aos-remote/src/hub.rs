@@ -32,6 +32,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 
 use aos_proto_types::SurfaceRef;
@@ -57,6 +58,8 @@ const CONNECT_PROTOCOL_VERSION: &str = "1";
 pub struct HubClient {
     /// The shared `reqwest` client (rustls TLS for `https://`).
     http: reqwest::Client,
+    /// Streaming transfer client without the unary RPC deadline.
+    upload_http: reqwest::Client,
     /// The hub root with a single trailing slash, e.g. `https://hub.example/`.
     base: String,
     /// The hub access JWT to send as `Authorization: Bearer …`, when present.
@@ -1534,6 +1537,66 @@ impl HubClient {
         self.call(M::method(), request).await
     }
 
+    /// Streams one declared publication object to its exact Hub upload URL.
+    ///
+    /// The URL must share the configured Hub origin and use the typed
+    /// `PublishService/UploadObject` namespace. This prevents a malicious or
+    /// corrupted response from redirecting the bearer credential elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a non-Hub URL, unreadable input, transport failure,
+    /// or a non-success response from the Hub.
+    pub async fn upload_publication_object(&self, upload_url: &str, path: &Path) -> Result<()> {
+        let base = url::Url::parse(&self.base).context("parsing configured Hub URL")?;
+        let target = url::Url::parse(upload_url).context("parsing publication upload URL")?;
+        anyhow::ensure!(
+            target.scheme() == base.scheme()
+                && target.host_str() == base.host_str()
+                && target.port_or_known_default() == base.port_or_known_default()
+                && target.query().is_none()
+                && target.fragment().is_none()
+                && target
+                    .path()
+                    .starts_with("/aos.hub.v1.PublishService/UploadObject/"),
+            "publication upload URL is outside the configured Hub origin"
+        );
+        let file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("opening publication object {}", path.display()))?;
+        let size = file
+            .metadata()
+            .await
+            .with_context(|| format!("reading publication object metadata {}", path.display()))?
+            .len();
+        let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+        let mut request = self
+            .upload_http
+            .put(target.clone())
+            .header(reqwest::header::CONTENT_LENGTH, size)
+            .body(body);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("uploading publication object to {target}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "publication upload to {target} failed ({status}){}",
+                if detail.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", detail.trim())
+                }
+            );
+        }
+        Ok(())
+    }
+
     /// Connects to a hub for **unauthenticated** public reads.
     ///
     /// No credential is attached, so calls see only public registries and
@@ -1571,8 +1634,13 @@ impl HubClient {
             .timeout(std::time::Duration::from_secs(HUB_TIMEOUT_SECS))
             .build()
             .context("building the hub HTTP client")?;
+        let upload_http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(HUB_TIMEOUT_SECS))
+            .build()
+            .context("building the hub upload HTTP client")?;
         Ok(Self {
             http,
+            upload_http,
             base: ensure_trailing_slash(&base.to_string()),
             token: access_token.map(str::to_owned),
         })
