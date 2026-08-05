@@ -69,12 +69,12 @@
         needle = "data-not-lost";
       }
       {
-        label = "data-not-lost is safety";
-        needle = "Property::Always";
+        label = "data-not-lost is guest safety";
+        needle = "AssertionDef::guest_unreachable";
       }
       {
-        label = "data loss evidence forbidden";
-        needle = "data_lost=true";
+        label = "data loss guest assertion";
+        needle = "data-not-lost";
       }
       {
         label = "reconverges assertion";
@@ -149,19 +149,11 @@
         needle = "region=wal";
       }
       {
-        label = "observable convergence frame";
-        needle = "committed_write_survived=true raft_log_match";
+        label = "structured guest convergence assertion";
+        needle = "committed-write-survived";
       }
     ]
     ++ forbiddenFor "crates/crucible/src/example_corpus.rs" exampleCorpus [
-      {
-        label = "guest-marker dependency";
-        needle = "Predicate::guest_marker";
-      }
-      {
-        label = "white-box enabled dependency";
-        needle = "WhiteBoxPolicy::Enabled";
-      }
       {
         label = "reserved unsupported workload key";
         needle = "crucible.workload=replicated-store";
@@ -222,7 +214,7 @@
       }
       {
         label = "data-not-lost safety test";
-        needle = "data_lost=true";
+        needle = "HostAssertionOutcomeKind::Passed";
       }
       {
         label = "WAL payload test";

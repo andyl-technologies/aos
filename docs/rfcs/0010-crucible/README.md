@@ -143,7 +143,7 @@ Start here, then read in three bands:
 31. [`30-risks-spikes.md`](30-risks-spikes.md) · 32. [`31-decision-register.md`](31-decision-register.md)
 
 **Worked examples & workloads:**
-33. [`33-examples-and-workloads.md`](33-examples-and-workloads.md) — end-to-end worked scenarios (happy path, partition-recovery, crash/restart, fault campaign, determinism check) authored with zero guest-side components, plus the in-guest workload/traffic-generation story.
+33. [`33-examples-and-workloads.md`](33-examples-and-workloads.md) — end-to-end worked scenarios covering both opaque black-box workloads and structured guest assertions (happy path, partition-recovery, crash/restart, fault campaign, determinism check), plus the in-guest workload/traffic-generation story.
 
 **Advanced capabilities (built on the green determinism foundation):**
 34. [`34-failure-triage.md`](34-failure-triage.md) — clustering/dedup of discovered failures by root-cause signature, signature-preserving minimization, per-cluster reports.
