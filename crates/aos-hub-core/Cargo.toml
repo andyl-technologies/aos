@@ -2,6 +2,7 @@
 name = "aos-hub-core"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "Runtime-agnostic core of the AOS registry hub (RFC-0004 Phase 5): the async database backend abstraction, SQL dialect translation, and value/row marshalling shared by the native hub and the Cloudflare Worker — compiles to wasm32"
 
 [dependencies]

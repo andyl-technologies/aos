@@ -135,19 +135,35 @@
         label = "QEMU plugin header installed";
         needle = "install -m 644 include/qemu/qemu-plugin.h \"$out/include/qemu/qemu-plugin.h\"";
       }
+      {
+        label = "QEMU output retains GPL-2.0-or-later text for its plugin header";
+        needle = "LICENSES/GPL-2.0-or-later.txt";
+      }
+      {
+        label = "QEMU output retains MIT text for the generated boundary header";
+        needle = "LICENSES/MIT.txt";
+      }
+      {
+        label = "QEMU package metadata inventories combined and per-file scopes";
+        needle = "license = [\"GPL-2.0-only\" \"GPL-2.0-or-later\" \"MIT\"];";
+      }
+      {
+        label = "patched QEMU is not a standalone publication root";
+        needle = "standalone_release=false";
+      }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
       {
-        label = "CLI package carries matched QEMU/plugin runtime deps";
-        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
+        label = "suite carries the separate controller and matched QEMU/plugin runtime deps";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
       }
       {
-        label = "CLI package pins AOS QEMU hint";
-        needle = "CRUCIBLE_AOS_QEMU = \"" + "$" + "{qemu-crucible}/bin/qemu-system-x86_64\";";
+        label = "suite wrapper configures QEMU at runtime";
+        needle = "CRUCIBLE_QEMU:=";
       }
       {
-        label = "CLI package pins AOS plugin hint";
-        needle = "CRUCIBLE_AOS_PLUGIN = \"" + "$" + "{crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so\";";
+        label = "suite wrapper configures the plugin at runtime";
+        needle = "CRUCIBLE_PLUGIN:=";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-aos-workspace-build.nix" workspaceBuildCheck [

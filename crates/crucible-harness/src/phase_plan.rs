@@ -1,8 +1,6 @@
 //! Phase-gate ordering for RFC-0010.
 //!
-//! The canonical gate catalog records each gate name once. The phase plan records
-//! every gate occurrence, including repeated gates such as `gate:replay-oracle`
-//! and `gate:e2e-determinism`.
+//! The catalog records names once; this plan records every occurrence, including repeated gates.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -559,6 +557,14 @@ pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
     ),
     catalog_gate(
         PhasePlanPhase::Phase1,
+        "gate:license-boundary",
+        "checks.crucible.phase1.gates.licenseBoundary",
+        "component license and public process boundary",
+        false,
+        false,
+    ),
+    catalog_gate(
+        PhasePlanPhase::Phase1,
         "gate:layer0-determinism",
         "checks.crucible.phase1.gates.layer0Determinism",
         "L0 core",
@@ -766,7 +772,6 @@ pub fn phase_plan_invariant_failures(
     let mut seen_attr_paths = BTreeSet::new();
     let mut has_terminal_e2e = false;
     let mut last_phase = None;
-
     for occurrence in plan {
         if let Some(previous) = last_phase
             && occurrence.phase < previous
@@ -777,7 +782,6 @@ pub fn phase_plan_invariant_failures(
             ));
         }
         last_phase = Some(occurrence.phase);
-
         if !seen_attr_paths.insert(occurrence.attr_path) {
             failures.push(failure_for(
                 PhasePlanInvariantFailureKind::DuplicateAttrPath,
@@ -968,11 +972,7 @@ pub fn advanced_feature_ladder_failures(
 }
 
 /// Returns failures where the actual Nix check graph schedules ADV work out of order.
-///
-/// The `default_checks` input is the text of `tests/crucible/default.nix`. This
-/// check is deliberately tied to the real gate wiring so a future `T-ADV-*`
-/// check cannot be added without the lower green gates and earlier ADV task
-/// checks it depends on.
+/// It ties `default_checks` to real wiring so ADV work cannot bypass prerequisite tasks and gates.
 #[must_use]
 pub fn advanced_feature_schedule_failures(
     default_checks: &str,
