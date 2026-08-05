@@ -314,6 +314,7 @@ in
                 crates/crucible-qemu-plugin/src/registration/tests.rs|\
                 crates/crucible-qemu-plugin/src/runtime.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs|\
+                crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/error.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_whitebox/marker.rs|\
                 crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs|\
@@ -365,7 +366,7 @@ in
             done < "$TMPDIR/plugin-unsafe-files"
 
             if grep -RIn 'transmute' crates/crucible-qemu-plugin/src \
-              | grep -Ev 'src/(abi|coverage|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/coverage/tests(\.rs|/live_callback_cases\.rs):|src/runtime/live_whitebox\.rs:'; then
+              | grep -Ev 'src/(abi|coverage|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/coverage/tests(\.rs|/live_callback_cases\.rs):|src/runtime/live_whitebox(\.rs|/api\.rs):'; then
               echo "transmute is confined to audited QEMU FFI adapters and tests" >&2
               exit 1
             fi
@@ -380,7 +381,7 @@ in
               fi
             done
             if grep -RIn 'as_ptr().cast' crates/crucible-qemu-plugin/src \
-              | grep -Ev 'src/(abi|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/abi/tests\.rs:|src/runtime/live_whitebox(\.rs|/error\.rs):'; then
+              | grep -Ev 'src/(abi|fingerprint_sampler|network_rx|network_tx|raw_state_dump)\.rs:|src/abi/tests\.rs:|src/runtime/live_whitebox(\.rs|/api\.rs|/error\.rs):'; then
               echo "pointer casts are confined to audited QEMU FFI adapters and tests" >&2
               exit 1
             fi

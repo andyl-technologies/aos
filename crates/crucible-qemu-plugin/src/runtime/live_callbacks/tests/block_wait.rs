@@ -93,6 +93,7 @@ fn live_block_wait_preserves_an_earlier_timer_deadline() {
 
 #[test]
 fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
+    let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
     let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 20, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
@@ -125,11 +126,18 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
         header: &inbound_header,
         entries: &mut inbound_entries,
     };
-    let rx_queue = QemuLosslessNetworkRxQueue::require(Some(test_net_send), Some(test_net_flush))
-        .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
-    let state = test_live_state(49, 1, 0, 0, &slot)
-        .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue))
-        .unwrap_or_else(|error| panic!("live network callback state should build: {error}"));
+    let rx_queue =
+        QemuLosslessNetworkRxQueue::require(Some(test_net_send), Some(test_reentrant_net_flush))
+            .unwrap_or_else(|error| panic!("test RX queue should build: {error}"));
+    let state = Box::new(
+        test_live_state(49, 1, 0, 0, &slot)
+            .and_then(|state| state.attach_network(0, outbound, inbound, rx_queue))
+            .unwrap_or_else(|error| panic!("live network callback state should build: {error}")),
+    );
+    TEST_REENTRANT_RX_STATE.store(
+        std::ptr::from_ref(state.as_ref()).cast_mut(),
+        Ordering::Release,
+    );
     state
         .on_vcpu_init(49, 0)
         .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
@@ -174,10 +182,13 @@ fn live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit() {
     state
         .complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 7))
         .unwrap_or_else(|error| panic!("exact completion should commit network state: {error}"));
+    TEST_REENTRANT_RX_STATE.store(std::ptr::null_mut(), Ordering::Release);
     assert_eq!(slot.snapshot().current_icount, 7);
-    assert_eq!(outbound_header.write_index(), 1);
+    assert_eq!(outbound_header.write_index(), 2);
     assert_eq!(outbound_entries[0].delivery_icount, 7);
     assert_eq!(outbound_entries[0].payload(), Ok(b"timer-tx".as_slice()));
+    assert_eq!(outbound_entries[1].delivery_icount, 7);
+    assert_eq!(outbound_entries[1].payload(), Ok(b"flush-tx".as_slice()));
     assert_eq!(inbound_header.read_index(), 1);
     assert_eq!(TEST_RX_SEND_COUNT.load(Ordering::SeqCst), 2);
     assert_eq!(TEST_RX_LAST_LEN.load(Ordering::SeqCst), 7);

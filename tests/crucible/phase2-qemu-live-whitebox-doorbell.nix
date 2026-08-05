@@ -38,8 +38,7 @@
             movl $stack_top, %esp
             movl $whitebox_frame, %eax
             movl $22, %ecx
-            movl $0x00e7, %edx
-            outl %eax, %dx
+            outb %al, $0xe7
             xorl %eax, %eax
           workload_loop:
             addl $0x9e3779b9, %eax
@@ -102,14 +101,12 @@
             movl $stack_top, %esp
             movl $random_request_frame, %eax
             movl $27, %ecx
-            movl $0x00e7, %edx
-            outl %eax, %dx
+            outb %al, $0xe7
             cmpl $0x4c425243, random_request_frame
             je workload_loop
             movl $reply_marker_frame, %eax
             movl $26, %ecx
-            movl $0x00e7, %edx
-            outl %eax, %dx
+            outb %al, $0xe7
           workload_loop:
             addl $0x9e3779b9, %eax
             roll $7, %eax
@@ -462,10 +459,9 @@ in
             printf 'collision_negative_device=isa-debugcon\n'
             printf 'collision_negative_rejected_before_plugin_launch=true\n'
             printf 'doorbell_architecture=x86_64\n'
-            printf 'doorbell_instruction=out-dx-eax\n'
+            printf 'doorbell_instruction=out-imm8-al\n'
             printf 'doorbell_port=0x00e7\n'
             printf 'payload_registers=rax,rcx\n'
-            printf 'port_register=rdx\n'
             printf 'guest_memory_api=qemu_plugin_read_memory_vaddr\n'
             printf 'marker_kind=coverage\n'
             printf 'marker_transport=plugin-to-host-shmem-spsc\n'

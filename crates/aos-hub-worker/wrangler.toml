@@ -1,27 +1,10 @@
-# Cloudflare Workers config for the AOS registry hub Worker (RFC-0004).
+# Development fixture for the AOS Hub Worker.
 #
-# PREFER THE INSTALLER. `aos-hub worker deploy` (the
-# `aos-hub-cloudflare` package) generates this config over the prebuilt
-# wasm dist, provisions the resources, and sets the secrets — see
-# deploy/DEPLOY.md. HubDb applies the shared schema to its colocated SQLite on
-# first use. This checked-in file is for the manual `wrangler deploy` path; its
-# placeholder ids and service names are not real.
-#
-# Runtime configuration the Worker reads (worker deploy sets these for you):
-#   HUB_JWT_SECRET      (secret, required) HS256 JWT signing key
-#   HUB_SEAL_KEY        (secret, required) at-rest AES-GCM sealing key
-#   HUB_ROUTE_RESERVATION_KEYRING (secret, required) active and retained
-#                       route URL-reservation HMAC keys as canonical JSON
-#   HUB_EXTERNAL_URL    ([vars], required) externally-reachable base URL
-#   HUB_EMAIL_API_URL   ([vars], optional) magic-link email relay endpoint
-#   HUB_EMAIL_API_TOKEN (secret, optional) bearer token for the relay
-#   HUB_SECRET_VERSION_MANIFEST ([vars], optional) JSON object mapping immutable
-#                       provider version refs to named Worker secret bindings
-# Set secrets with `wrangler secret put <NAME>`; put [vars] in this file. The
-# root admin is created through the seal-gated HubDb bootstrap operation.
-#
-# Live validation requires a Cloudflare account; none of this can be validated
-# in a sandbox — see README.md and deploy/DEPLOY.md.
+# Do not use this file as an operator deployment template. The
+# `pkg-aos-hub-cloudflare` package and `aos-hub worker` installer generate the
+# current production configuration over the bundled artifact, provision its
+# resources, preserve secrets on routine updates, and bootstrap the root account.
+# See docs/users/aos-hub/cloudflare.md.
 
 name = "aos-hub"
 main = "build/worker/shim.mjs"

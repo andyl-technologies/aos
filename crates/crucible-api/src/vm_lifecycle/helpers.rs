@@ -2,6 +2,15 @@
 
 use super::*;
 
+pub(super) const fn production_whitebox_switch(
+    policy: crucible::WhiteBoxPolicy,
+) -> ProductionPluginSwitch {
+    match policy {
+        crucible::WhiteBoxPolicy::Disabled => ProductionPluginSwitch::Off,
+        crucible::WhiteBoxPolicy::Enabled => ProductionPluginSwitch::On,
+    }
+}
+
 pub(super) fn production_app_random_launch_config(
     scenario: &ScenarioDef,
     branch: Option<&ProductionVmBranchConfig>,
@@ -176,6 +185,18 @@ mod tests {
             .with_quantum_budget(16);
 
         assert_eq!(config.maximum_scheduler_quanta(2), 19);
+    }
+
+    #[test]
+    fn production_whitebox_switch_follows_the_authored_node_policy() {
+        assert_eq!(
+            production_whitebox_switch(crucible::WhiteBoxPolicy::Disabled),
+            ProductionPluginSwitch::Off
+        );
+        assert_eq!(
+            production_whitebox_switch(crucible::WhiteBoxPolicy::Enabled),
+            ProductionPluginSwitch::On
+        );
     }
 
     #[test]

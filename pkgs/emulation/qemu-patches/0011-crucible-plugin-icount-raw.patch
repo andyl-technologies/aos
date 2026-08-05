@@ -29,7 +29,7 @@ diff --git a/plugins/api-system.c b/plugins/api-system.c
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -224,6 +225,21 @@ int qemu_plugin_advance_time_ns(int64_t new_time)
+@@ -222,6 +223,21 @@ int qemu_plugin_advance_time_ns(int64_t new_time)
      return 0;
  }
  

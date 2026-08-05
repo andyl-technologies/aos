@@ -231,8 +231,12 @@
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle.rs" apiLifecycle [
       {
-        label = "production lifecycle enables whitebox";
-        needle = ".with_whitebox(ProductionPluginSwitch::On)";
+        label = "production lifecycle follows authored whitebox policy";
+        needle = ".with_whitebox(whitebox)";
+      }
+      {
+        label = "production lifecycle gates app-random on whitebox opt-in";
+        needle = "if vm.white_box == crucible::WhiteBoxPolicy::Enabled";
       }
       {
         label = "production lifecycle wires app-random";
@@ -240,6 +244,10 @@
       }
     ]
     ++ failuresFor "crates/crucible-api/src/vm_lifecycle/runtime.rs" apiRuntime [
+      {
+        label = "production relaunch gates app-random on whitebox opt-in";
+        needle = "if white_box_enabled";
+      }
       {
         label = "production relaunch carries app-random cursors";
         needle = ".with_app_random(self.app_random_continuation_config(node)?)";

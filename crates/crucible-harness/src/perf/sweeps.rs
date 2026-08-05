@@ -157,36 +157,87 @@ pub fn rendezvous_frequency_sweep(
 
 /// The modeled syscall accounting for a fixed advance workload ([PERF-8]).
 ///
-/// All hot-path cross-node synchronization is shared-memory atomics plus at most
-/// one futex per park/wake, never an IPC round-trip per quantum. The only
-/// syscalls charged to the advance path are the futex park/wake operations paid
-/// when a node actually parks and is woken; there are *zero* per-quantum IPC
-/// round-trips (no QMP, no plugin-IPC on the advance/delivery path).
+/// All hot-path cross-node synchronization is shared-memory based and never an
+/// IPC round trip per quantum. The current ceiling-publication path performs one
+/// unconditional futex wake per quantum, and a parked node can perform repeated
+/// futex waits after interrupted, spurious, or non-actionable returns.
+/// Service/backpressure producer releases and frame deliveries can issue
+/// additional futex wakes. The host also writes the plugin eventfd at least once
+/// per quantum and may write it again to resignal an unchanged-icount poll or
+/// service I/O. This arithmetic is bookkeeping, not runtime syscall observation,
+/// and it does not attempt to count QEMU-side eventfd reads or event-loop poll
+/// entries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdvanceSyscallCount {
     /// Quanta advanced over the fixed workload.
     pub quanta: u64,
-    /// Park/wake futex syscalls (paid only when a node parks and is woken).
-    pub futex_park_wake: u64,
-    /// Per-quantum IPC round-trips on the advance/delivery path (MUST be zero).
-    pub per_quantum_ipc_round_trips: u64,
+    /// Total host futex wakes and plugin futex waits in the arithmetic model.
+    pub futex_wake_wait: u64,
+    /// Unconditional scheduler-ceiling futex wakes, one per quantum currently.
+    pub futex_ceiling_wakes: u64,
+    /// Actual plugin futex-wait calls, including repeated waits after wake returns.
+    pub futex_wait_calls: u64,
+    /// Additional futex wakes caused by service or ring-backpressure producer
+    /// releases.
+    pub futex_service_release_wakes: u64,
+    /// Additional futex wakes caused by inbound or completed-frame delivery.
+    pub futex_delivery_wakes: u64,
+    /// Total host plugin-eventfd writes, including quantum, resignal, and service wakes.
+    pub eventfd_wake_writes: u64,
+    /// Initial plugin-eventfd wake writes, one per quantum currently.
+    pub eventfd_quantum_wake_writes: u64,
+    /// Additional eventfd writes used to resignal unchanged-icount polls.
+    pub eventfd_unchanged_icount_wake_writes: u64,
+    /// Additional eventfd writes used after servicing host I/O.
+    pub eventfd_service_wake_writes: u64,
+    /// Host polling sleeps between pending advance observations.
+    pub host_poll_sleep_calls: u64,
+    /// Socket/QMP/plugin-control request-response round trips per quantum (MUST be zero).
+    pub per_quantum_socket_control_round_trips: u64,
 }
 
 /// Models the syscall count over a fixed advance workload ([PERF-8]).
 ///
-/// The advance path issues no per-quantum IPC round-trip; it pays only a futex
-/// park/wake when a node actually parks. The returned count therefore has
-/// `per_quantum_ipc_round_trips == 0` regardless of quanta or node count, and
-/// `futex_park_wake` bounded by the number of park events, not by the quanta.
+/// The advance path issues no per-quantum IPC round trip. The current
+/// implementation pays one unconditional ceiling futex wake per quantum, the
+/// caller-supplied actual futex-wait calls (including repeats), and explicit
+/// service-release and delivery futex wakes. It also pays at least one
+/// plugin-eventfd write per quantum, plus the
+/// caller-supplied unchanged-icount and service writes. A future waiter-armed
+/// optimization may eliminate unnecessary futex wakes, but this arithmetic
+/// intentionally describes current host/plugin integration behavior. It is not
+/// a runtime syscall measurement and does not count QEMU-side eventfd reads or
+/// event-loop poll entries. Host polling sleeps are carried as a separate
+/// caller-supplied category.
 #[must_use]
-pub fn advance_syscall_count(quanta: u64, park_events: u64) -> AdvanceSyscallCount {
+pub fn advance_syscall_count(
+    quanta: u64,
+    futex_wait_calls: u64,
+    futex_service_release_wakes: u64,
+    futex_delivery_wakes: u64,
+    eventfd_unchanged_icount_wake_writes: u64,
+    eventfd_service_wake_writes: u64,
+    host_poll_sleep_calls: u64,
+) -> AdvanceSyscallCount {
     AdvanceSyscallCount {
         quanta,
-        // One futex wake per park event; parks happen only when a node blocks,
-        // never once per quantum.
-        futex_park_wake: park_events,
-        // The advance/delivery path is shared-memory atomics only.
-        per_quantum_ipc_round_trips: 0,
+        futex_wake_wait: quanta
+            .saturating_add(futex_wait_calls)
+            .saturating_add(futex_service_release_wakes)
+            .saturating_add(futex_delivery_wakes),
+        futex_ceiling_wakes: quanta,
+        futex_wait_calls,
+        futex_service_release_wakes,
+        futex_delivery_wakes,
+        eventfd_wake_writes: quanta
+            .saturating_add(eventfd_unchanged_icount_wake_writes)
+            .saturating_add(eventfd_service_wake_writes),
+        eventfd_quantum_wake_writes: quanta,
+        eventfd_unchanged_icount_wake_writes,
+        eventfd_service_wake_writes,
+        host_poll_sleep_calls,
+        // The advance/delivery path does not use request/response IPC.
+        per_quantum_socket_control_round_trips: 0,
     }
 }
 

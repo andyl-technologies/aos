@@ -200,6 +200,7 @@ pub struct QemuLiveNodeStepGateConfig {
     schedule: QemuLiveNodeStepSchedule,
     completion_timeout: Duration,
     second_run_host_load: bool,
+    console_capture: bool,
 }
 
 impl QemuLiveNodeStepGateConfig {
@@ -249,6 +250,7 @@ impl QemuLiveNodeStepGateConfig {
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
+            console_capture: false,
         }
     }
 
@@ -287,6 +289,7 @@ impl QemuLiveNodeStepGateConfig {
             schedule: QemuLiveNodeStepSchedule::new(),
             completion_timeout: Duration::from_secs(240),
             second_run_host_load: true,
+            console_capture: false,
         }
     }
 
@@ -395,6 +398,13 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub const fn with_second_run_host_load(mut self, second_run_host_load: bool) -> Self {
         self.second_run_host_load = second_run_host_load;
+        self
+    }
+
+    /// Returns this configuration with output-only serial console capture enabled.
+    #[must_use]
+    pub const fn with_console_capture(mut self) -> Self {
+        self.console_capture = true;
         self
     }
 
@@ -656,6 +666,9 @@ pub(super) fn build_live_node(
     if let Some(gdbstub) = &config.gdbstub {
         command = command.with_gdbstub(gdbstub.clone());
     }
+    if config.console_capture {
+        command = command.with_console_capture();
+    }
     let command = command
         .build()
         .map_err(|source| QemuLiveNodeStepGateError::LaunchCommand { source })?;
@@ -676,6 +689,20 @@ pub(super) fn build_live_node(
     if !setup.setup_ack().can_schedule() {
         return Err(QemuLiveNodeStepGateError::SetupAckNotReady);
     }
+    let console_observation = config
+        .console_capture
+        .then(|| {
+            // QEMU realizes chardevs before the plugin publishes its setup ACK,
+            // so a missing socket here is a launch failure rather than a race.
+            UnixStream::connect(run_directory.join(crate::QEMU_CONSOLE_SOCKET_FILE_NAME))
+        })
+        .transpose()
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::prime(
+                "connect console observation",
+                QemuNodeChannelError::new("connect QEMU console stream", source.to_string()),
+            )
+        })?;
 
     let runtime = QemuLiveHostIoRuntime::from_shmem_fd(
         setup.shmem_as_fd(),
@@ -715,6 +742,13 @@ pub(super) fn build_live_node(
     .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
     if let Some(gdbstub) = &config.gdbstub {
         node = node.with_gdbstub(gdbstub.clone());
+    }
+    if let Some(console_observation) = console_observation {
+        node = node
+            .with_console_observation(node_id(identity.node), console_observation)
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::prime("configure console observation", source)
+            })?;
     }
     if !restoring_checkpoint {
         node.retain_priming_network_outputs(priming_network_outputs);

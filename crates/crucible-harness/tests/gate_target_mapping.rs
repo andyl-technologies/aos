@@ -125,6 +125,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
         BTreeSet::from([
             ("gate:harness-lint", "crucible-harness", "harness_lint"),
             (
+                "gate:license-boundary",
+                "crucible-harness",
+                "gate_license_boundary"
+            ),
+            (
                 "gate:layer0-determinism",
                 "crucible-sim",
                 "gate_layer0_determinism"

@@ -54,6 +54,7 @@ test that enforces it, and a back-pointer to the defining section.
 | `QEMU` | QEMU integration (host side) | 10 |
 | `PATCH` | QEMU patch series | 11 |
 | `PLUG` | QEMU plugin (in-VM) | 12 |
+| `BOUND` | Licensing and Crucible/QEMU process boundary | 37 |
 | `SHM` | Shared-memory co-sim ABI | 13 |
 | `PROTO` | IPC protocol | 14 |
 | `IO` | I/O sub-nodes (disk / 9p / net devices) | 15 |

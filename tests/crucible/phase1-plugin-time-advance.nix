@@ -221,8 +221,8 @@
         needle = "negative_target_rejected_before_queue=true";
       }
       {
-        label = "backward target completion assertion";
-        needle = "backward_target_reports_completion_failure=true";
+        label = "already-reached target assertion";
+        needle = "already_reached_target_is_idempotent=true";
       }
       {
         label = "queued timer dispatch assertion";
@@ -688,7 +688,7 @@ in
             grep -q '^callback_reconfiguration_while_pending_rejected=true$' "$out/result"
             grep -q '^pending_predicate_tracks_completion_barrier=true$' "$out/result"
             grep -q '^negative_target_rejected_before_queue=true$' "$out/result"
-            grep -q '^backward_target_reports_completion_failure=true$' "$out/result"
+            grep -q '^already_reached_target_is_idempotent=true$' "$out/result"
             grep -q '^queued_main_loop_worker_runs_virtual_timers=true$' "$out/result"
             grep -q '^icount_bias_advance_converges_where_qtest_set_hangs=true$' "$out/result"
             grep -q '^completion_uses_normal_main_loop_bh=true$' "$out/result"

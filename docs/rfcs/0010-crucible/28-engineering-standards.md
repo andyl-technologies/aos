@@ -426,6 +426,14 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
   per-file checklist is a doc-lint failure. *Spec:* §1 of 24,
   [`00-conventions.md`](00-conventions.md).
 
+- **[STD-34]** **License-boundary review.** Code and documentation that touch
+  QEMU integration, `crucible-qemu-plugin`, `crucible-protocol`,
+  `crucible-shmem`, packaging, or guest doorbells MUST preserve the component,
+  dependency, and public-protocol rules in
+  [`37-licensing-process-boundary.md`](37-licensing-process-boundary.md). The
+  `gate:license-boundary` Always gate owned by `crucible-harness` MUST fail
+  closed on a violation. *Gate:* `gate:license-boundary`. *Spec:* §37.
+
 ---
 
 ## 6. The determinism review checklist
@@ -440,8 +448,8 @@ the mechanical cases, the gates catch what runs, and this checklist catches the
 
 - **[STD-32]** A reviewer MUST apply the following determinism review checklist to
   any PR touching an engine/scheduler/transport crate, and MUST block the PR on
-  any unchecked item. The checklist is recorded in the PR (a template). *Gate:*
-  enforced by review on top of `gate:harness-lint`. *Spec:* §6.
+  any unchecked item. The completed checklist is recorded in the PR description
+  or review. *Gate:* enforced by review on top of `gate:harness-lint`. *Spec:* §6.
 
 The checklist:
 

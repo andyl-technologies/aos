@@ -28,6 +28,11 @@
 
   phaseGateTargets = [
     {
+      phase = "phase1";
+      attr = "licenseBoundary";
+      gate = "gate:license-boundary";
+    }
+    {
       phase = "phase0";
       attr = "blockers";
       label = "phase0:blockers";
