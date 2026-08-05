@@ -255,7 +255,7 @@ to drain.
 
 Implementation caveat: on Linux x86_64, architectural port I/O is privileged.
 The userspace `crucible-guest` emitter therefore requests permission for the
-single reserved port with `ioperm(2)` before executing `out dx,eax`, and fails
+single reserved port with `ioperm(2)` before executing `out 0xe7,al`, and fails
 loudly if the guest image has not granted the required I/O capability. This keeps
 the emitter free of `/dev` nodes and kernel modules, but it makes the x86_64
 userspace privilege requirement explicit instead of relying on an unexplained
@@ -288,12 +288,12 @@ The disabled doorbell remains uninstalled and inert by construction.
 In short, a collision is a setup error, not a silently installed shared trap.
 
 ```text
-instruction_abi_version = 1
+instruction_abi_version = 3
 
 arch     trap                    payload registers  trap bytes
 -------  ----------------------  -----------------  --------------------------
-x86_64   out dx,eax, port 0x00e7 ptr=rax len=rcx    ef
-aarch64  hlt #0x04c1             ptr=x0  len=x1     20 98 40 d4
+x86_64   out 0xe7,al              ptr=rax len=rcx    e6 e7
+aarch64  hlt #0x04c1              ptr=x0  len=x1     20 98 40 d4
 
 aarch64 trap bytes are the little-endian encoding of instruction word 0xd4409820.
 ```
@@ -301,10 +301,16 @@ aarch64 trap bytes are the little-endian encoding of instruction word 0xd4409820
 - **[GHC-15]** On **x86_64**, the doorbell MUST be a write to a **reserved port-I/O
   address** (`out` to a configured, otherwise-unused port). Port I/O is the
   portable x86 choice: it is a single instruction, it is trappable by the plugin
-  synchronously at retirement, the written value and the `dx`/`eax` register state
-  are available at the trap, and a reserved port does not collide with real device
-  I/O. The reserved port number is part of the channel configuration and the
-  scenario hash. *Gate:* `gate:abi-conformance`. *Spec:* §16.4.
+  synchronously at retirement, and a reserved port does not collide with real
+  device I/O. The port MUST use the immediate form so the complete two-byte
+  instruction identifies the doorbell at translation time; the register-selected
+  form would require a register read on every ordinary `out dx,eax` executed by
+  an otherwise-unmodified guest. The byte-width `al` form is required because the
+  I/O value is not part of the doorbell payload and Linux `ioperm(2)` can then
+  grant exactly the one reserved port; an `eax` write spans four consecutive I/O
+  ports. The reserved port number is part of the channel
+  configuration and the scenario hash. *Gate:* `gate:abi-conformance`. *Spec:*
+  §16.4.
 
 - **[GHC-16]** On **aarch64**, where architectural port I/O does not exist, the
   doorbell MUST use an aarch64-appropriate trappable instruction — the default is a
@@ -336,9 +342,9 @@ aarch64 trap bytes are the little-endian encoding of instruction word 0xd4409820
 ```text
 Doorbell, abstractly (per-arch instruction, arch-independent payload):
 
-  x86_64 :  mov   dx, <reserved_port>     ; configured port, no device behind it
-            mov   eax, <ptr-or-tag>       ; payload pointer or inline command
-            out   dx, eax                 ; <-- plugin traps synchronously here,
+  x86_64 :  mov   rax, <payload_pointer>  ; payload guest-address
+            mov   rcx, <payload_length>   ; bounded frame length
+            out   <reserved_port>, al     ; <-- plugin traps synchronously here,
                                           ;     at the exact retirement icount
 
   aarch64:  ; payload guest-address in x0, length in x1
@@ -784,7 +790,7 @@ the transport layer by construction.
   payload sources, rejects disabled or oversized traps before reading guest
   memory, and keeps device-queue channel markers out of the doorbell path.
   `checks.crucible.phase2.qemuLiveWhiteboxDoorbell` now adds the first real
-  backend slice: a standalone x86 guest rings the frozen `out dx,eax` doorbell
+  backend slice: a standalone x86 guest rings the frozen `out 0xe7,al` doorbell
   on port `0x00e7`, and the packaged production Rust plugin reads its
   `rax`/`rcx` virtual pointer+length payload, decodes the golden coverage marker,
   and reports the exact trap icount before the run reaches its exact scheduler
@@ -802,8 +808,8 @@ the transport layer by construction.
   [GHC-16], [GHC-18]; spec §16.4.
   Completed by `checks.crucible.phase4.guestHostDoorbellAbi`: `crucible-protocol`
   now exports `WHITEBOX_DOORBELL_ABIS` as the single-source instruction ABI, the
-  QEMU plugin and guest-agent boundary re-export it, the x86_64 `out dx,eax` byte
-  vector (`ef`) and aarch64 `hlt #0x04c1` byte vector (`20 98 40 d4`) are frozen,
+  QEMU plugin and guest-agent boundary re-export it, the x86_64 `out 0xe7,al`
+  byte vector (`e6 e7`) and aarch64 `hlt #0x04c1` byte vector (`20 98 40 d4`) are frozen,
   the payload register contract is recorded (`rax`/`rcx`, `x0`/`x1`), and plugin
   registration state is built from those ABI trap entries.
 - [x] **T-GHC-6** Implement collision avoidance and inertness for the reserved
@@ -877,7 +883,7 @@ the transport layer by construction.
   always/sometimes/reachable/unreachable/lifecycle/event/coverage/get-random
   vocabulary, `InstructionDoorbellTransport` rings the Linux x86_64 and aarch64
   trap instructions from `WHITEBOX_DOORBELL_ABIS` (with x86_64 `ioperm(2)`
-  requested before `out dx,eax`), and the dedicated AOS `pkgs.crucible-guest`
+  requested before `out 0xe7,al`), and the dedicated AOS `pkgs.crucible-guest`
   package builds the current-system `crucible-guest` binary from source with
   target-specific `target-feature=+crt-static` flags plus an ELF interpreter
   absence check while recording the shared x86_64/aarch64 instruction ABI

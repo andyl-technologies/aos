@@ -189,9 +189,19 @@ fn host_side_assertions_grade_all_five_quantifiers_in_black_box_mode() {
 
     evaluator.observe_prefix(&observable_prefix(1, Vec::new()), &mut oracle);
     evaluator.observe_prefix(&observable_prefix(10, vec![request.clone()]), &mut oracle);
-    evaluator.observe_prefix(
+    let satisfied = evaluator.observe_prefix(
         &observable_prefix(12, vec![request.clone(), ack.clone()]),
         &mut oracle,
+    );
+    assert_outcome(
+        &satisfied,
+        "sometimes-ack",
+        HostAssertionOutcomeKind::Satisfied,
+    );
+    assert_outcome(
+        &satisfied,
+        "eventually-request-acks",
+        HostAssertionOutcomeKind::Satisfied,
     );
     evaluator.observe_prefix(
         &observable_prefix(15, vec![request.clone(), ack.clone(), coverage.clone()]),
