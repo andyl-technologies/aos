@@ -273,7 +273,7 @@ apm policy acme-health-agent --system
 
 The current machine-wide desired-package reconciler installs and removes roots,
 but does not replace an already-present package with a newer registry
-candidate. `apm upgrade --system` upgrades the OS sysroot, not the runtime
+candidate. `apm upgrade --system` stages an A/B OS image, not the runtime
 package profile. Until a machine-wide runtime upgrade operation ships, roll a
 new image containing the new package or use a release-specific, tested
 remove-and-reconcile procedure. Do not present that workaround as an atomic

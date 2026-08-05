@@ -128,6 +128,7 @@ in {
     operatorModules ? [],
     packageModules ? [],
     factsModules ? [],
+    structuredErrors ? false,
   }:
     lib.evalModules {
       modules =
@@ -146,5 +147,6 @@ in {
         ];
       pkgs = frozenPkgs;
       inherit lib operatorModules packageModules;
+      specialArgs.aosStructuredErrors = structuredErrors;
     };
 }

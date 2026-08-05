@@ -336,10 +336,28 @@ pub struct EvaluatorInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigModulesInput {
+    /// Registry whose signed release selected the module set.
+    pub registry: Option<String>,
+    /// Semver release tag accepted by `verify_tag_chain`.
+    pub release_tag: Option<String>,
+    /// Short fingerprint of the roster key that signed the tag.
+    pub tag_signer_key: Option<String>,
+    /// Hash of the exact signed `store/` subgraphs consumed below.
+    pub realization: Option<String>,
     /// Set-hash over every resolved package's `config` output NAR (below).
     pub closure_hash: String,
     /// Number of config modules in the resolved set.
-    pub count: u32,
+    pub count: usize,
+    /// Exact config-output store paths, sorted by path.
+    pub store_paths: Vec<String>,
+    /// Canonical NAR hashes corresponding positionally to `store_paths`.
+    pub nar_hashes: Vec<String>,
+    /// Package identities corresponding positionally to `store_paths`.
+    pub package_names: Vec<String>,
+    /// ABI compatibility evidence corresponding positionally to `store_paths`.
+    pub module_abi_compat: Vec<ModuleAbiCompat>,
+    /// Shared-root authorization evidence corresponding positionally to `store_paths`.
+    pub authorizations: Vec<PackageAuthorization>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,7 +365,7 @@ pub struct ConfigModulesInput {
 pub struct HostNixInput {
     /// `sha256` of the policy-accepted `host.nix` bytes.
     pub content_hash: String,
-    /// Selected policy: `"platform"` or `"signed"`.
+    /// Selected policy: `"platform"`, `"signed"`, or the no-input `"image"` arm.
     pub trust_mode: String,
     /// Control-plane identity for platform mode.
     pub platform: Option<String>,
@@ -372,8 +390,15 @@ pub struct InstanceFactsInput {
 | `base_lib.abi_hash` | `hash_cjson({ "abi": <module_abi:u32>, "schema": [ [path, type_sig], … ] })` where the schema array is the result of an **options-only eval** of the base lib (no `config` forced), one `[option-path, type-signature-string]` pair per declared shared-tree option, sorted by `option-path`. `type_sig` is `options.<path>.type.description`. |
 | `evaluator.store_hash` | the evaluator store path's hash component decoded from nixbase32 to its 20 bytes, re-encoded `"sha256:"+hex`. (`store_path` carries the same identity; both recorded for cross-checking.) |
 | `config_modules.closure_hash` | set-hash (§0) over `[ [config_output_store_path, config_output_nar_hash], … ]` for every resolved package, taken from each package's `ConfigOutputMeta`. Sorted; identity is the *set*. |
+| `config_modules.realization` | For each selected config-output root, hash the canonical JSON object mapping every reachable IA hash to the canonical signed `store/` realization record. Then set-hash (§0) the sorted `[config_output_store_path, subtree_hash]` pairs. This commits to the exact consumed signed graph, including non-package dependencies. Absent only when `count == 0`. |
 | `host_nix.content_hash` | `"sha256:"+hex(sha256(verified_host_nix_bytes))` — the exact bytes the resolver verified the operator signature over, before any parsing. |
 | `instance_facts.facts_hash` | `hash_cjson(resolved_host_facts_tree)` — the `host.facts.*` subtree as resolved into the fixpoint (hostname, MAC→interface map, disk-id map, ssh_authorized_keys, …), serialized as a nested JSON object and CJSON-hashed. Facts are recorded, not signed. |
+
+For a non-empty config-module set, all four signed-release identity fields are
+required and every selected module must come from that one release. For the
+canonical empty set, all four are absent, all parallel arrays are empty, and
+`closure_hash = hash_cjson([])`; a mixture of empty and non-empty evidence is
+invalid.
 
 `manifest_hash` (used as `generation_id` input and in the attestation bundle) =
 `hash_cjson(manifest)` over the whole `ConfigManifest` value.
@@ -1074,9 +1099,11 @@ the registry format, the module contract, or the generations
 ---
 
 Files referenced (absolute):
-- `/Users/dplecki/src/andyl/andyl-os/.claude/worktrees/rfc-0011-on-host-config-eval/lib/modules.nix` (`:744` undefined-declared throw; `:917` strict-undeclared throw; `:935` assertions; `:924-930` options-only eval; `:541-567,620` base-lib injection)
-- `/Users/dplecki/src/andyl/andyl-os/.claude/worktrees/rfc-0011-on-host-config-eval/crates/aos-package/src/resolve.rs` (`:65` `resolve_closure`, `:233` `resolve_multiple`, `:267-271` cycle guard, `:297-314` expose-requires/uses traversal — the machinery the fixpoint drives)
-- `/Users/dplecki/src/andyl/andyl-os/.claude/worktrees/rfc-0011-on-host-config-eval/docs/rfcs/0011-on-host-config-eval/{module-system,architecture,operability}.md`
+- `lib/modules.nix` (undefined-declared and strict-undeclared errors,
+  assertions, options-only evaluation, and base-lib injection)
+- `crates/aos-package/src/resolve.rs` (closure resolution, cycle guards, and
+  expose-requires/uses traversal — the machinery the fixpoint drives)
+- `docs/rfcs/0011-on-host-config-eval/{module-system,architecture,operability}.md`
 
 Suggested filename for the drop-in: `docs/rfcs/0011-on-host-config-eval/resolve-eval-fixpoint.md`.
 
@@ -1766,7 +1793,10 @@ tested. Ignition compatibility is not part of the end-state contract.
 
 ---
 
-Grounding files (absolute): `/Users/dplecki/src/andyl/andyl-os/.claude/worktrees/rfc-0011-on-host-config-eval/docs/rfcs/0011-on-host-config-eval/provisioning.md`, `/Users/dplecki/src/andyl/andyl-os/.claude/worktrees/rfc-0011-on-host-config-eval/modules/services/ignition.nix`, `/Users/dplecki/src/andyl/andyl-os/.claude/worktrees/rfc-0011-on-host-config-eval/pkgs/boot/aos-platform-detect.nix`, `/Users/dplecki/src/andyl/andyl-os/.claude/worktrees/rfc-0011-on-host-config-eval/crates/aos-net/src/{transfer.rs,types.rs,retry.rs,protocol/http.rs}`, `/Users/dplecki/src/andyl/andyl-os/.claude/worktrees/rfc-0011-on-host-config-eval/crates/aos-package/src/security.rs`.
+Grounding files: `docs/rfcs/0011-on-host-config-eval/provisioning.md`, the
+historical Ignition service and platform-detection package removed by this RFC,
+`crates/aos-net/src/{transfer.rs,types.rs,retry.rs,protocol/http.rs}`, and
+`crates/aos-package/src/security.rs`.
 
 
 ---
@@ -1805,9 +1835,10 @@ Grounding files:
 A new module in `aos-package` (`crates/aos-package/src/attestation.rs`) emits the
 record after a generation is materialized and `activate <N>` succeeds. It is a
 serde struct serialized to **canonical JSON** (BTreeMap key ordering, no
-insignificant whitespace — the same canonicalization the manifest hash uses), so
-two boxes that derived the same generation emit byte-identical records modulo the
-`quote` field.
+insignificant whitespace — the same canonicalization the manifest hash uses).
+Each completed activation has a fresh random identity, so reactivating an old
+generation produces new evidence without changing that generation's manifest
+identity.
 
 ### 1.2 Wire schema
 
@@ -1815,7 +1846,8 @@ two boxes that derived the same generation emit byte-identical records modulo th
 aos.gen-attestation/v1  (canonical JSON; field order below is the struct order)
 
   schema          : "aos.gen-attestation/v1"            # literal discriminator
-  generation_id   : "<hex>"      # content hash of the materialized config-generation
+  activation_id   : "sha256:<hex>"  # unique identity of this activation attempt
+  generation_id   : "sha256:<hex>"  # content hash of the materialized config-generation
   manifest_hash   : "sha256:<hex>"  # canonicalized manifest, verify.rs::sha256 form
   inputs:
     base_lib:
@@ -1833,13 +1865,14 @@ aos.gen-attestation/v1  (canonical JSON; field order below is the struct order)
       realization         : "sha256:<hex>"   # hash of consumed signed store/ subset
     host_nix:
       content_hash        : "sha256:<hex>"   # sha256 of the operator config bytes
-      trust_mode          : "<platform|signed>"
-      platform            : "<aws|gcp|...>"  # platform mode
+      trust_mode          : "<platform|signed|image>"
+      platform            : "<aws|gcp|...|image>"  # platform/image mode
       signer_key          : "<fingerprint>"  # signed mode only
     instance_facts:
       facts_hash          : "sha256:<hex>"   # canonical host.facts.* tree
       platform            : "<aws|gcp|...>"
   eval_mode       : "pure-eval"
+  quote_status    : "quoted" | "unquoted-tpm-unavailable"
   quote           : <TPM2 quote blob>        # see §1.4
 ```
 
@@ -1851,6 +1884,9 @@ concrete.
 
 - `generation_id` — the content hash APM already assigns the materialized
   generation directory; read from the generation record, not recomputed.
+- `activation_id` — `sha256:` plus 32 bytes from the OS CSPRNG, generated for
+  every successful activation. A crash retry reuses the transaction's retained
+  value; a later reactivation or same-ABI rollback always gets a new value.
 - `manifest_hash` — `verify::sha256_stream` over the canonicalized manifest JSON.
   Format `sha256:<hex>` (`verify.rs:55`).
 - `base_lib.pcr11_expected` — read from the **booted UKI's published
@@ -1877,12 +1913,20 @@ concrete.
   `release_tag` (the `verify_tag_chain` target, `registry/verify.rs:99`),
   `tag_signer_key` (`security.rs::key_fingerprint`), `realization` (sha256 of the
   signed `store/` graph subset consumed, the blessed set `verify.rs::verify_nar_blessed`
-  validated).
+  validated). Sync publishes a cache-local release receipt only after tag-chain
+  verification and invalidates any older receipt before replacing extracted
+  registry data. The receipt is transport evidence, not a trust anchor: remote
+  verification independently checks the tag, signer roster, realization, and
+  exact module catalog. Branch/commit/default or otherwise unsigned syncs do
+  not produce a receipt and therefore cannot attest a non-empty module set.
 - `host_nix.content_hash` — `sha256` of the exact `host.nix` bytes that were fed
   to the evaluator (the store-path-pinned content; §3, §F1-Q5).
 - `host_nix.trust_mode` plus `platform` or `signer_key` — evidence for the
   policy that accepted the input. Exactly the policy-appropriate field is
-  present; no record is emitted when authorization fails.
+  present; no record is emitted when authorization fails. The `image` mode is
+  reserved for `platform = "image"` and the evaluator's exact image-authored
+  empty module. It is not an operator-input authorization mode, and verifier
+  step 10 is mandatory for it.
 - `instance_facts.facts_hash` — `sha256` of the canonical `host.facts.*` tree
   (M-facts); `platform` the IMDS platform tag.
 - `eval_mode` — literal `"pure-eval"`; asserts the determinism precondition.
@@ -1894,13 +1938,27 @@ then taking a quote over the boot PCRs plus 15:
 
 1. Canonicalize the record **without** the `quote` field → `record_bytes`.
 2. `record_hash = sha256(record_bytes)`.
-3. Extend PCR 15: `TPM2_PCR_Extend(15, record_hash)` (sd's app-PCR convention;
+3. Append the canonical event to the shared AOS CEL, then extend PCR 15 with
+   `record_hash`: `TPM2_PCR_Extend(15, record_hash)` (sd's app-PCR convention;
    PCR 15 is the agreed application slot — distinct from the sealed-`/var` PCRs
    7 and 11 so the seal policy is untouched).
-4. `quote = TPM2_Quote(PCR { 7, 11, 15 }, nonce)`. The `nonce` is the verifier's
+4. `quote = TPM2_Quote(PCR { 7, 11, 12, 15 }, nonce)`. The `nonce` is the verifier's
    challenge (online attestation) or `record_hash` itself (offline/self-describing).
 5. Serialize `quote` (TPM2B_ATTEST + TPMT_SIGNATURE, AK-signed) into the record's
    `quote` field and persist the full record alongside `gen-N/manifest.json`.
+
+The producer writes a durable, input-bound attestation transaction marker,
+including `activation_id`, before appending the CEL event. CEL append is fsynced
+before PCR extension. On retry, the producer validates the marker and exact CEL
+event, replays the CEL prefix, and compares it with live PCR 15: it extends only
+when the event is logged but not yet reflected in PCR 15, skips extension when
+already reflected, and fails closed on any ambiguous history or later event.
+Quote artifacts may then be regenerated without extending again. The marker is
+removed durably only after both the quote directory and canonical record are
+published. A later activation has no marker to resume, so it creates a fresh
+identity, appends another CEL event, extends PCR 15 again, and replaces the
+generation's current evidence. Repeated `generation_id` values are therefore
+valid; repeated `activation_id` values are not.
 
 The seal mechanism is **unchanged**: `/var` stays sealed to PCR 11 (signed) + PCR
 7 (pinned) per `secure-boot.nix`. The roothash rides inside PCR 11 for free (§4);
@@ -1914,9 +1972,13 @@ only from trusted inputs:
 
 ```text
 verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platforms, expected_facts?):
-  1. schema == "aos.gen-attestation/v1"                          else FAIL(schema)
-  2. quote signature valid under ak_pubkey over (PCR{7,11,15}, nonce)  else FAIL(quote)
-  3. PCR15 in quote == TPM2_PCR_Extend(0, sha256(record\quote))  else FAIL(record-binding)
+  1. schema == "aos.gen-attestation/v1"
+       AND activation_id is canonical and unique in the CEL     else FAIL(schema)
+  2. quote signature valid under ak_pubkey over (PCR{7,11,12,15}, nonce)  else FAIL(quote)
+  3. validate the CEL prefix preceding this generation event;
+     replay its ordered SHA-256 event digests from the all-zero PCR baseline,
+     then extend sha256(record\quote);
+     PCR15 in quote == the replayed result                       else FAIL(record-binding)
   4. PCR7  in quote == catalog.expected_pcr7  (SB-state pin)     else FAIL(sb-state)
   5. PCR11 in quote == record.inputs.base_lib.pcr11_expected
         AND == catalog.expected_pcr11 for that UKI               else FAIL(pcr11)
@@ -1927,13 +1989,21 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
   7. config_modules.release_tag is signed by a roster key in catalog,
        not revoked: verify_tag_chain(release_tag) succeeds        else FAIL(tag)
        AND tag_signer_key ∈ catalog roster fingerprints
+       AND strict receipt registry/tag/commit/signer fields equal the
+           independently reverified release object
+       AND module membership, NAR hashes, and realization are reconstructed
+           from that signed commit
   8. host_nix.trust_mode == "platform"
        AND host_nix.platform ∈ trusted_platforms
      OR host_nix.trust_mode == "signed"
        AND host_nix.signer_key ∈ trusted_config_keys fingerprints
+     OR host_nix.trust_mode == "image"
+       AND host_nix.platform == "image"
+       AND host_nix.signer_key is absent
                                                                   else FAIL(host-config-trust)
   9. eval_mode == "pure-eval"                                    else FAIL(eval-mode)
- 10. (optional, full re-derivation) given the authenticated inputs
+ 10. (optional for platform/signed; REQUIRED for image, full re-derivation)
+       given the authenticated inputs
        (base-lib@pcr11_expected, evaluator@store_path,
         config_modules@realization, host_nix@content_hash,
         instance_facts@facts_hash), re-run the pure eval and check
@@ -1947,6 +2017,9 @@ byte of the erofs root carrying base-lib + evaluator. Step 6 lets the verifier
 independently confirm the booted roothash equals the published image's root
 without trusting the box. Step 10 upgrades attestation to full re-derivation, the
 property the manifest's signature-free trust model rests on.
+For the no-input `image` arm, step 10 is also the authorization proof: the
+PCR-bound evaluator must reproduce the manifest from its exact empty host
+module. A verifier that cannot re-derive MUST reject `trust_mode = "image"`.
 
 ---
 
@@ -2063,6 +2136,10 @@ control-plane channel. Signed mode verifies a detached SSHSIG over exact
 `host.nix` bytes against public anchors included in the measured initrd.
 `trust_mode` is measured boot configuration, is not accepted from user-data,
 and cannot fall back from `signed` to `platform`.
+If no operator input exists and no operator-backed generation has been
+committed, stage 2 may evaluate only the image-authored empty module and records
+that distinct no-input case as `trust_mode = "image"`; it is never a fallback
+from a failed platform or signed authorization.
 
 Authorization occurs before restricted evaluation. Stage-2 does not repeat
 the trust decision over mutable input: it verifies that `/run/aos-eval/host.nix`
@@ -2224,19 +2301,20 @@ device params to assemble `/dev/mapper/root`. Keep `dm_verity` in
    ext4-only (`rootFsType == "ext4"`): an erofs+verity root must never be grown
    (growing would change bytes and break the roothash).
 
-### 4.6 Eval side — production image wiring (the missing piece)
+### 4.6 Eval side — implemented production image wiring
 
-The production/measured-boot variant (`systems/server-measured-boot.nix` or a
-`server.nix` prod profile):
+The production-integrity variant is `systems/server-verity.nix`. It imports
+`systems/server-measured-boot.nix`, inherits its erofs root, and enables:
 
 ```text
-imports = [ ../modules/security/verity.nix ];
 aos.security.verity.enable = true;
-aos.filesystems.rootFsType = "erofs";
-# rootfs builder invoked with verity = true
+# server-measured-boot -> server supplies rootFsType = "erofs"
+# the image builder derives verity = true from aos.security.verity.enable
 ```
 
-Tests keep `ext4` + verity off.
+Ordinary VM tests may keep `ext4` + verity off; `checks.fleet.measured-boot`
+boots `systems.server-verity` and verifies the live mapper, command-line root
+hash, GPT hash partition, attestation binding, and tamper rejection.
 
 ### 4.7 PCR-11-covers-root proof
 
@@ -2292,7 +2370,8 @@ without changing `<hex>` is caught by the kernel dm-verity target at first read
   reproducibility from authenticated, recorded inputs is stronger than a
   manifest signature, and
   the `gen-attestation/v1` record (§1) makes it falsifiable.
-- The one real gap — *which inputs the evaluator consumed* — is closed by §1
+- The input-set binding distinction — *which inputs the evaluator consumed* —
+  is covered by §1
   (config-modules + host.nix + facts in the record) and §4 (root anchored to PCR
   11).
 - Secret material never enters the value graph: §2's `secretRef` carries only

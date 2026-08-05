@@ -127,6 +127,9 @@ impl ConfigModuleResolver for MockResolver {
     fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
         let (key, (version, platform, module)) = self.modules.get_key_value(package)?;
         Some(ResolvedConfigModule {
+            registry: "test",
+            release_trust: None,
+            config_realization: None,
             package: key.as_str(),
             version,
             platform,
@@ -211,6 +214,9 @@ fn read_miss(root: &str) -> MissingOption {
 /// present) — i.e. it counts toward the no-progress guard.
 fn loaded(package: &str) -> WorkingSetMember {
     WorkingSetMember {
+        registry: None,
+        release_trust: None,
+        config_realization: None,
         package: package.to_string(),
         version: Some("1".to_string()),
         config_output: Some(format!("/nix/store/h-{package}-config")),
@@ -219,6 +225,39 @@ fn loaded(package: &str) -> WorkingSetMember {
         authorization: PackageAuthorization::default(),
         outputs: PackageOutputs::default(),
     }
+}
+
+#[test]
+fn signed_release_identity_flows_from_resolver_members_into_manifest_input() {
+    let receipt = crate::registry::ReleaseTrustReceipt {
+        schema: "aos.registry-release-trust/v1".to_string(),
+        registry: "aos-core".to_string(),
+        release_tag: "1.4.0".to_string(),
+        commit: "a".repeat(40),
+        tag_signer_key: "deadbeef".to_string(),
+    };
+    let members = vec![WorkingSetMember {
+        registry: Some("aos-core".to_string()),
+        release_trust: Some(receipt),
+        config_realization: Some(format!("sha256:{}", "aa".repeat(32))),
+        package: "web".to_string(),
+        version: Some("1.0.0".to_string()),
+        config_output: Some("/nix/store/cccccccccccccccccccccccccccccccc-web-config".to_string()),
+        config_output_nar_hash: Some(format!("sha256:{}", "bb".repeat(32))),
+        module_abi_compat: Some(compat(1, 2)),
+        authorization: PackageAuthorization::default(),
+        outputs: PackageOutputs::default(),
+    }];
+    let (registry, tag, signer, realization) =
+        super::config_module_release_identity(&members).unwrap();
+    assert_eq!(registry.as_deref(), Some("aos-core"));
+    assert_eq!(tag.as_deref(), Some("1.4.0"));
+    assert_eq!(signer.as_deref(), Some("deadbeef"));
+    assert!(
+        realization
+            .as_deref()
+            .is_some_and(|value| value.starts_with("sha256:") && value.len() == 71)
+    );
 }
 
 fn inputs(seed: Vec<WorkingSetMember>, abi: u32, cap: Option<u32>) -> FixpointInputs {
@@ -584,6 +623,9 @@ fn seed_abi_gate_rejects_before_any_eval() {
     let eval = ScriptedEvaluator::new(vec![]);
     let fetcher = RecordingFetcher::new();
     let seed = vec![WorkingSetMember {
+        registry: None,
+        release_trust: None,
+        config_realization: None,
         package: "firewall".into(),
         version: Some("9.9.9".into()),
         config_output: Some("/nix/store/h-firewall-config".into()),

@@ -15,6 +15,13 @@
   # Specialized writable-root test variants may override this mkDefault.
   aos.security.verity.enable = lib.mkDefault true;
 
+  # The service modules retain backwards-compatible enabled defaults. Keep
+  # the golden image policy-neutral at a weaker priority so authenticated
+  # host.nix or aos.roles.server/aos.roles.edge can select runtime services
+  # without rebuilding the image.
+  aos.services.chrony.enable = lib.mkOverride 1500 false;
+  aos.services.ssh.enable = lib.mkOverride 1500 false;
+
   # Image capability: support encrypted state/swap selected by host policy.
   aos.kernel.modules = ["dm-crypt" "aes" "xts"];
 }

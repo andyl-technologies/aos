@@ -1,0 +1,68 @@
+[package]
+name = "aos-nix"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+# RFC-0007 Candidate-C value-ABI cutover variant (task #12): forwards the
+# one-word carrier + layout descriptor coherently through the whole ratchet
+# stack. Since S4b the JIT is fully live on this carrier (one-word stack maps
+# + decoded-core tier-2 emitters). Enabling every layer keeps the carrier
+# (`ratchet-value`) and the ABI layout descriptor (`ratchet-core`) in lock-step.
+candidate_c_value = [
+  "ratchet-value/candidate_c_value",
+  "ratchet-core/candidate_c_value",
+  "ratchet-oracle/candidate_c_value",
+  "ratchet-jit/candidate_c_value",
+  "ratchet-runtime-ffi/candidate_c_value",
+]
+# Default-off serial Apply/GenList active packed-thunk experiment.
+active_packed_thunk_probe = ["candidate_c_value", "ratchet-oracle/active_packed_thunk_probe"]
+# Compile-time-only projected duplicate-work census.
+maximal_laziness_probe = ["candidate_c_value", "ratchet-oracle/maximal_laziness_probe"]
+# Compile-time-only allocation-byte and statepoint shadow census.
+demand_region_shadow_probe = ["candidate_c_value", "ratchet-oracle/demand_region_shadow_probe"]
+whole_demand_trace_shadow_probe = [
+  "demand_region_shadow_probe",
+  "ratchet-oracle/whole_demand_trace_shadow_probe",
+]
+# Compile-time-only no-collection explicit-dispatcher safepoint preflight.
+collection_poll_probe = ["candidate_c_value", "ratchet-oracle/collection_poll_probe"]
+[dependencies]
+anyhow = { workspace = true }
+aos-nix-compat = { workspace = true }
+aos-nix-syntax = { workspace = true }
+ratchet-core = { workspace = true }
+aos-nix-dialect = { workspace = true }
+ratchet-jit = { workspace = true }
+ratchet-value = { workspace = true }
+ratchet-oracle = { workspace = true }
+ratchet-runtime-ffi = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+bzip2 = { workspace = true }
+flate2 = { workspace = true }
+git2 = { workspace = true }
+md-5 = { workspace = true }
+miette = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha1 = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+xxhash-rust = { workspace = true }
+xz2 = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+nix-compat = { workspace = true }
+proptest = { workspace = true }
+ratchet-core = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }

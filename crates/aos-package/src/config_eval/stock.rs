@@ -86,6 +86,14 @@ impl StockNixEvaluator {
     /// in-image module library and is therefore builder-gated; this renderer
     /// only guarantees a syntactically valid, deterministic expression.
     pub fn render_entry_nix(&self, attempt: &EvalAttempt<'_>) -> String {
+        self.render_entry_nix_with_structured_errors(attempt, false)
+    }
+
+    fn render_entry_nix_with_structured_errors(
+        &self,
+        attempt: &EvalAttempt<'_>,
+        structured_errors: bool,
+    ) -> String {
         let package_modules = render_package_module_list(attempt.working_set);
         let facts_binding = attempt.facts_json.map_or_else(String::new, |_| {
             format!(
@@ -108,8 +116,10 @@ impl StockNixEvaluator {
             \x20   operatorModules = [ hostModule ];\n\
             \x20   packageModules = {modules};\n\
             \x20   factsModules = {facts_modules};\n\
+            \x20   structuredErrors = {structured_errors};\n\
             \x20 }};\n\
              in {{\n\
+            \x20 optionWrites = system._optionWrites;\n\
             \x20 manifest = system.config.system.build.configManifest // {{\n\
             \x20   config = baseLib.lib.recursiveUpdate\n\
             \x20     system.config.system.build.configManifest.config\n\
@@ -136,11 +146,24 @@ impl StockNixEvaluator {
             modules = package_modules,
             facts_binding = facts_binding,
             facts_modules = facts_modules,
+            structured_errors = if structured_errors { "true" } else { "false" },
         )
     }
 
     /// Writes `entry.nix` into the eval root.
-    fn write_entry(&self, attempt: &EvalAttempt<'_>) -> Result<PathBuf> {
+    pub(super) fn write_entry(&self, attempt: &EvalAttempt<'_>) -> Result<PathBuf> {
+        self.write_entry_with_structured_errors(attempt, false)
+    }
+
+    pub(super) fn write_native_entry(&self, attempt: &EvalAttempt<'_>) -> Result<PathBuf> {
+        self.write_entry_with_structured_errors(attempt, true)
+    }
+
+    fn write_entry_with_structured_errors(
+        &self,
+        attempt: &EvalAttempt<'_>,
+        structured_errors: bool,
+    ) -> Result<PathBuf> {
         let entry = self.root.join("entry.nix");
         std::fs::create_dir_all(&self.root)
             .with_context(|| format!("creating eval root {}", self.root.display()))?;
@@ -153,8 +176,11 @@ impl StockNixEvaluator {
             std::fs::write(self.root.join("host-facts.nix"), rendered)
                 .context("writing rendered host facts module")?;
         }
-        std::fs::write(&entry, self.render_entry_nix(attempt))
-            .with_context(|| format!("writing {}", entry.display()))?;
+        std::fs::write(
+            &entry,
+            self.render_entry_nix_with_structured_errors(attempt, structured_errors),
+        )
+        .with_context(|| format!("writing {}", entry.display()))?;
         Ok(entry)
     }
 }
@@ -326,7 +352,7 @@ fn nix_string(value: &str) -> String {
 
 /// Render a path as a bare Nix path literal when it is an absolute store-style
 /// path, else as a quoted string (so the expression always parses).
-fn nix_path(path: &Path) -> String {
+pub(super) fn nix_path(path: &Path) -> String {
     nix_path_str(&path.to_string_lossy())
 }
 
@@ -502,20 +528,27 @@ impl RegistryConfigModules {
             .registries()
             .iter()
             .filter(|registry| registry_name.is_none_or(|name| registry.config.name == name))
-            .flat_map(|registry| registry.package_versions())
-            .find(|meta| {
-                meta.name == package
-                    && version.is_none_or(|want| meta.version == want)
-                    && runtime_output.is_none_or(|want| meta.store_path == want)
-                    && meta.config_module.is_some()
-            })
-            .and_then(|meta| {
+            .find_map(|registry| {
+                let meta = registry.package_versions().find(|meta| {
+                    meta.name == package
+                        && version.is_none_or(|want| meta.version == want)
+                        && runtime_output.is_none_or(|want| meta.store_path == want)
+                        && meta.config_module.is_some()
+                })?;
+                let module = meta.config_module.as_ref()?;
+                let root = crate::registry::store_path_hash(&module.config_output.store_path);
                 Some(ResolvedConfigModule {
+                    registry: &registry.config.name,
+                    release_trust: registry.release_trust(),
+                    config_realization: registry
+                        .store_map()
+                        .realization_subset_hash(&[root.to_string()])
+                        .ok(),
                     package: &meta.name,
                     version: &meta.version,
                     platform: &meta.platform,
                     runtime_output: &meta.store_path,
-                    module: meta.config_module.as_ref()?,
+                    module,
                 })
             })
     }
@@ -523,9 +556,16 @@ impl RegistryConfigModules {
 
 impl ConfigModuleResolver for RegistryConfigModules {
     fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
-        let (_registry, meta) = self.registries.resolve(package)?;
+        let (registry, meta) = self.registries.resolve(package)?;
         let module = meta.config_module.as_ref()?;
+        let root = crate::registry::store_path_hash(&module.config_output.store_path);
         Some(ResolvedConfigModule {
+            registry: &registry.config.name,
+            release_trust: registry.release_trust(),
+            config_realization: registry
+                .store_map()
+                .realization_subset_hash(&[root.to_string()])
+                .ok(),
             package: &meta.name,
             version: &meta.version,
             platform: &meta.platform,
@@ -547,6 +587,9 @@ impl ConfigModuleResolver for RegistryConfigModules {
         self.installed
             .iter()
             .map(|pin| ResolvedConfigModule {
+                registry: "",
+                release_trust: None,
+                config_realization: None,
                 package: &pin.package,
                 version: &pin.version,
                 platform: "installed-profile",
@@ -574,6 +617,9 @@ mod tests {
 
     fn member(pkg: &str, config_output: Option<&str>) -> WorkingSetMember {
         WorkingSetMember {
+            registry: None,
+            release_trust: None,
+            config_realization: None,
             package: pkg.to_string(),
             version: Some("1.0.0".to_string()),
             config_output: config_output.map(str::to_string),

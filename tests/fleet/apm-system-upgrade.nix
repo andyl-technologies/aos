@@ -262,7 +262,9 @@ in {
       # ── 3. The boot-time DB seed covers the pre-staged toplevel ────────
       target.succeed(
           "systemctl is-active aos-nix-db.service\n"
-          "test -L /nix/var/nix/gcroots/aos-profiles\n"
+          "${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles\n"
+          "test \"$(${pkgs.coreutils}/bin/stat -c %d:%i /var/lib/profiles)\" = "
+          "\"$(${pkgs.coreutils}/bin/stat -c %d:%i /nix/var/nix/gcroots/aos-profiles)\"\n"
           "${pkgs.nix}/bin/nix-store --check-validity '${server2Top}'\n",
           timeout=120,
       )

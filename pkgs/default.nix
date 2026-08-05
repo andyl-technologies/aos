@@ -199,7 +199,7 @@
                       echo "config module for '${packageName}' must contain a regular module.nix" >&2
                       exit 1
                     fi
-                    invalid_helper=$(${stdenv.findutils}/bin/find "$output" -type f ! -name '*.nix' ! -path "$output/config-meta.json" ! -path "$output/expose-config.json" -print -quit)
+                    invalid_helper=$(${stdenv.findutils}/bin/find "$output" -type f ! -name '*.nix' ! -path "$output/config-meta.json" ${lib.optionalString hasGeneratedExposeConfig ''! -path "$output/expose-config.json" ! -path "$output/generated/expose-config.json"''} -print -quit)
                     if [[ -n "$invalid_helper" ]]; then
                       echo "config module for '${packageName}' contains a non-Nix helper: $invalid_helper" >&2
                       exit 1

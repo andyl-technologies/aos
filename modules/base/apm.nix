@@ -268,6 +268,14 @@ in {
         cfg.systemCredentials)
       ++ [
         {
+          # Force each strict secretRef submodule even when install-at-boot is
+          # disabled. Otherwise an undeclared plaintext field can remain in an
+          # unforced option thunk and escape the normal toplevel assertion
+          # gate.
+          assertion = builtins.deepSeq cfg.credentials true;
+          message = "aos.apm.installAtBoot.credentials contains an invalid secretRef";
+        }
+        {
           assertion = credentialConflicts == [];
           message = ''
             aos.apm.installAtBoot credentials and systemCredentials must not
@@ -299,10 +307,31 @@ in {
           d  /etc/aos/packages.d                 0755 root root - -
           d  /run/aos-attest                     0700 root root - -
           d  /var/lib/apm                        0755 root root - -
+          d  /var/lib/apm/credential-transactions 0700 root root - -
           d  /var/lib/apm/config                 0755 root root - -
           d  /var/lib/apm/config/registries.d    0755 root root - -
         '';
       };
+
+    systemd.services.aos-credential-recovery = {
+      description = "Recover interrupted AOS credential publication";
+      requiredBy = ["sysinit.target"];
+      before = [
+        "sysinit.target"
+        "aos-eval.service"
+        "multi-user.target"
+      ];
+      requires = ["local-fs.target"];
+      after = ["local-fs.target"];
+      unitConfig.DefaultDependencies = "no";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        ${pkgs.aos}/bin/.apm-unwrapped recover-credential-transactions
+      '';
+    };
 
     systemd.services.aos-attest = {
       description = "Produce AOS package attestation quote";

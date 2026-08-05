@@ -25,6 +25,10 @@
   ...
 }: let
   cfg = config.aos.boot.secureBoot;
+  enrollAuthDir =
+    if cfg.enrollAuthDir == null
+    then "/nonexistent/aos-secure-boot-auth"
+    else cfg.enrollAuthDir;
 
   # Lockdown deployment kernel (phase 2). The reproducible base kernel
   # deliberately omits lockdown + module signing (they require a
@@ -57,7 +61,8 @@
   # begins enforcing. efi-updatevar shells out to `mount -l` to locate
   # efivarfs, so util-linux must be on PATH; other paths are baked as
   # absolute store paths.
-  enrollScript = pkgs.writeShellScriptBin "aos-sb-enroll" ''
+  enrollScript = config.aos.config.artifacts.secure-boot-enroll;
+  enrollScriptSource = pkgs.writeShellScriptBin "aos-sb-enroll" ''
     set -eu
     export PATH=${pkgs.util-linux}/bin:${pkgs.coreutils}/bin:$PATH
     if [ ! -d /sys/firmware/efi/efivars ]; then
@@ -65,9 +70,9 @@
       exit 1
     fi
     uv=${pkgs.efitools}/bin/efi-updatevar
-    "$uv" -f ${cfg.enrollAuthDir}/db.auth  db
-    "$uv" -f ${cfg.enrollAuthDir}/KEK.auth KEK
-    "$uv" -f ${cfg.enrollAuthDir}/PK.auth  PK
+    "$uv" -f ${enrollAuthDir}/db.auth  db
+    "$uv" -f ${enrollAuthDir}/KEK.auth KEK
+    "$uv" -f ${enrollAuthDir}/PK.auth  PK
     echo "aos-sb-enroll: enrolled db, KEK, PK (now in User Mode)"
   '';
 
@@ -243,6 +248,16 @@ in {
   };
 
   config = lib.mkMerge [
+    {
+      # This command is image-fixed. Preserve its stage-1 store path in the
+      # base library so a stage-2 evaluation never calls a builder that is
+      # intentionally absent from the frozen package set.
+      aos.config._artifactSources.secure-boot-enroll =
+        if config.aos.config.frozenArtifacts ? "secure-boot-enroll"
+        then null
+        else enrollScriptSource;
+    }
+
     (lib.mkIf cfg.enable {
       assertions = [
         {

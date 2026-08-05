@@ -2841,13 +2841,13 @@ pub use aos_registry_surface::manifest::{SbatEntry, SysrootImageEntry, SysrootUk
 ///
 /// Produced by [`ConfigGeneration::reactivation_plan`] and consumed by the
 /// rollback path. The two arms are the two independent re-bind outcomes the
-/// generations model permits: a free pointer switch within one ABI, or a
-/// deterministic re-evaluation across an ABI boundary.
+/// generations model permits: reactivation of retained material within one
+/// ABI, or deterministic re-evaluation across an ABI boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReactivationPlan {
     /// Identical module ABI under any running image: re-activate the retained
-    /// non-`@base` overlay with a pure `current → gen-N` pointer switch.
-    /// No eval, no reboot.
+    /// non-`@base` overlay, republish credentials and evidence, then commit the
+    /// `current → gen-N` pointer. No eval and no reboot are required.
     DirectReactivate,
     /// Different ABI: direct activation is refused; the config-gen must be
     /// re-evaluated from its retained inputs against the rolled-back image's

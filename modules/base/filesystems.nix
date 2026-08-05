@@ -111,8 +111,8 @@ in {
     ## Block device for the EFI System Partition.
     espDevice = lib.mkOption {
       type = lib.types.str;
-      default = "/dev/vda1";
-      description = "Block device for the EFI System Partition.";
+      default = "/dev/disk/by-partlabel/ESP";
+      description = "Stable block-device path for the EFI System Partition.";
     };
 
     zfs = {

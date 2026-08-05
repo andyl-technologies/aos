@@ -15,20 +15,23 @@
 //!
 //! Serialized to **canonical JSON** (the same canonicalization as the manifest
 //! hash; see [`crate::graph_compile::reproject::hash_cjson`]) and persisted
-//! alongside `gen-N/manifest.json`. Two boxes that derived the same generation
-//! emit byte-identical records modulo the `quote` field.
+//! alongside `gen-N/manifest.json`. Each successful activation, including a
+//! same-generation rollback, receives a fresh random `activation_id`; crash
+//! recovery retains that identity only while completing the same transaction.
 //!
 //! ```text
 //! aos.gen-attestation/v1
 //!   schema          : "aos.gen-attestation/v1"
+//!   activation_id   : "sha256:<64 lowercase hex>"
 //!   generation_id   : "<hex>"
 //!   manifest_hash   : "sha256:<hex>"
 //!   inputs:
 //!     base_lib:        { pcr11_expected, abi_hash, module_abi,
 //!                        root_verity_roothash, root_verity_uuid? }
 //!     evaluator:       { store_path, store_hash }
-//!     config_modules:  { closure_hash, store_paths, nar_hashes,
-//!                        package_names, provenance }
+//!     config_modules:  { registry, release_tag, tag_signer_key, realization,
+//!                        closure_hash, store_paths, nar_hashes, package_names,
+//!                        provenance }
 //!     host_nix:        { content_hash, store_path, trust_mode,
 //!                        platform?, signer_key? }
 //!     instance_facts:  { facts_hash, store_path, platform }
@@ -40,18 +43,19 @@
 //! # Quoting (build-spec §1.4)
 //!
 //! The record is bound to the TPM by extending its hash into application PCR 15,
-//! then quoting PCR {7, 11, 15}:
+//! then quoting PCR {7, 11, 12, 15}:
 //!
 //! 1. canonicalize the record **without** `quote` -> `record_bytes`;
 //! 2. `record_hash = sha256(record_bytes)`;
 //! 3. `TPM2_PCR_Extend(15, record_hash)`;
-//! 4. `quote = TPM2_Quote(PCR{7,11,15}, nonce)`.
+//! 4. `quote = TPM2_Quote(PCR{7,11,12,15}, nonce)`.
 //!
 //! The seal mechanism is unchanged: `/var` stays sealed to PCR 7 + 11; PCR 15
 //! carries only attestation evidence, never the seal. The TPM operations are
 //! isolated behind [`TpmQuoter`] / [`QuoteChecker`] so the record logic is
 //! unit-testable off-host with a mock TPM.
 
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -62,9 +66,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config_eval::materialize::ConfigManifest;
+use crate::config_eval::{PackageAuthorization, materialize::ConfigManifest};
 use crate::graph_compile::reproject::hash_cjson;
-use crate::types::ImageGeneration;
+use crate::types::{ImageGeneration, ModuleAbiCompat};
 
 /// Schema discriminator for the generation-attestation record.
 pub const GEN_ATTESTATION_SCHEMA: &str = "aos.gen-attestation/v1";
@@ -81,12 +85,28 @@ pub const QUOTE_STATUS_UNQUOTED: &str = "unquoted-tpm-unavailable";
 /// A record whose hash was extended into PCR 15 and covered by a TPM quote.
 pub const QUOTE_STATUS_QUOTED: &str = "quoted";
 
+const GEN_ATTESTATION_TRANSACTION_SCHEMA: &str = "aos.gen-attestation-transaction/v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GenAttestationTransaction {
+    schema: String,
+    activation_id: String,
+    generation_id: String,
+    manifest_hash: String,
+    record_hash: String,
+}
+
 /// The `aos.gen-attestation/v1` evidence bundle (build-spec §1.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GenAttestation {
     /// Always [`GEN_ATTESTATION_SCHEMA`]; rejected otherwise.
     pub schema: String,
+    /// Unique identity of this activation attempt, including rollback
+    /// reactivations of an otherwise unchanged generation.
+    #[serde(default)]
+    pub activation_id: String,
     /// Content hash APM assigned the materialized config-generation directory.
     /// Read from the generation record, not recomputed.
     pub generation_id: String,
@@ -99,7 +119,7 @@ pub struct GenAttestation {
     /// Whether `quote` contains TPM evidence or this TPM-less record is
     /// deliberately retained without hardware evidence.
     pub quote_status: String,
-    /// Hex of the TPM2 quote blob over PCR {7, 11, 15} + this record's hash.
+    /// Hex of the TPM2 quote blob over PCR {7, 11, 12, 15} + this record's hash.
     /// Empty in a freshly-built, not-yet-quoted record.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub quote: String,
@@ -159,6 +179,18 @@ pub struct EvaluatorAttInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigModulesAttInput {
+    /// Registry whose signed release selected the complete module set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+    /// Semver release tag whose verified tag chain authenticates the set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_tag: Option<String>,
+    /// Fingerprint of the roster key that signed `release_tag`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_signer_key: Option<String>,
+    /// `sha256:<hex>` identity of the consumed signed `store/` subset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realization: Option<String>,
     /// Set hash over the authenticated module paths and NAR hashes.
     pub closure_hash: String,
     /// Number of authenticated config-only outputs.
@@ -183,9 +215,11 @@ pub struct HostNixAttInput {
     pub content_hash: String,
     /// Content-addressed store copy of the exact host module.
     pub store_path: String,
-    /// Image-selected authorization policy: `platform` or `signed`.
+    /// Image-selected authorization policy: `platform`, `signed`, or the
+    /// narrowly-defined `image` fallback for the image-authored empty module.
     pub trust_mode: String,
-    /// Detected control-plane identity in platform mode.
+    /// Detected control-plane identity in platform mode, or literal `image`
+    /// for the image-authored empty-module fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
     /// Trusted configuration-key fingerprint in signed mode.
@@ -209,14 +243,14 @@ pub struct InstanceFactsAttInput {
 // TPM seams (mockable)
 // ---------------------------------------------------------------------------
 
-/// Produces a TPM2 quote binding a record hash to PCR {7, 11, 15}.
+/// Produces a TPM2 quote binding a record hash to PCR {7, 11, 12, 15}.
 ///
 /// The production implementation extends `record_hash` into PCR 15 and runs
 /// `tpm2_quote` (reusing the
 /// [`crate::package_attestation`] machinery); tests inject a deterministic
 /// mock so the record/compute logic is exercised off-host.
 pub trait TpmQuoter {
-    /// Extend PCR 15 with `record_hash`, then quote PCR {7, 11, 15} with
+    /// Extend PCR 15 with `record_hash`, then quote PCR {7, 11, 12, 15} with
     /// `nonce`. Returns the opaque quote blob.
     ///
     /// # Errors
@@ -345,15 +379,13 @@ pub fn compute_gen_attestation(
         );
     }
 
-    let mut record = GenAttestation {
-        schema: GEN_ATTESTATION_SCHEMA.to_string(),
-        generation_id: generation_id.into(),
-        manifest_hash: manifest_hash.into(),
+    let mut record = build_unquoted_gen_attestation(
+        generation_id.into(),
+        manifest_hash.into(),
+        new_activation_id(),
         inputs,
-        eval_mode: EVAL_MODE_PURE.to_string(),
-        quote_status: QUOTE_STATUS_QUOTED.to_string(),
-        quote: String::new(),
-    };
+    )?;
+    record.quote_status = QUOTE_STATUS_QUOTED.to_string();
 
     let digest = record_hash(&record)?;
     let quote = quoter.quote(&digest, nonce)?;
@@ -371,16 +403,35 @@ pub fn compute_unquoted_gen_attestation(
     manifest_hash: impl Into<String>,
     inputs: AttestationInputs,
 ) -> Result<GenAttestation> {
+    build_unquoted_gen_attestation(
+        generation_id.into(),
+        manifest_hash.into(),
+        new_activation_id(),
+        inputs,
+    )
+}
+
+fn build_unquoted_gen_attestation(
+    generation_id: String,
+    manifest_hash: String,
+    activation_id: String,
+    inputs: AttestationInputs,
+) -> Result<GenAttestation> {
     validate_host_evidence(&inputs.host_nix)?;
     Ok(GenAttestation {
         schema: GEN_ATTESTATION_SCHEMA.to_string(),
-        generation_id: generation_id.into(),
-        manifest_hash: manifest_hash.into(),
+        activation_id,
+        generation_id,
+        manifest_hash,
         inputs,
         eval_mode: EVAL_MODE_PURE.to_string(),
         quote_status: QUOTE_STATUS_UNQUOTED.to_string(),
         quote: String::new(),
     })
+}
+
+fn new_activation_id() -> String {
+    format!("sha256:{}", hex::encode(rand::random::<[u8; 32]>()))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -422,45 +473,80 @@ pub(crate) fn persist_generation_attestation(
     detect_tpm: bool,
 ) -> Result<GenAttestation> {
     let record_path = generation_dir.join("gen-attestation.json");
-    if record_path.is_file() {
-        let bytes = std::fs::read(&record_path)
-            .with_context(|| format!("reading {}", record_path.display()))?;
-        let retained: GenAttestation = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parsing {}", record_path.display()))?;
-        validate_retained_record(&retained, generation_id, manifest_hash, require_quote)?;
-        return Ok(retained);
-    }
-
+    let transaction_path = generation_dir.join(".gen-attestation-transaction.json");
     let inputs = inputs_from_manifest(manifest, running_image)?;
-    if !detect_tpm || !crate::package_attestation::tpm_available()? {
-        if require_quote {
+    let retained_transaction = read_attestation_transaction(&transaction_path)?;
+    let activation_id = retained_transaction
+        .as_ref()
+        .map(|transaction| transaction.activation_id.clone())
+        .unwrap_or_else(new_activation_id);
+
+    let quote_required = require_quote || image_requires_generation_quote(running_image);
+    let has_tpm = detect_tpm && crate::package_attestation::tpm_available()?;
+    let quote_dir = generation_dir.join("gen-attestation-quote");
+    let stage = generation_dir.join(".gen-attestation-quote.pending");
+    if !has_tpm {
+        if retained_transaction.is_some() {
+            bail!(
+                "cannot recover the retained TPM-backed generation attestation transaction without a TPM"
+            );
+        }
+        if quote_required {
             bail!("measured boot requires a TPM-backed generation attestation quote");
         }
-        let record = compute_unquoted_gen_attestation(generation_id, manifest_hash, inputs)?;
+        let record = build_unquoted_gen_attestation(
+            generation_id.to_string(),
+            manifest_hash.to_string(),
+            activation_id,
+            inputs,
+        )?;
+        // All validation is complete before replacing evidence from the prior
+        // activation. In particular, a corrupt retained transaction must never
+        // delete an otherwise usable quote bundle.
+        remove_private_quote_dir_if_exists(&stage)?;
+        remove_private_quote_dir_if_exists(&quote_dir)?;
         write_record_atomic(&record_path, &record)?;
+        remove_file_durable_if_exists(&transaction_path)?;
         return Ok(record);
     }
 
     if running_image.expected_pcr11.is_none() || running_image.root_verity_roothash.is_none() {
         bail!("TPM-backed generation attestation requires image PCR 11 and root verity metadata");
     }
-    let mut record = compute_unquoted_gen_attestation(generation_id, manifest_hash, inputs)?;
+    let mut record = build_unquoted_gen_attestation(
+        generation_id.to_string(),
+        manifest_hash.to_string(),
+        activation_id.clone(),
+        inputs,
+    )?;
     record.quote_status = QUOTE_STATUS_QUOTED.to_string();
     let digest = record_hash(&record)?;
     let canonical = bare_record_bytes(&record)?;
+    let transaction = GenAttestationTransaction {
+        schema: GEN_ATTESTATION_TRANSACTION_SCHEMA.to_string(),
+        activation_id: activation_id.clone(),
+        generation_id: generation_id.to_string(),
+        manifest_hash: manifest_hash.to_string(),
+        record_hash: format!("sha256:{}", hex::encode(digest)),
+    };
+    prepare_attestation_transaction(
+        &transaction_path,
+        retained_transaction.as_ref(),
+        &transaction,
+    )?;
+    // Validate the retained transaction before mutating the prior activation's
+    // published quote evidence.
+    remove_private_quote_dir_if_exists(&stage)?;
+    remove_private_quote_dir_if_exists(&quote_dir)?;
     if !crate::package_attestation::measure_generation_attestation(
         Path::new("/"),
         generation_id,
+        &activation_id,
         &canonical,
     )? {
         bail!("TPM disappeared before generation attestation measurement");
     }
 
-    let quote_dir = generation_dir.join("gen-attestation-quote");
-    let stage = generation_dir.join(format!(
-        ".gen-attestation-quote.stage.{}",
-        std::process::id()
-    ));
     let nonce = hex::encode(digest);
     let artifacts = crate::package_attestation::produce_package_quote(&nonce, &stage)?;
     let embedded = EmbeddedQuote {
@@ -477,7 +563,80 @@ pub(crate) fn persist_generation_attestation(
     std::fs::rename(&stage, &quote_dir)
         .with_context(|| format!("publishing {}", quote_dir.display()))?;
     write_record_atomic(&record_path, &record)?;
+    remove_file_durable_if_exists(&transaction_path)?;
     Ok(record)
+}
+
+/// Returns whether authenticated running-image metadata requires quoted
+/// generation evidence.
+///
+/// An expected PCR 11 exists only for images published with measured boot. It
+/// is therefore the durable image-state policy bit used by every activation
+/// entry point, including direct same-ABI rollback paths that do not pass
+/// through the boot unit's command-line flag.
+pub(crate) fn image_requires_generation_quote(image: &ImageGeneration) -> bool {
+    image.expected_pcr11.is_some()
+}
+
+fn read_attestation_transaction(path: &Path) -> Result<Option<GenAttestationTransaction>> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let transaction: GenAttestationTransaction = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            if transaction.schema != GEN_ATTESTATION_TRANSACTION_SCHEMA
+                || !is_sha256_identity(&transaction.activation_id)
+            {
+                bail!("invalid retained generation-attestation transaction identity");
+            }
+            Ok(Some(transaction))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+fn prepare_attestation_transaction(
+    path: &Path,
+    retained: Option<&GenAttestationTransaction>,
+    expected: &GenAttestationTransaction,
+) -> Result<()> {
+    if let Some(retained) = retained {
+        if *retained != *expected {
+            bail!("retained generation-attestation transaction disagrees with activation inputs");
+        }
+        return Ok(());
+    }
+    write_canonical_json_atomic(path, expected)
+}
+
+fn remove_private_quote_dir_if_exists(path: &Path) -> Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        bail!(
+            "generation attestation quote path is not a private directory: {}",
+            path.display()
+        );
+    }
+    std::fs::remove_dir_all(path).with_context(|| format!("removing {}", path.display()))
+}
+
+fn remove_file_durable_if_exists(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("removing {}", path.display())),
+    }
+    let parent = path
+        .parent()
+        .with_context(|| format!("path has no parent: {}", path.display()))?;
+    File::open(parent)
+        .with_context(|| format!("opening {}", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("syncing {}", parent.display()))
 }
 
 fn inputs_from_manifest(
@@ -485,6 +644,14 @@ fn inputs_from_manifest(
     image: &ImageGeneration,
 ) -> Result<AttestationInputs> {
     let config = &manifest.inputs.config_modules;
+    if config.count > 0
+        && (config.registry.is_none()
+            || config.release_tag.is_none()
+            || config.tag_signer_key.is_none()
+            || config.realization.is_none())
+    {
+        bail!("cannot attest config modules without signed-release provenance");
+    }
     let provenance = serde_json::json!({
         "module_abi_compat": config.module_abi_compat,
         "authorizations": config.authorizations,
@@ -493,6 +660,9 @@ fn inputs_from_manifest(
     let (platform, signer_key) = match host.trust_mode.as_str() {
         "platform" => (Some(host.platform.clone()), None),
         "signed" => (None, host.signer_key.clone()),
+        "image" if host.platform == "image" && host.signer_key.is_none() => {
+            (Some(host.platform.clone()), None)
+        }
         mode => bail!("cannot attest unsupported host.nix trust mode {mode:?}"),
     };
     Ok(AttestationInputs {
@@ -509,6 +679,10 @@ fn inputs_from_manifest(
             store_hash: manifest.inputs.evaluator.store_hash.clone(),
         },
         config_modules: ConfigModulesAttInput {
+            registry: config.registry.clone(),
+            release_tag: config.release_tag.clone(),
+            tag_signer_key: config.tag_signer_key.clone(),
+            realization: config.realization.clone(),
             closure_hash: config.closure_hash.clone(),
             count: config.count,
             store_paths: config.store_paths.clone(),
@@ -531,25 +705,6 @@ fn inputs_from_manifest(
     })
 }
 
-fn validate_retained_record(
-    record: &GenAttestation,
-    generation_id: &str,
-    manifest_hash: &str,
-    require_quote: bool,
-) -> Result<()> {
-    if record.schema != GEN_ATTESTATION_SCHEMA
-        || record.generation_id != generation_id
-        || record.manifest_hash != manifest_hash
-        || record.eval_mode != EVAL_MODE_PURE
-    {
-        bail!("retained generation attestation identity disagrees with activation inputs");
-    }
-    if require_quote && (record.quote_status != QUOTE_STATUS_QUOTED || record.quote.is_empty()) {
-        bail!("measured boot requires a quoted retained generation attestation");
-    }
-    Ok(())
-}
-
 fn read_hex(path: &Path) -> Result<String> {
     std::fs::read(path)
         .with_context(|| format!("reading {}", path.display()))
@@ -557,6 +712,10 @@ fn read_hex(path: &Path) -> Result<String> {
 }
 
 fn write_record_atomic(path: &Path, record: &GenAttestation) -> Result<()> {
+    write_canonical_json_atomic(path, record)
+}
+
+fn write_canonical_json_atomic<T: Serialize>(path: &Path, record: &T) -> Result<()> {
     let value = serde_json::to_value(record).context("serializing generation attestation")?;
     let bytes = crate::graph_compile::reproject::canonical_json(&value);
     let parent = path
@@ -584,6 +743,7 @@ fn validate_host_evidence(host: &HostNixAttInput) -> Result<()> {
     match host.trust_mode.as_str() {
         "platform" if host.platform.is_some() && host.signer_key.is_none() => Ok(()),
         "signed" if host.signer_key.is_some() && host.platform.is_none() => Ok(()),
+        "image" if host.platform.as_deref() == Some("image") && host.signer_key.is_none() => Ok(()),
         mode => bail!("host.nix authorization evidence is incomplete for trust mode '{mode}'"),
     }
 }
@@ -610,14 +770,58 @@ pub struct VerifierPolicy {
     pub expected_pcr11: String,
     /// The published image's `root.roothash` (UKI `.cmdline` token), 64 hex.
     pub expected_root_roothash: String,
+    /// Optional verifier-known canonical instance-facts hash.
+    pub expected_facts_hash: Option<String>,
+    /// Ordered SHA-256 event digests already extended into the shared AOS
+    /// application PCR before this generation record. A verifier obtains this
+    /// history by validating and replaying the CEL prefix.
+    pub prior_pcr15_event_digests: Vec<String>,
     /// Operator config-key fingerprints in `trusted-config-keys.d`.
     pub trusted_config_keys: Vec<String>,
     /// Deployment platform identities accepted as control-plane authorities.
     pub trusted_platforms: Vec<String>,
     /// Registry roster fingerprints that may sign release tags.
     pub roster_fingerprints: Vec<String>,
-    /// Release tags accepted by `verify_tag_chain` and not revoked.
-    pub valid_release_tags: Vec<String>,
+    /// Registry roster fingerprints explicitly revoked by the authenticated
+    /// catalog. A key appearing in both lists is rejected.
+    pub revoked_roster_fingerprints: Vec<String>,
+    /// Release/tag/module evidence accepted after `verify_tag_chain` and
+    /// signed-catalog validation.
+    pub valid_release_tags: Vec<VerifiedConfigModuleRelease>,
+}
+
+/// A config-module member authenticated by one signed registry release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedConfigModuleMember {
+    /// Authenticated package identity.
+    pub package_name: String,
+    /// Exact config-output store path selected for evaluation.
+    pub store_path: String,
+    /// Canonical NAR hash blessed for `store_path` by the signed graph.
+    pub nar_hash: String,
+    /// Base-library ABI band authenticated by the signed package catalog.
+    pub module_abi_compat: ModuleAbiCompat,
+    /// Shared-root write authority authenticated by the signed package catalog.
+    pub authorization: PackageAuthorization,
+}
+
+/// Verifier-side evidence recovered from a successfully verified release tag.
+///
+/// Callers populate this only after validating the signed tag chain and the
+/// catalog/store graph it targets. Verification below binds the quoted record
+/// to this authenticated evidence; a bare tag name is never sufficient.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedConfigModuleRelease {
+    /// Registry name bound into the signing key and authenticated catalog.
+    pub registry: String,
+    /// Name-bound semver release tag accepted by `verify_tag_chain`.
+    pub release_tag: String,
+    /// Fingerprints of keys whose signatures validated on the release tag.
+    pub signer_fingerprints: Vec<String>,
+    /// `sha256:<hex>` identity of the authenticated `store/` subset.
+    pub realization: String,
+    /// Exact config-module membership authenticated by that release.
+    pub config_modules: Vec<VerifiedConfigModuleMember>,
 }
 
 /// Why a [`GenAttestation`] failed verification (build-spec §1.5 FAIL points).
@@ -627,7 +831,7 @@ pub enum GenAttestationFailure {
     Schema,
     /// The quote signature did not validate under the verifier's AK.
     Quote,
-    /// PCR 15 did not equal `extend(0, sha256(record\quote))`.
+    /// PCR 15 did not equal the validated CEL prefix extended with this record.
     RecordBinding,
     /// PCR 7 did not match the catalog SB-state pin.
     SbState,
@@ -635,6 +839,8 @@ pub enum GenAttestationFailure {
     Pcr11,
     /// The F1 root-verity binding did not hold across record/catalog.
     RootVerity,
+    /// Recorded instance facts disagree with verifier-known facts.
+    Facts,
     /// The release tag is unsigned/revoked, or `tag_signer_key` is off-roster.
     Tag,
     /// Host-input authorization evidence does not satisfy verifier policy.
@@ -658,6 +864,7 @@ impl std::fmt::Display for GenAttestationFailure {
                 "PCR 11 does not match the expected measured-boot value"
             }
             GenAttestationFailure::RootVerity => "F1 root-verity roothash binding failed",
+            GenAttestationFailure::Facts => "instance-facts binding failed",
             GenAttestationFailure::Tag => "release tag is unsigned, revoked, or off-roster",
             GenAttestationFailure::HostNixTrust => "host.nix authorization evidence is untrusted",
             GenAttestationFailure::EvalMode => "eval_mode is not 'pure-eval'",
@@ -677,6 +884,8 @@ impl std::error::Error for GenAttestationFailure {}
 /// taken over. When `rederive` is `Some`, it is called with the record and must
 /// return the re-computed `manifest_hash`; a mismatch is
 /// [`GenAttestationFailure::Rederive`]. Pass `None` to stop at step 9.
+/// Image-default records are the exception: their authorization proof depends
+/// on re-deriving the exact empty-module evaluation, so `None` rejects them.
 ///
 /// # Errors
 ///
@@ -696,6 +905,12 @@ pub fn verify_gen_attestation(
     if record.schema != GEN_ATTESTATION_SCHEMA {
         return Err(GenAttestationFailure::Schema);
     }
+    if !is_sha256_identity(&record.activation_id)
+        || record.quote_status != QUOTE_STATUS_QUOTED
+        || record.quote.is_empty()
+    {
+        return Err(GenAttestationFailure::Schema);
+    }
 
     // 2. quote signature valid -> recover PCRs.
     let quote_bytes = hex::decode(&record.quote).map_err(|_| GenAttestationFailure::Quote)?;
@@ -703,9 +918,10 @@ pub fn verify_gen_attestation(
         .check(&quote_bytes, nonce)
         .map_err(|_| GenAttestationFailure::Quote)?;
 
-    // 3. PCR15 == extend(0, sha256(record\quote))
+    // 3. PCR15 == replay(validated CEL prefix) then extend(record\quote).
     let record_digest = record_hash(record).map_err(|_| GenAttestationFailure::RecordBinding)?;
-    let expected_pcr15 = expected_app_pcr(&record_digest);
+    let expected_pcr15 = expected_app_pcr_after(&policy.prior_pcr15_event_digests, &record_digest)
+        .map_err(|_| GenAttestationFailure::RecordBinding)?;
     if !ct_eq(&pcrs.pcr15, &expected_pcr15) {
         return Err(GenAttestationFailure::RecordBinding);
     }
@@ -740,16 +956,19 @@ pub fn verify_gen_attestation(
     ) {
         return Err(GenAttestationFailure::RootVerity);
     }
-
-    // 7. release tag signed by a roster key and not revoked.
-    // Config-module provenance is retained verbatim from the authenticated
-    // manifest. Registry tag/roster validation happens before these inputs
-    // enter that manifest; a verifier's optional re-derivation repeats it.
-    if record.inputs.config_modules.store_paths.len()
-        != record.inputs.config_modules.nar_hashes.len()
-        || record.inputs.config_modules.store_paths.len()
-            != record.inputs.config_modules.package_names.len()
+    if policy
+        .expected_facts_hash
+        .as_ref()
+        .is_some_and(|expected| !ct_eq(expected, &record.inputs.instance_facts.facts_hash))
     {
+        return Err(GenAttestationFailure::Facts);
+    }
+
+    // 7. Bind the quoted module input to one name-bound, signed release tag,
+    // an active roster signer, the authenticated store-graph realization,
+    // and the release's exact module membership. Merely observing that the
+    // vectors have equal lengths is not trust evidence.
+    if !config_module_release_is_trusted(&record.inputs.config_modules, policy) {
         return Err(GenAttestationFailure::Tag);
     }
 
@@ -770,6 +989,12 @@ pub fn verify_gen_attestation(
                     .as_ref()
                     .is_some_and(|key| policy.trusted_config_keys.contains(key))
         }
+        // `image` is not operator input. The evaluator admits this arm only
+        // for its exact image-authored empty module, while steps 4-6 bind that
+        // evaluator and immutable base library to the verified boot. A remote
+        // verifier still re-runs evaluation in step 10 before accepting the
+        // resulting manifest.
+        "image" => host.platform.as_deref() == Some("image") && host.signer_key.is_none(),
         _ => false,
     };
     if !host_trusted {
@@ -781,7 +1006,13 @@ pub fn verify_gen_attestation(
         return Err(GenAttestationFailure::EvalMode);
     }
 
-    // 10. optional full re-derivation.
+    // 10. Full re-derivation is mandatory for the image-default arm: that is
+    // what demonstrates the measured evaluator admitted only its exact empty
+    // module rather than operator-controlled bytes. Other trust modes retain
+    // the API's optional step-10 behavior.
+    if host.trust_mode == "image" && rederive.is_none() {
+        return Err(GenAttestationFailure::Rederive);
+    }
     if let Some(rederive) = rederive {
         if rederive(record) != record.manifest_hash {
             return Err(GenAttestationFailure::Rederive);
@@ -791,13 +1022,220 @@ pub fn verify_gen_attestation(
     Ok(())
 }
 
-/// `extend(0, digest)` = `sha256(zeros32 || digest)`, the PCR value after a
-/// single extend of a freshly-reset (all-zero) PCR (build-spec §1.5 step 3).
-fn expected_app_pcr(digest: &[u8; 32]) -> String {
+fn config_module_release_is_trusted(
+    modules: &ConfigModulesAttInput,
+    policy: &VerifierPolicy,
+) -> bool {
+    if modules.count == 0 {
+        return modules.registry.is_none()
+            && modules.release_tag.is_none()
+            && modules.tag_signer_key.is_none()
+            && modules.realization.is_none()
+            && modules.store_paths.is_empty()
+            && modules.nar_hashes.is_empty()
+            && modules.package_names.is_empty()
+            && provenance_entries(&modules.provenance).is_some_and(|(compat, authorization)| {
+                compat.is_empty() && authorization.is_empty()
+            })
+            && ct_eq(
+                &modules.closure_hash,
+                &hash_cjson(&Value::Array(Vec::new())),
+            );
+    }
+    let (Some(registry), Some(release_tag), Some(signer), Some(realization)) = (
+        modules.registry.as_deref(),
+        modules.release_tag.as_deref(),
+        modules.tag_signer_key.as_deref(),
+        modules.realization.as_deref(),
+    ) else {
+        return false;
+    };
+
+    if crate::types::validate_registry_name(registry).is_err()
+        || semver::Version::parse(release_tag).is_err()
+        || !is_short_fingerprint(signer)
+        || !is_sha256_identity(realization)
+        || !policy
+            .roster_fingerprints
+            .iter()
+            .any(|fingerprint| is_short_fingerprint(fingerprint) && fingerprint == signer)
+        || policy
+            .revoked_roster_fingerprints
+            .iter()
+            .any(|fingerprint| fingerprint.eq_ignore_ascii_case(signer))
+    {
+        return false;
+    }
+
+    let matching_releases = policy
+        .valid_release_tags
+        .iter()
+        .filter(|release| release.registry == registry && release.release_tag == release_tag)
+        .collect::<Vec<_>>();
+    let [release] = matching_releases.as_slice() else {
+        // A catalog with no matching release has not authenticated the tag;
+        // multiple matching records are ambiguous and fail closed as well.
+        return false;
+    };
+    let catalog_signers = release
+        .signer_fingerprints
+        .iter()
+        .filter(|fingerprint| is_short_fingerprint(fingerprint))
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if catalog_signers.len() != release.signer_fingerprints.len()
+        || !catalog_signers.contains(signer)
+        || !ct_eq(&release.realization, realization)
+        || !is_sha256_identity(&release.realization)
+    {
+        return false;
+    }
+
+    let count = modules.count;
+    if count != modules.store_paths.len()
+        || count != modules.nar_hashes.len()
+        || count != modules.package_names.len()
+        || count != release.config_modules.len()
+    {
+        return false;
+    }
+
+    let mut quoted_members = BTreeSet::new();
+    let mut closure_members = Vec::with_capacity(count);
+    for ((path, nar_hash), package_name) in modules
+        .store_paths
+        .iter()
+        .zip(&modules.nar_hashes)
+        .zip(&modules.package_names)
+    {
+        if !is_canonical_store_path(path)
+            || crate::types::validate_package_name(package_name).is_err()
+            || crate::registry::store::NarBytes::from_hash(nar_hash, 0)
+                .map(|nar| nar.nar_hash() != *nar_hash)
+                .unwrap_or(true)
+            || !quoted_members.insert((package_name, path, nar_hash))
+        {
+            return false;
+        }
+        closure_members.push(serde_json::json!([path, nar_hash]));
+    }
+    closure_members.sort_by(|left, right| {
+        left[0]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right[0].as_str().unwrap_or_default())
+    });
+    let expected_closure = hash_cjson(&Value::Array(closure_members));
+    if !ct_eq(&modules.closure_hash, &expected_closure) {
+        return false;
+    }
+
+    let mut catalog_members = BTreeSet::new();
+    for member in &release.config_modules {
+        if !is_canonical_store_path(&member.store_path)
+            || crate::types::validate_package_name(&member.package_name).is_err()
+            || crate::registry::store::NarBytes::from_hash(&member.nar_hash, 0)
+                .map(|nar| nar.nar_hash() != member.nar_hash)
+                .unwrap_or(true)
+            || !catalog_members.insert((&member.package_name, &member.store_path, &member.nar_hash))
+        {
+            return false;
+        }
+    }
+
+    if quoted_members != catalog_members {
+        return false;
+    }
+
+    let Some((abi_compat, authorizations)) = provenance_entries(&modules.provenance) else {
+        return false;
+    };
+    if abi_compat.len() != count || authorizations.len() != count {
+        return false;
+    }
+    release
+        .config_modules
+        .iter()
+        .zip(abi_compat)
+        .zip(authorizations)
+        .all(|((member, compat), authorization)| {
+            member.module_abi_compat == compat && member.authorization == authorization
+        })
+}
+
+fn provenance_entries(
+    provenance: &Value,
+) -> Option<(Vec<ModuleAbiCompat>, Vec<PackageAuthorization>)> {
+    let Some(object) = provenance.as_object() else {
+        return None;
+    };
+    if object.len() != 2 {
+        return None;
+    }
+    let compat = serde_json::from_value(object.get("module_abi_compat")?.clone()).ok()?;
+    let authorization = serde_json::from_value(object.get("authorizations")?.clone()).ok()?;
+    Some((compat, authorization))
+}
+
+fn is_short_fingerprint(value: &str) -> bool {
+    value.len() == 8
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_sha256_identity(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_canonical_store_path(value: &str) -> bool {
+    let Some(name) = value.strip_prefix("/nix/store/") else {
+        return false;
+    };
+    if name.contains('/') {
+        return false;
+    }
+    let Some((hash, suffix)) = name.split_once('-') else {
+        return false;
+    };
+    hash.len() == 32
+        && !suffix.is_empty()
+        && hash
+            .bytes()
+            .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+}
+
+/// Returns the PCR value after replaying `prior` and extending `digest`.
+fn expected_app_pcr_after(prior: &[String], digest: &[u8; 32]) -> Result<String> {
+    let mut pcr = [0_u8; 32];
+    for event in prior {
+        let decoded = hex::decode(strip_sha256(event))
+            .with_context(|| format!("decoding prior PCR 15 event digest {event:?}"))?;
+        let event: [u8; 32] = decoded
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("prior PCR 15 event digest is not SHA-256"))?;
+        pcr = extend_app_pcr(&pcr, &event);
+    }
+    Ok(hex::encode(extend_app_pcr(&pcr, digest)))
+}
+
+fn extend_app_pcr(pcr: &[u8; 32], digest: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update([0_u8; 32]);
+    hasher.update(*pcr);
     hasher.update(digest);
-    hex::encode(hasher.finalize())
+    hasher.finalize().into()
+}
+
+/// `extend(0, digest)` convenience used by the isolated mock TPM.
+#[cfg(test)]
+fn expected_app_pcr(digest: &[u8; 32]) -> String {
+    hex::encode(extend_app_pcr(&[0_u8; 32], digest))
 }
 
 /// Strip an optional `sha256:`/`sha256-` prefix, returning the bare hex.
@@ -858,6 +1296,18 @@ mod tests {
         }
     }
 
+    struct HistoryChecker {
+        pcr15: String,
+    }
+
+    impl QuoteChecker for HistoryChecker {
+        fn check(&self, quote: &[u8], nonce: &[u8]) -> anyhow::Result<QuotedPcrs> {
+            let mut quoted = MockChecker.check(quote, nonce)?;
+            quoted.pcr15 = self.pcr15.clone();
+            Ok(quoted)
+        }
+    }
+
     fn to_array(b: &[u8]) -> [u8; 32] {
         let mut a = [0_u8; 32];
         a.copy_from_slice(b);
@@ -869,6 +1319,12 @@ mod tests {
     const PCR7_HEX: &str = "7777777777777777777777777777777777777777777777777777777777777777";
 
     fn sample_inputs() -> AttestationInputs {
+        let module_path = "/nix/store/cccccccccccccccccccccccccccccccc-web-config".to_string();
+        let module_nar_hash =
+            crate::registry::store::NarBytes::from_hash(&format!("sha256:{}", "dd".repeat(32)), 0)
+                .unwrap()
+                .nar_hash();
+        let closure_hash = hash_cjson(&serde_json::json!([[&module_path, &module_nar_hash]]));
         AttestationInputs {
             base_lib: BaseLibAttInput {
                 store_path: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-base-lib".to_string(),
@@ -883,12 +1339,14 @@ mod tests {
                 store_hash: "hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh".to_string(),
             },
             config_modules: ConfigModulesAttInput {
-                closure_hash: "sha256:cc".to_string(),
+                registry: Some("aos-core".to_string()),
+                release_tag: Some("1.4.0".to_string()),
+                tag_signer_key: Some("deadbeef".to_string()),
+                realization: Some(format!("sha256:{}", "aa".repeat(32))),
+                closure_hash,
                 count: 1,
-                store_paths: vec![
-                    "/nix/store/cccccccccccccccccccccccccccccccc-web-config".to_string(),
-                ],
-                nar_hashes: vec!["sha256:dd".to_string()],
+                store_paths: vec![module_path],
+                nar_hashes: vec![module_nar_hash],
                 package_names: vec!["web".to_string()],
                 provenance: serde_json::json!({"module_abi_compat":[{"min":1,"max":1}],"authorizations":[{"owns":[],"contributes":{}}]}),
             },
@@ -912,26 +1370,45 @@ mod tests {
             expected_pcr7: PCR7_HEX.to_string(),
             expected_pcr11: format!("sha256:{PCR11_HEX}"),
             expected_root_roothash: ROOTHASH.to_string(),
+            expected_facts_hash: None,
+            prior_pcr15_event_digests: Vec::new(),
             trusted_config_keys: vec!["0badf00d".to_string()],
             trusted_platforms: vec!["aws".to_string()],
             roster_fingerprints: vec!["deadbeef".to_string()],
-            valid_release_tags: vec!["1.4.0".to_string()],
+            revoked_roster_fingerprints: Vec::new(),
+            valid_release_tags: vec![VerifiedConfigModuleRelease {
+                registry: "aos-core".to_string(),
+                release_tag: "1.4.0".to_string(),
+                signer_fingerprints: vec!["deadbeef".to_string()],
+                realization: format!("sha256:{}", "aa".repeat(32)),
+                config_modules: vec![VerifiedConfigModuleMember {
+                    package_name: "web".to_string(),
+                    store_path: "/nix/store/cccccccccccccccccccccccccccccccc-web-config"
+                        .to_string(),
+                    nar_hash: crate::registry::store::NarBytes::from_hash(
+                        &format!("sha256:{}", "dd".repeat(32)),
+                        0,
+                    )
+                    .unwrap()
+                    .nar_hash(),
+                    module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
+                    authorization: PackageAuthorization::default(),
+                }],
+            }],
         }
     }
 
     fn computed() -> GenAttestation {
+        computed_with_inputs(sample_inputs())
+    }
+
+    fn computed_with_inputs(inputs: AttestationInputs) -> GenAttestation {
         let tpm = MockTpm {
             pcr7: PCR7_HEX.to_string(),
             pcr11: PCR11_HEX.to_string(),
         };
-        compute_gen_attestation(
-            "gen-7-cafe",
-            "sha256:abc",
-            sample_inputs(),
-            &tpm,
-            b"nonce-xyz",
-        )
-        .expect("compute")
+        compute_gen_attestation("gen-7-cafe", "sha256:abc", inputs, &tpm, b"nonce-xyz")
+            .expect("compute")
     }
 
     #[test]
@@ -942,6 +1419,43 @@ mod tests {
         assert_eq!(record, back);
         assert_eq!(record.schema, GEN_ATTESTATION_SCHEMA);
         assert!(!record.quote.is_empty());
+    }
+
+    #[test]
+    fn repeated_same_generation_attestations_have_activation_bound_identity() {
+        let first = computed();
+        let mut newer_image_inputs = first.inputs.clone();
+        // Module ABI and every config input remain identical; only the
+        // authenticated running-image measurements change.
+        newer_image_inputs.base_lib.pcr11_expected = Some(format!("sha256:{}", "ab".repeat(32)));
+        newer_image_inputs.base_lib.root_verity_roothash = Some("cd".repeat(32));
+        let second = computed_with_inputs(newer_image_inputs);
+        assert_eq!(first.generation_id, second.generation_id);
+        assert_ne!(first.activation_id, second.activation_id);
+        assert_ne!(record_hash(&first).unwrap(), record_hash(&second).unwrap());
+    }
+
+    #[test]
+    fn authenticated_measured_image_metadata_requires_generation_quotes() {
+        let mut image = ImageGeneration {
+            number: 1,
+            slot: crate::types::ImageSlot::A,
+            uki_path: "EFI/Linux/aos.efi".to_string(),
+            toplevel: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos".to_string(),
+            package_name: "aos".to_string(),
+            version: "1".to_string(),
+            registry: "aos-core".to_string(),
+            kernel_path: None,
+            evaluator_ref: "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-base-lib".to_string(),
+            module_abi: 1,
+            baselib_digest: format!("sha256:{}", "11".repeat(32)),
+            root_verity_roothash: Some("22".repeat(32)),
+            expected_pcr11: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        assert!(!image_requires_generation_quote(&image));
+        image.expected_pcr11 = Some(format!("sha256:{}", "33".repeat(32)));
+        assert!(image_requires_generation_quote(&image));
     }
 
     #[test]
@@ -973,6 +1487,223 @@ mod tests {
         let res =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
         assert!(res.is_ok(), "got {res:?}");
+    }
+
+    #[test]
+    fn verifier_rejects_missing_release_identity() {
+        let mut inputs = sample_inputs();
+        inputs.config_modules.registry = None;
+        let record = computed_with_inputs(inputs);
+        let error =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err();
+        assert_eq!(error, GenAttestationFailure::Tag);
+    }
+
+    #[test]
+    fn verifier_accepts_only_canonical_empty_config_module_evidence() {
+        let mut inputs = sample_inputs();
+        inputs.config_modules = ConfigModulesAttInput {
+            registry: None,
+            release_tag: None,
+            tag_signer_key: None,
+            realization: None,
+            closure_hash: hash_cjson(&Value::Array(Vec::new())),
+            count: 0,
+            store_paths: Vec::new(),
+            nar_hashes: Vec::new(),
+            package_names: Vec::new(),
+            provenance: serde_json::json!({
+                "module_abi_compat": [],
+                "authorizations": []
+            }),
+        };
+        let record = computed_with_inputs(inputs.clone());
+        let result =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
+        assert!(result.is_ok(), "got {result:?}");
+
+        inputs.config_modules.registry = Some("aos-core".to_string());
+        let record = computed_with_inputs(inputs);
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None,)
+                .unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_unverified_or_cross_registry_release_tag() {
+        let record = computed();
+        let mut policy = sample_policy();
+        policy.valid_release_tags[0].registry = "mirror".to_string();
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut policy = sample_policy();
+        policy.valid_release_tags[0].release_tag = "1.4.1".to_string();
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_off_roster_revoked_or_non_signing_key() {
+        let record = computed();
+
+        let mut policy = sample_policy();
+        policy.roster_fingerprints.clear();
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut policy = sample_policy();
+        policy
+            .revoked_roster_fingerprints
+            .push("deadbeef".to_string());
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut policy = sample_policy();
+        policy.valid_release_tags[0].signer_fingerprints = vec!["cafebabe".to_string()];
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut policy = sample_policy();
+        policy.valid_release_tags[0]
+            .signer_fingerprints
+            .push("deadbeef".to_string());
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_realization_or_module_catalog_mismatch() {
+        let record = computed();
+
+        let mut policy = sample_policy();
+        policy.valid_release_tags[0].realization = format!("sha256:{}", "bb".repeat(32));
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut policy = sample_policy();
+        policy.valid_release_tags[0].config_modules[0].package_name = "database".to_string();
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut policy = sample_policy();
+        policy.valid_release_tags[0].config_modules[0].nar_hash =
+            crate::registry::store::NarBytes::from_hash(&format!("sha256:{}", "cc".repeat(32)), 0)
+                .unwrap()
+                .nar_hash();
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut inputs = sample_inputs();
+        inputs.config_modules.provenance["module_abi_compat"][0]["max"] = serde_json::json!(2);
+        let record = computed_with_inputs(inputs);
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut inputs = sample_inputs();
+        inputs.config_modules.provenance["authorizations"][0]["owns"] =
+            serde_json::json!(["firewall"]);
+        let record = computed_with_inputs(inputs);
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+    }
+
+    #[test]
+    fn verifier_recomputes_module_closure_and_rejects_duplicates() {
+        let mut inputs = sample_inputs();
+        inputs.config_modules.closure_hash = format!("sha256:{}", "ff".repeat(32));
+        let record = computed_with_inputs(inputs);
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+
+        let mut inputs = sample_inputs();
+        inputs.config_modules.count = 2;
+        inputs
+            .config_modules
+            .store_paths
+            .push(inputs.config_modules.store_paths[0].clone());
+        inputs
+            .config_modules
+            .nar_hashes
+            .push(inputs.config_modules.nar_hashes[0].clone());
+        inputs
+            .config_modules
+            .package_names
+            .push(inputs.config_modules.package_names[0].clone());
+        inputs.config_modules.provenance = serde_json::json!({
+            "module_abi_compat": [{"min":1,"max":1}, {"min":1,"max":1}],
+            "authorizations": [{"owns":[],"contributes":{}}, {"owns":[],"contributes":{}}]
+        });
+        let record = computed_with_inputs(inputs);
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+    }
+
+    #[test]
+    fn verifier_rejects_ambiguous_release_catalog_entries() {
+        let record = computed();
+        let mut policy = sample_policy();
+        policy
+            .valid_release_tags
+            .push(policy.valid_release_tags[0].clone());
+        assert_eq!(
+            verify_gen_attestation(&record, &MockChecker, &policy, b"nonce-xyz", None).unwrap_err(),
+            GenAttestationFailure::Tag
+        );
+    }
+
+    #[test]
+    fn verifies_record_after_replaying_cumulative_pcr15_history() {
+        let record = computed();
+        let prior = format!("sha256:{}", "22".repeat(32));
+        let digest = record_hash(&record).expect("record hashes");
+        let expected =
+            expected_app_pcr_after(std::slice::from_ref(&prior), &digest).expect("history replays");
+        let checker = HistoryChecker { pcr15: expected };
+        let mut policy = sample_policy();
+        policy.prior_pcr15_event_digests.push(prior);
+        let result = verify_gen_attestation(&record, &checker, &policy, b"nonce-xyz", None);
+        assert!(result.is_ok(), "got {result:?}");
+
+        policy.prior_pcr15_event_digests[0] = format!("sha256:{}", "33".repeat(32));
+        assert_eq!(
+            verify_gen_attestation(&record, &checker, &policy, b"nonce-xyz", None)
+                .expect_err("wrong CEL prefix must fail"),
+            GenAttestationFailure::RecordBinding
+        );
     }
 
     #[test]
@@ -1078,6 +1809,40 @@ mod tests {
                 .expect("compute platform-mode record");
         let result =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[test]
+    fn accepts_the_image_authored_empty_host_evidence() {
+        let mut inputs = sample_inputs();
+        inputs.host_nix.trust_mode = "image".to_string();
+        inputs.host_nix.platform = Some("image".to_string());
+        inputs.host_nix.signer_key = None;
+        let tpm = MockTpm {
+            pcr7: PCR7_HEX.to_string(),
+            pcr11: PCR11_HEX.to_string(),
+        };
+        let record = compute_gen_attestation(
+            "gen-image-default",
+            "sha256:abc",
+            inputs,
+            &tpm,
+            b"nonce-xyz",
+        )
+        .expect("compute image-default record");
+        let without_rederivation =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
+        assert_eq!(
+            without_rederivation.unwrap_err(),
+            GenAttestationFailure::Rederive
+        );
+        let result = verify_gen_attestation(
+            &record,
+            &MockChecker,
+            &sample_policy(),
+            b"nonce-xyz",
+            Some(&|record| record.manifest_hash.clone()),
+        );
         assert!(result.is_ok(), "got {result:?}");
     }
 

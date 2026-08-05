@@ -8,7 +8,9 @@
 //! `activate` script, and only then publishes the generation pointer.
 
 use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::{error::Error, fmt};
 
 use anyhow::{Context, Result, bail};
@@ -29,6 +31,24 @@ use crate::sysroot::{
 use crate::types::{ConfigGeneration, ImageGeneration, ProfileScope};
 
 const ACTIVATION_RECORD: &str = "activation.json";
+const DEFAULT_SWITCH_LOCK: &str = "/run/apm/switch.lock";
+
+/// Resolves the global switch lock beneath an optional AOS root filesystem.
+fn resolve_switch_lock(root: Option<&str>) -> PathBuf {
+    let Some(root) = root.filter(|root| !root.is_empty()) else {
+        return PathBuf::from(DEFAULT_SWITCH_LOCK);
+    };
+    let root = Path::new(root);
+    if !root.is_absolute() || root == Path::new("/") {
+        return PathBuf::from(DEFAULT_SWITCH_LOCK);
+    }
+    root.join(DEFAULT_SWITCH_LOCK.trim_start_matches('/'))
+}
+
+/// Returns the global switch-lock path, honoring `$AOS_ROOT`.
+pub(crate) fn default_switch_lock_path() -> PathBuf {
+    resolve_switch_lock(std::env::var("AOS_ROOT").ok().as_deref())
+}
 
 /// Durable proof that a graph transaction reached the config pointer commit.
 #[derive(Debug, Serialize)]
@@ -77,7 +97,7 @@ impl Default for ActivateConfigParams {
             marker_root: PathBuf::from("/run/aos"),
             profile: ProfileScope::System.profile_path(),
             module_abi: 1,
-            switch_lock: PathBuf::from("/run/apm/switch.lock"),
+            switch_lock: default_switch_lock_path(),
             running_image: None,
             image_profile: PathBuf::from("/var/lib/profiles/image"),
             switch_lock_held: false,
@@ -94,6 +114,14 @@ pub struct ActivationFailure {
 }
 
 impl ActivationFailure {
+    /// Classifies an indeterminate post-swap failure as requiring rescue.
+    pub(crate) fn rescue(message: impl Into<String>) -> Self {
+        Self {
+            exit_code: 4,
+            message: message.into(),
+        }
+    }
+
     /// Returns the process exit code the service contract must observe.
     pub fn exit_code(&self) -> i32 {
         self.exit_code
@@ -124,15 +152,178 @@ impl Error for ActivationFailure {}
 /// as an error *after* committing because the switch stands but the system is
 /// degraded.
 pub fn activate_config(params: &ActivateConfigParams) -> Result<u32> {
-    activate_config_with(params, true, true, true, |activate, number, nonce| {
-        let status = std::process::Command::new(activate)
-            .arg(number.to_string())
-            .env("AOS_SWITCH_LOCK_HELD", "1")
-            .env("AOS_ACTIVATION_NONCE", nonce)
-            .status()
-            .with_context(|| format!("running {}", activate.display()))?;
-        Ok(status.code())
-    })
+    activate_config_with(
+        params,
+        true,
+        true,
+        true,
+        run_activation_with_credential_barrier,
+    )
+}
+
+const CREDENTIAL_STAGED_VIEW_READY: &str = "AOS_CREDENTIAL_STAGED_VIEW_READY ";
+const CREDENTIAL_STAGED_VIEW_CONTINUE: &[u8] = b"AOS_CREDENTIAL_STAGED_VIEW_CONTINUE\n";
+const CREDENTIAL_BARRIER_READY: &str = "AOS_CREDENTIAL_BARRIER_READY ";
+const CREDENTIAL_BARRIER_CONTINUE: &[u8] = b"AOS_CREDENTIAL_BARRIER_CONTINUE\n";
+
+/// A credential checkpoint emitted by the activation script.
+pub(crate) enum CredentialBarrier<'a> {
+    /// The fully composed candidate `/etc`, before any live unit is stopped.
+    StagedView(&'a Path),
+    /// The post-swap daemon plan, immediately before credential publication.
+    Publish(&'a Path),
+}
+
+/// Runs an activation script and services its credential validation and
+/// publication barriers.
+///
+/// # Errors
+///
+/// Returns an error if the script cannot be started, barrier communication or
+/// credential publication fails, or a successful script omits the barrier.
+pub(crate) fn run_activation_with_credential_barrier(
+    activate: &Path,
+    number: u32,
+    nonce: &str,
+    barrier: &mut dyn FnMut(CredentialBarrier<'_>) -> Result<()>,
+) -> Result<Option<i32>> {
+    let mut child = Command::new(activate)
+        .arg(number.to_string())
+        .env("AOS_SWITCH_LOCK_HELD", "1")
+        .env("AOS_ACTIVATION_NONCE", nonce)
+        .env("AOS_CREDENTIAL_BARRIER", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("running {}", activate.display()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("activation stdout was not piped")?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("activation stdin was not piped")?;
+    let mut reader = BufReader::new(stdout);
+    let mut line = String::new();
+    let mut validated_staged_view = false;
+    let mut crossed_barrier = false;
+    loop {
+        line.clear();
+        let read = match reader.read_line(&mut line) {
+            Ok(read) => read,
+            Err(error) => {
+                drop(stdin);
+                drop(reader);
+                let _ = child.wait();
+                return Err(ActivationFailure {
+                    exit_code: 4,
+                    message: format!(
+                        "activation barrier communication failed: {error}; /etc state is indeterminate and rescue mode is required"
+                    ),
+                }
+                .into());
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        if let Some(candidate) = line.trim_end().strip_prefix(CREDENTIAL_STAGED_VIEW_READY) {
+            if validated_staged_view || crossed_barrier || candidate.is_empty() {
+                drop(stdin);
+                drop(reader);
+                let _ = child.wait();
+                return Err(ActivationFailure {
+                    exit_code: 2,
+                    message:
+                        "activation emitted an invalid pre-swap credential staged-view barrier"
+                            .to_string(),
+                }
+                .into());
+            }
+            if let Err(error) = barrier(CredentialBarrier::StagedView(Path::new(candidate))) {
+                drop(stdin);
+                drop(reader);
+                let _ = child.wait();
+                return Err(error)
+                    .context("validating credentials in the staged configuration view");
+            }
+            if let Err(error) = stdin
+                .write_all(CREDENTIAL_STAGED_VIEW_CONTINUE)
+                .and_then(|()| stdin.flush())
+            {
+                drop(stdin);
+                drop(reader);
+                let _ = child.wait();
+                return Err(error).context("acknowledging credential staged-view validation");
+            }
+            validated_staged_view = true;
+        } else if let Some(plan) = line.trim_end().strip_prefix(CREDENTIAL_BARRIER_READY) {
+            if !validated_staged_view || crossed_barrier || plan.is_empty() {
+                drop(stdin);
+                drop(reader);
+                let _ = child.wait();
+                return Err(ActivationFailure {
+                    exit_code: 4,
+                    message: "activation emitted an invalid post-swap credential barrier; rescue mode is required".to_string(),
+                }
+                .into());
+            }
+            if let Err(error) = barrier(CredentialBarrier::Publish(Path::new(plan))) {
+                drop(stdin);
+                drop(reader);
+                let _ = child.wait();
+                return Err(error).context(
+                    "configuration activation swapped /etc but credential publication failed; rescue mode is required",
+                );
+            }
+            if let Err(error) = stdin
+                .write_all(CREDENTIAL_BARRIER_CONTINUE)
+                .and_then(|()| stdin.flush())
+            {
+                drop(stdin);
+                drop(reader);
+                let _ = child.wait();
+                return Err(ActivationFailure {
+                    exit_code: 4,
+                    message: format!(
+                        "activation credential acknowledgement failed: {error}; rescue mode is required"
+                    ),
+                }
+                .into());
+            }
+            crossed_barrier = true;
+        } else {
+            if let Err(error) = std::io::stdout().write_all(line.as_bytes()) {
+                drop(stdin);
+                drop(reader);
+                let _ = child.wait();
+                return Err(ActivationFailure {
+                    exit_code: 4,
+                    message: format!(
+                        "forwarding activation output failed: {error}; /etc state is indeterminate and rescue mode is required"
+                    ),
+                }
+                .into());
+            }
+        }
+    }
+    drop(stdin);
+    let status = child.wait().map_err(|error| ActivationFailure {
+        exit_code: 4,
+        message: format!(
+            "waiting for activation after barrier communication failed: {error}; rescue mode is required"
+        ),
+    })?;
+    if matches!(status.code(), Some(0 | 5 | 6)) && (!validated_staged_view || !crossed_barrier) {
+        return Err(ActivationFailure {
+            exit_code: 4,
+            message: "activation succeeded without crossing the credential publication barrier; rescue mode is required".to_string(),
+        }
+        .into());
+    }
+    Ok(status.code())
 }
 
 fn activate_config_with<F>(
@@ -143,7 +334,49 @@ fn activate_config_with<F>(
     run_activate: F,
 ) -> Result<u32>
 where
-    F: FnOnce(&Path, u32, &str) -> Result<Option<i32>>,
+    F: FnOnce(
+        &Path,
+        u32,
+        &str,
+        &mut dyn FnMut(CredentialBarrier<'_>) -> Result<()>,
+    ) -> Result<Option<i32>>,
+{
+    activate_config_with_reconciliation(
+        params,
+        verify_realized_paths,
+        resolve_credentials,
+        detect_tpm,
+        run_activate,
+        |reconciliation, plan| {
+            reconciliation
+                .publish_with(|units| {
+                    if units.is_empty() {
+                        Ok(())
+                    } else {
+                        crate::sysroot::augment_reconcile_plan_with_credential_units(plan, units)
+                    }
+                })
+                .map(|_| ())
+        },
+    )
+}
+
+fn activate_config_with_reconciliation<F, G>(
+    params: &ActivateConfigParams,
+    verify_realized_paths: bool,
+    resolve_credentials: bool,
+    detect_tpm: bool,
+    run_activate: F,
+    apply_credentials: G,
+) -> Result<u32>
+where
+    F: FnOnce(
+        &Path,
+        u32,
+        &str,
+        &mut dyn FnMut(CredentialBarrier<'_>) -> Result<()>,
+    ) -> Result<Option<i32>>,
+    G: FnOnce(crate::credential_artifact::CredentialReconciliation, &Path) -> Result<()>,
 {
     let _switch_lock = if params.switch_lock_held {
         None
@@ -162,9 +395,6 @@ where
     manifest
         .validate()
         .with_context(|| format!("validating {}", params.manifest.display()))?;
-    if verify_realized_paths {
-        verify_manifest_store_paths_realized(&manifest)?;
-    }
     if manifest.module_abi != params.module_abi || manifest.module_abi != running_image.module_abi {
         bail!(
             "manifest module_abi {} does not match running image ABI {}",
@@ -195,6 +425,17 @@ where
         &params.marker_root.join("staging"),
         &mut projection,
     )?;
+    if verify_realized_paths {
+        // A soft-failed package is deliberately absent from the local store.
+        // Requiring every path from the source intent here would turn the
+        // package wing's bounded fetch failure into a hard activation failure
+        // and make degraded re-projection impossible. The source manifest was
+        // structurally validated above; realization is required only for the
+        // dependency-closed manifest that will actually be committed.
+        let projected: ConfigManifest = serde_json::from_value(projection.manifest.clone())
+            .context("parsing projected manifest for realized-path verification")?;
+        verify_manifest_store_paths_realized(&projected)?;
+    }
     let credential_reconciliation = if resolve_credentials {
         let projected: ConfigManifest = serde_json::from_value(projection.manifest.clone())
             .context("parsing staged credential projection")?;
@@ -273,7 +514,32 @@ where
 
     let activate = Path::new(&running_image.toplevel).join("activate");
     let nonce = write_activation_intent_pub(&params.profile, &state, number)?;
-    let status = run_activate(&activate, number, &nonce)?;
+    let mut credential_reconciliation = Some(credential_reconciliation);
+    let mut apply_credentials = Some(apply_credentials);
+    let mut barrier = |event: CredentialBarrier<'_>| match event {
+        CredentialBarrier::StagedView(candidate_etc) => credential_reconciliation
+            .as_mut()
+            .context("activation validated credentials after publication")?
+            .validate_staged_view(candidate_etc),
+        CredentialBarrier::Publish(plan) => {
+            let reconciliation = credential_reconciliation
+                .take()
+                .context("activation crossed the credential publication barrier more than once")?;
+            let apply = apply_credentials
+                .take()
+                .context("activation crossed the credential publication barrier more than once")?;
+            apply(reconciliation, plan).map_err(|error| {
+                ActivationFailure {
+                    exit_code: 4,
+                    message: format!(
+                        "configuration activation swapped /etc but credential publication failed: {error:#}; rescue mode is required"
+                    ),
+                }
+                .into()
+            })
+        }
+    };
+    let status = run_activate(&activate, number, &nonce, &mut barrier)?;
 
     match status {
         Some(activation_exit @ (0 | 5 | 6)) => {
@@ -294,16 +560,39 @@ where
                     "configuration activation swapped /etc but generation attestation failed: {error:#}; rescue mode is required"
                 ),
             })?;
-            commit_current_generation_pub(&params.profile, &mut state, number)?;
-            publish_activation_record(params, &projection, number, activation_exit)?;
-            credential_reconciliation
-                .apply()
-                .context("restarting units with changed credential bytes")?;
-            if activation_exit == 6 {
+            if credential_reconciliation.is_some() {
+                return Err(ActivationFailure {
+                    exit_code: 4,
+                    message: "configuration activation crossed /etc swap without credential publication; rescue mode is required".to_string(),
+                }
+                .into());
+            }
+            commit_current_generation_pub(&params.profile, &mut state, number).map_err(|error| {
+                ActivationFailure {
+                    exit_code: 4,
+                    message: format!(
+                        "configuration activation swapped /etc but publishing the current generation failed: {error:#}; rescue mode is required"
+                    ),
+                }
+            })?;
+            let recorded_exit = if projection.projected {
+                6
+            } else {
+                activation_exit
+            };
+            publish_activation_record(params, &projection, number, recorded_exit).map_err(
+                |error| ActivationFailure {
+                    exit_code: 4,
+                    message: format!(
+                        "configuration activation committed generation {number} but its activation record failed: {error:#}; rescue mode is required"
+                    ),
+                },
+            )?;
+            if recorded_exit == 6 {
                 return Err(ActivationFailure {
                     exit_code: 6,
                     message: format!(
-                        "configuration generation {number} was committed, but activation reported degraded units"
+                        "configuration generation {number} was committed in degraded state"
                     ),
                 }
                 .into());
@@ -680,6 +969,27 @@ mod tests {
     use crate::sysroot::load_generation_state_pub;
     use crate::types::ConfigGenerationState;
 
+    #[test]
+    fn switch_lock_is_rooted_only_by_an_absolute_aos_root() {
+        assert_eq!(resolve_switch_lock(None), Path::new(DEFAULT_SWITCH_LOCK));
+        assert_eq!(
+            resolve_switch_lock(Some("")),
+            Path::new(DEFAULT_SWITCH_LOCK)
+        );
+        assert_eq!(
+            resolve_switch_lock(Some("/")),
+            Path::new(DEFAULT_SWITCH_LOCK)
+        );
+        assert_eq!(
+            resolve_switch_lock(Some("relative")),
+            Path::new(DEFAULT_SWITCH_LOCK)
+        );
+        assert_eq!(
+            resolve_switch_lock(Some("/tmp/aos-root")),
+            Path::new("/tmp/aos-root/run/apm/switch.lock")
+        );
+    }
+
     fn setup() -> (TempDir, ActivateConfigParams, Value) {
         let root = tempfile::tempdir().unwrap();
         let profile = root.path().join("profile");
@@ -741,6 +1051,10 @@ mod tests {
                     "store_hash": format!("sha256:{}", "1".repeat(40))
                 },
                 "config_modules": {
+                    "registry": "test",
+                    "release_tag": "1.0.0",
+                    "tag_signer_key": "deadbeef",
+                    "realization": format!("sha256:{}", "5".repeat(64)),
                     "closure_hash": "sha256:9ab0c293d36b82b855c56917504b69670de56367c26d3bb7529a82b227bd1135",
                     "count": 1,
                     "store_paths": ["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-config"],
@@ -937,13 +1251,20 @@ mod tests {
         mark(&params, "firewall");
         mark(&params, "web");
 
-        let number =
-            activate_config_with(&params, false, false, false, |activate, number, _nonce| {
+        let number = activate_config_with(
+            &params,
+            false,
+            false,
+            false,
+            |activate, number, _nonce, barrier| {
                 assert!(activate.ends_with("activate"));
                 assert_eq!(number, 2);
+                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
                 Ok(Some(0))
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
 
         assert_eq!(number, 2);
         let state = load_generation_state_pub(&params.profile).unwrap();
@@ -988,6 +1309,13 @@ mod tests {
         assert_eq!(attestation["generation_id"], expected_hash);
         assert_eq!(attestation["manifest_hash"], expected_hash);
         assert_eq!(attestation["quote_status"], "unquoted-tpm-unavailable");
+        for field in ["registry", "release_tag", "tag_signer_key", "realization"] {
+            assert_eq!(
+                attestation["inputs"]["config_modules"][field],
+                manifest["inputs"]["config_modules"][field],
+                "config-module release field {field} must survive manifest-to-attestation projection"
+            );
+        }
         assert_eq!(
             attestation["inputs"]["host_nix"]["content_hash"],
             manifest["inputs"]["host_nix"]["content_hash"]
@@ -1019,6 +1347,45 @@ mod tests {
     }
 
     #[test]
+    fn credential_reconciliation_failure_refuses_pointer_and_proof() {
+        let (_root, params, _manifest) = setup();
+        mark(&params, "firewall");
+        mark(&params, "web");
+
+        let error = activate_config_with_reconciliation(
+            &params,
+            false,
+            false,
+            false,
+            |_activate, number, _nonce, barrier| {
+                assert_eq!(number, 2);
+                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
+                Ok(Some(0))
+            },
+            |_reconciliation, _plan| bail!("injected credential publication failure"),
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("credential publication failed"),
+            "{error:#}"
+        );
+        assert_eq!(
+            error
+                .downcast_ref::<ActivationFailure>()
+                .expect("credential failure is classified post-swap")
+                .exit_code(),
+            4
+        );
+        assert_eq!(
+            load_generation_state_pub(&params.profile).unwrap().current,
+            1
+        );
+        assert!(!params.marker_root.join(ACTIVATION_RECORD).exists());
+    }
+
+    #[test]
     fn required_quote_fails_closed_before_pointer_publication_without_tpm() {
         let (_root, mut params, _manifest) = setup();
         params.require_attestation_quote = true;
@@ -1030,7 +1397,11 @@ mod tests {
             false,
             false,
             false,
-            |_activate, _number, _nonce| Ok(Some(0)),
+            |_activate, _number, _nonce, barrier| {
+                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
+                Ok(Some(0))
+            },
         )
         .expect_err("measured activation must require TPM evidence");
         let failure = error
@@ -1055,7 +1426,11 @@ mod tests {
                 false,
                 false,
                 false,
-                |_activate, _number, _nonce| Ok(Some(0))
+                |_activate, _number, _nonce, barrier| {
+                    barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                    barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
+                    Ok(Some(0))
+                }
             )
             .unwrap(),
             2
@@ -1078,10 +1453,18 @@ mod tests {
             .number = 3;
 
         assert_eq!(
-            activate_config_with(&params, false, false, false, |_activate, number, _nonce| {
-                assert_eq!(number, 4);
-                Ok(Some(0))
-            })
+            activate_config_with(
+                &params,
+                false,
+                false,
+                false,
+                |_activate, number, _nonce, barrier| {
+                    assert_eq!(number, 4);
+                    barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                    barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
+                    Ok(Some(0))
+                }
+            )
             .unwrap(),
             4
         );
@@ -1101,7 +1484,11 @@ mod tests {
                 false,
                 false,
                 false,
-                |_activate, _number, _nonce| Ok(Some(0))
+                |_activate, _number, _nonce, barrier| {
+                    barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                    barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
+                    Ok(Some(0))
+                }
             )
             .unwrap(),
             2
@@ -1118,7 +1505,7 @@ mod tests {
             false,
             false,
             false,
-            |_activate, _number, _nonce| {
+            |_activate, _number, _nonce, _barrier| {
                 panic!("tampered generation must be rejected before activation")
             },
         )
@@ -1137,7 +1524,7 @@ mod tests {
             false,
             false,
             false,
-            |_activate, _number, _nonce| Ok(Some(2)),
+            |_activate, _number, _nonce, _barrier| Ok(Some(2)),
         )
         .unwrap_err();
         assert!(
@@ -1168,7 +1555,7 @@ mod tests {
             false,
             false,
             false,
-            |_activate, _number, _nonce| Ok(Some(2)),
+            |_activate, _number, _nonce, _barrier| Ok(Some(2)),
         )
         .unwrap_err();
 
@@ -1180,10 +1567,18 @@ mod tests {
         save_generation_state_pub(&params.profile, &state).unwrap();
 
         assert_eq!(
-            activate_config_with(&params, false, false, false, |_activate, number, _nonce| {
-                assert_eq!(number, 2);
-                Ok(Some(0))
-            })
+            activate_config_with(
+                &params,
+                false,
+                false,
+                false,
+                |_activate, number, _nonce, barrier| {
+                    assert_eq!(number, 2);
+                    barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                    barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
+                    Ok(Some(0))
+                }
+            )
             .unwrap(),
             2
         );
@@ -1209,7 +1604,14 @@ mod tests {
             false,
             false,
             false,
-            |_activate, _number, _nonce| Ok(Some(6)),
+            // The /etc reconcile itself is healthy. The missing package
+            // markers alone must classify the committed projection as
+            // degraded and surface exit 6.
+            |_activate, _number, _nonce, barrier| {
+                barrier(CredentialBarrier::StagedView(Path::new("/unused")))?;
+                barrier(CredentialBarrier::Publish(Path::new("/unused")))?;
+                Ok(Some(0))
+            },
         )
         .unwrap_err();
         assert!(number.to_string().contains("was committed"));

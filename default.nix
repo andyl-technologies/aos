@@ -994,7 +994,16 @@ in {
       pname = "aos-eval-and-characterization-checks";
       version = "0";
       src = null;
-      buildDeps = [eval-standalone system-characterization];
+      buildDeps = [
+        eval-standalone
+        system-characterization
+        config-eval
+        config-manifest
+        rfc-0011-provenance
+        config-materialize
+        config-parity
+        config-parity-p2
+      ];
       phases = [
         {
           name = "check";
@@ -1047,12 +1056,49 @@ in {
       inherit pkgs mkSystem;
       serverModule = ./systems/server.nix;
     };
-    rfc-0011-two-axis-gen = import ./lib/testing/rfc-0011-two-axis-gen.nix {inherit pkgs lib;};
     rfc-0011-cfgsrc-gc = import ./lib/testing/rfc-0011-cfgsrc-gc.nix {inherit pkgs lib;};
-    rfc-0011-image-rollback = import ./lib/testing/rfc-0011-image-rollback.nix {inherit pkgs lib;};
     config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
     rfc-0011-materialize = config-materialize;
     config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
+    config-parity-p2 = import ./lib/testing/config-parity-p2.nix {inherit pkgs lib;};
+    # Complete non-KVM RFC-0011 gate. The image lifecycle and degraded-network
+    # contracts are exercised by checks.fleet.rfc-0011-all below.
+    rfc-0011-all = pkgs.mkDerivation {
+      pname = "rfc-0011-all";
+      version = "0";
+      src = null;
+      buildDeps =
+        [
+          pkgs.aos
+          pkgs.aos-evaluator-tests
+          config-eval
+          config-manifest
+          config-materialize
+          config-parity
+          config-parity-p2
+          eval
+          module-args
+          module-enforcement
+          package-expose
+          rfc-0011-cfgsrc-gc
+          rfc-0011-provenance
+          system-characterization
+          systemd-credentials
+          systemd-generate
+          systemd-lib
+          systemd-verity
+        ]
+        ++ builtins.attrValues lint;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p $out
+            echo PASS > $out/result
+          '';
+        }
+      ];
+    };
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
     systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
     systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
@@ -1126,6 +1172,41 @@ in {
         selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;
-    fleet = discoverFleetTests // crucibleFleetChecks;
+    fleet = let
+      base = discoverFleetTests // crucibleFleetChecks;
+      rfcNames =
+        builtins.filter
+        (name:
+          lib.hasPrefix "rfc-0011-" name
+          || builtins.elem name [
+            "apm-desired-sequencing"
+            "apm-system-activation-fail"
+            "apm-system-upgrade"
+            "install-from-image"
+            "measured-boot"
+            "package-attestation-quote"
+            "provisioning-boot"
+          ])
+        (builtins.attrNames base);
+      rfcFleet = builtins.map (name: base.${name}) rfcNames;
+    in
+      base
+      // {
+        rfc-0011-all = pkgs.mkDerivation {
+          pname = "rfc-0011-fleet-all";
+          version = "0";
+          src = null;
+          buildDeps = rfcFleet;
+          phases = [
+            {
+              name = "check";
+              script = ''
+                mkdir -p $out
+                echo PASS > $out/result
+              '';
+            }
+          ];
+        };
+      };
   };
 }

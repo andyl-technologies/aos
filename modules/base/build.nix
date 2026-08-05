@@ -16,6 +16,7 @@
   pkgs,
   lib,
   provenance,
+  aosStructuredErrors ? false,
   ...
 }: let
   systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
@@ -146,6 +147,30 @@ in {
               `/nix/store` path produced by a derivation. Behaviour at
               build time depends on `mode` and on whether `source` is
               a regular file or a directory — see `mode` below.
+            '';
+          };
+          runtimeCertificateBundle = lib.mkOption {
+            type = lib.types.nullOr (lib.types.listOf (lib.types.submodule {
+              options = {
+                source = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = "Authenticated store file containing PEM certificates.";
+                };
+                text = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = "Inline PEM certificate bytes.";
+                };
+              };
+            }));
+            default = null;
+            internal = true;
+            description = ''
+              Ordered certificate-only PEM inputs concatenated by the runtime
+              configuration materializer. Exactly one of `source` or `text`
+              must be set for each part. This avoids derivation builders in
+              the eval-only host configuration path.
             '';
           };
           mode = lib.mkOption {
@@ -432,10 +457,19 @@ in {
         if failedAssertions == []
         then null
         else
-          throw ''
-            Failed assertions:
-            ${lib.concatStringsSep "\n" (builtins.map (a: "  - ${a.message}") failedAssertions)}
-          '';
+          if aosStructuredErrors
+          then throw (builtins.toJSON {
+            __aosEvalError = {
+              kind = "assertion";
+              msg = (builtins.head failedAssertions).message;
+              file = null;
+            };
+          })
+          else
+            throw ''
+              Failed assertions:
+              ${lib.concatStringsSep "\n" (builtins.map (a: "  - ${a.message}") failedAssertions)}
+            '';
       # Emit every warning via `builtins.trace` in a single fold. The
       # trace writes to stderr during evaluation and returns its second
       # argument unchanged, so the chain produces a sentinel value we
@@ -488,6 +522,7 @@ in {
                 printf '%s' "${toString config.aos.system.moduleAbi}" > $out/meta/module-abi
                 printf '%s' "sha256:${builtins.hashString "sha256" (toString config.aos.config.evalAtBoot.baseLib)}" > $out/meta/baselib-digest
                 printf '%s' "EFI/Linux/aos-${config.aos.system.name}-${config.aos.system.version}${lib.optionalString (config.aos.boot.bootCountingTries != null) "+${toString config.aos.boot.bootCountingTries}"}.efi" > $out/meta/uki-path
+                printf '%s' ${lib.escapeShellArg config.aos.filesystems.espDevice} > $out/meta/esp-device
 
                 # Closure tracking: list every systemPackage as a
                 # /nix/store path so Nix's reference scanner pulls
@@ -555,7 +590,28 @@ in {
       # `/etc` entries contributed by `environment.etc`, minus the
       # `systemd/system` directory (expanded per-unit below).
       renderEtc = e:
-        if e.text != null
+        if e.runtimeCertificateBundle != null
+        then {
+          kind = "certificate-bundle";
+          mode =
+            if isOctal e.mode
+            then e.mode
+            else "0644";
+          parts = builtins.map (part:
+            if part.source != null && part.text == null
+            then {
+              kind = "store-file";
+              path = part.source;
+            }
+            else if part.source == null && part.text != null
+            then {
+              kind = "text";
+              inherit (part) text;
+            }
+            else throw "runtimeCertificateBundle parts must set exactly one of source or text")
+          e.runtimeCertificateBundle;
+        }
+        else if e.text != null
         then {
           kind = "text";
           text = e.text;
@@ -588,7 +644,10 @@ in {
         lib.optional (e.enable && e.target != "systemd/system") {
           path = e.target;
           value = renderEtc e;
-          owner = artifactOwner ["environment" "etc"] name;
+          owner =
+            if e.runtimeCertificateBundle != null
+            then config.aos.security.pki._runtimeBundleOwner
+            else artifactOwner ["environment" "etc"] name;
         })
       config.environment.etc);
       envEtcTargets = builtins.map (record: record.path) envEtcRecords;
@@ -685,6 +744,23 @@ in {
       presetRecords);
 
       pathString = value: builtins.unsafeDiscardStringContext (builtins.toString value);
+      # Find every canonical store root embedded in an emitted manifest string.
+      # Runtime role modules deliberately reference their tools by absolute
+      # path instead of adding them to environment.systemPackages, so their
+      # unit bodies and job scripts are closure-bearing artifacts too. Keep
+      # this pattern byte-for-byte aligned with the accepted store-name
+      # alphabet in the Rust manifest validator.
+      storeRootsInString = value:
+        lib.concatLists (builtins.map
+          (part:
+            if builtins.isList part
+            then builtins.filter (match: match != null) part
+            else [])
+          (builtins.split
+            "(/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[A-Za-z0-9+._?=-]+)"
+            (pathString value)));
+      storeRecordsInString = owner: value:
+        builtins.map (path: {inherit path owner;}) (storeRootsInString value);
       storeRoot = target: let
         parts = lib.splitString "/" target;
       in
@@ -699,11 +775,56 @@ in {
           owner = provenance.ownerOfListString ["environment" "systemPackages"] path;
         })
         config.environment.systemPackages;
-      etcStoreRecords = builtins.map (record: {
-        path = storeRoot record.value.target;
-        inherit (record) owner;
-      }) (builtins.filter (record: record.value.kind == "store-symlink") envEtcRecords);
-      storeRecords = packageStoreRecords ++ etcStoreRecords;
+      etcStoreRecords = lib.concatMap (record:
+        if record.value.kind == "store-symlink"
+        then [{
+          path = storeRoot record.value.target;
+          inherit (record) owner;
+        }]
+        else if record.value.kind == "certificate-bundle"
+        then builtins.map (part: {
+          path = storeRoot part.path;
+          inherit (record) owner;
+        }) (builtins.filter (part: part.kind == "store-file") record.value.parts)
+        else [])
+      envEtcRecords;
+      emittedEtcStoreRecords = lib.concatMap (path: let
+        entry = etc.${path};
+        owner = etcOwnership.${path};
+        strings =
+          if entry.kind == "text"
+          then [entry.text]
+          else if entry.kind == "store-symlink"
+          then [entry.target]
+          else if entry.kind == "certificate-bundle"
+          then builtins.map
+            (part:
+              if part.kind == "store-file"
+              then part.path
+              else part.text)
+            entry.parts
+          else [];
+      in
+        lib.concatMap (storeRecordsInString owner) strings)
+      (builtins.attrNames etc);
+      emittedJobStoreRecords = lib.concatMap (key:
+        storeRecordsInString jobScriptOwnership.${key} jobScripts.${key}.text)
+      (builtins.attrNames jobScripts);
+      emittedUserStoreRecords = lib.concatMap (user:
+        storeRecordsInString userOwnership.${user.name} "${user.home}\n${user.shell}")
+      users;
+      emittedProjectionStoreRecords = lib.concatLists (lib.mapAttrsToList (package: binding:
+        storeRecordsInString package (builtins.toJSON {
+          inherit (binding) desired credentials;
+        }))
+      exposeProjectionBindings);
+      storeRecords =
+        packageStoreRecords
+        ++ etcStoreRecords
+        ++ emittedEtcStoreRecords
+        ++ emittedJobStoreRecords
+        ++ emittedUserStoreRecords
+        ++ emittedProjectionStoreRecords;
       storePaths =
         builtins.sort (a: b: a < b)
         (lib.unique (builtins.map (record: record.path) storeRecords));
@@ -711,10 +832,21 @@ in {
         owners =
           lib.unique (builtins.map (record: record.owner)
             (builtins.filter (record: record.path == path) storeRecords));
+        nonHostOwners = builtins.filter (owner: owner != "@host") owners;
       in
-        if builtins.length owners == 1
-        then builtins.head owners
-        else throw "config manifest store path ${path} has multiple owners: ${lib.concatStringsSep ", " owners}";
+        # @base is the least-privileged classification: every authenticated
+        # artifact may reference image-owned content. @host is the most
+        # permissive artifact owner and therefore never overrides a more
+        # constrained package owner merely because host.nix selected the
+        # feature. Two unrelated package owners remain an ambiguity and fail
+        # closed rather than silently laundering either package's closure.
+        if builtins.elem "@base" owners
+        then "@base"
+        else if builtins.length nonHostOwners == 1
+        then builtins.head nonHostOwners
+        else if nonHostOwners == [] && owners == ["@host"]
+        then "@host"
+        else throw "config manifest store path ${path} has multiple package owners: ${lib.concatStringsSep ", " owners}";
       storeOwnership = builtins.listToAttrs (builtins.map (path:
         lib.nameValuePair path (storeOwner path))
       storePaths);

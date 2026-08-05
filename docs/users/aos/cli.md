@@ -137,6 +137,59 @@ aos completions fish > aos.fish
 The generated script covers the `aos` command tree. `apm` and `apr` do not
 currently expose their own completion generators.
 
+## Verify runtime attestation evidence
+
+`apm attest verify` replays the package and generation events in the AOS CEL.
+A bare `--pcr15` value verifies only event-log consistency. A full generation
+decision requires an identity-pinned TPM quote, the generation record, and a
+verifier-owned policy:
+
+```sh
+apm attest verify --system \
+  --event-log host-evidence/aos-packages.cel \
+  --quote-dir host-evidence/gen-attestation-quote \
+  --nonce-file host-evidence/nonce.hex \
+  --quote-identity-file verifier/quote-identities.json \
+  --generation-attestation host-evidence/gen-attestation.json \
+  --generation-policy-file verifier/generation-policy.json \
+  --rederived-manifest verifier/rederived-manifest.json
+```
+
+The policy is strict JSON. PCR and root values come from the verifier's image
+catalog, not from the host being checked:
+
+```json
+{
+  "schema": "aos.gen-attestation-policy/v1",
+  "expected_pcr7": "<64 lowercase hex>",
+  "expected_pcr11": "sha256:<64 lowercase hex>",
+  "expected_root_roothash": "<64 lowercase hex>",
+  "expected_facts_hash": "sha256:<64 lowercase hex>",
+  "trusted_config_keys": ["<8-hex fingerprint>"],
+  "trusted_platforms": ["aws"]
+}
+```
+
+The command verifies the quote against an enrolled AK/EK identity, binds the
+record to its unique activation event and PCR-15 prefix, checks PCR 7, PCR 11,
+dm-verity, facts, and host-input authorization, and reconstructs config-module
+membership and realization from the signed release commit. It rejects missing,
+revoked, or mismatched release receipts. `--rederived-manifest` supplies an
+independently produced manifest for the final reproducibility gate and is
+mandatory for image-authored configuration.
+
+Create the quote-identity catalog only after completing the selected enrollment
+workflow:
+
+```sh
+apm attest enroll \
+  --quote-dir enrollment/quote \
+  --label node-17 \
+  --method credential-activation \
+  --evidence-file enrollment/credential-activation.transcript \
+  --catalog-file verifier/quote-identities.json
+```
+
 ## Understand command results
 
 Most successful commands exit `0`. Invalid syntax normally exits `2`, and
@@ -144,9 +197,10 @@ build, evaluation, download, hash, and package errors use nonzero codes suited
 to their command surface. A declined package-operation confirmation exits
 `100`.
 
-OS generation activation can fail after the new generation is live. See
-[Upgrade and roll back a host](upgrades.md#interpret-activation-results) before
-automating system upgrades.
+Configuration activation can report a degraded result after the new generation
+is live, while image staging and boot assessment have a separate A/B state.
+See [Upgrade and roll back a host](upgrades.md#interpret-configuration-activation-results)
+before automating system upgrades.
 
 Continue with [Manage packages](packages.md) for `apm`, or
 [Operate an AOS package registry](../registry/) for producer-side `apr`

@@ -260,6 +260,18 @@ upperdir="$upper_root/dir",\
 workdir="$upper_root/work" \
   "$tmpEtc"
 
+# Validate package-authored sealed credential sources against the fully
+# composed candidate view before the pre-swap reconciler can stop a live unit.
+# Failure or EOF here leaves /etc, credential files, and consumer states
+# untouched; the compose-stage trap tears down only the candidate mounts.
+if [ "${AOS_CREDENTIAL_BARRIER:-0}" = 1 ]; then
+  printf 'AOS_CREDENTIAL_STAGED_VIEW_READY %s\n' "$tmpEtc"
+  if ! IFS= read -r staged_ack || [ "$staged_ack" != AOS_CREDENTIAL_STAGED_VIEW_CONTINUE ]; then
+    echo "activate: credential validation failed in staged configuration view" >&2
+    exit "$EX_COMPOSE"
+  fi
+fi
+
 # --- pre-swap reconcile ---
 # Hand off to apm before the swap: diff live /etc against the candidate, stop
 # old-definition units, and capture the post-swap plan path. The path is the
@@ -328,6 +340,19 @@ prev_gen=$(@coreutils@/bin/readlink /run/etc/system \
 @coreutils@/bin/ln -sfn system-${N}   /run/etc/system
 @coreutils@/bin/ln -sfn config-${N} /run/etc/config
 @coreutils@/bin/ln -sfn upper-${N}    /run/etc/upper
+
+# When apm owns the switch, pause after the atomic /etc swap and before any
+# new unit can start. The parent publishes all resolved credential files as a
+# transaction, folds their consumers into this plan, and acknowledges over the
+# private pipe. EOF, a malformed acknowledgement, or publication failure is an
+# indeterminate post-swap transaction and therefore uses the rescue exit.
+if [ "${AOS_CREDENTIAL_BARRIER:-0}" = 1 ]; then
+  printf 'AOS_CREDENTIAL_BARRIER_READY %s\n' "$plan"
+  if ! IFS= read -r barrier_ack || [ "$barrier_ack" != AOS_CREDENTIAL_BARRIER_CONTINUE ]; then
+    echo "FATAL: credential publication barrier failed after /etc swap" >&2
+    exit "$EX_SWAP"
+  fi
+fi
 
 # --- post-swap reconcile ---
 # The /etc swap is now the commit point. Any post-swap reconcile problem is

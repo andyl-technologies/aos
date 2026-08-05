@@ -2454,7 +2454,11 @@ fn scan_config_module_interface(
             }
             continue;
         }
-        if path.file_name().and_then(|name| name.to_str()) == Some("config-meta.json") {
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        if relative == Path::new("config-meta.json")
+            || relative == Path::new("expose-config.json")
+            || relative == Path::new("generated/expose-config.json")
+        {
             continue;
         }
         if path.extension().and_then(|extension| extension.to_str()) != Some("nix") {
@@ -13094,6 +13098,26 @@ mod tests {
 
         assert!(contributes.is_empty());
         assert!(capabilities.is_empty());
+    }
+
+    #[test]
+    fn config_interface_scan_accepts_only_generated_expose_metadata() {
+        let tmp = TempDir::new().expect("temporary config module");
+        fs::create_dir(tmp.path().join("generated")).expect("create generated directory");
+        fs::write(tmp.path().join("module.nix"), "{ ... }: {}\n").expect("write module");
+        fs::write(
+            tmp.path().join("generated/expose-config.json"),
+            "{\"schema\":\"aos.expose-config/v1\"}\n",
+        )
+        .expect("write generated exposure metadata");
+
+        scan_config_module_interface(tmp.path(), "web", &[], &[])
+            .expect("scan generated exposure metadata");
+
+        fs::write(tmp.path().join("authored.json"), "{}\n").expect("write unauthorized helper");
+        let error = scan_config_module_interface(tmp.path(), "web", &[], &[])
+            .expect_err("reject unauthorized non-Nix helper");
+        assert!(error.to_string().contains("non-Nix helper"), "{error:#}");
     }
 
     #[test]

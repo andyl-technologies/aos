@@ -57,8 +57,14 @@ use crate::types::{ConfigModuleMeta, ModuleAbiCompat, OwnedRoot};
 /// [`ConfigModuleMeta`] declaring its roots, capabilities, and ABI band. It is
 /// the input the [`SystemRoots`] builder folds over and the shape the resolver's
 /// structural (private-root) fallback returns.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ResolvedConfigModule<'a> {
+    /// Registry that authenticated this package version.
+    pub registry: &'a str,
+    /// Signed-release receipt associated with the extracted registry tree.
+    pub release_trust: Option<&'a crate::registry::ReleaseTrustReceipt>,
+    /// Hash of the signed store subgraph rooted at the config output.
+    pub config_realization: Option<String>,
     /// Package name.
     pub package: &'a str,
     /// Package version.
@@ -595,6 +601,9 @@ mod tests {
 
     fn resolved<'a>(package: &'a str, module: &'a ConfigModuleMeta) -> ResolvedConfigModule<'a> {
         ResolvedConfigModule {
+            registry: "test",
+            release_trust: None,
+            config_realization: None,
             package,
             version: "1.0.0",
             platform: "x86_64-linux",
@@ -690,6 +699,55 @@ mod tests {
         );
         let roots = SystemRoots::build([resolved("nginx", &nginx)]).expect("self-owned root");
         assert_eq!(roots.owner("nginx").expect("owner").package, "nginx");
+    }
+
+    #[test]
+    fn explicitly_selected_variants_provide_one_virtual_root() {
+        // Under the F3-B index-removal decision, `owns_roots` is the signed
+        // per-package Provides declaration and SystemRoots exclusivity is the
+        // resolved-set Conflicts rule. The resolver never guesses between
+        // registry alternatives: the operator explicitly installs one.
+        let full = module(
+            &["nginx.enable", "nginx.virtualHosts"],
+            vec![owned("nginx", &["virtualHosts.*"])],
+            vec![],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+        let minimal = module(
+            &["nginx.enable"],
+            vec![owned("nginx", &[])],
+            vec![],
+            &[],
+            ModuleAbiCompat { min: 1, max: 2 },
+        );
+
+        let selected = SystemRoots::build([resolved("nginx-full", &full)])
+            .expect("one explicitly selected variant");
+        assert_eq!(
+            selected.owner("nginx").expect("virtual root owner").package,
+            "nginx-full"
+        );
+        assert_eq!(selected.len(), 1, "the variant is the sole root declarer");
+
+        let alternative = SystemRoots::build([resolved("nginx-minimal", &minimal)])
+            .expect("the alternative is independently selectable");
+        assert_eq!(
+            alternative
+                .owner("nginx")
+                .expect("virtual root owner")
+                .package,
+            "nginx-minimal"
+        );
+
+        let conflict = SystemRoots::build([
+            resolved("nginx-full", &full),
+            resolved("nginx-minimal", &minimal),
+        ])
+        .expect_err("two alternatives must conflict in one resolved set");
+        let message = conflict.to_string();
+        assert!(message.contains("nginx-full@1.0.0"), "{message}");
+        assert!(message.contains("nginx-minimal@1.0.0"), "{message}");
     }
 
     #[test]

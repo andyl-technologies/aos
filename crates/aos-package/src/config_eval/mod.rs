@@ -43,6 +43,7 @@ pub mod classify;
 pub mod diagnostics;
 pub mod dry_run;
 pub mod materialize;
+pub mod native;
 pub mod runtime;
 pub mod stock;
 pub mod system_roots;
@@ -81,6 +82,12 @@ const ITER_CAP_SLACK: u32 = 8;
 /// image's `module_abi` before it can enter `entry.nix`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkingSetMember {
+    /// Registry that authenticated this member's config output.
+    pub registry: Option<String>,
+    /// Signed release identity for the extracted registry tree.
+    pub release_trust: Option<crate::registry::ReleaseTrustReceipt>,
+    /// Hash of the signed store subgraph rooted at this config output.
+    pub config_realization: Option<String>,
     /// Package name.
     pub package: String,
     /// Package version, when known.
@@ -152,6 +159,9 @@ impl WorkingSetMember {
     /// Builds a bare seed member with no config-module metadata.
     pub fn seed(package: impl Into<String>) -> Self {
         Self {
+            registry: None,
+            release_trust: None,
+            config_realization: None,
             package: package.into(),
             version: None,
             config_output: None,
@@ -204,6 +214,8 @@ pub struct IterRecord {
 pub struct FixpointOutcome {
     /// The JSON manifest text the final eval produced.
     pub manifest: String,
+    /// First-class native option access graph for the converged evaluation.
+    pub option_graph: aos_core::nix::native::OptionGraph,
     /// The converged working set (seed plus every fetched provider).
     pub working_set: Vec<WorkingSetMember>,
     /// The causal chain of provider additions.
@@ -514,8 +526,9 @@ pub struct EvalAttempt<'a> {
 ///
 /// The P1 implementation ([`stock::StockNixEvaluator`]) renders `entry.nix`,
 /// runs a cold stock-Nix subprocess, and parses stderr via [`classify`]. The P2
-/// aos-nix implementation produces the same [`EvalClass`] from structured
-/// engine errors. Tests inject a scripted mock.
+/// [`native::NativeNixEvaluator`] evaluates the same entry expression in
+/// process and fails closed on unsupported language features. Tests inject a
+/// scripted mock.
 pub trait NixEvaluator {
     /// Evaluate `attempt` and return its classified outcome.
     ///
@@ -564,7 +577,7 @@ pub trait ConfigOutputFetcher {
 // The fixpoint
 // ---------------------------------------------------------------------------
 
-/// Drive stock-Nix `evalModules` to a complete configuration (build-spec §1).
+/// Drive `evalModules` to a complete configuration (build-spec §1).
 ///
 /// The loop renders the current `working_set` into `entry.nix`, evaluates it,
 /// and on a missing-option signal selects the owning provider — a shared-root
@@ -677,6 +690,19 @@ where
             EvalClass::Manifest(manifest) => {
                 return Ok(FixpointOutcome {
                     manifest,
+                    option_graph: aos_core::nix::native::OptionGraph::default(),
+                    working_set,
+                    trace,
+                    iterations: iter,
+                });
+            }
+            EvalClass::NativeManifest {
+                manifest,
+                option_graph,
+            } => {
+                return Ok(FixpointOutcome {
+                    manifest,
+                    option_graph,
                     working_set,
                     trace,
                     iterations: iter,
@@ -704,7 +730,7 @@ where
                             read_by: selection.read_by.clone(),
                         }
                     })?;
-                system_roots.validate_discovered_module(authenticated_module)?;
+                system_roots.validate_discovered_module(authenticated_module.clone())?;
                 let authorization = PackageAuthorization::from_module(authenticated_module.module);
 
                 // Gate the newly-selected provider before it enters entry.nix.
@@ -738,6 +764,9 @@ where
 
                 fetched.insert(selection.package.clone());
                 working_set.push(WorkingSetMember {
+                    registry: Some(authenticated_module.registry.to_string()),
+                    release_trust: authenticated_module.release_trust.cloned(),
+                    config_realization: authenticated_module.config_realization.clone(),
                     package: selection.package.clone(),
                     version: Some(selection.version.clone()),
                     config_output: Some(selection.config_output.clone()),
@@ -793,6 +822,9 @@ where
         let Some(resolved) = resolver.config_module(&seed.package) else {
             continue;
         };
+        seed.registry = Some(resolved.registry.to_string());
+        seed.release_trust = resolved.release_trust.cloned();
+        seed.config_realization = resolved.config_realization.clone();
         seed.authorization = PackageAuthorization::from_module(resolved.module);
         seed.outputs.self_output = Some(resolved.runtime_output.to_string());
         if seed.config_output_nar_hash.is_none() {
@@ -1170,7 +1202,7 @@ fn enforce_host_nix_trust_policy(cmd: &EvalCommand) -> Result<()> {
     }
 }
 
-/// Run the on-host fixpoint with the production stock-Nix evaluator and fetcher.
+/// Run the on-host fixpoint with the production native evaluator and fetcher.
 ///
 /// Loads the on-host registries (as the by-name [`ConfigModuleResolver`]) and
 /// seed set from disk, drives [`run_fixpoint`], and — **only on convergence** —
@@ -1235,7 +1267,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         }
     }
 
-    let evaluator = stock::StockNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
+    let evaluator = native::NativeNixEvaluator::new(cmd.eval_root.clone(), cmd.verbose);
     let fetcher = stock::SubstituterFetcher::new(cmd.verbose);
 
     // Resolve the selected names before evaluation. This both pins the exact
@@ -1306,6 +1338,7 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
         outer_iterations += 1;
     };
 
+    merge_option_graph_edges(&mut runtime.edges, &outcome.option_graph);
     let manifest = enrich_manifest(cmd, &outcome, &runtime)?;
     if let Some(parent) = cmd.out.parent() {
         std::fs::create_dir_all(parent)
@@ -1326,6 +1359,28 @@ pub(crate) fn run_eval_command_with_report(cmd: &EvalCommand) -> Result<EvalComm
     Ok(EvalCommandReport {
         resolution_trace: outcome.trace.iter().map(render_iter_record).collect(),
     })
+}
+
+/// Merges cross-package native option reads into the runtime ordering graph.
+fn merge_option_graph_edges(
+    edges: &mut BTreeMap<String, Vec<String>>,
+    graph: &aos_core::nix::native::OptionGraph,
+) {
+    use aos_core::nix::native::OptionAccessKind;
+
+    for access in &graph.accesses {
+        if access.kind != OptionAccessKind::Read {
+            continue;
+        }
+        let Some(provider) = access.provider.as_ref() else {
+            continue;
+        };
+        let dependencies = edges.entry(access.package.clone()).or_default();
+        if !dependencies.contains(provider) {
+            dependencies.push(provider.clone());
+            dependencies.sort();
+        }
+    }
 }
 
 /// Renders one provider-discovery step for the dry-run JSON contract.
@@ -1506,6 +1561,73 @@ fn config_module_inputs(
     Ok((paths, nar_hashes, packages, abi_compat, authorizations))
 }
 
+fn config_module_release_identity(
+    working_set: &[WorkingSetMember],
+) -> Result<(
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+)> {
+    let modules = working_set
+        .iter()
+        .filter(|member| member.config_output.is_some())
+        .collect::<Vec<_>>();
+    if modules.is_empty() {
+        return Ok((None, None, None, None));
+    }
+    let first = modules[0];
+    let registry = first
+        .registry
+        .as_deref()
+        .context("config module has no authenticated source registry")?;
+    let receipt = first
+        .release_trust
+        .as_ref()
+        .context("config module registry has no verified signed-release receipt")?;
+    if receipt.registry != registry {
+        anyhow::bail!("config module registry disagrees with its signed-release receipt");
+    }
+    let mut realization_members = Vec::with_capacity(modules.len());
+    for member in modules {
+        let member_registry = member
+            .registry
+            .as_deref()
+            .context("config module has no authenticated source registry")?;
+        let member_receipt = member
+            .release_trust
+            .as_ref()
+            .context("config module registry has no verified signed-release receipt")?;
+        if member_registry != registry || member_receipt != receipt {
+            anyhow::bail!("one configuration generation cannot mix signed registry releases");
+        }
+        realization_members.push(serde_json::json!([
+            member
+                .config_output
+                .as_deref()
+                .context("config module output disappeared")?,
+            member
+                .config_realization
+                .as_deref()
+                .context("config module has no authenticated store realization")?,
+        ]));
+    }
+    realization_members.sort_by(|left, right| {
+        left[0]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right[0].as_str().unwrap_or_default())
+    });
+    let realization =
+        crate::graph_compile::reproject::hash_cjson(&serde_json::Value::Array(realization_members));
+    Ok((
+        Some(registry.to_string()),
+        Some(receipt.release_tag.clone()),
+        Some(receipt.tag_signer_key.clone()),
+        Some(realization),
+    ))
+}
+
 fn enrich_manifest(
     cmd: &EvalCommand,
     outcome: &FixpointOutcome,
@@ -1592,6 +1714,8 @@ fn enrich_manifest(
     let base_abi_hash = read_base_lib_abi_hash(&cmd.base_lib, cmd.module_abi)?;
     let evaluator_store_hash = evaluator_store_hash(&evaluator)?;
     let config_closure_hash = config_module_closure_hash(&config_outputs, &config_nar_hashes)?;
+    let (config_registry, config_release_tag, config_tag_signer_key, config_realization) =
+        config_module_release_identity(&outcome.working_set)?;
     let host_store_path = add_fixed_input_to_store(&cmd.host_nix)?;
 
     object.insert(
@@ -1607,6 +1731,10 @@ fn enrich_manifest(
                 "store_hash": evaluator_store_hash,
             },
             "config_modules": {
+                "registry": config_registry,
+                "release_tag": config_release_tag,
+                "tag_signer_key": config_tag_signer_key,
+                "realization": config_realization,
                 "closure_hash": config_closure_hash,
                 "count": config_outputs.len(),
                 "store_paths": config_outputs,
@@ -1953,7 +2081,7 @@ pub fn reeval_cross_abi(
     validate_retained_manifest_inputs(&source, retained)?;
 
     let working_set = retained_cross_abi_working_set(&source, retained)?;
-    let evaluator = stock::StockNixEvaluator::new(eval_root, verbose);
+    let evaluator = native::NativeNixEvaluator::new(eval_root, verbose);
     let attempt = EvalAttempt {
         host_nix: Path::new(&retained.host_nix_ref),
         base_lib: running_base_lib,
@@ -1962,7 +2090,7 @@ pub fn reeval_cross_abi(
         iteration: 0,
     };
     let evaluated = match evaluator.evaluate(&attempt)? {
-        EvalClass::Manifest(manifest) => manifest,
+        EvalClass::Manifest(manifest) | EvalClass::NativeManifest { manifest, .. } => manifest,
         other => anyhow::bail!(
             "retained configuration is incompatible with module ABI {}: {other:?}",
             retained.to_module_abi
@@ -2042,6 +2170,9 @@ fn retained_cross_abi_working_set(
         .zip(&modules.authorizations)
         .map(
             |((((path, nar_hash), package), compat), authorization)| WorkingSetMember {
+                registry: None,
+                release_trust: None,
+                config_realization: None,
                 package: package.clone(),
                 version: source
                     .package_outputs
@@ -2173,26 +2304,20 @@ fn load_host_selection(cmd: &EvalCommand) -> Result<Vec<WorkingSetMember>> {
     );
     std::fs::write(&entry, expression).with_context(|| format!("writing {}", entry.display()))?;
 
-    let mut evaluator = stock::pure_eval_command()
-        .context("resolving the AOS stock evaluator for host package selection")?;
+    let evaluator = native::NativeNixEvaluator::new(&cmd.eval_root, cmd.verbose);
+    let expression = format!("import {}", stock::nix_path(&entry));
     let output = evaluator
-        .arg("-I")
-        .arg(&cmd.eval_root)
-        .arg("-I")
-        .arg(&cmd.base_lib)
-        .arg("-I")
-        .arg(&cmd.host_nix)
-        .arg(&entry)
-        .output()
-        .context("spawning restricted host package-selection evaluation")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "host package-selection evaluation failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+        .eval_strict_json(
+            &expression,
+            [
+                entry.as_path(),
+                cmd.base_lib.as_path(),
+                cmd.host_nix.as_path(),
+            ],
+        )
+        .context("evaluating host package selection with the native evaluator")?;
     let selection: HostSelection =
-        serde_json::from_slice(&output.stdout).context("parsing host package selection")?;
+        serde_json::from_str(&output).context("parsing host package selection")?;
     let mut seen = BTreeSet::new();
     Ok(selection
         .packages
