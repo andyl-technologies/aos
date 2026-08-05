@@ -14,6 +14,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 crucible-api = { path = "../crucible-api" }
+tempfile = { workspace = true }
 
 [[bin]]
 name = "crucible-debug-gateway"

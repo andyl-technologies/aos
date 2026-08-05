@@ -341,6 +341,10 @@ pub enum DebugGatewayMessageKind {
     BackendStatus = 14,
     /// Returns active and prepared backend identities.
     BackendStatusAck = 15,
+    /// Requests the bound operator-facing GDB listener address.
+    OperatorStatus = 16,
+    /// Returns the bound operator-facing GDB listener address as UTF-8.
+    OperatorStatusAck = 17,
     /// Reports a typed gateway rejection, optionally correlated to a stream.
     Error = 255,
 }
@@ -363,6 +367,8 @@ impl DebugGatewayMessageKind {
             13 => Ok(Self::RunControl),
             14 => Ok(Self::BackendStatus),
             15 => Ok(Self::BackendStatusAck),
+            16 => Ok(Self::OperatorStatus),
+            17 => Ok(Self::OperatorStatusAck),
             255 => Ok(Self::Error),
             _ => Err(DebugGatewayDecodeError::UnknownKind { tag }),
         }

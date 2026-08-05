@@ -6,6 +6,7 @@
 //! reconcile idempotent prepare/commit operations after a lost acknowledgement.
 
 use std::io::{self, Read, Write};
+use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -28,6 +29,7 @@ pub struct DebugGatewayProcess {
     child: Child,
     client: DebugGatewayControlClient,
     control_socket: std::path::PathBuf,
+    operator_listen: Option<SocketAddr>,
     _directory: tempfile::TempDir,
 }
 
@@ -43,7 +45,7 @@ impl DebugGatewayProcess {
     /// be created, the process cannot be spawned, exits before negotiation, or
     /// does not become ready within [`DEBUG_GATEWAY_STARTUP_TIMEOUT`].
     pub fn launch(executable: impl AsRef<Path>) -> Result<Self, DebugGatewayClientError> {
-        Self::launch_with_timeout(executable, DEBUG_GATEWAY_STARTUP_TIMEOUT)
+        Self::launch_internal(executable.as_ref(), DEBUG_GATEWAY_STARTUP_TIMEOUT, None)
     }
 
     /// Spawns a standalone gateway with an explicit startup bound.
@@ -56,11 +58,48 @@ impl DebugGatewayProcess {
         executable: impl AsRef<Path>,
         timeout: Duration,
     ) -> Result<Self, DebugGatewayClientError> {
+        Self::launch_internal(executable.as_ref(), timeout, None)
+    }
+
+    /// Spawns a gateway with an explicitly unauthenticated loopback GDB listener.
+    ///
+    /// This mode is intended only for a trusted local host. Remote and
+    /// multi-user access must use the authenticated daemon relay instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] for process startup, negotiation, or
+    /// listener-status failures.
+    pub fn launch_with_trusted_loopback(
+        executable: impl AsRef<Path>,
+        listen: SocketAddr,
+    ) -> Result<Self, DebugGatewayClientError> {
+        if !listen.ip().is_loopback() {
+            return Err(DebugGatewayClientError::UntrustedOperatorListen(listen));
+        }
+        Self::launch_internal(
+            executable.as_ref(),
+            DEBUG_GATEWAY_STARTUP_TIMEOUT,
+            Some(listen),
+        )
+    }
+
+    fn launch_internal(
+        executable: &Path,
+        timeout: Duration,
+        trusted_loopback: Option<SocketAddr>,
+    ) -> Result<Self, DebugGatewayClientError> {
         let directory = tempfile::tempdir().map_err(DebugGatewayClientError::CreateDirectory)?;
         let control_socket = directory.path().join("control.sock");
-        let mut child = Command::new(executable.as_ref())
-            .arg("--control-socket")
-            .arg(&control_socket)
+        let mut command = Command::new(executable);
+        command.arg("--control-socket").arg(&control_socket);
+        if let Some(listen) = trusted_loopback {
+            command
+                .arg("--allow-unauthenticated-gdb")
+                .arg("--gdb-listen")
+                .arg(listen.to_string());
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -69,11 +108,19 @@ impl DebugGatewayProcess {
         let started = Instant::now();
         loop {
             match DebugGatewayControlClient::connect(&control_socket) {
-                Ok(client) => {
+                Ok(mut client) => {
+                    let operator_listen = match client.operator_listen() {
+                        Ok(operator_listen) => operator_listen,
+                        Err(error) => {
+                            let _ = terminate_child(&mut child);
+                            return Err(error);
+                        }
+                    };
                     return Ok(Self {
                         child,
                         client,
                         control_socket,
+                        operator_listen,
                         _directory: directory,
                     });
                 }
@@ -112,6 +159,12 @@ impl DebugGatewayProcess {
     #[must_use]
     pub fn control_socket(&self) -> &Path {
         &self.control_socket
+    }
+
+    /// Returns the stable operator-facing GDB listener bound by the gateway.
+    #[must_use]
+    pub const fn operator_listen(&self) -> Option<SocketAddr> {
+        self.operator_listen
     }
 
     /// Returns the negotiated control client.
@@ -191,6 +244,31 @@ impl DebugGatewayControlClient {
         }
         DebugGatewayBackendStatus::decode(&reply.payload)
             .map_err(|error| DebugGatewayClientError::InvalidPayload(error.to_string()))
+    }
+
+    /// Returns the stable operator-facing GDB listener address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when transport or framing fails, the
+    /// gateway rejects the query, or the response is not a valid socket address.
+    pub fn operator_listen(&mut self) -> Result<Option<SocketAddr>, DebugGatewayClientError> {
+        let reply = self.request(DebugGatewayMessageKind::OperatorStatus, 0, Vec::new())?;
+        if reply.kind != DebugGatewayMessageKind::OperatorStatusAck {
+            return Err(DebugGatewayClientError::UnexpectedReply {
+                expected: DebugGatewayMessageKind::OperatorStatusAck,
+                actual: reply.kind,
+            });
+        }
+        if reply.payload.is_empty() {
+            return Ok(None);
+        }
+        let value = std::str::from_utf8(&reply.payload)
+            .map_err(|error| DebugGatewayClientError::InvalidPayload(error.to_string()))?;
+        value
+            .parse()
+            .map(Some)
+            .map_err(|_| DebugGatewayClientError::InvalidOperatorListen(value.to_owned()))
     }
 
     /// Connects and validates a candidate private QEMU RSP endpoint.
@@ -406,6 +484,12 @@ pub enum DebugGatewayClientError {
     /// A QEMU endpoint could not be represented by the protocol.
     #[error("QEMU debugger endpoint is not valid UTF-8: {0}")]
     InvalidEndpoint(std::path::PathBuf),
+    /// The gateway reported an invalid operator listener address.
+    #[error("debugger gateway reported invalid operator listener `{0}`")]
+    InvalidOperatorListen(String),
+    /// A direct unauthenticated listener was requested outside loopback.
+    #[error("unauthenticated debugger listener must be loopback, not `{0}`")]
+    UntrustedOperatorListen(SocketAddr),
 }
 
 #[cfg(test)]

@@ -9,20 +9,25 @@
 //! active backend.
 //!
 //! A malformed or disconnected control client is isolated to its connection;
-//! the process and active backend remain available for the next client. RSP
-//! relay and guest channels intentionally fail closed until their persistent
-//! asynchronous pumps are implemented.
+//! the process and active backend remain available for the next client. The
+//! stable operator listener relays allowlisted read-only RSP traffic across
+//! backend replacement. Scheduler run control and guest channels intentionally
+//! fail closed until their dedicated host and shared-memory routes are active.
 
 #![forbid(unsafe_code)]
 
+use std::collections::VecDeque;
 use std::env;
 use std::io::{self, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crucible_debug_gateway::{
-    BackendGeneration, DebugGateway, QemuRspEndpoint, RspSessionState, RspStreamDecoder, RspUnit,
+    BackendGeneration, DebugGateway, QemuRspEndpoint, RspDisposition, RspSessionState,
+    RspStreamDecoder, RspUnit, classify_rsp_packet,
 };
 use crucible_protocol::debug_gateway::{
     DEBUG_GATEWAY_HEADER_LEN, DEBUG_GATEWAY_MAX_PAYLOAD, DebugGatewayBackendIdentity,
@@ -32,18 +37,29 @@ use crucible_protocol::debug_gateway::{
 
 struct GatewayProcess {
     model: DebugGateway,
-    _active: Option<UnixStream>,
-    prepared: Option<(BackendGeneration, UnixStream)>,
+    active: Option<(BackendGeneration, UnixStream)>,
+    prepared: Option<(BackendGeneration, UnixStream, u64)>,
+    operator_listen: Option<SocketAddr>,
+    operator_writer: Option<TcpStream>,
+    rsp_responses_pending: usize,
+    rsp_state_epoch: u64,
+    replacement_epoch: u64,
 }
 
 const QEMU_RSP_TIMEOUT: Duration = Duration::from_secs(5);
+const RSP_RELAY_POLL_TIMEOUT: Duration = Duration::from_millis(10);
 
 impl GatewayProcess {
-    fn new() -> Self {
+    fn new(operator_listen: Option<SocketAddr>) -> Self {
         Self {
             model: DebugGateway::new(),
-            _active: None,
+            active: None,
             prepared: None,
+            operator_listen,
+            operator_writer: None,
+            rsp_responses_pending: 0,
+            rsp_state_epoch: 0,
+            replacement_epoch: 0,
         }
     }
 
@@ -52,47 +68,45 @@ impl GatewayProcess {
             DebugGatewayMessageKind::Hello => {
                 response(DebugGatewayMessageKind::HelloAck, 0, b"debug-gateway.v1")
             }
-            DebugGatewayMessageKind::BackendPrepare => {
-                let path = String::from_utf8(frame.payload)
-                    .map_err(|error| format!("backend endpoint is not UTF-8: {error}"))?;
-                let endpoint = QemuRspEndpoint::new(path)
-                    .map_err(|error| format!("validate backend endpoint: {error}"))?;
-                let mut stream = UnixStream::connect(endpoint.as_str())
-                    .map_err(|error| format!("connect candidate QEMU RSP endpoint: {error}"))?;
-                stream
-                    .set_read_timeout(Some(QEMU_RSP_TIMEOUT))
-                    .map_err(|error| format!("set candidate QEMU RSP read timeout: {error}"))?;
-                stream
-                    .set_write_timeout(Some(QEMU_RSP_TIMEOUT))
-                    .map_err(|error| format!("set candidate QEMU RSP write timeout: {error}"))?;
-                validate_and_hydrate_candidate(&mut stream, self.model.rsp_state())?;
-                let prepared = self
-                    .model
-                    .prepare_backend(endpoint)
-                    .map_err(|error| error.to_string())?;
-                self.prepared = Some((prepared.generation, stream));
-                response(
-                    DebugGatewayMessageKind::Ack,
-                    0,
-                    prepared.generation.0.to_be_bytes(),
-                )
-            }
+            DebugGatewayMessageKind::BackendPrepare => Err(String::from(
+                "backend prepare must use the shared candidate dispatcher",
+            )),
             DebugGatewayMessageKind::BackendCommit => {
                 let generation = generation_payload(&frame.payload)?;
                 if self.model.active().map(|active| active.generation) == Some(generation) {
                     return response(DebugGatewayMessageKind::Ack, 0, generation.0.to_be_bytes());
                 }
-                let Some((prepared_generation, stream)) = self.prepared.take() else {
+                if self.rsp_responses_pending != 0 {
+                    return Err(String::from(
+                        "cannot commit a backend while an operator RSP response is pending",
+                    ));
+                }
+                let Some((prepared_generation, stream, hydrated_epoch)) = self.prepared.take()
+                else {
                     return Err(String::from("no candidate QEMU RSP endpoint is prepared"));
                 };
                 if prepared_generation != generation {
-                    self.prepared = Some((prepared_generation, stream));
+                    self.prepared = Some((prepared_generation, stream, hydrated_epoch));
                     return Err(String::from("prepared backend generation mismatch"));
+                }
+                if hydrated_epoch != self.rsp_state_epoch {
+                    self.prepared = Some((prepared_generation, stream, hydrated_epoch));
+                    return Err(String::from(
+                        "prepared backend debugger state is stale; prepare it again",
+                    ));
                 }
                 self.model
                     .commit_backend(generation)
                     .map_err(|error| error.to_string())?;
-                self._active = Some(stream);
+                self.active = Some((generation, stream));
+                if let Some(operator) = self.operator_writer.as_mut() {
+                    operator
+                        .write_all(&encode_rsp_packet(b"T05"))
+                        .map_err(|error| {
+                            format!("write replacement stop to operator gdb: {error}")
+                        })?;
+                }
+                self.replacement_epoch = self.replacement_epoch.saturating_add(1);
                 response(DebugGatewayMessageKind::Ack, 0, generation.0.to_be_bytes())
             }
             DebugGatewayMessageKind::BackendAbort => {
@@ -114,6 +128,20 @@ impl GatewayProcess {
                 let payload = status.encode().map_err(|error| error.to_string())?;
                 response(DebugGatewayMessageKind::BackendStatusAck, 0, payload)
             }
+            DebugGatewayMessageKind::OperatorStatus => {
+                if !frame.payload.is_empty() {
+                    return Err(String::from(
+                        "operator status request payload must be empty",
+                    ));
+                }
+                response(
+                    DebugGatewayMessageKind::OperatorStatusAck,
+                    0,
+                    self.operator_listen
+                        .map(|listen| listen.to_string().into_bytes())
+                        .unwrap_or_default(),
+                )
+            }
             DebugGatewayMessageKind::RspData => Err(String::from(
                 "RSP relay is disabled until the persistent asynchronous stream pump is active",
             )),
@@ -127,6 +155,7 @@ impl GatewayProcess {
             DebugGatewayMessageKind::HelloAck
             | DebugGatewayMessageKind::Ack
             | DebugGatewayMessageKind::BackendStatusAck
+            | DebugGatewayMessageKind::OperatorStatusAck
             | DebugGatewayMessageKind::RunControl
             | DebugGatewayMessageKind::Error => {
                 Err(String::from("message kind is not a host request"))
@@ -283,7 +312,366 @@ fn read_frame(stream: &mut UnixStream) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(bytes))
 }
 
-fn serve_connection(process: &mut GatewayProcess, mut stream: UnixStream) -> Result<(), String> {
+type SharedGatewayProcess = Arc<Mutex<GatewayProcess>>;
+
+fn with_gateway<T>(
+    process: &SharedGatewayProcess,
+    operation: impl FnOnce(&mut GatewayProcess) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut process = process
+        .lock()
+        .map_err(|_| String::from("debug gateway shared state is poisoned"))?;
+    operation(&mut process)
+}
+
+fn dispatch_request(
+    process: &SharedGatewayProcess,
+    frame: DebugGatewayFrame,
+) -> Result<DebugGatewayFrame, String> {
+    if frame.kind == DebugGatewayMessageKind::BackendPrepare {
+        prepare_backend(process, frame.payload)
+    } else {
+        with_gateway(process, |process| process.handle(frame))
+    }
+}
+
+fn prepare_backend(
+    process: &SharedGatewayProcess,
+    payload: Vec<u8>,
+) -> Result<DebugGatewayFrame, String> {
+    const MAX_STATE_REPLAY_ATTEMPTS: usize = 3;
+    let path = String::from_utf8(payload)
+        .map_err(|error| format!("backend endpoint is not UTF-8: {error}"))?;
+    let endpoint = QemuRspEndpoint::new(path)
+        .map_err(|error| format!("validate backend endpoint: {error}"))?;
+    for _attempt in 0..MAX_STATE_REPLAY_ATTEMPTS {
+        let state = with_gateway(process, |gateway| Ok(gateway.model.rsp_state().clone()))?;
+        let mut stream = connect_candidate(&endpoint)?;
+        validate_and_hydrate_candidate(&mut stream, &state)?;
+        let committed = with_gateway(process, |gateway| {
+            if gateway.model.rsp_state() != &state {
+                return Ok(None);
+            }
+            let prepared = gateway
+                .model
+                .prepare_backend(endpoint.clone())
+                .map_err(|error| error.to_string())?;
+            gateway.prepared = Some((prepared.generation, stream, gateway.rsp_state_epoch));
+            Ok(Some(prepared))
+        })?;
+        if let Some(prepared) = committed {
+            return response(
+                DebugGatewayMessageKind::Ack,
+                0,
+                prepared.generation.0.to_be_bytes(),
+            );
+        }
+    }
+    Err(String::from(
+        "debugger session state changed repeatedly while preparing candidate backend",
+    ))
+}
+
+fn connect_candidate(endpoint: &QemuRspEndpoint) -> Result<UnixStream, String> {
+    let stream = UnixStream::connect(endpoint.as_str())
+        .map_err(|error| format!("connect candidate QEMU RSP endpoint: {error}"))?;
+    stream
+        .set_read_timeout(Some(QEMU_RSP_TIMEOUT))
+        .map_err(|error| format!("set candidate QEMU RSP read timeout: {error}"))?;
+    stream
+        .set_write_timeout(Some(QEMU_RSP_TIMEOUT))
+        .map_err(|error| format!("set candidate QEMU RSP write timeout: {error}"))?;
+    Ok(stream)
+}
+
+fn spawn_operator_listener(
+    process: SharedGatewayProcess,
+    listener: TcpListener,
+) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name(String::from("crucible-debug-gdb-listener"))
+        .spawn(move || operator_listener_loop(&process, listener))
+        .map(|_| ())
+        .map_err(|error| format!("spawn operator gdb listener: {error}"))
+}
+
+fn operator_listener_loop(process: &SharedGatewayProcess, listener: TcpListener) {
+    for connection in listener.incoming() {
+        match connection {
+            Ok(stream) => {
+                let result = serve_operator_connection(process, stream);
+                let cleanup = deactivate_unrecoverable_backend(process);
+                if let Err(error) = result {
+                    eprintln!(
+                        "crucible-debug-gateway: operator gdb connection closed: {}",
+                        bounded_diagnostic(&error)
+                    );
+                }
+                if let Err(error) = cleanup {
+                    eprintln!(
+                        "crucible-debug-gateway: operator cleanup failed: {}",
+                        bounded_diagnostic(&error)
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!(
+                    "crucible-debug-gateway: accept operator gdb connection: {}",
+                    bounded_diagnostic(&error.to_string())
+                );
+            }
+        }
+    }
+}
+
+fn deactivate_unrecoverable_backend(process: &SharedGatewayProcess) -> Result<(), String> {
+    with_gateway(process, |gateway| {
+        gateway.model.deactivate_backend();
+        gateway.active = None;
+        gateway.operator_writer = None;
+        gateway.rsp_responses_pending = 0;
+        Ok(())
+    })
+}
+
+fn serve_operator_connection(
+    process: &SharedGatewayProcess,
+    mut operator: TcpStream,
+) -> Result<(), String> {
+    operator
+        .set_read_timeout(Some(RSP_RELAY_POLL_TIMEOUT))
+        .map_err(|error| format!("set operator gdb read timeout: {error}"))?;
+    let mut operator_writer = operator
+        .try_clone()
+        .map_err(|error| format!("clone operator gdb stream: {error}"))?;
+    operator_writer
+        .set_write_timeout(Some(QEMU_RSP_TIMEOUT))
+        .map_err(|error| format!("set operator gdb write timeout: {error}"))?;
+    let (mut observed_replacement_epoch, mut synthetic_stop_ack_pending) =
+        with_gateway(process, |gateway| {
+            if gateway.operator_writer.is_some() {
+                return Err(String::from("an operator gdb connection is already active"));
+            }
+            let active = gateway.active.is_some();
+            gateway.operator_writer = Some(operator_writer);
+            if active {
+                let writer = gateway
+                    .operator_writer
+                    .as_mut()
+                    .ok_or_else(|| String::from("operator gdb writer disappeared during attach"))?;
+                writer
+                    .write_all(&encode_rsp_packet(b"T05"))
+                    .map_err(|error| format!("write initial stop to operator gdb: {error}"))?;
+                gateway.replacement_epoch = gateway.replacement_epoch.saturating_add(1);
+            }
+            Ok((gateway.replacement_epoch, active))
+        })?;
+    let mut operator_decoder = RspStreamDecoder::new();
+    let mut backend_decoder = RspStreamDecoder::new();
+    let mut pending_state = VecDeque::<Vec<u8>>::new();
+    let mut buffer = [0_u8; 4096];
+
+    loop {
+        let replacement_epoch = with_gateway(process, |gateway| Ok(gateway.replacement_epoch))?;
+        if replacement_epoch != observed_replacement_epoch {
+            observed_replacement_epoch = replacement_epoch;
+            backend_decoder = RspStreamDecoder::new();
+            pending_state.clear();
+            synthetic_stop_ack_pending = true;
+        }
+
+        match operator.read(&mut buffer) {
+            Ok(0) => return Ok(()),
+            Ok(read) => {
+                let units = operator_decoder
+                    .push(&buffer[..read])
+                    .map_err(|error| format!("decode operator RSP stream: {error}"))?;
+                for unit in units {
+                    handle_operator_rsp_unit(
+                        process,
+                        unit,
+                        &mut pending_state,
+                        &mut synthetic_stop_ack_pending,
+                    )?;
+                }
+            }
+            Err(error) if is_poll_timeout(&error) => {}
+            Err(error) => return Err(format!("read operator gdb stream: {error}")),
+        }
+
+        let Some(read) = read_and_forward_active_backend(process, &mut buffer)? else {
+            continue;
+        };
+        let units = backend_decoder
+            .push(&buffer[..read])
+            .map_err(|error| format!("decode QEMU RSP stream: {error}"))?;
+        for unit in units {
+            match unit {
+                RspUnit::Nack => {
+                    pending_state.pop_front();
+                    resolve_pending_response(process)?;
+                }
+                RspUnit::Packet(response) if !is_async_console_packet(&response) => {
+                    if let Some(request) = pending_state.pop_front() {
+                        record_semantic_response(process, &request, &response)?;
+                        resolve_pending_response(process)?;
+                    }
+                }
+                RspUnit::Ack | RspUnit::Interrupt | RspUnit::Packet(_) => {}
+            }
+        }
+    }
+}
+
+fn read_and_forward_active_backend(
+    process: &SharedGatewayProcess,
+    buffer: &mut [u8],
+) -> Result<Option<usize>, String> {
+    with_gateway(process, |gateway| {
+        let Some((_, stream)) = gateway.active.as_mut() else {
+            return Ok(None);
+        };
+        stream
+            .set_read_timeout(Some(RSP_RELAY_POLL_TIMEOUT))
+            .map_err(|error| format!("set active QEMU RSP read timeout: {error}"))?;
+        let read = match stream.read(buffer) {
+            Ok(0) => Err(String::from("active QEMU RSP backend closed")),
+            Ok(read) => Ok(Some(read)),
+            Err(error) if is_poll_timeout(&error) => Ok(None),
+            Err(error) => Err(format!("read active QEMU RSP backend: {error}")),
+        }?;
+        if let Some(read) = read {
+            let operator = gateway
+                .operator_writer
+                .as_mut()
+                .ok_or_else(|| String::from("operator gdb connection is not active"))?;
+            operator
+                .write_all(&buffer[..read])
+                .map_err(|error| format!("forward QEMU RSP bytes to operator gdb: {error}"))?;
+        }
+        Ok(read)
+    })
+}
+
+fn handle_operator_rsp_unit(
+    process: &SharedGatewayProcess,
+    unit: RspUnit,
+    pending_state: &mut VecDeque<Vec<u8>>,
+    synthetic_stop_ack_pending: &mut bool,
+) -> Result<(), String> {
+    match unit {
+        RspUnit::Ack if *synthetic_stop_ack_pending => {
+            *synthetic_stop_ack_pending = false;
+            Ok(())
+        }
+        RspUnit::Ack => write_active_backend(process, b"+").map(|_| ()),
+        RspUnit::Nack => write_active_backend(process, b"-").map(|_| ()),
+        RspUnit::Interrupt => write_rsp_rejection(process, b"E31", false),
+        RspUnit::Packet(packet) => match classify_rsp_packet(&packet) {
+            RspDisposition::ForwardToQemu => {
+                if !admit_operator_request(process, &packet)? {
+                    return write_rsp_rejection(process, b"E20", true);
+                }
+                pending_state.push_back(packet);
+                Ok(())
+            }
+            RspDisposition::SchedulerRunControl => write_rsp_rejection(process, b"E31", true),
+            RspDisposition::RejectReadOnly => write_rsp_rejection(process, b"E22", true),
+            RspDisposition::RejectUnsupported => write_rsp_rejection(process, b"E01", true),
+        },
+    }
+}
+
+fn admit_operator_request(process: &SharedGatewayProcess, packet: &[u8]) -> Result<bool, String> {
+    with_gateway(process, |gateway| {
+        let Some((_, backend)) = gateway.active.as_mut() else {
+            return Ok(false);
+        };
+        backend
+            .write_all(packet)
+            .map_err(|error| format!("forward operator RSP packet to QEMU: {error}"))?;
+        gateway.rsp_responses_pending = gateway.rsp_responses_pending.saturating_add(1);
+        Ok(true)
+    })
+}
+
+fn write_active_backend(process: &SharedGatewayProcess, bytes: &[u8]) -> Result<bool, String> {
+    with_gateway(process, |gateway| {
+        let Some((_, backend)) = gateway.active.as_mut() else {
+            return Ok(false);
+        };
+        backend
+            .write_all(bytes)
+            .map_err(|error| format!("forward operator RSP bytes to QEMU: {error}"))?;
+        Ok(true)
+    })
+}
+
+fn write_rsp_rejection(
+    process: &SharedGatewayProcess,
+    payload: &[u8],
+    acknowledge_request: bool,
+) -> Result<(), String> {
+    if acknowledge_request {
+        write_operator_bytes(process, b"+")?;
+    }
+    write_operator_bytes(process, &encode_rsp_packet(payload))
+}
+
+fn write_operator_bytes(process: &SharedGatewayProcess, bytes: &[u8]) -> Result<(), String> {
+    with_gateway(process, |gateway| {
+        let operator = gateway
+            .operator_writer
+            .as_mut()
+            .ok_or_else(|| String::from("operator gdb connection is not active"))?;
+        operator
+            .write_all(bytes)
+            .map_err(|error| format!("write operator gdb bytes: {error}"))
+    })
+}
+
+fn resolve_pending_response(process: &SharedGatewayProcess) -> Result<(), String> {
+    with_gateway(process, |gateway| {
+        gateway.rsp_responses_pending = gateway.rsp_responses_pending.saturating_sub(1);
+        Ok(())
+    })
+}
+
+fn record_semantic_response(
+    process: &SharedGatewayProcess,
+    request: &[u8],
+    response: &[u8],
+) -> Result<(), String> {
+    if rsp_payload(response) != b"OK" {
+        return Ok(());
+    }
+    with_gateway(process, |gateway| {
+        let before = gateway.model.rsp_state().clone();
+        gateway.model.observe_acknowledged_rsp(request);
+        if gateway.model.rsp_state() != &before {
+            gateway.rsp_state_epoch = gateway.rsp_state_epoch.saturating_add(1);
+        }
+        Ok(())
+    })
+}
+
+fn is_async_console_packet(packet: &[u8]) -> bool {
+    let payload = rsp_payload(packet);
+    payload.starts_with(b"O") && payload != b"OK"
+}
+
+fn rsp_payload(packet: &[u8]) -> &[u8] {
+    &packet[1..packet.len() - 3]
+}
+
+fn is_poll_timeout(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+fn serve_connection(process: &SharedGatewayProcess, mut stream: UnixStream) -> Result<(), String> {
     let mut negotiated = false;
     while let Some(bytes) = read_frame(&mut stream).map_err(|error| error.to_string())? {
         let frame = decode_debug_gateway_frame(&bytes).map_err(|error| error.to_string())?;
@@ -298,7 +686,7 @@ fn serve_connection(process: &mut GatewayProcess, mut stream: UnixStream) -> Res
                 ))
             } else {
                 negotiated = true;
-                process.handle(frame)
+                dispatch_request(process, frame)
             }
         } else if !negotiated {
             error_code = DebugGatewayErrorCode::ProtocolViolation;
@@ -306,7 +694,7 @@ fn serve_connection(process: &mut GatewayProcess, mut stream: UnixStream) -> Res
                 "debug gateway Hello must precede every other request",
             ))
         } else {
-            process.handle(frame)
+            dispatch_request(process, frame)
         }
         .or_else(|message| error_response(error_code, stream_id, &message))?;
         let encoded = reply.encode().map_err(|error| error.to_string())?;
@@ -323,6 +711,7 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
         | DebugGatewayMessageKind::BackendCommit
         | DebugGatewayMessageKind::BackendAbort
         | DebugGatewayMessageKind::BackendStatus => DebugGatewayErrorCode::BackendUnavailable,
+        DebugGatewayMessageKind::OperatorStatus => DebugGatewayErrorCode::InvalidRequest,
         DebugGatewayMessageKind::RspData
         | DebugGatewayMessageKind::ExecOpen
         | DebugGatewayMessageKind::PtyOpen
@@ -333,41 +722,107 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
         | DebugGatewayMessageKind::HelloAck
         | DebugGatewayMessageKind::Ack
         | DebugGatewayMessageKind::BackendStatusAck
+        | DebugGatewayMessageKind::OperatorStatusAck
         | DebugGatewayMessageKind::RunControl
         | DebugGatewayMessageKind::Error => DebugGatewayErrorCode::InvalidRequest,
     }
 }
 
-fn control_socket_argument() -> Result<PathBuf, String> {
+struct GatewayArguments {
+    control_socket: PathBuf,
+    gdb_listen: Option<SocketAddr>,
+}
+
+fn gateway_arguments() -> Result<GatewayArguments, String> {
     let mut arguments = env::args_os();
     let program = arguments.next();
-    let flag = arguments.next();
-    let value = arguments.next();
-    if flag.as_deref() != Some(std::ffi::OsStr::new("--control-socket"))
-        || value.is_none()
-        || arguments.next().is_some()
-    {
-        let program = program
-            .as_deref()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("crucible-debug-gateway");
-        return Err(format!("usage: {program} --control-socket <absolute-path>"));
+    let program = program
+        .as_deref()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or("crucible-debug-gateway");
+    let mut control_socket = None;
+    let mut gdb_listen = None;
+    let mut allow_unauthenticated_gdb = false;
+    while let Some(flag) = arguments.next() {
+        if flag == std::ffi::OsStr::new("--allow-unauthenticated-gdb") {
+            allow_unauthenticated_gdb = true;
+            continue;
+        }
+        let value = arguments.next().ok_or_else(|| gateway_usage(program))?;
+        if flag == std::ffi::OsStr::new("--control-socket") && control_socket.is_none() {
+            control_socket = Some(PathBuf::from(value));
+        } else if flag == std::ffi::OsStr::new("--gdb-listen") {
+            gdb_listen = Some(
+                value
+                    .into_string()
+                    .map_err(|_| String::from("gdb listen address is not UTF-8"))?,
+            );
+        } else {
+            return Err(gateway_usage(program));
+        }
     }
-    let path = PathBuf::from(value.ok_or_else(|| String::from("missing control socket"))?);
-    if !path.is_absolute() {
+    let control_socket = control_socket.ok_or_else(|| String::from("missing control socket"))?;
+    if !control_socket.is_absolute() {
         return Err(String::from("control socket path must be absolute"));
     }
-    Ok(path)
+    if gdb_listen.is_some() && !allow_unauthenticated_gdb {
+        return Err(String::from(
+            "--gdb-listen requires explicit --allow-unauthenticated-gdb trusted-loopback policy",
+        ));
+    }
+    let gdb_listen = allow_unauthenticated_gdb
+        .then(|| gdb_listen.unwrap_or_else(|| String::from("127.0.0.1:0")))
+        .map(|listen| {
+            let listen = listen
+                .parse::<SocketAddr>()
+                .map_err(|error| format!("parse gdb listen address: {error}"))?;
+            if !listen.ip().is_loopback() {
+                return Err(String::from(
+                    "standalone gateway gdb listener must use a loopback address",
+                ));
+            }
+            Ok(listen)
+        })
+        .transpose()?;
+    Ok(GatewayArguments {
+        control_socket,
+        gdb_listen,
+    })
+}
+
+fn gateway_usage(program: &str) -> String {
+    format!(
+        "usage: {program} --control-socket <absolute-path> [--allow-unauthenticated-gdb [--gdb-listen <loopback-address>]]"
+    )
 }
 
 fn run() -> Result<(), String> {
-    let path = control_socket_argument()?;
-    let listener = UnixListener::bind(&path)
-        .map_err(|error| format!("bind control socket {}: {error}", path.display()))?;
-    let mut process = GatewayProcess::new();
+    let arguments = gateway_arguments()?;
+    let gdb_listener = arguments
+        .gdb_listen
+        .map(|listen| {
+            TcpListener::bind(listen)
+                .map_err(|error| format!("bind operator gdb listener {listen}: {error}"))
+        })
+        .transpose()?;
+    let operator_listen = gdb_listener
+        .as_ref()
+        .map(TcpListener::local_addr)
+        .transpose()
+        .map_err(|error| format!("inspect operator gdb listener: {error}"))?;
+    let process = Arc::new(Mutex::new(GatewayProcess::new(operator_listen)));
+    if let Some(gdb_listener) = gdb_listener {
+        spawn_operator_listener(process.clone(), gdb_listener)?;
+    }
+    let listener = UnixListener::bind(&arguments.control_socket).map_err(|error| {
+        format!(
+            "bind control socket {}: {error}",
+            arguments.control_socket.display()
+        )
+    })?;
     for connection in listener.incoming() {
         let stream = connection.map_err(|error| format!("accept control connection: {error}"))?;
-        if let Err(error) = serve_connection(&mut process, stream) {
+        if let Err(error) = serve_connection(&process, stream) {
             eprintln!(
                 "crucible-debug-gateway: control connection closed: {}",
                 bounded_diagnostic(&error)
@@ -414,7 +869,7 @@ mod tests {
     }
 
     fn serve_frames(
-        process: &mut GatewayProcess,
+        process: &SharedGatewayProcess,
         frames: Vec<DebugGatewayFrame>,
     ) -> Vec<DebugGatewayFrame> {
         let mut bytes = Vec::new();
@@ -453,29 +908,43 @@ mod tests {
             .unwrap_or_else(|error| panic!("hello should build: {error}"))
     }
 
+    fn test_process() -> SharedGatewayProcess {
+        Arc::new(Mutex::new(GatewayProcess::new(Some(
+            "127.0.0.1:12345"
+                .parse()
+                .unwrap_or_else(|error| panic!("test listener should parse: {error}")),
+        ))))
+    }
+
     #[test]
     fn partial_header_is_a_connection_error_without_mutating_process_state() {
-        let mut process = GatewayProcess::new();
-        let before = process.model.clone();
-        let error = serve_connection(&mut process, write_and_close(b"CRDBG".to_vec()))
+        let process = test_process();
+        let before = with_gateway(&process, |process| Ok(process.model.clone()))
+            .unwrap_or_else(|error| panic!("test process should lock: {error}"));
+        let error = serve_connection(&process, write_and_close(b"CRDBG".to_vec()))
             .expect_err("partial header must fail");
 
         assert!(error.contains("truncated debugger gateway frame header"));
-        assert_eq!(process.model, before);
+        let after = with_gateway(&process, |process| Ok(process.model.clone()))
+            .unwrap_or_else(|error| panic!("test process should lock: {error}"));
+        assert_eq!(after, before);
     }
 
     #[test]
     fn truncated_payload_is_a_connection_error_without_mutating_process_state() {
-        let mut process = GatewayProcess::new();
-        let before = process.model.clone();
+        let process = test_process();
+        let before = with_gateway(&process, |process| Ok(process.model.clone()))
+            .unwrap_or_else(|error| panic!("test process should lock: {error}"));
         let mut bytes = DebugGatewayFrame::v1(DebugGatewayMessageKind::Hello, 0, b"v1".to_vec())
             .unwrap_or_else(|error| panic!("hello should build: {error}"))
             .encode()
             .unwrap_or_else(|error| panic!("hello should encode: {error}"));
         bytes.pop();
 
-        assert!(serve_connection(&mut process, write_and_close(bytes)).is_err());
-        assert_eq!(process.model, before);
+        assert!(serve_connection(&process, write_and_close(bytes)).is_err());
+        let after = with_gateway(&process, |process| Ok(process.model.clone()))
+            .unwrap_or_else(|error| panic!("test process should lock: {error}"));
+        assert_eq!(after, before);
     }
 
     #[test]
@@ -494,8 +963,8 @@ mod tests {
             .shutdown(std::net::Shutdown::Write)
             .unwrap_or_else(|error| panic!("test client should half-close: {error}"));
 
-        let mut process = GatewayProcess::new();
-        serve_connection(&mut process, server)
+        let process = test_process();
+        serve_connection(&process, server)
             .unwrap_or_else(|error| panic!("valid rejected request should be served: {error}"));
         let reply = read_frame(&mut client)
             .unwrap_or_else(|error| panic!("reply should read: {error}"))
@@ -519,22 +988,163 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_recovers_prepare_whose_acknowledgement_was_lost() {
-        let mut process = GatewayProcess::new();
+    fn persistent_rsp_state_requires_semantic_ok_response() {
+        let process = test_process();
+        let request = encode_rsp_packet(b"Z1,4000,1");
+        record_semantic_response(&process, &request, &encode_rsp_packet(b"E22"))
+            .unwrap_or_else(|error| panic!("semantic rejection should record: {error}"));
+        let (state_after_error, epoch_after_error) = with_gateway(&process, |gateway| {
+            Ok((gateway.model.rsp_state().clone(), gateway.rsp_state_epoch))
+        })
+        .unwrap_or_else(|error| panic!("test process should lock: {error}"));
+        assert!(state_after_error.hardware_breakpoints.is_empty());
+        assert_eq!(epoch_after_error, 0);
+
+        record_semantic_response(&process, &request, &encode_rsp_packet(b"OK"))
+            .unwrap_or_else(|error| panic!("semantic success should record: {error}"));
+        let (state_after_ok, epoch_after_ok) = with_gateway(&process, |gateway| {
+            Ok((gateway.model.rsp_state().clone(), gateway.rsp_state_epoch))
+        })
+        .unwrap_or_else(|error| panic!("test process should lock: {error}"));
+        assert!(
+            state_after_ok
+                .hardware_breakpoints
+                .contains(b"Z1,4000,1".as_slice())
+        );
+        assert_eq!(epoch_after_ok, 1);
+    }
+
+    #[test]
+    fn commit_rejects_candidate_hydrated_before_rsp_state_change() {
+        let process = test_process();
         let endpoint = QemuRspEndpoint::new("/run/crucible/qemu-candidate.sock")
             .unwrap_or_else(|error| panic!("candidate endpoint should build: {error}"));
-        let prepared = process
-            .model
-            .prepare_backend(endpoint)
-            .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
+        let (stream, peer) = UnixStream::pair()
+            .unwrap_or_else(|error| panic!("backend stream pair should open: {error}"));
+        let prepared = with_gateway(&process, |gateway| {
+            let prepared = gateway
+                .model
+                .prepare_backend(endpoint)
+                .map_err(|error| error.to_string())?;
+            gateway.prepared = Some((prepared.generation, stream, gateway.rsp_state_epoch));
+            Ok(prepared)
+        })
+        .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
+        record_semantic_response(
+            &process,
+            &encode_rsp_packet(b"Hg1"),
+            &encode_rsp_packet(b"OK"),
+        )
+        .unwrap_or_else(|error| panic!("thread selection should record: {error}"));
+        let commit = DebugGatewayFrame::v1(
+            DebugGatewayMessageKind::BackendCommit,
+            0,
+            prepared.generation.0.to_be_bytes(),
+        )
+        .unwrap_or_else(|error| panic!("commit should build: {error}"));
+
+        let error = with_gateway(&process, |gateway| gateway.handle(commit))
+            .expect_err("stale prepared debugger state must reject commit");
+        assert!(error.contains("stale"));
+        let active = with_gateway(&process, |gateway| Ok(gateway.model.active().cloned()))
+            .unwrap_or_else(|error| panic!("test process should lock: {error}"));
+        assert!(active.is_none());
+        drop(peer);
+    }
+
+    #[test]
+    fn packet_admitted_after_commit_barrier_reaches_only_new_backend() {
+        let process = test_process();
+        let (old_stream, mut old_peer) = UnixStream::pair()
+            .unwrap_or_else(|error| panic!("old backend pair should open: {error}"));
+        let (new_stream, mut new_peer) = UnixStream::pair()
+            .unwrap_or_else(|error| panic!("new backend pair should open: {error}"));
+        old_peer
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap_or_else(|error| panic!("old backend timeout should set: {error}"));
+        new_peer
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap_or_else(|error| panic!("new backend timeout should set: {error}"));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .unwrap_or_else(|error| panic!("operator listener should bind: {error}"));
+        let operator_peer = TcpStream::connect(
+            listener
+                .local_addr()
+                .unwrap_or_else(|error| panic!("operator address should inspect: {error}")),
+        )
+        .unwrap_or_else(|error| panic!("operator peer should connect: {error}"));
+        let (operator_writer, _) = listener
+            .accept()
+            .unwrap_or_else(|error| panic!("operator writer should accept: {error}"));
+        let new_generation = with_gateway(&process, |gateway| {
+            let old = gateway
+                .model
+                .prepare_backend(
+                    QemuRspEndpoint::new("/run/crucible/old.sock")
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            gateway
+                .model
+                .commit_backend(old.generation)
+                .map_err(|error| error.to_string())?;
+            gateway.active = Some((old.generation, old_stream));
+            let new = gateway
+                .model
+                .prepare_backend(
+                    QemuRspEndpoint::new("/run/crucible/new.sock")
+                        .map_err(|error| error.to_string())?,
+                )
+                .map_err(|error| error.to_string())?;
+            gateway.prepared = Some((new.generation, new_stream, gateway.rsp_state_epoch));
+            gateway.operator_writer = Some(operator_writer);
+            Ok(new.generation)
+        })
+        .unwrap_or_else(|error| panic!("backend fixture should configure: {error}"));
+        let commit = DebugGatewayFrame::v1(
+            DebugGatewayMessageKind::BackendCommit,
+            0,
+            new_generation.0.to_be_bytes(),
+        )
+        .unwrap_or_else(|error| panic!("commit should build: {error}"));
+        with_gateway(&process, |gateway| gateway.handle(commit))
+            .unwrap_or_else(|error| panic!("commit barrier should complete: {error}"));
+        assert!(
+            write_active_backend(&process, b"$g#67")
+                .unwrap_or_else(|error| panic!("post-commit packet should write: {error}"))
+        );
+
+        let mut packet = [0_u8; 5];
+        new_peer
+            .read_exact(&mut packet)
+            .unwrap_or_else(|error| panic!("new backend should receive packet: {error}"));
+        assert_eq!(&packet, b"$g#67");
+        let mut old_byte = [0_u8; 1];
+        assert!(old_peer.read(&mut old_byte).is_err());
+        drop(operator_peer);
+    }
+
+    #[test]
+    fn reconnect_recovers_prepare_whose_acknowledgement_was_lost() {
+        let process = test_process();
+        let endpoint = QemuRspEndpoint::new("/run/crucible/qemu-candidate.sock")
+            .unwrap_or_else(|error| panic!("candidate endpoint should build: {error}"));
         let (stream, peer) = UnixStream::pair()
             .unwrap_or_else(|error| panic!("backend stream pair should open: {error}"));
         drop(peer);
-        process.prepared = Some((prepared.generation, stream));
+        let prepared = with_gateway(&process, |process| {
+            let prepared = process
+                .model
+                .prepare_backend(endpoint)
+                .map_err(|error| error.to_string())?;
+            process.prepared = Some((prepared.generation, stream, process.rsp_state_epoch));
+            Ok(prepared)
+        })
+        .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
 
         let status = DebugGatewayFrame::v1(DebugGatewayMessageKind::BackendStatus, 0, Vec::new())
             .unwrap_or_else(|error| panic!("status request should build: {error}"));
-        let replies = serve_frames(&mut process, vec![hello(), status]);
+        let replies = serve_frames(&process, vec![hello(), status]);
         let recovered = DebugGatewayBackendStatus::decode(&replies[1].payload)
             .unwrap_or_else(|error| panic!("status should decode: {error}"));
 
@@ -548,17 +1158,21 @@ mod tests {
 
     #[test]
     fn reconnect_repeats_commit_whose_acknowledgement_was_lost() {
-        let mut process = GatewayProcess::new();
+        let process = test_process();
         let endpoint = QemuRspEndpoint::new("/run/crucible/qemu-candidate.sock")
             .unwrap_or_else(|error| panic!("candidate endpoint should build: {error}"));
-        let prepared = process
-            .model
-            .prepare_backend(endpoint)
-            .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
         let (stream, peer) = UnixStream::pair()
             .unwrap_or_else(|error| panic!("backend stream pair should open: {error}"));
         drop(peer);
-        process.prepared = Some((prepared.generation, stream));
+        let prepared = with_gateway(&process, |process| {
+            let prepared = process
+                .model
+                .prepare_backend(endpoint)
+                .map_err(|error| error.to_string())?;
+            process.prepared = Some((prepared.generation, stream, process.rsp_state_epoch));
+            Ok(prepared)
+        })
+        .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
         let commit = DebugGatewayFrame::v1(
             DebugGatewayMessageKind::BackendCommit,
             0,
@@ -566,12 +1180,11 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("commit should build: {error}"));
 
-        let _lost_reply = process
-            .handle(commit.clone())
+        let _lost_reply = with_gateway(&process, |process| process.handle(commit.clone()))
             .unwrap_or_else(|error| panic!("first commit should succeed: {error}"));
         let status = DebugGatewayFrame::v1(DebugGatewayMessageKind::BackendStatus, 0, Vec::new())
             .unwrap_or_else(|error| panic!("status request should build: {error}"));
-        let replies = serve_frames(&mut process, vec![hello(), commit, status]);
+        let replies = serve_frames(&process, vec![hello(), commit, status]);
         let recovered = DebugGatewayBackendStatus::decode(&replies[2].payload)
             .unwrap_or_else(|error| panic!("status should decode: {error}"));
 

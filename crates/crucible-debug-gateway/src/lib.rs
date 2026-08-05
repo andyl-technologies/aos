@@ -82,6 +82,14 @@ impl DebugGateway {
         self.active.as_ref()
     }
 
+    /// Drops the active backend after an unrecoverable relay failure.
+    ///
+    /// Persistent acknowledged GDB session state is retained for a later
+    /// validated replacement backend.
+    pub fn deactivate_backend(&mut self) -> Option<PreparedBackend> {
+        self.active.take()
+    }
+
     /// Returns the candidate backend awaiting commit, when present.
     #[must_use]
     pub const fn prepared(&self) -> Option<&PreparedBackend> {

@@ -2088,6 +2088,7 @@ version = "0.1.0"
 dependencies = [
  "crucible-api",
  "crucible-protocol",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
