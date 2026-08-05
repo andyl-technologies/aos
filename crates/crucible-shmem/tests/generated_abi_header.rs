@@ -12,6 +12,13 @@ fn committed_header_matches_generated_rust_layout() {
 }
 
 #[test]
+fn generated_header_preserves_public_abi_license_notice() {
+    let header = generated_c_header();
+    assert!(header.starts_with("/* SPDX-License-Identifier: MIT OR Apache-2.0 */\n"));
+    assert!(header.contains("Public process ABI: independently implementable"));
+}
+
+#[test]
 fn generated_header_asserts_every_shared_struct_layout() {
     let header = generated_c_header();
     for needle in [

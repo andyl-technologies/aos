@@ -13,6 +13,11 @@ Read [`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md) and
 [`02-glossary.md`](02-glossary.md) first — this file uses their vocabulary and
 invariant IDs (`INV-*`) without redefining them.
 
+The diagram also represents a license boundary: the Apache host and GPL-side
+QEMU/plugin are separate processes joined only by the public socket and
+shared-memory protocols. The normative component and protocol constraints are
+in [`37-licensing-process-boundary.md`](37-licensing-process-boundary.md).
+
 ## 1. The system in one diagram and one walkthrough
 
 Crucible turns an immutable test definition into a reproducible distributed-systems

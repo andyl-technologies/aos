@@ -149,12 +149,25 @@ in
       shmem_generated_header=${qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
       shmem_generated_header_hash=${qemu-crucible.passthru.shmemHeaderHash}
       plugin_abi=crucible-shmem-abi-v$shmem_abi_version
+      component=qemu-in-process-adapter
+      component_license=GPL-2.0-only
       INFO
+
+      mkdir -p "$out/share/licenses/crucible-qemu-plugin"
+      cp ${../../LICENSES/GPL-2.0-only.txt} \
+        "$out/share/licenses/crucible-qemu-plugin/GPL-2.0.txt"
+      cp ${../../LICENSES/MIT.txt} \
+        "$out/share/licenses/crucible-qemu-plugin/MIT.txt"
+      cat > "$out/share/licenses/crucible-qemu-plugin/COMPONENT" <<'LICENSE_SCOPE'
+      crucible-qemu-plugin is an in-process QEMU adapter.
+      SPDX-License-Identifier: GPL-2.0-only
+      crucible-protocol and crucible-shmem are used under their MIT option.
+      LICENSE_SCOPE
     '';
 
     meta = {
       description = "Crucible QEMU plugin cdylib built against AOS QEMU headers";
       homepage = "https://github.com/andyl/andyl-os";
-      license = "MIT";
+      license = "GPL-2.0-only";
     };
   }

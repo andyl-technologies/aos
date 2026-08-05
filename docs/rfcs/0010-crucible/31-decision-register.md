@@ -471,7 +471,7 @@ genuinely unresolved and is tracked as a spike in
     bounded liveness, end-state, coverage) with reproducible, hashed semantics.
 - **Affects:** [NG-3], [ASRT-1], [ASRT-2]; files 01, 18, 19.
 
-### D-15 — Shared-memory co-sim transport over IPC barriers; the shmem ABI is the single source of truth
+### D-15 — Shared-memory data plane over IPC barriers; the shmem ABI is a public process protocol
 
 - **Status:** Decided
 - **Decision:** The host↔plugin co-simulation transport is a **`#[repr(C)]`
@@ -480,8 +480,8 @@ genuinely unresolved and is tracked as a spike in
   wake — not an IPC-barrier / message-passing rendezvous. Every input carries its
   **delivery icount in-band** so the consumer is time-driven, not arrival-driven.
   The shared-memory layout (the `crucible-shmem` ABI) is the **single, explicitly
-  versioned source of truth** for the boundary, covered by conformance
-  tests/golden vectors.
+  versioned public protocol** for the data-plane boundary, covered by conformance
+  tests/golden vectors and independently implementable from its public semantics.
 - **Rationale:** The most important correctness property of the transport is that
   a payload's *presence* on a queue never determines its *visibility* to the
   guest ([DET-13], [DET-34]); the consumer reads the in-band delivery icount and
@@ -491,7 +491,7 @@ genuinely unresolved and is tracked as a spike in
   unless every message also carried the icount — at which point the barrier is
   pure overhead over the shmem queue. Shared memory with a futex wake is also the
   lowest-latency option, which matters for the per-quantum handshake cost (G-9).
-  Making the `#[repr(C)]` layout the single versioned source of truth (rather than
+  Making the public, versioned layout a single source of truth (rather than
   a hand-maintained protocol doc plus a struct) means host and plugin cannot drift,
   and golden vectors pin the wire format across versions ([G-8]).
 - **Alternatives considered:**
@@ -500,9 +500,11 @@ genuinely unresolved and is tracked as a spike in
     discipline is harder to enforce.
   - *Two sources of truth (a prose protocol spec + an independently-written
     struct).* Rejected: they drift; the ABI struct is canonical and conformance
-    vectors test it.
+  vectors test it. Rust may remain the mechanically checked schema source that
+  generates the C view, but neither process may expose private implementation
+  objects through the region ([BOUND-6], [BOUND-7]).
 - **Affects:** [G-8], [G-9], [INV-3], [DET-11], [DET-13], [DET-34], [SHM-*],
-  [PROTO-*]; files 04 (§4.4, §4.9), 13, 14.
+  [PROTO-*], [BOUND-4]–[BOUND-8]; files 04 (§4.4, §4.9), 13, 14, 37.
 
 ### D-16 — QEMU patches are inert unless sim mode is active
 

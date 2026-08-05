@@ -334,16 +334,19 @@ error, never a late delivery.
 
 ---
 
-## 29.3 The lock-free SPSC ring + per-node ceiling + futex wake
+## 29.3 The lock-free SPSC ring + per-node ceiling + futex/eventfd wake
 
 **Intent.** Cross-node frame delivery and per-node advancement are coordinated
-through a single shared-memory region (13) using **atomics plus one cross-process
-futex** — no IPC round-trip on the hot path. Each directed `(src, dst)` pair owns
+through a single shared-memory region (13) using **atomics plus a cross-process
+futex and the QEMU-facing eventfd nudge** — no socket/control round trip on the
+hot path. Each directed `(src, dst)` pair owns
 a Lamport single-producer/single-consumer ring whose head and tail sit on
 separate cache lines; the producer publishes an entry with a *release* store of
 the tail and the consumer reads the tail with *acquire* before touching the entry.
 A node that reaches its scheduler-set ceiling parks on its slot's futex word using
-the race-free publish-precondition / read-counter / re-check / wait idiom.
+the race-free publish-precondition / read-counter / re-check / wait idiom. The
+host also writes the registered plugin eventfd at least once per quantum so
+QEMU's main loop re-enters the callbacks that read shared state.
 
 **Invariants.** One producer, one consumer per ring; neither endpoint writes the
 other's index ([SHM-19]); `release` on publish / `acquire` on observe, no
@@ -354,7 +357,8 @@ enqueue, and deliverability is `delivery_icount <= current_icount` —
 icount, never wall-clock ([SHM-33], [SHM-35]).
 
 **Realizes.** [`13-shmem-abi.md`](13-shmem-abi.md) §§13.6, 13.7, 13.9
-(SPSC mechanics, the ceiling handshake, the futex, icount-not-wallclock delivery).
+(SPSC mechanics, the ceiling handshake, futex/eventfd wake roles,
+icount-not-wallclock delivery).
 
 ```rust,illustrative
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -431,6 +435,12 @@ fn wake(slot: &NodeSlot) {
     futex_wake_shared(&slot.wake_signal, 1);
 }
 
+/// Nudge QEMU's registered main-loop source at least once per quantum. The
+/// counter carries no state; callbacks re-read the authoritative shared region.
+fn nudge_qemu_quantum(plugin_wake_eventfd: RawFd) {
+    eventfd_write(plugin_wake_eventfd, 1);
+}
+
 /// Deliverability is a pure function of two icounts ([SHM-33]): a frame is
 /// architecturally visible iff its delivery icount has been reached. The
 /// wall-clock moment the producer's store landed is irrelevant.
@@ -446,11 +456,12 @@ Two things make this correct and not merely fast: the *release/acquire* pairing
 futex calls compile to no-ops so the pure atomic/SPSC logic still unit-tests
 ([SHM-28]); the blocking path is never exercised off a simulation host.
 
-- **[PAT-4]** The transport SHOULD follow the SPSC + ceiling + futex shape in
+- **[PAT-4]** The transport SHOULD follow the SPSC + ceiling + futex/eventfd shape in
   §29.3: one Lamport ring per directed pair with cache-line-separated indices,
   release-on-publish / acquire-on-observe ordering, a power-of-two capacity, the
   non-private race-free futex idiom, *write inbound input before waking*, and
-  icount-not-wallclock deliverability. *Spec:* [`13-shmem-abi.md`](13-shmem-abi.md)
+  a required host eventfd nudge consumed by QEMU's registered main-loop handler,
+  while icount-not-wallclock shared state remains authoritative. *Spec:* [`13-shmem-abi.md`](13-shmem-abi.md)
   §§13.6, 13.7, 13.9 ([SHM-19], [SHM-20], [SHM-24]–[SHM-27], [SHM-33], [SHM-35]).
 
 - **[PAT-5]** The SPSC ring SHOULD be covered by property-based and `loom`-style
@@ -1162,7 +1173,7 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     `checks.crucible.phase1.executionBake`,
     `checks.crucible.phase1.executionStartResumeFork`, and
     `checks.crucible.phase1.gates.singleVmFingerprint` gate the pattern.
-- [x] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex follow the
+- [x] **T-PAT-3** Ensure the SPSC ring + ceiling handshake + futex/eventfd wakes follow the
   §29.3 shape and carry the `loom`/property concurrency tests. — satisfies
   [PAT-4], [PAT-5]; realized by **T-SHM-6**, **T-SHM-8**, **T-SHM-9**,
   **T-SHM-15** (spec 13 §§13.6, 13.7, 13.9).
@@ -1184,7 +1195,7 @@ check, precisely because the model collapsed them into one ([EXEC-31]).
     wake ordering, idle/wake races, non-private futex behavior, and scheduler/
     frame wake triggers.
     Summary: the shared-memory transport now follows the §29.3 SPSC + ceiling +
-    futex pattern, with focused model/property and wake-order tests covering the
+    futex/eventfd pattern, with focused model/property and wake-order tests covering the
     concurrency invariants.
 - [x] **T-PAT-8** Ensure every wire surface follows the §29.8 framed-codec shape
   with round-trip + no-panic fuzz properties. — satisfies [PAT-10]; realized by

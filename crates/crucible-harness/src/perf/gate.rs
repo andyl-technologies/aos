@@ -50,7 +50,7 @@ const PEAK_RSS_UNITS: u64 = 64;
 /// - **[PERF-15]** coverage extraction does not change the result fingerprint.
 /// - **[PERF-16]** fork cost scales with delta, not absolute state size.
 /// - **[PERF-18]** replay cost is bounded by suffix length.
-/// - **[PERF-8]** the advance path issues zero per-quantum IPC round-trips.
+/// - **[PERF-8]** the advance path issues zero per-quantum socket/control round trips.
 /// - **[PERF-12]**, **[PERF-17]** snapshot capture and restore latency scale with
 ///   changed state, not total state.
 /// - **[PERF-20]** the run pins a host profile.
@@ -137,19 +137,85 @@ fn with_latency_evidence(
 }
 
 fn assert_no_per_quantum_ipc() -> Result<AdvanceSyscallCount, PerfBenchError> {
-    // Over a fixed advance workload, the only syscalls charged to the advance
-    // path are futex park/wakes; there are zero per-quantum IPC round-trips.
-    let count = advance_syscall_count(10_000, 7);
-    if count.per_quantum_ipc_round_trips != 0 {
+    // Arithmetic bookkeeping: each quantum has an unconditional futex wake and
+    // plugin-eventfd write, plus explicit actual futex waits, service/delivery
+    // futex wakes, host poll sleeps, and unchanged-icount/service eventfd writes.
+    // This is not runtime syscall observation and excludes QEMU-side eventfd
+    // reads and event-loop poll entries.
+    let count = advance_syscall_count(10_000, 8, 4, 5, 3, 2, 6);
+    if count.per_quantum_socket_control_round_trips != 0 {
         return Err(PerfBenchError::PerQuantumIpcRoundTrip {
-            round_trips: count.per_quantum_ipc_round_trips,
+            round_trips: count.per_quantum_socket_control_round_trips,
         });
     }
-    // Futex park/wake must be bounded by park events, not by quanta: it must not
-    // scale with the fixed workload's quantum count.
-    if count.futex_park_wake > count.quanta {
-        return Err(PerfBenchError::PerQuantumIpcRoundTrip {
-            round_trips: count.futex_park_wake,
+    let expected_futex_wake_wait = count
+        .quanta
+        .saturating_add(8)
+        .saturating_add(4)
+        .saturating_add(5);
+    if count.futex_wake_wait != expected_futex_wake_wait {
+        return Err(PerfBenchError::AdvanceKernelEntryAccounting {
+            entry: "futex wake/wait",
+            expected: expected_futex_wake_wait,
+            actual: count.futex_wake_wait,
+        });
+    }
+    for (entry, expected, actual) in [
+        (
+            "ceiling futex wake",
+            count.quanta,
+            count.futex_ceiling_wakes,
+        ),
+        ("actual futex wait", 8, count.futex_wait_calls),
+        (
+            "service-release futex wake",
+            4,
+            count.futex_service_release_wakes,
+        ),
+        ("delivery futex wake", 5, count.futex_delivery_wakes),
+    ] {
+        if actual != expected {
+            return Err(PerfBenchError::AdvanceKernelEntryAccounting {
+                entry,
+                expected,
+                actual,
+            });
+        }
+    }
+    if count.eventfd_quantum_wake_writes != count.quanta {
+        return Err(PerfBenchError::AdvanceKernelEntryAccounting {
+            entry: "initial quantum eventfd wake-write",
+            expected: count.quanta,
+            actual: count.eventfd_quantum_wake_writes,
+        });
+    }
+    let expected_eventfd_wake_writes = count.quanta.saturating_add(3).saturating_add(2);
+    if count.eventfd_wake_writes != expected_eventfd_wake_writes {
+        return Err(PerfBenchError::AdvanceKernelEntryAccounting {
+            entry: "total eventfd wake-write",
+            expected: expected_eventfd_wake_writes,
+            actual: count.eventfd_wake_writes,
+        });
+    }
+    if count.eventfd_unchanged_icount_wake_writes != 3 {
+        return Err(PerfBenchError::AdvanceKernelEntryAccounting {
+            entry: "unchanged-icount eventfd wake-write",
+            expected: 3,
+            actual: count.eventfd_unchanged_icount_wake_writes,
+        });
+    }
+    if count.eventfd_service_wake_writes != 2 {
+        return Err(PerfBenchError::AdvanceKernelEntryAccounting {
+            entry: "host-I/O service eventfd wake-write",
+            expected: 2,
+            actual: count.eventfd_service_wake_writes,
+        });
+    }
+    if count.host_poll_sleep_calls != 6 {
+        return Err(PerfBenchError::AdvanceKernelEntryAccounting {
+            entry: "host poll sleep call",
+            expected: 6,
+            actual: count.host_poll_sleep_calls,
         });
     }
     Ok(count)
