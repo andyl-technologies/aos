@@ -1,0 +1,1164 @@
+//! Stable typed targets and fault-opportunity identities.
+//!
+//! Production adapters construct an opportunity before evaluating bindings.
+//! Its identity contains only canonical modeled context; host addresses,
+//! callback order, and thread scheduling cannot enter the digest.
+
+use std::error::Error;
+use std::fmt;
+
+use super::{ContentHash, FaultAdapter, FaultPhase, FaultTargetKind};
+
+/// Maximum bytes in an author-supplied fault identifier.
+pub const FAULT_ID_MAX_BYTES: usize = 96;
+
+/// A canonical identifier used by targets, bindings, and adapter-owned objects.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultObjectId(String);
+
+impl FaultObjectId {
+    /// Parses a lower-case, hyphen-separated identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultContractError::InvalidId`] if `value` is empty, too long,
+    /// non-ASCII, begins with a non-letter, ends with a non-alphanumeric byte,
+    /// contains an unsupported byte, or contains adjacent hyphens.
+    pub fn parse(value: impl Into<String>) -> Result<Self, FaultContractError> {
+        let value = value.into();
+        if !valid_id(&value) {
+            return Err(FaultContractError::InvalidId { value });
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the canonical identifier text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for FaultObjectId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+fn valid_id(value: &str) -> bool {
+    if value.is_empty() || value.len() > FAULT_ID_MAX_BYTES || !value.is_ascii() {
+        return false;
+    }
+    let bytes = value.as_bytes();
+    if !bytes[0].is_ascii_lowercase() || !bytes[bytes.len() - 1].is_ascii_alphanumeric() {
+        return false;
+    }
+    let mut previous_hyphen = false;
+    for byte in bytes {
+        let hyphen = *byte == b'-';
+        if !(byte.is_ascii_lowercase() || byte.is_ascii_digit() || hyphen)
+            || (hyphen && previous_hyphen)
+        {
+            return false;
+        }
+        previous_hyphen = hyphen;
+    }
+    true
+}
+
+/// A direction attached to an opportunity when the operation is directional.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FaultDirection {
+    /// From endpoint A toward endpoint B.
+    AToB,
+    /// From endpoint B toward endpoint A.
+    BToA,
+    /// Into the named target.
+    Ingress,
+    /// Out of the named target.
+    Egress,
+    /// A read from a target into its consumer.
+    Read,
+    /// A write from a producer into its target.
+    Write,
+}
+
+impl FaultDirection {
+    /// Returns the canonical schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AToB => "a_to_b",
+            Self::BToA => "b_to_a",
+            Self::Ingress => "ingress",
+            Self::Egress => "egress",
+            Self::Read => "read",
+            Self::Write => "write",
+        }
+    }
+}
+
+/// A fully resolved, capability-checked target identity.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ResolvedFaultTarget {
+    /// One endpoint interface.
+    NetworkInterface {
+        /// Endpoint identity.
+        endpoint: FaultObjectId,
+        /// Interface identity.
+        interface: FaultObjectId,
+    },
+    /// One directed segment.
+    NetworkSegment {
+        /// Segment identity.
+        segment: FaultObjectId,
+        /// Direction through the segment.
+        direction: FaultDirection,
+    },
+    /// One medium channel or resource.
+    NetworkMedium {
+        /// Medium identity.
+        medium: FaultObjectId,
+        /// Channel or resource identity.
+        resource: FaultObjectId,
+    },
+    /// One queue owned by a forwarder or medium.
+    NetworkQueue {
+        /// Queue owner identity.
+        owner: FaultObjectId,
+        /// Queue identity within the owner.
+        queue: FaultObjectId,
+    },
+    /// One forwarding device.
+    NetworkForwarder {
+        /// Forwarder identity.
+        forwarder: FaultObjectId,
+    },
+    /// One path version and direction.
+    NetworkPath {
+        /// Immutable path-version identity.
+        path_version: FaultObjectId,
+        /// Direction through the path.
+        direction: FaultDirection,
+    },
+    /// One endpoint attachment.
+    NetworkAttachment {
+        /// Endpoint identity.
+        endpoint: FaultObjectId,
+        /// Interface identity.
+        interface: FaultObjectId,
+        /// Attachment identity.
+        attachment: FaultObjectId,
+    },
+    /// One contact between two endpoints.
+    NetworkContact {
+        /// First endpoint identity in canonical endpoint order.
+        endpoint_a: FaultObjectId,
+        /// Second endpoint identity in canonical endpoint order.
+        endpoint_b: FaultObjectId,
+        /// Contact identity.
+        contact: FaultObjectId,
+    },
+    /// One block or flash device.
+    BlockDevice {
+        /// Device content identity.
+        device: ContentHash,
+    },
+    /// One byte-addressed block range.
+    BlockRange {
+        /// Device content identity.
+        device: ContentHash,
+        /// First byte in the range.
+        start_byte: u64,
+        /// Positive range length.
+        length_bytes: u64,
+    },
+    /// One storage controller namespace or path.
+    StorageController {
+        /// Controller identity.
+        controller: FaultObjectId,
+        /// Namespace or path identity.
+        namespace_or_path: FaultObjectId,
+    },
+    /// One array member or path.
+    StorageArray {
+        /// Array identity.
+        array: FaultObjectId,
+        /// Member or path identity.
+        member_or_path: FaultObjectId,
+    },
+    /// One 9p device.
+    NinePDevice {
+        /// Device content identity.
+        device: ContentHash,
+    },
+    /// One emulated node.
+    Node {
+        /// Node identity.
+        node: FaultObjectId,
+    },
+    /// One vCPU in a node.
+    Vcpu {
+        /// Node identity.
+        node: FaultObjectId,
+        /// Stable vCPU index.
+        vcpu: u32,
+    },
+    /// One architecture-resolved register bit range.
+    Register {
+        /// Node identity.
+        node: FaultObjectId,
+        /// Stable vCPU index.
+        vcpu: u32,
+        /// Architecture registry identity.
+        architecture: FaultObjectId,
+        /// Architecture register identity.
+        register: FaultObjectId,
+        /// First selected bit.
+        first_bit: u16,
+        /// Positive selected bit count.
+        bit_count: u16,
+    },
+    /// One range resolved to guest physical memory.
+    MemoryRange {
+        /// Node identity.
+        node: FaultObjectId,
+        /// Declared address-space identity.
+        address_space: FaultObjectId,
+        /// Resolved guest physical address.
+        guest_physical_address: u64,
+        /// Positive range length.
+        length_bytes: u64,
+    },
+    /// One fully routed interrupt identity.
+    Interrupt {
+        /// Node identity.
+        node: FaultObjectId,
+        /// Interrupt controller identity.
+        controller: FaultObjectId,
+        /// Interrupt source identity.
+        source: FaultObjectId,
+        /// Stable target vCPU index.
+        target_vcpu: u32,
+        /// Architecture interrupt vector or type number.
+        vector: u32,
+    },
+    /// One guest-visible clock source.
+    ClockSource {
+        /// Node identity.
+        node: FaultObjectId,
+        /// Clock-source identity.
+        source: FaultObjectId,
+    },
+    /// One accelerator device.
+    Accelerator {
+        /// Node identity.
+        node: FaultObjectId,
+        /// Bus/device/function or declared device identity.
+        device: FaultObjectId,
+    },
+}
+
+impl ResolvedFaultTarget {
+    /// Returns the registered target kind.
+    #[must_use]
+    pub const fn kind(&self) -> FaultTargetKind {
+        match self {
+            Self::NetworkInterface { .. } => FaultTargetKind::NetworkInterface,
+            Self::NetworkSegment { .. } => FaultTargetKind::NetworkSegment,
+            Self::NetworkMedium { .. } => FaultTargetKind::NetworkMedium,
+            Self::NetworkQueue { .. } => FaultTargetKind::NetworkQueue,
+            Self::NetworkForwarder { .. } => FaultTargetKind::NetworkForwarder,
+            Self::NetworkPath { .. } => FaultTargetKind::NetworkPath,
+            Self::NetworkAttachment { .. } => FaultTargetKind::NetworkAttachment,
+            Self::NetworkContact { .. } => FaultTargetKind::NetworkContact,
+            Self::BlockDevice { .. } => FaultTargetKind::BlockDevice,
+            Self::BlockRange { .. } => FaultTargetKind::BlockRange,
+            Self::StorageController { .. } => FaultTargetKind::StorageController,
+            Self::StorageArray { .. } => FaultTargetKind::StorageArray,
+            Self::NinePDevice { .. } => FaultTargetKind::NinePDevice,
+            Self::Node { .. } => FaultTargetKind::Node,
+            Self::Vcpu { .. } => FaultTargetKind::Vcpu,
+            Self::Register { .. } => FaultTargetKind::Register,
+            Self::MemoryRange { .. } => FaultTargetKind::MemoryRange,
+            Self::Interrupt { .. } => FaultTargetKind::Interrupt,
+            Self::ClockSource { .. } => FaultTargetKind::ClockSource,
+            Self::Accelerator { .. } => FaultTargetKind::Accelerator,
+        }
+    }
+
+    /// Validates range and ordering invariants that are not encoded by types.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultContractError::InvalidTarget`] for a zero-sized range,
+    /// overflowing range, empty register selection, invalid register bit end,
+    /// non-network direction, or non-canonical contact endpoint order.
+    pub fn validate(&self) -> Result<(), FaultContractError> {
+        match self {
+            Self::NetworkSegment { direction, .. } | Self::NetworkPath { direction, .. } => {
+                if !matches!(direction, FaultDirection::AToB | FaultDirection::BToA) {
+                    return Err(FaultContractError::InvalidTarget { kind: self.kind() });
+                }
+            }
+            Self::NetworkContact {
+                endpoint_a,
+                endpoint_b,
+                ..
+            } if endpoint_a >= endpoint_b => {
+                return Err(FaultContractError::InvalidTarget { kind: self.kind() });
+            }
+            Self::BlockRange {
+                start_byte,
+                length_bytes,
+                ..
+            }
+            | Self::MemoryRange {
+                guest_physical_address: start_byte,
+                length_bytes,
+                ..
+            } if *length_bytes == 0 || start_byte.checked_add(*length_bytes).is_none() => {
+                return Err(FaultContractError::InvalidTarget { kind: self.kind() });
+            }
+            Self::Register {
+                first_bit,
+                bit_count,
+                ..
+            } if *bit_count == 0 || first_bit.checked_add(*bit_count).is_none() => {
+                return Err(FaultContractError::InvalidTarget { kind: self.kind() });
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn append_canonical(&self, material: &mut String) {
+        material.push_str(self.kind().as_str());
+        material.push(':');
+        match self {
+            Self::NetworkInterface {
+                endpoint,
+                interface,
+            } => push_ids(material, &[endpoint, interface]),
+            Self::NetworkSegment { segment, direction } => {
+                push_ids(material, &[segment]);
+                push_text(material, direction.as_str());
+            }
+            Self::NetworkMedium { medium, resource } => push_ids(material, &[medium, resource]),
+            Self::NetworkQueue { owner, queue } => push_ids(material, &[owner, queue]),
+            Self::NetworkForwarder { forwarder } => push_ids(material, &[forwarder]),
+            Self::NetworkPath {
+                path_version,
+                direction,
+            } => {
+                push_ids(material, &[path_version]);
+                push_text(material, direction.as_str());
+            }
+            Self::NetworkAttachment {
+                endpoint,
+                interface,
+                attachment,
+            } => push_ids(material, &[endpoint, interface, attachment]),
+            Self::NetworkContact {
+                endpoint_a,
+                endpoint_b,
+                contact,
+            } => push_ids(material, &[endpoint_a, endpoint_b, contact]),
+            Self::BlockDevice { device } | Self::NinePDevice { device } => {
+                push_text(material, &device.to_hex());
+            }
+            Self::BlockRange {
+                device,
+                start_byte,
+                length_bytes,
+            } => {
+                push_text(material, &device.to_hex());
+                push_u64(material, *start_byte);
+                push_u64(material, *length_bytes);
+            }
+            Self::StorageController {
+                controller,
+                namespace_or_path,
+            } => push_ids(material, &[controller, namespace_or_path]),
+            Self::StorageArray {
+                array,
+                member_or_path,
+            } => push_ids(material, &[array, member_or_path]),
+            Self::Node { node } => push_ids(material, &[node]),
+            Self::Vcpu { node, vcpu } => {
+                push_ids(material, &[node]);
+                push_u64(material, u64::from(*vcpu));
+            }
+            Self::Register {
+                node,
+                vcpu,
+                architecture,
+                register,
+                first_bit,
+                bit_count,
+            } => {
+                push_ids(material, &[node, architecture, register]);
+                push_u64(material, u64::from(*vcpu));
+                push_u64(material, u64::from(*first_bit));
+                push_u64(material, u64::from(*bit_count));
+            }
+            Self::MemoryRange {
+                node,
+                address_space,
+                guest_physical_address,
+                length_bytes,
+            } => {
+                push_ids(material, &[node, address_space]);
+                push_u64(material, *guest_physical_address);
+                push_u64(material, *length_bytes);
+            }
+            Self::Interrupt {
+                node,
+                controller,
+                source,
+                target_vcpu,
+                vector,
+            } => {
+                push_ids(material, &[node, controller, source]);
+                push_u64(material, u64::from(*target_vcpu));
+                push_u64(material, u64::from(*vector));
+            }
+            Self::ClockSource { node, source } => push_ids(material, &[node, source]),
+            Self::Accelerator { node, device } => push_ids(material, &[node, device]),
+        }
+    }
+}
+
+fn push_ids(material: &mut String, ids: &[&FaultObjectId]) {
+    for id in ids {
+        push_text(material, id.as_str());
+    }
+}
+
+fn push_text(material: &mut String, value: &str) {
+    material.push_str(&value.len().to_string());
+    material.push(':');
+    material.push_str(value);
+    material.push(';');
+}
+
+fn push_u64(material: &mut String, value: u64) {
+    material.push_str(&value.to_string());
+    material.push(';');
+}
+
+/// A closed production-adapter operation that can expose fault opportunities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FaultOperation {
+    /// A network transmission.
+    NetworkTransmit,
+    /// A network reception.
+    NetworkReceive,
+    /// Shared-medium contention.
+    NetworkContend,
+    /// Shared-medium resource allocation.
+    NetworkAllocate,
+    /// Queue admission.
+    NetworkEnqueue,
+    /// Queue service.
+    NetworkServe,
+    /// Queue removal.
+    NetworkDequeue,
+    /// Forwarding-table learning.
+    NetworkLearn,
+    /// Forwarding-table lookup.
+    NetworkLookup,
+    /// Route selection or transition.
+    NetworkRoute,
+    /// Address or protocol translation.
+    NetworkTranslate,
+    /// Network encapsulation.
+    NetworkEncapsulate,
+    /// Path, backend, beam, or gateway selection.
+    NetworkSelect,
+    /// Segment, medium, path, or contact traversal.
+    NetworkTraverse,
+    /// A versioned network topology or path change.
+    NetworkChange,
+    /// Network discovery.
+    NetworkDiscover,
+    /// Network authentication.
+    NetworkAuthenticate,
+    /// Network association.
+    NetworkAssociate,
+    /// Network handoff.
+    NetworkHandoff,
+    /// Contact acquisition.
+    NetworkAcquire,
+    /// Bundle custody transition.
+    NetworkCustody,
+    /// Contact teardown.
+    NetworkTeardown,
+    /// A block or 9p read request.
+    StorageRead,
+    /// A block or 9p write request.
+    StorageWrite,
+    /// A block or 9p flush request.
+    StorageFlush,
+    /// A block discard request.
+    StorageDiscard,
+    /// A block capacity request.
+    StorageGetLength,
+    /// A storage reset request.
+    StorageReset,
+    /// A flash erase operation.
+    StorageErase,
+    /// A media refresh operation.
+    StorageRefresh,
+    /// Storage-controller admission.
+    StorageAdmit,
+    /// Storage-controller submission.
+    StorageSubmit,
+    /// Storage-controller completion.
+    StorageComplete,
+    /// Storage-controller enumeration.
+    StorageEnumerate,
+    /// Array rebuild work.
+    StorageRebuild,
+    /// A node boot transition.
+    NodeBoot,
+    /// Node or vCPU execution.
+    NodeRun,
+    /// A node pause transition.
+    NodePause,
+    /// A node reset transition.
+    NodeReset,
+    /// A node stop transition.
+    NodeStop,
+    /// A node resume transition.
+    NodeResume,
+    /// An instruction execution.
+    CpuInstruction,
+    /// An architecture exception transition.
+    CpuException,
+    /// A vCPU halt transition.
+    CpuHalt,
+    /// A register access.
+    RegisterAccess,
+    /// An instruction fetch.
+    MemoryFetch,
+    /// A memory load.
+    MemoryLoad,
+    /// A memory store.
+    MemoryStore,
+    /// A DMA read.
+    MemoryDmaRead,
+    /// A DMA write.
+    MemoryDmaWrite,
+    /// A modeled memory refresh.
+    MemoryRefresh,
+    /// An interrupt raise.
+    InterruptRaise,
+    /// An interrupt route.
+    InterruptRoute,
+    /// An interrupt acknowledgement.
+    InterruptAcknowledge,
+    /// An interrupt delivery.
+    InterruptDeliver,
+    /// An interrupt return.
+    InterruptReturn,
+    /// A guest clock read.
+    ClockRead,
+    /// A timer arm.
+    ClockArm,
+    /// A timer fire.
+    ClockFire,
+    /// A clock synchronization.
+    ClockSynchronize,
+    /// A guest clock source switch.
+    ClockSourceSwitch,
+    /// An accelerator job submission.
+    AcceleratorSubmit,
+    /// Accelerator execution.
+    AcceleratorExecute,
+    /// Accelerator completion.
+    AcceleratorComplete,
+    /// An accelerator memory access.
+    AcceleratorMemoryAccess,
+    /// An accelerator reset.
+    AcceleratorReset,
+}
+
+impl FaultOperation {
+    /// Returns the adapter that owns this operation.
+    #[must_use]
+    pub const fn adapter(self) -> FaultAdapter {
+        match self {
+            Self::NetworkTransmit
+            | Self::NetworkReceive
+            | Self::NetworkContend
+            | Self::NetworkAllocate
+            | Self::NetworkEnqueue
+            | Self::NetworkServe
+            | Self::NetworkDequeue
+            | Self::NetworkLearn
+            | Self::NetworkLookup
+            | Self::NetworkRoute
+            | Self::NetworkTranslate
+            | Self::NetworkEncapsulate
+            | Self::NetworkSelect
+            | Self::NetworkTraverse
+            | Self::NetworkChange
+            | Self::NetworkDiscover
+            | Self::NetworkAuthenticate
+            | Self::NetworkAssociate
+            | Self::NetworkHandoff
+            | Self::NetworkAcquire
+            | Self::NetworkCustody
+            | Self::NetworkTeardown => FaultAdapter::Network,
+            Self::StorageRead
+            | Self::StorageWrite
+            | Self::StorageFlush
+            | Self::StorageDiscard
+            | Self::StorageGetLength
+            | Self::StorageReset
+            | Self::StorageErase
+            | Self::StorageRefresh
+            | Self::StorageAdmit
+            | Self::StorageSubmit
+            | Self::StorageComplete
+            | Self::StorageEnumerate
+            | Self::StorageRebuild => FaultAdapter::Storage,
+            Self::NodeBoot
+            | Self::NodeRun
+            | Self::NodePause
+            | Self::NodeReset
+            | Self::NodeStop
+            | Self::NodeResume
+            | Self::CpuInstruction
+            | Self::CpuException
+            | Self::CpuHalt
+            | Self::RegisterAccess
+            | Self::MemoryFetch
+            | Self::MemoryLoad
+            | Self::MemoryStore
+            | Self::MemoryDmaRead
+            | Self::MemoryDmaWrite
+            | Self::MemoryRefresh
+            | Self::InterruptRaise
+            | Self::InterruptRoute
+            | Self::InterruptAcknowledge
+            | Self::InterruptDeliver
+            | Self::InterruptReturn
+            | Self::ClockRead
+            | Self::ClockArm
+            | Self::ClockFire
+            | Self::ClockSynchronize
+            | Self::ClockSourceSwitch
+            | Self::AcceleratorSubmit
+            | Self::AcceleratorExecute
+            | Self::AcceleratorComplete
+            | Self::AcceleratorMemoryAccess
+            | Self::AcceleratorReset => FaultAdapter::Node,
+        }
+    }
+
+    /// Returns the canonical schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NetworkTransmit => "network_transmit",
+            Self::NetworkReceive => "network_receive",
+            Self::NetworkContend => "network_contend",
+            Self::NetworkAllocate => "network_allocate",
+            Self::NetworkEnqueue => "network_enqueue",
+            Self::NetworkServe => "network_serve",
+            Self::NetworkDequeue => "network_dequeue",
+            Self::NetworkLearn => "network_learn",
+            Self::NetworkLookup => "network_lookup",
+            Self::NetworkRoute => "network_route",
+            Self::NetworkTranslate => "network_translate",
+            Self::NetworkEncapsulate => "network_encapsulate",
+            Self::NetworkSelect => "network_select",
+            Self::NetworkTraverse => "network_traverse",
+            Self::NetworkChange => "network_change",
+            Self::NetworkDiscover => "network_discover",
+            Self::NetworkAuthenticate => "network_authenticate",
+            Self::NetworkAssociate => "network_associate",
+            Self::NetworkHandoff => "network_handoff",
+            Self::NetworkAcquire => "network_acquire",
+            Self::NetworkCustody => "network_custody",
+            Self::NetworkTeardown => "network_teardown",
+            Self::StorageRead => "storage_read",
+            Self::StorageWrite => "storage_write",
+            Self::StorageFlush => "storage_flush",
+            Self::StorageDiscard => "storage_discard",
+            Self::StorageGetLength => "storage_get_length",
+            Self::StorageReset => "storage_reset",
+            Self::StorageErase => "storage_erase",
+            Self::StorageRefresh => "storage_refresh",
+            Self::StorageAdmit => "storage_admit",
+            Self::StorageSubmit => "storage_submit",
+            Self::StorageComplete => "storage_complete",
+            Self::StorageEnumerate => "storage_enumerate",
+            Self::StorageRebuild => "storage_rebuild",
+            Self::NodeBoot => "node_boot",
+            Self::NodeRun => "node_run",
+            Self::NodePause => "node_pause",
+            Self::NodeReset => "node_reset",
+            Self::NodeStop => "node_stop",
+            Self::NodeResume => "node_resume",
+            Self::CpuInstruction => "cpu_instruction",
+            Self::CpuException => "cpu_exception",
+            Self::CpuHalt => "cpu_halt",
+            Self::RegisterAccess => "register_access",
+            Self::MemoryFetch => "memory_fetch",
+            Self::MemoryLoad => "memory_load",
+            Self::MemoryStore => "memory_store",
+            Self::MemoryDmaRead => "memory_dma_read",
+            Self::MemoryDmaWrite => "memory_dma_write",
+            Self::MemoryRefresh => "memory_refresh",
+            Self::InterruptRaise => "interrupt_raise",
+            Self::InterruptRoute => "interrupt_route",
+            Self::InterruptAcknowledge => "interrupt_acknowledge",
+            Self::InterruptDeliver => "interrupt_deliver",
+            Self::InterruptReturn => "interrupt_return",
+            Self::ClockRead => "clock_read",
+            Self::ClockArm => "clock_arm",
+            Self::ClockFire => "clock_fire",
+            Self::ClockSynchronize => "clock_synchronize",
+            Self::ClockSourceSwitch => "clock_source_switch",
+            Self::AcceleratorSubmit => "accelerator_submit",
+            Self::AcceleratorExecute => "accelerator_execute",
+            Self::AcceleratorComplete => "accelerator_complete",
+            Self::AcceleratorMemoryAccess => "accelerator_memory_access",
+            Self::AcceleratorReset => "accelerator_reset",
+        }
+    }
+}
+
+/// A scheduler coordinate included in a fault-opportunity identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultCoordinate {
+    /// Global virtual time in nanoseconds.
+    pub virtual_nanos: u64,
+    /// Optional node-local retired-instruction coordinate.
+    pub retired_instructions: Option<u64>,
+}
+
+/// Bounded immutable metadata needed to distinguish and validate an operation.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OpportunityPayload {
+    /// No additional identity-bearing metadata is required.
+    None,
+    /// Network-frame identity and immutable payload summary.
+    NetworkFrame {
+        /// Stable producer identity.
+        producer: FaultObjectId,
+        /// Producer-owned monotonically recorded frame sequence.
+        producer_sequence: u64,
+        /// Frame length in bytes.
+        length_bytes: u64,
+        /// Digest of immutable frame bytes or normalized fields.
+        payload_digest: ContentHash,
+    },
+    /// Storage-request byte range and immutable request identity.
+    StorageRequest {
+        /// Adapter-owned request sequence.
+        request_sequence: u64,
+        /// First addressed byte, when the operation has a range.
+        start_byte: Option<u64>,
+        /// Positive addressed length, when the operation has a range.
+        length_bytes: Option<u64>,
+        /// Digest of write data or immutable typed request fields.
+        request_digest: ContentHash,
+    },
+    /// Decoded instruction identity.
+    Instruction {
+        /// Program counter before the instruction.
+        program_counter: u64,
+        /// Stable translated-block identity.
+        translated_block: ContentHash,
+        /// Digest of normalized instruction bytes and decode fields.
+        instruction_digest: ContentHash,
+    },
+    /// Memory-access identity.
+    MemoryAccess {
+        /// Resolved guest physical address.
+        guest_physical_address: u64,
+        /// Positive access width in bytes.
+        width_bytes: u32,
+    },
+    /// Interrupt-delivery identity.
+    Interrupt {
+        /// Interrupt source identity.
+        source: FaultObjectId,
+        /// Stable target vCPU index.
+        target_vcpu: u32,
+        /// Architecture vector or interrupt type number.
+        vector: u32,
+    },
+    /// Accelerator-job identity and immutable result summary.
+    AcceleratorJob {
+        /// Adapter-owned job sequence.
+        job_sequence: u64,
+        /// Digest of immutable job fields.
+        job_digest: ContentHash,
+    },
+}
+
+impl OpportunityPayload {
+    fn validate(&self) -> Result<(), FaultContractError> {
+        match self {
+            Self::StorageRequest {
+                start_byte,
+                length_bytes,
+                ..
+            } => match (start_byte, length_bytes) {
+                (None, None) => {}
+                (Some(start), Some(length))
+                    if *length > 0 && start.checked_add(*length).is_some() => {}
+                _ => return Err(FaultContractError::InvalidPayload),
+            },
+            Self::MemoryAccess { width_bytes, .. } if *width_bytes == 0 => {
+                return Err(FaultContractError::InvalidPayload);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn append_canonical(&self, material: &mut String) {
+        match self {
+            Self::None => material.push_str("none;"),
+            Self::NetworkFrame {
+                producer,
+                producer_sequence,
+                length_bytes,
+                payload_digest,
+            } => {
+                material.push_str("network_frame;");
+                push_text(material, producer.as_str());
+                push_u64(material, *producer_sequence);
+                push_u64(material, *length_bytes);
+                push_text(material, &payload_digest.to_hex());
+            }
+            Self::StorageRequest {
+                request_sequence,
+                start_byte,
+                length_bytes,
+                request_digest,
+            } => {
+                material.push_str("storage_request;");
+                push_u64(material, *request_sequence);
+                push_optional_u64(material, *start_byte);
+                push_optional_u64(material, *length_bytes);
+                push_text(material, &request_digest.to_hex());
+            }
+            Self::Instruction {
+                program_counter,
+                translated_block,
+                instruction_digest,
+            } => {
+                material.push_str("instruction;");
+                push_u64(material, *program_counter);
+                push_text(material, &translated_block.to_hex());
+                push_text(material, &instruction_digest.to_hex());
+            }
+            Self::MemoryAccess {
+                guest_physical_address,
+                width_bytes,
+            } => {
+                material.push_str("memory_access;");
+                push_u64(material, *guest_physical_address);
+                push_u64(material, u64::from(*width_bytes));
+            }
+            Self::Interrupt {
+                source,
+                target_vcpu,
+                vector,
+            } => {
+                material.push_str("interrupt;");
+                push_text(material, source.as_str());
+                push_u64(material, u64::from(*target_vcpu));
+                push_u64(material, u64::from(*vector));
+            }
+            Self::AcceleratorJob {
+                job_sequence,
+                job_digest,
+            } => {
+                material.push_str("accelerator_job;");
+                push_u64(material, *job_sequence);
+                push_text(material, &job_digest.to_hex());
+            }
+        }
+    }
+}
+
+fn push_optional_u64(material: &mut String, value: Option<u64>) {
+    match value {
+        Some(value) => {
+            material.push_str("some;");
+            push_u64(material, value);
+        }
+        None => material.push_str("none;"),
+    }
+}
+
+/// Canonical context for one possible effect application.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaultOpportunity {
+    adapter: FaultAdapter,
+    target: ResolvedFaultTarget,
+    operation: FaultOperation,
+    phase: FaultPhase,
+    coordinate: FaultCoordinate,
+    sequence: u64,
+    direction: Option<FaultDirection>,
+    payload: OpportunityPayload,
+    id: ContentHash,
+}
+
+impl FaultOpportunity {
+    /// Validates and content-addresses an adapter opportunity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultContractError`] when the target is malformed, the target
+    /// and operation belong to different adapters, or payload invariants fail.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        target: ResolvedFaultTarget,
+        operation: FaultOperation,
+        phase: FaultPhase,
+        coordinate: FaultCoordinate,
+        sequence: u64,
+        direction: Option<FaultDirection>,
+        payload: OpportunityPayload,
+    ) -> Result<Self, FaultContractError> {
+        target.validate()?;
+        payload.validate()?;
+        let adapter = target.kind().adapter();
+        if operation.adapter() != adapter {
+            return Err(FaultContractError::AdapterMismatch {
+                target: adapter,
+                operation: operation.adapter(),
+            });
+        }
+        let mut material = String::from("adapter:");
+        material.push_str(match adapter {
+            FaultAdapter::Network => "network;",
+            FaultAdapter::Storage => "storage;",
+            FaultAdapter::Node => "node;",
+        });
+        target.append_canonical(&mut material);
+        push_text(&mut material, operation.as_str());
+        push_text(&mut material, phase.as_str());
+        push_u64(&mut material, coordinate.virtual_nanos);
+        push_optional_u64(&mut material, coordinate.retired_instructions);
+        push_u64(&mut material, sequence);
+        match direction {
+            Some(direction) => push_text(&mut material, direction.as_str()),
+            None => material.push_str("no_direction;"),
+        }
+        payload.append_canonical(&mut material);
+        let id = ContentHash::from_canonical_material("crucible.fault-opportunity.v1", &material);
+        Ok(Self {
+            adapter,
+            target,
+            operation,
+            phase,
+            coordinate,
+            sequence,
+            direction,
+            payload,
+            id,
+        })
+    }
+
+    /// Returns the owning production adapter.
+    #[must_use]
+    pub const fn adapter(&self) -> FaultAdapter {
+        self.adapter
+    }
+
+    /// Returns the resolved target.
+    #[must_use]
+    pub const fn target(&self) -> &ResolvedFaultTarget {
+        &self.target
+    }
+
+    /// Returns the closed adapter operation.
+    #[must_use]
+    pub const fn operation(&self) -> FaultOperation {
+        self.operation
+    }
+
+    /// Returns the application phase.
+    #[must_use]
+    pub const fn phase(&self) -> FaultPhase {
+        self.phase
+    }
+
+    /// Returns the scheduler coordinate.
+    #[must_use]
+    pub const fn coordinate(&self) -> FaultCoordinate {
+        self.coordinate
+    }
+
+    /// Returns the adapter-owned stable operation sequence.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the optional typed direction.
+    #[must_use]
+    pub const fn direction(&self) -> Option<FaultDirection> {
+        self.direction
+    }
+
+    /// Returns the immutable bounded payload metadata.
+    #[must_use]
+    pub const fn payload(&self) -> &OpportunityPayload {
+        &self.payload
+    }
+
+    /// Returns the content identity of the complete opportunity context.
+    #[must_use]
+    pub const fn id(&self) -> ContentHash {
+        self.id
+    }
+}
+
+/// Validation failure for targets, opportunities, bindings, or effects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FaultContractError {
+    /// An identifier is not canonical.
+    InvalidId {
+        /// Rejected text.
+        value: String,
+    },
+    /// A resolved target violates its kind-specific invariant.
+    InvalidTarget {
+        /// Target kind being validated.
+        kind: FaultTargetKind,
+    },
+    /// An operation and target belong to different adapters.
+    AdapterMismatch {
+        /// Adapter owning the target.
+        target: FaultAdapter,
+        /// Adapter owning the operation.
+        operation: FaultAdapter,
+    },
+    /// Immutable opportunity payload metadata is malformed.
+    InvalidPayload,
+}
+
+impl fmt::Display for FaultContractError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidId { value } => write!(formatter, "invalid fault identifier {value:?}"),
+            Self::InvalidTarget { kind } => {
+                write!(formatter, "invalid resolved {} target", kind.as_str())
+            }
+            Self::AdapterMismatch { target, operation } => write!(
+                formatter,
+                "target adapter {target:?} does not match operation adapter {operation:?}",
+            ),
+            Self::InvalidPayload => formatter.write_str("invalid fault-opportunity payload"),
+        }
+    }
+}
+
+impl Error for FaultContractError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(value: &str) -> FaultObjectId {
+        match FaultObjectId::parse(value) {
+            Ok(id) => id,
+            Err(error) => panic!("test identifier must be valid: {error}"),
+        }
+    }
+
+    fn opportunity(result: Result<FaultOpportunity, FaultContractError>) -> FaultOpportunity {
+        match result {
+            Ok(opportunity) => opportunity,
+            Err(error) => panic!("test opportunity must be valid: {error}"),
+        }
+    }
+
+    #[test]
+    fn opportunity_identity_changes_for_every_identity_field() {
+        let target = ResolvedFaultTarget::NetworkSegment {
+            segment: id("uplink"),
+            direction: FaultDirection::AToB,
+        };
+        let build = |sequence, phase| {
+            FaultOpportunity::new(
+                target.clone(),
+                FaultOperation::NetworkTraverse,
+                phase,
+                FaultCoordinate {
+                    virtual_nanos: 42,
+                    retired_instructions: None,
+                },
+                sequence,
+                Some(FaultDirection::AToB),
+                OpportunityPayload::NetworkFrame {
+                    producer: id("sender"),
+                    producer_sequence: 7,
+                    length_bytes: 1_500,
+                    payload_digest: ContentHash::from_bytes(b"frame"),
+                },
+            )
+        };
+        let first = opportunity(build(1, FaultPhase::Resolve));
+        let equal = opportunity(build(1, FaultPhase::Resolve));
+        let next = opportunity(build(2, FaultPhase::Resolve));
+        let delivered = opportunity(build(1, FaultPhase::Deliver));
+        assert_eq!(first.id(), equal.id());
+        assert_ne!(first.id(), next.id());
+        assert_ne!(first.id(), delivered.id());
+    }
+
+    #[test]
+    fn opportunity_rejects_cross_adapter_operation() {
+        let result = FaultOpportunity::new(
+            ResolvedFaultTarget::Node { node: id("node-a") },
+            FaultOperation::StorageRead,
+            FaultPhase::Resolve,
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: Some(0),
+            },
+            0,
+            None,
+            OpportunityPayload::None,
+        );
+        let error = match result {
+            Ok(_) => panic!("cross-adapter operation must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error,
+            FaultContractError::AdapterMismatch {
+                target: FaultAdapter::Node,
+                operation: FaultAdapter::Storage,
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_resolved_targets_fail_before_hashing() {
+        let target = ResolvedFaultTarget::BlockRange {
+            device: ContentHash::from_bytes(b"disk"),
+            start_byte: u64::MAX,
+            length_bytes: 2,
+        };
+        assert_eq!(
+            target.validate(),
+            Err(FaultContractError::InvalidTarget {
+                kind: FaultTargetKind::BlockRange,
+            })
+        );
+    }
+}
