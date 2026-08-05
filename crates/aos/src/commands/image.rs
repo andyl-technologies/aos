@@ -41,7 +41,7 @@ pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
             }
             for image in images {
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     image.package,
                     image.release,
                     if image.channel.is_empty() {
@@ -53,7 +53,8 @@ pub async fn run(command: &ImageCommand, printer: &Printer) -> Result<()> {
                     image.format,
                     image.compatible_targets.join(","),
                     image.byte_size,
-                    image.verification,
+                    image.release_verification,
+                    image.boot_verification,
                     image.sha256,
                     image.filename,
                 );

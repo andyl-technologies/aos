@@ -501,12 +501,16 @@ message SystemImage {
   uint64 byte_size = 12;
   string sha256 = 13;
   repeated string compatible_targets = 14;
-  string verification = 15;
+  // Secure Boot/UKI verification state for the boot payload.
+  string boot_verification = 15;
   string object_key = 16;
   ImageInfo image_info = 17;
   string logical_disk_sha256 = 18;
   string rootfs_sha256 = 19;
   ImageUki uki = 20;
+  // Verification state of the registry release signature. Published images
+  // are returned only after this state reaches "verified".
+  string release_verification = 21;
 }
 
 message ImageUki {
