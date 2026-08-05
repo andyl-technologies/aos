@@ -161,6 +161,8 @@
         || !publicList.text.includes("raw")
         || !publicList.text.includes("qcow2")
         || !publicList.text.includes(bootstrapState.raw_key)
+        || !publicList.text.includes('"releaseVerification":"verified"')
+        || !publicList.text.includes('"bootVerification":"unsigned"')
         || !publicList.text.includes(rawSha256)) {
       throw new Error(`public image list: ''${publicList.response.status} ''${publicList.text}`);
     }
@@ -234,6 +236,7 @@
         || !imagesHtml.includes("qemu-kvm")
         || !imagesHtml.includes(`''${(rawBytes.length / (1024 * 1024)).toFixed(1)} MiB`)
         || !imagesHtml.includes(rawSha256)
+        || !imagesHtml.includes("verified")
         || !imagesHtml.includes("unsigned")
         || !imagesHtml.includes('href="/failure/images-public/-/images"')
         || !imagesHtml.includes('aria-current="page">Images')) {

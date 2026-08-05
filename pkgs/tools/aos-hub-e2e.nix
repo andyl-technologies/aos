@@ -113,7 +113,8 @@ mkDerivation {
         image_show="$(aos --json image show --hub "$HUB" --registry demo/cdn \
           --channel stable --architecture x86_64 --target qemu-kvm)"
         if printf '%s' "$image_show" | grep -q '"format":"qcow2"' \
-           && printf '%s' "$image_show" | grep -q '"verification":"unsigned"'; then
+           && printf '%s' "$image_show" | grep -q '"releaseVerification":"verified"' \
+           && printf '%s' "$image_show" | grep -q '"bootVerification":"unsigned"'; then
           pass "aos image show resolves target to complete integrity metadata"
         else die "aos image show did not resolve qemu-kvm to QCOW2"; fi
 

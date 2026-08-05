@@ -398,6 +398,8 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     let qcow2_sha256 = hex::encode(Sha256::digest(&public_fixture.qcow2));
     assert!(body_text.contains(&raw_sha256));
     assert!(body_text.contains(&qcow2_sha256));
+    assert!(body_text.contains("\"releaseVerification\":\"verified\""));
+    assert!(body_text.contains("\"bootVerification\":\"unsigned\""));
 
     let get_body = br#"{"slug":"images/public","release":"1.0.0","architecture":"x86_64","format":"raw","package":"aos-system"}"#.to_vec();
     let (status, _, body) = request(
@@ -500,6 +502,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert!(page.contains(&format!("{} B", public_fixture.raw.len())));
     assert!(page.contains(&raw_sha256));
     assert!(page.contains("unsigned"));
+    assert!(page.contains("verified"));
     assert!(page.contains("Download"));
 
     let private_uri = format!("/images/private/{}", private_fixture.qcow2_key);

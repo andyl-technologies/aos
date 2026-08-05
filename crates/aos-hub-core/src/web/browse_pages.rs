@@ -2011,7 +2011,8 @@ pub fn images_page(
         {
             continue;
         }
-        let (verification, class) = image_verification_label(image.delivery.uki.verification);
+        let (boot_verification, boot_class) =
+            image_verification_label(image.delivery.uki.verification);
         rows.push(vec![
             format!(
                 "{} <span class=\"dim\">{}</span>",
@@ -2027,7 +2028,8 @@ pub fn images_page(
             escape(&image.format),
             escape(&targets),
             human_size(image.delivery.byte_size),
-            format!("<span class=\"{class}\">{verification}</span>"),
+            "<span class=\"ok\">verified</span>".to_string(),
+            format!("<span class=\"{boot_class}\">{boot_verification}</span>"),
             format!("<code>{}</code>", escape(&image.delivery.sha256)),
             download_base.map_or_else(
                 || "<span class=\"dim\">route unavailable</span>".to_string(),
@@ -2098,7 +2100,8 @@ pub fn images_page(
                 "format",
                 "target",
                 "size",
-                "verification",
+                "release signature",
+                "boot payload",
                 "SHA-256",
                 "download",
             ],

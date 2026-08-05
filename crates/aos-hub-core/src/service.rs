@@ -11001,7 +11001,7 @@ impl RpcService {
                 .map(image_target_name)
                 .map(str::to_string)
                 .collect(),
-            verification: image_verification_name(delivery.uki.verification).to_string(),
+            boot_verification: image_verification_name(delivery.uki.verification).to_string(),
             object_key: delivery.object_key,
             image_info: Some(pb::ImageInfo {
                 filename: delivery.image_info.filename,
@@ -11034,6 +11034,7 @@ impl RpcService {
                 measured: uki.measured,
                 expected_pcr11: uki.expected_pcr11.unwrap_or_default(),
             }),
+            release_verification: "verified".to_string(),
         })
     }
 
