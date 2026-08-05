@@ -48,6 +48,22 @@ forbidden = [
   "compiler-dependent-bitfield",
 ]
 
+[fault_command_protocol]
+abi_major = 1
+abi_minor = 0
+semantic_version = 1
+command_header_bytes = 216
+result_header_bytes = 188
+capability_row_bytes = 60
+default_payload_bytes = 1048576
+hard_payload_bytes = 16777216
+default_ring_capacity = 4096
+hard_ring_capacity = 65536
+encoding = "explicit-little-endian-byte-arrays"
+payload_authentication = "blake3"
+unknown_tags = "reject"
+nonzero_reserved_fields = "reject"
+
 [conformance]
 c_header = "../include/crucible_shmem_abi.h"
 rust_version = "../src/abi_version.in"

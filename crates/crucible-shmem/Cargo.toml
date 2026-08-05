@@ -9,5 +9,6 @@ publish = false
 workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 libc = { workspace = true }
 thiserror = { workspace = true }

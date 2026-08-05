@@ -81,6 +81,8 @@ FaultCommandHeaderV1 {
   abi_minor: u16
   command_kind: u16
   command_flags: u16
+  phase: u16
+  reserved_zero_phase: u16
   semantic_version: u32
   command_sequence: u64
   target_node_hash: [u8; 32]
@@ -89,17 +91,22 @@ FaultCommandHeaderV1 {
   binding_hash: [u8; 32]
   opportunity_hash: [u8; 32]
   expected_precondition_hash: [u8; 32]
+  payload_hash: [u8; 32]
   payload_offset: u64
   payload_length: u32
   reserved_zero: u32
 }
 ```
 
-The result contains the same sequence/kind/version, status, observed/applied
-icount, QEMU capability version, before/after/evidence hashes, typed result
-offset/length, and reserved zero fields. Command kinds and payload layouts are
-generated from the [closed registry](../08-executable-effect-contracts.md) and
-versioned in the boundary crates.
+The result contains ABI major/minor, the same sequence/kind/version, status,
+observed/applied icount, QEMU capability version, reached phase,
+before/after/evidence hashes, a typed-result payload hash, typed result
+offset/length, and reserved zero fields. The command header is exactly 216
+bytes, the result header exactly 188 bytes, and a capability row exactly 60
+bytes. Command kinds, statuses, phases, every byte offset, and resource ceilings
+are generated into the independently consumable C header from the dual-licensed
+boundary crate. Out-of-line command and result bytes are authenticated by the
+hash in their envelope before decoding.
 
 Statuses are `applied`, `not_applicable`, `precondition_mismatch`,
 `invalid_target`, `invalid_phase`, `unsupported_capability`, `past_boundary`,
