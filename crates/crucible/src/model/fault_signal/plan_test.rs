@@ -2,9 +2,10 @@ use super::*;
 use crate::model::{
     Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES, NodeId,
     Plan, ReadyPoint, ScenarioBinaryReader, ScenarioBinaryWriter, VmArchitecture, WhiteBoxPolicy,
-    World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldNetworkInterface,
-    WorldNetworkPath, WorldNetworkPathHop, WorldNetworkSegment, WorldNetworkSegmentKind,
-    WorldNetworkTechnology, WorldNode,
+    World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldNetworkForwarder,
+    WorldNetworkForwarderKind, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
+    WorldNetworkQueue, WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow, WorldNetworkSegment,
+    WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNode,
 };
 
 fn test_link() -> LinkDef {
@@ -83,7 +84,7 @@ fn test_world() -> World {
                 minimum_latency_nanos: 1,
                 medium: None,
                 forwarders: Vec::new(),
-                fault_domains: Vec::new(),
+                fault_domains: vec![signal_id("campus-uplink")],
             }],
             network_paths: vec![WorldNetworkPath {
                 id: signal_id("active-uplink"),
@@ -693,4 +694,72 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
             .unwrap_or_else(|error| panic!("decode max cadence: {error}")),
         cadence_plan,
     );
+}
+
+#[test]
+fn world_toml_round_trips_wide_topology_u64_values_canonically() {
+    let world = test_world();
+    let mut topology = world.fault_topology().clone();
+    topology.network_queues.push(WorldNetworkQueue {
+        id: signal_id("wide-queue"),
+        owner: signal_id("left-interface"),
+        capacity_packets: 1,
+        capacity_bytes: u64::MAX,
+        discipline: WorldNetworkQueueDiscipline::Fifo,
+        overflow: WorldNetworkQueueOverflow::DropTail,
+        fault_domains: Vec::new(),
+    });
+    let world = world
+        .with_fault_topology(topology)
+        .unwrap_or_else(|error| panic!("wide topology: {error}"));
+    let encoded = world
+        .to_canonical_toml()
+        .unwrap_or_else(|error| panic!("encode wide topology: {error}"));
+    assert!(encoded.contains("capacity_bytes = \"u64:18446744073709551615\""));
+    assert_eq!(
+        World::from_canonical_toml(&encoded)
+            .unwrap_or_else(|error| panic!("decode wide topology: {error}")),
+        world,
+    );
+}
+
+#[test]
+fn compact_plan_rejects_resolved_targets_absent_from_decode_world() {
+    let program = program(true);
+    let binding = binding(&program);
+    let plan = Plan::empty().with_fault_signals(
+        FaultSignalPlan::new(vec![program], vec![binding])
+            .unwrap_or_else(|error| panic!("binding plan: {error}")),
+    );
+    let world_without_targets = test_world()
+        .with_fault_topology(WorldFaultTopology::default())
+        .unwrap_or_else(|error| panic!("empty fault topology: {error}"));
+    assert!(
+        Plan::from_compact_binary_for_world(&world_without_targets, &plan.to_compact_binary())
+            .is_err()
+    );
+}
+
+#[test]
+fn world_rejects_adjacent_forwarders_in_a_network_path() {
+    let world = test_world();
+    let mut topology = world.fault_topology().clone();
+    for id in ["first-forwarder", "second-forwarder"] {
+        topology.network_forwarders.push(WorldNetworkForwarder {
+            id: signal_id(id),
+            kind: WorldNetworkForwarderKind::Router,
+            ports: vec![signal_id("right-interface")],
+            table_capacity: 1,
+            fault_domains: Vec::new(),
+        });
+    }
+    topology.network_paths[0].hops.extend([
+        WorldNetworkPathHop::Forwarder {
+            forwarder: signal_id("first-forwarder"),
+        },
+        WorldNetworkPathHop::Forwarder {
+            forwarder: signal_id("second-forwarder"),
+        },
+    ]);
+    assert!(world.with_fault_topology(topology).is_err());
 }

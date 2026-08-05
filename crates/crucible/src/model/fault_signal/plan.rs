@@ -11,6 +11,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io;
 
+use crate::model::World;
+
 use super::*;
 
 /// Exact maximum signal graphs in one scenario plan.
@@ -166,6 +168,22 @@ impl FaultSignalPlan {
             .map_err(FaultSignalPlanDecodeError::Json)?
             .admit()
             .map_err(FaultSignalPlanDecodeError::Admission)
+    }
+
+    /// Re-resolves every persisted selector against the supplied world.
+    ///
+    /// # Errors
+    ///
+    /// Returns a strict authoring error when a persisted target, fault domain,
+    /// or dynamic path is absent or resolves differently in `world`.
+    pub(crate) fn validate_for_world(
+        &self,
+        world: &World,
+    ) -> Result<(), FaultSignalAuthoringError> {
+        for binding in &self.bindings {
+            validate_selector_for_world(binding.selector(), world)?;
+        }
+        Ok(())
     }
 
     /// Returns bindings grouped by their exact admitted program identity.

@@ -13,9 +13,9 @@ use std::fmt;
 use super::*;
 
 /// Hard maximum number of declarations in any one world fault registry table.
-pub const HARD_WORLD_FAULT_DECLARATIONS_PER_KIND: usize = 65_536;
+pub const HARD_WORLD_FAULT_DECLARATIONS_PER_KIND: usize = 262_144;
 /// Hard maximum number of references carried by one world fault declaration.
-pub const HARD_WORLD_FAULT_REFERENCES_PER_DECLARATION: usize = 4_096;
+pub const HARD_WORLD_FAULT_REFERENCES_PER_DECLARATION: usize = 16_384;
 
 /// Complete immutable world registry used by fault selectors and adapters.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -43,6 +43,10 @@ pub struct WorldFaultTopology {
     pub mobile_endpoints: Vec<WorldMobileEndpoint>,
     /// Durability and media contracts for deterministic block/9p nodes.
     pub storage_devices: Vec<WorldStorageFaultDevice>,
+    /// Storage controllers, namespaces, and access paths.
+    pub storage_controllers: Vec<WorldStorageController>,
+    /// Storage arrays and their member/path topology.
+    pub storage_arrays: Vec<WorldStorageArray>,
     /// Live-QEMU capability contracts for VM nodes.
     pub node_capabilities: Vec<WorldNodeFaultCapabilities>,
 }
@@ -84,6 +88,20 @@ impl WorldFaultTopology {
     /// collections, dangling references, self-references, invalid geometry, or
     /// a sensor-backed field which is specification-only in schema v2.
     pub fn admit(mut self, world: &World) -> Result<Self, WorldFaultTopologyError> {
+        hard_count(&self.fault_domains, "fault domains", 65_536)?;
+        hard_count(&self.network_interfaces, "network interfaces", 65_536)?;
+        hard_count(&self.network_segments, "network segments", 262_144)?;
+        hard_count(&self.network_media, "network media", 16_384)?;
+        hard_count(&self.network_forwarders, "network forwarders", 32_768)?;
+        hard_count(&self.network_queues, "network queues", 262_144)?;
+        hard_count(&self.network_paths, "network paths", 262_144)?;
+        hard_count(&self.network_attachments, "network attachments", 65_536)?;
+        hard_count(&self.network_contact_plans, "network contact plans", 65_536)?;
+        hard_count(&self.mobile_endpoints, "mobile endpoints", 65_536)?;
+        hard_count(&self.storage_devices, "storage devices", 16_384)?;
+        hard_count(&self.storage_controllers, "storage controllers", 16_384)?;
+        hard_count(&self.storage_arrays, "storage arrays", 16_384)?;
+        hard_count(&self.node_capabilities, "node capabilities", 16_384)?;
         canonicalize_by_id(&mut self.fault_domains, WorldFaultDomain::id)?;
         canonicalize_by_id(&mut self.network_interfaces, WorldNetworkInterface::id)?;
         canonicalize_by_id(&mut self.network_segments, WorldNetworkSegment::id)?;
@@ -95,6 +113,8 @@ impl WorldFaultTopology {
         canonicalize_by_id(&mut self.network_contact_plans, WorldNetworkContactPlan::id)?;
         canonicalize_by_id(&mut self.mobile_endpoints, WorldMobileEndpoint::id)?;
         canonicalize_by_id(&mut self.storage_devices, WorldStorageFaultDevice::id)?;
+        canonicalize_by_id(&mut self.storage_controllers, WorldStorageController::id)?;
+        canonicalize_by_id(&mut self.storage_arrays, WorldStorageArray::id)?;
         canonicalize_by_id(&mut self.node_capabilities, WorldNodeFaultCapabilities::id)?;
 
         for domain in &mut self.fault_domains {
@@ -131,14 +151,28 @@ impl WorldFaultTopology {
         for storage in &mut self.storage_devices {
             canonicalize_set(&mut storage.fault_domains, "storage device fault domains")?;
         }
-        for capabilities in &mut self.node_capabilities {
-            canonicalize_set(&mut capabilities.address_spaces, "node address spaces")?;
+        for controller in &mut self.storage_controllers {
+            canonicalize_by_id(&mut controller.namespaces, WorldStorageNamespace::id)?;
+            canonicalize_by_id(&mut controller.paths, WorldStoragePath::id)?;
             canonicalize_set(
-                &mut capabilities.interrupt_controllers,
-                "node interrupt controllers",
+                &mut controller.fault_domains,
+                "storage controller fault domains",
             )?;
-            canonicalize_set(&mut capabilities.clock_sources, "node clock sources")?;
-            canonicalize_set(&mut capabilities.accelerators, "node accelerators")?;
+        }
+        for array in &mut self.storage_arrays {
+            canonicalize_by_id(&mut array.members, WorldStorageArrayMember::id)?;
+            canonicalize_by_id(&mut array.paths, WorldStoragePath::id)?;
+            canonicalize_set(&mut array.fault_domains, "storage array fault domains")?;
+        }
+        for capabilities in &mut self.node_capabilities {
+            canonicalize_by_id(&mut capabilities.registers, WorldNodeRegister::id)?;
+            canonicalize_by_id(&mut capabilities.address_spaces, WorldNodeAddressSpace::id)?;
+            canonicalize_by_id(&mut capabilities.interrupts, WorldNodeInterrupt::id)?;
+            canonicalize_by_id(&mut capabilities.clock_sources, WorldNodeClockSource::id)?;
+            canonicalize_by_id(&mut capabilities.accelerators, WorldNodeAccelerator::id)?;
+            for interrupt in &mut capabilities.interrupts {
+                canonicalize_set(&mut interrupt.target_vcpus, "interrupt target vCPUs")?;
+            }
         }
 
         let vm_nodes = world
@@ -209,7 +243,7 @@ impl WorldFaultTopology {
                 "network medium fault domain",
             )?;
             require(!medium.resources.is_empty(), "network medium resources")?;
-            bounded(&medium.resources, "network medium resources")?;
+            hard_count(&medium.resources, "network medium resources", 16_384)?;
         }
         for forwarder in &self.network_forwarders {
             require_all(
@@ -240,17 +274,61 @@ impl WorldFaultTopology {
         }
         for path in &self.network_paths {
             require(!path.hops.is_empty(), "network path hops")?;
-            bounded(&path.hops, "network path hops")?;
+            require(path.mtu_bytes > 0, "network path MTU")?;
+            hard_count(&path.hops, "network path hops", 1_024)?;
+            let mut previous_exit: Option<&SignalId> = None;
+            let mut forwarding_ports: Option<&[SignalId]> = None;
             for hop in &path.hops {
                 match hop {
-                    WorldNetworkPathHop::Segment { segment, .. } => {
-                        require(segments.contains(segment), "network path segment")?;
+                    WorldNetworkPathHop::Segment { segment, direction } => {
+                        let declaration = self
+                            .network_segments
+                            .iter()
+                            .find(|candidate| &candidate.id == segment)
+                            .ok_or_else(|| invalid("network path segment"))?;
+                        let (entry, exit) = match direction {
+                            FaultDirection::AToB => {
+                                (&declaration.interface_a, &declaration.interface_b)
+                            }
+                            FaultDirection::BToA => {
+                                (&declaration.interface_b, &declaration.interface_a)
+                            }
+                            _ => return Err(invalid("network path direction")),
+                        };
+                        if let Some(ports) = forwarding_ports.take() {
+                            require(ports.contains(entry), "network path forwarder egress")?;
+                        } else if let Some(previous) = previous_exit {
+                            require(previous == entry, "network path continuity")?;
+                        }
+                        previous_exit = Some(exit);
                     }
                     WorldNetworkPathHop::Forwarder { forwarder } => {
-                        require(forwarders.contains(forwarder), "network path forwarder")?;
+                        require(
+                            forwarding_ports.is_none(),
+                            "network path adjacent forwarders",
+                        )?;
+                        let declaration = self
+                            .network_forwarders
+                            .iter()
+                            .find(|candidate| &candidate.id == forwarder)
+                            .ok_or_else(|| invalid("network path forwarder"))?;
+                        if let Some(previous) = previous_exit {
+                            require(
+                                declaration.ports.contains(previous),
+                                "network path forwarder ingress",
+                            )?;
+                        }
+                        forwarding_ports = Some(&declaration.ports);
+                    }
+                    WorldNetworkPathHop::Queue { queue } => {
+                        require(queues.contains(queue), "network path queue")?;
                     }
                 }
             }
+            require(
+                forwarding_ports.is_none(),
+                "network path trailing forwarder",
+            )?;
         }
         for attachment in &self.network_attachments {
             require(
@@ -280,8 +358,12 @@ impl WorldFaultTopology {
                 vm_nodes.contains(plan.endpoint_b.as_str()),
                 "contact endpoint_b",
             )?;
-            require(plan.endpoint_a != plan.endpoint_b, "contact plan self-loop")?;
+            require(
+                plan.endpoint_a < plan.endpoint_b,
+                "contact plan endpoint order",
+            )?;
             require(!plan.contacts.is_empty(), "contact plan contacts")?;
+            hard_count(&plan.contacts, "network contact entries", 16_777_216)?;
             let mut previous_end = 0;
             let mut contact_ids = BTreeSet::new();
             for contact in &plan.contacts {
@@ -297,7 +379,12 @@ impl WorldFaultTopology {
                 "mobile endpoint node",
             )?;
         }
+        let mut declared_storage_devices = BTreeSet::new();
         for storage in &self.storage_devices {
+            require(
+                declared_storage_devices.insert(&storage.device),
+                "duplicate storage device contract",
+            )?;
             require_all(
                 &storage.fault_domains,
                 &fault_domains,
@@ -314,9 +401,97 @@ impl WorldFaultTopology {
                 ),
                 "storage device kind",
             )?;
+            let node = world
+                .io_nodes()
+                .find(|node| node.id.name == storage.device.as_str())
+                .ok_or_else(|| invalid("storage device"))?;
+            if let WorldIoNodeKind::Block { base_length, .. } = &node.kind {
+                require(
+                    storage.persistence.length_bytes == *base_length,
+                    "storage device length",
+                )?;
+            }
             storage.validate()?;
         }
+        let storage_devices = self
+            .storage_devices
+            .iter()
+            .map(|item| item.device.clone())
+            .collect::<BTreeSet<_>>();
+        for controller in &self.storage_controllers {
+            require(
+                controller.semantic_version == 1,
+                "storage controller semantic version",
+            )?;
+            require_all(
+                &controller.fault_domains,
+                &fault_domains,
+                "storage controller fault domain",
+            )?;
+            require(
+                !controller.namespaces.is_empty(),
+                "storage controller namespaces",
+            )?;
+            for namespace in &controller.namespaces {
+                require(
+                    storage_devices.contains(&namespace.device),
+                    "storage controller namespace device",
+                )?;
+                require(namespace.capacity_bytes > 0, "storage namespace capacity")?;
+            }
+            require(!controller.paths.is_empty(), "storage controller paths")?;
+            for path in &controller.paths {
+                require(path.queue_depth > 0, "storage controller path queue depth")?;
+            }
+        }
+        for array in &self.storage_arrays {
+            require(
+                array.semantic_version == 1,
+                "storage array semantic version",
+            )?;
+            require_all(
+                &array.fault_domains,
+                &fault_domains,
+                "storage array fault domain",
+            )?;
+            require(!array.members.is_empty(), "storage array members")?;
+            hard_count(&array.members, "storage array members", 4_096)?;
+            require(
+                array.chunk_bytes.is_power_of_two(),
+                "storage array chunk geometry",
+            )?;
+            require(array.read_quorum > 0, "storage array read quorum")?;
+            require(array.write_quorum > 0, "storage array write quorum")?;
+            require(
+                usize::from(array.read_quorum) <= array.members.len()
+                    && usize::from(array.write_quorum) <= array.members.len(),
+                "storage array quorum",
+            )?;
+            for member in &array.members {
+                require(
+                    storage_devices.contains(&member.device),
+                    "storage array member device",
+                )?;
+            }
+            let ordinals = array
+                .members
+                .iter()
+                .map(|member| member.ordinal)
+                .collect::<BTreeSet<_>>();
+            require(
+                ordinals.len() == array.members.len(),
+                "storage array member ordinal",
+            )?;
+            for path in &array.paths {
+                require(path.queue_depth > 0, "storage array path queue depth")?;
+            }
+        }
+        let mut declared_node_capabilities = BTreeSet::new();
         for capabilities in &self.node_capabilities {
+            require(
+                declared_node_capabilities.insert(&capabilities.node),
+                "duplicate node capability contract",
+            )?;
             let node = world
                 .vm_nodes()
                 .iter()
@@ -327,6 +502,15 @@ impl WorldFaultTopology {
                 "node capability architecture",
             )?;
             capabilities.validate()?;
+            for interrupt in &capabilities.interrupts {
+                require(
+                    interrupt
+                        .target_vcpus
+                        .iter()
+                        .all(|vcpu| *vcpu < u32::from(node.smp_vcpus)),
+                    "node interrupt target vCPU",
+                )?;
+            }
         }
 
         let targets = self.all_target_refs();
@@ -335,6 +519,24 @@ impl WorldFaultTopology {
             bounded(&domain.targets, "fault domain targets")?;
             for target in &domain.targets {
                 require(targets.contains(target), "fault domain target")?;
+                require(
+                    self.target_fault_domains(target).contains(&domain.id),
+                    "fault domain inverse membership",
+                )?;
+            }
+        }
+        for target in targets {
+            for domain in self.target_fault_domains(&target) {
+                let declaration = self
+                    .fault_domain(domain)
+                    .ok_or_else(|| invalid("fault domain membership"))?;
+                require(
+                    declaration
+                        .targets
+                        .iter()
+                        .any(|declared| same_target_object(declared, &target)),
+                    "fault domain inverse target",
+                )?;
             }
         }
         let _ = queues;
@@ -353,6 +555,56 @@ impl WorldFaultTopology {
         self.network_paths.iter().find(|path| &path.id == id)
     }
 
+    fn target_fault_domains(&self, target: &WorldFaultTargetRef) -> &[SignalId] {
+        match target {
+            WorldFaultTargetRef::NetworkInterface { interface } => self
+                .network_interfaces
+                .iter()
+                .find(|item| &item.id == interface)
+                .map_or(&[], |item| item.fault_domains.as_slice()),
+            WorldFaultTargetRef::NetworkSegment { segment, .. } => self
+                .network_segments
+                .iter()
+                .find(|item| &item.id == segment)
+                .map_or(&[], |item| item.fault_domains.as_slice()),
+            WorldFaultTargetRef::NetworkMedium { medium, .. } => self
+                .network_media
+                .iter()
+                .find(|item| &item.id == medium)
+                .map_or(&[], |item| item.fault_domains.as_slice()),
+            WorldFaultTargetRef::NetworkForwarder { forwarder } => self
+                .network_forwarders
+                .iter()
+                .find(|item| &item.id == forwarder)
+                .map_or(&[], |item| item.fault_domains.as_slice()),
+            WorldFaultTargetRef::NetworkQueue { queue } => self
+                .network_queues
+                .iter()
+                .find(|item| &item.id == queue)
+                .map_or(&[], |item| item.fault_domains.as_slice()),
+            WorldFaultTargetRef::BlockDevice { device }
+            | WorldFaultTargetRef::NinePDevice { device } => self
+                .storage_devices
+                .iter()
+                .find(|item| &item.device == device)
+                .map_or(&[], |item| item.fault_domains.as_slice()),
+            WorldFaultTargetRef::StorageController { controller, .. } => self
+                .storage_controllers
+                .iter()
+                .find(|item| &item.id == controller)
+                .map_or(&[], |item| item.fault_domains.as_slice()),
+            WorldFaultTargetRef::StorageArray { array, .. } => self
+                .storage_arrays
+                .iter()
+                .find(|item| &item.id == array)
+                .map_or(&[], |item| item.fault_domains.as_slice()),
+            WorldFaultTargetRef::NetworkPath { .. }
+            | WorldFaultTargetRef::NetworkAttachment { .. }
+            | WorldFaultTargetRef::NetworkContact { .. }
+            | WorldFaultTargetRef::Node { .. } => &[],
+        }
+    }
+
     fn all_target_refs(&self) -> BTreeSet<WorldFaultTargetRef> {
         let mut targets = BTreeSet::new();
         targets.extend(self.network_interfaces.iter().map(|item| {
@@ -368,13 +620,14 @@ impl WorldFaultTopology {
                 }
             })
         }));
-        targets.extend(
-            self.network_media
+        targets.extend(self.network_media.iter().flat_map(|item| {
+            item.resources
                 .iter()
-                .map(|item| WorldFaultTargetRef::NetworkMedium {
+                .map(|resource| WorldFaultTargetRef::NetworkMedium {
                     medium: item.id.clone(),
-                }),
-        );
+                    resource: resource.clone(),
+                })
+        }));
         targets.extend(self.network_forwarders.iter().map(|item| {
             WorldFaultTargetRef::NetworkForwarder {
                 forwarder: item.id.clone(),
@@ -387,13 +640,14 @@ impl WorldFaultTopology {
                     queue: item.id.clone(),
                 }),
         );
-        targets.extend(
-            self.network_paths
-                .iter()
-                .map(|item| WorldFaultTargetRef::NetworkPath {
+        targets.extend(self.network_paths.iter().flat_map(|item| {
+            [FaultDirection::AToB, FaultDirection::BToA].map(|direction| {
+                WorldFaultTargetRef::NetworkPath {
                     path: item.id.clone(),
-                }),
-        );
+                    direction,
+                }
+            })
+        }));
         targets.extend(self.network_attachments.iter().map(|item| {
             WorldFaultTargetRef::NetworkAttachment {
                 attachment: item.id.clone(),
@@ -414,6 +668,42 @@ impl WorldFaultTopology {
             WorldStorageKind::NineP => WorldFaultTargetRef::NinePDevice {
                 device: item.device.clone(),
             },
+        }));
+        targets.extend(self.storage_controllers.iter().flat_map(|controller| {
+            controller
+                .namespaces
+                .iter()
+                .map(|namespace| WorldFaultTargetRef::StorageController {
+                    controller: controller.id.clone(),
+                    namespace_or_path: namespace.id.clone(),
+                })
+                .chain(
+                    controller
+                        .paths
+                        .iter()
+                        .map(|path| WorldFaultTargetRef::StorageController {
+                            controller: controller.id.clone(),
+                            namespace_or_path: path.id.clone(),
+                        }),
+                )
+        }));
+        targets.extend(self.storage_arrays.iter().flat_map(|array| {
+            array
+                .members
+                .iter()
+                .map(|member| WorldFaultTargetRef::StorageArray {
+                    array: array.id.clone(),
+                    member_or_path: member.id.clone(),
+                })
+                .chain(
+                    array
+                        .paths
+                        .iter()
+                        .map(|path| WorldFaultTargetRef::StorageArray {
+                            array: array.id.clone(),
+                            member_or_path: path.id.clone(),
+                        }),
+                )
         }));
         targets.extend(
             self.node_capabilities
@@ -463,6 +753,8 @@ pub enum WorldFaultTargetRef {
     NetworkMedium {
         /// Medium ID.
         medium: SignalId,
+        /// Channel or resource ID.
+        resource: SignalId,
     },
     /// One forwarding element.
     NetworkForwarder {
@@ -478,6 +770,8 @@ pub enum WorldFaultTargetRef {
     NetworkPath {
         /// Path ID.
         path: SignalId,
+        /// Direction through the path.
+        direction: FaultDirection,
     },
     /// One endpoint attachment state machine.
     NetworkAttachment {
@@ -500,6 +794,20 @@ pub enum WorldFaultTargetRef {
     NinePDevice {
         /// 9p-node ID.
         device: SignalId,
+    },
+    /// One namespace or path on a storage controller.
+    StorageController {
+        /// Controller ID.
+        controller: SignalId,
+        /// Namespace or path ID.
+        namespace_or_path: SignalId,
+    },
+    /// One member or path of a storage array.
+    StorageArray {
+        /// Array ID.
+        array: SignalId,
+        /// Member or path ID.
+        member_or_path: SignalId,
     },
     /// One VM node.
     Node {
@@ -612,6 +920,10 @@ pub struct WorldNetworkSegment {
     /// Second interface ID.
     pub interface_b: SignalId,
     /// Strict lower latency bound.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
     pub minimum_latency_nanos: u64,
     /// Optional shared medium ID.
     pub medium: Option<SignalId>,
@@ -759,6 +1071,10 @@ pub struct WorldNetworkQueue {
     /// Packet-count capacity.
     pub capacity_packets: u32,
     /// Byte-count capacity, or zero when only packets bound the queue.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
     pub capacity_bytes: u64,
     /// Queue discipline.
     pub discipline: WorldNetworkQueueDiscipline,
@@ -788,6 +1104,11 @@ pub enum WorldNetworkPathHop {
     Forwarder {
         /// Forwarder ID.
         forwarder: SignalId,
+    },
+    /// Traverses one explicitly declared service queue.
+    Queue {
+        /// Queue ID.
+        queue: SignalId,
     },
 }
 
@@ -838,12 +1159,28 @@ pub struct WorldNetworkContact {
     /// Stable contact ID within its plan.
     pub id: SignalId,
     /// Inclusive contact start.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
     pub start_nanos: u64,
     /// Exclusive contact end.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
     pub end_nanos: u64,
     /// One-way range delay.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
     pub range_delay_nanos: u64,
     /// Contact service rate.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
     pub rate_bps: u64,
     /// Optional beam ID.
     pub beam: Option<SignalId>,
@@ -927,20 +1264,60 @@ pub enum WorldDiscardSemantics {
     UndefinedRecorded,
 }
 
+/// Closed successful-completion durability layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldCompletionDurability {
+    /// Success may be reported after controller admission.
+    ControllerAccepted,
+    /// Success may be reported after volatile-cache admission.
+    VolatileCacheAccepted,
+    /// Success is reported only after durable persistence.
+    Durable,
+}
+
 /// Immutable storage durability contract.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorldStoragePersistence {
-    /// Logical sector size.
-    pub sector_bytes: u32,
+    /// Guest-visible logical block size.
+    pub logical_block_bytes: u32,
+    /// Physical persistence-sector size.
+    pub physical_sector_bytes: u32,
     /// Smallest all-or-nothing write size.
     pub atomic_write_bytes: u32,
+    /// Exact guest-visible device or namespace length.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub length_bytes: u64,
+    /// Discard granularity, or zero when discard is unsupported.
+    pub discard_granularity_bytes: u32,
+    /// Maximum admitted request size.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub maximum_request_bytes: u64,
     /// Volatile write-cache capacity.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
     pub volatile_cache_bytes: u64,
     /// Flush ordering contract.
     pub flush_semantics: WorldFlushSemantics,
     /// Discard readback contract.
     pub discard_semantics: WorldDiscardSemantics,
+    /// Durability layer required before ordinary success completion.
+    pub completion_durability: WorldCompletionDurability,
+    /// Maximum volatile cache entry count.
+    pub cache_entries: u32,
+    /// Maximum persistence dependency edge count.
+    pub persistence_dependencies: u32,
+    /// Maximum retained logical versions per interval.
+    pub retained_versions_per_interval: u16,
 }
 
 /// Closed storage media geometry.
@@ -950,10 +1327,18 @@ pub enum WorldStorageMedia {
     /// Flash media with erase/program geometry and finite endurance.
     Flash {
         /// Erase-block size.
+        #[serde(
+            deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+            serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+        )]
         erase_block_bytes: u64,
         /// Program-page size.
         program_page_bytes: u32,
         /// Rated erase cycles per block.
+        #[serde(
+            deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+            serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+        )]
         endurance_cycles: u64,
     },
     /// Magnetic media with sector/track geometry.
@@ -961,6 +1346,10 @@ pub enum WorldStorageMedia {
         /// Physical sector size.
         sector_bytes: u32,
         /// Track size.
+        #[serde(
+            deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+            serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+        )]
         track_bytes: u64,
     },
     /// Volatile or persistent RAM media.
@@ -998,13 +1387,60 @@ impl WorldStorageFaultDevice {
     }
     fn validate(&self) -> Result<(), WorldFaultTopologyError> {
         require(
-            self.persistence.sector_bytes.is_power_of_two(),
-            "storage sector geometry",
+            self.persistence.logical_block_bytes.is_power_of_two()
+                && (512..=65_536).contains(&self.persistence.logical_block_bytes),
+            "storage logical block geometry",
+        )?;
+        require(
+            self.persistence.physical_sector_bytes.is_power_of_two()
+                && self.persistence.physical_sector_bytes % self.persistence.logical_block_bytes
+                    == 0,
+            "storage physical sector geometry",
         )?;
         require(
             self.persistence.atomic_write_bytes > 0
-                && self.persistence.atomic_write_bytes % self.persistence.sector_bytes == 0,
+                && self.persistence.atomic_write_bytes % self.persistence.logical_block_bytes == 0
+                && self.persistence.atomic_write_bytes <= self.persistence.physical_sector_bytes,
             "storage atomic write geometry",
+        )?;
+        require(
+            self.persistence.length_bytes > 0
+                && self.persistence.length_bytes % u64::from(self.persistence.logical_block_bytes)
+                    == 0,
+            "storage length geometry",
+        )?;
+        require(
+            self.persistence.discard_granularity_bytes == 0
+                || (self.persistence.discard_granularity_bytes.is_power_of_two()
+                    && self.persistence.discard_granularity_bytes
+                        % self.persistence.logical_block_bytes
+                        == 0),
+            "storage discard geometry",
+        )?;
+        require(
+            self.persistence.maximum_request_bytes > 0
+                && self.persistence.maximum_request_bytes <= 67_108_864
+                && self.persistence.maximum_request_bytes
+                    % u64::from(self.persistence.logical_block_bytes)
+                    == 0,
+            "storage maximum request geometry",
+        )?;
+        require(
+            self.persistence.volatile_cache_bytes <= 68_719_476_736,
+            "storage cache byte limit",
+        )?;
+        require(
+            self.persistence.cache_entries <= 4_194_304,
+            "storage cache entry limit",
+        )?;
+        require(
+            self.persistence.persistence_dependencies <= 16_777_216,
+            "storage dependency limit",
+        )?;
+        require(
+            self.persistence.retained_versions_per_interval > 0
+                && self.persistence.retained_versions_per_interval <= 1_024,
+            "storage retained version limit",
         )?;
         match self.media {
             WorldStorageMedia::Flash {
@@ -1033,6 +1469,250 @@ impl WorldStorageFaultDevice {
     }
 }
 
+/// One controller namespace bound to a deterministic storage device.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldStorageNamespace {
+    /// Stable namespace ID within its controller.
+    pub id: SignalId,
+    /// Referenced storage-device node ID.
+    pub device: SignalId,
+    /// Guest-visible namespace capacity.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub capacity_bytes: u64,
+    /// Whether force-unit-access requests are accepted.
+    pub supports_fua: bool,
+    /// Whether discard requests are accepted.
+    pub supports_discard: bool,
+}
+impl WorldStorageNamespace {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// One deterministic path to a controller or array.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldStoragePath {
+    /// Stable path ID within its owner.
+    pub id: SignalId,
+    /// Maximum admitted in-flight operation count.
+    pub queue_depth: u32,
+    /// Registered path-selection and retry policy ID.
+    pub policy: SignalId,
+}
+impl WorldStoragePath {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// One deterministic storage controller with explicit namespaces and paths.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldStorageController {
+    /// Stable controller ID.
+    pub id: SignalId,
+    /// Exact controller state-machine semantic version.
+    pub semantic_version: u16,
+    /// Closed namespace declarations.
+    pub namespaces: Vec<WorldStorageNamespace>,
+    /// Closed access-path declarations.
+    pub paths: Vec<WorldStoragePath>,
+    /// Fault-domain memberships.
+    pub fault_domains: Vec<SignalId>,
+}
+impl WorldStorageController {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// Closed storage-array layout family.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldStorageArrayLayout {
+    /// Replicates each logical range across members.
+    Mirror,
+    /// Stripes logical ranges without parity.
+    Stripe,
+    /// Uses single distributed parity.
+    SingleParity,
+    /// Uses dual distributed parity.
+    DualParity,
+}
+
+/// One member of a deterministic storage array.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldStorageArrayMember {
+    /// Stable member ID within its array.
+    pub id: SignalId,
+    /// Referenced storage-device node ID.
+    pub device: SignalId,
+    /// Stable member position used by parity and selection rules.
+    pub ordinal: u16,
+}
+impl WorldStorageArrayMember {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// One deterministic storage array with explicit members, paths, and quorums.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldStorageArray {
+    /// Stable array ID.
+    pub id: SignalId,
+    /// Exact array state-machine and parity semantic version.
+    pub semantic_version: u16,
+    /// Array layout.
+    pub layout: WorldStorageArrayLayout,
+    /// Stripe chunk size.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub chunk_bytes: u64,
+    /// Minimum members required for a read.
+    pub read_quorum: u16,
+    /// Minimum members required for a write.
+    pub write_quorum: u16,
+    /// Closed member declarations.
+    pub members: Vec<WorldStorageArrayMember>,
+    /// Closed multipath declarations.
+    pub paths: Vec<WorldStoragePath>,
+    /// Fault-domain memberships.
+    pub fault_domains: Vec<SignalId>,
+}
+impl WorldStorageArray {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// One architecture register exposed by the live fault ABI.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldNodeRegister {
+    /// Stable architecture register ID.
+    pub id: SignalId,
+    /// Register width in bits.
+    pub width_bits: u16,
+    /// Whether the register has one independent value per vCPU.
+    pub per_vcpu: bool,
+    /// Lowercase hex mask of bits which the fault ABI may mutate.
+    pub writable_mask_hex: String,
+}
+impl WorldNodeRegister {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// One guest memory address space exposed by the live fault ABI.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldNodeAddressSpace {
+    /// Stable address-space ID.
+    pub id: SignalId,
+    /// Inclusive first address.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub start_address: u64,
+    /// Positive byte length.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub length_bytes: u64,
+}
+impl WorldNodeAddressSpace {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// One fully routed interrupt exposed by the live fault ABI.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldNodeInterrupt {
+    /// Stable manifest row ID.
+    pub id: SignalId,
+    /// Interrupt controller ID.
+    pub controller: SignalId,
+    /// Interrupt source ID.
+    pub source: SignalId,
+    /// Architecture vector or interrupt type.
+    pub vector: u32,
+    /// Closed set of routable target vCPU indices.
+    pub target_vcpus: Vec<u32>,
+}
+impl WorldNodeInterrupt {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// One guest-visible clock source exposed by the live fault ABI.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldNodeClockSource {
+    /// Stable clock-source ID.
+    pub id: SignalId,
+    /// Exact clock transform semantic version.
+    pub semantic_version: u16,
+    /// Whether the guest contract requires monotonic reads.
+    pub monotonic: bool,
+}
+impl WorldNodeClockSource {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
+/// Closed accelerator class implemented by the patched QEMU device.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeAcceleratorKind {
+    /// Virtio GPU device.
+    Gpu,
+    /// Crucible TPU co-simulation device.
+    Tpu,
+    /// Crucible FPGA co-simulation device.
+    Fpga,
+}
+
+/// One accelerator device exposed by the live fault ABI.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorldNodeAccelerator {
+    /// Stable device ID.
+    pub id: SignalId,
+    /// Accelerator class.
+    pub kind: WorldNodeAcceleratorKind,
+    /// Exact accelerator fault-device semantic version.
+    pub semantic_version: u16,
+    /// Content address of the device-specific capability manifest.
+    pub capability_manifest: ContentHash,
+}
+impl WorldNodeAccelerator {
+    const fn id(&self) -> &SignalId {
+        &self.id
+    }
+}
+
 /// One closed VM-node fault capability declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1045,16 +1725,22 @@ pub struct WorldNodeFaultCapabilities {
     pub architecture: SignalId,
     /// Content address of the exact register schema.
     pub register_schema: ContentHash,
+    /// Exact architecture register manifest.
+    pub registers: Vec<WorldNodeRegister>,
     /// Registered memory address spaces.
-    pub address_spaces: Vec<SignalId>,
+    pub address_spaces: Vec<WorldNodeAddressSpace>,
     /// Guest page size used by memory mutation contracts.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
     pub page_bytes: u64,
-    /// Registered interrupt-controller IDs.
-    pub interrupt_controllers: Vec<SignalId>,
-    /// Registered guest-visible clock source IDs.
-    pub clock_sources: Vec<SignalId>,
-    /// Registered accelerator IDs.
-    pub accelerators: Vec<SignalId>,
+    /// Exact routable interrupt manifest.
+    pub interrupts: Vec<WorldNodeInterrupt>,
+    /// Registered guest-visible clock sources.
+    pub clock_sources: Vec<WorldNodeClockSource>,
+    /// Registered accelerator devices.
+    pub accelerators: Vec<WorldNodeAccelerator>,
     /// Exact capability schema semantic version.
     pub semantic_version: u16,
 }
@@ -1068,11 +1754,45 @@ impl WorldNodeFaultCapabilities {
             "node capability semantic version",
         )?;
         require(self.page_bytes.is_power_of_two(), "node page geometry")?;
+        require(!self.registers.is_empty(), "node register manifest")?;
         require(!self.address_spaces.is_empty(), "node address spaces")?;
-        bounded(&self.address_spaces, "node address spaces")?;
-        bounded(&self.interrupt_controllers, "node interrupt controllers")?;
-        bounded(&self.clock_sources, "node clock sources")?;
-        bounded(&self.accelerators, "node accelerators")
+        for register in &self.registers {
+            require(register.width_bits > 0, "node register width")?;
+            require(
+                register.writable_mask_hex.len() == usize::from(register.width_bits).div_ceil(4)
+                    && register
+                        .writable_mask_hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "node register writable mask",
+            )?;
+        }
+        for space in &self.address_spaces {
+            require(space.length_bytes > 0, "node address-space length")?;
+            require(
+                space
+                    .start_address
+                    .checked_add(space.length_bytes)
+                    .is_some(),
+                "node address-space range",
+            )?;
+        }
+        for interrupt in &self.interrupts {
+            require(!interrupt.target_vcpus.is_empty(), "node interrupt targets")?;
+        }
+        require(
+            self.clock_sources
+                .iter()
+                .all(|source| source.semantic_version == 1),
+            "node clock semantic version",
+        )?;
+        require(
+            self.accelerators
+                .iter()
+                .all(|device| device.semantic_version == 1),
+            "node accelerator semantic version",
+        )?;
+        hard_count(&self.accelerators, "node accelerators", 1_024)
     }
 }
 
@@ -1162,7 +1882,9 @@ impl_id!(
     WorldNetworkMedium,
     WorldNetworkForwarder,
     WorldNetworkQueue,
-    WorldNetworkPath
+    WorldNetworkPath,
+    WorldStorageController,
+    WorldStorageArray
 );
 fn require(condition: bool, field: &'static str) -> Result<(), WorldFaultTopologyError> {
     if condition {
@@ -1185,6 +1907,21 @@ fn bounded<T>(values: &[T], field: &'static str) -> Result<(), WorldFaultTopolog
         })
     }
 }
+fn hard_count<T>(
+    values: &[T],
+    field: &'static str,
+    hard: usize,
+) -> Result<(), WorldFaultTopologyError> {
+    if values.len() <= hard {
+        Ok(())
+    } else {
+        Err(WorldFaultTopologyError::CollectionLimit {
+            field,
+            actual: values.len(),
+            hard,
+        })
+    }
+}
 fn require_all(
     values: &[SignalId],
     available: &BTreeSet<SignalId>,
@@ -1192,4 +1929,65 @@ fn require_all(
 ) -> Result<(), WorldFaultTopologyError> {
     bounded(values, field)?;
     require(values.iter().all(|value| available.contains(value)), field)
+}
+
+fn same_target_object(left: &WorldFaultTargetRef, right: &WorldFaultTargetRef) -> bool {
+    match (left, right) {
+        (
+            WorldFaultTargetRef::NetworkInterface { interface: left },
+            WorldFaultTargetRef::NetworkInterface { interface: right },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::NetworkSegment { segment: left, .. },
+            WorldFaultTargetRef::NetworkSegment { segment: right, .. },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::NetworkMedium { medium: left, .. },
+            WorldFaultTargetRef::NetworkMedium { medium: right, .. },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::NetworkForwarder { forwarder: left },
+            WorldFaultTargetRef::NetworkForwarder { forwarder: right },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::NetworkQueue { queue: left },
+            WorldFaultTargetRef::NetworkQueue { queue: right },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::NetworkPath { path: left, .. },
+            WorldFaultTargetRef::NetworkPath { path: right, .. },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::NetworkAttachment { attachment: left },
+            WorldFaultTargetRef::NetworkAttachment { attachment: right },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::NetworkContact { plan: left, .. },
+            WorldFaultTargetRef::NetworkContact { plan: right, .. },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::BlockDevice { device: left },
+            WorldFaultTargetRef::BlockDevice { device: right },
+        )
+        | (
+            WorldFaultTargetRef::NinePDevice { device: left },
+            WorldFaultTargetRef::NinePDevice { device: right },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::StorageController {
+                controller: left, ..
+            },
+            WorldFaultTargetRef::StorageController {
+                controller: right, ..
+            },
+        ) => left == right,
+        (
+            WorldFaultTargetRef::StorageArray { array: left, .. },
+            WorldFaultTargetRef::StorageArray { array: right, .. },
+        ) => left == right,
+        (WorldFaultTargetRef::Node { node: left }, WorldFaultTargetRef::Node { node: right }) => {
+            left == right
+        }
+        _ => false,
+    }
 }

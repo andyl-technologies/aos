@@ -695,7 +695,7 @@ mod tests {
         let unbounded_from_toml = ScenarioDefForm::from_canonical_toml(&unbounded_toml)
             .expect("default app-random cap scenario form TOML should parse");
         assert!(unbounded_toml.contains(&format!(
-            "app_random_draw_cap = \"{}\"",
+            "app_random_draw_cap = \"u64:{}\"",
             crate::DEFAULT_APP_RANDOM_DRAW_CAP
         )));
         assert_eq!(unbounded_from_toml.id(), unbounded.id());

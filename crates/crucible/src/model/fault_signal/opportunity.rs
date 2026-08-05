@@ -170,6 +170,8 @@ pub enum ResolvedFaultTarget {
     },
     /// One contact between two endpoints.
     NetworkContact {
+        /// Contact-plan identity.
+        plan: FaultObjectId,
         /// First endpoint identity in canonical endpoint order.
         endpoint_a: FaultObjectId,
         /// Second endpoint identity in canonical endpoint order.
@@ -378,10 +380,11 @@ impl ResolvedFaultTarget {
                 attachment,
             } => push_ids(material, &[endpoint, interface, attachment]),
             Self::NetworkContact {
+                plan,
                 endpoint_a,
                 endpoint_b,
                 contact,
-            } => push_ids(material, &[endpoint_a, endpoint_b, contact]),
+            } => push_ids(material, &[plan, endpoint_a, endpoint_b, contact]),
             Self::BlockDevice { device } | Self::NinePDevice { device } => {
                 push_text(material, &device.to_hex());
             }
