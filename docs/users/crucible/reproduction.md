@@ -40,9 +40,10 @@ To compare two existing artifacts without running the scenario again:
 
 ## Failure artifacts
 
-A non-passing `run` or `search` result normally writes a self-contained
-`.crucible` artifact below `--artifact-dir`; `verify` writes paired side
-artifacts when both divergent reductions carry producer provenance. It records:
+A non-passing `run`, `search`, or `fuzz` result normally writes a self-contained
+`.crucible` artifact below `--artifact-dir`; collect-mode exploration writes one
+artifact per retained finding, and `verify` writes paired side artifacts when
+both divergent reductions carry producer provenance. It records:
 
 - the resolved seed;
 - engine, protocol, QEMU, patch-series, and plugin identity;
@@ -56,10 +57,9 @@ commands. JSON/JSONL records the artifact digest in the final outcome but does
 not add the host path to the canonical log; locate the matching `repro-*.crucible`
 file below `--artifact-dir`.
 
-The current production `fuzz` driver records coverage and corpus admissions but
-does not yet promote a failing iteration into a non-passing command outcome or
-export its reproduction artifact. Do not rely on `fuzz` alone as a failure
-retention boundary.
+Search and fuzz also emit a signed `.crucible-findings` ledger that can be passed
+directly to `triage`. Use `--findings-out <path>` for a fixed ledger location;
+otherwise it is content-addressed below `<artifact-dir>/findings`.
 
 ## Replay
 
