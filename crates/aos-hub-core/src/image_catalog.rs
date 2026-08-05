@@ -115,7 +115,7 @@ impl SignedImageCatalog {
                         // --image`, but cannot safely produce a direct disk
                         // download URL because they bind neither the served
                         // bytes nor the accompanying image-info document.
-                        if image.delivery.is_legacy_store_only() {
+                        if image.delivery.is_store_only() {
                             continue;
                         }
                         let delivery = &image.delivery;
@@ -391,14 +391,14 @@ sha256 = "{info}"
     }
 
     #[test]
-    fn legacy_store_only_images_remain_installable_but_are_not_direct_downloads() {
+    fn store_only_images_remain_installable_but_are_not_direct_downloads() {
         let mut package = package();
         package.versions[0]
             .platforms
             .get_mut("x86_64-linux")
             .unwrap()
             .images[0]
-            .delivery = ImageDelivery::legacy_store_only();
+            .delivery = ImageDelivery::store_only();
         let catalog = SignedImageCatalog::build(
             &[package],
             &BTreeMap::new(),
