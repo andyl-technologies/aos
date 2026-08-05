@@ -12,6 +12,9 @@ workspace = true
 crucible-protocol = { path = "../crucible-protocol" }
 thiserror = { workspace = true }
 
+[dev-dependencies]
+crucible-api = { path = "../crucible-api" }
+
 [[bin]]
 name = "crucible-debug-gateway"
 path = "src/main.rs"

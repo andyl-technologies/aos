@@ -8,6 +8,8 @@
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 use crucible_protocol::debug_gateway::{
     DEBUG_GATEWAY_HEADER_LEN, DEBUG_GATEWAY_MAX_PAYLOAD, DebugGatewayBackendStatus,
@@ -18,6 +20,132 @@ use thiserror::Error;
 
 /// Version-1 gateway capability token returned by negotiation.
 pub const DEBUG_GATEWAY_V1_CAPABILITY: &[u8] = b"debug-gateway.v1";
+/// Default time allowed for a newly spawned gateway to bind and negotiate.
+pub const DEBUG_GATEWAY_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Owned debugger gateway child and its negotiated control connection.
+pub struct DebugGatewayProcess {
+    child: Child,
+    client: DebugGatewayControlClient,
+    control_socket: std::path::PathBuf,
+    _directory: tempfile::TempDir,
+}
+
+impl DebugGatewayProcess {
+    /// Spawns a standalone gateway and waits for version negotiation.
+    ///
+    /// The executable is invoked directly with a private control socket under
+    /// an owned temporary directory; no shell or ambient host utility is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the temporary directory cannot
+    /// be created, the process cannot be spawned, exits before negotiation, or
+    /// does not become ready within [`DEBUG_GATEWAY_STARTUP_TIMEOUT`].
+    pub fn launch(executable: impl AsRef<Path>) -> Result<Self, DebugGatewayClientError> {
+        Self::launch_with_timeout(executable, DEBUG_GATEWAY_STARTUP_TIMEOUT)
+    }
+
+    /// Spawns a standalone gateway with an explicit startup bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] for the same conditions as
+    /// [`Self::launch`] or when child status inspection fails.
+    pub fn launch_with_timeout(
+        executable: impl AsRef<Path>,
+        timeout: Duration,
+    ) -> Result<Self, DebugGatewayClientError> {
+        let directory = tempfile::tempdir().map_err(DebugGatewayClientError::CreateDirectory)?;
+        let control_socket = directory.path().join("control.sock");
+        let mut child = Command::new(executable.as_ref())
+            .arg("--control-socket")
+            .arg(&control_socket)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(DebugGatewayClientError::Spawn)?;
+        let started = Instant::now();
+        loop {
+            match DebugGatewayControlClient::connect(&control_socket) {
+                Ok(client) => {
+                    return Ok(Self {
+                        child,
+                        client,
+                        control_socket,
+                        _directory: directory,
+                    });
+                }
+                Err(error) if started.elapsed() < timeout => {
+                    if let Some(status) = child
+                        .try_wait()
+                        .map_err(DebugGatewayClientError::InspectChild)?
+                    {
+                        return Err(DebugGatewayClientError::EarlyExit { status });
+                    }
+                    if !matches!(
+                        error,
+                        DebugGatewayClientError::Connect(ref source)
+                            if matches!(
+                                source.kind(),
+                                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                            )
+                    ) {
+                        let _ = terminate_child(&mut child);
+                        return Err(error);
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(last_error) => {
+                    let _ = terminate_child(&mut child);
+                    return Err(DebugGatewayClientError::StartupTimeout {
+                        timeout,
+                        last_error: Box::new(last_error),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Returns the private control-socket path used by the child.
+    #[must_use]
+    pub fn control_socket(&self) -> &Path {
+        &self.control_socket
+    }
+
+    /// Returns the negotiated control client.
+    pub fn client_mut(&mut self) -> &mut DebugGatewayControlClient {
+        &mut self.client
+    }
+
+    /// Terminates and reaps the gateway process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] if child status inspection, signal
+    /// delivery, or reaping fails.
+    pub fn shutdown(mut self) -> Result<ExitStatus, DebugGatewayClientError> {
+        terminate_child(&mut self.child)
+    }
+}
+
+impl Drop for DebugGatewayProcess {
+    fn drop(&mut self) {
+        let _ = terminate_child(&mut self.child);
+    }
+}
+
+fn terminate_child(child: &mut Child) -> Result<ExitStatus, DebugGatewayClientError> {
+    if let Some(status) = child
+        .try_wait()
+        .map_err(DebugGatewayClientError::InspectChild)?
+    {
+        return Ok(status);
+    }
+    child.kill().map_err(DebugGatewayClientError::Terminate)?;
+    child.wait().map_err(DebugGatewayClientError::Reap)
+}
 
 /// Blocking control client for one debugger gateway process.
 pub struct DebugGatewayControlClient {
@@ -198,6 +326,35 @@ fn read_frame(stream: &mut UnixStream) -> Result<DebugGatewayFrame, DebugGateway
 /// Errors returned by the debugger gateway control client.
 #[derive(Debug, Error)]
 pub enum DebugGatewayClientError {
+    /// A private gateway run directory could not be created.
+    #[error("create debugger gateway run directory: {0}")]
+    CreateDirectory(#[source] io::Error),
+    /// The standalone gateway process could not be spawned.
+    #[error("spawn debugger gateway process: {0}")]
+    Spawn(#[source] io::Error),
+    /// Child status could not be inspected during startup or shutdown.
+    #[error("inspect debugger gateway process: {0}")]
+    InspectChild(#[source] io::Error),
+    /// The child exited before its control socket negotiated.
+    #[error("debugger gateway exited before negotiation with status {status}")]
+    EarlyExit {
+        /// Observed child status.
+        status: ExitStatus,
+    },
+    /// The child did not negotiate before the startup bound.
+    #[error("debugger gateway did not negotiate within {timeout:?}: {last_error}")]
+    StartupTimeout {
+        /// Applied startup bound.
+        timeout: Duration,
+        /// Last connection or negotiation error.
+        last_error: Box<DebugGatewayClientError>,
+    },
+    /// The gateway child could not be terminated.
+    #[error("terminate debugger gateway process: {0}")]
+    Terminate(#[source] io::Error),
+    /// The gateway child could not be reaped.
+    #[error("reap debugger gateway process: {0}")]
+    Reap(#[source] io::Error),
     /// The Unix control socket could not be connected.
     #[error("connect debugger gateway control socket: {0}")]
     Connect(#[source] io::Error),
