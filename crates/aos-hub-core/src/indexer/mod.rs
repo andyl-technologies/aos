@@ -110,7 +110,7 @@ fn pending_outcome() -> IndexOutcome {
         releases: 0,
         channels: 0,
         incremental: false,
-        pending: false,
+        pending: true,
     }
 }
 
@@ -128,7 +128,7 @@ fn empty_outcome() -> IndexOutcome {
         releases: 0,
         channels: 0,
         incremental: false,
-        pending: true,
+        pending: false,
     }
 }
 

@@ -1008,7 +1008,7 @@ mod tests {
         let surface = S3Surface::from_binding(&b, "reg", None).unwrap().unwrap();
         assert!(!surface.is_writable());
         let get = surface.object_url(Method::Get, "info/refs", 1).unwrap();
-        assert_eq!(get, "https://cdn.example.com/my-bucket/reg/info/refs");
+        assert_eq!(get, "https://cdn.example.com:443/my-bucket/reg/info/refs");
         assert!(surface.object_url(Method::Put, "info/refs", 1).is_err());
     }
 

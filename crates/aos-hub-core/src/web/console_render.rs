@@ -6579,7 +6579,7 @@ mod cache_render_tests {
         let general = render("access");
         assert!(general.contains("<h1>Identity &amp; access · build</h1>"));
         assert!(general.contains("<h2>Cache policy</h2>"));
-        assert!(general.contains("<button>save</button>"));
+        assert!(general.contains("<button>Review policy update</button>"));
         assert!(general.contains("action=\"/-/org/acme/caches/build/access/plan-update\""));
         assert!(general.contains("name=\"expected_resource_version\""));
         assert!(general.contains("csrf-tok"));
@@ -6759,7 +6759,8 @@ mod cache_render_tests {
         );
         assert!(html.contains("No delivery routes"));
         assert!(!html.contains("settings/delivery/routes/new"));
-        assert!(!html.contains("Upstream mirror"));
+        assert!(html.contains("Upstream mirror"));
+        assert!(!html.contains("No upstream mirror is configured"));
         assert!(!html.contains("<form"));
         assert_eq!(html.matches("aria-current=\"page\"").count(), 2);
         assert_one_current_per_navigation(&html);
@@ -6924,7 +6925,9 @@ mod cache_render_tests {
 
         let privileged = render_org_storage(false, true);
         assert!(privileged.contains("/srv/private/acme"));
-        assert!(privileged.contains("https://origin.internal.example/private-bucket/tenant-prefix"));
+        assert!(
+            privileged.contains("https://origin.internal.example:443/private-bucket/tenant-prefix")
+        );
         assert!(privileged.contains("/-/org/acme/storage-bindings/binding-local-primary"));
         assert!(privileged.contains("/binding-local-primary/plan-delete"));
         assert!(!privileged.contains("name=\"id\""));
