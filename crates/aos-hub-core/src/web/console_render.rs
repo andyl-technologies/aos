@@ -2078,7 +2078,7 @@ pub fn org_dashboard(
     bindings: &[StorageBindingReadSummary],
     managed_bindings: Option<&[StorageBindingRecord]>,
     caches: &[CacheSummary],
-    domains: &[crate::db::DomainRecord],
+    domains: &[crate::db::DeliveryDomainRecord],
     boundaries: &[crate::db::NetworkBoundaryRecord],
     endpoints: &[crate::db::DeliveryEndpointRecord],
     gateways: &[crate::db::StorageGatewayRecord],
@@ -2440,18 +2440,18 @@ pub fn org_dashboard(
                 .map(|domain| {
                     vec![
                         format!("<code>{}</code>", escape(&domain.hostname)),
-                        domain
-                            .desired_dns_provider
-                            .as_deref()
-                            .map(escape)
-                            .unwrap_or_else(|| "external".to_string()),
-                        escape(&domain.observed_dns_state),
-                        domain
-                            .desired_tls_provider
-                            .as_deref()
-                            .map(escape)
-                            .unwrap_or_else(|| "external".to_string()),
-                        escape(&domain.observed_tls_state),
+                        if domain.dns_configuration_json.is_some() {
+                            "managed".to_string()
+                        } else {
+                            "external".to_string()
+                        },
+                        escape(&domain.dns_state),
+                        if domain.certificate_configuration_json.is_some() {
+                            "managed".to_string()
+                        } else {
+                            "external".to_string()
+                        },
+                        escape(&domain.certificate_state),
                         if domain.verified_at.is_some() {
                             "verified".to_string()
                         } else {

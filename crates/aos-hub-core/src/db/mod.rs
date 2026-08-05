@@ -11954,6 +11954,49 @@ impl Database {
         Ok(Some(context))
     }
 
+    /// Resolves a stable authorization scope to its current human path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn authorization_scope_display_path(
+        &self,
+        scope_key: &str,
+    ) -> Result<Option<String>> {
+        let Some(row) = self
+            .backend
+            .query_opt(
+                "SELECT a.kind, o.slug, p.path, r.slug, c.slug
+                   FROM authorization_scopes a
+                   LEFT JOIN orgs o ON o.id = a.org_id
+                   LEFT JOIN projects p ON p.scope_key = a.scope_key
+                   LEFT JOIN registries r ON r.scope_key = a.scope_key
+                   LEFT JOIN binary_caches c ON c.scope_key = a.scope_key
+                  WHERE a.scope_key = ?1 AND a.retired_at IS NULL",
+                &vals![scope_key],
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let kind: String = row.get(0)?;
+        let org: Option<String> = row.get(1)?;
+        let project: Option<String> = row.get(2)?;
+        let registry: Option<String> = row.get(3)?;
+        let cache: Option<String> = row.get(4)?;
+        let display = match kind.as_str() {
+            "instance" => Some("instance".to_string()),
+            "organization" => org,
+            "project" => org
+                .zip(project)
+                .map(|(org, project)| format!("{org}/{project}")),
+            "registry" => registry,
+            "binary_cache" => cache,
+            _ => None,
+        };
+        Ok(display)
+    }
+
     /// Resolves the immutable authorization scope governing a registry.
     ///
     /// This is always the exact registry resource scope, never its organization

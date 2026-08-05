@@ -46,6 +46,7 @@
 //! TEXT                        TEXT                    TEXT                      VARCHAR(255) (see note)
 //! LONGTEXT                    LONGTEXT                TEXT                      LONGTEXT
 //! IDTEXT                      TEXT                    TEXT                      VARCHAR(255) COLLATE utf8mb4_0900_bin
+//! KEYTEXT16                   TEXT COLLATE BINARY     VARCHAR(16) COLLATE "C"    VARCHAR(16) + utf8mb4_0900_bin
 //! KEYTEXT32                   TEXT COLLATE BINARY     VARCHAR(32) COLLATE "C"    VARCHAR(32) + utf8mb4_0900_bin
 //! KEYTEXT64                   TEXT COLLATE BINARY     VARCHAR(64) COLLATE "C"    VARCHAR(64) + utf8mb4_0900_bin
 //! KEYTEXT128                  TEXT COLLATE BINARY     VARCHAR(128) COLLATE "C"   VARCHAR(128) + utf8mb4_0900_bin
@@ -70,7 +71,7 @@
 //! `KEYTEXT<N>` marks a bounded, case-sensitive topology key. It is intended
 //! for stable names, normalized paths, hashes, revisions, and other values
 //! whose equality and ordering must not depend on the database's default
-//! collation. The supported capacities are 32, 64, 128, 255, and 512. SQLite
+//! collation. The supported capacities are 16, 32, 64, 128, 255, and 512. SQLite
 //! and Durable Object SQLite use bytewise `BINARY` collation, postgres uses its deterministic
 //! `C` collation, and MySQL 8.0.16+ uses its `NO PAD` `utf8mb4_0900_bin`
 //! collation.
@@ -261,6 +262,7 @@ impl Dialect {
             // clean on-disk schema.
             let mut s = sql.to_string();
             for marker in [
+                "KEYTEXT16",
                 "KEYTEXT32",
                 "KEYTEXT64",
                 "KEYTEXT128",
@@ -326,7 +328,8 @@ impl Dialect {
         // supported capacity before the generic TEXT rewrite; otherwise a
         // marker such as KEYTEXT64 would become KEYVARCHAR(255)64 and could no
         // longer be restored. The sentinels deliberately contain no `TEXT`.
-        const KEYTEXT_SENTINELS: [(&str, &str, usize); 5] = [
+        const KEYTEXT_SENTINELS: [(&str, &str, usize); 6] = [
+            ("KEYTEXT16", "\u{0}KEY_EXACT_16\u{0}", 16),
             ("KEYTEXT32", "\u{0}KEY_EXACT_32\u{0}", 32),
             ("KEYTEXT64", "\u{0}KEY_EXACT_64\u{0}", 64),
             ("KEYTEXT128", "\u{0}KEY_EXACT_128\u{0}", 128),

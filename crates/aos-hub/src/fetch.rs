@@ -114,7 +114,20 @@ pub async fn read_body_capped(
     cap: u64,
     what: &str,
 ) -> Result<Vec<u8>> {
-    if let Some(declared) = response.content_length() {
+    let declared = response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .map(|value| {
+            value
+                .to_str()
+                .context("response Content-Length is not ASCII")?
+                .parse::<u64>()
+                .context("response Content-Length is not an integer")
+        })
+        .transpose()
+        .map_err(|error| fetch_err(format!("{what}: {error:#}")))?
+        .or_else(|| response.content_length());
+    if let Some(declared) = declared {
         if declared > cap {
             return Err(fetch_err(format!(
                 "{what}: response is {declared} bytes (cap {cap})"
@@ -1127,17 +1140,17 @@ mod tests {
             ]);
             axum::response::Response::new(axum::body::Body::from_stream(chunks))
         }
-        // A lying/malformed peer advertises a body already beyond the cap. The
-        // reader must refuse it before it allocates or polls the body stream.
-        async fn lying_length() -> axum::response::Response {
+        // A peer advertises a fixed body already beyond the cap. The reader
+        // must refuse it from Content-Length before accumulating the body.
+        async fn declared_over_cap() -> axum::response::Response {
             axum::response::Response::builder()
                 .header(axum::http::header::CONTENT_LENGTH, "4096")
-                .body(axum::body::Body::empty())
+                .body(axum::body::Body::from(vec![0_u8; 4096]))
                 .unwrap()
         }
         let app = axum::Router::new()
             .route("/big", get(big))
-            .route("/lying", get(lying_length));
+            .route("/declared-over-cap", get(declared_over_cap));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/big", listener.local_addr().unwrap());
         tokio::spawn(async move {
@@ -1160,9 +1173,9 @@ mod tests {
             .unwrap();
         assert_eq!(body.len(), 1400);
 
-        let lying_url = url.replace("/big", "/lying");
-        let response = client.get(&lying_url).send().await.unwrap();
-        let error = read_body_capped(response, cap, "lying S3 list page")
+        let declared_url = url.replace("/big", "/declared-over-cap");
+        let response = client.get(&declared_url).send().await.unwrap();
+        let error = read_body_capped(response, cap, "oversized S3 list page")
             .await
             .unwrap_err();
         assert!(error.to_string().contains("4096"), "got: {error:#}");

@@ -271,9 +271,14 @@ fn write_key_0600(path: &Path, key: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
         let (parent_fd, name) = open_private_secret_parent(path)?;
+        let temporary_name = format!(
+            ".{}.{}.tmp",
+            name.to_string_lossy(),
+            uuid::Uuid::new_v4().simple()
+        );
         let fd = rustix::fs::openat(
             &parent_fd,
-            name,
+            &temporary_name,
             rustix::fs::OFlags::WRONLY
                 | rustix::fs::OFlags::CREATE
                 | rustix::fs::OFlags::EXCL
@@ -281,15 +286,29 @@ fn write_key_0600(path: &Path, key: &[u8]) -> Result<()> {
                 | rustix::fs::OFlags::NOFOLLOW,
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
-        .with_context(|| format!("creating {} without following links", path.display()))?;
+        .with_context(|| format!("creating a temporary key beside {}", path.display()))?;
         let mut file = fs::File::from(fd);
-        std::io::Write::write_all(&mut file, key)
-            .with_context(|| format!("writing {}", path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("syncing {}", path.display()))?;
-        rustix::fs::fsync(&parent_fd)
-            .with_context(|| format!("syncing parent of {}", path.display()))?;
-        return Ok(());
+        let result = (|| {
+            std::io::Write::write_all(&mut file, key)
+                .with_context(|| format!("writing temporary key for {}", path.display()))?;
+            file.sync_all()
+                .with_context(|| format!("syncing temporary key for {}", path.display()))?;
+            rustix::fs::renameat_with(
+                &parent_fd,
+                &temporary_name,
+                &parent_fd,
+                name,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .with_context(|| format!("installing {} without replacement", path.display()))?;
+            rustix::fs::fsync(&parent_fd)
+                .with_context(|| format!("syncing parent of {}", path.display()))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = rustix::fs::unlinkat(&parent_fd, &temporary_name, rustix::fs::AtFlags::empty());
+        }
+        return result;
     }
     #[cfg(not(unix))]
     {
@@ -310,9 +329,19 @@ fn write_key_0600(path: &Path, key: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn private_tempdir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        dir
+    }
+
     #[test]
     fn instance_sealer_creates_and_reloads_persistent_key() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let root = dir.path();
         // No env override for this test.
         std::env::remove_var("AOS_HUB_SECRET_KEY_FILE");
@@ -341,7 +370,7 @@ mod tests {
     fn secret_reader_rejects_symlinks_and_group_permissions() {
         use std::os::unix::fs::{symlink, PermissionsExt as _};
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let key = dir.path().join("key");
         fs::write(&key, [3_u8; KEY_LEN]).unwrap();
         fs::set_permissions(&key, fs::Permissions::from_mode(0o640)).unwrap();
@@ -359,7 +388,7 @@ mod tests {
     fn secret_reader_rejects_hard_links_and_public_parents() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let key = dir.path().join("key");
         let hard_link = dir.path().join("key-hard-link");
         fs::write(&key, [5_u8; KEY_LEN]).unwrap();
@@ -377,7 +406,7 @@ mod tests {
     fn secret_reader_rejects_a_symlinked_parent() {
         use std::os::unix::fs::{symlink, PermissionsExt as _};
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let private = dir.path().join("private");
         fs::create_dir(&private).unwrap();
         fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
@@ -394,7 +423,7 @@ mod tests {
     fn secret_reader_rejects_oversized_files() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let secret = dir.path().join("oversized");
         fs::write(&secret, vec![0_u8; MAX_SECRET_FILE_BYTES as usize + 1]).unwrap();
         fs::set_permissions(&secret, fs::Permissions::from_mode(0o600)).unwrap();
@@ -406,7 +435,7 @@ mod tests {
     fn secret_reader_rejects_an_intermediate_symlink_component() {
         use std::os::unix::fs::{symlink, PermissionsExt as _};
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let private = dir.path().join("private");
         let nested = private.join("nested");
         fs::create_dir_all(&nested).unwrap();
@@ -427,7 +456,7 @@ mod tests {
         use std::sync::{Arc, Barrier};
 
         std::env::remove_var("AOS_HUB_SECRET_KEY_FILE");
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let root = dir.path().to_path_buf();
         let barrier = Arc::new(Barrier::new(8));
         let mut threads = Vec::new();
@@ -453,7 +482,7 @@ mod tests {
         use std::os::unix::fs::{symlink, PermissionsExt as _};
         use std::sync::{Arc, Barrier};
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let key = dir.path().join("key");
         let parked = dir.path().join("key.parked");
         let target = dir.path().join("attacker-target");

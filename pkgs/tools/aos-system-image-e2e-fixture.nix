@@ -30,7 +30,7 @@
             mkdir -p "$out"
             filename=aos-e2e.img
             truncate -s 32M "$out/$filename"
-            ${gptfdisk}/bin/sgdisk \
+            ${gptfdisk}/sbin/sgdisk \
               --new=1:2048:18431 --typecode=1:ef00 --change-name=1:esp \
               --new=2:18432:65502 --typecode=2:8304 --change-name=2:root-a \
               "$out/$filename"

@@ -47,7 +47,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
-        leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
+        leases: std::sync::Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
         secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
@@ -263,7 +263,10 @@ async fn send_json(
     json: Option<String>,
     form: Option<String>,
 ) -> Resp {
-    let mut req = Request::builder().method(method).uri(uri);
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420");
     if let Some(c) = cookie {
         req = req.header(header::COOKIE, c);
     }

@@ -91,7 +91,6 @@ pub mod egress_gateway;
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
 pub use aos_hub_core::domain;
 pub mod export;
-pub mod facade;
 pub mod fetch;
 pub mod image_snapshot;
 /// Package/release listing filters, re-exported from

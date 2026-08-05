@@ -26,7 +26,9 @@ async fn get_with_accept(
     uri: &str,
     accept: Option<&str>,
 ) -> (StatusCode, axum::http::HeaderMap, String) {
-    let mut request = Request::builder().uri(uri);
+    let mut request = Request::builder()
+        .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420");
     if let Some(accept) = accept {
         request = request.header(header::ACCEPT, accept);
     }

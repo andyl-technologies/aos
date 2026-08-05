@@ -33,6 +33,7 @@ pub struct TopologySurfaceFetch {
     db: Arc<Database>,
     provider: Arc<dyn SurfaceProvider>,
     surface: SurfaceTarget,
+    verified_git_objects: bool,
 }
 
 impl TopologySurfaceFetch {
@@ -47,6 +48,35 @@ impl TopologySurfaceFetch {
             db,
             provider,
             surface,
+            verified_git_objects: false,
+        }
+    }
+
+    /// Creates a reader for Git object walks that verify every loose-object id.
+    ///
+    /// Loose Git objects are selected from eligible complete placements without
+    /// requiring delivery-inventory evidence because the Git reader inflates
+    /// and hashes every object against the SHA-256 encoded in its path. All
+    /// other paths retain the ordinary inventory and publication requirements.
+    #[must_use]
+    pub fn for_verified_git_objects(
+        db: Arc<Database>,
+        provider: Arc<dyn SurfaceProvider>,
+        surface: SurfaceTarget,
+    ) -> Self {
+        Self {
+            db,
+            provider,
+            surface,
+            verified_git_objects: true,
+        }
+    }
+
+    fn requirement<'a>(&self, path: &'a str) -> PlacementReadRequirement<'a> {
+        if self.verified_git_objects && is_loose_git_object_path(path) {
+            PlacementReadRequirement::Untracked
+        } else {
+            requirement_for_path(self.surface, path)
         }
     }
 }
@@ -55,7 +85,18 @@ impl TopologySurfaceFetch {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl SurfaceFetch for TopologySurfaceFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        match fetch_from_placements(&self.db, self.provider.as_ref(), self.surface, path).await? {
+        let plan = self
+            .db
+            .readable_surface_placements(self.surface, self.requirement(path))
+            .await?;
+        match execute_fetch_plan(
+            self.provider.as_ref(),
+            plan.candidates,
+            path,
+            plan.miss_is_inconsistent,
+        )
+        .await?
+        {
             PlacementReadOutcome::Found(read) => Ok(Some(read.value)),
             PlacementReadOutcome::NotFound => Ok(None),
         }
@@ -77,6 +118,21 @@ impl SurfaceFetch for TopologySurfaceFetch {
     fn describe(&self) -> String {
         "topology-planned surface placements".to_string()
     }
+}
+
+fn is_loose_git_object_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("objects/") else {
+        return false;
+    };
+    let Some((fanout, digest_rest)) = rest.split_once('/') else {
+        return false;
+    };
+    fanout.len() == 2
+        && digest_rest.len() == 62
+        && fanout
+            .bytes()
+            .chain(digest_rest.bytes())
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Whether a backend failure permits trying the next placement.

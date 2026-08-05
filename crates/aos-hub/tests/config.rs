@@ -38,7 +38,7 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         ratelimit: auth.ratelimit.clone(),
         trusted_proxy: false,
         auth,
-        leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
+        leases: std::sync::Arc::new(aos_hub_core::lease::InMemoryLease::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
         secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
@@ -74,6 +74,7 @@ async fn rpc(
     let mut req = Request::builder()
         .method("POST")
         .uri(format!("/aos.hub.v1.{method}"))
+        .header(header::HOST, "127.0.0.1:8420")
         .header(header::CONTENT_TYPE, "application/json")
         .header("connect-protocol-version", "1");
     if let Some(auth) = auth {
@@ -97,6 +98,9 @@ async fn rpc(
 /// `acme/infra/prod/cdn`, returning the registry id.
 async fn managed_registry(db: &Database, visibility: &str) -> i64 {
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    db.create_project(org, "infra/prod", "Production")
+        .await
+        .unwrap();
     db.create_managed_registry(org, "infra/prod", "cdn", visibility, &[], true)
         .await
         .unwrap()
@@ -214,11 +218,22 @@ async fn visibility_change_and_revert_round_trip() {
         let db = &db;
         async move {
             if is_registry {
-                db.registry_by_slug(&oid)
+                db.registry_by_id(id)
                     .await
                     .ok()
                     .flatten()
-                    .map(|r| serde_json::json!({"visibility": r.visibility}))
+                    .filter(|registry| registry.stable_id == oid)
+                    .map(|registry| {
+                        serde_json::json!({
+                            "stableId": registry.stable_id,
+                            "slug": registry.slug,
+                            "visibility": registry.visibility,
+                            "crawlPolicy": registry.crawl_policy,
+                            "llmsTxtBody": registry.llms_txt_body,
+                            "trustKeys": registry.trust_keys,
+                            "resourceVersion": registry.resource_version,
+                        })
+                    })
             } else {
                 None
             }
@@ -280,11 +295,22 @@ async fn revert_flags_conflict_when_object_diverged() {
         let db = &db;
         async move {
             if is_registry {
-                db.registry_by_slug(&oid)
+                db.registry_by_id(id)
                     .await
                     .ok()
                     .flatten()
-                    .map(|r| serde_json::json!({"visibility": r.visibility}))
+                    .filter(|registry| registry.stable_id == oid)
+                    .map(|registry| {
+                        serde_json::json!({
+                            "stableId": registry.stable_id,
+                            "slug": registry.slug,
+                            "visibility": registry.visibility,
+                            "crawlPolicy": registry.crawl_policy,
+                            "llmsTxtBody": registry.llms_txt_body,
+                            "trustKeys": registry.trust_keys,
+                            "resourceVersion": registry.resource_version,
+                        })
+                    })
             } else {
                 None
             }
@@ -509,6 +535,11 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(value["changeset"]["status"], "applied");
     assert_eq!(value["revisions"][0]["objectType"], "registry");
-    assert_eq!(value["revisions"][0]["diffs"][0]["field"], "visibility");
-    assert_eq!(value["revisions"][0]["diffs"][0]["new"], "private");
+    let visibility = value["revisions"][0]["diffs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|diff| diff["field"] == "visibility")
+        .unwrap();
+    assert_eq!(visibility["new"], "private");
 }
