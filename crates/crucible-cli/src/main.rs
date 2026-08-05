@@ -75,6 +75,7 @@ const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
 const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
+const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3: &str = "crucible.failure-triage.findings-ledger.v3";
 const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
     "application/vnd.crucible.recorded-decision-payload+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
