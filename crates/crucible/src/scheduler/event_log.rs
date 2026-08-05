@@ -680,6 +680,38 @@ pub type EventClass = SchedulerEventLogClass;
 pub(super) struct SchedulerEventLogEntryProvenance;
 
 impl SchedulerEventLogEntry {
+    /// Builds the scheduler-owned causal marker for an exhausted execution budget.
+    ///
+    /// The marker deliberately records only the stable budget domain. Numeric
+    /// limits and observed counters belong in timeout report evidence and do not
+    /// perturb the causal signature.
+    #[must_use]
+    pub fn execution_budget_exhausted(
+        sequence: u64,
+        at: VirtualTime,
+        budget_kind: impl Into<String>,
+    ) -> Self {
+        let mut attributes = BTreeMap::new();
+        attributes.insert(
+            String::from("budget_kind"),
+            EventAttributeValue::String(budget_kind.into()),
+        );
+        let diagnostic = EventDiagnosticPayload::new(
+            "execution_budget_exhausted",
+            EventLevel::Error,
+            attributes.clone(),
+        );
+        scheduler_event_log_entry_with_material(
+            sequence,
+            EventLogTime::from_virtual_time(at),
+            EventSource::Engine,
+            EventLevel::Error,
+            SchedulerEventLogClass::Causal,
+            EventPayload::new("execution_budget_exhausted", attributes),
+            SchedulerEventLogPayload::Diagnostic(diagnostic),
+        )
+    }
+
     /// Builds a scheduler-owned assertion-state observation for deterministic
     /// test-double loops.
     ///
@@ -702,6 +734,27 @@ impl SchedulerEventLogEntry {
                 name,
                 state,
             }),
+        )
+    }
+
+    /// Builds a scheduler-owned assertion-state observation with an exact
+    /// retained event-log coordinate.
+    #[must_use]
+    pub fn assertion_state_observation_with_time(
+        sequence: u64,
+        at: EventLogTime,
+        name: AssertionId,
+        state: AssertionPhase,
+    ) -> Self {
+        let entry = Self::assertion_state_observation(sequence, at.virtual_time, name, state);
+        scheduler_event_log_entry_with_material(
+            sequence,
+            at,
+            entry.source,
+            entry.level,
+            entry.class,
+            entry.event_payload,
+            entry.payload,
         )
     }
 

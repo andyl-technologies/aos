@@ -127,6 +127,36 @@ pub(in crate::model) fn validate_violation_point(
     })
 }
 
+pub(in crate::model) fn validate_timeout_point(
+    event_log: &FailureRecordedEventLog,
+    timeout: &FailureTimeoutRecord,
+) -> Result<usize, EngineError> {
+    if timeout.reproduction_artifact != event_log.artifact() {
+        return Err(EngineError::ReplayTargetMismatch {
+            expected: event_log.artifact(),
+            actual: timeout.reproduction_artifact,
+        });
+    }
+    event_log
+        .projection
+        .entries()
+        .iter()
+        .enumerate()
+        .find(|(_, entry)| {
+            entry.entry.event_payload().kind() == timeout.event_kind
+                && entry.entry.at() == timeout.at_virtual_time
+                && timeout
+                    .at_icount
+                    .map(|icount| entry.entry.time().icount.icount == icount)
+                    .unwrap_or(true)
+        })
+        .map(|(index, _)| index)
+        .ok_or(EngineError::UnifiedOperationEvidenceMismatch {
+            operation: "failure-signature.timeout",
+            reason: "timeout boundary is absent from recorded causal projection",
+        })
+}
+
 pub(in crate::model) fn violation_event_icount_matches(
     at: &crate::scheduler::EventLogTime,
     violation: &HostAssertionViolation,
@@ -791,6 +821,16 @@ pub(in crate::model) fn failure_signature_preserving_minimization_result_materia
             "minimization.representative_artifact={}",
             content_hash_hex(run.representative_artifact)
         ));
+        lines.push(format!(
+            "minimization.disposition={}",
+            match run.disposition {
+                FailureMinimizationDisposition::Minimized => "minimized",
+                FailureMinimizationDisposition::NotRequested => "not-requested",
+                FailureMinimizationDisposition::NotApplicableTimeout => {
+                    "not-applicable-timeout"
+                }
+            }
+        ));
         lines.push(String::from("minimization.target_signature_key_BEGIN"));
         lines.push(run.target_signature_key.canonical_material().to_owned());
         lines.push(String::from("minimization.target_signature_key_END"));
@@ -899,6 +939,7 @@ pub(in crate::model) fn failure_report_anchor_index(
         FailureClusterReportFailure::Divergence(divergence) => {
             validate_divergence_point(event_log, &divergence.to_divergence_point())
         }
+        FailureClusterReportFailure::Timeout(timeout) => validate_timeout_point(event_log, timeout),
     }
 }
 
@@ -924,6 +965,9 @@ pub(in crate::model) fn failure_signature_for_report_failure(
                 &divergence.to_divergence_point(),
                 normalization,
             )
+        }
+        FailureClusterReportFailure::Timeout(timeout) => {
+            FailureSignature::from_recorded_timeout(finding, event_log, timeout)
         }
     }
 }
@@ -1132,6 +1176,42 @@ pub(in crate::model) fn push_failure_report_failure_lines(
                 divergence.reproduced_state_summary
             ));
         }
+        FailureClusterReportFailure::Timeout(timeout) => {
+            lines.push(format!("{prefix}.kind=timeout"));
+            lines.push(format!(
+                "{prefix}.budget_kind={}",
+                failure_timeout_budget_kind_label(timeout.budget_kind)
+            ));
+            lines.push(
+                timeout
+                    .configured_limit
+                    .map(|limit| format!("{prefix}.configured_limit={limit}"))
+                    .unwrap_or_else(|| format!("{prefix}.configured_limit=none")),
+            );
+            lines.push(format!(
+                "{prefix}.observed_quanta={}",
+                timeout.observed_quanta
+            ));
+            lines.push(format!(
+                "{prefix}.at_virtual_time={}",
+                timeout.at_virtual_time.ticks
+            ));
+            lines.push(
+                timeout
+                    .at_icount
+                    .map(|icount| format!("{prefix}.at_icount={}", icount.retired))
+                    .unwrap_or_else(|| format!("{prefix}.at_icount=none")),
+            );
+            match &timeout.node {
+                Some(node) => lines.push(node_ref_material(&format!("{prefix}.node"), node)),
+                None => lines.push(format!("{prefix}.node=none")),
+            }
+            lines.push(format!("{prefix}.event_kind={}", timeout.event_kind));
+            lines.push(format!(
+                "{prefix}.reproduction_artifact={}",
+                content_hash_hex(timeout.reproduction_artifact)
+            ));
+        }
     }
 }
 
@@ -1282,6 +1362,16 @@ pub(in crate::model) fn failure_kind_label(kind: FailureKind) -> &'static str {
     match kind {
         FailureKind::PropertyViolation => "property-violation",
         FailureKind::Divergence => "divergence",
+        FailureKind::Timeout => "timeout",
+    }
+}
+
+pub(in crate::model) fn failure_timeout_budget_kind_label(
+    kind: FailureTimeoutBudgetKind,
+) -> &'static str {
+    match kind {
+        FailureTimeoutBudgetKind::ExecutionQuanta => "execution-quanta",
+        FailureTimeoutBudgetKind::VirtualTime => "virtual-time",
     }
 }
 
