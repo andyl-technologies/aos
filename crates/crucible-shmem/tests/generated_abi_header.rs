@@ -48,6 +48,13 @@ fn generated_header_asserts_every_shared_struct_layout() {
         "offsetof(crucible_shmem_coverage_entry, vcpu_index)",
         "offsetof(crucible_shmem_coverage_entry, block_len)",
         "offsetof(crucible_shmem_coverage_entry, reserved)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_command_slot_v1)",
+        "offsetof(crucible_fault_command_slot_v1, header)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_result_slot_v1)",
+        "offsetof(crucible_fault_result_slot_v1, header)",
+        "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_payload_arena_header)",
+        "offsetof(crucible_fault_payload_arena_header, read_cursor)",
+        "offsetof(crucible_fault_payload_arena_header, write_cursor)",
     ] {
         assert!(
             header.contains(needle),

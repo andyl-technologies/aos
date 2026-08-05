@@ -8,8 +8,10 @@ use thiserror::Error;
 
 use super::{
     COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_SIZE, CoverageEntry, DirectedRing,
+    FAULT_COMMAND_SLOT_V1_BYTES, FAULT_PAYLOAD_ARENA_HEADER_BYTES, FAULT_RESULT_SLOT_V1_BYTES,
     FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE, FRAME_ENTRY_ALIGN,
-    FRAME_ENTRY_SIZE, FingerprintSampleSlot, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot,
+    FRAME_ENTRY_SIZE, FaultCommandSlotV1, FaultPayloadArenaHeader, FaultResultSlotV1,
+    FingerprintSampleSlot, FrameEntry, NODE_SLOT_ALIGN, NODE_SLOT_SIZE, NodeSlot,
     REGION_HEADER_ALIGN, REGION_HEADER_SIZE, RING_HEADER_ALIGN, RING_HEADER_SIZE, RegionHeader,
     RegionLayout, RegionLayoutError, RegionSetupValidationError, RingHeader, ValidatedSetupRegion,
     WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_SIZE, WhiteboxMarkerEntry, directed_rings,
@@ -66,6 +68,38 @@ pub struct MappedWhiteboxMarkerRingMut<'a> {
     pub header: &'a RingHeader,
     /// Bounded marker-entry backing storage.
     pub entries: &'a mut [WhiteboxMarkerEntry],
+}
+
+/// A mutable view of one VM's host-to-plugin fault command transport.
+pub struct MappedFaultCommandTransportMut<'a> {
+    /// VM slot whose plugin exclusively consumes the transport.
+    pub vm_slot: u32,
+    /// Host-producer/plugin-consumer SPSC ring header.
+    pub ring: &'a RingHeader,
+    /// Fixed command slot storage.
+    pub slots: &'a mut [FaultCommandSlotV1],
+    /// Circular payload arena cursors.
+    pub arena_header: &'a FaultPayloadArenaHeader,
+    /// Circular payload arena bytes.
+    pub arena: &'a mut [u8],
+    /// Region-relative offset of `arena` for command envelopes.
+    pub arena_region_offset: u64,
+}
+
+/// A mutable view of one VM's plugin-to-host fault result transport.
+pub struct MappedFaultResultTransportMut<'a> {
+    /// VM slot whose plugin exclusively produces the transport.
+    pub vm_slot: u32,
+    /// Plugin-producer/host-consumer SPSC ring header.
+    pub ring: &'a RingHeader,
+    /// Fixed result slot storage.
+    pub slots: &'a mut [FaultResultSlotV1],
+    /// Circular result-payload arena cursors.
+    pub arena_header: &'a FaultPayloadArenaHeader,
+    /// Circular result-payload arena bytes.
+    pub arena: &'a mut [u8],
+    /// Region-relative offset of `arena` for result envelopes.
+    pub arena_region_offset: u64,
 }
 
 /// A mutable view of two distinct mapped directed rings and one node slot.
@@ -341,6 +375,178 @@ impl MappedSetupRegion {
         })
     }
 
+    /// Borrows one VM's host-to-plugin fault command transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` is not a logical VM, or any transport segment is out
+    /// of bounds or misaligned.
+    pub fn fault_command_transport_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedFaultCommandTransportMut<'_>, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        validate_fault_vm_slot(layout, vm_slot, "fault command transport")?;
+        let ring_offset = mapped_fault_ring_header_offset(
+            layout.fault_command_ring_hdr_off,
+            layout.fault_command_ring_count,
+            self.len,
+            vm_slot,
+            "fault command ring header",
+        )?;
+        let slots_offset = mapped_fault_slot_offset(
+            layout.fault_command_slot_off,
+            layout.fault_command_ring_count,
+            layout.fault_command_queue_capacity,
+            FAULT_COMMAND_SLOT_V1_BYTES,
+            self.len,
+            vm_slot,
+            "fault command slot",
+        )?;
+        let arena_header_offset = mapped_fault_arena_header_offset(
+            layout.fault_command_arena_hdr_off,
+            layout.fault_command_ring_count,
+            self.len,
+            vm_slot,
+            "fault command arena header",
+        )?;
+        let arena_offset = mapped_fault_arena_offset(
+            layout.fault_command_arena_off,
+            layout.fault_command_arena_stride,
+            layout.fault_command_ring_count,
+            self.len,
+            vm_slot,
+            "fault command arena",
+        )?;
+        let slot_count = usize::try_from(layout.fault_command_queue_capacity).map_err(|_| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "fault command slot",
+                index: vm_slot,
+            }
+        })?;
+        let arena_len = usize::try_from(layout.fault_command_arena_stride).map_err(|_| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "fault command arena",
+                index: vm_slot,
+            }
+        })?;
+        let base = self.base_ptr();
+        // SAFETY: the helpers validate complete, pairwise-disjoint aligned
+        // ranges for this VM. The exclusive mapping borrow prevents another
+        // safe mutable transport view while these slices are live.
+        let (ring, slots, arena_header, arena) = unsafe {
+            (
+                &*base.add(ring_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(slots_offset).cast::<FaultCommandSlotV1>(),
+                    slot_count,
+                ),
+                &*base
+                    .add(arena_header_offset)
+                    .cast::<FaultPayloadArenaHeader>(),
+                core::slice::from_raw_parts_mut(base.add(arena_offset), arena_len),
+            )
+        };
+        Ok(MappedFaultCommandTransportMut {
+            vm_slot,
+            ring,
+            slots,
+            arena_header,
+            arena,
+            arena_region_offset: layout.fault_command_arena_off
+                + u64::from(vm_slot) * layout.fault_command_arena_stride,
+        })
+    }
+
+    /// Borrows one VM's plugin-to-host fault result transport.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` is not a logical VM, or any transport segment is out
+    /// of bounds or misaligned.
+    pub fn fault_result_transport_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedFaultResultTransportMut<'_>, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        validate_fault_vm_slot(layout, vm_slot, "fault result transport")?;
+        let ring_offset = mapped_fault_ring_header_offset(
+            layout.fault_result_ring_hdr_off,
+            layout.fault_result_ring_count,
+            self.len,
+            vm_slot,
+            "fault result ring header",
+        )?;
+        let slots_offset = mapped_fault_slot_offset(
+            layout.fault_result_slot_off,
+            layout.fault_result_ring_count,
+            layout.fault_result_queue_capacity,
+            FAULT_RESULT_SLOT_V1_BYTES,
+            self.len,
+            vm_slot,
+            "fault result slot",
+        )?;
+        let arena_header_offset = mapped_fault_arena_header_offset(
+            layout.fault_result_arena_hdr_off,
+            layout.fault_result_ring_count,
+            self.len,
+            vm_slot,
+            "fault result arena header",
+        )?;
+        let arena_offset = mapped_fault_arena_offset(
+            layout.fault_result_arena_off,
+            layout.fault_result_arena_stride,
+            layout.fault_result_ring_count,
+            self.len,
+            vm_slot,
+            "fault result arena",
+        )?;
+        let slot_count = usize::try_from(layout.fault_result_queue_capacity).map_err(|_| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "fault result slot",
+                index: vm_slot,
+            }
+        })?;
+        let arena_len = usize::try_from(layout.fault_result_arena_stride).map_err(|_| {
+            MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                segment: "fault result arena",
+                index: vm_slot,
+            }
+        })?;
+        let base = self.base_ptr();
+        // SAFETY: the helpers validate complete, pairwise-disjoint aligned
+        // ranges for this VM. The exclusive mapping borrow prevents another
+        // safe mutable transport view while these slices are live.
+        let (ring, slots, arena_header, arena) = unsafe {
+            (
+                &*base.add(ring_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(slots_offset).cast::<FaultResultSlotV1>(),
+                    slot_count,
+                ),
+                &*base
+                    .add(arena_header_offset)
+                    .cast::<FaultPayloadArenaHeader>(),
+                core::slice::from_raw_parts_mut(base.add(arena_offset), arena_len),
+            )
+        };
+        Ok(MappedFaultResultTransportMut {
+            vm_slot,
+            ring,
+            slots,
+            arena_header,
+            arena,
+            arena_region_offset: layout.fault_result_arena_off
+                + u64::from(vm_slot) * layout.fault_result_arena_stride,
+        })
+    }
+
     /// Borrows one VM's dedicated plugin-to-host fingerprint sample slot.
     ///
     /// The VM slot is also the fingerprint-slot index. The interior atomic
@@ -495,6 +701,18 @@ pub enum MappedSetupRegionAccessError {
         "mapped setup region has no white-box marker ring for VM slot {vm_slot}; VM count is {vm_node_count}"
     )]
     UnknownWhiteboxMarkerRing {
+        /// Rejected VM slot.
+        vm_slot: u32,
+        /// Number of logical VM slots in the region.
+        vm_node_count: u32,
+    },
+    /// A VM slot was outside a per-VM fault command/result transport table.
+    #[error(
+        "mapped setup region has no {segment} for VM slot {vm_slot}; VM count is {vm_node_count}"
+    )]
+    UnknownFaultTransport {
+        /// Transport segment being requested.
+        segment: &'static str,
         /// Rejected VM slot.
         vm_slot: u32,
         /// Number of logical VM slots in the region.
@@ -824,6 +1042,119 @@ fn mapped_whitebox_marker_ring_entries_offset(
         WHITEBOX_MARKER_ENTRY_ALIGN,
         region_len,
     )
+}
+
+fn validate_fault_vm_slot(
+    layout: RegionLayout,
+    vm_slot: u32,
+    segment: &'static str,
+) -> Result<(), MappedSetupRegionAccessError> {
+    if vm_slot >= layout.vm_node_count {
+        return Err(MappedSetupRegionAccessError::UnknownFaultTransport {
+            segment,
+            vm_slot,
+            vm_node_count: layout.vm_node_count,
+        });
+    }
+    Ok(())
+}
+
+fn mapped_fault_ring_header_offset(
+    base: u64,
+    count: u32,
+    region_len: usize,
+    vm_slot: u32,
+    segment: &'static str,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    if vm_slot >= count {
+        return Err(MappedSetupRegionAccessError::UnknownFaultTransport {
+            segment,
+            vm_slot,
+            vm_node_count: count,
+        });
+    }
+    mapped_segment_offset(
+        segment,
+        vm_slot,
+        base,
+        RING_HEADER_SIZE,
+        RING_HEADER_ALIGN,
+        region_len,
+    )
+}
+
+fn mapped_fault_slot_offset(
+    base: u64,
+    count: u32,
+    capacity: u32,
+    slot_size: usize,
+    region_len: usize,
+    vm_slot: u32,
+    segment: &'static str,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    if vm_slot >= count {
+        return Err(MappedSetupRegionAccessError::UnknownFaultTransport {
+            segment,
+            vm_slot,
+            vm_node_count: count,
+        });
+    }
+    let byte_len = usize::try_from(capacity)
+        .ok()
+        .and_then(|capacity| capacity.checked_mul(slot_size))
+        .ok_or(MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment,
+            index: vm_slot,
+        })?;
+    mapped_segment_offset(segment, vm_slot, base, byte_len, 64, region_len)
+}
+
+fn mapped_fault_arena_header_offset(
+    base: u64,
+    count: u32,
+    region_len: usize,
+    vm_slot: u32,
+    segment: &'static str,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    if vm_slot >= count {
+        return Err(MappedSetupRegionAccessError::UnknownFaultTransport {
+            segment,
+            vm_slot,
+            vm_node_count: count,
+        });
+    }
+    mapped_segment_offset(
+        segment,
+        vm_slot,
+        base,
+        FAULT_PAYLOAD_ARENA_HEADER_BYTES,
+        FAULT_PAYLOAD_ARENA_HEADER_BYTES,
+        region_len,
+    )
+}
+
+fn mapped_fault_arena_offset(
+    base: u64,
+    stride: u64,
+    count: u32,
+    region_len: usize,
+    vm_slot: u32,
+    segment: &'static str,
+) -> Result<usize, MappedSetupRegionAccessError> {
+    if vm_slot >= count {
+        return Err(MappedSetupRegionAccessError::UnknownFaultTransport {
+            segment,
+            vm_slot,
+            vm_node_count: count,
+        });
+    }
+    let len = usize::try_from(stride).map_err(|_| {
+        MappedSetupRegionAccessError::SegmentOffsetOverflow {
+            segment,
+            index: vm_slot,
+        }
+    })?;
+    mapped_segment_offset(segment, vm_slot, base, len, 1, region_len)
 }
 
 fn mapped_segment_offset(

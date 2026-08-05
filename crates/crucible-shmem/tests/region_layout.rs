@@ -6,12 +6,14 @@ use crucible_shmem::{
     ABI_VERSION, COVERAGE_ENTRY_ALIGN, COVERAGE_ENTRY_BLOCK_LEN_OFFSET,
     COVERAGE_ENTRY_CURRENT_ICOUNT_OFFSET, COVERAGE_ENTRY_GUEST_PC_OFFSET,
     COVERAGE_ENTRY_MAP_INDEX_OFFSET, COVERAGE_ENTRY_RESERVED_OFFSET, COVERAGE_ENTRY_SIZE,
-    COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_QUEUE_CAPACITY,
-    FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE, FRAME_ENTRY_ALIGN,
-    FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, FRAME_ENTRY_LEN_OFFSET,
-    FRAME_ENTRY_PAD_OFFSET, FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET,
-    KIND_9P, KIND_BLK, KIND_NET, LAYOUT_TARGET_SUPPORTED, LAYOUT_TARGET_TRIPLE, MAX_NODES,
-    MAX_VM_NODES, NODE_SLOT_ALIGN, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
+    COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_FAULT_COMMAND_CAPACITY,
+    DEFAULT_FAULT_PAYLOAD_BYTES, DEFAULT_QUEUE_CAPACITY, FAULT_COMMAND_SLOT_V1_BYTES,
+    FAULT_PAYLOAD_ARENA_HEADER_BYTES, FAULT_RESULT_SLOT_V1_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN,
+    FINGERPRINT_SAMPLE_SLOT_SIZE, FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET,
+    FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, FRAME_ENTRY_LEN_OFFSET, FRAME_ENTRY_PAD_OFFSET,
+    FRAME_ENTRY_SEQ_OFFSET, FRAME_ENTRY_SIZE, FRAME_ENTRY_SRC_NODE_OFFSET, KIND_9P, KIND_BLK,
+    KIND_NET, LAYOUT_TARGET_SUPPORTED, LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES,
+    NODE_SLOT_ALIGN, NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
     NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
     NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET, NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET,
     NODE_SLOT_PAD0_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_RESERVED_OFFSET, NODE_SLOT_SIZE,
@@ -180,10 +182,63 @@ fn region_layout_computes_offsets_and_directed_rings() {
         layout.whitebox_marker_entry_stride,
         WHITEBOX_MARKER_ENTRY_SIZE as u64
     );
+    let whitebox_data_end = layout.whitebox_marker_ring_data_off
+        + layout.whitebox_marker_entry_count() * layout.whitebox_marker_entry_stride;
+    assert_eq!(layout.fault_command_ring_count, layout.vm_node_count);
+    assert_eq!(
+        layout.fault_command_queue_capacity,
+        DEFAULT_FAULT_COMMAND_CAPACITY
+    );
+    assert_eq!(layout.fault_command_ring_hdr_off, whitebox_data_end);
+    assert_eq!(
+        layout.fault_command_slot_off,
+        layout.fault_command_ring_hdr_off
+            + u64::from(layout.fault_command_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.fault_command_slot_stride,
+        FAULT_COMMAND_SLOT_V1_BYTES as u64
+    );
+    assert_eq!(
+        layout.fault_command_arena_hdr_off,
+        layout.fault_command_slot_off
+            + layout.fault_command_slot_count() * layout.fault_command_slot_stride
+    );
+    assert_eq!(
+        layout.fault_command_arena_off,
+        layout.fault_command_arena_hdr_off
+            + u64::from(layout.fault_command_ring_count) * FAULT_PAYLOAD_ARENA_HEADER_BYTES as u64
+    );
+    assert_eq!(
+        layout.fault_command_arena_stride,
+        u64::from(DEFAULT_FAULT_PAYLOAD_BYTES)
+    );
+    let command_data_end = layout.fault_command_arena_off
+        + u64::from(layout.fault_command_ring_count) * layout.fault_command_arena_stride;
+    assert_eq!(layout.fault_result_ring_hdr_off, command_data_end);
+    assert_eq!(
+        layout.fault_result_slot_off,
+        layout.fault_result_ring_hdr_off
+            + u64::from(layout.fault_result_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.fault_result_slot_stride,
+        FAULT_RESULT_SLOT_V1_BYTES as u64
+    );
+    assert_eq!(
+        layout.fault_result_arena_hdr_off,
+        layout.fault_result_slot_off
+            + layout.fault_result_slot_count() * layout.fault_result_slot_stride
+    );
+    assert_eq!(
+        layout.fault_result_arena_off,
+        layout.fault_result_arena_hdr_off
+            + u64::from(layout.fault_result_ring_count) * FAULT_PAYLOAD_ARENA_HEADER_BYTES as u64
+    );
     assert_eq!(
         layout.region_size,
-        layout.whitebox_marker_ring_data_off
-            + layout.whitebox_marker_entry_count() * layout.whitebox_marker_entry_stride
+        layout.fault_result_arena_off
+            + u64::from(layout.fault_result_ring_count) * layout.fault_result_arena_stride
     );
     assert_eq!(
         layout.frame_entry_count(),

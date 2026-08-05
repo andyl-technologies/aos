@@ -7,7 +7,7 @@
 name = "crucible-shmem"
 kind = "process-shared-memory"
 license = "MIT OR Apache-2.0"
-abi_version = 5
+abi_version = 6
 magic_ascii = "CRUCSHM1"
 target = "x86_64-unknown-linux-gnu"
 byte_order = "little"
@@ -55,6 +55,9 @@ semantic_version = 1
 command_header_bytes = 216
 result_header_bytes = 188
 capability_row_bytes = 60
+command_slot_bytes = 256
+result_slot_bytes = 256
+payload_arena_header_bytes = 128
 default_payload_bytes = 1048576
 hard_payload_bytes = 16777216
 default_ring_capacity = 4096
@@ -63,6 +66,8 @@ encoding = "explicit-little-endian-byte-arrays"
 payload_authentication = "blake3"
 unknown_tags = "reject"
 nonzero_reserved_fields = "reject"
+payload_arena = "bounded-spsc-monotonic-cursors-contiguous-reservations"
+malformed_command_consumption = "release-sound-transport-reservation-and-reject"
 
 [conformance]
 c_header = "../include/crucible_shmem_abi.h"
