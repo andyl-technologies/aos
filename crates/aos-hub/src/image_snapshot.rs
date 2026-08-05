@@ -8,6 +8,8 @@
 
 use std::fs;
 use std::io::{Read as _, Seek as _, Write as _};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd as _;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::sync::Arc;
@@ -421,12 +423,37 @@ impl ImageSnapshotStore {
             .retained
             .lock()
             .map_err(|_| anyhow::anyhow!("image snapshot cache lock poisoned"))?
-            .contains_key(digest);
-        // `File::try_clone` duplicates the descriptor but shares its open-file
-        // offset. Concurrent or repeated streams would therefore consume one
-        // another. Retention is the authorization check; reopen the immutable,
-        // owner-private digest path to obtain an independent file description.
-        retained.then(|| self.open_digest(digest)).transpose()
+            .get(digest)
+            .cloned();
+        let Some(retained) = retained else {
+            return Ok(None);
+        };
+
+        // Duplicating a descriptor shares its open-file offset, so concurrent
+        // streams could consume one another. Linux procfs opens the retained
+        // descriptor as a new file description while remaining bound to the
+        // verified inode even if its digest pathname is replaced.
+        #[cfg(target_os = "linux")]
+        {
+            let descriptor = format!("/proc/self/fd/{}", retained.as_raw_fd());
+            let reopened = fs::File::open(descriptor)?;
+            let retained_metadata = retained.metadata()?;
+            let reopened_metadata = reopened.metadata()?;
+            use std::os::unix::fs::MetadataExt as _;
+            anyhow::ensure!(
+                retained_metadata.dev() == reopened_metadata.dev()
+                    && retained_metadata.ino() == reopened_metadata.ino(),
+                "retained image snapshot inode changed while reopening"
+            );
+            Ok(Some(reopened))
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            // Native Hub serving is Linux-only. Keep other targets buildable
+            // for development without claiming independent stream offsets.
+            Ok(Some(retained.try_clone()?))
+        }
     }
 
     /// Validates and retains every snapshot tracked by durable state.

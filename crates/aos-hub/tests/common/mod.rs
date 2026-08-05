@@ -107,7 +107,7 @@ pub async fn configure_hub_delivery_route(
             "http",
             &DeliveryEndpointHostInput::Ipv4([127, 0, 0, 1]),
             8420,
-            "instance:test",
+            "instance:public",
             &DeliveryEndpointRevisionSpec {
                 boundary_revision: 1,
                 ingress_kind: "hub".to_string(),
