@@ -1,7 +1,7 @@
 # AOS user documentation
 
 - [Install and operate AOS](aos/)
-  - [Build and boot a server](aos/quickstart.md)
+  - [Build and boot a server from source](../maintainers/source-build-quickstart.md)
   - [Install an image](aos/installation.md)
   - [Customize an image and first-boot storage](aos/configuration.md)
   - [Understand and operate host.nix](aos/host-nix.md)
