@@ -7,7 +7,7 @@
 use std::error::Error;
 use std::fmt;
 
-use super::{ContentHash, FaultAdapter, FaultPhase, FaultTargetKind};
+use super::{ContentHash, EffectKind, EffectLifetime, FaultAdapter, FaultPhase, FaultTargetKind};
 
 /// Maximum bytes in an author-supplied fault identifier.
 pub const FAULT_ID_MAX_BYTES: usize = 96;
@@ -1048,6 +1048,110 @@ pub enum FaultContractError {
     },
     /// Immutable opportunity payload metadata is malformed.
     InvalidPayload,
+    /// A probability exceeds one million millionths.
+    ProbabilityOutOfRange {
+        /// Rejected probability.
+        value: u32,
+    },
+    /// A field that requires a positive quantity was zero.
+    ZeroValue {
+        /// Field requiring a positive value.
+        field: &'static str,
+    },
+    /// A requested amount exceeds its compiled semantic ceiling.
+    ResourceLimitExceeded {
+        /// Bounded field.
+        field: &'static str,
+        /// Requested amount.
+        requested: u64,
+        /// Compiled hard ceiling.
+        hard: u64,
+    },
+    /// A byte range is empty or its exclusive end overflows.
+    InvalidByteRange {
+        /// First selected byte.
+        start: u64,
+        /// Requested byte count.
+        length: u64,
+    },
+    /// Hexadecimal bytes are non-canonical or exceed their size ceiling.
+    InvalidHexBytes {
+        /// Encoded text length in bytes.
+        encoded_bytes: usize,
+        /// Maximum decoded payload bytes.
+        limit_bytes: usize,
+    },
+    /// A required collection contains no values.
+    EmptyCollection {
+        /// Empty field.
+        field: &'static str,
+    },
+    /// A homogeneous collection spans production adapters.
+    MixedAdapters {
+        /// Heterogeneous field.
+        field: &'static str,
+    },
+    /// A piecewise service curve is empty, unordered, or does not begin at zero.
+    InvalidServiceCurve,
+    /// Exactly one of two effect fields must be present.
+    MutuallyExclusiveFields {
+        /// First alternative.
+        left: &'static str,
+        /// Second alternative.
+        right: &'static str,
+    },
+    /// Dependent fields violate the named effect's closed parameter contract.
+    InvalidEffectParameters {
+        /// Effect whose parameter contract failed.
+        effect: EffectKind,
+    },
+    /// Authored or replayed effect semantics differ from the implemented version.
+    EffectVersionMismatch {
+        /// Effect being validated.
+        effect: EffectKind,
+        /// Required semantic version.
+        expected: u16,
+        /// Rejected semantic version.
+        actual: u16,
+    },
+    /// An effect kind does not permit the selected lifetime.
+    UnsupportedLifetime {
+        /// Effect being validated.
+        effect: EffectKind,
+        /// Rejected lifetime.
+        lifetime: EffectLifetime,
+    },
+    /// An effect kind does not permit the resolved target kind.
+    EffectTargetMismatch {
+        /// Effect being validated.
+        effect: EffectKind,
+        /// Rejected target kind.
+        target: FaultTargetKind,
+    },
+    /// An effect kind does not permit the recorded application phase.
+    EffectPhaseMismatch {
+        /// Effect being validated.
+        effect: EffectKind,
+        /// Rejected phase.
+        phase: FaultPhase,
+    },
+    /// An opportunity-scoped resolved effect omits its opportunity identity.
+    MissingOpportunity {
+        /// Effect being validated.
+        effect: EffectKind,
+    },
+    /// Resolved effect contributors are duplicated or not in binding order.
+    NonCanonicalContributors,
+    /// A resolved record names a capability other than the effect contract.
+    CapabilityMismatch {
+        /// Effect being validated.
+        effect: EffectKind,
+    },
+    /// A production capability identifier is not canonical.
+    InvalidCapabilityId {
+        /// Rejected capability text.
+        value: String,
+    },
 }
 
 impl fmt::Display for FaultContractError {
@@ -1062,6 +1166,91 @@ impl fmt::Display for FaultContractError {
                 "target adapter {target:?} does not match operation adapter {operation:?}",
             ),
             Self::InvalidPayload => formatter.write_str("invalid fault-opportunity payload"),
+            Self::ProbabilityOutOfRange { value } => {
+                write!(
+                    formatter,
+                    "probability {value} exceeds one million millionths"
+                )
+            }
+            Self::ZeroValue { field } => write!(formatter, "{field} must be positive"),
+            Self::ResourceLimitExceeded {
+                field,
+                requested,
+                hard,
+            } => write!(
+                formatter,
+                "{field} requests {requested}, exceeding hard ceiling {hard}",
+            ),
+            Self::InvalidByteRange { start, length } => {
+                write!(
+                    formatter,
+                    "invalid byte range start={start} length={length}"
+                )
+            }
+            Self::InvalidHexBytes {
+                encoded_bytes,
+                limit_bytes,
+            } => write!(
+                formatter,
+                "invalid hexadecimal payload of {encoded_bytes} encoded bytes (decoded limit {limit_bytes})",
+            ),
+            Self::EmptyCollection { field } => write!(formatter, "{field} must not be empty"),
+            Self::MixedAdapters { field } => {
+                write!(formatter, "{field} must belong to one adapter")
+            }
+            Self::InvalidServiceCurve => formatter
+                .write_str("service curve must begin at zero and use increasing coordinates"),
+            Self::MutuallyExclusiveFields { left, right } => {
+                write!(
+                    formatter,
+                    "exactly one of {left} and {right} must be present"
+                )
+            }
+            Self::InvalidEffectParameters { effect } => {
+                write!(formatter, "invalid parameters for effect {effect}")
+            }
+            Self::EffectVersionMismatch {
+                effect,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "effect {effect} requires semantic version {expected}, got {actual}",
+            ),
+            Self::UnsupportedLifetime { effect, lifetime } => {
+                write!(
+                    formatter,
+                    "effect {effect} does not support lifetime {lifetime:?}"
+                )
+            }
+            Self::EffectTargetMismatch { effect, target } => write!(
+                formatter,
+                "effect {effect} does not support target {}",
+                target.as_str(),
+            ),
+            Self::EffectPhaseMismatch { effect, phase } => {
+                write!(
+                    formatter,
+                    "effect {effect} does not support phase {phase:?}"
+                )
+            }
+            Self::MissingOpportunity { effect } => {
+                write!(
+                    formatter,
+                    "effect {effect} requires an opportunity identity"
+                )
+            }
+            Self::NonCanonicalContributors => formatter
+                .write_str("effect contributors must be unique and in canonical binding order"),
+            Self::CapabilityMismatch { effect } => {
+                write!(
+                    formatter,
+                    "effect {effect} capability does not match its registry"
+                )
+            }
+            Self::InvalidCapabilityId { value } => {
+                write!(formatter, "invalid fault capability identifier {value:?}")
+            }
         }
     }
 }

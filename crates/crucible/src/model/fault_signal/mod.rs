@@ -16,16 +16,26 @@ use std::fmt;
 use super::ContentHash;
 
 mod canonical;
+mod effect;
+mod effect_parameters;
 mod effect_registry;
 mod error;
+mod network_effect;
+mod node_effect;
 mod opportunity;
+mod storage_effect;
 #[cfg(test)]
 mod tests;
 
 use canonical::program_material;
+pub use effect::*;
+pub use effect_parameters::*;
 pub use effect_registry::*;
 pub use error::SignalProgramError;
+pub use network_effect::*;
+pub use node_effect::*;
 pub use opportunity::*;
+pub use storage_effect::*;
 
 /// Semantic version of the signal evaluator implemented by this crate.
 pub const SIGNAL_EVALUATOR_VERSION: u16 = 1;

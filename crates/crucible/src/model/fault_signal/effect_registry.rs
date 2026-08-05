@@ -11,6 +11,49 @@ use std::fmt;
 /// The implementation version shared by every initial effect contract.
 pub const EFFECT_SEMANTIC_VERSION: u16 = 1;
 
+/// A canonical fine-grained production-backend capability identifier.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultCapabilityId(String);
+
+impl FaultCapabilityId {
+    /// Parses a dot-separated lower-case capability identifier.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultContractError::InvalidCapabilityId`] when `value` is
+    /// empty, longer than 160 bytes, or has a malformed component.
+    pub fn parse(value: impl Into<String>) -> Result<Self, super::FaultContractError> {
+        let value = value.into();
+        let valid = !value.is_empty()
+            && value.len() <= 160
+            && value.is_ascii()
+            && value.split('.').all(|component| {
+                !component.is_empty()
+                    && component.as_bytes()[0].is_ascii_lowercase()
+                    && component.as_bytes()[component.len() - 1].is_ascii_alphanumeric()
+                    && component.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+            });
+        if !valid {
+            return Err(super::FaultContractError::InvalidCapabilityId { value });
+        }
+        Ok(Self(value))
+    }
+
+    /// Returns the exact canonical capability text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for FaultCapabilityId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// A production adapter family that can apply an effect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FaultAdapter {
