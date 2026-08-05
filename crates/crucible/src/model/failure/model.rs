@@ -2077,7 +2077,25 @@ pub struct FailureRecordedEventLog {
     pub(in crate::model) causal_subsequence: ContentHash,
     pub(in crate::model) causal_subsequence_events: usize,
     pub(in crate::model) coverage_fingerprint: ContentHash,
+    pub(in crate::model) evidence_binding: ContentHash,
     pub(in crate::model) projection: EventLogCausalProjection,
+}
+
+fn failure_recorded_evidence_binding(
+    projection: &EventLogCausalProjection,
+    coverage_fingerprint: ContentHash,
+    recorded_frames: &[Vec<u8>],
+) -> ContentHash {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"crucible.failure-recorded-evidence.v1\0");
+    bytes.extend_from_slice(&projection.content_hash().bytes);
+    bytes.extend_from_slice(&coverage_fingerprint.bytes);
+    bytes.extend_from_slice(&(recorded_frames.len() as u64).to_le_bytes());
+    for frame in recorded_frames {
+        bytes.extend_from_slice(&(frame.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(frame);
+    }
+    ContentHash::from_bytes(&bytes)
 }
 
 impl FailureRecordedEventLog {
@@ -2097,6 +2115,26 @@ impl FailureRecordedEventLog {
         causal_entries: &[SchedulerEventLogEntry],
         coverage_fingerprint: ContentHash,
     ) -> Result<Self, EngineError> {
+        Self::from_causal_entries_coverage_and_frames(
+            finding,
+            causal_entries,
+            coverage_fingerprint,
+            &[],
+        )
+    }
+
+    /// Builds checked signature evidence and binds the exact retained frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] when the finding's
+    /// embedded reproduction identity is inconsistent.
+    pub fn from_causal_entries_coverage_and_frames(
+        finding: &FindingReproductionArtifact,
+        causal_entries: &[SchedulerEventLogEntry],
+        coverage_fingerprint: ContentHash,
+        recorded_frames: &[Vec<u8>],
+    ) -> Result<Self, EngineError> {
         validate_finding_static_identity(finding)?;
         let projection = event_log_causal_projection(causal_entries);
         let event_log_artifact = ReproductionEventLogArtifact::from_causal_projection(
@@ -2114,6 +2152,11 @@ impl FailureRecordedEventLog {
             causal_subsequence: projection.content_hash(),
             causal_subsequence_events: projection.len(),
             coverage_fingerprint,
+            evidence_binding: failure_recorded_evidence_binding(
+                &projection,
+                coverage_fingerprint,
+                recorded_frames,
+            ),
             projection,
         })
     }
@@ -2174,6 +2217,11 @@ impl FailureRecordedEventLog {
             causal_subsequence: projection.content_hash(),
             causal_subsequence_events: projection.len(),
             coverage_fingerprint: event_log_artifact.coverage_fingerprint,
+            evidence_binding: failure_recorded_evidence_binding(
+                &projection,
+                event_log_artifact.coverage_fingerprint,
+                &[],
+            ),
             projection,
         })
     }
@@ -2206,6 +2254,12 @@ impl FailureRecordedEventLog {
     #[must_use]
     pub fn coverage_fingerprint(&self) -> ContentHash {
         self.coverage_fingerprint
+    }
+
+    /// Returns the binding over causal evidence, coverage, and retained frames.
+    #[must_use]
+    pub fn evidence_binding(&self) -> ContentHash {
+        self.evidence_binding
     }
 
     /// Returns the bucketed failure coverage class for this recorded log.
@@ -2323,9 +2377,20 @@ impl FailureTimeoutRecord {
     /// Returns the first attributable point recorded for this timeout.
     #[must_use]
     pub fn first_failing_point(&self) -> FailureFirstFailingPoint {
+        self.first_failing_point_with(&FailureSymmetryCanonicalizer::identity(
+            ContentHash::default(),
+        ))
+    }
+
+    /// Returns the first attributable point under a symmetry relabeling.
+    #[must_use]
+    pub fn first_failing_point_with(
+        &self,
+        canonicalizer: &FailureSymmetryCanonicalizer,
+    ) -> FailureFirstFailingPoint {
         FailureFirstFailingPoint {
             event_kind: self.event_kind.clone(),
-            faulting_node: self.node.clone(),
+            faulting_node: canonicalizer.canonical_node_option(&self.node),
         }
     }
 }
@@ -2346,6 +2411,8 @@ pub struct FailureSignature {
     pub first_failing_point: FailureFirstFailingPoint,
     /// Bucketed class derived from the deterministic coverage fingerprint.
     pub coverage_class: FailureCoverageClass,
+    /// Discovery-evidence binding checked during offline recomputation.
+    pub evidence_binding: ContentHash,
     /// Optional digest of the cone-scoped recorded causal slice.
     ///
     /// This is computed over the causal prefix ending at the first failing
@@ -2411,6 +2478,7 @@ impl FailureSignature {
             property: Some(violation.property_key()),
             first_failing_point: violation.first_failing_point_with(&canonicalizer),
             coverage_class: event_log.coverage_class(),
+            evidence_binding: event_log.evidence_binding(),
             causal_slice_hash: Some(causal_cone.content_hash()),
             causal_cone: Some(causal_cone),
             at_icount_report_only: violation.violation.at_icount,
@@ -2469,6 +2537,7 @@ impl FailureSignature {
                     .canonical_node_option(&divergence_faulting_node(divergence)),
             },
             coverage_class: event_log.coverage_class(),
+            evidence_binding: event_log.evidence_binding(),
             causal_slice_hash: Some(causal_cone.content_hash()),
             causal_cone: Some(causal_cone),
             at_icount_report_only: Some(divergence.at.icount),
@@ -2488,6 +2557,28 @@ impl FailureSignature {
         event_log: &FailureRecordedEventLog,
         timeout: &FailureTimeoutRecord,
     ) -> Result<Self, EngineError> {
+        Self::from_recorded_timeout_with_normalization(
+            finding,
+            event_log,
+            timeout,
+            &FailureSignatureNormalization::identity(),
+        )
+    }
+
+    /// Builds a timeout signature with explicit symmetry normalization.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EngineError::ReplayTargetMismatch`] when the finding, event
+    /// log, or timeout record names a different reproduction artifact. Returns
+    /// [`EngineError::UnifiedOperationEvidenceMismatch`] when the exact timeout
+    /// boundary is absent from the checked causal projection.
+    pub fn from_recorded_timeout_with_normalization(
+        finding: &FindingReproductionArtifact,
+        event_log: &FailureRecordedEventLog,
+        timeout: &FailureTimeoutRecord,
+        normalization: &FailureSignatureNormalization,
+    ) -> Result<Self, EngineError> {
         validate_finding_static_identity(finding)?;
         validate_recorded_event_log_for_finding(finding, event_log)?;
         if timeout.reproduction_artifact != finding.artifact.id() {
@@ -2497,15 +2588,15 @@ impl FailureSignature {
             });
         }
         let causal_index = validate_timeout_point(event_log, timeout)?;
-        let canonicalizer =
-            event_log.symmetry_canonicalizer(&FailureSignatureNormalization::identity());
+        let canonicalizer = event_log.symmetry_canonicalizer(normalization);
         let causal_cone =
             failure_causal_cone_through_index(event_log, causal_index, &canonicalizer);
         Ok(Self {
             failure_kind: FailureKind::Timeout,
             property: None,
-            first_failing_point: timeout.first_failing_point(),
+            first_failing_point: timeout.first_failing_point_with(&canonicalizer),
             coverage_class: event_log.coverage_class(),
+            evidence_binding: event_log.evidence_binding(),
             causal_slice_hash: Some(causal_cone.content_hash()),
             causal_cone: Some(causal_cone),
             at_icount_report_only: timeout.at_icount,

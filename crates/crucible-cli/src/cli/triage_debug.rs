@@ -456,19 +456,24 @@ pub(super) fn triage_property_evidence_for_violation_with_recording(
             }),
         },
     };
-    let entries = vec![
-        crucible::SchedulerEventLogEntry::assertion_state_observation_with_time(
-            0,
-            at,
-            violation.assertion.clone(),
-            crucible::AssertionPhase::Violated,
-        ),
-    ];
+    let entries = if recorded_event_frames.is_empty() {
+        vec![
+            crucible::SchedulerEventLogEntry::assertion_state_observation_with_time(
+                0,
+                at,
+                violation.assertion.clone(),
+                crucible::AssertionPhase::Violated,
+            ),
+        ]
+    } else {
+        triage_causal_entries_from_frames(&recorded_event_frames)?
+    };
     let recorded_event_log =
-        crucible_model::FailureRecordedEventLog::from_causal_entries_and_coverage(
+        crucible_model::FailureRecordedEventLog::from_causal_entries_coverage_and_frames(
             &finding,
             &entries,
             coverage_fingerprint,
+            &recorded_event_frames,
         )?;
     let failure = crucible_model::FailureClusterReportFailure::property(
         crucible_model::FailurePropertyViolationRecord::new(violation),
@@ -505,18 +510,29 @@ pub(super) fn triage_timeout_evidence(
         crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta => "execution-quanta",
         crucible_model::FailureTimeoutBudgetKind::VirtualTime => "virtual-time",
     };
-    let entries = vec![
-        crucible::SchedulerEventLogEntry::execution_budget_exhausted(
-            0,
-            timeout.at_virtual_time,
+    let at = crucible::EventLogTime {
+        virtual_time: timeout.at_virtual_time,
+        icount: crucible::EventLogIcountStamp {
+            node: timeout.node.clone(),
+            icount: timeout.at_icount.unwrap_or(crucible::Icount {
+                retired: timeout.at_virtual_time.ticks,
+            }),
+        },
+    };
+    let mut entries = triage_causal_entries_from_frames(&recorded_event_frames)?;
+    entries.push(
+        crucible::SchedulerEventLogEntry::execution_budget_exhausted_with_time(
+            entries.len() as u64,
+            at,
             budget_kind,
         ),
-    ];
+    );
     let recorded_event_log =
-        crucible_model::FailureRecordedEventLog::from_causal_entries_and_coverage(
+        crucible_model::FailureRecordedEventLog::from_causal_entries_coverage_and_frames(
             &finding,
             &entries,
             coverage_fingerprint,
+            &recorded_event_frames,
         )?;
     let discovery_signature = crucible_model::FailureSignature::from_recorded_timeout(
         &finding,
@@ -530,6 +546,223 @@ pub(super) fn triage_timeout_evidence(
         discovery_signature,
         recorded_event_frames,
     })
+}
+
+fn triage_causal_entries_from_frames(
+    frames: &[Vec<u8>],
+) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible_model::EngineError> {
+    let mut entries = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        let text = std::str::from_utf8(frame).map_err(|_| triage_frame_evidence_error())?;
+        if text.lines().next() != Some("crucible.rpc/event-frame") {
+            return Err(triage_frame_evidence_error());
+        }
+        let mut fields = BTreeMap::<&str, Vec<&str>>::new();
+        for line in text.lines().skip(1) {
+            if line.is_empty() {
+                continue;
+            }
+            let (name, value) = line
+                .split_once('=')
+                .ok_or_else(triage_frame_evidence_error)?;
+            if !matches!(
+                name,
+                "generation"
+                    | "cursor"
+                    | "next-cursor"
+                    | "sequence"
+                    | "virtual-time-ticks"
+                    | "icount-retired"
+                    | "icount-node"
+                    | "source"
+                    | "level"
+                    | "observational"
+                    | "kind"
+                    | "attribute"
+            ) {
+                return Err(triage_frame_evidence_error());
+            }
+            fields.entry(name).or_default().push(value);
+        }
+        let observational = triage_frame_singleton(&fields, "observational")?;
+        if observational == "true" {
+            continue;
+        }
+        if observational != "false" {
+            return Err(triage_frame_evidence_error());
+        }
+        let _generation = triage_frame_u64(&fields, "generation")?;
+        let sequence = triage_frame_u64(&fields, "sequence")?;
+        let cursor = triage_frame_u64(&fields, "cursor")?;
+        let next_cursor = triage_frame_u64(&fields, "next-cursor")?;
+        if cursor != sequence || next_cursor != sequence.saturating_add(1) {
+            return Err(triage_frame_evidence_error());
+        }
+        let at = crucible::EventLogTime {
+            virtual_time: crucible::VirtualTime {
+                ticks: triage_frame_u64(&fields, "virtual-time-ticks")?,
+            },
+            icount: crucible::EventLogIcountStamp {
+                node: triage_frame_optional_node(&fields, "icount-node")?,
+                icount: crucible::Icount {
+                    retired: triage_frame_u64(&fields, "icount-retired")?,
+                },
+            },
+        };
+        let source = triage_frame_source(triage_frame_singleton(&fields, "source")?)?;
+        let level = triage_frame_level(triage_frame_singleton(&fields, "level")?)?;
+        let wire_kind = triage_frame_singleton(&fields, "kind")?;
+        let kind = wire_kind
+            .strip_prefix("crucible.event.")
+            .unwrap_or(wire_kind);
+        let mut attributes = BTreeMap::new();
+        for value in fields.get("attribute").into_iter().flatten() {
+            let (name, value) = triage_frame_attribute(index, value)?;
+            if attributes.insert(name, value).is_some() {
+                return Err(triage_frame_evidence_error());
+            }
+        }
+        entries.push(
+            crucible::SchedulerEventLogEntry::from_retained_open_event(
+                sequence,
+                at,
+                source,
+                level,
+                crucible::SchedulerEventLogClass::Causal,
+                crucible::EventPayload::new(kind, attributes),
+            )
+            .map_err(|_| triage_frame_evidence_error())?,
+        );
+    }
+    Ok(entries)
+}
+
+fn triage_frame_singleton<'a>(
+    fields: &'a BTreeMap<&str, Vec<&str>>,
+    name: &str,
+) -> Result<&'a str, crucible_model::EngineError> {
+    match fields.get(name).map(Vec::as_slice) {
+        Some([value]) => Ok(value),
+        _ => Err(triage_frame_evidence_error()),
+    }
+}
+
+fn triage_frame_u64(
+    fields: &BTreeMap<&str, Vec<&str>>,
+    name: &str,
+) -> Result<u64, crucible_model::EngineError> {
+    triage_frame_singleton(fields, name)?
+        .parse()
+        .map_err(|_| triage_frame_evidence_error())
+}
+
+fn triage_frame_optional_node(
+    fields: &BTreeMap<&str, Vec<&str>>,
+    name: &str,
+) -> Result<Option<crucible::NodeId>, crucible_model::EngineError> {
+    match triage_frame_singleton(fields, name)? {
+        "none" => Ok(None),
+        value => {
+            triage_frame_hex_string(0, name, value).map(|name| Some(crucible::NodeId { name }))
+        }
+    }
+}
+
+fn triage_frame_source(value: &str) -> Result<crucible::EventSource, crucible_model::EngineError> {
+    if value == "engine" {
+        return Ok(crucible::EventSource::Engine);
+    }
+    let (kind, value) = value
+        .split_once('|')
+        .ok_or_else(triage_frame_evidence_error)?;
+    match kind {
+        "scenario" => triage_frame_hex_string(0, "source", value).map(|name| {
+            crucible::EventSource::Scenario {
+                event: crucible::EventId::from_name(name),
+            }
+        }),
+        "node" => {
+            triage_frame_hex_string(0, "source", value).map(|name| crucible::EventSource::Node {
+                node: crucible::NodeId { name },
+            })
+        }
+        "guest" => {
+            triage_frame_hex_string(0, "source", value).map(|name| crucible::EventSource::Guest {
+                node: crucible::NodeId { name },
+            })
+        }
+        "command" => value
+            .parse::<u64>()
+            .map(|command_id| crucible::EventSource::Command { command_id })
+            .map_err(|_| triage_frame_evidence_error()),
+        _ => Err(triage_frame_evidence_error()),
+    }
+}
+
+fn triage_frame_level(value: &str) -> Result<crucible::EventLevel, crucible_model::EngineError> {
+    match value {
+        "trace" => Ok(crucible::EventLevel::Trace),
+        "debug" => Ok(crucible::EventLevel::Debug),
+        "info" => Ok(crucible::EventLevel::Info),
+        "warn" => Ok(crucible::EventLevel::Warn),
+        "error" => Ok(crucible::EventLevel::Error),
+        _ => Err(triage_frame_evidence_error()),
+    }
+}
+
+fn triage_frame_attribute(
+    index: usize,
+    value: &str,
+) -> Result<(String, crucible::EventAttributeValue), crucible_model::EngineError> {
+    let mut parts = value.split('|');
+    let name = parts.next().ok_or_else(triage_frame_evidence_error)?;
+    let kind = parts.next().ok_or_else(triage_frame_evidence_error)?;
+    let value = parts.next().ok_or_else(triage_frame_evidence_error)?;
+    if parts.next().is_some() {
+        return Err(triage_frame_evidence_error());
+    }
+    let name = triage_frame_hex_string(index, "attribute-name", name)?;
+    let value = match kind {
+        "bool" => match value {
+            "true" => crucible::EventAttributeValue::Bool(true),
+            "false" => crucible::EventAttributeValue::Bool(false),
+            _ => return Err(triage_frame_evidence_error()),
+        },
+        "uint" => crucible::EventAttributeValue::U64(
+            value.parse().map_err(|_| triage_frame_evidence_error())?,
+        ),
+        "uint128" => crucible::EventAttributeValue::U128(
+            value.parse().map_err(|_| triage_frame_evidence_error())?,
+        ),
+        "string" => crucible::EventAttributeValue::String(triage_frame_hex_string(
+            index,
+            "attribute",
+            value,
+        )?),
+        "bytes" => crucible::EventAttributeValue::Bytes(
+            parse_hex_bytes(index, "attribute", value)
+                .map_err(|_| triage_frame_evidence_error())?,
+        ),
+        "int" | "float64bits" => return Err(triage_frame_evidence_error()),
+        _ => return Err(triage_frame_evidence_error()),
+    };
+    Ok((name, value))
+}
+
+fn triage_frame_hex_string(
+    index: usize,
+    field: &str,
+    value: &str,
+) -> Result<String, crucible_model::EngineError> {
+    let bytes = parse_hex_bytes(index, field, value).map_err(|_| triage_frame_evidence_error())?;
+    String::from_utf8(bytes).map_err(|_| triage_frame_evidence_error())
+}
+
+fn triage_frame_evidence_error() -> crucible_model::EngineError {
+    crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
+        operation: "failure-findings-ledger.v3.frames",
+        reason: "retained canonical event frames are malformed or inconsistent",
+    }
 }
 
 pub(super) fn load_triage_findings_ledger(
@@ -791,7 +1024,9 @@ pub(super) fn parse_triage_v3_finding_evidence(
     )
     .map_err(|error| artifact_error(format!("finding {index} artifact is invalid: {error}")))?;
     let frames = parse_v3_event_frames(fields)?;
-    let item = match required_field(fields, "evidence")? {
+    let evidence_kind = required_field(fields, "evidence")?;
+    validate_v3_finding_field_set(fields, evidence_kind, frames.len())?;
+    let item = match evidence_kind {
         "property" => {
             let assertion =
                 crucible::AssertionId::from_name(parse_hex_string_field(fields, "assertion_hex")?);
@@ -855,12 +1090,60 @@ pub(super) fn parse_triage_v3_finding_evidence(
         )));
     }
     let material = parse_hex_string_field(fields, "discovery_signature_material_hex")?;
-    if item.discovery_signature.canonical_material() != material {
+    if item.discovery_signature.report_material() != material {
         return Err(artifact_error(format!(
             "finding {index} discovery signature material does not match recorded evidence"
         )));
     }
     Ok(item)
+}
+
+pub(super) fn validate_v3_finding_field_set(
+    fields: &BTreeMap<String, String>,
+    evidence_kind: &str,
+    frame_count: usize,
+) -> Result<(), CliError> {
+    let mut expected = [
+        "artifact",
+        "discovery_path",
+        "finding_fingerprint",
+        "coverage_fingerprint",
+        "discovery_signature",
+        "discovery_signature_material_hex",
+        "evidence",
+        "event_frame_count",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<BTreeSet<_>>();
+    let evidence_fields: &[&str] = match evidence_kind {
+        "property" => &[
+            "assertion_hex",
+            "message_hex",
+            "quantifier",
+            "at_virtual_time",
+            "at_icount",
+            "node_hex",
+            "detail_hex",
+        ],
+        "timeout" => &[
+            "budget_kind",
+            "configured_limit",
+            "observed_quanta",
+            "at_virtual_time",
+            "at_icount",
+            "node_hex",
+        ],
+        _ => return Err(artifact_error("unsupported v3 findings evidence kind")),
+    };
+    expected.extend(evidence_fields.iter().copied().map(String::from));
+    expected.extend((0..frame_count).map(|index| format!("event_frame.{index}")));
+    if fields.keys().any(|field| !expected.contains(field)) {
+        return Err(artifact_error(
+            "v3 signed findings ledger contains a non-canonical field",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn failure_findings_ledger_v3_bytes(
@@ -869,12 +1152,12 @@ pub(super) fn failure_findings_ledger_v3_bytes(
     let mut canonical_evidence = BTreeMap::new();
     for item in evidence {
         let artifact = item.finding.artifact.id();
-        if let Some(existing) = canonical_evidence.insert(artifact, item) {
-            if existing != item {
-                return Err(artifact_error(
-                    "cannot write conflicting evidence for one reproduction artifact",
-                ));
-            }
+        if let Some(existing) = canonical_evidence.insert(artifact, item)
+            && existing != item
+        {
+            return Err(artifact_error(
+                "cannot write conflicting evidence for one reproduction artifact",
+            ));
         }
     }
     let mut lines = vec![
@@ -905,7 +1188,7 @@ pub(super) fn failure_findings_ledger_v3_bytes(
         ));
         lines.push(format!(
             "{prefix}.discovery_signature_material_hex={}",
-            ledger_hex(item.discovery_signature.canonical_material().as_bytes())
+            ledger_hex(item.discovery_signature.report_material().as_bytes())
         ));
         match &item.failure {
             crucible_model::FailureClusterReportFailure::Property(record) => {
