@@ -1427,11 +1427,32 @@ pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimiza
         None,
         finding.artifact.id(),
     );
+    let retained_frame =
+        canonical_streaming_event_frame_bytes(&crucible_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_api::EventLogCursor::new(0),
+            next_cursor: crucible_api::EventLogCursor::new(1),
+            event: crucible_api::OpenSetEventEnvelope {
+                sequence: 0,
+                at: crucible_api::OpenSetEventTime {
+                    virtual_time_ticks: 4,
+                    icount_retired: 8,
+                    icount_node: None,
+                },
+                source: crucible_api::OpenSetEventSource::Engine,
+                level: crucible::EventLevel::Info,
+                observational: true,
+                payload: crucible_api::OpenSetPayload::new(
+                    "crucible.event.coverage",
+                    BTreeMap::new(),
+                ),
+            },
+        });
     let evidence = triage_timeout_evidence(
         finding,
         timeout,
         crucible::ContentHash::from_bytes(b"timeout-v3-coverage"),
-        vec![b"frame=one\nvalue=two\n".to_vec()],
+        vec![retained_frame.clone()],
     )?;
     let second_form = crucible::ScenarioDefForm::from_components(
         form.world(),
@@ -1471,8 +1492,33 @@ pub(super) fn signed_findings_v3_round_trips_timeout_evidence_and_skips_minimiza
         failure_findings_ledger_v3_bytes(std::slice::from_ref(&evidence))?,
         "v3 ledgers must deduplicate identical artifact evidence"
     );
-    let (ledger_path, _, _) =
+    let (ledger_path, _, ledger_bytes) =
         write_failure_findings_ledger_v3(&artifact_dir, None, std::slice::from_ref(&evidence))?;
+    let ledger_text = String::from_utf8(ledger_bytes)?;
+    let frame_hex = ledger_hex(&retained_frame);
+    let mut changed_frame_hex = frame_hex.clone();
+    changed_frame_hex.replace_range(
+        ..1,
+        if changed_frame_hex.starts_with('0') {
+            "1"
+        } else {
+            "0"
+        },
+    );
+    let changed_frame = ledger_text.replacen(&frame_hex, &changed_frame_hex, 1);
+    assert!(parse_failure_findings_ledger_bytes(&store, changed_frame.as_bytes()).is_err());
+
+    let changed_coverage = ledger_text.replacen(
+        &crucible::ContentHash::from_bytes(b"timeout-v3-coverage").to_hex(),
+        &crucible::ContentHash::from_bytes(b"tampered-timeout-v3-coverage").to_hex(),
+        1,
+    );
+    assert!(parse_failure_findings_ledger_bytes(&store, changed_coverage.as_bytes()).is_err());
+    let non_canonical = ledger_text.replace(
+        "finding.0.event_frame_count=1\n",
+        "finding.0.event_frame_count=1\nfinding.0.unknown=field\n",
+    );
+    assert!(parse_failure_findings_ledger_bytes(&store, non_canonical.as_bytes()).is_err());
 
     let cli = Cli::parse_from([
         "crucible",

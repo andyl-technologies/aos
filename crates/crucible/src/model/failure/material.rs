@@ -145,6 +145,9 @@ pub(in crate::model) fn validate_timeout_point(
         .find(|(_, entry)| {
             entry.entry.event_payload().kind() == timeout.event_kind
                 && entry.entry.at() == timeout.at_virtual_time
+                && entry.entry.event_payload().string("budget_kind")
+                    == Some(failure_timeout_budget_kind_label(timeout.budget_kind))
+                && entry.entry.time().icount.node == timeout.node
                 && timeout
                     .at_icount
                     .map(|icount| entry.entry.time().icount.icount == icount)
@@ -445,6 +448,10 @@ pub(in crate::model) fn failure_signature_material(signature: &FailureSignature)
 
 pub(in crate::model) fn failure_signature_report_material(signature: &FailureSignature) -> String {
     let mut lines = vec![signature.canonical_material()];
+    lines.push(format!(
+        "evidence_binding={}",
+        signature.evidence_binding.to_hex()
+    ));
     lines.push(
         signature
             .at_icount_report_only
@@ -967,7 +974,12 @@ pub(in crate::model) fn failure_signature_for_report_failure(
             )
         }
         FailureClusterReportFailure::Timeout(timeout) => {
-            FailureSignature::from_recorded_timeout(finding, event_log, timeout)
+            FailureSignature::from_recorded_timeout_with_normalization(
+                finding,
+                event_log,
+                timeout,
+                normalization,
+            )
         }
     }
 }

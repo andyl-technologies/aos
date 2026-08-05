@@ -680,6 +680,50 @@ pub type EventClass = SchedulerEventLogClass;
 pub(super) struct SchedulerEventLogEntryProvenance;
 
 impl SchedulerEventLogEntry {
+    /// Reconstructs one retained open-set event for offline evidence checking.
+    ///
+    /// This adapter accepts only event kinds whose causal/observational class
+    /// matches the current catalog. The generic diagnostic payload preserves
+    /// the exact open-set kind and attributes used by failure triage without
+    /// granting the caller access to scheduler append ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the retained event
+    /// kind is unknown or its class disagrees with the catalog.
+    pub fn from_retained_open_event(
+        sequence: u64,
+        at: EventLogTime,
+        source: EventSource,
+        level: EventLevel,
+        class: SchedulerEventLogClass,
+        event_payload: EventPayload,
+    ) -> Result<Self, SchedulerError> {
+        let diagnostic = EventDiagnosticPayload::new(
+            event_payload.kind().to_owned(),
+            level,
+            event_payload.attributes().clone(),
+        );
+        let entry = scheduler_event_log_entry_with_material(
+            sequence,
+            at,
+            source,
+            level,
+            class,
+            event_payload,
+            SchedulerEventLogPayload::Diagnostic(diagnostic),
+        );
+        if !entry.class_matches_catalog() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "retained event `{}` has an unknown or mismatched event class",
+                    entry.event_payload().kind()
+                ),
+            });
+        }
+        Ok(entry)
+    }
+
     /// Builds the scheduler-owned causal marker for an exhausted execution budget.
     ///
     /// The marker deliberately records only the stable budget domain. Numeric
@@ -689,6 +733,20 @@ impl SchedulerEventLogEntry {
     pub fn execution_budget_exhausted(
         sequence: u64,
         at: VirtualTime,
+        budget_kind: impl Into<String>,
+    ) -> Self {
+        Self::execution_budget_exhausted_with_time(
+            sequence,
+            EventLogTime::from_virtual_time(at),
+            budget_kind,
+        )
+    }
+
+    /// Builds an execution-budget marker with its exact retained coordinate.
+    #[must_use]
+    pub fn execution_budget_exhausted_with_time(
+        sequence: u64,
+        at: EventLogTime,
         budget_kind: impl Into<String>,
     ) -> Self {
         let mut attributes = BTreeMap::new();
@@ -703,7 +761,7 @@ impl SchedulerEventLogEntry {
         );
         scheduler_event_log_entry_with_material(
             sequence,
-            EventLogTime::from_virtual_time(at),
+            at,
             EventSource::Engine,
             EventLevel::Error,
             SchedulerEventLogClass::Causal,
