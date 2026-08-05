@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crucible_protocol::debug_gateway::{
     DEBUG_GATEWAY_HEADER_LEN, DEBUG_GATEWAY_MAX_PAYLOAD, DebugGatewayBackendStatus,
@@ -105,7 +105,7 @@ impl DebugGatewayProcess {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(DebugGatewayClientError::Spawn)?;
-        let started = Instant::now();
+        let mut remaining = timeout;
         loop {
             match DebugGatewayControlClient::connect(&control_socket) {
                 Ok(mut client) => {
@@ -124,7 +124,7 @@ impl DebugGatewayProcess {
                         _directory: directory,
                     });
                 }
-                Err(error) if started.elapsed() < timeout => {
+                Err(error) => {
                     if let Some(status) = child
                         .try_wait()
                         .map_err(DebugGatewayClientError::InspectChild)?
@@ -132,8 +132,8 @@ impl DebugGatewayProcess {
                         return Err(DebugGatewayClientError::EarlyExit { status });
                     }
                     if !matches!(
-                        error,
-                        DebugGatewayClientError::Connect(ref source)
+                        &error,
+                        DebugGatewayClientError::Connect(source)
                             if matches!(
                                 source.kind(),
                                 io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
@@ -142,14 +142,16 @@ impl DebugGatewayProcess {
                         let _ = terminate_child(&mut child);
                         return Err(error);
                     }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(last_error) => {
-                    let _ = terminate_child(&mut child);
-                    return Err(DebugGatewayClientError::StartupTimeout {
-                        timeout,
-                        last_error: Box::new(last_error),
-                    });
+                    if remaining.is_zero() {
+                        let _ = terminate_child(&mut child);
+                        return Err(DebugGatewayClientError::StartupTimeout {
+                            timeout,
+                            last_error: Box::new(error),
+                        });
+                    }
+                    let delay = remaining.min(Duration::from_millis(10));
+                    std::thread::sleep(delay);
+                    remaining = remaining.saturating_sub(delay);
                 }
             }
         }

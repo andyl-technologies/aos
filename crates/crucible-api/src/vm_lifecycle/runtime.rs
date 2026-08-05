@@ -261,7 +261,7 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
-        let (mut backend, run_directory) = replay.take_replayed_node(node)?;
+        let (mut backend, run_directory, debug_backend_path) = replay.take_replayed_node(node)?;
         let observed = SimulationBackend::now(&backend).ticks;
         if self.inner.backend().contains(node) {
             let _ = SimulationBackend::shutdown(&mut backend);
@@ -271,6 +271,12 @@ impl ProductionVmLifecycleLoop {
                     node.name
                 ),
             });
+        }
+        if let Some(path) = debug_backend_path
+            && let Err(error) = self.promote_replacement_debug_backend(node, path)
+        {
+            let _ = SimulationBackend::shutdown(&mut backend);
+            return Err(error);
         }
         if let Some(previous) = self.inner.backend_mut().insert(node.clone(), backend) {
             if let Some(mut installed) = self.inner.backend_mut().take(node) {
@@ -291,7 +297,7 @@ impl ProductionVmLifecycleLoop {
     pub(super) fn take_replayed_node(
         mut self,
         node: &NodeId,
-    ) -> Result<(ProductionLiveNode, tempfile::TempDir), SchedulerError> {
+    ) -> Result<(ProductionLiveNode, tempfile::TempDir, Option<PathBuf>), SchedulerError> {
         let mut backend = self.inner.backend_mut().take(node).ok_or_else(|| {
             SchedulerError::BoundaryViolation {
                 message: format!("QEMU replay lifecycle has no node `{}`", node.name),
@@ -301,7 +307,8 @@ impl ProductionVmLifecycleLoop {
             let _ = SimulationBackend::shutdown(&mut backend);
             return Err(SchedulerError::Backend(error));
         }
-        Ok((backend, self._run_directory))
+        let debug_backend_path = self.debug_backend_paths.remove(node);
+        Ok((backend, self._run_directory, debug_backend_path))
     }
 
     pub(super) fn launch_ready_point(
@@ -368,10 +375,44 @@ impl ProductionVmLifecycleLoop {
                 ),
             })?
             .with_run_directory(&node_directory);
+        let replacement_debug_path = if self.debug_backend_paths.contains_key(node) {
+            let path = private_backend_gdbstub_path(&node_directory);
+            let endpoint = qemu_unix_gdbstub_endpoint(&path).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "configure replacement QEMU debugger endpoint for `{}`: {error}",
+                        node.name
+                    ),
+                }
+            })?;
+            let operator_listen = self
+                .config
+                .debug
+                .as_ref()
+                .map(|debug| debug.operator_listen.clone())
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "replacement QEMU debugger configuration for `{}` is unavailable",
+                        node.name
+                    ),
+                })?;
+            let gdbstub = ProductionGdbstubChannelConfig::new(endpoint, operator_listen).map_err(
+                |error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "configure replacement QEMU debugger channel for `{}`: {error}",
+                        node.name
+                    ),
+                },
+            )?;
+            launch = launch.with_gdbstub(gdbstub);
+            Some(path)
+        } else {
+            None
+        };
         if white_box_enabled {
             launch = launch.with_app_random(self.app_random_continuation_config(node)?);
         }
-        let backend = launch_production_live_node(
+        let mut backend = launch_production_live_node(
             &launch,
             &node_directory,
             &node.name,
@@ -382,6 +423,12 @@ impl ProductionVmLifecycleLoop {
             message: format!("relaunch QEMU node `{}`: {error}", node.name),
         })?;
         let observed = SimulationBackend::now(&backend).ticks;
+        if let Some(path) = replacement_debug_path
+            && let Err(error) = self.promote_replacement_debug_backend(node, path)
+        {
+            let _ = SimulationBackend::shutdown(&mut backend);
+            return Err(error);
+        }
         if let Some(previous) = self.inner.backend_mut().insert(node.clone(), backend) {
             if let Some(mut installed) = self.inner.backend_mut().take(node) {
                 let _ = SimulationBackend::shutdown(&mut installed);
@@ -395,6 +442,53 @@ impl ProductionVmLifecycleLoop {
             });
         }
         Ok(observed)
+    }
+
+    fn promote_replacement_debug_backend(
+        &mut self,
+        node: &NodeId,
+        path: PathBuf,
+    ) -> Result<(), SchedulerError> {
+        if self
+            .debug_attach
+            .as_ref()
+            .is_none_or(|attach| attach.node != *node)
+        {
+            self.debug_backend_paths.insert(node.clone(), path);
+            return Ok(());
+        }
+        let gateway =
+            self.debug_gateway
+                .as_mut()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "debugged QEMU node `{}` has no lifecycle-owned gateway",
+                        node.name
+                    ),
+                })?;
+        let generation = gateway
+            .client_mut()
+            .prepare_backend(&path)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "prepare replacement debugger backend for `{}`: {error}",
+                    node.name
+                ),
+            })?;
+        gateway
+            .client_mut()
+            .commit_backend(generation)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "commit replacement debugger backend for `{}`: {error}",
+                    node.name
+                ),
+            })?;
+        self.debug_backend_paths.insert(node.clone(), path.clone());
+        if let Some(attach) = &mut self.debug_attach {
+            attach.qemu_endpoint = path.to_string_lossy().into_owned();
+        }
+        Ok(())
     }
 
     fn app_random_continuation_config(

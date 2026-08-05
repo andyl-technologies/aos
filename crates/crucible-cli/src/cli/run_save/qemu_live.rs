@@ -449,6 +449,11 @@ pub(crate) fn production_qemu_lifecycle_config(
     )? {
         config = config.with_initrd(initrd);
     }
+    if let Some(gateway) =
+        optional_live_qemu_asset("CRUCIBLE_DEBUG_GATEWAY", None, "debugger gateway")?
+    {
+        config = config.with_debug_gateway(gateway);
+    }
     Ok(config)
 }
 
