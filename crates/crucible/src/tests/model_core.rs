@@ -659,7 +659,7 @@ fn spatial_components_have_independent_content_addresses_and_cross_reuse() {
     );
     assert_eq!(
         plan.content_hash(),
-        ContentHash::from_canonical_material("crucible.model.plan.v1", &plan_material)
+        ContentHash::from_canonical_material("crucible.model.plan.v2", &plan_material)
     );
     assert_eq!(
         properties.content_hash(),

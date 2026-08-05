@@ -389,6 +389,7 @@ pub struct Plan {
     /// The independently content-addressed plan identity.
     pub(super) id: ContentHash,
     pub(super) kind: PlanKind,
+    pub(super) fault_signals: FaultSignalPlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -464,6 +465,18 @@ impl Plan {
             PlanKind::FaultPlan { .. } => None,
             PlanKind::EventGraph { graph } => Some(graph),
         }
+    }
+
+    /// Returns the scenario's signal-driven fault programs and bindings.
+    #[must_use]
+    pub const fn fault_signals(&self) -> &FaultSignalPlan {
+        &self.fault_signals
+    }
+
+    /// Replaces the signal-driven fault layer and recomputes plan identity.
+    #[must_use]
+    pub fn with_fault_signals(self, fault_signals: FaultSignalPlan) -> Self {
+        Self::from_canonical_parts(self.kind, fault_signals)
     }
 
     /// Builds a full-taxonomy fault-plan body after validating it against `world`.
@@ -680,12 +693,15 @@ impl Plan {
     }
 
     fn from_canonical_kind(kind: PlanKind) -> Self {
+        Self::from_canonical_parts(kind, FaultSignalPlan::empty())
+    }
+
+    fn from_canonical_parts(kind: PlanKind, fault_signals: FaultSignalPlan) -> Self {
+        let material = plan_parts_material(&kind, &fault_signals);
         Self {
-            id: ContentHash::from_canonical_material(
-                "crucible.model.plan.v1",
-                &plan_kind_material(&kind),
-            ),
+            id: ContentHash::from_canonical_material("crucible.model.plan.v2", &material),
             kind,
+            fault_signals,
         }
     }
 }
