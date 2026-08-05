@@ -110,15 +110,25 @@ hash in their envelope before decoding.
 
 Statuses are `applied`, `not_applicable`, `precondition_mismatch`,
 `invalid_target`, `invalid_phase`, `unsupported_capability`, `past_boundary`,
-`resource_limit`, `guest_rejected`, and `internal_error`. Any status except
-`applied` is a loud run outcome unless the effect contract explicitly expects
-`not_applicable` as an opportunity result.
+`resource_limit`, `guest_rejected`, `internal_error`, `malformed_command`,
+`duplicate_sequence`, and `authentication_failed`. A result echoes the raw
+command-kind tag so even an unknown kind receives a canonical rejection; an
+`applied` result must name a registered kind. Any status except `applied` is a
+loud run outcome unless the effect contract explicitly expects `not_applicable`
+as an opportunity result. Every rejected result has `applied_icount = 0` and
+`after_hash == before_hash`.
 
 The host reserves a command slot, writes payload, publishes with release order,
 and rings the existing eventfd. The plugin acquires, validates, and arms it. QEMU
 applies only at the exact authorized boundary and publishes one result with
-release order. Slots are not reused until the host acquires the result. Ring
-exhaustion fails before losing or overwriting a command.
+release order. Each 256-byte command/result slot carries transport-owned logical
+reservation-start, payload-start, and reservation-end cursors plus the encoded
+header. That framing lets a consumer release a sound arena reservation even
+when the enclosed ABI bytes must be rejected. The plugin may release a command
+slot only after copying its payload into QEMU-owned bounded state; the host may
+release a result slot only after copying the result payload. A command sequence
+remains live and cannot be reused until the host acquires its result. Ring or
+arena exhaustion fails before publishing, losing, or overwriting a command.
 
 ## 14.4 Common per-patch acceptance template
 

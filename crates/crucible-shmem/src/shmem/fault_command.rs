@@ -5,7 +5,9 @@
 //! layouts. Every decoder rejects unknown tags, nonzero reserved fields,
 //! unsupported versions, invalid bounds, and unauthenticated payload bytes.
 
+use crate::RingHeader;
 use core::fmt::Write as _;
+use core::sync::atomic::Ordering;
 use thiserror::Error;
 
 /// Fault command ABI major version.
@@ -116,6 +118,216 @@ pub const FAULT_CAPABILITY_MAXIMUM_PENDING_OFFSET: usize = 16;
 pub const FAULT_CAPABILITY_REQUIRED_FEATURES_OFFSET: usize = 20;
 /// Capability identity hash field offset.
 pub const FAULT_CAPABILITY_HASH_OFFSET: usize = 28;
+
+/// Exact shared-memory size of one command transport slot.
+pub const FAULT_COMMAND_SLOT_V1_BYTES: usize = 256;
+/// Exact shared-memory size of one result transport slot.
+pub const FAULT_RESULT_SLOT_V1_BYTES: usize = 256;
+/// Exact shared-memory size of one payload-arena cursor header.
+pub const FAULT_PAYLOAD_ARENA_HEADER_BYTES: usize = 128;
+/// Command-slot reservation-start field offset.
+pub const FAULT_COMMAND_SLOT_RESERVATION_START_OFFSET: usize =
+    core::mem::offset_of!(FaultCommandSlotV1, reservation_start);
+/// Command-slot payload-start field offset.
+pub const FAULT_COMMAND_SLOT_PAYLOAD_START_OFFSET: usize =
+    core::mem::offset_of!(FaultCommandSlotV1, payload_start);
+/// Command-slot reservation-end field offset.
+pub const FAULT_COMMAND_SLOT_RESERVATION_END_OFFSET: usize =
+    core::mem::offset_of!(FaultCommandSlotV1, reservation_end);
+/// Command-slot encoded-header field offset.
+pub const FAULT_COMMAND_SLOT_HEADER_OFFSET: usize =
+    core::mem::offset_of!(FaultCommandSlotV1, header);
+/// Result-slot reservation-start field offset.
+pub const FAULT_RESULT_SLOT_RESERVATION_START_OFFSET: usize =
+    core::mem::offset_of!(FaultResultSlotV1, reservation_start);
+/// Result-slot payload-start field offset.
+pub const FAULT_RESULT_SLOT_PAYLOAD_START_OFFSET: usize =
+    core::mem::offset_of!(FaultResultSlotV1, payload_start);
+/// Result-slot reservation-end field offset.
+pub const FAULT_RESULT_SLOT_RESERVATION_END_OFFSET: usize =
+    core::mem::offset_of!(FaultResultSlotV1, reservation_end);
+/// Result-slot encoded-header field offset.
+pub const FAULT_RESULT_SLOT_HEADER_OFFSET: usize = core::mem::offset_of!(FaultResultSlotV1, header);
+/// Payload-arena consumer-cursor field offset.
+pub const FAULT_PAYLOAD_ARENA_READ_CURSOR_OFFSET: usize =
+    core::mem::offset_of!(FaultPayloadArenaHeader, read_cursor);
+/// Payload-arena producer-cursor field offset.
+pub const FAULT_PAYLOAD_ARENA_WRITE_CURSOR_OFFSET: usize =
+    core::mem::offset_of!(FaultPayloadArenaHeader, write_cursor);
+
+/// One command-ring slot with transport-owned payload reservation metadata.
+///
+/// The reservation cursors are outside the authenticated command envelope so a
+/// consumer can release arena space even when the command itself is malformed.
+/// A valid command must independently agree with these bounds.
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+pub struct FaultCommandSlotV1 {
+    reservation_start: u64,
+    payload_start: u64,
+    reservation_end: u64,
+    header: [u8; FAULT_COMMAND_HEADER_V1_BYTES],
+    _reserved: [u8; 16],
+}
+
+impl FaultCommandSlotV1 {
+    /// Builds a zeroed, unpublished command slot.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            reservation_start: 0,
+            payload_start: 0,
+            reservation_end: 0,
+            header: [0; FAULT_COMMAND_HEADER_V1_BYTES],
+            _reserved: [0; 16],
+        }
+    }
+
+    pub(crate) fn write_bytes(&self, bytes: &mut [u8]) {
+        bytes.fill(0);
+        bytes[0..8].copy_from_slice(&self.reservation_start.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.payload_start.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.reservation_end.to_le_bytes());
+        bytes[24..24 + FAULT_COMMAND_HEADER_V1_BYTES].copy_from_slice(&self.header);
+    }
+}
+
+impl Default for FaultCommandSlotV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// One result-ring slot with transport-owned payload reservation metadata.
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+pub struct FaultResultSlotV1 {
+    reservation_start: u64,
+    payload_start: u64,
+    reservation_end: u64,
+    header: [u8; FAULT_RESULT_HEADER_V1_BYTES],
+    _reserved: [u8; 44],
+}
+
+impl FaultResultSlotV1 {
+    /// Builds a zeroed, unpublished result slot.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            reservation_start: 0,
+            payload_start: 0,
+            reservation_end: 0,
+            header: [0; FAULT_RESULT_HEADER_V1_BYTES],
+            _reserved: [0; 44],
+        }
+    }
+
+    pub(crate) fn write_bytes(&self, bytes: &mut [u8]) {
+        bytes.fill(0);
+        bytes[0..8].copy_from_slice(&self.reservation_start.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.payload_start.to_le_bytes());
+        bytes[16..24].copy_from_slice(&self.reservation_end.to_le_bytes());
+        bytes[24..24 + FAULT_RESULT_HEADER_V1_BYTES].copy_from_slice(&self.header);
+    }
+}
+
+impl Default for FaultResultSlotV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// SPSC byte-arena cursors shared by one payload producer and one consumer.
+///
+/// Cursors are monotonically increasing logical byte positions. Physical
+/// offsets wrap within the fixed arena, but one payload is always contiguous;
+/// the producer accounts for skipped tail bytes in the published reservation.
+#[repr(C, align(128))]
+pub struct FaultPayloadArenaHeader {
+    read_cursor: core::sync::atomic::AtomicU64,
+    _pad_read: [u8; 56],
+    write_cursor: core::sync::atomic::AtomicU64,
+    _pad_write: [u8; 56],
+}
+
+impl Clone for FaultPayloadArenaHeader {
+    fn clone(&self) -> Self {
+        Self {
+            read_cursor: core::sync::atomic::AtomicU64::new(
+                self.read_cursor.load(core::sync::atomic::Ordering::Acquire),
+            ),
+            _pad_read: [0; 56],
+            write_cursor: core::sync::atomic::AtomicU64::new(
+                self.write_cursor
+                    .load(core::sync::atomic::Ordering::Acquire),
+            ),
+            _pad_write: [0; 56],
+        }
+    }
+}
+
+impl FaultPayloadArenaHeader {
+    /// Builds an empty payload arena header.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            read_cursor: core::sync::atomic::AtomicU64::new(0),
+            _pad_read: [0; 56],
+            write_cursor: core::sync::atomic::AtomicU64::new(0),
+            _pad_write: [0; 56],
+        }
+    }
+
+    /// Returns the consumer-owned logical read cursor.
+    #[must_use]
+    pub fn read_cursor(&self) -> u64 {
+        self.read_cursor.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Returns the producer-owned logical write cursor.
+    #[must_use]
+    pub fn write_cursor(&self) -> u64 {
+        self.write_cursor
+            .load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Returns whether all cache-line padding bytes remain zero.
+    #[must_use]
+    pub fn padding_bytes_are_zero(&self) -> bool {
+        self._pad_read.iter().all(|byte| *byte == 0)
+            && self._pad_write.iter().all(|byte| *byte == 0)
+    }
+
+    pub(crate) fn write_bytes(&self, bytes: &mut [u8]) {
+        bytes.fill(0);
+        bytes[0..8].copy_from_slice(&self.read_cursor().to_le_bytes());
+        bytes[64..72].copy_from_slice(&self.write_cursor().to_le_bytes());
+    }
+}
+
+impl Default for FaultPayloadArenaHeader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+const _: () = assert!(core::mem::size_of::<FaultCommandSlotV1>() == FAULT_COMMAND_SLOT_V1_BYTES);
+const _: () = assert!(core::mem::align_of::<FaultCommandSlotV1>() == 64);
+const _: () = assert!(core::mem::size_of::<FaultResultSlotV1>() == FAULT_RESULT_SLOT_V1_BYTES);
+const _: () = assert!(core::mem::align_of::<FaultResultSlotV1>() == 64);
+const _: () =
+    assert!(core::mem::size_of::<FaultPayloadArenaHeader>() == FAULT_PAYLOAD_ARENA_HEADER_BYTES);
+const _: () = assert!(core::mem::align_of::<FaultPayloadArenaHeader>() == 128);
+const _: () = assert!(FAULT_COMMAND_SLOT_RESERVATION_START_OFFSET == 0);
+const _: () = assert!(FAULT_COMMAND_SLOT_PAYLOAD_START_OFFSET == 8);
+const _: () = assert!(FAULT_COMMAND_SLOT_RESERVATION_END_OFFSET == 16);
+const _: () = assert!(FAULT_COMMAND_SLOT_HEADER_OFFSET == 24);
+const _: () = assert!(FAULT_RESULT_SLOT_RESERVATION_START_OFFSET == 0);
+const _: () = assert!(FAULT_RESULT_SLOT_PAYLOAD_START_OFFSET == 8);
+const _: () = assert!(FAULT_RESULT_SLOT_RESERVATION_END_OFFSET == 16);
+const _: () = assert!(FAULT_RESULT_SLOT_HEADER_OFFSET == 24);
+const _: () = assert!(FAULT_PAYLOAD_ARENA_READ_CURSOR_OFFSET == 0);
+const _: () = assert!(FAULT_PAYLOAD_ARENA_WRITE_CURSOR_OFFSET == 64);
 
 /// No optional command behavior is selected.
 pub const FAULT_COMMAND_FLAG_NONE: u16 = 0;
@@ -270,6 +482,12 @@ pub enum FaultResultStatus {
     GuestRejected = 9,
     /// QEMU could not preserve the atomic application contract.
     InternalError = 10,
+    /// The command envelope or typed payload is not canonically encoded.
+    MalformedCommand = 11,
+    /// The command sequence was already accepted or is not monotonic.
+    DuplicateSequence = 12,
+    /// The command or result payload failed digest authentication.
+    AuthenticationFailed = 13,
 }
 
 impl FaultResultStatus {
@@ -285,6 +503,9 @@ impl FaultResultStatus {
             8 => Ok(Self::ResourceLimit),
             9 => Ok(Self::GuestRejected),
             10 => Ok(Self::InternalError),
+            11 => Ok(Self::MalformedCommand),
+            12 => Ok(Self::DuplicateSequence),
+            13 => Ok(Self::AuthenticationFailed),
             _ => Err(FaultAbiError::UnknownResultStatus(value)),
         }
     }
@@ -364,6 +585,13 @@ impl FaultCommandHeaderV1 {
         bytes: &[u8],
         payload_region: &'a [u8],
     ) -> Result<(Self, &'a [u8]), FaultAbiError> {
+        let value = Self::decode_header(bytes)?;
+        let payload = payload_slice(payload_region, value.payload_offset, value.payload_length)?;
+        value.authenticate_payload(payload)?;
+        Ok((value, payload))
+    }
+
+    fn decode_header(bytes: &[u8]) -> Result<Self, FaultAbiError> {
         if bytes.len() != FAULT_COMMAND_HEADER_V1_BYTES {
             return Err(FaultAbiError::HeaderLength);
         }
@@ -398,11 +626,14 @@ impl FaultCommandHeaderV1 {
             return Err(FaultAbiError::ReservedNonzero);
         }
         value.validate()?;
-        let payload = payload_slice(payload_region, value.payload_offset, value.payload_length)?;
-        if *blake3::hash(payload).as_bytes() != value.payload_hash {
+        Ok(value)
+    }
+
+    fn authenticate_payload(&self, payload: &[u8]) -> Result<(), FaultAbiError> {
+        if *blake3::hash(payload).as_bytes() != self.payload_hash {
             return Err(FaultAbiError::PayloadDigest);
         }
-        Ok((value, payload))
+        Ok(())
     }
 
     fn validate(&self) -> Result<(), FaultAbiError> {
@@ -438,8 +669,8 @@ pub struct FaultResultHeaderV1 {
     pub abi_major: u16,
     /// ABI minor version.
     pub abi_minor: u16,
-    /// Echoed command kind.
-    pub command_kind: FaultCommandKind,
+    /// Echoed raw command kind, including an unsupported input tag.
+    pub command_kind: u16,
     /// Canonical application status.
     pub status: FaultResultStatus,
     /// Echoed command semantic version.
@@ -476,7 +707,7 @@ impl FaultResultHeaderV1 {
         let mut writer = FaultByteWriter::new(&mut bytes);
         writer.u16(self.abi_major);
         writer.u16(self.abi_minor);
-        writer.u16(self.command_kind as u16);
+        writer.u16(self.command_kind);
         writer.u16(self.status as u16);
         writer.u32(self.semantic_version);
         writer.u64(self.command_sequence);
@@ -505,6 +736,13 @@ impl FaultResultHeaderV1 {
         bytes: &[u8],
         payload_region: &'a [u8],
     ) -> Result<(Self, &'a [u8]), FaultAbiError> {
+        let value = Self::decode_header(bytes)?;
+        let payload = payload_slice(payload_region, value.result_offset, value.result_length)?;
+        value.authenticate_payload(payload)?;
+        Ok((value, payload))
+    }
+
+    fn decode_header(bytes: &[u8]) -> Result<Self, FaultAbiError> {
         if bytes.len() != FAULT_RESULT_HEADER_V1_BYTES {
             return Err(FaultAbiError::HeaderLength);
         }
@@ -512,7 +750,7 @@ impl FaultResultHeaderV1 {
         let value = Self {
             abi_major: reader.u16()?,
             abi_minor: reader.u16()?,
-            command_kind: FaultCommandKind::from_u16(reader.u16()?)?,
+            command_kind: reader.u16()?,
             status: FaultResultStatus::from_u16(reader.u16()?)?,
             semantic_version: reader.u32()?,
             command_sequence: reader.u64()?,
@@ -555,11 +793,17 @@ impl FaultResultHeaderV1 {
         {
             return Err(FaultAbiError::ResultInvariant);
         }
-        let payload = payload_slice(payload_region, value.result_offset, value.result_length)?;
-        if *blake3::hash(payload).as_bytes() != value.result_payload_hash {
+        if value.status == FaultResultStatus::Applied {
+            FaultCommandKind::from_u16(value.command_kind)?;
+        }
+        Ok(value)
+    }
+
+    fn authenticate_payload(&self, payload: &[u8]) -> Result<(), FaultAbiError> {
+        if *blake3::hash(payload).as_bytes() != self.result_payload_hash {
             return Err(FaultAbiError::PayloadDigest);
         }
-        Ok((value, payload))
+        Ok(())
     }
 }
 
@@ -677,6 +921,481 @@ pub fn fault_capability_manifest_digest(
         hasher.update(&bytes);
     }
     Ok(*hasher.finalize().as_bytes())
+}
+
+/// One command removed from the transport after its arena reservation is freed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DequeuedFaultCommand {
+    /// The envelope and copied payload passed every ABI check.
+    Valid {
+        /// Decoded command envelope.
+        header: FaultCommandHeaderV1,
+        /// Owned payload bytes, no longer borrowed from shared memory.
+        payload: Vec<u8>,
+    },
+    /// The transport framing was sound but the command ABI was rejected.
+    Rejected {
+        /// Raw kind tag, preserved even when it is not registered.
+        raw_command_kind: u16,
+        /// Raw sequence, preserved for a canonical result when nonzero.
+        command_sequence: u64,
+        /// Exact ABI validation failure.
+        error: FaultAbiError,
+    },
+}
+
+/// Enqueues one command and payload with release publication.
+///
+/// The operation first proves that both the command ring and circular byte
+/// arena have capacity. It then copies the payload, writes the complete slot,
+/// publishes the arena cursor, and finally publishes the ring index. A failure
+/// before publication changes neither shared cursor.
+///
+/// `arena_region_offset` is the byte offset of `arena` from the shared region
+/// base and is encoded into the command header.
+///
+/// # Errors
+///
+/// Returns [`FaultTransportError`] when a capacity, index, payload, arithmetic,
+/// or command-envelope invariant is violated.
+pub fn enqueue_fault_command(
+    ring: &RingHeader,
+    slots: &mut [FaultCommandSlotV1],
+    arena_header: &FaultPayloadArenaHeader,
+    arena: &mut [u8],
+    arena_region_offset: u64,
+    mut header: FaultCommandHeaderV1,
+    payload: &[u8],
+) -> Result<(), FaultTransportError> {
+    let (tail, slot_index) = producer_ring_slot(ring, slots.len())?;
+    let reservation = reserve_arena(arena_header, arena.len(), payload.len())?;
+    copy_payload(arena, reservation.payload_start, payload)?;
+
+    header.payload_offset = if payload.is_empty() {
+        0
+    } else {
+        arena_region_offset
+            .checked_add(reservation.payload_start % arena_len_u64(arena.len())?)
+            .ok_or(FaultTransportError::ArithmeticOverflow)?
+    };
+    header.payload_length = u32::try_from(payload.len())
+        .map_err(|_| FaultTransportError::PayloadTooLarge { len: payload.len() })?;
+    header.payload_hash = *blake3::hash(payload).as_bytes();
+    header.validate().map_err(FaultTransportError::Abi)?;
+
+    slots[slot_index] = FaultCommandSlotV1 {
+        reservation_start: reservation.start,
+        payload_start: reservation.payload_start,
+        reservation_end: reservation.end,
+        header: header.encode(),
+        _reserved: [0; 16],
+    };
+    arena_header
+        .write_cursor
+        .store(reservation.end, Ordering::Release);
+    ring.write_idx
+        .store(tail.wrapping_add(1), Ordering::Release);
+    Ok(())
+}
+
+/// Removes one command, copies its payload, and releases its transport space.
+///
+/// ABI-invalid commands are returned as [`DequeuedFaultCommand::Rejected`] and
+/// still consume their sound transport reservation, preventing a malformed
+/// host command from wedging the plugin. Corrupt transport-owned framing fails
+/// loudly because advancing an untrusted cursor would risk releasing live data.
+///
+/// # Errors
+///
+/// Returns [`FaultTransportError`] for invalid capacity, corrupt indices,
+/// inconsistent reservation framing, or arithmetic overflow.
+pub fn dequeue_fault_command(
+    ring: &RingHeader,
+    slots: &[FaultCommandSlotV1],
+    arena_header: &FaultPayloadArenaHeader,
+    arena: &[u8],
+    arena_region_offset: u64,
+) -> Result<Option<DequeuedFaultCommand>, FaultTransportError> {
+    let Some((head, slot_index)) = consumer_ring_slot(ring, slots.len())? else {
+        return Ok(None);
+    };
+    let slot = slots[slot_index];
+    let payload = copy_reserved_payload(
+        arena_header,
+        arena,
+        slot.reservation_start,
+        slot.payload_start,
+        slot.reservation_end,
+    )?;
+    let raw_command_kind = read_raw_u16(&slot.header, FAULT_COMMAND_KIND_OFFSET);
+    let command_sequence = read_raw_u64(&slot.header, FAULT_COMMAND_SEQUENCE_OFFSET);
+    let decoded = FaultCommandHeaderV1::decode_header(&slot.header).and_then(|header| {
+        validate_envelope_reservation(
+            header.payload_offset,
+            header.payload_length,
+            arena_region_offset,
+            arena.len(),
+            slot.payload_start,
+            slot.reservation_end,
+        )?;
+        header.authenticate_payload(&payload)?;
+        Ok(header)
+    });
+
+    arena_header
+        .read_cursor
+        .store(slot.reservation_end, Ordering::Release);
+    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
+
+    Ok(Some(match decoded {
+        Ok(header) => DequeuedFaultCommand::Valid { header, payload },
+        Err(error) => DequeuedFaultCommand::Rejected {
+            raw_command_kind,
+            command_sequence,
+            error,
+        },
+    }))
+}
+
+/// One result removed from the transport after its arena reservation is freed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DequeuedFaultResult {
+    /// The result envelope and copied evidence payload passed every ABI check.
+    Valid {
+        /// Decoded result envelope.
+        header: FaultResultHeaderV1,
+        /// Owned result payload bytes.
+        payload: Vec<u8>,
+    },
+    /// A malformed result was consumed and must fail the run loudly.
+    Invalid {
+        /// Raw command sequence for diagnostics and correlation.
+        command_sequence: u64,
+        /// Exact ABI validation failure.
+        error: FaultAbiError,
+    },
+}
+
+/// Enqueues one QEMU result and payload with release publication.
+///
+/// # Errors
+///
+/// Returns [`FaultTransportError`] when ring or arena capacity is exhausted, a
+/// cursor is corrupt, arithmetic overflows, or the result violates its ABI.
+pub fn enqueue_fault_result(
+    ring: &RingHeader,
+    slots: &mut [FaultResultSlotV1],
+    arena_header: &FaultPayloadArenaHeader,
+    arena: &mut [u8],
+    arena_region_offset: u64,
+    mut header: FaultResultHeaderV1,
+    payload: &[u8],
+) -> Result<(), FaultTransportError> {
+    let (tail, slot_index) = producer_ring_slot(ring, slots.len())?;
+    let reservation = reserve_arena(arena_header, arena.len(), payload.len())?;
+    copy_payload(arena, reservation.payload_start, payload)?;
+
+    header.result_offset = if payload.is_empty() {
+        0
+    } else {
+        arena_region_offset
+            .checked_add(reservation.payload_start % arena_len_u64(arena.len())?)
+            .ok_or(FaultTransportError::ArithmeticOverflow)?
+    };
+    header.result_length = u32::try_from(payload.len())
+        .map_err(|_| FaultTransportError::PayloadTooLarge { len: payload.len() })?;
+    header.result_payload_hash = *blake3::hash(payload).as_bytes();
+    FaultResultHeaderV1::decode_header(&header.encode()).map_err(FaultTransportError::Abi)?;
+
+    slots[slot_index] = FaultResultSlotV1 {
+        reservation_start: reservation.start,
+        payload_start: reservation.payload_start,
+        reservation_end: reservation.end,
+        header: header.encode(),
+        _reserved: [0; 44],
+    };
+    arena_header
+        .write_cursor
+        .store(reservation.end, Ordering::Release);
+    ring.write_idx
+        .store(tail.wrapping_add(1), Ordering::Release);
+    Ok(())
+}
+
+/// Removes one result, copies its payload, and releases its transport space.
+///
+/// Sound transport framing is consumed even when the result ABI is invalid so
+/// a bad plugin result cannot permanently fill the ring. The returned invalid
+/// value is a mandatory run failure, never a simulated guest outcome.
+///
+/// # Errors
+///
+/// Returns [`FaultTransportError`] for invalid capacity, corrupt indices,
+/// inconsistent reservation framing, or arithmetic overflow.
+pub fn dequeue_fault_result(
+    ring: &RingHeader,
+    slots: &[FaultResultSlotV1],
+    arena_header: &FaultPayloadArenaHeader,
+    arena: &[u8],
+    arena_region_offset: u64,
+) -> Result<Option<DequeuedFaultResult>, FaultTransportError> {
+    let Some((head, slot_index)) = consumer_ring_slot(ring, slots.len())? else {
+        return Ok(None);
+    };
+    let slot = slots[slot_index];
+    let payload = copy_reserved_payload(
+        arena_header,
+        arena,
+        slot.reservation_start,
+        slot.payload_start,
+        slot.reservation_end,
+    )?;
+    let command_sequence = read_raw_u64(&slot.header, FAULT_RESULT_SEQUENCE_OFFSET);
+    let decoded = FaultResultHeaderV1::decode_header(&slot.header).and_then(|header| {
+        validate_envelope_reservation(
+            header.result_offset,
+            header.result_length,
+            arena_region_offset,
+            arena.len(),
+            slot.payload_start,
+            slot.reservation_end,
+        )?;
+        header.authenticate_payload(&payload)?;
+        Ok(header)
+    });
+
+    arena_header
+        .read_cursor
+        .store(slot.reservation_end, Ordering::Release);
+    ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
+
+    Ok(Some(match decoded {
+        Ok(header) => DequeuedFaultResult::Valid { header, payload },
+        Err(error) => DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        },
+    }))
+}
+
+#[derive(Clone, Copy)]
+struct ArenaReservation {
+    start: u64,
+    payload_start: u64,
+    end: u64,
+}
+
+fn producer_ring_slot(
+    ring: &RingHeader,
+    capacity: usize,
+) -> Result<(u64, usize), FaultTransportError> {
+    let capacity = validated_transport_capacity(capacity)?;
+    let tail = ring.write_idx.load(Ordering::Relaxed);
+    let head = ring.read_idx.load(Ordering::Acquire);
+    let live = tail.wrapping_sub(head);
+    if live > capacity {
+        return Err(FaultTransportError::CorruptRingIndices {
+            read: head,
+            write: tail,
+            capacity,
+        });
+    }
+    if live == capacity {
+        return Err(FaultTransportError::RingFull { capacity });
+    }
+    Ok((tail, (tail & (capacity - 1)) as usize))
+}
+
+fn consumer_ring_slot(
+    ring: &RingHeader,
+    capacity: usize,
+) -> Result<Option<(u64, usize)>, FaultTransportError> {
+    let capacity = validated_transport_capacity(capacity)?;
+    let head = ring.read_idx.load(Ordering::Relaxed);
+    let tail = ring.write_idx.load(Ordering::Acquire);
+    let live = tail.wrapping_sub(head);
+    if live > capacity {
+        return Err(FaultTransportError::CorruptRingIndices {
+            read: head,
+            write: tail,
+            capacity,
+        });
+    }
+    Ok((live != 0).then_some((head, (head & (capacity - 1)) as usize)))
+}
+
+fn validated_transport_capacity(capacity: usize) -> Result<u64, FaultTransportError> {
+    if capacity == 0
+        || !capacity.is_power_of_two()
+        || capacity > HARD_FAULT_COMMAND_CAPACITY as usize
+    {
+        return Err(FaultTransportError::InvalidRingCapacity { capacity });
+    }
+    Ok(capacity as u64)
+}
+
+fn arena_len_u64(len: usize) -> Result<u64, FaultTransportError> {
+    if len == 0 || len > HARD_FAULT_PAYLOAD_BYTES as usize {
+        return Err(FaultTransportError::InvalidArenaCapacity { capacity: len });
+    }
+    u64::try_from(len).map_err(|_| FaultTransportError::ArithmeticOverflow)
+}
+
+fn reserve_arena(
+    header: &FaultPayloadArenaHeader,
+    arena_len: usize,
+    payload_len: usize,
+) -> Result<ArenaReservation, FaultTransportError> {
+    let capacity = arena_len_u64(arena_len)?;
+    let payload_len_usize = payload_len;
+    let payload_len = u64::try_from(payload_len)
+        .map_err(|_| FaultTransportError::PayloadTooLarge { len: payload_len })?;
+    if payload_len > capacity || payload_len > u64::from(HARD_FAULT_PAYLOAD_BYTES) {
+        return Err(FaultTransportError::PayloadTooLarge {
+            len: payload_len_usize,
+        });
+    }
+    let write = header.write_cursor.load(Ordering::Relaxed);
+    let read = header.read_cursor.load(Ordering::Acquire);
+    let live = write.wrapping_sub(read);
+    if live > capacity {
+        return Err(FaultTransportError::CorruptArenaCursors {
+            read,
+            write,
+            capacity,
+        });
+    }
+    if payload_len == 0 {
+        return Ok(ArenaReservation {
+            start: write,
+            payload_start: write,
+            end: write,
+        });
+    }
+    let physical = write % capacity;
+    let remaining = capacity - physical;
+    let padding = if payload_len > remaining {
+        remaining
+    } else {
+        0
+    };
+    let reservation_len = padding
+        .checked_add(payload_len)
+        .ok_or(FaultTransportError::ArithmeticOverflow)?;
+    if live
+        .checked_add(reservation_len)
+        .ok_or(FaultTransportError::ArithmeticOverflow)?
+        > capacity
+    {
+        return Err(FaultTransportError::PayloadArenaFull {
+            requested: reservation_len,
+            available: capacity - live,
+        });
+    }
+    let payload_start = write
+        .checked_add(padding)
+        .ok_or(FaultTransportError::ArithmeticOverflow)?;
+    let end = payload_start
+        .checked_add(payload_len)
+        .ok_or(FaultTransportError::ArithmeticOverflow)?;
+    Ok(ArenaReservation {
+        start: write,
+        payload_start,
+        end,
+    })
+}
+
+fn copy_payload(
+    arena: &mut [u8],
+    logical_start: u64,
+    payload: &[u8],
+) -> Result<(), FaultTransportError> {
+    if payload.is_empty() {
+        return Ok(());
+    }
+    let capacity = arena_len_u64(arena.len())?;
+    let start = usize::try_from(logical_start % capacity)
+        .map_err(|_| FaultTransportError::ArithmeticOverflow)?;
+    let end = start
+        .checked_add(payload.len())
+        .ok_or(FaultTransportError::ArithmeticOverflow)?;
+    let destination = arena
+        .get_mut(start..end)
+        .ok_or(FaultTransportError::CorruptReservation)?;
+    destination.copy_from_slice(payload);
+    Ok(())
+}
+
+fn copy_reserved_payload(
+    header: &FaultPayloadArenaHeader,
+    arena: &[u8],
+    start: u64,
+    payload_start: u64,
+    end: u64,
+) -> Result<Vec<u8>, FaultTransportError> {
+    let capacity = arena_len_u64(arena.len())?;
+    let expected_start = header.read_cursor.load(Ordering::Relaxed);
+    let published_end = header.write_cursor.load(Ordering::Acquire);
+    if start != expected_start
+        || payload_start < start
+        || end < payload_start
+        || end.wrapping_sub(start) > capacity
+        || end > published_end
+    {
+        return Err(FaultTransportError::CorruptReservation);
+    }
+    let physical_start = usize::try_from(payload_start % capacity)
+        .map_err(|_| FaultTransportError::ArithmeticOverflow)?;
+    let payload_len = usize::try_from(end - payload_start)
+        .map_err(|_| FaultTransportError::ArithmeticOverflow)?;
+    let physical_end = physical_start
+        .checked_add(payload_len)
+        .ok_or(FaultTransportError::ArithmeticOverflow)?;
+    arena
+        .get(physical_start..physical_end)
+        .map(<[u8]>::to_vec)
+        .ok_or(FaultTransportError::CorruptReservation)
+}
+
+fn validate_envelope_reservation(
+    payload_offset: u64,
+    payload_length: u32,
+    arena_region_offset: u64,
+    arena_len: usize,
+    payload_start: u64,
+    reservation_end: u64,
+) -> Result<(), FaultAbiError> {
+    if payload_length == 0 {
+        return (payload_offset == 0 && payload_start == reservation_end)
+            .then_some(())
+            .ok_or(FaultAbiError::PayloadBounds);
+    }
+    let capacity = u64::try_from(arena_len).map_err(|_| FaultAbiError::PayloadBounds)?;
+    let expected_offset = arena_region_offset
+        .checked_add(payload_start % capacity)
+        .ok_or(FaultAbiError::PayloadBounds)?;
+    if payload_offset != expected_offset
+        || reservation_end.wrapping_sub(payload_start) != u64::from(payload_length)
+    {
+        return Err(FaultAbiError::PayloadBounds);
+    }
+    Ok(())
+}
+
+fn read_raw_u16(bytes: &[u8], offset: usize) -> u16 {
+    bytes
+        .get(offset..offset + 2)
+        .and_then(|value| <[u8; 2]>::try_from(value).ok())
+        .map(u16::from_le_bytes)
+        .unwrap_or(0)
+}
+
+fn read_raw_u64(bytes: &[u8], offset: usize) -> u64 {
+    bytes
+        .get(offset..offset + 8)
+        .and_then(|value| <[u8; 8]>::try_from(value).ok())
+        .map(u64::from_le_bytes)
+        .unwrap_or(0)
 }
 
 fn payload_slice(region: &[u8], offset: u64, length: u32) -> Result<&[u8], FaultAbiError> {
@@ -814,6 +1533,72 @@ pub enum FaultAbiError {
     CapabilityInvariant,
 }
 
+/// Shared-memory fault command transport failure.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum FaultTransportError {
+    /// The command/result ring capacity is invalid for the ABI.
+    #[error("fault transport ring capacity {capacity} is invalid")]
+    InvalidRingCapacity {
+        /// Invalid entry count.
+        capacity: usize,
+    },
+    /// The payload arena capacity is zero or exceeds the ABI hard bound.
+    #[error("fault payload arena capacity {capacity} is invalid")]
+    InvalidArenaCapacity {
+        /// Invalid byte capacity.
+        capacity: usize,
+    },
+    /// The command/result ring cannot accept another entry.
+    #[error("fault command/result ring is full at capacity {capacity}")]
+    RingFull {
+        /// Fixed entry capacity.
+        capacity: u64,
+    },
+    /// The payload arena cannot accept one contiguous reservation.
+    #[error("fault payload arena has {available} bytes available, need {requested}")]
+    PayloadArenaFull {
+        /// Requested payload plus any required wrap padding.
+        requested: u64,
+        /// Currently free bytes.
+        available: u64,
+    },
+    /// One payload cannot fit under the configured or hard limit.
+    #[error("fault payload length {len} exceeds the arena or ABI limit")]
+    PayloadTooLarge {
+        /// Rejected payload length.
+        len: usize,
+    },
+    /// Producer and consumer indices describe more live entries than capacity.
+    #[error("fault ring indices are corrupt: read={read} write={write} capacity={capacity}")]
+    CorruptRingIndices {
+        /// Consumer-owned index.
+        read: u64,
+        /// Producer-owned index.
+        write: u64,
+        /// Fixed entry capacity.
+        capacity: u64,
+    },
+    /// Producer and consumer byte cursors describe impossible live storage.
+    #[error("fault arena cursors are corrupt: read={read} write={write} capacity={capacity}")]
+    CorruptArenaCursors {
+        /// Consumer-owned cursor.
+        read: u64,
+        /// Producer-owned cursor.
+        write: u64,
+        /// Fixed byte capacity.
+        capacity: u64,
+    },
+    /// Slot-owned reservation framing disagrees with the arena state.
+    #[error("fault payload reservation framing is corrupt")]
+    CorruptReservation,
+    /// An offset, cursor, or length calculation overflowed.
+    #[error("fault transport arithmetic overflow")]
+    ArithmeticOverflow,
+    /// The command envelope violates the byte-level ABI.
+    #[error(transparent)]
+    Abi(FaultAbiError),
+}
+
 pub(crate) fn emit_fault_command_c_header(out: &mut String) {
     macro_rules! define {
         ($name:literal, $value:expr) => {
@@ -855,6 +1640,18 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
     define!(
         "CRUCIBLE_FAULT_CAPABILITY_ROW_V1_BYTES",
         FAULT_CAPABILITY_ROW_V1_BYTES
+    );
+    define!(
+        "CRUCIBLE_FAULT_COMMAND_SLOT_V1_BYTES",
+        FAULT_COMMAND_SLOT_V1_BYTES
+    );
+    define!(
+        "CRUCIBLE_FAULT_RESULT_SLOT_V1_BYTES",
+        FAULT_RESULT_SLOT_V1_BYTES
+    );
+    define!(
+        "CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES",
+        FAULT_PAYLOAD_ARENA_HEADER_BYTES
     );
 
     for (name, value) in [
@@ -1034,6 +1831,46 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
             "CRUCIBLE_FAULT_CAPABILITY_HASH_OFFSET",
             FAULT_CAPABILITY_HASH_OFFSET,
         ),
+        (
+            "CRUCIBLE_FAULT_COMMAND_SLOT_RESERVATION_START_OFFSET",
+            FAULT_COMMAND_SLOT_RESERVATION_START_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_COMMAND_SLOT_PAYLOAD_START_OFFSET",
+            FAULT_COMMAND_SLOT_PAYLOAD_START_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_COMMAND_SLOT_RESERVATION_END_OFFSET",
+            FAULT_COMMAND_SLOT_RESERVATION_END_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_COMMAND_SLOT_HEADER_OFFSET",
+            FAULT_COMMAND_SLOT_HEADER_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_RESULT_SLOT_RESERVATION_START_OFFSET",
+            FAULT_RESULT_SLOT_RESERVATION_START_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_RESULT_SLOT_PAYLOAD_START_OFFSET",
+            FAULT_RESULT_SLOT_PAYLOAD_START_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_RESULT_SLOT_RESERVATION_END_OFFSET",
+            FAULT_RESULT_SLOT_RESERVATION_END_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_RESULT_SLOT_HEADER_OFFSET",
+            FAULT_RESULT_SLOT_HEADER_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_PAYLOAD_ARENA_READ_CURSOR_OFFSET",
+            FAULT_PAYLOAD_ARENA_READ_CURSOR_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_PAYLOAD_ARENA_WRITE_CURSOR_OFFSET",
+            FAULT_PAYLOAD_ARENA_WRITE_CURSOR_OFFSET,
+        ),
     ] {
         let _ = writeln!(out, "#define {name} {value}");
     }
@@ -1200,10 +2037,68 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
             "CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR",
             FaultResultStatus::InternalError as u16,
         ),
+        (
+            "CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND",
+            FaultResultStatus::MalformedCommand as u16,
+        ),
+        (
+            "CRUCIBLE_FAULT_STATUS_DUPLICATE_SEQUENCE",
+            FaultResultStatus::DuplicateSequence as u16,
+        ),
+        (
+            "CRUCIBLE_FAULT_STATUS_AUTHENTICATION_FAILED",
+            FaultResultStatus::AuthenticationFailed as u16,
+        ),
     ] {
         let _ = writeln!(out, "#define {name} {value}");
     }
-    out.push_str("/* Headers and rows are byte arrays; use the offsets above with explicit little-endian loads/stores. */\n");
+    out.push_str(
+        r#"
+typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_fault_command_slot_v1 {
+    uint64_t reservation_start;
+    uint64_t payload_start;
+    uint64_t reservation_end;
+    uint8_t header[CRUCIBLE_FAULT_COMMAND_HEADER_V1_BYTES];
+    uint8_t reserved[16];
+} crucible_fault_command_slot_v1;
+
+CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_command_slot_v1) == CRUCIBLE_FAULT_COMMAND_SLOT_V1_BYTES, "crucible_fault_command_slot_v1 size");
+CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_command_slot_v1) == 64, "crucible_fault_command_slot_v1 alignment");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_command_slot_v1, reservation_start) == CRUCIBLE_FAULT_COMMAND_SLOT_RESERVATION_START_OFFSET, "crucible_fault_command_slot_v1.reservation_start offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_command_slot_v1, payload_start) == CRUCIBLE_FAULT_COMMAND_SLOT_PAYLOAD_START_OFFSET, "crucible_fault_command_slot_v1.payload_start offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_command_slot_v1, reservation_end) == CRUCIBLE_FAULT_COMMAND_SLOT_RESERVATION_END_OFFSET, "crucible_fault_command_slot_v1.reservation_end offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_command_slot_v1, header) == CRUCIBLE_FAULT_COMMAND_SLOT_HEADER_OFFSET, "crucible_fault_command_slot_v1.header offset");
+
+typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_fault_result_slot_v1 {
+    uint64_t reservation_start;
+    uint64_t payload_start;
+    uint64_t reservation_end;
+    uint8_t header[CRUCIBLE_FAULT_RESULT_HEADER_V1_BYTES];
+    uint8_t reserved[44];
+} crucible_fault_result_slot_v1;
+
+CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_result_slot_v1) == CRUCIBLE_FAULT_RESULT_SLOT_V1_BYTES, "crucible_fault_result_slot_v1 size");
+CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_result_slot_v1) == 64, "crucible_fault_result_slot_v1 alignment");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v1, reservation_start) == CRUCIBLE_FAULT_RESULT_SLOT_RESERVATION_START_OFFSET, "crucible_fault_result_slot_v1.reservation_start offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v1, payload_start) == CRUCIBLE_FAULT_RESULT_SLOT_PAYLOAD_START_OFFSET, "crucible_fault_result_slot_v1.payload_start offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v1, reservation_end) == CRUCIBLE_FAULT_RESULT_SLOT_RESERVATION_END_OFFSET, "crucible_fault_result_slot_v1.reservation_end offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_result_slot_v1, header) == CRUCIBLE_FAULT_RESULT_SLOT_HEADER_OFFSET, "crucible_fault_result_slot_v1.header offset");
+
+typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_fault_payload_arena_header {
+    _Atomic uint64_t read_cursor;
+    uint8_t pad_read[56];
+    _Atomic uint64_t write_cursor;
+    uint8_t pad_write[56];
+} crucible_fault_payload_arena_header;
+
+CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_fault_payload_arena_header) == CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES, "crucible_fault_payload_arena_header size");
+CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_fault_payload_arena_header) == 128, "crucible_fault_payload_arena_header alignment");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_payload_arena_header, read_cursor) == CRUCIBLE_FAULT_PAYLOAD_ARENA_READ_CURSOR_OFFSET, "crucible_fault_payload_arena_header.read_cursor offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_payload_arena_header, write_cursor) == CRUCIBLE_FAULT_PAYLOAD_ARENA_WRITE_CURSOR_OFFSET, "crucible_fault_payload_arena_header.write_cursor offset");
+
+/* Headers and rows are byte arrays; use the offsets above with explicit little-endian loads/stores. */
+"#,
+    );
 }
 
 #[cfg(test)]
@@ -1268,7 +2163,7 @@ mod tests {
         let value = FaultResultHeaderV1 {
             abi_major: FAULT_COMMAND_ABI_MAJOR,
             abi_minor: FAULT_COMMAND_ABI_MINOR,
-            command_kind: FaultCommandKind::MemoryMutation,
+            command_kind: FaultCommandKind::MemoryMutation as u16,
             status: FaultResultStatus::Applied,
             semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
             command_sequence: 7,
@@ -1322,6 +2217,189 @@ mod tests {
         assert_eq!(
             fault_capability_manifest_digest(&[rows[1].clone(), rows[0].clone()]),
             Err(FaultAbiError::CapabilityInvariant)
+        );
+    }
+
+    #[test]
+    fn command_transport_wraps_without_splitting_payloads() {
+        let ring = RingHeader::new();
+        let arena_header = FaultPayloadArenaHeader::new();
+        let mut slots = vec![FaultCommandSlotV1::new(); 4];
+        let mut arena = vec![0_u8; 16];
+
+        enqueue_fault_command(
+            &ring,
+            &mut slots,
+            &arena_header,
+            &mut arena,
+            4_096,
+            command(&[]),
+            b"abcdefghijkl",
+        )
+        .unwrap_or_else(|error| panic!("enqueue first command: {error}"));
+        let first = dequeue_fault_command(&ring, &slots, &arena_header, &arena, 4_096)
+            .unwrap_or_else(|error| panic!("dequeue first command: {error}"));
+        assert!(matches!(
+            first,
+            Some(DequeuedFaultCommand::Valid { payload, .. }) if payload == b"abcdefghijkl"
+        ));
+
+        let mut second_header = command(&[]);
+        second_header.command_sequence = 8;
+        enqueue_fault_command(
+            &ring,
+            &mut slots,
+            &arena_header,
+            &mut arena,
+            4_096,
+            second_header,
+            b"mnopqrst",
+        )
+        .unwrap_or_else(|error| panic!("enqueue wrapped command: {error}"));
+        assert_eq!(&arena[..8], b"mnopqrst");
+        let second = dequeue_fault_command(&ring, &slots, &arena_header, &arena, 4_096)
+            .unwrap_or_else(|error| panic!("dequeue wrapped command: {error}"));
+        assert!(matches!(
+            second,
+            Some(DequeuedFaultCommand::Valid { payload, .. }) if payload == b"mnopqrst"
+        ));
+        assert_eq!(arena_header.read_cursor(), 24);
+        assert_eq!(arena_header.write_cursor(), 24);
+    }
+
+    #[test]
+    fn full_command_ring_fails_before_reserving_payload_bytes() {
+        let ring = RingHeader::new();
+        let arena_header = FaultPayloadArenaHeader::new();
+        let mut slots = vec![FaultCommandSlotV1::new(); 2];
+        let mut arena = vec![0_u8; 16];
+        for sequence in [7, 8] {
+            let mut header = command(&[]);
+            header.command_sequence = sequence;
+            enqueue_fault_command(
+                &ring,
+                &mut slots,
+                &arena_header,
+                &mut arena,
+                4_096,
+                header,
+                b"x",
+            )
+            .unwrap_or_else(|error| panic!("fill command ring: {error}"));
+        }
+        let write_before = arena_header.write_cursor();
+        let mut header = command(&[]);
+        header.command_sequence = 9;
+        assert_eq!(
+            enqueue_fault_command(
+                &ring,
+                &mut slots,
+                &arena_header,
+                &mut arena,
+                4_096,
+                header,
+                b"y",
+            ),
+            Err(FaultTransportError::RingFull { capacity: 2 })
+        );
+        assert_eq!(arena_header.write_cursor(), write_before);
+    }
+
+    #[test]
+    fn malformed_command_is_consumed_without_losing_raw_correlation() {
+        let ring = RingHeader::new();
+        let arena_header = FaultPayloadArenaHeader::new();
+        let mut slots = vec![FaultCommandSlotV1::new(); 2];
+        let mut arena = vec![0_u8; 16];
+        enqueue_fault_command(
+            &ring,
+            &mut slots,
+            &arena_header,
+            &mut arena,
+            4_096,
+            command(&[]),
+            b"bad-kind",
+        )
+        .unwrap_or_else(|error| panic!("enqueue command: {error}"));
+        slots[0].header[FAULT_COMMAND_KIND_OFFSET..FAULT_COMMAND_KIND_OFFSET + 2]
+            .copy_from_slice(&0xffff_u16.to_le_bytes());
+
+        let dequeued = dequeue_fault_command(&ring, &slots, &arena_header, &arena, 4_096)
+            .unwrap_or_else(|error| panic!("dequeue malformed command: {error}"));
+        assert_eq!(
+            dequeued,
+            Some(DequeuedFaultCommand::Rejected {
+                raw_command_kind: 0xffff,
+                command_sequence: 7,
+                error: FaultAbiError::UnknownCommandKind(0xffff),
+            })
+        );
+        assert_eq!(ring.read_index(), ring.write_index());
+        assert_eq!(arena_header.read_cursor(), arena_header.write_cursor());
+    }
+
+    #[test]
+    fn result_transport_accepts_unknown_kind_only_for_rejection() {
+        let ring = RingHeader::new();
+        let arena_header = FaultPayloadArenaHeader::new();
+        let mut slots = vec![FaultResultSlotV1::new(); 2];
+        let mut arena = vec![0_u8; 32];
+        let before = hash(b"before");
+        let result = FaultResultHeaderV1 {
+            abi_major: FAULT_COMMAND_ABI_MAJOR,
+            abi_minor: FAULT_COMMAND_ABI_MINOR,
+            command_kind: 0xffff,
+            status: FaultResultStatus::UnsupportedCapability,
+            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+            command_sequence: 11,
+            observed_icount: 4,
+            applied_icount: 0,
+            capability_version: 1,
+            phase: FaultBoundaryPhase::NodeBoundary,
+            before_hash: before,
+            after_hash: before,
+            evidence_hash: hash(b"unsupported"),
+            result_payload_hash: hash(&[]),
+            result_offset: 0,
+            result_length: 0,
+        };
+        enqueue_fault_result(
+            &ring,
+            &mut slots,
+            &arena_header,
+            &mut arena,
+            8_192,
+            result.clone(),
+            b"reason",
+        )
+        .unwrap_or_else(|error| panic!("enqueue result: {error}"));
+        let dequeued = dequeue_fault_result(&ring, &slots, &arena_header, &arena, 8_192)
+            .unwrap_or_else(|error| panic!("dequeue result: {error}"));
+        assert!(matches!(
+            dequeued,
+            Some(DequeuedFaultResult::Valid { header, payload })
+                if header.command_kind == 0xffff && payload == b"reason"
+        ));
+
+        let mut applied = result;
+        applied.command_sequence = 12;
+        applied.command_kind = 0xfffe;
+        applied.status = FaultResultStatus::Applied;
+        applied.applied_icount = 4;
+        applied.after_hash = hash(b"after");
+        assert_eq!(
+            enqueue_fault_result(
+                &ring,
+                &mut slots,
+                &arena_header,
+                &mut arena,
+                8_192,
+                applied,
+                &[],
+            ),
+            Err(FaultTransportError::Abi(FaultAbiError::UnknownCommandKind(
+                0xfffe
+            )))
         );
     }
 }

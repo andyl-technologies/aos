@@ -105,6 +105,27 @@
 //! 16      4608  decoded marker payload
 //! 4624    48    reserved (zero)
 //! ```
+//!
+//! Fault command/result transport slot wire layout:
+//!
+//! ```text
+//! offset  size       field
+//! 0       8          reservation_start logical cursor
+//! 8       8          payload_start logical cursor
+//! 16      8          reservation_end logical cursor
+//! 24      216/188    encoded command/result header
+//! 240/212 16/44      reserved (zero)
+//! ```
+//!
+//! Fault payload arena header wire layout:
+//!
+//! ```text
+//! offset  size  field
+//! 0       8     read_cursor
+//! 8       56    read-cacheline padding
+//! 64      8     write_cursor
+//! 72      56    write-cacheline padding
+//! ```
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
@@ -119,7 +140,8 @@ use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
-    MappedCoverageRingMut, MappedDirectedRingMut, MappedNodeRingPairMut, MappedSetupRegion,
+    MappedCoverageRingMut, MappedDirectedRingMut, MappedFaultCommandTransportMut,
+    MappedFaultResultTransportMut, MappedNodeRingPairMut, MappedSetupRegion,
     MappedSetupRegionAccessError, MappedWhiteboxMarkerRingMut, SetupRegionMapError,
     mmap_setup_region,
 };
@@ -139,9 +161,9 @@ pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Current shared-memory ABI version.
 ///
-/// Version 5 replaces part of each node slot's reserved tail with an atomic
-/// scheduler-to-plugin preemption mailbox while preserving the 128-byte slot.
-pub const ABI_VERSION: u32 = 5;
+/// Version 6 appends per-VM fault command/result rings and bounded circular
+/// payload arenas while preserving all version-5 offsets.
+pub const ABI_VERSION: u32 = 6;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///

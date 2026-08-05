@@ -20,7 +20,11 @@ use crucible_shmem::{
 
 #[cfg(unix)]
 use crucible_shmem::{
-    MappedSetupRegion, MappedSetupRegionAccessError, SetupRegionMapError, mmap_setup_region,
+    DequeuedFaultCommand, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
+    FAULT_COMMAND_FLAG_NONE, FAULT_COMMAND_SEMANTIC_VERSION, FaultBoundaryPhase,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultHeaderV1, FaultResultStatus,
+    MappedSetupRegion, MappedSetupRegionAccessError, SetupRegionMapError, dequeue_fault_command,
+    dequeue_fault_result, enqueue_fault_command, enqueue_fault_result, mmap_setup_region,
 };
 #[cfg(unix)]
 use std::io::Write;
@@ -380,6 +384,118 @@ fn mmap_setup_region_round_trips_whitebox_marker_ring_entries() {
 
     assert_eq!(consumed.validate(), Ok(marker));
     assert_eq!(ring.header.dequeue_whitebox_marker(ring.entries), Ok(None));
+}
+
+#[test]
+#[cfg(unix)]
+fn mmap_setup_region_round_trips_fault_command_transport() {
+    let allocation = match RegionAllocation::new_model(RegionConfig::new(1, 4, 0)) {
+        Ok(allocation) => allocation,
+        Err(error) => panic!("valid region allocation should build: {error}"),
+    };
+    let mut mapped = mapped_region_from_allocation(&allocation);
+    let view = match mapped.fault_command_transport_mut(0) {
+        Ok(view) => view,
+        Err(error) => panic!("mapped fault command transport should bind: {error}"),
+    };
+    let payload = b"memory mutation";
+    let hash = |bytes: &[u8]| *blake3::hash(bytes).as_bytes();
+    let command = FaultCommandHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::MemoryMutation,
+        command_flags: FAULT_COMMAND_FLAG_NONE,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 1,
+        target_node_hash: hash(b"node-0"),
+        target_icount: 10,
+        authorization_ceiling_icount: 10,
+        binding_hash: hash(b"binding"),
+        opportunity_hash: [0; 32],
+        expected_precondition_hash: hash(b"before"),
+        payload_hash: hash(&[]),
+        payload_offset: 0,
+        payload_length: 0,
+    };
+    if let Err(error) = enqueue_fault_command(
+        view.ring,
+        view.slots,
+        view.arena_header,
+        view.arena,
+        view.arena_region_offset,
+        command,
+        payload,
+    ) {
+        panic!("mapped fault command transport should enqueue: {error}");
+    }
+    let dequeued = match dequeue_fault_command(
+        view.ring,
+        view.slots,
+        view.arena_header,
+        view.arena,
+        view.arena_region_offset,
+    ) {
+        Ok(Some(command)) => command,
+        Ok(None) => panic!("mapped fault command transport should contain one command"),
+        Err(error) => panic!("mapped fault command transport should dequeue: {error}"),
+    };
+    assert!(matches!(
+        dequeued,
+        DequeuedFaultCommand::Valid { header, payload: actual }
+            if header.command_sequence == 1 && actual == payload
+    ));
+
+    let result_view = match mapped.fault_result_transport_mut(0) {
+        Ok(view) => view,
+        Err(error) => panic!("mapped fault result transport should bind: {error}"),
+    };
+    let before = hash(b"before");
+    let result = FaultResultHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::MemoryMutation as u16,
+        status: FaultResultStatus::Applied,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 1,
+        observed_icount: 10,
+        applied_icount: 10,
+        capability_version: 1,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        before_hash: before,
+        after_hash: hash(b"after"),
+        evidence_hash: hash(b"evidence"),
+        result_payload_hash: hash(&[]),
+        result_offset: 0,
+        result_length: 0,
+    };
+    if let Err(error) = enqueue_fault_result(
+        result_view.ring,
+        result_view.slots,
+        result_view.arena_header,
+        result_view.arena,
+        result_view.arena_region_offset,
+        result,
+        b"applied",
+    ) {
+        panic!("mapped fault result transport should enqueue: {error}");
+    }
+    let dequeued = match dequeue_fault_result(
+        result_view.ring,
+        result_view.slots,
+        result_view.arena_header,
+        result_view.arena,
+        result_view.arena_region_offset,
+    ) {
+        Ok(Some(result)) => result,
+        Ok(None) => panic!("mapped fault result transport should contain one result"),
+        Err(error) => panic!("mapped fault result transport should dequeue: {error}"),
+    };
+    assert!(matches!(
+        dequeued,
+        DequeuedFaultResult::Valid { header, payload: actual }
+            if header.command_sequence == 1 && actual == b"applied"
+    ));
 }
 
 fn valid_snapshot() -> (RegionLayout, RegionHeaderSnapshot) {

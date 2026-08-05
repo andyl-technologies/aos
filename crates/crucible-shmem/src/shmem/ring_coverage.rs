@@ -5,9 +5,9 @@ use super::*;
 /// A Lamport SPSC ring header shared by exactly one producer and one consumer.
 #[repr(C, align(128))]
 pub struct RingHeader {
-    read_idx: AtomicU64,
+    pub(super) read_idx: AtomicU64,
     _pad_read: [u8; 56],
-    write_idx: AtomicU64,
+    pub(super) write_idx: AtomicU64,
     _pad_write: [u8; 56],
 }
 
