@@ -52,9 +52,9 @@ pub use doorbell_abi::{
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
     WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
     WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_X86_64_ABI,
-    WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+    WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
     WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellInstruction,
-    WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_dx_eax_instruction,
+    WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
 };
 pub use doorbell_frame::{

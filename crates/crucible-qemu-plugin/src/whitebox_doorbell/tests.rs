@@ -166,7 +166,7 @@ fn whitebox_doorbell_abi_vectors_cover_x86_64_and_aarch64() {
             .iter()
             .map(|abi| abi.vector_name())
             .collect::<Vec<_>>(),
-        vec!["x86_64-out-dx-eax-port-e7", "aarch64-hlt-imm-04c1"]
+        vec!["x86_64-out-imm8-al-port-e7", "aarch64-hlt-imm-04c1"]
     );
     assert_eq!(
         WHITEBOX_DOORBELL_ABIS
@@ -189,12 +189,11 @@ fn whitebox_doorbell_abi_vectors_cover_x86_64_and_aarch64() {
 }
 
 #[test]
-fn whitebox_doorbell_x86_64_golden_vector_freezes_out_dx_eax() {
+fn whitebox_doorbell_x86_64_golden_vector_freezes_out_imm8_al() {
     let abi = WHITEBOX_DOORBELL_X86_64_ABI;
-
     assert_eq!(abi.architecture().as_str(), "x86_64");
-    assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::X86OutDxEax);
-    assert_eq!(abi.instruction().as_str(), "out-dx-eax");
+    assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::X86OutImm8Al);
+    assert_eq!(abi.instruction().as_str(), "out-imm8-al");
     assert_eq!(
         abi.trap(),
         WhiteboxDoorbellTrapAbi::X86PortIo {
@@ -209,18 +208,17 @@ fn whitebox_doorbell_x86_64_golden_vector_freezes_out_dx_eax() {
     );
     assert_eq!(abi.payload_pointer_register(), "rax");
     assert_eq!(abi.payload_length_register(), "rcx");
-    assert_eq!(abi.assembly(), "out dx, eax");
+    assert_eq!(abi.assembly(), "out 0xe7, al");
     assert_eq!(
-        encode_x86_64_out_dx_eax_instruction(),
-        WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES
+        encode_x86_64_out_imm8_al_instruction(WHITEBOX_DOORBELL_X86_64_RESERVED_PORT as u8),
+        WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES
     );
-    assert_eq!(abi.instruction_bytes(), &[0xef]);
+    assert_eq!(abi.instruction_bytes(), &[0xe6, 0xe7]);
 }
 
 #[test]
 fn whitebox_doorbell_aarch64_golden_vector_freezes_hlt_immediate() {
     let abi = WHITEBOX_DOORBELL_AARCH64_ABI;
-
     assert_eq!(abi.architecture().as_str(), "aarch64");
     assert_eq!(abi.instruction(), WhiteboxDoorbellInstruction::Aarch64Hlt);
     assert_eq!(abi.instruction().as_str(), "hlt-imm16");
@@ -258,7 +256,6 @@ fn whitebox_doorbell_registration_uses_single_source_abi_trap() {
             Ok(plan) => plan,
             Err(error) => panic!("ABI-derived doorbell should validate: {error}"),
         };
-
         assert_eq!(doorbell.trap(), WhiteboxDoorbellTrap::from_abi(abi.trap()));
         assert_eq!(
             plan,

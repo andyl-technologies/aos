@@ -10,9 +10,9 @@
 //!    until the scenario passes, fails, or exhausts its budget.
 //!
 //! The `nginx` guest serves HTTP on `10.0.0.2:8080`. The `curl` guest makes one
-//! request and writes `CURL_STATUS=200` to its serial console. Crucible observes
-//! that console output and turns the matching assertion into the terminal pass
-//! action.
+//! request and emits the `curl-receives-http-200` guest assertion through the
+//! white-box doorbell after observing status 200. Crucible records that typed
+//! marker and turns the satisfied assertion into the terminal pass action.
 //!
 //! Run the binary with `--emit-scenario` to print the canonical TOML fixture.
 //! The production run instead expects paths to QEMU, the Crucible QEMU plugin,
@@ -28,14 +28,14 @@ use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, ContentAddressedBlobRef, ContentHash,
     EventGraph, GuestWorkloadBinary, Icount, LinkDef, LinkLossProbability, NodeId, NodeLifecycle,
     NodeTemplate, Plan, Predicate, Properties, Property, QuantumLoop, QuantumRequest,
-    QuantumTerminalVerdict, ReadyPoint, RegexProgram, ScenarioDefForm, Seed, SimDuration,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    QuantumTerminalVerdict, ReadyPoint, ScenarioDefForm, Seed, SimDuration, VirtualTime,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 use crucible_api::{
     ProductionRootImageFormat, ProductionVmLifecycleConfig, build_production_vm_lifecycle_loop,
 };
 
-const MAX_QUANTA: u64 = 10_000;
+const MAX_QUANTA: u64 = 30_000;
 
 /// Limits the number of authoritative scheduler quanta admitted for this run.
 ///
@@ -190,11 +190,13 @@ fn nginx_curl_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
     let nginx = node(
         "nginx",
         GuestWorkloadBinary::Httpd.selected_cmdline("console=ttyS0 address=10.0.0.2 port=8080"),
+        WhiteBoxPolicy::Disabled,
     );
     let curl = node(
         "curl",
         GuestWorkloadBinary::ClientLoop
             .selected_cmdline("console=ttyS0 address=10.0.0.3 target=10.0.0.2:8080 count=1"),
+        WhiteBoxPolicy::Enabled,
     );
     let link = LinkDef::with_transport(
         node_id("curl"),
@@ -207,18 +209,13 @@ fn nginx_curl_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
         None,
     )?;
     let world = World::from_nodes_and_links(vec![nginx, curl], vec![link])?;
-    // `Sometimes` is an eventual-success property: the console match need only
-    // become true once during the run.
-    let assertion = AssertionDef {
-        id: AssertionId::from_name("curl-receives-http-200"),
-        message: String::from("Curl receives an HTTP 200 response from Nginx"),
-        property: Property::Sometimes {
-            predicate: Predicate::console_match(
-                node_id("curl"),
-                RegexProgram::from_pattern("(^|\\n)CURL_STATUS=200(\\r?\\n|$)"),
-            ),
-        },
-    };
+    // `guest_sometimes` declares an eventual-success property whose truth must
+    // arrive as a typed assertion marker from a white-box-enabled guest. The
+    // Curl workload emits that marker only after observing HTTP status 200.
+    let assertion = AssertionDef::guest_sometimes(
+        AssertionId::from_name("curl-receives-http-200"),
+        "Curl receives an HTTP 200 response from Nginx",
+    );
     // `Always` is a safety property. It is violated immediately if either node
     // enters the crashed lifecycle state.
     let no_crashes = AssertionDef {
@@ -249,23 +246,25 @@ fn nginx_curl_scenario() -> Result<ScenarioDefForm, Box<dyn Error>> {
         .action(Action::pass())
         .build_with_assertions_for_world(assertion_ids.clone(), &world)?;
     let plan = Plan::from_event_graph_with_assertions_for_world(&world, assertion_ids, graph)?;
-    // The seed makes all pseudo-random choices repeatable. The draw cap bounds
-    // application-level randomness independently of scheduler progress.
+    // The seed makes all pseudo-random choices repeatable. A draw cap of zero
+    // rejects application-random requests because neither workload needs them.
     Ok(ScenarioDefForm::from_components_with_app_random_draw_cap(
         &world,
         &plan,
         &properties,
         Seed::from_u64(0x200),
-        10,
+        0,
     )?)
 }
 
 /// Creates one x86_64 VM description for the shared test image.
 ///
 /// Both guests boot the same kernel and root image; `cmdline` selects their
-/// workload and network identity. A ready point of zero requests a snapshot
-/// after the guest has retired zero instructions.
-fn node(name: &str, cmdline: String) -> WorldNode {
+/// workload and network identity. `white_box` controls whether the guest may
+/// send typed observations through the Crucible doorbell: the Curl node needs
+/// it for its assertion marker, while the Nginx node does not. A ready point of
+/// zero requests a snapshot after the guest has retired zero instructions.
+fn node(name: &str, cmdline: String, white_box: WhiteBoxPolicy) -> WorldNode {
     WorldNode {
         id: node_id(name),
         arch: VmArchitecture::X86_64,
@@ -274,7 +273,7 @@ fn node(name: &str, cmdline: String) -> WorldNode {
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 0 },
         },
-        white_box: WhiteBoxPolicy::Disabled,
+        white_box,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
         icount_shift: 7,
         kernel: Some(blob("aos-linux-crucible")),

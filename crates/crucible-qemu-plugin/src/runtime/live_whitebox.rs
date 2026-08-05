@@ -1,13 +1,13 @@
 //! Live QEMU adapters for the optional per-architecture white-box doorbell.
 //!
-//! The adapter recognizes the single-source x86_64 `out dx,eax` or aarch64
-//! `hlt #0x04c1` encoding during translation and installs a register-reading
-//! execution callback only on that instruction. It reads the architecture's
+//! The adapter recognizes the single-source x86_64 `out 0xe7,al` or aarch64
+//! `hlt #0x04c1` encoding during translation and installs an execution callback
+//! only on that dedicated instruction. The admitted path reads the architecture's
 //! `(pointer, length)` payload registers and delegates bounded frame decoding to
 //! [`crate::PluginWhiteboxDoorbell`].
 
 use std::ffi::CStr;
-use std::os::raw::{c_char, c_int, c_uint, c_void};
+use std::os::raw::{c_int, c_uint, c_void};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
@@ -16,18 +16,20 @@ use crucible_shmem::MAX_FRAME_DATA;
 use crate::{
     GuestMemoryAddressSpace, GuestMemoryRange, GuestMemoryReadError, GuestMemoryReader,
     PluginAppRandomConfig, PluginSwitch, PluginWhiteboxDoorbell, QemuIcountRawFn, QemuPluginId,
-    QemuPluginInsn, QemuPluginTargetArchitecture, QemuPluginTb, QemuRequestShutdownFn,
+    QemuPluginTargetArchitecture, QemuPluginTb, QemuRequestShutdownFn,
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
-    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES,
-    WHITEBOX_DOORBELL_X86_64_RESERVED_PORT, WhiteboxDoorbellCapabilities,
-    WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellSetupResources,
+    WHITEBOX_DOORBELL_X86_64_ABI, WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
+    WhiteboxDoorbellCapabilities, WhiteboxDoorbellRegistrationPlan, WhiteboxDoorbellSetupResources,
     WhiteboxDoorbellSetupValidation, WhiteboxDoorbellTrapEvent, WhiteboxMarkerSinkError,
     handle_whitebox_doorbell_callback,
 };
 
+mod api;
 mod app_random;
 mod error;
 mod marker;
+pub(crate) use api::LiveWhiteboxApis;
+use api::{QemuPluginRegDescriptor, QemuPluginRegister};
 use app_random::LiveAppRandomState;
 pub use error::LiveWhiteboxError;
 use error::write_stderr;
@@ -37,153 +39,17 @@ pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const MAX_LIVE_WHITEBOX_VCPUS: usize = 64;
 
-const REGISTER_TB_TRANS_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_tb_trans_cb\0";
-const TB_N_INSNS_SYMBOL_C: &[u8] = b"qemu_plugin_tb_n_insns\0";
-const TB_GET_INSN_SYMBOL_C: &[u8] = b"qemu_plugin_tb_get_insn\0";
-const INSN_DATA_SYMBOL_C: &[u8] = b"qemu_plugin_insn_data\0";
-const REGISTER_INSN_EXEC_CB_SYMBOL_C: &[u8] = b"qemu_plugin_register_vcpu_insn_exec_cb\0";
-const GET_REGISTERS_SYMBOL_C: &[u8] = b"qemu_plugin_get_registers\0";
-const READ_REGISTER_SYMBOL_C: &[u8] = b"qemu_plugin_read_register\0";
-const READ_MEMORY_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_read_memory_vaddr\0";
-const WRITE_MEMORY_VADDR_SYMBOL_C: &[u8] = b"qemu_plugin_crucible_write_memory_vaddr\0";
-const G_ARRAY_FREE_SYMBOL_C: &[u8] = b"g_array_free\0";
-const G_BYTE_ARRAY_NEW_SYMBOL_C: &[u8] = b"g_byte_array_new\0";
-const G_BYTE_ARRAY_FREE_SYMBOL_C: &[u8] = b"g_byte_array_free\0";
-
 static LIVE_WHITEBOX_STATE: AtomicPtr<LiveWhiteboxState> = AtomicPtr::new(std::ptr::null_mut());
-
-#[repr(C)]
-struct GArray {
-    data: *mut c_char,
-    len: c_uint,
-}
-
-#[repr(C)]
-struct GByteArray {
-    data: *mut u8,
-    len: c_uint,
-}
-
-#[repr(C)]
-struct QemuPluginRegister {
-    _private: [u8; 0],
-}
-
-#[repr(C)]
-struct QemuPluginRegDescriptor {
-    handle: *mut QemuPluginRegister,
-    name: *const c_char,
-    feature: *const c_char,
-}
-
-type QemuVcpuTbTransCbFn = extern "C" fn(QemuPluginId, *mut QemuPluginTb);
-type QemuVcpuInsnExecCbFn = extern "C" fn(c_uint, *mut c_void);
-type QemuRegisterTbTransCbFn = extern "C" fn(QemuPluginId, Option<QemuVcpuTbTransCbFn>);
-type QemuTbNInsnsFn = extern "C" fn(*const QemuPluginTb) -> usize;
-type QemuTbGetInsnFn = extern "C" fn(*const QemuPluginTb, usize) -> *mut QemuPluginInsn;
-type QemuInsnDataFn = extern "C" fn(*const QemuPluginInsn, *mut c_void, usize) -> usize;
-type QemuRegisterInsnExecCbFn =
-    extern "C" fn(*mut QemuPluginInsn, Option<QemuVcpuInsnExecCbFn>, c_int, *mut c_void);
-type QemuGetRegistersFn = extern "C" fn() -> *mut GArray;
-type QemuReadRegisterFn = extern "C" fn(*mut QemuPluginRegister, *mut GByteArray) -> c_int;
-type QemuReadMemoryVaddrFn = extern "C" fn(u64, *mut GByteArray, usize) -> bool;
-type QemuWriteMemoryVaddrFn = extern "C" fn(u64, *const u8, usize) -> bool;
-type GArrayFreeFn = extern "C" fn(*mut GArray, bool) -> *mut c_char;
-type GByteArrayNewFn = extern "C" fn() -> *mut GByteArray;
-type GByteArrayFreeFn = extern "C" fn(*mut GByteArray, bool) -> *mut u8;
-
-/// Complete upstream-QEMU API table required by the live doorbell adapter.
-#[derive(Clone, Copy)]
-pub(crate) struct LiveWhiteboxApis {
-    register_tb_trans_cb: QemuRegisterTbTransCbFn,
-    tb_n_insns: QemuTbNInsnsFn,
-    tb_get_insn: QemuTbGetInsnFn,
-    insn_data: QemuInsnDataFn,
-    register_insn_exec_cb: QemuRegisterInsnExecCbFn,
-    get_registers: QemuGetRegistersFn,
-    read_register: QemuReadRegisterFn,
-    read_memory_vaddr: QemuReadMemoryVaddrFn,
-    write_memory_vaddr: QemuWriteMemoryVaddrFn,
-    g_array_free: GArrayFreeFn,
-    g_byte_array_new: GByteArrayNewFn,
-    g_byte_array_free: GByteArrayFreeFn,
-}
-
-impl LiveWhiteboxApis {
-    /// Resolves every upstream QEMU and GLib symbol before registration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`LiveWhiteboxError::CapabilityUnavailable`] for the first
-    /// missing process symbol.
-    pub(crate) fn resolve() -> Result<Self, LiveWhiteboxError> {
-        Ok(Self {
-            register_tb_trans_cb: resolve_symbol(
-                REGISTER_TB_TRANS_CB_SYMBOL_C,
-                "qemu_plugin_register_vcpu_tb_trans_cb",
-            )?,
-            tb_n_insns: resolve_symbol(TB_N_INSNS_SYMBOL_C, "qemu_plugin_tb_n_insns")?,
-            tb_get_insn: resolve_symbol(TB_GET_INSN_SYMBOL_C, "qemu_plugin_tb_get_insn")?,
-            insn_data: resolve_symbol(INSN_DATA_SYMBOL_C, "qemu_plugin_insn_data")?,
-            register_insn_exec_cb: resolve_symbol(
-                REGISTER_INSN_EXEC_CB_SYMBOL_C,
-                "qemu_plugin_register_vcpu_insn_exec_cb",
-            )?,
-            get_registers: resolve_symbol(GET_REGISTERS_SYMBOL_C, "qemu_plugin_get_registers")?,
-            read_register: resolve_symbol(READ_REGISTER_SYMBOL_C, "qemu_plugin_read_register")?,
-            read_memory_vaddr: resolve_symbol(
-                READ_MEMORY_VADDR_SYMBOL_C,
-                "qemu_plugin_read_memory_vaddr",
-            )?,
-            write_memory_vaddr: resolve_symbol(
-                WRITE_MEMORY_VADDR_SYMBOL_C,
-                "qemu_plugin_crucible_write_memory_vaddr",
-            )?,
-            g_array_free: resolve_symbol(G_ARRAY_FREE_SYMBOL_C, "g_array_free")?,
-            g_byte_array_new: resolve_symbol(G_BYTE_ARRAY_NEW_SYMBOL_C, "g_byte_array_new")?,
-            g_byte_array_free: resolve_symbol(G_BYTE_ARRAY_FREE_SYMBOL_C, "g_byte_array_free")?,
-        })
-    }
-}
-
-#[cfg(unix)]
-fn resolve_symbol<T: Copy>(
-    symbol_name_c: &'static [u8],
-    symbol: &'static str,
-) -> Result<T, LiveWhiteboxError> {
-    // SAFETY: `symbol_name_c` is a static NUL-terminated name. Every call site
-    // supplies the exact function-pointer type declared by QEMU 10.0 or GLib.
-    let address = unsafe { libc::dlsym(libc::RTLD_DEFAULT, symbol_name_c.as_ptr().cast()) };
-    if address.is_null() {
-        Err(LiveWhiteboxError::CapabilityUnavailable { symbol })
-    } else {
-        // SAFETY: the non-null process symbol has the ABI represented by `T` at
-        // the call site, and all supported function pointers are pointer-sized.
-        Ok(unsafe { std::mem::transmute_copy::<*mut c_void, T>(&address) })
-    }
-}
-
-#[cfg(not(unix))]
-fn resolve_symbol<T: Copy>(
-    _symbol_name_c: &'static [u8],
-    symbol: &'static str,
-) -> Result<T, LiveWhiteboxError> {
-    Err(LiveWhiteboxError::CapabilityUnavailable { symbol })
-}
 
 #[derive(Clone, Copy, Default)]
 struct LiveWhiteboxRegisters {
     pointer: Option<NonNull<QemuPluginRegister>>,
     length: Option<NonNull<QemuPluginRegister>>,
-    port: Option<NonNull<QemuPluginRegister>>,
 }
 
 impl LiveWhiteboxRegisters {
-    const fn complete(self, architecture: QemuPluginTargetArchitecture) -> bool {
-        self.pointer.is_some()
-            && self.length.is_some()
-            && (matches!(architecture, QemuPluginTargetArchitecture::Aarch64)
-                || self.port.is_some())
+    const fn complete(self, _architecture: QemuPluginTargetArchitecture) -> bool {
+        self.pointer.is_some() && self.length.is_some()
     }
 }
 
@@ -371,7 +237,6 @@ impl LiveWhiteboxState {
                 | (QemuPluginTargetArchitecture::Aarch64, b"x1") => {
                     registers.length = handle;
                 }
-                (QemuPluginTargetArchitecture::X86_64, b"rdx") => registers.port = handle,
                 _ => {}
             }
         }
@@ -391,16 +256,6 @@ impl LiveWhiteboxState {
             });
         }
         let registers = self.registers[vcpu_index];
-        if matches!(self.architecture, QemuPluginTargetArchitecture::X86_64) {
-            let port = self.read_register_u64(
-                registers
-                    .port
-                    .ok_or(LiveWhiteboxError::RequiredRegistersUnavailable { vcpu_index })?,
-            )? as u16;
-            if port != WHITEBOX_DOORBELL_X86_64_RESERVED_PORT {
-                return Ok(());
-            }
-        }
         let address = self.read_register_u64(
             registers
                 .pointer
@@ -541,7 +396,7 @@ extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(
         let mut bytes = [0_u8; 4];
         let copied = (state.apis.insn_data)(insn, bytes.as_mut_ptr().cast(), bytes.len());
         let trap_bytes: &[u8] = match state.architecture {
-            QemuPluginTargetArchitecture::X86_64 => &WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES,
+            QemuPluginTargetArchitecture::X86_64 => &WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
             QemuPluginTargetArchitecture::Aarch64 => &WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
         };
         if bytes[..copied.min(bytes.len())] == *trap_bytes {

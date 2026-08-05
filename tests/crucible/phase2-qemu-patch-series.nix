@@ -351,7 +351,7 @@
     {
       item = "T-PATCH-15";
       enforces = "PATCH-33";
-      capability = "guest-to-host doorbell reuses upstream QEMU plugin memory callbacks and virtual memory reads";
+      capability = "guest-to-host doorbell reuses upstream QEMU translated-instruction callbacks and virtual memory reads";
       evidence = "checks.crucible.phase1.qemuDoorbellNoPatch";
     }
     {
