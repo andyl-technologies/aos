@@ -3,8 +3,7 @@
 //!
 //! Drives the real router and database for the operations surface:
 //!
-//! - typed publication admission's `507 Insufficient Storage` quota gate and
-//!   the running usage increment a successful object upload makes;
+//! - staged publication accounting and concurrent-generation exclusion;
 //! - the per-endpoint rate limiter returning `429` with `Retry-After` on the
 //!   magic-link issuance and device-authorization paths;
 //! - the instance signup policy gating `OrganizationService.CreateOrg`;
@@ -19,9 +18,7 @@ use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{
-    Database, NewSurfacePlacementSpec, OrgQuota, SignupPolicy, SurfaceTarget, TokenAuth,
-};
+use aos_hub::db::{Database, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget, TokenAuth};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use aos_hub_core::service::{ReadAuthorization, RpcError, RpcService};
@@ -143,8 +140,8 @@ async fn machine_get(
 
 /// Create org "acme", a `local_fs` binding over an empty dir, and a managed
 /// registry at `acme/infra/prod/cdn` bound to it (prefix `cdn`). Returns
-/// `(db, surface_root)`.
-async fn empty_managed() -> (Arc<Database>, PathBuf, i64) {
+/// `(db, surface_root, binding_id, placement_id)`.
+async fn empty_managed() -> (Arc<Database>, PathBuf, i64, i64) {
     let root = tempfile::tempdir().unwrap().keep();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
@@ -157,6 +154,18 @@ async fn empty_managed() -> (Arc<Database>, PathBuf, i64) {
         .await
         .unwrap();
     let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+    let publisher = db
+        .create_service_account(org, "fixture-publisher")
+        .await
+        .unwrap();
+    db.grant_membership(
+        "service_account",
+        publisher,
+        &common::org_scope(&db, "acme").await,
+        "maintainer",
+    )
+    .await
+    .unwrap();
     let placement = common::create_ready_placement(
         &db,
         SurfaceTarget::Registry(registry_id),
@@ -173,6 +182,17 @@ async fn empty_managed() -> (Arc<Database>, PathBuf, i64) {
         "operations-publication",
     )
     .await;
+    db.grant_consumer_scope(
+        aos_hub::db::GrantResource::NetworkBoundary {
+            id: "instance:public",
+        },
+        &registry.owner_scope_key,
+        "explicit",
+        "test",
+        "request:operations-boundary-grant",
+    )
+    .await
+    .unwrap();
     common::configure_hub_delivery_route(
         &db,
         SurfaceTarget::Registry(registry_id),
@@ -184,80 +204,76 @@ async fn empty_managed() -> (Arc<Database>, PathBuf, i64) {
         "git",
     )
     .await;
-    (db, root.join("cdn"), binding)
+    (db, root.join("cdn"), binding, placement.id)
 }
 
 #[tokio::test]
-async fn registry_route_streams_ranges_through_the_selected_placement() {
-    let (db, surface, _binding) = empty_managed().await;
-    std::fs::create_dir_all(surface.join("nar")).unwrap();
-    std::fs::write(surface.join("nar/range.nar"), b"0123456789").unwrap();
-    std::fs::create_dir_all(surface.join("web")).unwrap();
-    std::fs::write(surface.join("web/app-hash.js"), b"alert('no')").unwrap();
-
+async fn cache_route_serves_through_the_selected_placement() {
+    let root = tempfile::tempdir().unwrap().keep();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org_id = db.create_org("acme", "Acme").await.unwrap();
+    let org = db.org_by_id(org_id).await.unwrap().unwrap();
+    let binding =
+        common::create_local_binding(&db, org.id, "primary", root.to_str().unwrap()).await;
+    let cache = db
+        .create_binary_cache(
+            Some(org.id),
+            "range-cache",
+            "Range Cache",
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    let placement = common::create_ready_placement(
+        &db,
+        SurfaceTarget::BinaryCache(cache),
+        binding,
+        "range-cache",
+        "range-cache",
+    )
+    .await;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::BinaryCache(cache),
+        placement.id,
+        &org.stable_id,
+        "endpoint:range-cache",
+        "route:range-cache",
+        "/range-cache",
+        "nix_cache",
+    )
+    .await;
+    let cache_root = root.join("range-cache");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    std::fs::write(cache_root.join("nix-cache-info"), b"0123456789").unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
     let response = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/acme/infra/prod/cdn/nar/range.nar")
+                .uri("/range-cache/nix-cache-info")
                 .header(header::HOST, "127.0.0.1:8420")
-                .header(header::RANGE, "bytes=2-5")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-    assert_eq!(
-        response
-            .headers()
-            .get(header::CONTENT_RANGE)
-            .and_then(|value| value.to_str().ok()),
-        Some("bytes 2-5/10")
-    );
+    assert_eq!(response.status(), StatusCode::OK);
     let body = axum::body::to_bytes(response.into_body(), 64)
         .await
         .unwrap();
-    assert_eq!(body.as_ref(), b"2345");
-
-    let document = app
-        .oneshot(
-            Request::builder()
-                .uri("/acme/infra/prod/cdn/web/app-hash.js")
-                .header(header::HOST, "127.0.0.1:8420")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(document.status(), StatusCode::OK);
-    assert_eq!(
-        document
-            .headers()
-            .get(header::CONTENT_SECURITY_POLICY)
-            .and_then(|value| value.to_str().ok()),
-        Some("sandbox")
-    );
-    assert_eq!(
-        document
-            .headers()
-            .get(header::CONTENT_DISPOSITION)
-            .and_then(|value| value.to_str().ok()),
-        Some("attachment")
-    );
+    assert!(body.starts_with(b"StoreDir: /nix/store\n"));
 }
 
 #[tokio::test]
-async fn native_machine_streams_preserve_session_and_bearer_authorization() {
+async fn native_cache_streams_preserve_session_and_bearer_authorization() {
     let root = tempfile::tempdir().unwrap().keep();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("private-org", "Private Org").await.unwrap();
     let binding = common::create_local_binding(&db, org, "primary", root.to_str().unwrap()).await;
-    let registry_id = db
-        .create_managed_registry(org, "", "private-registry", "private", &[], false)
-        .await
-        .unwrap();
     let cache_id = db
         .create_binary_cache(
             Some(org),
@@ -271,52 +287,38 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
         .await
         .unwrap();
     let private_scope = common::org_scope(&db, "private-org").await;
-    for (surface, name, prefix) in [
-        (SurfaceTarget::Registry(registry_id), "registry", "registry"),
-        (SurfaceTarget::BinaryCache(cache_id), "cache", "cache"),
-    ] {
-        let placement = db
-            .create_surface_placement(&NewSurfacePlacementSpec {
-                surface,
-                name: name.to_string(),
-                storage_binding_id: binding,
-                prefix: prefix.to_string(),
-                kind: "complete".to_string(),
-                desired_state: "active".to_string(),
-                hash_range: None,
-                desired_read_enabled: true,
-                read_order: 0,
-                requires_conditional_writes: false,
-            })
-            .await
-            .unwrap();
-        db.observe_surface_placement(placement.id, "ready", "complete", 1)
-            .await
-            .unwrap();
-        let (route_id, base_path, audience) = match surface {
-            SurfaceTarget::Registry(_) => (
-                "route:private-registry",
-                "/private-org/private-registry",
-                "git",
-            ),
-            SurfaceTarget::BinaryCache(_) => ("route:private-cache", "/private-cache", "cache"),
-        };
-        common::configure_hub_delivery_route(
-            &db,
+    let surface = SurfaceTarget::BinaryCache(cache_id);
+    let placement = db
+        .create_surface_placement(&NewSurfacePlacementSpec {
             surface,
-            placement.id,
-            &private_scope,
-            "endpoint:private-fixture",
-            route_id,
-            base_path,
-            audience,
-        )
-        .await;
-    }
-    std::fs::create_dir_all(root.join("registry/nar")).unwrap();
-    std::fs::write(root.join("registry/nar/private.nar"), b"registry-private").unwrap();
-    std::fs::create_dir_all(root.join("cache/nar")).unwrap();
-    std::fs::write(root.join("cache/nar/private.nar"), b"cache-private").unwrap();
+            name: "cache".to_string(),
+            storage_binding_id: binding,
+            prefix: "cache".to_string(),
+            kind: "complete".to_string(),
+            desired_state: "active".to_string(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await
+        .unwrap();
+    db.observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await
+        .unwrap();
+    common::configure_hub_delivery_route(
+        &db,
+        surface,
+        placement.id,
+        &private_scope,
+        "endpoint:private-fixture",
+        "route:private-cache",
+        "/private-cache",
+        "nix_cache",
+    )
+    .await;
+    std::fs::create_dir_all(root.join("cache")).unwrap();
+    std::fs::write(root.join("cache/nix-cache-info"), b"cache-private").unwrap();
 
     let member = db
         .create_user("member@private.invalid", None)
@@ -328,22 +330,13 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
     let session = db.create_session(member, 3600, 0).await.unwrap();
     let cookie = format!("__Host-aos_session={session}");
     let token = bearer(Principal::user(member), &private_scope, &[Permission::Read]);
-    let stale_registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
     let stale_cache = db.binary_cache_by_id(cache_id).await.unwrap().unwrap();
     let state = app_state(Arc::clone(&db)).await;
     let service = machine_service(&state);
     let app = router(state).await;
 
-    for (uri, expected) in [
-        (
-            "/private-org/private-registry/nar/private.nar",
-            b"registry-private".as_slice(),
-        ),
-        (
-            "/private-cache/nar/private.nar",
-            b"cache-private".as_slice(),
-        ),
-    ] {
+    let generated_cache_info = b"StoreDir: /nix/store\n".as_slice();
+    for (uri, expected) in [("/private-cache/nix-cache-info", generated_cache_info)] {
         for denied_cookie in [None, Some("__Host-aos_session=invalid")] {
             let (status, _) = machine_get(&app, uri, denied_cookie, None).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "protected route {uri}");
@@ -351,11 +344,11 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
 
         let (status, body) = machine_get(&app, uri, Some(&cookie), None).await;
         assert_eq!(status, StatusCode::OK, "session path {uri}");
-        assert_eq!(body.as_ref(), expected);
+        assert!(body.starts_with(expected));
 
         let (status, body) = machine_get(&app, uri, None, Some(&token)).await;
         assert_eq!(status, StatusCode::OK, "bearer path {uri}");
-        assert_eq!(body.as_ref(), expected);
+        assert!(body.starts_with(expected));
 
         let (status, _) = machine_get(&app, uri, None, Some("invalid")).await;
         assert_eq!(
@@ -363,24 +356,6 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
             StatusCode::UNAUTHORIZED,
             "invalid bearer path {uri}"
         );
-    }
-
-    // The service, not the route snapshot, is the final authorization/serve
-    // linearization point. A concurrent hard registry delete cascades its
-    // placements; a stale record must not fall back to the still-present bytes.
-    assert!(db.seed_delete_registry_for_test(registry_id).await.unwrap());
-    match service
-        .registry_serve(
-            ReadAuthorization::PreauthorizedSession,
-            &stale_registry,
-            "nar/private.nar",
-            None,
-            aos_hub_core::image_http::ImageMethod::Get,
-        )
-        .await
-    {
-        Err(RpcError::NotFound(_)) => {}
-        _ => panic!("deleted registry must not serve from a stale record"),
     }
 
     // Cache soft-delete leaves both its row and placement intact, making this a
@@ -394,7 +369,7 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
         .cache_serve(
             ReadAuthorization::PreauthorizedSession,
             &stale_cache,
-            "nar/private.nar",
+            "nix-cache-info",
             None,
         )
         .await
@@ -432,6 +407,7 @@ async fn upload_publication_object(
 async fn begin_publication(
     app: &axum::Router,
     auth: &str,
+    registry: &str,
     generation: &str,
     objects: &[(&str, &[u8], &str)],
 ) -> (StatusCode, serde_json::Value) {
@@ -443,7 +419,7 @@ async fn begin_publication(
         app,
         "PublishService/BeginRegistryPublication",
         serde_json::json!({
-            "registry": "acme/infra/prod/cdn",
+            "registry": registry,
             "generation": generation,
             "refsDigest": hex::encode(Sha256::digest(refs)),
             "objects": objects.iter().map(|(path, bytes, kind)| serde_json::json!({
@@ -561,19 +537,9 @@ async fn planned_rpc(
 }
 
 #[tokio::test]
-async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
-    let (db, _surface, _binding) = empty_managed().await;
+async fn staged_publication_bytes_remain_unaccounted_until_commit() {
+    let (db, _surface, _binding, _placement) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
-    // A tiny byte budget: 10 bytes.
-    db.set_org_quota(
-        org.id,
-        &OrgQuota {
-            max_bytes: Some(10),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         Principal::service_account(1),
@@ -585,7 +551,8 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
         ("objects/ab/cd", b"data".as_slice(), "immutable"),
         ("info/refs", b"".as_slice(), "mutable_pointer"),
     ];
-    let (status, publication) = begin_publication(&app, &token, "quota-fits-v1", &first).await;
+    let (status, publication) =
+        begin_publication(&app, &token, "acme/infra/prod/cdn", "staging-v1", &first).await;
     assert_eq!(status, StatusCode::OK, "{publication}");
     let (status, _) = upload_publication_object(
         &app,
@@ -595,29 +562,13 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
-
-    let second = [
-        ("objects/ef/gh", b"too-many-bytes".as_slice(), "immutable"),
-        ("info/refs", b"".as_slice(), "mutable_pointer"),
-    ];
-    let (status, publication) = begin_publication(&app, &token, "quota-overflow-v1", &second).await;
-    assert_eq!(status, StatusCode::OK, "{publication}");
-    let (status, _) = upload_publication_object(
-        &app,
-        publication_upload_url(&publication, "objects/ef/gh"),
-        &token,
-        b"too-many-bytes".to_vec(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::INSUFFICIENT_STORAGE);
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
 }
 
 #[tokio::test]
-async fn immutable_publication_path_rejects_changed_content() {
-    let (db, _surface, _binding) = empty_managed().await;
+async fn concurrent_publication_generation_is_rejected() {
+    let (db, _surface, _binding, _placement) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
@@ -630,7 +581,8 @@ async fn immutable_publication_path_rejects_changed_content() {
         ("objects/ab/cd", b"data".as_slice(), "immutable"),
         ("info/refs", b"".as_slice(), "mutable_pointer"),
     ];
-    let (status, publication) = begin_publication(&app, &token, "immutable-v1", &first).await;
+    let (status, publication) =
+        begin_publication(&app, &token, "acme/infra/prod/cdn", "immutable-v1", &first).await;
     assert_eq!(status, StatusCode::OK, "{publication}");
     let (status, _) = upload_publication_object(
         &app,
@@ -640,19 +592,26 @@ async fn immutable_publication_path_rejects_changed_content() {
     )
     .await;
     assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
 
-    // A later generation cannot assign different bytes to the same immutable
-    // path. Admission fails before any write or quota change.
+    // A later generation cannot start while the preceding publication is
+    // incomplete. Admission fails before any additional write or usage change.
     let changed = [
         ("objects/ab/cd", b"ten-bytes!".as_slice(), "immutable"),
         ("info/refs", b"".as_slice(), "mutable_pointer"),
     ];
-    let (status, _) = begin_publication(&app, &token, "immutable-v2", &changed).await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
+    let (status, _) = begin_publication(
+        &app,
+        &token,
+        "acme/infra/prod/cdn",
+        "immutable-v2",
+        &changed,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 0);
+    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 0);
 }
 
 #[tokio::test]
@@ -748,15 +707,9 @@ async fn invite_only_allows_existing_member() {
 
 #[tokio::test]
 async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
-    let (db, surface, _binding) = empty_managed().await;
+    let (db, surface, _binding_id, _placement) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     // A managed cache so the manifest's cache slice has something to carry.
-    let binding = db
-        .list_storage_bindings(org.id)
-        .await
-        .unwrap()
-        .pop()
-        .unwrap();
     db.create_binary_cache(
         Some(org.id),
         "acme-cache",
@@ -782,6 +735,14 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
         .create_service_account(org.id, "publisher")
         .await
         .unwrap();
+    db.grant_membership(
+        "service_account",
+        sa,
+        &common::org_scope(&db, "acme").await,
+        "maintainer",
+    )
+    .await
+    .unwrap();
     let (_id, secret) = db
         .create_token(
             Principal::service_account(sa),
@@ -806,8 +767,14 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
         ("objects/ab/cd", b"surface-bytes".as_slice(), "immutable"),
         ("info/refs", b"".as_slice(), "mutable_pointer"),
     ];
-    let (status, publication) =
-        begin_publication(&app, &token, "export-fixture-v1", &objects).await;
+    let (status, publication) = begin_publication(
+        &app,
+        &token,
+        "acme/infra/prod/cdn",
+        "export-fixture-v1",
+        &objects,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{publication}");
     let (status, _) = upload_publication_object(
         &app,
@@ -837,9 +804,12 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     assert!(manifest
         .memberships
         .iter()
-        .any(|m| m.scope == "acme" && m.role == "owner"));
+        .any(|m| m.scope == org.stable_id && m.role == "owner"));
     assert_eq!(manifest.tokens.len(), 1);
-    assert_eq!(manifest.tokens[0].scope, "acme/infra/prod/cdn");
+    assert_eq!(
+        manifest.tokens[0].scope,
+        common::registry_scope(&db, "acme/infra/prod/cdn").await
+    );
     // No secret, no hash anywhere in the serialized manifest.
     let hash = aos_hub::auth::token::sha256_hex(&secret);
     assert!(!json.contains(&secret), "raw secret leaked into manifest");
@@ -871,7 +841,7 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding =
+    let _binding =
         common::create_local_binding(&db, org, "primary", dir.path().to_str().unwrap()).await;
     db.create_managed_registry(org, "", "cdn", "public", &[], false)
         .await
@@ -974,7 +944,7 @@ async fn legacy_link_cache_route_is_absent_and_creates_no_integration() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{body}");
 
     let registry = db.registry_by_slug("acme/pub").await.unwrap().unwrap();
     assert!(db

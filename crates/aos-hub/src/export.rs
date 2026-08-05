@@ -278,7 +278,7 @@ pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest>
         .collect();
 
     let memberships = db
-        .list_memberships_under(&org.slug)
+        .list_memberships_under(&org.stable_id)
         .await?
         .into_iter()
         .map(
