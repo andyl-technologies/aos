@@ -1339,8 +1339,22 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
     // external request has no `ResolvedDeliveryRoute` extension and receives
     // 404, so the internal name is not an alternate public surface URL.
     let mut r = Router::new()
-        .route("/_aos-internal/delivery", get(resolved_delivery_handler))
-        .route(DOMAIN_PROBE_PATH, get(domain_probe_handler));
+        .route(
+            "/_aos-internal/delivery",
+            get(
+                |state: State<SharedState>, headers: HeaderMap, request: Request| {
+                    send_bridge(resolved_delivery_handler(state, headers, request))
+                },
+            ),
+        )
+        .route(
+            DOMAIN_PROBE_PATH,
+            get(
+                |state: State<SharedState>, query: Query<DomainProbeQuery>, request: Request| {
+                    send_bridge(domain_probe_handler(state, query, request))
+                },
+            ),
+        );
     // RegistryService
     r = rpc_route!(
         r,

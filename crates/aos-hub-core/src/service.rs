@@ -10592,6 +10592,26 @@ impl RpcService {
             self.create_organization_from_plan(auth, input.request, &plan.plan_id)
                 .await?
         };
+        let claims = self.require_claims(auth)?;
+        if let Some(organization) = response.organization.as_ref() {
+            if let Err(error) = self
+                .db
+                .record_audit(
+                    &claims.owner_kind,
+                    Some(claims.owner_id),
+                    &claims.sub,
+                    "topology.organization.create",
+                    &organization.stable_id,
+                    None,
+                    None,
+                    None,
+                    Some(&organization.slug),
+                )
+                .await
+            {
+                tracing::warn!(error = %format!("{error:#}"), "recording organization creation audit");
+            }
+        }
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
             .await?;
         Ok(response)
@@ -11550,6 +11570,23 @@ impl RpcService {
             return Err(RpcError::FailedPrecondition(
                 "organization changed after planning".to_string(),
             ));
+        }
+        if let Err(error) = self
+            .db
+            .record_audit(
+                &claims.owner_kind,
+                Some(claims.owner_id),
+                &claims.sub,
+                "topology.organization.delete",
+                &org.stable_id,
+                None,
+                None,
+                None,
+                Some(&org.slug),
+            )
+            .await
+        {
+            tracing::warn!(error = %format!("{error:#}"), "recording organization deletion audit");
         }
         let response = pb::DeleteTopologyResourceResponse { deleted: true };
         self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
@@ -18219,6 +18256,57 @@ impl RpcService {
         }
     }
 
+    /// Enforces the membership role ceiling for a currently authenticated actor.
+    ///
+    /// Members with `members.manage` may administer grants at or below their
+    /// own effective role. Only an owner may create, replace, or remove an
+    /// owner grant. The service repeats this check during apply so a sealed plan
+    /// cannot outlive an intervening demotion.
+    async fn require_membership_grant_ceiling(
+        &self,
+        claims: &Claims,
+        scope: &Scope,
+        current_role: Option<Role>,
+        desired_role: Option<Role>,
+    ) -> Result<(), RpcError> {
+        let actor = claims_principal(claims)
+            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        let context = self
+            .db
+            .authorization_context(scope.as_str())
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
+        let actor_rank = self
+            .db
+            .effective_scopes(actor)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .filter(|(grant_scope, _)| context.is_covered_by(grant_scope))
+            .map(|(_, role)| role.rank())
+            .max()
+            .unwrap_or(0);
+        if current_role.is_some_and(|role| role.rank() > actor_rank) {
+            return Err(RpcError::PermissionDenied(
+                "cannot modify a membership above the actor's role".into(),
+            ));
+        }
+        if desired_role.is_some_and(|role| role.rank() > actor_rank) {
+            return Err(RpcError::PermissionDenied(
+                "cannot grant a membership above the actor's role".into(),
+            ));
+        }
+        if (current_role == Some(Role::Owner) || desired_role == Some(Role::Owner))
+            && actor_rank < Role::Owner.rank()
+        {
+            return Err(RpcError::PermissionDenied(
+                "only an owner may modify owner memberships".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Reads one direct membership grant and its exact revision.
     pub async fn get_membership(
         &self,
@@ -18227,7 +18315,7 @@ impl RpcService {
     ) -> Result<pb::MembershipResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let scope = parse_authorization_scope(&req.scope)?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
+        self.require_permission(&claims, Permission::MembersManage, &scope)
             .await?;
         let principal_id = self
             .resolve_existing_principal_id(&req.principal_kind, &req.principal_ref)
@@ -18258,16 +18346,14 @@ impl RpcService {
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let scope = parse_authorization_scope(&req.scope)?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
+        self.require_permission(&claims, Permission::MembersManage, &scope)
             .await?;
         let desired_role = if req.role.is_empty() {
             None
         } else {
             Some(
                 Role::parse(&req.role)
-                    .ok_or_else(|| RpcError::invalid(format!("unknown role '{}'", req.role)))?
-                    .as_str()
-                    .to_string(),
+                    .ok_or_else(|| RpcError::invalid(format!("unknown role '{}'", req.role)))?,
             )
         };
         let principal_id = self
@@ -18282,6 +18368,13 @@ impl RpcService {
             .find_map(|(candidate_scope, role)| {
                 (candidate_scope == scope.as_str()).then_some(role)
             });
+        self.require_membership_grant_ceiling(
+            &claims,
+            &scope,
+            baseline_role.as_deref().and_then(Role::parse),
+            desired_role,
+        )
+        .await?;
         let baseline_version = baseline_role.as_deref().unwrap_or("absent");
         if req.expected_resource_version != baseline_version {
             return Err(RpcError::FailedPrecondition(
@@ -18293,7 +18386,7 @@ impl RpcService {
             principal_ref: req.principal_ref,
             principal_id,
             scope: scope.as_str().to_string(),
-            desired_role,
+            desired_role: desired_role.map(|role| role.as_str().to_string()),
             baseline_role,
         };
         let confirmation_hash = hex::encode(Sha256::digest(
@@ -18323,7 +18416,7 @@ impl RpcService {
     ) -> Result<pb::MembershipResponse, RpcError> {
         const PLAN_KIND: &str = "set_membership";
         let claims = self
-            .require_control_plan_permission(auth, &req.plan_id, Permission::IamAdmin)
+            .require_control_plan_permission(auth, &req.plan_id, Permission::MembersManage)
             .await?;
         if let Some(response) = self
             .replayed_control_result(
@@ -18349,8 +18442,15 @@ impl RpcService {
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
         let scope = parse_authorization_scope(&input.scope)?;
-        self.require_permission(&claims, Permission::IamAdmin, &scope)
+        self.require_permission(&claims, Permission::MembersManage, &scope)
             .await?;
+        self.require_membership_grant_ceiling(
+            &claims,
+            &scope,
+            input.baseline_role.as_deref().and_then(Role::parse),
+            input.desired_role.as_deref().and_then(Role::parse),
+        )
+        .await?;
         let principal_id = self
             .resolve_existing_principal_id(&input.principal_kind, &input.principal_ref)
             .await?;

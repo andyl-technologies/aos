@@ -4590,7 +4590,7 @@ pub(crate) async fn new_org_submit(
         return *resp;
     }
     if !form.plan_id.is_empty() {
-        let bearer = match session.topology_bearer(&deps, Scope::parse("")) {
+        let bearer = match session.topology_bearer(&deps, Scope::root()) {
             Ok(bearer) => bearer,
             Err(error) => return internal(error),
         };
@@ -4670,7 +4670,7 @@ pub(crate) async fn new_org_submit(
         Ok(_) => {}
         Err(err) => return internal(err),
     }
-    let bearer = match session.topology_bearer(&deps, Scope::parse("")) {
+    let bearer = match session.topology_bearer(&deps, Scope::root()) {
         Ok(bearer) => bearer,
         Err(error) => return internal(error),
     };

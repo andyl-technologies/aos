@@ -75,17 +75,28 @@
   cargoFeatures ? "",
 }: let
   version = "0.1.0";
+  repoRoot = ../..;
+  repoRootString = toString repoRoot;
 
-  # The whole cargo workspace is the source: the worker depends on the
-  # in-workspace `aos-registry-surface` crate, and the workspace `Cargo.lock`
-  # pins every transitive dependency. Mirrors `pkgs/tools/aos/aos.nix`.
+  # The Cargo workspace plus its generated API-manifest input are the source.
+  # `aos-proto-types` validates that manifest in its build script, so the Worker
+  # artifact must carry the same RFC subtree as the native Hub package.
   src = builtins.path {
-    path = ../../crates;
-    name = "aos-crates-src";
+    path = repoRoot;
+    name = "aos-hub-worker-workspace-src";
     filter = path: _type: let
+      pathString = toString path;
       base = baseNameOf path;
     in
-      base != "target" && base != ".git";
+      base != "target"
+      && base != ".git"
+      && (
+        pathString == repoRootString
+        || lib.hasPrefix "${repoRootString}/crates" pathString
+        || pathString == "${repoRootString}/docs"
+        || pathString == "${repoRootString}/docs/rfcs"
+        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
+      );
   };
 
   # The native `esbuild` binary inside the vendored miniflare/wrangler closure
@@ -105,6 +116,7 @@ in
     # `aos.nix`/`aos-hub.nix` but its own fixed-output derivation.
     cargoDeps = fetchCargoDeps {
       inherit src;
+      sourceRoot = "source/crates";
       hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
     };
 
@@ -112,13 +124,13 @@ in
       {
         name = "unpack";
         script = ''
-          # `src` is a `builtins.path` of the crates/ workspace directory (not a
-          # tarball), and store paths are read-only. Copy it into a writable
+          # `src` is a filtered repository `builtins.path` (not a tarball), and
+          # store paths are read-only. Copy it into a writable
           # working tree so the configure/build phases can create .cargo/, the
           # target/ dir, and the build/ output.
           cp -r "$src" source
           chmod -R u+w source
-          cd source
+          cd source/crates
         '';
       }
       {
