@@ -92,6 +92,7 @@ const DEFAULT_RUN_SEED: u64 = 0x0010_c001;
 const DEFAULT_RR_SWITCH_QUANTUM: u64 = 4096;
 const PLUGIN_ARG_SIMFD: &str = "simfd";
 const PLUGIN_ARG_SLOT: &str = "slot";
+const PLUGIN_ARG_FAULT_NODE_HASH: &str = "fault_node_hash";
 const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
@@ -110,6 +111,16 @@ const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
 const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
 const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
 const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
+const FAULT_TARGET_NODE_DOMAIN: &[u8] = b"crucible.qemu.fault-target-node.v1\0";
+
+/// Derives the process-bound fault target identity from a canonical node name.
+#[must_use]
+pub fn qemu_fault_target_hash(node_name: &str) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(FAULT_TARGET_NODE_DOMAIN);
+    hasher.update(node_name.as_bytes());
+    *hasher.finalize().as_bytes()
+}
 const FIXED_PLUGIN_SIM_FD: i32 = 3;
 const FIXED_PLUGIN_SHMEM_FD: i32 = 4;
 const FIXED_PLUGIN_WAKE_FD: i32 = 5;
@@ -458,6 +469,7 @@ pub struct QemuLaunchCommand {
     gdbstub: Option<QemuGdbstubChannelConfig>,
     qmp: Option<QemuQmpChannelConfig>,
     plugin_coverage: QemuLaunchPluginSwitch,
+    plugin_fault_node_hash: [u8; 32],
 }
 
 impl QemuLaunchCommand {
@@ -495,6 +507,12 @@ impl QemuLaunchCommand {
     #[must_use]
     pub const fn plugin_coverage(&self) -> QemuLaunchPluginSwitch {
         self.plugin_coverage
+    }
+
+    /// Returns the node identity hash authenticated by the fault bridge.
+    #[must_use]
+    pub const fn plugin_fault_node_hash(&self) -> [u8; 32] {
+        self.plugin_fault_node_hash
     }
 
     /// Appends one content-addressed observation-only QEMU plugin.
@@ -692,6 +710,7 @@ impl QemuLaunchCommandBuilder {
             gdbstub: self.gdbstub,
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
+            plugin_fault_node_hash: self.plugin.fault_node_hash(),
         })
     }
 }

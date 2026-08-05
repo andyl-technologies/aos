@@ -28,6 +28,8 @@ use crate::{
 
 #[path = "mapped_quantum/error.rs"]
 mod error;
+#[path = "mapped_quantum/fault_commands.rs"]
+mod fault_commands;
 #[path = "mapped_quantum/preemption.rs"]
 mod preemption;
 pub use error::QemuMappedQuantumShmemHotPathError;

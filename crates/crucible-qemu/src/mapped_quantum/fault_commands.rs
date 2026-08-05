@@ -1,0 +1,67 @@
+//! Host-side access to one VM's lossless QEMU fault transport.
+
+use crucible_shmem::{
+    DequeuedFaultResult, FaultCommandHeaderV1, dequeue_fault_result, enqueue_fault_command,
+};
+
+use super::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError};
+
+impl QemuMappedQuantumShmemHotPath {
+    /// Publishes one authenticated command to this VM's plugin bridge.
+    ///
+    /// The command and payload become visible atomically through the dedicated
+    /// host-producer/plugin-consumer ring. The plugin copies them before calling
+    /// QEMU, so callers may release `payload` after this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the VM transport is
+    /// absent, full, corrupt, or the command envelope violates the public ABI.
+    pub fn enqueue_fault_command(
+        &mut self,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+    ) -> Result<(), QemuMappedQuantumShmemHotPathError> {
+        let transport = self
+            .region
+            .fault_command_transport_mut(self.config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
+        enqueue_fault_command(
+            transport.ring,
+            transport.slots,
+            transport.arena_header,
+            transport.arena,
+            transport.arena_region_offset,
+            header,
+            payload,
+        )
+        .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultTransport { source })
+    }
+
+    /// Removes one completed QEMU fault result from this VM's plugin bridge.
+    ///
+    /// An ABI-invalid result is returned as [`DequeuedFaultResult::Invalid`]
+    /// after its sound transport reservation is released. Production callers
+    /// must fail the run rather than treating that variant as a guest outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuMappedQuantumShmemHotPathError`] when the VM transport is
+    /// absent or its ring/arena framing is corrupt.
+    pub fn dequeue_fault_result(
+        &mut self,
+    ) -> Result<Option<DequeuedFaultResult>, QemuMappedQuantumShmemHotPathError> {
+        let transport = self
+            .region
+            .fault_result_transport_mut(self.config.vm_slot)
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?;
+        dequeue_fault_result(
+            transport.ring,
+            transport.slots,
+            transport.arena_header,
+            transport.arena,
+            transport.arena_region_offset,
+        )
+        .map_err(|source| QemuMappedQuantumShmemHotPathError::FaultTransport { source })
+    }
+}

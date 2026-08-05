@@ -2122,6 +2122,7 @@ dependencies = [
 name = "crucible-qemu"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crucible",
  "crucible-device",
  "crucible-protocol",
@@ -2137,6 +2138,7 @@ dependencies = [
 name = "crucible-qemu-plugin"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crucible",
  "crucible-protocol",
  "crucible-shmem",

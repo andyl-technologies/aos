@@ -19,6 +19,7 @@ use crucible_shmem::{
     RegionControlAction, RegionHeader, RingHeader, SLOT_NET_ROUTER, SchedulerPreemptionKind,
 };
 
+use crate::fault_command::{FaultCommandBridge, QemuFaultCommandApis};
 use crate::fingerprint_sampler::CapturedFingerprintSample;
 use crate::{
     ExactDeadlineError, ExactDeadlineReader, FingerprintSamplerError, IdleHotLoopError,
@@ -76,6 +77,7 @@ pub(crate) struct LiveVcpuTimeCallbackCapabilities {
     pub(crate) register_block: Option<QemuRegisterBlkCbFn>,
     pub(crate) register_block_wait: Option<QemuRegisterBlkWaitCbFn>,
     pub(crate) register_ninep: Option<QemuRegisterNinePCbFn>,
+    pub(crate) fault_commands: QemuFaultCommandApis,
     pub(crate) request_shutdown: crate::QemuRequestShutdownFn,
 }
 
@@ -182,6 +184,7 @@ impl LiveVcpuTimeCallbackRegistrar {
             register_block,
             register_block_wait,
             register_ninep,
+            fault_commands: self.capabilities.fault_commands,
             request_shutdown: self.capabilities.request_shutdown,
             whitebox,
         })
@@ -227,6 +230,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 self.plugin_id,
                 self.execution_model.smp_vcpus(),
                 args.slot(),
+                args.fault_node_hash(),
                 capabilities.icount_raw,
                 capabilities.force_vcpu_exit,
                 capabilities.preemption_injector,
@@ -234,6 +238,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
                 capabilities.exact_deadline,
                 capabilities.queued_idle_advance,
                 capabilities.network_rx,
+                capabilities.fault_commands,
                 fingerprint,
                 args.fingerprint_oracle().is_on(),
                 state_dump,
@@ -342,6 +347,7 @@ struct RequiredLiveVcpuTimeCapabilities {
     register_block: QemuRegisterBlkCbFn,
     register_block_wait: QemuRegisterBlkWaitCbFn,
     register_ninep: QemuRegisterNinePCbFn,
+    fault_commands: QemuFaultCommandApis,
     request_shutdown: crate::QemuRequestShutdownFn,
     whitebox: Option<LiveWhiteboxApis>,
 }
@@ -646,6 +652,10 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     devices: Option<Mutex<LiveDeviceCallbackState>>,
     fingerprint: Option<LiveFingerprintCallbackState>,
     state_dump: Option<PluginRawStateDump>,
+    #[cfg(not(test))]
+    fault_commands: Mutex<FaultCommandBridge>,
+    #[cfg(test)]
+    fault_commands: Mutex<Option<FaultCommandBridge>>,
 }
 
 #[derive(Debug)]
@@ -689,6 +699,8 @@ impl LiveVcpuTimeCallbackState {
         initial_raw_icount: u64,
         exact_deadline: ExactDeadlineReader,
         queued_idle_advance: QueuedIdleAdvance,
+        #[cfg(not(test))] fault_commands: FaultCommandBridge,
+        #[cfg(test)] fault_commands: Option<FaultCommandBridge>,
         header: &RegionHeader,
         slot: &NodeSlot,
         quiescence: Arc<LiveCallbackQuiescence>,
@@ -747,6 +759,7 @@ impl LiveVcpuTimeCallbackState {
             devices: None,
             fingerprint: None,
             state_dump: None,
+            fault_commands: Mutex::new(fault_commands),
         })
     }
 
@@ -1094,6 +1107,7 @@ impl LiveVcpuTimeCallbackState {
         if PluginShmemOrdering::observe_shutdown_requested(self.header.get()) {
             return self.signal_shared_shutdown();
         }
+        self.pump_fault_commands(raw_icount)?;
         let pending_idle_advance = self.try_pending_idle_advance()?;
         if let Some(pending) = pending_idle_advance.as_ref() {
             if raw_icount == pending.raw_icount_at_request {
@@ -1569,6 +1583,8 @@ impl LiveVcpuTimeCallbackState {
     /// is closed separately by the device-wait callback of the SCHED-8 delivery
     /// patch.
     fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
+        let raw_icount = (self.icount_raw)();
+        self.pump_fault_commands(raw_icount)?;
         let ceiling = PluginShmemOrdering::load_scheduler_ceiling(self.slot.get());
         let offset = self.logical_icount_offset.load(Ordering::Acquire);
         let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
@@ -1624,6 +1640,33 @@ impl LiveVcpuTimeCallbackState {
             .acknowledge_preemption_command(published.sequence)
             .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?;
         Ok(raw_ceiling.min(raw_at))
+    }
+
+    fn pump_fault_commands(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
+        let logical_icount_offset = self.logical_icount_offset.load(Ordering::Acquire);
+        let mut bridge = match self.fault_commands.try_lock() {
+            Ok(bridge) => bridge,
+            Err(TryLockError::WouldBlock) => {
+                return Err(LiveVcpuTimeCallbackError::CallbackReentered);
+            }
+            Err(TryLockError::Poisoned(_error)) => {
+                return Err(LiveVcpuTimeCallbackError::CallbackStatePoisoned);
+            }
+        };
+        #[cfg(not(test))]
+        let bridge = &mut *bridge;
+        #[cfg(test)]
+        let Some(bridge) = bridge.as_mut() else {
+            return Ok(());
+        };
+        bridge
+            .pump(logical_icount_offset, raw_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })
+    }
+
+    /// Processes setup-time capability admission before the ready ACK.
+    pub(crate) fn admit_fault_capabilities(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.pump_fault_commands((self.icount_raw)())
     }
 
     fn vcpu_flag(&self, vcpu_index: u32) -> Result<&AtomicBool, LiveVcpuTimeCallbackError> {

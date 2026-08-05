@@ -81,6 +81,7 @@ fn test_live_state_with_teardown(
         initial_raw_icount,
         exact_deadline,
         queued_idle_advance,
+        None,
         header,
         slot,
         Arc::new(LiveCallbackQuiescence::new()),

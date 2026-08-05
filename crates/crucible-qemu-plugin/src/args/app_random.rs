@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn complete_group_parses() {
         let args = PluginArgs::parse(
-            "simfd=4,slot=1,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=1048598,app_random_cap=2,app_random_node=node-a",
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=1048598,app_random_cap=2,app_random_node=node-a",
         )
         .unwrap_or_else(|error| panic!("app-random args should parse: {error}"));
         let config = args
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn continuation_positions_parse() {
         let args = PluginArgs::parse(
-            "simfd=4,slot=1,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_draw_offset=3,app_random_positions=616c706861:2;62657461:1",
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=11,app_random_cap=8,app_random_node=node-a,app_random_draw_offset=3,app_random_positions=616c706861:2;62657461:1",
         )
         .unwrap_or_else(|error| panic!("continuation configuration should parse: {error}"));
         let config = args
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn complete_branch_group_parses() {
         let args = PluginArgs::parse(
-            "simfd=4,slot=1,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=1048598,app_random_cap=9,app_random_node=node-a,app_random_branch_seed=77,app_random_branch_after=2",
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=1048598,app_random_cap=9,app_random_node=node-a,app_random_branch_seed=77,app_random_branch_after=2",
         )
         .unwrap_or_else(|error| panic!("app-random branch args should parse: {error}"));
         let config = args
@@ -365,7 +365,7 @@ mod tests {
     fn partial_or_disabled_group_is_rejected() {
         assert_eq!(
             PluginArgs::parse(
-                "simfd=3,slot=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7"
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7"
             ),
             Err(PluginArgsParseError::AppRandom(
                 AppRandomArgsParseError::Incomplete
@@ -373,7 +373,7 @@ mod tests {
         );
         assert_eq!(
             PluginArgs::parse(
-                "simfd=3,slot=0,app_random_seed=7,app_random_cap=1,app_random_node=node-a"
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,app_random_seed=7,app_random_cap=1,app_random_node=node-a"
             ),
             Err(PluginArgsParseError::AppRandom(
                 AppRandomArgsParseError::WhiteboxDisabled
@@ -381,7 +381,7 @@ mod tests {
         );
         assert_eq!(
             PluginArgs::parse(
-                "simfd=3,slot=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=1,app_random_node=node-a,app_random_branch_seed=9"
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=1,app_random_node=node-a,app_random_branch_seed=9"
             ),
             Err(PluginArgsParseError::AppRandom(
                 AppRandomArgsParseError::IncompleteBranch
@@ -389,7 +389,7 @@ mod tests {
         );
         assert_eq!(
             PluginArgs::parse(
-                "simfd=3,slot=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_draw_offset=1"
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_draw_offset=1"
             ),
             Err(PluginArgsParseError::AppRandom(
                 AppRandomArgsParseError::Incomplete
@@ -397,7 +397,7 @@ mod tests {
         );
         assert!(matches!(
             PluginArgs::parse(
-                "simfd=3,slot=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=4,app_random_node=node-a,app_random_draw_offset=2,app_random_positions=616c706861:1"
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=4,app_random_node=node-a,app_random_draw_offset=2,app_random_positions=616c706861:1"
             ),
             Err(PluginArgsParseError::AppRandom(
                 AppRandomArgsParseError::PositionsMismatchOffset {
@@ -408,7 +408,7 @@ mod tests {
         ));
         assert!(matches!(
             PluginArgs::parse(
-                "simfd=3,slot=0,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=4,app_random_node=node-a,app_random_branch_seed=9,app_random_branch_after=1,app_random_draw_offset=2,app_random_positions=616c706861:2"
+                "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,app_random_seed=7,app_random_cap=4,app_random_node=node-a,app_random_branch_seed=9,app_random_branch_after=1,app_random_draw_offset=2,app_random_positions=616c706861:2"
             ),
             Err(PluginArgsParseError::AppRandom(
                 AppRandomArgsParseError::BranchBeforeOffset {

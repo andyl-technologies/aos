@@ -76,6 +76,7 @@ fn max_advance_enqueues_and_acknowledges_logical_preemption_in_raw_space() {
         10,
         exact_deadline,
         queued_idle_advance,
+        None,
         &header,
         &slot,
         Arc::new(LiveCallbackQuiescence::new()),

@@ -659,7 +659,7 @@ pub(super) fn build_live_node(
     let qmp_config = QemuQmpChannelConfig::new(GATE_QMP_SOCKET_FILE_NAME)
         .map_err(|source| QemuLiveNodeStepGateError::QmpChannelConfig { source })?;
     let vm = vm_launch_config(config, identity.node);
-    let plugin = live_node_plugin_config(config, &profile, &vm, run_directory)?;
+    let plugin = live_node_plugin_config(config, &profile, &vm, run_directory, identity.node)?;
     let mut command =
         QemuLaunchCommandBuilder::new(profile, vm, path_text(&config.qemu_executable), plugin)
             .with_qmp(qmp_config.clone());

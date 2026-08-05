@@ -30,6 +30,7 @@ pub struct QemuSpawnHostResources {
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     region_len: u64,
+    fault_node_hash: [u8; 32],
 }
 
 impl QemuSpawnHostResources {
@@ -65,6 +66,7 @@ impl QemuSpawnHostResources {
             shmem_fd: self.shmem_fd,
             wake_fd: self.wake_fd,
             region_len: self.region_len,
+            fault_node_hash: self.fault_node_hash,
         }
     }
 }
@@ -76,6 +78,7 @@ pub struct QemuSpawnSetupResources {
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
     region_len: u64,
+    fault_node_hash: [u8; 32],
 }
 
 impl QemuSpawnSetupResources {
@@ -103,14 +106,21 @@ impl QemuSpawnSetupResources {
         self.region_len
     }
 
+    /// Returns the node identity hash encoded in the spawned plugin argument.
+    #[must_use]
+    pub const fn fault_node_hash(&self) -> [u8; 32] {
+        self.fault_node_hash
+    }
+
     /// Consumes the setup resources into their owned parts.
     #[must_use]
-    pub fn into_parts(self) -> (UnixStream, OwnedFd, OwnedFd, u64) {
+    pub fn into_parts(self) -> (UnixStream, OwnedFd, OwnedFd, u64, [u8; 32]) {
         (
             self.control_socket,
             self.shmem_fd,
             self.wake_fd,
             self.region_len,
+            self.fault_node_hash,
         )
     }
 }
@@ -197,7 +207,8 @@ fn spawn_qemu_child_with_fds_in_optional_directory(
     run_directory: Option<&Path>,
     region_len: u64,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    let (resources, child_resources) = create_spawn_resources(region_len)?;
+    let (mut resources, child_resources) = create_spawn_resources(region_len)?;
+    resources.fault_node_hash = command.plugin_fault_node_hash();
     let child = spawn_process_with_resources(
         command.executable(),
         command.args(),
@@ -240,6 +251,7 @@ fn create_spawn_resources(
             shmem_fd: host_shmem,
             wake_fd: host_wake,
             region_len,
+            fault_node_hash: [0; 32],
         },
         QemuSpawnChildResources {
             control_socket: child_control,
@@ -259,7 +271,8 @@ fn create_spawn_resources(
 pub(crate) fn create_test_spawn_resource_pair(
     region_len: u64,
 ) -> Result<(QemuSpawnHostResources, UnixStream), QemuSpawnError> {
-    let (host_resources, child_resources) = create_spawn_resources(region_len)?;
+    let (mut host_resources, child_resources) = create_spawn_resources(region_len)?;
+    host_resources.fault_node_hash = crate::qemu_fault_target_hash("standalone-vm-slot-0");
     Ok((
         host_resources,
         UnixStream::from(child_resources.control_socket),

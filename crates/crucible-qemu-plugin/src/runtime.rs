@@ -185,6 +185,8 @@ pub(crate) struct OwnedCallbackRuntimeState {
     live_whitebox: Option<Pin<Box<live_whitebox::LiveWhiteboxState>>>,
     setup: PluginSetupCompletion,
     coverage: Option<LiveBasicBlockCoverage>,
+    #[cfg(test)]
+    allow_missing_fault_command_state: bool,
     _pin: PhantomPinned,
 }
 
@@ -200,8 +202,20 @@ impl OwnedCallbackRuntimeState {
             live_whitebox: None,
             setup,
             coverage: None,
+            #[cfg(test)]
+            allow_missing_fault_command_state: false,
             _pin: PhantomPinned,
         })
+    }
+
+    /// Marks an isolated registration-order fixture that intentionally does
+    /// not construct callback-addressable state.
+    #[cfg(test)]
+    fn allow_missing_fault_command_state_for_test(self: Pin<&mut Self>) {
+        // SAFETY: the assignment does not move any field of the pinned owner.
+        unsafe {
+            self.get_unchecked_mut().allow_missing_fault_command_state = true;
+        }
     }
 
     /// Returns the stable opaque pointer supplied as QEMU callback userdata.
@@ -228,6 +242,7 @@ impl OwnedCallbackRuntimeState {
         plugin_id: QemuPluginId,
         vcpu_count: u32,
         slot_index: u32,
+        fault_node_hash: [u8; 32],
         icount_raw: crate::QemuIcountRawFn,
         force_vcpu_exit: crate::QemuForceVcpuExitFn,
         preemption_injector: crate::PluginPreemptionInjector,
@@ -235,6 +250,7 @@ impl OwnedCallbackRuntimeState {
         exact_deadline: crate::ExactDeadlineReader,
         queued_idle_advance: crate::QueuedIdleAdvance,
         network_rx: crate::QemuLosslessNetworkRxQueue,
+        fault_command_apis: crate::fault_command::QemuFaultCommandApis,
         fingerprint: Option<crate::PluginFingerprintSampling>,
         fingerprint_oracle: bool,
         state_dump: Option<crate::PluginRawStateDump>,
@@ -254,6 +270,13 @@ impl OwnedCallbackRuntimeState {
             }
         })?;
         let header = std::ptr::NonNull::from(state.setup.mapped_region().header());
+        let fault_commands = crate::fault_command::FaultCommandBridge::new(
+            fault_command_apis,
+            fault_node_hash,
+            state.setup.mapped_region_mut(),
+            slot_index,
+        )
+        .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?;
         let router_slot = crucible_shmem::SLOT_NET_ROUTER as u32;
         let mapped = state
             .setup
@@ -279,6 +302,10 @@ impl OwnedCallbackRuntimeState {
             initial_raw_icount,
             exact_deadline,
             queued_idle_advance,
+            #[cfg(not(test))]
+            fault_commands,
+            #[cfg(test)]
+            Some(fault_commands),
             header,
             mapped.node_slot,
             Arc::clone(&state.quiescence),
@@ -454,6 +481,31 @@ impl RequiredOwnedCallbacksRegistered {
 
     pub(crate) fn setup(&self) -> &PluginSetupCompletion {
         &self.state.as_ref().get_ref().setup
+    }
+
+    /// Processes the mandatory setup-time fault capability query.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LiveVcpuTimeCallbackError`] when command transport, QEMU
+    /// capability enumeration, or result publication fails.
+    pub(crate) fn admit_fault_capabilities(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        #[cfg(test)]
+        if self
+            .state
+            .as_ref()
+            .get_ref()
+            .allow_missing_fault_command_state
+        {
+            return Ok(());
+        }
+        self.state
+            .as_ref()
+            .get_ref()
+            .live_vcpu_time
+            .as_ref()
+            .ok_or(LiveVcpuTimeCallbackError::FaultCommandStateUnavailable)?
+            .admit_fault_capabilities()
     }
 
     /// Installs live basic-block coverage into the pinned callback state.
@@ -757,6 +809,7 @@ pub(crate) struct LiveInstallCapabilities {
     pub(crate) register_block: Option<crate::QemuRegisterBlkCbFn>,
     pub(crate) register_block_wait: Option<crate::QemuRegisterBlkWaitCbFn>,
     pub(crate) register_ninep: Option<crate::QemuRegisterNinePCbFn>,
+    pub(crate) fault_commands: crate::fault_command::QemuFaultCommandApis,
 }
 
 /// Registers the callback families whose C adapters own live device behavior.
@@ -805,6 +858,7 @@ enum PostRegistrationStage {
     RegisterCallbacks,
     RequireCallbackCapabilities,
     RegisterWakeFd,
+    AdmitFaultCapabilities,
     SendReadyAck,
     WaitBootBarrier,
     Finalize,
@@ -832,6 +886,7 @@ impl PostRegistrationStage {
             Self::RegisterCallbacks => "RegisterCallbacks",
             Self::RequireCallbackCapabilities => "RequireCallbackCapabilities",
             Self::RegisterWakeFd => "RegisterWakeFd",
+            Self::AdmitFaultCapabilities => "AdmitFaultCapabilities",
             Self::SendReadyAck => "SendReadyAck",
             Self::WaitBootBarrier => "WaitBootBarrier",
             Self::Finalize => "Finalize",
@@ -953,6 +1008,7 @@ impl FailClosedOwnedCallbackRegistrar {
                     register_block: capabilities.register_block,
                     register_block_wait: capabilities.register_block_wait,
                     register_ninep: capabilities.register_ninep,
+                    fault_commands: capabilities.fault_commands,
                     request_shutdown: capabilities.request_shutdown,
                 },
             ),
@@ -1265,6 +1321,16 @@ where
         if let Err(source) = wake_registration {
             acknowledgement_state = PostRegistrationAckState::FailureAttempted;
             return Err(registration_error(source));
+        }
+
+        post_registration_stage = PostRegistrationStage::AdmitFaultCapabilities;
+        maybe_inject_post_registration_panic(post_registration_stage);
+        if let Err(source) = retained.registered().admit_fault_capabilities() {
+            return Err(fail_post_registration_before_ready_ack_lifecycle(
+                &mut control_stream,
+                PluginRuntimeInstallError::FaultCapabilityAdmission { source },
+                &mut acknowledgement_state,
+            ));
         }
 
         post_registration_stage = PostRegistrationStage::SendReadyAck;
@@ -1582,6 +1648,12 @@ pub enum PluginRuntimeInstallError {
     OwnedCallbacks {
         /// Underlying callback registration error.
         source: OwnedCallbackRegistrationError,
+    },
+    /// Setup-time QEMU fault capability admission failed before guest start.
+    #[error("live QEMU fault capability admission failed: {source}")]
+    FaultCapabilityAdmission {
+        /// Exact bridge or QEMU capability failure.
+        source: LiveVcpuTimeCallbackError,
     },
     /// The callback failure could not be acknowledged to the host.
     #[error(

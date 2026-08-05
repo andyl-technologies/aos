@@ -141,6 +141,7 @@ impl fmt::Display for QemuLaunchPluginSwitch {
 pub struct QemuLaunchPluginConfig {
     plugin_path: String,
     slot: u32,
+    fault_node_hash: [u8; 32],
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
     app_random: Option<QemuLaunchAppRandomConfig>,
@@ -154,9 +155,11 @@ impl QemuLaunchPluginConfig {
     /// Builds the required plugin launch config.
     #[must_use]
     pub fn new(plugin_path: impl Into<String>, slot: u32) -> Self {
+        let standalone_identity = format!("standalone-vm-slot-{slot}");
         Self {
             plugin_path: plugin_path.into(),
             slot,
+            fault_node_hash: qemu_fault_target_hash(&standalone_identity),
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
             app_random: None,
@@ -165,6 +168,19 @@ impl QemuLaunchPluginConfig {
             fingerprint_oracle: QemuLaunchPluginSwitch::Off,
             state_dump: None,
         }
+    }
+
+    /// Returns a config bound to the canonical scenario node identity.
+    #[must_use]
+    pub fn with_fault_target_node(mut self, node_name: &str) -> Self {
+        self.fault_node_hash = qemu_fault_target_hash(node_name);
+        self
+    }
+
+    /// Returns the exact hash authenticated by the plugin fault bridge.
+    #[must_use]
+    pub const fn fault_node_hash(&self) -> [u8; 32] {
+        self.fault_node_hash
     }
 
     /// Returns a config with the white-box hook switch set.
@@ -284,6 +300,10 @@ impl QemuLaunchPluginConfig {
         let mut args = vec![
             format!("{PLUGIN_ARG_SIMFD}={FIXED_PLUGIN_SIM_FD}"),
             format!("{PLUGIN_ARG_SLOT}={}", self.slot),
+            format!(
+                "{PLUGIN_ARG_FAULT_NODE_HASH}={}",
+                lowercase_hex(&self.fault_node_hash)
+            ),
             format!("{PLUGIN_ARG_SHMEMFD}={FIXED_PLUGIN_SHMEM_FD}"),
             format!("{PLUGIN_ARG_WAKEFD}={FIXED_PLUGIN_WAKE_FD}"),
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
@@ -418,6 +438,16 @@ impl QemuLaunchPluginConfig {
         }
         Ok(())
     }
+}
+
+fn lowercase_hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        encoded.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 fn encode_stream_positions(positions: &BTreeMap<String, u64>) -> String {

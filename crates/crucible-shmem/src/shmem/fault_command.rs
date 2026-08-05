@@ -453,7 +453,9 @@ impl FaultBoundaryPhase {
         }
     }
 
-    const fn bit(self) -> u32 {
+    /// Returns this phase's bit in a capability `phase_mask`.
+    #[must_use]
+    pub const fn bit(self) -> u32 {
         1_u32 << (self as u16 - 1)
     }
 }
@@ -921,6 +923,92 @@ pub fn fault_capability_manifest_digest(
         hasher.update(&bytes);
     }
     Ok(*hasher.finalize().as_bytes())
+}
+
+/// Magic prefix for a returned QEMU fault-capability manifest.
+pub const FAULT_CAPABILITY_MANIFEST_MAGIC_V1: [u8; 8] = *b"CRUCFCP1";
+/// Semantic version of the capability-manifest payload codec.
+pub const FAULT_CAPABILITY_MANIFEST_VERSION_V1: u16 = 1;
+/// Fixed header size before the canonical capability rows.
+pub const FAULT_CAPABILITY_MANIFEST_HEADER_V1_BYTES: usize = 48;
+/// Hard maximum number of QEMU capability rows accepted from one backend.
+pub const HARD_FAULT_CAPABILITY_ROWS: usize = 4_096;
+
+/// Encodes a canonical, self-authenticating QEMU capability manifest.
+///
+/// # Errors
+///
+/// Returns [`FaultAbiError::CapabilityInvariant`] when `rows` is empty,
+/// unsorted, duplicated, invalid, or exceeds [`HARD_FAULT_CAPABILITY_ROWS`].
+pub fn encode_fault_capability_manifest(
+    rows: &[FaultCapabilityRowV1],
+) -> Result<Vec<u8>, FaultAbiError> {
+    if rows.len() > HARD_FAULT_CAPABILITY_ROWS {
+        return Err(FaultAbiError::CapabilityInvariant);
+    }
+    let digest = fault_capability_manifest_digest(rows)?;
+    let count = u32::try_from(rows.len()).map_err(|_| FaultAbiError::CapabilityInvariant)?;
+    let body_bytes = rows
+        .len()
+        .checked_mul(FAULT_CAPABILITY_ROW_V1_BYTES)
+        .ok_or(FaultAbiError::CapabilityInvariant)?;
+    let capacity = FAULT_CAPABILITY_MANIFEST_HEADER_V1_BYTES
+        .checked_add(body_bytes)
+        .ok_or(FaultAbiError::CapabilityInvariant)?;
+    let mut bytes = Vec::with_capacity(capacity);
+    bytes.extend_from_slice(&FAULT_CAPABILITY_MANIFEST_MAGIC_V1);
+    bytes.extend_from_slice(&FAULT_CAPABILITY_MANIFEST_VERSION_V1.to_le_bytes());
+    bytes.extend_from_slice(&0_u16.to_le_bytes());
+    bytes.extend_from_slice(&count.to_le_bytes());
+    bytes.extend_from_slice(&digest);
+    for row in rows {
+        bytes.extend_from_slice(&row.encode());
+    }
+    Ok(bytes)
+}
+
+/// Decodes and authenticates a canonical QEMU capability manifest.
+///
+/// # Errors
+///
+/// Returns [`FaultAbiError`] when framing, version, bounds, row validation,
+/// canonical ordering, or the embedded manifest digest is invalid.
+pub fn decode_fault_capability_manifest(
+    bytes: &[u8],
+) -> Result<Vec<FaultCapabilityRowV1>, FaultAbiError> {
+    if bytes.len() < FAULT_CAPABILITY_MANIFEST_HEADER_V1_BYTES
+        || bytes[..8] != FAULT_CAPABILITY_MANIFEST_MAGIC_V1
+    {
+        return Err(FaultAbiError::HeaderLength);
+    }
+    let version = u16::from_le_bytes([bytes[8], bytes[9]]);
+    let reserved = u16::from_le_bytes([bytes[10], bytes[11]]);
+    if version != FAULT_CAPABILITY_MANIFEST_VERSION_V1 || reserved != 0 {
+        return Err(FaultAbiError::Version);
+    }
+    let count = usize::try_from(u32::from_le_bytes([
+        bytes[12], bytes[13], bytes[14], bytes[15],
+    ]))
+    .map_err(|_source| FaultAbiError::CapabilityInvariant)?;
+    if count == 0 || count > HARD_FAULT_CAPABILITY_ROWS {
+        return Err(FaultAbiError::CapabilityInvariant);
+    }
+    let expected_len = count
+        .checked_mul(FAULT_CAPABILITY_ROW_V1_BYTES)
+        .and_then(|body| FAULT_CAPABILITY_MANIFEST_HEADER_V1_BYTES.checked_add(body))
+        .ok_or(FaultAbiError::CapabilityInvariant)?;
+    if bytes.len() != expected_len {
+        return Err(FaultAbiError::HeaderLength);
+    }
+    let rows = bytes[FAULT_CAPABILITY_MANIFEST_HEADER_V1_BYTES..]
+        .chunks_exact(FAULT_CAPABILITY_ROW_V1_BYTES)
+        .map(FaultCapabilityRowV1::decode)
+        .collect::<Result<Vec<_>, _>>()?;
+    let digest = fault_capability_manifest_digest(&rows)?;
+    if bytes[16..48] != digest {
+        return Err(FaultAbiError::PayloadDigest);
+    }
+    Ok(rows)
 }
 
 /// One command removed from the transport after its arena reservation is freed.
@@ -2214,6 +2302,18 @@ mod tests {
         let second = fault_capability_manifest_digest(&rows)
             .unwrap_or_else(|error| panic!("capability manifest twice: {error}"));
         assert_eq!(first, second);
+        let encoded = encode_fault_capability_manifest(&rows)
+            .unwrap_or_else(|error| panic!("encode capability manifest: {error}"));
+        assert_eq!(
+            decode_fault_capability_manifest(&encoded),
+            Ok(rows.to_vec())
+        );
+        let mut corrupt = encoded;
+        corrupt[16] ^= 1;
+        assert_eq!(
+            decode_fault_capability_manifest(&corrupt),
+            Err(FaultAbiError::PayloadDigest)
+        );
         assert_eq!(
             fault_capability_manifest_digest(&[rows[1].clone(), rows[0].clone()]),
             Err(FaultAbiError::CapabilityInvariant)
