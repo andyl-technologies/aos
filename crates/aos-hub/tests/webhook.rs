@@ -869,6 +869,7 @@ async fn metrics_renders_counters() {
         .oneshot(
             Request::builder()
                 .uri("/metrics")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )

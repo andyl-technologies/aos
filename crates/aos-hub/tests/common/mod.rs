@@ -654,7 +654,7 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                       targets: Vec<ImageTarget>| {
         ImageEntry {
             format: format.to_string(),
-            store_path: format!("/var/lib/store/image-{format}"),
+            store_path: format!("/var/lib/store/{}-image-{format}", &sha256[..32]),
             nar_hash: format!("sha256:{sha256}"),
             nar_size: bytes.len() as u64,
             delivery: ImageDelivery {
@@ -730,8 +730,13 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
         "[package]\nname = \"aos-system\"\ndescription = \"AOS system image\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/aos-system-1.0.0\"\nnar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\nsource_drv = \"/var/lib/store/aos-system-1.0.0.drv\"\nsource_nar_hash = \"sha256:bb\"\nreferences = []\n",
     )
     .unwrap();
-    package["versions"][0]["platforms"][platform]["images"] =
-        toml::Value::try_from(&images).unwrap();
+    package["versions"][0]["platforms"][platform]
+        .as_table_mut()
+        .unwrap()
+        .insert(
+            "images".to_string(),
+            toml::Value::try_from(&images).unwrap(),
+        );
     let package_toml = fixture.put_blob(&toml::to_string(&package).unwrap());
     let closure_blob = fixture.put_blob("aossystemhash\n");
     let bucket = fixture.put_tree(&[("100644", "aos-system.toml", package_toml)]);

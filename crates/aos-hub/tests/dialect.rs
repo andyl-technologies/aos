@@ -666,6 +666,9 @@ async fn exercise(db: &Database) {
 
     // -- storage binding + managed registry -----------------------------------
     let binding = common::create_local_binding(&db, org, "primary", "/srv/aos-hub").await;
+    db.create_project(org, "infra/prod", "Production")
+        .await
+        .unwrap();
     let reg = db
         .create_managed_registry(
             org,
@@ -846,11 +849,13 @@ async fn exercise(db: &Database) {
     .unwrap();
     let org_audit = db.list_audit(&org_scope).await.unwrap();
     assert_eq!(
-        org_audit.len(),
+        org_audit
+            .iter()
+            .filter(|row| row.action == "registry.visibility")
+            .count(),
         1,
         "org-scoped query surfaces the registry action"
     );
-    assert_eq!(org_audit[0].action, "registry.visibility");
     assert!(
         db.list_audit("other").await.unwrap().is_empty(),
         "an unrelated scope sees nothing"

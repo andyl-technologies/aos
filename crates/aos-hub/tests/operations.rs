@@ -196,6 +196,7 @@ async fn registry_route_streams_ranges_through_the_selected_placement() {
         .oneshot(
             Request::builder()
                 .uri("/acme/infra/prod/cdn/nar/range.nar")
+                .header(header::HOST, "127.0.0.1:8420")
                 .header(header::RANGE, "bytes=2-5")
                 .body(Body::empty())
                 .unwrap(),
@@ -219,6 +220,7 @@ async fn registry_route_streams_ranges_through_the_selected_placement() {
         .oneshot(
             Request::builder()
                 .uri("/acme/infra/prod/cdn/web/app-hash.js")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -384,6 +386,7 @@ async fn put(
     let req = Request::builder()
         .method("PUT")
         .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420")
         .header(header::AUTHORIZATION, format!("Bearer {auth}"))
         .body(Body::from(body))
         .unwrap();
@@ -406,6 +409,7 @@ async fn post_form(
     let mut req = Request::builder()
         .method("POST")
         .uri(uri)
+        .header(header::HOST, "127.0.0.1:8420")
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
     if let Some(xff) = forwarded_for {
         req = req.header("x-forwarded-for", xff);
@@ -793,6 +797,7 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
         .oneshot(
             Request::builder()
                 .uri("/acme/cdn/")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -807,6 +812,7 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
         .oneshot(
             Request::builder()
                 .uri("/acme/cdn/")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -821,6 +827,7 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
         .oneshot(
             Request::builder()
                 .uri("/acme/cdn/")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )

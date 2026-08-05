@@ -295,7 +295,7 @@ pub fn registry_home(
     caches: &[(String, u32)],
     roster: &[(String, String, String)],
     validations: &[ValidationRunRow],
-    external_url: &str,
+    external_url: Option<&str>,
     manage_link: bool,
     started: Instant,
     session: &SessionIndicator,
@@ -474,6 +474,18 @@ pub fn registry_home(
     );
 
     body.push_str("<h2>Setup</h2>\n");
+    let Some(external_url) = external_url else {
+        body.push_str(
+            "<p class=\"dim\">No canonical Git delivery route is ready. Configure delivery before adding this registry to a client.</p>\n",
+        );
+        return page_with_session(
+            display_name,
+            &registry_crumbs(slug, &[]),
+            &body,
+            &state_line(status, started),
+            session,
+        );
+    };
     let url = external_url.trim_end_matches('/');
     let _ = write!(
         body,

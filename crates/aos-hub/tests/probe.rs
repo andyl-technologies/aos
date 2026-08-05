@@ -141,6 +141,7 @@ async fn probes_record_reachable_and_unreachable_caches() {
         .oneshot(
             Request::builder()
                 .uri("/demo/-/health")
+                .header(header::HOST, "127.0.0.1:8420")
                 .body(Body::empty())
                 .unwrap(),
         )

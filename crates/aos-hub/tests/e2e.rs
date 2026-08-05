@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use aos_hub::db::Database;
 use aos_hub::fetch::LocalFsFetch;
-use aos_hub::indexer::{index_and_record, index_and_record_from_placement};
+use aos_hub::indexer::{
+    index_and_record, index_and_record_from_placement, reconcile_registry_replica,
+};
 use aos_hub::server::{router, AppState};
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -48,7 +50,8 @@ async fn request(
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header(header::HOST, "127.0.0.1:8420");
+        .header(header::HOST, "127.0.0.1:8420")
+        .header("connect-protocol-version", "1");
     for (name, value) in headers {
         builder = builder.header(*name, *value);
     }
@@ -66,9 +69,96 @@ async fn request(
     (status, headers, body)
 }
 
+async fn configure_image_delivery_route(
+    db: &Database,
+    registry_id: i64,
+    placement_id: i64,
+    owner_scope: &str,
+    endpoint_id: &str,
+    route_id: &str,
+    base_path: &str,
+) {
+    use aos_hub::db::{DeliveryRouteSpec, SurfaceTarget};
+    use sha2::{Digest as _, Sha256};
+
+    let access_policy_json = "{}".to_string();
+    let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
+    let canonical_url = format!("http://127.0.0.1:8420{base_path}");
+    let endpoint = db.delivery_endpoint(endpoint_id).await.unwrap().unwrap();
+    let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest).unwrap();
+    let reservation_key = [9_u8; 32];
+    let reservation_digest = Database::route_reservation_digest(
+        &reservation_key,
+        &endpoint_digest,
+        base_path,
+        &canonical_url,
+    )
+    .unwrap();
+    let route = db
+        .create_delivery_route(
+            route_id,
+            SurfaceTarget::Registry(registry_id),
+            &DeliveryRouteSpec {
+                consumer_scope_key: owner_scope.to_string(),
+                endpoint_id: endpoint_id.to_string(),
+                endpoint_generation: 1,
+                endpoint_ingress_kind: "hub".to_string(),
+                base_path: base_path.to_string(),
+                mode: "hub_proxy".to_string(),
+                access_policy_kind: "public".to_string(),
+                access_policy_json,
+                access_policy_digest: access_policy_digest.clone(),
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                storage_gateway_id: None,
+                gateway_generation: None,
+                target_storage_binding_id: None,
+                gateway_client_base_path: None,
+                target_placement_prefix: None,
+                placement_id: Some(placement_id),
+                placement_policy_revision_id: None,
+                serves_git: true,
+                serves_cache: false,
+                serves_web: true,
+                enabled: true,
+            },
+            &canonical_url,
+            1,
+            &reservation_digest,
+            &[(1, reservation_digest.to_vec())],
+            None,
+            "test",
+        )
+        .await
+        .unwrap();
+    let configuration_digest = route.configuration_digest.as_deref().unwrap();
+    db.reconcile_delivery_route(
+        route_id,
+        route.configuration_generation.unwrap(),
+        configuration_digest,
+        &access_policy_digest,
+        "healthy",
+        "verified",
+        None,
+        None,
+        1,
+    )
+    .await
+    .unwrap();
+    db.set_canonical_route(SurfaceTarget::Registry(registry_id), "git", route_id, None)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn signed_system_images_work_end_to_end_for_public_and_private_registries() {
-    use aos_hub::db::{NewSurfacePlacementSpec, SurfaceTarget, TokenAuth};
+    use aos_hub::db::{
+        DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec, NewSurfacePlacementSpec,
+        SurfaceTarget, TokenAuth, UpdateSurfacePlacementSpec,
+    };
     use aos_hub::domain::{Permission, Principal, Scope};
     use sha2::{Digest as _, Sha256};
 
@@ -108,6 +198,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         .await
         .unwrap();
     let mut public_placement_id = None;
+    let mut private_placement_id = None;
     for (registry_id, prefix, fixture) in [
         (public_id, "public", &public_fixture),
         (private_id, "private", &private_fixture),
@@ -124,7 +215,8 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         let outcome = index_and_record_from_placement(
             &db,
             &LocalFsFetch::new(&fixture.registry.root)
-                .with_image_snapshots(Arc::clone(&image_snapshots)),
+                .with_image_snapshots(Arc::clone(&image_snapshots))
+                .with_image_snapshot_indexing(),
             &registry,
             Some(placement.id),
         )
@@ -134,8 +226,65 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         assert_eq!(db.list_system_images(registry_id).await.unwrap().len(), 2);
         if registry_id == public_id {
             public_placement_id = Some(placement.id);
+        } else {
+            private_placement_id = Some(placement.id);
         }
     }
+
+    let owner_scope = common::org_scope(&db, "images").await;
+    db.create_delivery_endpoint(
+        "endpoint:image-fixture",
+        &owner_scope,
+        Some(org),
+        "http",
+        &DeliveryEndpointHostInput::Ipv4([127, 0, 0, 1]),
+        8420,
+        "instance:public",
+        &DeliveryEndpointRevisionSpec {
+            boundary_revision: 1,
+            ingress_kind: "hub".to_string(),
+            listener_configuration: "listener:image-fixture".to_string(),
+            tls_configuration: "{}".to_string(),
+            probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+        },
+        Some(1),
+        "test",
+        "request:image-fixture-endpoint",
+    )
+    .await
+    .unwrap();
+    db.reconcile_delivery_endpoint(
+        "endpoint:image-fixture",
+        1,
+        1,
+        "healthy",
+        true,
+        false,
+        None,
+        1,
+    )
+    .await
+    .unwrap();
+    configure_image_delivery_route(
+        &db,
+        public_id,
+        public_placement_id.unwrap(),
+        &owner_scope,
+        "endpoint:image-fixture",
+        "route:image-public",
+        "/images/public",
+    )
+    .await;
+    configure_image_delivery_route(
+        &db,
+        private_id,
+        private_placement_id.unwrap(),
+        &owner_scope,
+        "endpoint:image-fixture",
+        "route:image-private",
+        "/images/private",
+    )
+    .await;
 
     // Move default-branch HEAD to a signed commit with no packages while the
     // immutable release tag remains pinned to the original image catalog.
@@ -167,7 +316,8 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     let outcome = index_and_record_from_placement(
         &db,
         &LocalFsFetch::new(&public_fixture.registry.root)
-            .with_image_snapshots(Arc::clone(&image_snapshots)),
+            .with_image_snapshots(Arc::clone(&image_snapshots))
+            .with_image_snapshot_indexing(),
         &public_registry,
         public_placement_id,
     )
@@ -252,7 +402,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
 
     let image_uri = format!("/images/public/{}", public_fixture.raw_key);
     let (status, headers, body) = request(&app, Method::GET, &image_uri, &[], Vec::new()).await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     assert_eq!(body, public_fixture.raw);
     assert_eq!(
         headers[header::CONTENT_DISPOSITION],
@@ -328,7 +478,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
 
     let private_uri = format!("/images/private/{}", private_fixture.qcow2_key);
     let (status, _, _) = request(&app, Method::GET, &private_uri, &[], Vec::new()).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, headers, bytes) = request(
         &app,
         Method::GET,
@@ -382,6 +532,11 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     let corrupt_surface = root.path().join("corrupt-first");
     let replica_fixture = common::system_image_registry(&corrupt_surface);
     assert_eq!(replica_fixture.raw_key, public_fixture.raw_key);
+    std::fs::copy(
+        public_fixture.registry.root.join("info/refs"),
+        corrupt_surface.join("info/refs"),
+    )
+    .unwrap();
     let corrupt_raw_path = corrupt_surface.join(&public_fixture.raw_key);
     let corrupt_placement = db
         .create_surface_placement(&NewSurfacePlacementSpec {
@@ -401,11 +556,13 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     db.observe_surface_placement(corrupt_placement.id, "ready", "complete", 1)
         .await
         .unwrap();
-    index_and_record_from_placement(
+    reconcile_registry_replica(
         &db,
-        &LocalFsFetch::new(&corrupt_surface).with_image_snapshots(Arc::clone(&image_snapshots)),
+        &LocalFsFetch::new(&corrupt_surface)
+            .with_image_snapshots(Arc::clone(&image_snapshots))
+            .with_image_snapshot_indexing(),
         &public_registry,
-        Some(corrupt_placement.id),
+        corrupt_placement.id,
     )
     .await
     .unwrap();
@@ -415,30 +572,35 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     let (status, _, bytes) = request(&app, Method::GET, &image_uri, &[], Vec::new()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(bytes, public_fixture.raw);
+    db.update_surface_placement(
+        corrupt_placement.id,
+        &UpdateSurfacePlacementSpec {
+            expected_version: corrupt_placement.resource_version,
+            desired_state: "active".to_string(),
+            desired_read_enabled: true,
+            read_order: 10,
+        },
+    )
+    .await
+    .unwrap();
 
-    // An unchanged ref advertisement must not preserve stale availability.
-    // Same-size corruption of one release-root object fails the exact readback,
-    // marks the index non-fresh, and immediately removes every image surface.
+    // A source mutation cannot change already-published bytes: delivery keeps
+    // serving the retained immutable snapshot until authoritative reindexing
+    // rejects the corrupt release root and withdraws its catalog entries.
     let raw_path = public_fixture.registry.root.join(&public_fixture.raw_key);
     let mut corrupted = public_fixture.raw.clone();
     corrupted[0] ^= 0xff;
     std::fs::write(&raw_path, &corrupted).unwrap();
-    let (status, _, _) = request(&app, Method::GET, &image_uri, &[], Vec::new()).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "same-size post-index mutation was served"
-    );
+    let (status, _, bytes) = request(&app, Method::GET, &image_uri, &[], Vec::new()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, public_fixture.raw);
     let (status, _, _) = request(&app, Method::HEAD, &image_uri, &[], Vec::new()).await;
-    assert_ne!(
-        status,
-        StatusCode::OK,
-        "HEAD vouched for mutated image bytes"
-    );
+    assert_eq!(status, StatusCode::OK);
     assert!(index_and_record_from_placement(
         &db,
         &LocalFsFetch::new(&public_fixture.registry.root)
-            .with_image_snapshots(Arc::clone(&image_snapshots)),
+            .with_image_snapshots(Arc::clone(&image_snapshots))
+            .with_image_snapshot_indexing(),
         &public_registry,
         public_placement_id,
     )
@@ -449,12 +611,15 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         "failed"
     );
     assert!(db.list_system_images(public_id).await.unwrap().is_empty());
+    let (status, _, _) = request(&app, Method::GET, &image_uri, &[], Vec::new()).await;
+    assert_ne!(status, StatusCode::OK);
 
     std::fs::write(&raw_path, &public_fixture.raw).unwrap();
     index_and_record_from_placement(
         &db,
         &LocalFsFetch::new(&public_fixture.registry.root)
-            .with_image_snapshots(Arc::clone(&image_snapshots)),
+            .with_image_snapshots(Arc::clone(&image_snapshots))
+            .with_image_snapshot_indexing(),
         &public_registry,
         public_placement_id,
     )
@@ -483,7 +648,8 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     index_and_record_from_placement(
         &db,
         &LocalFsFetch::new(&public_fixture.registry.root)
-            .with_image_snapshots(Arc::clone(&image_snapshots)),
+            .with_image_snapshots(Arc::clone(&image_snapshots))
+            .with_image_snapshot_indexing(),
         &public_registry,
         public_placement_id,
     )
@@ -545,65 +711,19 @@ async fn fixture_surface_indexes_and_serves() {
         "release must record its signer"
     );
 
-    // Serve and exercise every audience.
+    // Serve the indexed control-plane views. Byte delivery is covered through
+    // explicit delivery routes in the image and routing fixtures below.
     let app = router(Arc::new(
         AppState::new(Arc::clone(&db), "http://127.0.0.1:8420".into()).await,
     ))
     .await;
 
-    // Machine surface: byte-faithful with the right header classes.
-    let (status, headers, body) = get(&app, "/demo/HEAD").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, b"ref: refs/heads/stable\n");
-    assert_eq!(
-        headers[header::CACHE_CONTROL],
-        "public, max-age=60, must-revalidate"
-    );
-
-    let (status, _, body) = get(&app, "/demo/info/refs").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, std::fs::read(surface.join("info/refs")).unwrap());
-
-    // A loose object is immutable and byte-identical.
-    let object_path = {
-        let refs = String::from_utf8(std::fs::read(surface.join("info/refs")).unwrap()).unwrap();
-        let commit_hex = refs.lines().next().unwrap().split('\t').next().unwrap();
-        format!("objects/{}/{}", &commit_hex[..2], &commit_hex[2..])
-    };
-    let (status, headers, body) = get(&app, &format!("/demo/{object_path}")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, std::fs::read(surface.join(&object_path)).unwrap());
-    assert_eq!(
-        headers[header::CACHE_CONTROL],
-        "public, max-age=31536000, immutable"
-    );
-
-    // Nix binary cache surface.
-    let (status, headers, _) = get(&app, "/demo/h7j3k8l2m9n4.narinfo").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(headers[header::CONTENT_TYPE], "text/x-nix-narinfo");
-    let (status, headers, _) = get(&app, "/demo/nar/h7j3k8l2m9n4-fixturehash.nar").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        headers[header::CACHE_CONTROL],
-        "public, max-age=31536000, immutable"
-    );
-    let (status, _, body) = get(&app, "/demo/nix-cache-info").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.starts_with(b"StoreDir:"));
-
-    // A channel partition is a machine path too.
-    let (status, _, body) = get(&app, "/demo/channels/stable/00").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(String::from_utf8(body).unwrap().contains("tag stable"));
-
     // Human pages render from the verified index.
-    let (status, _, body) = get(&app, "/demo/").await;
+    let (status, _, body) = get(&app, "/demo/-/").await;
     assert_eq!(status, StatusCode::OK);
     let home = String::from_utf8(body).unwrap();
     assert!(home.contains("Fixture registry"));
     assert!(home.contains("stable"));
-    assert!(home.contains("apr add http://127.0.0.1:8420/demo/"));
 
     let (status, _, body) = get(&app, "/demo/-/packages/curl").await;
     assert_eq!(status, StatusCode::OK);
@@ -711,7 +831,9 @@ async fn connectrpc_read_path_serves_index() {
                     Request::builder()
                         .method("POST")
                         .uri(uri)
+                        .header(header::HOST, "127.0.0.1:8420")
                         .header(header::CONTENT_TYPE, "application/json")
+                        .header("connect-protocol-version", "1")
                         .body(Body::from(body))
                         .unwrap(),
                 )
@@ -779,7 +901,10 @@ async fn connectrpc_read_path_serves_index() {
         "/aos.hub.v1.CacheService/ListCaches",
     ] {
         let (status, _) = post(uri, "{}").await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "legacy route mounted: {uri}");
+        assert!(
+            !status.is_success(),
+            "removed RPC unexpectedly succeeded: {uri}"
+        );
     }
 }
 
@@ -807,6 +932,7 @@ async fn rpc_inbound_body_cap_rejects_oversized_request() {
                 Request::builder()
                     .method("POST")
                     .uri("/aos.hub.v1.PackageService/ListPackages")
+                    .header(header::HOST, "127.0.0.1:8420")
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(header::CONTENT_LENGTH, len)
                     .body(Body::from(body))

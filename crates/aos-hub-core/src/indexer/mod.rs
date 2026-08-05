@@ -931,13 +931,24 @@ async fn synthesize_external_audit(
         "note": "out-of-band commit (not authored via the hub)",
     })
     .to_string();
+    let scope = match db.registry_authorization_scope(registry.id).await {
+        Ok(scope) => scope,
+        Err(err) => {
+            tracing::warn!(
+                slug = %registry.slug,
+                error = %format!("{err:#}"),
+                "resolving registry scope for external-commit audit"
+            );
+            return;
+        }
+    };
     if let Err(err) = db
         .record_audit(
             "key",
             None,
             &actor_label,
             ACTION,
-            &registry.slug,
+            &scope,
             None,
             Some(commit_oid_hex),
             None,

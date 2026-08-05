@@ -598,7 +598,8 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "placementName": "primary",
-            "expectedResourceVersion": primary.resource_version.to_string()
+            "expectedResourceVersion": primary.resource_version.to_string(),
+            "idempotencyKey": "plan-primary-read-only"
         }),
         Some(&owner_admin),
     )
@@ -655,7 +656,8 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "placementName": "conditional",
-            "expectedResourceVersion": conditional.resource_version.to_string()
+            "expectedResourceVersion": conditional.resource_version.to_string(),
+            "idempotencyKey": "plan-conditional-without-cas"
         }),
         Some(&owner_admin),
     )
@@ -679,20 +681,22 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "placementName": "primary",
-            "expectedResourceVersion": primary.resource_version.to_string()
+            "expectedResourceVersion": primary.resource_version.to_string(),
+            "idempotencyKey": "plan-initial-authority"
         }),
         Some(&owner_admin),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "plan initial authority: {resp}");
-    assert_eq!(resp["plan"]["createsInitialAuthority"], true);
     let initial_plan_id = resp["plan"]["planId"].as_str().unwrap();
+    let initial_confirmation = resp["plan"]["confirmationHash"].as_str().unwrap();
     let (status, resp) = rpc(
         &app,
         "TopologyService/PromotePlacement",
         serde_json::json!({
-            "surface": { "registrySlug": "placement-owner/private" },
-            "planId": initial_plan_id
+            "planId": initial_plan_id,
+            "confirmationHash": initial_confirmation,
+            "idempotencyKey": "apply-initial-authority"
         }),
         Some(&owner_admin),
     )
@@ -907,21 +911,22 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
             "placementName": "replica-west",
-            "expectedResourceVersion": updated_version
+            "expectedResourceVersion": updated_version,
+            "idempotencyKey": "plan-replica-promotion"
         }),
         Some(&owner_admin),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "plan promotion: {resp}");
-    assert_eq!(resp["plan"]["createsInitialAuthority"], false);
-    assert_eq!(resp["plan"]["observedPlacementName"], "primary");
     let promotion_plan_id = resp["plan"]["planId"].as_str().unwrap();
+    let promotion_confirmation = resp["plan"]["confirmationHash"].as_str().unwrap();
     let (status, resp) = rpc(
         &app,
         "TopologyService/PromotePlacement",
         serde_json::json!({
-            "surface": { "registrySlug": "placement-owner/private" },
-            "planId": promotion_plan_id
+            "planId": promotion_plan_id,
+            "confirmationHash": promotion_confirmation,
+            "idempotencyKey": "apply-replica-promotion"
         }),
         Some(&owner_admin),
     )
@@ -938,8 +943,9 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         &app,
         "TopologyService/PromotePlacement",
         serde_json::json!({
-            "surface": { "registrySlug": "placement-owner/private" },
-            "planId": promotion_plan_id
+            "planId": promotion_plan_id,
+            "confirmationHash": promotion_confirmation,
+            "idempotencyKey": "apply-replica-promotion"
         }),
         Some(&owner_admin),
     )

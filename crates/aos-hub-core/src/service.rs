@@ -10361,7 +10361,6 @@ impl RpcService {
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         require_absent_resource_version(&req.expected_resource_version)?;
         let claims = self.require_claims(auth)?;
-        req.slug = req.slug.trim().to_string();
         req.display_name = req.display_name.trim().to_string();
         if req.display_name.is_empty() {
             return Err(RpcError::invalid("displayName is required"));
@@ -10854,19 +10853,22 @@ impl RpcService {
         })
     }
 
-    fn image_object_url(&self, slug: &str, object_key: &str) -> Result<String, RpcError> {
-        let mut url = url::Url::parse(&self.external_url).map_err(RpcError::internal)?;
+    fn image_object_url(download_base: &str, object_key: &str) -> Result<String, RpcError> {
+        let mut url = url::Url::parse(download_base).map_err(RpcError::internal)?;
         url.path_segments_mut()
-            .map_err(|_| RpcError::internal(anyhow::anyhow!("Hub URL cannot carry paths")))?
+            .map_err(|_| {
+                RpcError::internal(anyhow::anyhow!(
+                    "canonical image delivery URL cannot carry paths"
+                ))
+            })?
             .pop_if_empty()
-            .extend(slug.split('/'))
             .extend(object_key.split('/'));
         Ok(url.to_string())
     }
 
     fn system_image_message(
         &self,
-        slug: &str,
+        download_base: &str,
         image: crate::db::IndexedSystemImage,
         channel: Option<&str>,
     ) -> Result<pb::SystemImage, RpcError> {
@@ -10881,7 +10883,7 @@ impl RpcService {
             format: image.format,
             logical_image_id: delivery.logical_image_id,
             filename: delivery.filename,
-            download_url: self.image_object_url(slug, &delivery.object_key)?,
+            download_url: Self::image_object_url(download_base, &delivery.object_key)?,
             media_type: delivery.media_type,
             compression: image_compression_name(delivery.compression).to_string(),
             byte_size: delivery.byte_size,
@@ -10896,7 +10898,10 @@ impl RpcService {
             object_key: delivery.object_key,
             image_info: Some(pb::ImageInfo {
                 filename: delivery.image_info.filename,
-                download_url: self.image_object_url(slug, &delivery.image_info.object_key)?,
+                download_url: Self::image_object_url(
+                    download_base,
+                    &delivery.image_info.object_key,
+                )?,
                 object_key: delivery.image_info.object_key,
                 media_type: delivery.image_info.media_type,
                 byte_size: delivery.image_info.byte_size,
@@ -10938,6 +10943,16 @@ impl RpcService {
     ) -> Result<pb::ListImagesResponse, RpcError> {
         let registry = self.registry_or_not_found(&req.slug).await?;
         self.require_read(auth, &registry).await?;
+        let download_base = self
+            .db
+            .ready_registry_canonical_url(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "registry canonical image delivery route is not ready".to_string(),
+                )
+            })?;
         if !req.release.is_empty() && !req.channel.is_empty() {
             return Err(RpcError::invalid(
                 "release and channel are mutually exclusive",
@@ -10988,7 +11003,7 @@ impl RpcService {
                 continue;
             }
             messages.push(self.system_image_message(
-                &req.slug,
+                &download_base,
                 image,
                 (!req.channel.is_empty()).then_some(req.channel.as_str()),
             )?);
@@ -17832,7 +17847,7 @@ impl RpcService {
         self.create_control_plan(
             &claims,
             "set_instance_settings",
-            "",
+            "instance",
             &input,
             &req.idempotency_key,
             vec!["replace deployment-wide instance settings".to_string()],
@@ -17893,7 +17908,7 @@ impl RpcService {
         }
 
         let actor_id = claims_principal(&claims).map(|principal| principal.id);
-        let mut touched: Vec<&str> = input.writes.iter().map(|(key, _)| key.as_str()).collect();
+        let touched: Vec<&str> = input.writes.iter().map(|(key, _)| key.as_str()).collect();
         let detail = touched.join(", ");
         if let Err(err) = self
             .db
@@ -20677,8 +20692,12 @@ impl RpcService {
         let registry = self.registry_or_not_found(&req.slug).await?;
         self.require_read(auth, &registry).await?;
         let head = self.head_commit(&registry).await?;
-        let fetch = self.topology_surface_fetcher(SurfaceTarget::Registry(registry.id));
-        let log = crate::git::commit_log(fetch.as_ref(), head, crate::git::GIT_LOG_LIMIT)
+        let fetch = crate::placement_read::TopologySurfaceFetch::for_verified_git_objects(
+            Arc::clone(&self.db),
+            Arc::clone(&self.surface),
+            SurfaceTarget::Registry(registry.id),
+        );
+        let log = crate::git::commit_log(&fetch, head, crate::git::GIT_LOG_LIMIT)
             .await
             .map_err(RpcError::internal)?;
         let commits: Vec<pb::GitCommit> = log
@@ -20731,8 +20750,12 @@ impl RpcService {
         } else {
             Oid::from_hex(&req.to_oid).map_err(|e| RpcError::invalid(format!("{e:#}")))?
         };
-        let fetch = self.topology_surface_fetcher(SurfaceTarget::Registry(registry.id));
-        let diff = crate::git::diff_config_files(fetch.as_ref(), from, to)
+        let fetch = crate::placement_read::TopologySurfaceFetch::for_verified_git_objects(
+            Arc::clone(&self.db),
+            Arc::clone(&self.surface),
+            SurfaceTarget::Registry(registry.id),
+        );
+        let diff = crate::git::diff_config_files(&fetch, from, to)
             .await
             .map_err(RpcError::internal)?;
         Ok(pb::GitDiffResponse { diff })

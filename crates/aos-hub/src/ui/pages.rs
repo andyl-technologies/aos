@@ -80,7 +80,7 @@ pub fn registry_home(
         caches,
         roster,
         validations,
-        external_url,
+        Some(external_url),
         manage_link,
         started,
         &current_session_indicator(),

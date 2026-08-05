@@ -417,12 +417,16 @@ impl ImageSnapshotStore {
     /// Returns an error for an invalid digest or poisoned store state.
     pub fn open_retained(&self, digest: &str) -> Result<Option<fs::File>> {
         Self::validate_digest(digest)?;
-        self.retained
+        let retained = self
+            .retained
             .lock()
             .map_err(|_| anyhow::anyhow!("image snapshot cache lock poisoned"))?
-            .get(digest)
-            .map(|file| file.try_clone().map_err(Into::into))
-            .transpose()
+            .contains_key(digest);
+        // `File::try_clone` duplicates the descriptor but shares its open-file
+        // offset. Concurrent or repeated streams would therefore consume one
+        // another. Retention is the authorization check; reopen the immutable,
+        // owner-private digest path to obtain an independent file description.
+        retained.then(|| self.open_digest(digest)).transpose()
     }
 
     /// Validates and retains every snapshot tracked by durable state.

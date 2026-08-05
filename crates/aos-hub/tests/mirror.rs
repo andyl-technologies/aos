@@ -226,7 +226,13 @@ async fn pull_through_fetches_verifies_persists_and_serves() {
     let uri = format!("/acme/infra/prod/mirror/{object_path}");
     let response = app
         .clone()
-        .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri(&uri)
+                .header(header::HOST, "127.0.0.1:8420")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
