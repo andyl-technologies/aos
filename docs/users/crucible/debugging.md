@@ -96,10 +96,15 @@ Debugger verbs are subcommands:
 
 ```text
 attach-gdb
+fork-debug
 goto <coordinate>
 reverse-step <instruction|quantum|event|assertion|timer>
 reverse-continue <condition>
 ```
+
+`--allow-mutate` only authorizes the explicit `fork-debug` verb. It does not
+fork by itself, and mutation or operator-controlled execution remains rejected
+until that whole-world non-canonical branch has been created.
 
 For example:
 
@@ -116,8 +121,8 @@ For example:
   admission and identity checks.
 - The CLI currently emits planned debug operations and live probe evidence; it
   is not yet a persistent interactive debugger shell.
-- `--allow-mutate` denotes a non-canonical branch. Do not use its output as a
-  normal replay-oracle artifact.
+- `fork-debug` creates a non-canonical branch. Do not use its output as a normal
+  replay-oracle artifact.
 - `attach-gdb` currently records the planned mediated-gdbstub operation; it does
   not keep a GDB proxy or debugger session open after the bounded probe exits.
 - `--session` is a debugger target shape, but the packaged `serve` backend is

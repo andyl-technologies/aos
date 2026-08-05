@@ -441,7 +441,7 @@ fn serve_operator_connection(
     operator
         .set_read_timeout(Some(RSP_RELAY_POLL_TIMEOUT))
         .map_err(|error| format!("set operator gdb read timeout: {error}"))?;
-    let mut operator_writer = operator
+    let operator_writer = operator
         .try_clone()
         .map_err(|error| format!("clone operator gdb stream: {error}"))?;
     operator_writer
@@ -921,8 +921,10 @@ mod tests {
         let process = test_process();
         let before = with_gateway(&process, |process| Ok(process.model.clone()))
             .unwrap_or_else(|error| panic!("test process should lock: {error}"));
-        let error = serve_connection(&process, write_and_close(b"CRDBG".to_vec()))
-            .expect_err("partial header must fail");
+        let error = match serve_connection(&process, write_and_close(b"CRDBG".to_vec())) {
+            Ok(()) => panic!("partial header must fail"),
+            Err(error) => error,
+        };
 
         assert!(error.contains("truncated debugger gateway frame header"));
         let after = with_gateway(&process, |process| Ok(process.model.clone()))
@@ -1043,8 +1045,10 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("commit should build: {error}"));
 
-        let error = with_gateway(&process, |gateway| gateway.handle(commit))
-            .expect_err("stale prepared debugger state must reject commit");
+        let error = match with_gateway(&process, |gateway| gateway.handle(commit)) {
+            Ok(_) => panic!("stale prepared debugger state must reject commit"),
+            Err(error) => error,
+        };
         assert!(error.contains("stale"));
         let active = with_gateway(&process, |gateway| Ok(gateway.model.active().cloned()))
             .unwrap_or_else(|error| panic!("test process should lock: {error}"));

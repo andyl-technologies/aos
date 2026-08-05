@@ -6,7 +6,7 @@
 //! reconcile idempotent prepare/commit operations after a lost acknowledgement.
 
 use std::io::{self, Read, Write};
-use std::net::SocketAddr;
+use std::net::{Shutdown, SocketAddr};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -174,6 +174,102 @@ impl DebugGatewayProcess {
         &mut self.client
     }
 
+    /// Reconnects and renegotiates the private control channel.
+    ///
+    /// The gateway process and any operator-facing GDB connection remain
+    /// untouched. Callers use this after an ambiguous control acknowledgement
+    /// and reconcile through [`DebugGatewayControlClient::backend_status`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the gateway cannot be reached or
+    /// version negotiation fails.
+    pub fn reconnect_control(&mut self) -> Result<(), DebugGatewayClientError> {
+        self.client.disconnect();
+        self.client = DebugGatewayControlClient::connect(&self.control_socket)?;
+        Ok(())
+    }
+
+    /// Prepares and commits one backend with lost-acknowledgement reconciliation.
+    ///
+    /// A failed prepare or commit may mean the gateway applied the request but
+    /// the acknowledgement was lost. This method reconnects, queries backend
+    /// status, and accepts only exact endpoint and generation evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when promotion is rejected, control
+    /// transport cannot be reconciled, or reported state does not prove the
+    /// requested transition.
+    pub fn promote_backend(&mut self, endpoint: &Path) -> Result<u64, DebugGatewayClientError> {
+        let endpoint_text = endpoint
+            .to_str()
+            .ok_or_else(|| DebugGatewayClientError::InvalidEndpoint(endpoint.to_path_buf()))?;
+        let generation = match self.client.prepare_backend(endpoint) {
+            Ok(generation) => generation,
+            Err(prepare_error) => {
+                let reconciled = self
+                    .reconnect_control()
+                    .and_then(|()| self.client.backend_status());
+                if let Some(generation) = reconciled.as_ref().ok().and_then(|status| {
+                    status.prepared.as_ref().and_then(|prepared| {
+                        (prepared.endpoint == endpoint_text).then_some(prepared.generation)
+                    })
+                }) {
+                    generation
+                } else {
+                    let gateway_state_indeterminate = reconciled.is_err();
+                    return Err(DebugGatewayClientError::PromotionReconciliation {
+                        operation: "prepare",
+                        failure: prepare_error.to_string(),
+                        reconciliation: format_reconciliation(reconciled),
+                        gateway_state_indeterminate,
+                    });
+                }
+            }
+        };
+        if let Err(commit_error) = self.client.commit_backend(generation) {
+            let reconciled = self
+                .reconnect_control()
+                .and_then(|()| self.client.backend_status());
+            if reconciled.as_ref().is_ok_and(|status| {
+                status.active.as_ref().map(|active| active.generation) == Some(generation)
+            }) {
+                return Ok(generation);
+            }
+            let candidate_is_prepared = reconciled.as_ref().is_ok_and(|status| {
+                status.prepared.as_ref().map(|prepared| prepared.generation) == Some(generation)
+            });
+            let mut gateway_state_indeterminate = reconciled.is_err();
+            let mut reconciliation = format_reconciliation(reconciled);
+            if candidate_is_prepared && let Err(abort_error) = self.client.abort_backend(generation)
+            {
+                let after_abort = self
+                    .reconnect_control()
+                    .and_then(|()| self.client.backend_status());
+                gateway_state_indeterminate = match after_abort.as_ref() {
+                    Ok(status) => {
+                        status.active.as_ref().map(|active| active.generation) == Some(generation)
+                            || status.prepared.as_ref().map(|prepared| prepared.generation)
+                                == Some(generation)
+                    }
+                    Err(_) => true,
+                };
+                reconciliation = format!(
+                    "{reconciliation}; abort failed: {abort_error}; after abort: {}",
+                    format_reconciliation(after_abort)
+                );
+            }
+            return Err(DebugGatewayClientError::PromotionReconciliation {
+                operation: "commit",
+                failure: commit_error.to_string(),
+                reconciliation,
+                gateway_state_indeterminate,
+            });
+        }
+        Ok(generation)
+    }
+
     /// Terminates and reaps the gateway process.
     ///
     /// # Errors
@@ -181,6 +277,17 @@ impl DebugGatewayProcess {
     /// Returns [`DebugGatewayClientError`] if child status inspection, signal
     /// delivery, or reaping fails.
     pub fn shutdown(mut self) -> Result<ExitStatus, DebugGatewayClientError> {
+        terminate_child(&mut self.child)
+    }
+
+    /// Terminates and reaps the gateway while retaining the process handle on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] if child status inspection, signal
+    /// delivery, or reaping fails. Callers may retry while retaining dependent
+    /// backend ownership.
+    pub fn terminate(&mut self) -> Result<ExitStatus, DebugGatewayClientError> {
         terminate_child(&mut self.child)
     }
 }
@@ -200,6 +307,15 @@ fn terminate_child(child: &mut Child) -> Result<ExitStatus, DebugGatewayClientEr
     }
     child.kill().map_err(DebugGatewayClientError::Terminate)?;
     child.wait().map_err(DebugGatewayClientError::Reap)
+}
+
+fn format_reconciliation(
+    status: Result<DebugGatewayBackendStatus, DebugGatewayClientError>,
+) -> String {
+    status.map_or_else(
+        |error| format!("unavailable: {error}"),
+        |status| format!("active={:?}, prepared={:?}", status.active, status.prepared),
+    )
 }
 
 /// Blocking control client for one debugger gateway process.
@@ -228,6 +344,10 @@ impl DebugGatewayControlClient {
             });
         }
         Ok(client)
+    }
+
+    fn disconnect(&self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
     }
 
     /// Returns active and prepared backend identities for reconciliation.
@@ -492,6 +612,37 @@ pub enum DebugGatewayClientError {
     /// A direct unauthenticated listener was requested outside loopback.
     #[error("unauthenticated debugger listener must be loopback, not `{0}`")]
     UntrustedOperatorListen(SocketAddr),
+    /// A backend promotion could not be proven after an ambiguous response.
+    #[error(
+        "debugger backend {operation} failed with `{failure}`; reconciliation {reconciliation}"
+    )]
+    PromotionReconciliation {
+        /// Promotion phase whose acknowledgement was ambiguous.
+        operation: &'static str,
+        /// Original transport or gateway failure.
+        failure: String,
+        /// Status observed after reconnecting, or the reconnect failure.
+        reconciliation: String,
+        /// Whether the gateway may still have applied an unobserved transition.
+        gateway_state_indeterminate: bool,
+    },
+}
+
+impl DebugGatewayClientError {
+    /// Returns whether this failure requires terminating the gateway session.
+    ///
+    /// An indeterminate promotion cannot safely discard either backend while
+    /// the gateway might still route the stable operator connection to it.
+    #[must_use]
+    pub const fn promotion_requires_gateway_teardown(&self) -> bool {
+        matches!(
+            self,
+            Self::PromotionReconciliation {
+                gateway_state_indeterminate: true,
+                ..
+            }
+        )
+    }
 }
 
 #[cfg(test)]

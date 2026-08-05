@@ -2179,6 +2179,10 @@ pub struct DebugRuntimeRepositionRequest {
     pub restore_checkpoint: ContentHash,
     /// Fat checkpoint expected after replay reaches the target.
     pub target_checkpoint: ContentHash,
+    /// Runtime state whose scheduler, event-log, and node coordinates must be realized.
+    pub target_runtime: RuntimeState,
+    /// Fat/thin replay-oracle proof binding the target checkpoint to the target configuration.
+    pub replay_oracle: ReplayOracleCheck,
 }
 
 impl DebugRuntimeRepositionRequest {
@@ -2201,6 +2205,13 @@ impl DebugRuntimeRepositionRequest {
                 actual: target.id(),
             });
         }
+        if !goto.proves_replay_oracle() {
+            return Err(EngineError::ReplayOracleMismatch {
+                checkpoint: goto.target_checkpoint,
+                expected: goto.replay_oracle.thin_checkpoint,
+                actual: goto.replay_oracle.fat_checkpoint,
+            });
+        }
         Ok(Self {
             node,
             current_configuration: goto.current_configuration,
@@ -2209,7 +2220,18 @@ impl DebugRuntimeRepositionRequest {
             restore_configuration: goto.restore_configuration,
             restore_checkpoint: goto.restore_checkpoint,
             target_checkpoint: goto.target_checkpoint,
+            target_runtime: goto.runtime.runtime.clone(),
+            replay_oracle: goto.replay_oracle.clone(),
         })
+    }
+
+    /// Returns whether the request carries a complete target replay-oracle proof.
+    #[must_use]
+    pub fn proves_target_oracle(&self) -> bool {
+        self.target_runtime.configuration == self.target.id()
+            && self.replay_oracle.configuration == self.target.id()
+            && self.replay_oracle.fat_checkpoint == self.target_checkpoint
+            && self.replay_oracle.thin_checkpoint == self.target_checkpoint
     }
 }
 
@@ -2228,6 +2250,32 @@ pub struct DebugRuntimeRepositionReport {
     pub qemu_gdbstub: DebugGdbEndpoint,
     /// Nonzero gateway generation returned by the committed prepare transaction.
     pub gateway_generation: u64,
+    /// How the replaced world was deauthorized after gateway promotion.
+    pub retired_world_cleanup: DebugRetiredWorldCleanup,
+}
+
+/// Teardown evidence for a world retired by debugger runtime replacement.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DebugRetiredWorldCleanup {
+    /// Every old QEMU child completed the normal shutdown and reap ladder.
+    Reaped,
+    /// Runtime authority was detached, but process cleanup was not observed.
+    DetachedCleanupPending {
+        /// Bounded diagnostic from the failed observed shutdown ladder.
+        diagnostic: String,
+    },
+}
+
+impl DebugRetiredWorldCleanup {
+    /// Returns whether the retired world no longer has scheduler or gateway authority.
+    ///
+    /// This proof concerns Crucible control authority only. A
+    /// [`Self::DetachedCleanupPending`] result deliberately makes no claim that
+    /// every operating-system process has exited or been reaped.
+    #[must_use]
+    pub const fn proves_deauthorization(&self) -> bool {
+        true
+    }
 }
 
 impl DebugRuntimeRepositionReport {
@@ -2238,6 +2286,22 @@ impl DebugRuntimeRepositionReport {
         qemu_gdbstub: DebugGdbEndpoint,
         gateway_generation: u64,
     ) -> Self {
+        Self::completed_with_cleanup(
+            request,
+            qemu_gdbstub,
+            gateway_generation,
+            DebugRetiredWorldCleanup::Reaped,
+        )
+    }
+
+    /// Builds a success report with explicit retired-world cleanup evidence.
+    #[must_use]
+    pub fn completed_with_cleanup(
+        request: &DebugRuntimeRepositionRequest,
+        qemu_gdbstub: DebugGdbEndpoint,
+        gateway_generation: u64,
+        retired_world_cleanup: DebugRetiredWorldCleanup,
+    ) -> Self {
         Self {
             node: request.node.clone(),
             previous_configuration: request.current_configuration,
@@ -2245,18 +2309,21 @@ impl DebugRuntimeRepositionReport {
             target_checkpoint: request.target_checkpoint,
             qemu_gdbstub,
             gateway_generation,
+            retired_world_cleanup,
         }
     }
 
     /// Returns whether this report proves completion of exactly `request`.
     #[must_use]
     pub fn proves(&self, request: &DebugRuntimeRepositionRequest) -> bool {
-        self.node == request.node
+        request.proves_target_oracle()
+            && self.node == request.node
             && self.previous_configuration == request.current_configuration
             && self.target_configuration == request.target.id()
             && self.target_checkpoint == request.target_checkpoint
             && self.qemu_gdbstub != request.current_qemu_gdbstub
             && self.gateway_generation != 0
+            && self.retired_world_cleanup.proves_deauthorization()
     }
 }
 

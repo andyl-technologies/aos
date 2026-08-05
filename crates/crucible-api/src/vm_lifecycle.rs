@@ -19,13 +19,15 @@ use crate::vm_resume::{
 };
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, ConditionEvaluationPass,
-    ConditionLeaf, Configuration, ControlOperation, Decision, EventFirings, EventGraph,
-    EventGraphState, FingerprintSample, GdbAttachInfo, GdbListen, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, NodeId, ObservableEvent, QuantumLoop,
-    QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RestartPolicy, ScenarioDef,
+    ConditionLeaf, Configuration, ContentHash, ControlOperation, DebugGdbEndpoint,
+    DebugRetiredWorldCleanup, DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest,
+    Decision, EventFirings, EventGraph, EventGraphState, EventLogOffset, FingerprintSample,
+    GdbAttachInfo, GdbListen, HostAssertionEvaluator, HostAssertionOutcome,
+    HostAssertionOutcomeKind, Icount, NodeId, ObservableEvent, QuantumLoop, QuantumOutcome,
+    QuantumRequest, QuantumTerminalVerdict, RestartPolicy, RuntimeState, ScenarioDef,
     ScenarioDefForm, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
-    SingleScheduler, VirtualTime, World,
+    SchedulerLivenessScenario, SchedulerState, SearchFrontierChoices, Seed, Shift, SimInstant,
+    SimulationBackend, SingleScheduler, VirtualTime, World,
 };
 
 use crate::LifecycleApiError;
@@ -74,6 +76,23 @@ struct ProductionVmBranchConfig {
     frontier: VirtualTime,
     decisions: Vec<Decision>,
     seed: Option<Seed>,
+}
+
+/// Original live-execution evidence sampled at one scheduler boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProductionVmDebugRuntimeEvidence {
+    configuration: ContentHash,
+    event_log: EventLogOffset,
+    scheduler: SchedulerState,
+    node_icounts: BTreeMap<NodeId, Icount>,
+    fingerprints: BTreeMap<NodeId, FingerprintSample>,
+    runtime: Option<RuntimeState>,
+}
+
+/// Single-node replacement retained while gateway ownership is indeterminate.
+struct ProductionVmQuarantinedBackend {
+    backend: ProductionLiveNode,
+    run_directory: Option<tempfile::TempDir>,
 }
 
 #[derive(Clone, Debug)]
@@ -301,6 +320,10 @@ pub struct ProductionVmLifecycleLoop {
     debug_backend_paths: BTreeMap<NodeId, PathBuf>,
     debug_gateway: Option<DebugGatewayProcess>,
     debug_attach: Option<GdbAttachInfo>,
+    debug_gateway_teardown_required: bool,
+    indeterminate_debug_candidate: Option<Box<ProductionVmLifecycleLoop>>,
+    indeterminate_debug_backend: Option<ProductionVmQuarantinedBackend>,
+    debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     retained_replay_directories: Vec<tempfile::TempDir>,
     reconciled_crashes: usize,
     reconciled_restarts: usize,
@@ -586,7 +609,7 @@ pub fn build_production_vm_lifecycle_loop(
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
 
-    Ok(ProductionVmLifecycleLoop {
+    let mut lifecycle = ProductionVmLifecycleLoop {
         inner: BackendQuantumLoop::new(scheduler, backends),
         trigger_graph,
         trigger_state: EventGraphState::default(),
@@ -610,9 +633,20 @@ pub fn build_production_vm_lifecycle_loop(
         debug_backend_paths,
         debug_gateway: None,
         debug_attach: None,
+        debug_gateway_teardown_required: false,
+        indeterminate_debug_candidate: None,
+        indeterminate_debug_backend: None,
+        debug_runtime_evidence: Vec::new(),
         retained_replay_directories: Vec::new(),
         reconciled_crashes: 0,
         reconciled_restarts: 0,
         _run_directory: run_directory,
-    })
+    };
+    if let Err(error) = lifecycle.capture_debug_runtime_evidence() {
+        let _ = lifecycle.inner.shutdown();
+        return Err(loop_factory_error(format!(
+            "capture initial debugger runtime evidence: {error}"
+        )));
+    }
+    Ok(lifecycle)
 }
