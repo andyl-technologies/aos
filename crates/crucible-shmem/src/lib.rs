@@ -161,9 +161,9 @@ pub const DEFAULT_QUEUE_CAPACITY: u32 = 64;
 pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b"CRUCSHM1");
 /// Current shared-memory ABI version.
 ///
-/// Version 6 appends per-VM fault command/result rings and bounded circular
-/// payload arenas while preserving all version-5 offsets.
-pub const ABI_VERSION: u32 = 6;
+/// Version 7 makes the bounded per-node fault payload-arena size explicit in
+/// the region header so admitted mutation envelopes are reconstructed exactly.
+pub const ABI_VERSION: u32 = 7;
 const _: () = assert!(ABI_VERSION == include!("abi_version.in"));
 /// Fixed number of entries in each plugin-to-host coverage queue.
 ///
@@ -208,6 +208,8 @@ mod delivery_errors;
 mod fault_command;
 #[path = "shmem/fault_memory.rs"]
 mod fault_memory;
+#[path = "shmem/fault_memory_evidence.rs"]
+mod fault_memory_evidence;
 #[path = "shmem/fingerprint_sample.rs"]
 mod fingerprint_sample;
 #[path = "shmem/frame_node.rs"]
@@ -222,6 +224,7 @@ mod ring_whitebox_marker;
 pub use delivery_errors::*;
 pub use fault_command::*;
 pub use fault_memory::*;
+pub use fault_memory_evidence::*;
 pub use fingerprint_sample::*;
 pub use frame_node::*;
 pub use region::*;

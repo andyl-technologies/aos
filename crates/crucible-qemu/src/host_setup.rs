@@ -16,18 +16,21 @@ use crucible_protocol::{
     SetupDescriptorFds,
 };
 use crucible_shmem::{
-    ABI_VERSION, DEFAULT_FAULT_COMMAND_CAPACITY, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR,
-    FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultBoundaryPhase,
-    FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandHeaderV1, FaultCommandKind,
-    FaultResultStatus, FaultTransportError, MappedSetupRegionAccessError, RegionAllocation,
-    RegionConfig, RegionLayoutError, RegionSerializationError, RegionSetupValidationError,
-    SetupRegionMapError, ValidatedSetupRegion, decode_fault_capability_manifest,
-    dequeue_fault_result, enqueue_fault_command, fault_capability_manifest_digest,
-    mmap_setup_region, validate_setup_region_header,
+    ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
+    FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultStatus, FaultTransportError,
+    MappedSetupRegionAccessError, RegionAllocation, RegionConfig, RegionLayoutError,
+    RegionSerializationError, RegionSetupValidationError, SetupRegionMapError,
+    ValidatedSetupRegion, decode_fault_capability_manifest, dequeue_fault_result,
+    enqueue_fault_command, fault_capability_manifest_digest, mmap_setup_region,
+    validate_setup_region_header,
 };
 use thiserror::Error;
 
-use crate::{QemuNodeChannelError, QemuPluginIpcControlChannel, QemuSpawnSetupResources};
+use crate::{
+    QemuFaultCapabilityRequirement, QemuNodeChannelError, QemuPluginIpcControlChannel,
+    QemuSpawnSetupResources,
+};
 
 /// Completed host-side setup state for one QEMU plugin node.
 #[derive(Debug)]
@@ -40,83 +43,6 @@ pub struct QemuHostPluginSetup {
     region: ValidatedSetupRegion,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
     fault_capability_digest: [u8; 32],
-}
-
-/// Exact QEMU fault capability manifest required before guest execution.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuFaultCapabilityRequirement {
-    rows: Vec<FaultCapabilityRowV1>,
-    digest: [u8; 32],
-}
-
-impl QemuFaultCapabilityRequirement {
-    /// Builds an exact, canonically ordered capability requirement.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultAbiError`] when rows are empty, invalid, duplicated, or
-    /// not in canonical `(kind, version, scope)` order.
-    pub fn exact(rows: Vec<FaultCapabilityRowV1>) -> Result<Self, FaultAbiError> {
-        let digest = fault_capability_manifest_digest(&rows)?;
-        Ok(Self { rows, digest })
-    }
-
-    /// Returns the exact 0047-0048 capability set before mutation patches.
-    #[must_use]
-    pub fn abi_boundary_v1() -> Self {
-        let row = |command_kind, maximum_pending_commands, name: &[u8], schema: &[u8]| {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(b"crucible.qemu-fault-capability.v1\0");
-            hasher.update(name);
-            hasher.update(&[0]);
-            hasher.update(schema);
-            FaultCapabilityRowV1 {
-                command_kind,
-                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
-                scope: FaultCapabilityScope::All,
-                phase_mask: FaultBoundaryPhase::NodeBoundary.bit(),
-                maximum_payload_bytes: 0,
-                maximum_pending_commands,
-                required_feature_bits: 0,
-                capability_hash: *hasher.finalize().as_bytes(),
-            }
-        };
-        let rows = vec![
-            row(
-                FaultCommandKind::QueryCapabilities,
-                1,
-                b"qemu.fault-command-abi.v1",
-                b"empty; use capability query API",
-            ),
-            row(
-                FaultCommandKind::BoundaryProbe,
-                DEFAULT_FAULT_COMMAND_CAPACITY,
-                b"qemu.fault-boundary-probe.v1",
-                b"empty",
-            ),
-        ];
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"crucible.qemu-fault-capabilities.v1\0");
-        for row in &rows {
-            hasher.update(&row.encode());
-        }
-        Self {
-            rows,
-            digest: *hasher.finalize().as_bytes(),
-        }
-    }
-
-    /// Returns the exact required rows.
-    #[must_use]
-    pub fn rows(&self) -> &[FaultCapabilityRowV1] {
-        &self.rows
-    }
-
-    /// Returns the canonical manifest digest bound to execution identity.
-    #[must_use]
-    pub const fn digest(&self) -> [u8; 32] {
-        self.digest
-    }
 }
 
 impl QemuHostPluginSetup {
@@ -441,21 +367,29 @@ fn accept_capability_result(
         || header.command_kind != FaultCommandKind::QueryCapabilities as u16
         || header.status != FaultResultStatus::Applied
         || header.phase != FaultBoundaryPhase::NodeBoundary
+        || header.capability_version != 1
+        || header.observed_icount != 0
+        || header.applied_icount != 0
+        || header.evidence_hash != *blake3::hash(&payload).as_bytes()
     {
         return Err(QemuHostPluginSetupError::AdmissionResultRejected {
             command_sequence: header.command_sequence,
             command_kind: header.command_kind,
             status: header.status,
             phase: header.phase,
+            capability_version: header.capability_version,
+            observed_icount: header.observed_icount,
+            applied_icount: header.applied_icount,
+            evidence_hash: header.evidence_hash,
         });
     }
     let observed = decode_fault_capability_manifest(&payload)
         .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
-    if observed != required.rows {
+    if observed != required.rows() {
         let observed_digest = fault_capability_manifest_digest(&observed)
             .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
         return Err(QemuHostPluginSetupError::AdmissionCapabilityMismatch {
-            required_digest: required.digest,
+            required_digest: required.digest(),
             observed_digest,
         });
     }
@@ -592,7 +526,7 @@ pub enum QemuHostPluginSetupError {
     },
     /// QEMU rejected or miscorrelated the mandatory capability query.
     #[error(
-        "fault capability result mismatch: sequence={command_sequence} kind={command_kind} status={status:?} phase={phase:?}"
+        "fault capability result mismatch: sequence={command_sequence} kind={command_kind} status={status:?} phase={phase:?} capability_version={capability_version} observed_icount={observed_icount} applied_icount={applied_icount} evidence_hash={evidence_hash:02x?}"
     )]
     AdmissionResultRejected {
         /// Returned sequence.
@@ -603,6 +537,14 @@ pub enum QemuHostPluginSetupError {
         status: FaultResultStatus,
         /// Returned boundary phase.
         phase: FaultBoundaryPhase,
+        /// Returned capability ABI version.
+        capability_version: u32,
+        /// Returned setup-time observation coordinate.
+        observed_icount: u64,
+        /// Returned setup-time application coordinate.
+        applied_icount: u64,
+        /// Returned evidence digest.
+        evidence_hash: [u8; 32],
     },
     /// The returned immutable capability manifest was malformed.
     #[error("fault capability manifest is invalid: {source}")]
@@ -648,7 +590,7 @@ pub(crate) mod tests {
 
     #[test]
     fn qemu_host_rejects_a_v1_plugin_against_the_v6_region() {
-        assert_eq!(ABI_VERSION, 6);
+        assert_eq!(ABI_VERSION, 7);
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,

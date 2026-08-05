@@ -515,7 +515,7 @@ fn run_loaded_qemu_once(
         resources.into_setup_resources(),
         region_config,
         GATE_SLOT,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        command.fault_capability_requirement(),
     )
     .map_err(|source| LoadedQemuCoverageGateError::HostSetup { mode, source })?;
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)

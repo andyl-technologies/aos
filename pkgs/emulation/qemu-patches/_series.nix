@@ -7,10 +7,10 @@ let
   patchBranchRef = "crucible/qemu-${qemuVersion}";
   patchBranchModel = "tracked-quilt-stack-linearized-into-git-commits";
   patchBranchBundle = ./crucible-qemu-10.0.0.bundle;
-  patchBranchBundleSha256 = "86d1e7f93e404a5783a2d77051d9a31045d67aa7d144473b1a1d4cb28756446a";
+  patchBranchBundleSha256 = "93ea8c9d357758fac50d796efed290b0717fcdd30fa162a93d41906a6a912d83";
   patchBranchBaseCommit = "36ac68e25469b93cc91f6350b998b486ac41669d";
   patchBranchBaseTree = "0cd2d9a4fc104d62436a431eddc2dac955068986";
-  patchBranchHeadCommit = "8fc9a7f0938954564f2aeb0773d7fecd7f0f78ac";
+  patchBranchHeadCommit = "1a05b3386612b0cad3b4db93d44c69632d602ea0";
   deterministicAuthorName = "Crucible Patch Regenerator";
   deterministicAuthorEmail = "crucible@aos.invalid";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
@@ -324,8 +324,8 @@ let
     }
     {
       file = "0035-crucible-process-argv-attestation.patch";
-      branchCommit = "664759be120434a1dfe3e30abadb92399a482ba9";
-      branchTree = "7a94a8557c4d94206386fa000b6c2cd3f04d6c19";
+      branchCommit = "4c1c218fa1480d523ec91390219a75af49167473";
+      branchTree = "15000afeb742ca6d2f1f58bcd4e9723f62c5269f";
       catalogName = "crucible-process-argv-attestation";
       class = "F";
       enforces = "DET-31,QEMU-34";
@@ -333,8 +333,8 @@ let
     }
     {
       file = "0036-crucible-raw-state-export.patch";
-      branchCommit = "59dab46e07097fdc10aa9285b413f409e57bf8dc";
-      branchTree = "57140fdc7685e5d9e077fa6d32af423493dcaf9f";
+      branchCommit = "93b08689b4c0a4862f2fa36455cf7bc4184fa0a6";
+      branchTree = "b2da5a6b56885201eb936f94bec0e79dd0904a3b";
       catalogName = "crucible-raw-state-export";
       class = "F";
       enforces = "DET-29,PLUG-47";
@@ -342,8 +342,8 @@ let
     }
     {
       file = "0037-crucible-sim-freeze-warp-at-observation-boundary.patch";
-      branchCommit = "a39af176593a74a3d27b49b1bf38d1ae164228e1";
-      branchTree = "d272edd88c53c1c57b82c937a8f2d7fa4c7ba057";
+      branchCommit = "bc3792339ec879f3375e241cb9079a1ec4523d16";
+      branchTree = "459261c9767a3119244c55bd30a23287f5b1e040";
       catalogName = "crucible-sim-freeze-warp-at-observation-boundary";
       class = "D";
       enforces = "DET-8,DET-29";
@@ -351,8 +351,8 @@ let
     }
     {
       file = "0038-crucible-sim-gate-rr-kick.patch";
-      branchCommit = "fe8e95dab72e7a4a1aaadac31c23c4b2f98a4fb6";
-      branchTree = "e7e0e4f0bb159a42c82995662302c67c3b923a86";
+      branchCommit = "e1f2ee6dd7f485bd1ae16aa3c77a2ab063d4c9e1";
+      branchTree = "65670ef9953575370edcee88fb4d67686a3c947a";
       catalogName = "crucible-sim-gate-rr-kick";
       class = "D";
       enforces = "DET-30";
@@ -360,8 +360,8 @@ let
     }
     {
       file = "0039-crucible-blk-device-completion-advance.patch";
-      branchCommit = "081c39e25fbad5ab57420a7af841cc3ee153df5f";
-      branchTree = "ea9479133be86aef4bea2605bdb85ff91bd405b9";
+      branchCommit = "3392d53edd0d1b385df469d94c74c74403db4fcc";
+      branchTree = "4876994ce1997fa8d8e71d2abb2f041e66304421";
       catalogName = "crucible-blk-device-completion-advance";
       class = "D";
       enforces = "DET-16,PATCH-27,PLUG-21,IO-31";
@@ -369,8 +369,8 @@ let
     }
     {
       file = "0040-crucible-9p-sync-kick.patch";
-      branchCommit = "3cfc953b439b903ada7dad20d6324c744e38248f";
-      branchTree = "7d743fffaab320e5f139d62ae9898c6579ac7efe";
+      branchCommit = "8a65603e452a1250a27a256b91b6608d4156dd7f";
+      branchTree = "481dafec5a8a12247d29400407e066aeb8b9b5d6";
       catalogName = "crucible-9p-sync-kick";
       class = "D";
       enforces = "DET-16,PATCH-29,PLUG-22,IO-32";
@@ -378,8 +378,8 @@ let
     }
     {
       file = "0041-crucible-whitebox-guest-write.patch";
-      branchCommit = "9c00b49431e15c216c66994af75ff77a904a5658";
-      branchTree = "13ab2a7213502a99b63392344e2c1c3347d266c7";
+      branchCommit = "b3deeb1b8576a57d528c0cace2ba6254a18f900e";
+      branchTree = "75c4a854a5f613477094b13e259ac3357f099e8d";
       catalogName = "crucible-whitebox-guest-write";
       class = "F";
       enforces = "PLUG-34,PLUG-51,GHC-32,GHC-37";
@@ -387,8 +387,8 @@ let
     }
     {
       file = "0042-crucible-aarch64-det-ipi-adapter.patch";
-      branchCommit = "851e72e46bd88780130cfb5ba2e9eef835e4f260";
-      branchTree = "d6edde819b744161a03a798ea0e616f162523359";
+      branchCommit = "52c20f02d3609db51042c07e849e191aaaf0750c";
+      branchTree = "bba76c6d0fef7d7b1276ba82e45e3929c341ede0";
       catalogName = "crucible-aarch64-det-ipi-adapter";
       class = "D";
       enforces = "DET-4,PLUG-14,GHC-4";
@@ -396,8 +396,8 @@ let
     }
     {
       file = "0043-crucible-time-advance-commit-barrier.patch";
-      branchCommit = "5e5e0e69eca6da8cd11ecc06327a4c04c71ee2d4";
-      branchTree = "85190c04d76f1f23daea71e7d9193f9126c5d32e";
+      branchCommit = "e7c083fb6e441316a6083f006cef5621d27c5521";
+      branchTree = "379bc92910170d260ef88c5f8c9f3497f80037d4";
       catalogName = "crucible-time-advance-commit-barrier";
       class = "D";
       enforces = "TIME-23,TIME-27,DET-1,INV-10";
@@ -405,8 +405,8 @@ let
     }
     {
       file = "0044-crucible-time-advance-enqueue-kick.patch";
-      branchCommit = "da9ff8ead549b151afd9fdb6485f89f77a0a4ae7";
-      branchTree = "d4d9760e7e981d25847b395b256a6ae304ae6074";
+      branchCommit = "0cca0f65984e6c9ea7fc20e34b2f399eb474aa1e";
+      branchTree = "199274a8dc65abd9bef2b0b15fa97901b5cde890";
       catalogName = "crucible-time-advance-enqueue-kick";
       class = "D";
       enforces = "TIME-23,TIME-27,DET-1,INV-10";
@@ -414,8 +414,8 @@ let
     }
     {
       file = "0045-crucible-time-advance-arm-at-vcpu-boundary.patch";
-      branchCommit = "d5d17201d768a0888058cd7522d1cfbb4fc42edd";
-      branchTree = "a4269bdaac347481ba03975535de9517e108523d";
+      branchCommit = "505e66b0b34ad6a8c41e50bba48bb7bcdd50cb5d";
+      branchTree = "f4c226a9dc8dcd76c604e6e6c89249b7726f016e";
       catalogName = "crucible-time-advance-arm-at-vcpu-boundary";
       class = "D";
       enforces = "TIME-23,TIME-27,DET-1,INV-10";
@@ -423,8 +423,8 @@ let
     }
     {
       file = "0046-crucible-translation-prefetch-helper.patch";
-      branchCommit = "5cf2e39a80828febc0c1d4b5972914860fedcfe9";
-      branchTree = "f0584d267d2625b8deff047effab134670d66d16";
+      branchCommit = "d7f86cc58818d8d97eea0a1221e9195297bf351a";
+      branchTree = "e8237caa96f342f36bc11391c7731aa3b86e7883";
       catalogName = "crucible-translation-prefetch-helper";
       class = "F";
       enforces = "PERF-32";
@@ -432,8 +432,8 @@ let
     }
     {
       file = "0047-crucible-fault-command-abi.patch";
-      branchCommit = "c5968ac9d219bedce631d3ed005fec3ca74eb3cd";
-      branchTree = "b6db1acf5033613f5908c354e896738160f48cdf";
+      branchCommit = "6a6189322506fd462093a1ce5ad9b0394d90b5ee";
+      branchTree = "df04f6464a152789d4811989245a32b4f71739ff";
       catalogName = "crucible-fault-command-abi";
       class = "F";
       enforces = "FAULT-ABI,FAULT-CAP,FAULT-ORDER";
@@ -441,8 +441,8 @@ let
     }
     {
       file = "0048-crucible-fault-safe-boundary.patch";
-      branchCommit = "8fc9a7f0938954564f2aeb0773d7fecd7f0f78ac";
-      branchTree = "8926fd161f68a5ed955868d4c6ca805f17ce6001";
+      branchCommit = "1a05b3386612b0cad3b4db93d44c69632d602ea0";
+      branchTree = "fedacbdaf836839b37d534599d40ba9ce137b714";
       catalogName = "crucible-fault-safe-boundary";
       class = "D";
       enforces = "FAULT-BOUNDARY,FAULT-AUTH,DET-1";

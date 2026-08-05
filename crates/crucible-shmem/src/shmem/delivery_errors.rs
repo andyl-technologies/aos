@@ -296,6 +296,16 @@ pub enum RegionLayoutError {
         /// The rejected shift value.
         shift_bits: u32,
     },
+    /// The per-direction fault payload arena cannot carry the supported envelope.
+    #[error("fault payload arena size {bytes} is outside supported range {minimum}..={maximum}")]
+    InvalidFaultPayloadArenaBytes {
+        /// Rejected arena byte count.
+        bytes: u32,
+        /// Smallest arena that carries the default mutation envelope.
+        minimum: u32,
+        /// Largest arena permitted by the public transport ABI.
+        maximum: u32,
+    },
     /// The computed region byte geometry overflowed an integer.
     #[error("computed shared-memory region geometry overflowed")]
     GeometryOverflow,

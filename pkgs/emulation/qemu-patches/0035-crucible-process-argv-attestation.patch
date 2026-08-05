@@ -1,19 +1,51 @@
-diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
---- a/include/qemu/plugin.h
-+++ b/include/qemu/plugin.h
-@@ -24,6 +24,11 @@
- struct qemu_plugin_desc;
- typedef QTAILQ_HEAD(, qemu_plugin_desc) QemuPluginList;
- 
+diff --git a/MAINTAINERS b/MAINTAINERS
+index d54b557..5d6bc74 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -3163,6 +3163,7 @@ Main loop
+ M: Paolo Bonzini <pbonzini@redhat.com>
+ S: Maintained
+ F: include/qemu/main-loop.h
++F: include/qemu/crucible-process.h
+ F: include/system/runstate.h
+ F: include/system/runstate-action.h
+ F: util/main-loop.c
+diff --git a/include/qemu/crucible-process.h b/include/qemu/crucible-process.h
+new file mode 100644
+index 0000000..aa8fa71
+--- /dev/null
++++ b/include/qemu/crucible-process.h
+@@ -0,0 +1,16 @@
++/*
++ * Crucible process-level deterministic attestation helpers.
++ *
++ * Copyright (c) 2026 ANDYL Technologies, Inc.
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef QEMU_CRUCIBLE_PROCESS_H
++#define QEMU_CRUCIBLE_PROCESS_H
++
 +int qemu_crucible_process_argv_attestation(uint32_t *version_out,
 +                                           uint64_t *argc_out,
 +                                           uint64_t *raw_bytes_out,
 +                                           uint8_t digest_out[32]);
 +
- /*
-  * Construct a qemu_plugin_meminfo_t.
-  */
++#endif /* QEMU_CRUCIBLE_PROCESS_H */
+diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index 9a0b94f..e3112d3 100644
+--- a/include/qemu/plugin.h
++++ b/include/qemu/plugin.h
+@@ -8,6 +8,7 @@
+ #define QEMU_PLUGIN_H
+ 
+ #include "qemu/config-file.h"
++#include "qemu/crucible-process.h"
+ #include "qemu/qemu-plugin.h"
+ #include "qemu/error-report.h"
+ #include "qemu/queue.h"
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 7156b90..0fc574c 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1435,6 +1435,19 @@ int qemu_plugin_crucible_sha256_bytes(const uint8_t *material,
@@ -37,6 +69,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_crucible_icount(void);
 diff --git a/plugins/api.c b/plugins/api.c
+index 6cbddfb..795997d 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -1121,6 +1121,17 @@ void qemu_plugin_crucible_fingerprint_capture_free(void *material)
@@ -58,9 +91,18 @@ diff --git a/plugins/api.c b/plugins/api.c
  {
      return qemu_plugin_icount_raw();
 diff --git a/system/main.c b/system/main.c
+index 1c02206..79b8d2e 100644
 --- a/system/main.c
 +++ b/system/main.c
-@@ -41,6 +41,122 @@
+@@ -23,6 +23,7 @@
+  */
+ 
+ #include "qemu/osdep.h"
++#include "qemu/crucible-process.h"
+ #include "qemu-main.h"
+ #include "qemu/main-loop.h"
+ #include "system/replay.h"
+@@ -41,6 +42,122 @@
  #include <CoreFoundation/CoreFoundation.h>
  #endif
  
@@ -183,7 +225,7 @@ diff --git a/system/main.c b/system/main.c
  static void *qemu_default_main(void *opaque)
  {
      int status;
-@@ -68,6 +184,7 @@ int (*qemu_main)(void) = os_darwin_cfrunloop_main;
+@@ -68,6 +185,7 @@ int (*qemu_main)(void) = os_darwin_cfrunloop_main;
  
  int main(int argc, char **argv)
  {

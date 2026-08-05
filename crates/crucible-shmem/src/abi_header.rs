@@ -23,7 +23,8 @@ use crate::{
     NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_RESERVED_OFFSET, NODE_SLOT_SIZE,
     NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET, PREEMPTION_KIND_INTERRUPT_AT,
     PREEMPTION_KIND_NONE, PREEMPTION_KIND_VCPU_SWITCH, REGION_HEADER_ABI_VERSION_OFFSET,
-    REGION_HEADER_ALIGN, REGION_HEADER_ENTRY_STRIDE_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
+    REGION_HEADER_ALIGN, REGION_HEADER_CONTROL_PADDING_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
     REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_PAUSE_REQUESTED_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
     REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RESERVED_OFFSET,
@@ -164,6 +165,11 @@ fn emit_constants(out: &mut String) {
             (
                 "SHUTDOWN_REQUESTED",
                 REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET,
+            ),
+            ("CONTROL_PADDING", REGION_HEADER_CONTROL_PADDING_OFFSET),
+            (
+                "FAULT_PAYLOAD_ARENA_BYTES",
+                REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
             ),
             ("RESERVED", REGION_HEADER_RESERVED_OFFSET),
         ],
@@ -361,6 +367,8 @@ fn emit_region_header(out: &mut String) {
     out.push_str("    _Atomic uint32_t icount_shift;\n");
     out.push_str("    _Atomic uint8_t pause_requested;\n");
     out.push_str("    _Atomic uint8_t shutdown_requested;\n");
+    out.push_str("    uint8_t control_padding[2];\n");
+    out.push_str("    _Atomic uint32_t fault_payload_arena_bytes;\n");
     out.push_str("    uint8_t reserved[CRUCIBLE_SHMEM_REGION_HEADER_RESERVED_LEN];\n");
     out.push_str("} crucible_shmem_region_header;\n\n");
 
@@ -381,6 +389,8 @@ fn emit_region_header(out: &mut String) {
             ("icount_shift", "ICOUNT_SHIFT"),
             ("pause_requested", "PAUSE_REQUESTED"),
             ("shutdown_requested", "SHUTDOWN_REQUESTED"),
+            ("control_padding", "CONTROL_PADDING"),
+            ("fault_payload_arena_bytes", "FAULT_PAYLOAD_ARENA_BYTES"),
             ("reserved", "RESERVED"),
         ],
     );

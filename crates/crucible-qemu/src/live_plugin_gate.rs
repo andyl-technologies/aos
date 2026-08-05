@@ -332,7 +332,7 @@ pub fn run_live_plugin_install_gate(
         resources.into_setup_resources(),
         region_config,
         GATE_SLOT,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        command.fault_capability_requirement(),
     )
     .map_err(|source| LivePluginInstallGateError::HostSetup { source })?;
     let handshake = setup.negotiated_handshake();

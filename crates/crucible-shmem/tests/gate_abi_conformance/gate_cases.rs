@@ -39,6 +39,7 @@ fn generated_header_carries_static_asserts_for_every_shared_struct() {
         "offsetof(crucible_shmem_region_header, icount_shift)",
         "offsetof(crucible_shmem_region_header, pause_requested)",
         "offsetof(crucible_shmem_region_header, shutdown_requested)",
+        "offsetof(crucible_shmem_region_header, fault_payload_arena_bytes)",
         "offsetof(crucible_shmem_region_header, reserved)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_node_slot)",
         "CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_node_slot)",
@@ -153,7 +154,21 @@ fn assert_frozen_golden_vectors() -> Fixture {
 
     assert_eq!(fixture.abi_version, ABI_VERSION);
     assert_eq!(fixture.bytes.len(), GOLDEN_TOTAL_LEN);
-    assert_eq!(fixture.bytes, live_golden_bytes());
+    let live = live_golden_bytes();
+    if let Some(index) = fixture
+        .bytes
+        .iter()
+        .zip(&live)
+        .position(|(frozen, generated)| frozen != generated)
+    {
+        panic!(
+            "frozen ABI vector first differs at byte {index}: frozen={:02x} generated={:02x}; frozen region-size={:02x?} generated region-size={:02x?}",
+            fixture.bytes[index],
+            live[index],
+            &fixture.bytes[REGION_HEADER_REGION_SIZE_OFFSET..REGION_HEADER_REGION_SIZE_OFFSET + 8],
+            &live[REGION_HEADER_REGION_SIZE_OFFSET..REGION_HEADER_REGION_SIZE_OFFSET + 8],
+        );
+    }
     fixture
 }
 

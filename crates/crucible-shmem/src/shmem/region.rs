@@ -17,7 +17,9 @@ pub struct RegionHeader {
     icount_shift: AtomicU32,
     pause_requested: AtomicU8,
     shutdown_requested: AtomicU8,
-    _reserved: [u8; 194],
+    _control_padding: [u8; 2],
+    fault_payload_arena_bytes: AtomicU32,
+    _reserved: [u8; 188],
 }
 
 impl Clone for RegionHeader {
@@ -35,7 +37,11 @@ impl Clone for RegionHeader {
             icount_shift: AtomicU32::new(self.icount_shift.load(Ordering::Acquire)),
             pause_requested: AtomicU8::new(self.pause_requested.load(Ordering::Acquire)),
             shutdown_requested: AtomicU8::new(self.shutdown_requested.load(Ordering::Acquire)),
-            _reserved: [0; 194],
+            _control_padding: [0; 2],
+            fault_payload_arena_bytes: AtomicU32::new(
+                self.fault_payload_arena_bytes.load(Ordering::Acquire),
+            ),
+            _reserved: [0; 188],
         }
     }
 }
@@ -73,6 +79,12 @@ pub const REGION_HEADER_PAUSE_REQUESTED_OFFSET: usize =
 /// Byte offset of [`RegionHeader`]'s shutdown flag.
 pub const REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET: usize =
     core::mem::offset_of!(RegionHeader, shutdown_requested);
+/// Byte offset of [`RegionHeader`]'s alignment padding after control flags.
+pub const REGION_HEADER_CONTROL_PADDING_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, _control_padding);
+/// Byte offset of [`RegionHeader`]'s per-direction fault payload-arena size.
+pub const REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, fault_payload_arena_bytes);
 /// Byte offset of [`RegionHeader`]'s reserved forward-compatibility bytes.
 pub const REGION_HEADER_RESERVED_OFFSET: usize = core::mem::offset_of!(RegionHeader, _reserved);
 /// Wire size of one [`RegionHeader`].
@@ -92,7 +104,9 @@ pub(super) const _: () = assert!(REGION_HEADER_REGION_SIZE_OFFSET == 48);
 pub(super) const _: () = assert!(REGION_HEADER_ICOUNT_SHIFT_OFFSET == 56);
 pub(super) const _: () = assert!(REGION_HEADER_PAUSE_REQUESTED_OFFSET == 60);
 pub(super) const _: () = assert!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61);
-pub(super) const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 62);
+pub(super) const _: () = assert!(REGION_HEADER_CONTROL_PADDING_OFFSET == 62);
+pub(super) const _: () = assert!(REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET == 64);
+pub(super) const _: () = assert!(REGION_HEADER_RESERVED_OFFSET == 68);
 pub(super) const _: () = assert!(REGION_HEADER_SIZE == 256);
 pub(super) const _: () = assert!(REGION_HEADER_ALIGN == 128);
 
@@ -113,7 +127,9 @@ impl RegionHeader {
             icount_shift: AtomicU32::new(layout.icount_shift),
             pause_requested: AtomicU8::new(0),
             shutdown_requested: AtomicU8::new(0),
-            _reserved: [0; 194],
+            _control_padding: [0; 2],
+            fault_payload_arena_bytes: AtomicU32::new(layout.fault_payload_arena_bytes),
+            _reserved: [0; 188],
         }
     }
 
@@ -133,6 +149,7 @@ impl RegionHeader {
             icount_shift: self.icount_shift.load(Ordering::Acquire),
             pause_requested: self.pause_requested.load(Ordering::Acquire),
             shutdown_requested: self.shutdown_requested.load(Ordering::Acquire),
+            fault_payload_arena_bytes: self.fault_payload_arena_bytes.load(Ordering::Acquire),
         }
     }
 
@@ -207,7 +224,8 @@ impl RegionHeader {
     /// Returns `true` when all forward-compatible reserved header bytes are zero.
     #[must_use]
     pub fn reserved_bytes_are_zero(&self) -> bool {
-        self._reserved.iter().all(|byte| *byte == 0)
+        self._control_padding.iter().all(|byte| *byte == 0)
+            && self._reserved.iter().all(|byte| *byte == 0)
     }
 }
 
@@ -258,6 +276,8 @@ pub struct RegionHeaderSnapshot {
     pub pause_requested: u8,
     /// Nonzero when the scheduler requested shutdown.
     pub shutdown_requested: u8,
+    /// Bytes in each per-node, per-direction fault payload arena.
+    pub fault_payload_arena_bytes: u32,
 }
 
 /// A setup-time region whose header matched the compiled shared-memory ABI and geometry.
@@ -351,6 +371,8 @@ pub struct RegionConfig {
     pub queue_capacity: u32,
     /// Fixed icount shift used to derive virtual nanoseconds.
     pub icount_shift: u32,
+    /// Bytes in each per-node, per-direction fault payload arena.
+    pub fault_payload_arena_bytes: u32,
 }
 
 impl RegionConfig {
@@ -361,7 +383,15 @@ impl RegionConfig {
             vm_node_count,
             queue_capacity,
             icount_shift,
+            fault_payload_arena_bytes: DEFAULT_FAULT_PAYLOAD_ARENA_BYTES,
         }
+    }
+
+    /// Returns a configuration with an explicit fault payload-arena size.
+    #[must_use]
+    pub const fn with_fault_payload_arena_bytes(mut self, bytes: u32) -> Self {
+        self.fault_payload_arena_bytes = bytes;
+        self
     }
 }
 
@@ -446,6 +476,8 @@ pub struct RegionLayout {
     pub region_size: u64,
     /// Fixed icount shift used to derive virtual nanoseconds.
     pub icount_shift: u32,
+    /// Bytes in each per-node, per-direction fault payload arena.
+    pub fault_payload_arena_bytes: u32,
 }
 
 impl RegionLayout {
@@ -470,6 +502,15 @@ impl RegionLayout {
         if config.icount_shift >= 64 {
             return Err(RegionLayoutError::InvalidIcountShift {
                 shift_bits: config.icount_shift,
+            });
+        }
+        if config.fault_payload_arena_bytes < DEFAULT_FAULT_PAYLOAD_BYTES
+            || config.fault_payload_arena_bytes > HARD_FAULT_PAYLOAD_ARENA_BYTES
+        {
+            return Err(RegionLayoutError::InvalidFaultPayloadArenaBytes {
+                bytes: config.fault_payload_arena_bytes,
+                minimum: DEFAULT_FAULT_PAYLOAD_BYTES,
+                maximum: HARD_FAULT_PAYLOAD_ARENA_BYTES,
             });
         }
 
@@ -560,9 +601,9 @@ impl RegionLayout {
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
 
-        // Additive ABI v6 sections: one host-to-plugin command transport and
-        // one plugin-to-host result transport per logical VM. Each direction
-        // has an independent SPSC ring and circular payload byte arena.
+        // ABI v7 sections: one host-to-plugin command transport and one
+        // plugin-to-host result transport per logical VM. Each direction has
+        // an independent SPSC ring and explicitly sized circular byte arena.
         let fault_command_ring_count = config.vm_node_count;
         let fault_command_queue_capacity = DEFAULT_FAULT_COMMAND_CAPACITY;
         let fault_command_ring_hdr_off =
@@ -596,7 +637,7 @@ impl RegionLayout {
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
-        let fault_command_arena_stride = u64::from(DEFAULT_FAULT_PAYLOAD_BYTES);
+        let fault_command_arena_stride = u64::from(config.fault_payload_arena_bytes);
         let fault_command_data_end = fault_command_arena_off
             .checked_add(
                 u64::from(fault_command_ring_count)
@@ -638,7 +679,7 @@ impl RegionLayout {
                     .ok_or(RegionLayoutError::GeometryOverflow)?,
             )
             .ok_or(RegionLayoutError::GeometryOverflow)?;
-        let fault_result_arena_stride = u64::from(DEFAULT_FAULT_PAYLOAD_BYTES);
+        let fault_result_arena_stride = u64::from(config.fault_payload_arena_bytes);
         let region_size = fault_result_arena_off
             .checked_add(
                 u64::from(fault_result_ring_count)
@@ -687,6 +728,7 @@ impl RegionLayout {
             fault_result_arena_stride,
             region_size,
             icount_shift: config.icount_shift,
+            fault_payload_arena_bytes: config.fault_payload_arena_bytes,
         })
     }
 
@@ -1760,11 +1802,14 @@ pub(super) fn layout_from_setup_region_geometry(
     }
 
     let vm_node_count = snapshot.ring_count / rings_per_vm;
-    let layout = RegionLayout::for_config(RegionConfig::new(
-        vm_node_count,
-        snapshot.queue_capacity,
-        snapshot.icount_shift,
-    ))
+    let layout = RegionLayout::for_config(
+        RegionConfig::new(
+            vm_node_count,
+            snapshot.queue_capacity,
+            snapshot.icount_shift,
+        )
+        .with_fault_payload_arena_bytes(snapshot.fault_payload_arena_bytes),
+    )
     .map_err(|source| RegionSetupValidationError::InvalidLayout { source })?;
 
     if snapshot.node_count != layout.node_count {
@@ -1924,6 +1969,11 @@ pub(super) fn write_region_header_bytes(
         header,
         REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET,
         snapshot.shutdown_requested,
+    );
+    write_u32_at(
+        header,
+        REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
+        snapshot.fault_payload_arena_bytes,
     );
     Ok(())
 }

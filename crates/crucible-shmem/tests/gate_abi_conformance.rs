@@ -18,7 +18,8 @@ use crucible_shmem::{
     NODE_SLOT_PREEMPTION_PUBLISHED_SEQUENCE_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_SIZE,
     NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET, PREEMPTION_KIND_VCPU_SWITCH,
     REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
-    REGION_HEADER_ICOUNT_SHIFT_OFFSET, REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
+    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
+    REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_PAUSE_REQUESTED_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
     REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RING_COUNT_OFFSET,
     REGION_HEADER_RING_DATA_OFF_OFFSET, REGION_HEADER_RING_HDR_OFF_OFFSET,
@@ -174,6 +175,11 @@ fn live_golden_bytes() -> Vec<u8> {
     );
     write_u8(&mut bytes, REGION_HEADER_PAUSE_REQUESTED_OFFSET, 1);
     write_u8(&mut bytes, REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, 0);
+    write_u32(
+        &mut bytes,
+        REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
+        layout.fault_payload_arena_bytes,
+    );
 
     write_u64(
         &mut bytes,
@@ -464,6 +470,10 @@ fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
             icount_shift: read_u32(bytes, REGION_HEADER_ICOUNT_SHIFT_OFFSET),
             pause_requested: read_u8(bytes, REGION_HEADER_PAUSE_REQUESTED_OFFSET),
             shutdown_requested: read_u8(bytes, REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET),
+            fault_payload_arena_bytes: read_u32(
+                bytes,
+                REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
+            ),
         },
         node: NodeSlotState {
             current_icount: read_u64(
@@ -640,6 +650,11 @@ fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         &mut bytes,
         REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET,
         state.region.shutdown_requested,
+    );
+    write_u32(
+        &mut bytes,
+        REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
+        state.region.fault_payload_arena_bytes,
     );
 
     write_u64(
@@ -885,6 +900,7 @@ struct RegionHeaderState {
     icount_shift: u32,
     pause_requested: u8,
     shutdown_requested: u8,
+    fault_payload_arena_bytes: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
