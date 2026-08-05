@@ -229,16 +229,16 @@ attack surface the operator never authorized (`redis-exporter` starting `redis`
 and opening 6379). The rule forbids that without banning legitimate provider
 configuration:
 
-> **Open decision F3 (review conscription-vs-composition).** "Forbid foreign-root
-> writes" rejects *legitimate composition* — `nextcloud` writing
+> **Resolved decision F3 (review conscription-vs-composition).** "Forbid
+> foreign-root writes" would reject *legitimate composition* — `nextcloud` writing
 > `nginx.virtualHosts.*` / `postgresql.ensureDatabases` / `redis.*` is a
 > foreign-root write — while an unscoped "registered contributor" escape is the
-> same act an attacker uses, making the rule too strict or vacuous. The resolution
-> (F3-B, recommended in [`known-issues.md`](known-issues.md)) is a
+> same act an attacker uses, making the rule too strict or vacuous. The
+> implemented resolution (F3-B in [`decisions.md`](decisions.md)) is a
 > **capability-scoped contribution surface**: the shared-root *owner* declares
 > which sub-paths non-owners may contribute (`nginx` opens `virtualHosts.*` /
 > `upstreams.*`, keeps `enable`/global owner-only). Composition works; enabling or
-> conscripting the service stays blocked. The bullets below assume that model.
+> conscripting the service stays blocked. The bullets below specify that model.
 
 - **A package may write/enable only within roots it owns, or within the
   owner-declared *contributable sub-paths* of a shared root.** A write outside
@@ -270,8 +270,11 @@ configuration:
 
 A logical service is a shared root (`nginx.*`); concrete packages that implement
 it (`nginx-full`, `nginx-minimal`, `nginx-light`) are **alternative providers**:
-they `Provides` the virtual root and `Conflicts` with each other, so exactly one
-is in any resolved set. Consequences:
+each package's authenticated `owns_roots = [ nginx ]` claim is its `Provides`,
+and `SystemRoots` owned-root exclusivity is the resolved-set `Conflicts` rule.
+The operator explicitly installs one concrete package by name. Per the F3-B
+index-removal decision, a missing shared root never triggers registry discovery
+or an automatic choice between alternatives. Consequences:
 
 - The single-declarer rule (above) holds **per resolved set** via the conflict —
   multiple variants may exist in the registry, but only one declares/implements
@@ -282,8 +285,9 @@ is in any resolved set. Consequences:
 - A *layering* relationship (a base `nginx` package + an `nginx-full` extension
   that adds and enables modules, both installed) is the same mechanism with
   `nginx-full` as a registered **contributor** to `nginx.*` rather than a
-  mutually-exclusive variant. Either way the authorization is the registry
-  registration, checked at publish.
+  mutually-exclusive variant. Either way authorization comes from the signed
+  package metadata and the operator's install decision, checked against the
+  locally composed `SystemRoots` at resolve time.
 
 ## What the existing module system already provides
 

@@ -44,7 +44,7 @@
 //! toplevel's drain script (or isolates `drain.target`) before a disruptive
 //! switch.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -566,27 +566,29 @@ pub async fn install_system(
             crate::config_eval::activation::ActivateConfigParams::default().switch_lock;
         let _switch_guard = crate::config_eval::activation::acquire_switch_lock_pub(&switch_lock)?;
         printer.step(8, 8, "Staging inactive A/B image slot...");
-        let staged = stage_pending_image_generation_with(
-            image_profile,
-            &ProfileScope::System.profile_path(),
-            Path::new(NIX_OVERLAY_UPPER_STORE),
-            &ImageSlotLayout::default(),
-            toplevel_meta,
-            &closure.registry_name,
-            image,
-            &image_store,
-            |entry| {
-                let status = std::process::Command::new("bootctl")
-                    .arg("set-default")
-                    .arg(entry)
-                    .status()
-                    .context("running bootctl set-default for staged image")?;
-                if !status.success() {
-                    bail!("bootctl set-default failed with {status}");
-                }
-                Ok(())
-            },
-        )?;
+        let staged = with_writable_boot(|| {
+            stage_pending_image_generation_with(
+                image_profile,
+                &ProfileScope::System.profile_path(),
+                Path::new(NIX_OVERLAY_UPPER_STORE),
+                &ImageSlotLayout::default(),
+                toplevel_meta,
+                &closure.registry_name,
+                image,
+                &image_store,
+                |entry| {
+                    let status = std::process::Command::new("bootctl")
+                        .arg("set-default")
+                        .arg(entry)
+                        .status()
+                        .context("running bootctl set-default for staged image")?;
+                    if !status.success() {
+                        bail!("bootctl set-default failed with {status}");
+                    }
+                    Ok(())
+                },
+            )
+        })?;
         printer.success(&format!(
             "Image generation {} staged in slot {:?}; configuration remains unchanged until reboot.",
             staged.number, staged.slot
@@ -700,7 +702,13 @@ fn stage_retained_runtime(
     Ok(())
 }
 
-fn validate_generation_manifest(
+/// Validates a retained generation manifest against its recorded content hash.
+///
+/// # Errors
+///
+/// Returns an error when the manifest is unreadable, structurally invalid, or
+/// does not match the generation record's authenticated hash.
+pub(crate) fn validate_generation_manifest(
     profile_path: &Path,
     generation: &ConfigGeneration,
 ) -> Result<PathBuf> {
@@ -722,6 +730,49 @@ fn validate_generation_manifest(
         );
     }
     Ok(path)
+}
+
+/// Authenticates and returns the manifest owned by the active configuration.
+///
+/// The generation index and `current` symlink must name the same generation,
+/// and the retained manifest must hash to that generation's recorded identity.
+///
+/// # Errors
+///
+/// Returns an error when generation state, the current pointer, or the retained
+/// manifest is missing, malformed, inconsistent, or tampered.
+pub(crate) fn authenticated_current_generation_manifest(
+    profile_path: &Path,
+) -> Result<Option<PathBuf>> {
+    let state = load_generation_state_readonly(profile_path)?;
+    if state.current == 0 {
+        return Ok(None);
+    }
+    let generation = state
+        .generations
+        .iter()
+        .find(|generation| generation.number == state.current)
+        .with_context(|| {
+            format!(
+                "system generation state names missing current generation {}",
+                state.current
+            )
+        })?;
+    let expected_link = PathBuf::from(format!("gen-{}", generation.number));
+    let actual_link = std::fs::read_link(profile_path.join("current")).with_context(|| {
+        format!(
+            "reading current generation pointer in {}",
+            profile_path.display()
+        )
+    })?;
+    if actual_link != expected_link {
+        bail!(
+            "current generation pointer names {}, but state records generation {}",
+            actual_link.display(),
+            generation.number
+        );
+    }
+    validate_generation_manifest(profile_path, generation).map(Some)
 }
 
 fn validate_direct_reactivation(
@@ -747,6 +798,69 @@ fn validate_direct_reactivation(
         );
     }
     Ok(())
+}
+
+fn load_reactivation_record(
+    profile_path: &Path,
+    target: &ConfigGeneration,
+    generation_id: &str,
+) -> Result<serde_json::Value> {
+    let path = profile_path
+        .join(format!("gen-{}", target.number))
+        .join("activation.json");
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&path)
+            .with_context(|| format!("reading retained activation record {}", path.display()))?,
+    )
+    .with_context(|| format!("parsing retained activation record {}", path.display()))?;
+    if record.get("schema").and_then(serde_json::Value::as_str) != Some("aos.config-activation/v1")
+        || record.get("generation").and_then(serde_json::Value::as_u64)
+            != Some(u64::from(target.number))
+        || record
+            .get("generation_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(generation_id)
+        || record
+            .get("transaction_manifest")
+            .and_then(serde_json::Value::as_str)
+            .is_none()
+    {
+        bail!(
+            "retained activation record for configuration generation {} does not authenticate its generation and graph transaction",
+            target.number
+        );
+    }
+    Ok(record)
+}
+
+fn publish_reactivation_record(
+    profile_path: &Path,
+    retained: &serde_json::Value,
+    activation_exit: i32,
+) -> Result<()> {
+    let mut record = retained.clone();
+    let object = record
+        .as_object_mut()
+        .context("retained activation record is not an object")?;
+    object.insert("activation_exit".to_string(), activation_exit.into());
+    object.insert(
+        "status".to_string(),
+        serde_json::Value::String(if activation_exit == 6 {
+            "degraded".to_string()
+        } else {
+            "complete".to_string()
+        }),
+    );
+    let generation = object
+        .get("generation")
+        .and_then(serde_json::Value::as_u64)
+        .context("retained activation record has no generation")?;
+    let bytes = serde_json::to_vec_pretty(&record)?;
+    write_atomic_durable(
+        &profile_path.join(format!("gen-{generation}/activation.json")),
+        &bytes,
+    )?;
+    write_atomic_durable(Path::new("/run/aos/activation.json"), &bytes)
 }
 
 /// `apm upgrade --system` — check for newer sysroot version and apply.
@@ -920,22 +1034,69 @@ pub async fn rollback_system(
         let running_abi = running_image.module_abi;
         match target.reactivation_plan(running_abi)? {
             ReactivationPlan::DirectReactivate => {
-                let manifest = validate_generation_manifest(&profile_path, &target)?;
-                validate_direct_reactivation(&target, &running_image, &manifest)?;
+                let manifest_path = validate_generation_manifest(&profile_path, &target)?;
+                validate_direct_reactivation(&target, &running_image, &manifest_path)?;
+                let manifest: crate::config_eval::materialize::ConfigManifest =
+                    serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+                let reconciliation = crate::credential_artifact::reconcile_secret_refs(
+                    &config.settings,
+                    &crate::credential_artifact::aos_root_path(),
+                    &manifest.credentials,
+                )
+                .context("resolving retained generation credential references")?;
+                let activation_record =
+                    load_reactivation_record(&profile_path, &target, &target.manifest_hash)?;
                 direct_reactivate_config_generation_with(
                     &profile_path,
                     &mut state,
                     Path::new(&running_image.toplevel),
                     &target,
                     printer,
-                    |activate, number, nonce| {
-                        let status = std::process::Command::new(activate)
-                            .arg(number.to_string())
-                            .env("AOS_SWITCH_LOCK_HELD", "1")
-                            .env("AOS_ACTIVATION_NONCE", nonce)
-                            .status()
-                            .with_context(|| format!("running {}", activate.display()))?;
-                        Ok(status.code())
+                    crate::config_eval::activation::run_activation_with_credential_barrier,
+                    {
+                        let mut reconciliation = Some(reconciliation);
+                        move |event| match event {
+                            crate::config_eval::activation::CredentialBarrier::StagedView(
+                                candidate_etc,
+                            ) => reconciliation
+                                .as_mut()
+                                .context("credential reconciliation already published")?
+                                .validate_staged_view(candidate_etc),
+                            crate::config_eval::activation::CredentialBarrier::Publish(plan) => {
+                                reconciliation
+                                    .take()
+                                    .context("credential reconciliation published twice")?
+                                    .publish_with(|units| {
+                                        if units.is_empty() {
+                                            Ok(())
+                                        } else {
+                                            augment_reconcile_plan_with_credential_units(
+                                                plan, units,
+                                            )
+                                        }
+                                    })
+                                    .map(|_| ())
+                            }
+                        }
+                    },
+                    || {
+                        crate::attestation::persist_generation_attestation(
+                            &profile_path.join(format!("gen-{}", target.number)),
+                            &target.manifest_hash,
+                            &target.manifest_hash,
+                            &manifest,
+                            &running_image,
+                            crate::attestation::image_requires_generation_quote(&running_image),
+                            true,
+                        )
+                        .map(|_| ())
+                    },
+                    |activation_exit| {
+                        publish_reactivation_record(
+                            &profile_path,
+                            &activation_record,
+                            activation_exit,
+                        )
                     },
                 )?;
                 return Ok(());
@@ -1081,10 +1242,29 @@ fn image_artifact_path(
 
 fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
     let source_len = std::fs::metadata(source)?.len();
-    let destination_metadata = std::fs::symlink_metadata(destination)
+    let production_partlabel = destination.starts_with("/dev/disk/by-partlabel");
+    if production_partlabel {
+        let resolved = std::fs::canonicalize(destination)
+            .with_context(|| format!("resolving inactive image slot {}", destination.display()))?;
+        if !resolved.starts_with("/dev") {
+            bail!(
+                "inactive image slot {} resolves outside /dev: {}",
+                destination.display(),
+                resolved.display()
+            );
+        }
+    }
+    // Open first and validate the file descriptor metadata, avoiding a
+    // symlink-swap race between the type check and the destructive write.
+    let mut output = OpenOptions::new()
+        .write(true)
+        .open(destination)
         .with_context(|| format!("opening inactive image slot {}", destination.display()))?;
-    if destination_metadata.file_type().is_symlink()
-        || !(destination_metadata.file_type().is_block_device() || destination_metadata.is_file())
+    let destination_metadata = output.metadata()?;
+    if (production_partlabel && !destination_metadata.file_type().is_block_device())
+        || (!production_partlabel
+            && !(destination_metadata.file_type().is_block_device()
+                || destination_metadata.is_file()))
     {
         bail!(
             "inactive image slot is not a block device: {}",
@@ -1103,12 +1283,158 @@ fn copy_payload_to_slot(source: &Path, destination: &Path) -> Result<()> {
         );
     }
     let mut input = OpenOptions::new().read(true).open(source)?;
-    let mut output = OpenOptions::new().write(true).open(destination)?;
     let copied = std::io::copy(&mut input, &mut output)?;
     if copied != source_len {
         bail!("short image-slot write: copied {copied} of {source_len} bytes");
     }
     output.sync_all()?;
+    Ok(())
+}
+
+/// Temporarily remounts the EFI System Partition writable for one transaction.
+///
+/// AOS keeps `/boot` read-only during normal operation. Image staging and
+/// boot-count blessing are the only transactions that need to publish or
+/// rename UKIs, so they use this narrow bracket and restore read-only state on
+/// both success and failure.
+fn with_writable_boot<T>(action: impl FnOnce() -> Result<T>) -> Result<T> {
+    let expected_device = PathBuf::from(read_toplevel_meta(
+        Path::new(RUNNING_TOPLEVEL_LINK),
+        "esp-device",
+    )?);
+    if !expected_device.is_absolute() || !expected_device.starts_with("/dev") {
+        bail!(
+            "running image records an unsafe EFI System Partition device: {}",
+            expected_device.display()
+        );
+    }
+    validate_boot_esp_mount(
+        Path::new(BOOT_ROOT),
+        Path::new("/proc/self/mountinfo"),
+        &expected_device,
+        true,
+    )?;
+    with_writable_boot_using(Path::new(BOOT_ROOT), remount_boot, action)
+}
+
+fn validate_boot_esp_mount(
+    boot_root: &Path,
+    mountinfo: &Path,
+    expected_device: &Path,
+    require_block_devices: bool,
+) -> Result<()> {
+    let boot_root = std::fs::canonicalize(boot_root)
+        .with_context(|| format!("resolving EFI mount point {}", boot_root.display()))?;
+    let expected_device = std::fs::canonicalize(expected_device).with_context(|| {
+        format!(
+            "resolving expected EFI System Partition {}",
+            expected_device.display()
+        )
+    })?;
+    let contents = std::fs::read_to_string(mountinfo)
+        .with_context(|| format!("reading mount table {}", mountinfo.display()))?;
+    let (mounted_root, filesystem_type, source) = contents
+        .lines()
+        .find_map(|line| {
+            let (mount, filesystem) = line.split_once(" - ")?;
+            let mut mount_fields = mount.split_ascii_whitespace();
+            let mounted_root = mount_fields.nth(3)?;
+            let mountpoint = mount_fields.next()?;
+            if Path::new(mountpoint) != boot_root {
+                return None;
+            }
+            let mut filesystem_fields = filesystem.split_ascii_whitespace();
+            let filesystem_type = filesystem_fields.next()?;
+            let source = filesystem_fields.next()?;
+            Some((mounted_root, filesystem_type, source))
+        })
+        .with_context(|| {
+            format!(
+                "{} is not a mounted EFI System Partition",
+                boot_root.display()
+            )
+        })?;
+    if mounted_root != "/" {
+        bail!(
+            "{} is a bind/subtree mount (filesystem root {mounted_root:?}), not the ESP root",
+            boot_root.display()
+        );
+    }
+    if filesystem_type != "vfat" {
+        bail!(
+            "{} has filesystem type {filesystem_type:?}, expected vfat",
+            boot_root.display()
+        );
+    }
+    // Open both paths before inspecting them so a symlink replacement cannot
+    // change the device identity between validation and comparison.
+    let expected_file = std::fs::File::open(&expected_device).with_context(|| {
+        format!(
+            "opening expected EFI System Partition {}",
+            expected_device.display()
+        )
+    })?;
+    let mounted_file = std::fs::File::open(source)
+        .with_context(|| format!("opening mounted EFI device {source}"))?;
+    let expected_metadata = expected_file.metadata()?;
+    let mounted_metadata = mounted_file.metadata()?;
+    if require_block_devices
+        && (!expected_metadata.file_type().is_block_device()
+            || !mounted_metadata.file_type().is_block_device())
+    {
+        bail!("EFI System Partition paths must both be block devices");
+    }
+    let mounted_device = std::fs::canonicalize(source)
+        .with_context(|| format!("resolving mounted EFI device {source}"))?;
+    let same_device = if expected_metadata.file_type().is_block_device()
+        && mounted_metadata.file_type().is_block_device()
+    {
+        expected_metadata.rdev() == mounted_metadata.rdev()
+    } else {
+        mounted_device == expected_device
+    };
+    if !same_device {
+        bail!(
+            "{} is mounted from {}, expected {}",
+            boot_root.display(),
+            mounted_device.display(),
+            expected_device.display()
+        );
+    }
+    Ok(())
+}
+
+fn with_writable_boot_using<T>(
+    boot_root: &Path,
+    mut remount: impl FnMut(&Path, bool) -> Result<()>,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    remount(boot_root, true)?;
+    let result = action();
+    let restore = remount(boot_root, false);
+    match (result, restore) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error.context("restoring the EFI System Partition read-only")),
+        (Err(error), Err(restore_error)) => Err(error.context(format!(
+            "the EFI System Partition also failed to return read-only: {restore_error:#}"
+        ))),
+    }
+}
+
+fn remount_boot(boot_root: &Path, writable: bool) -> Result<()> {
+    let mode = if writable { "rw" } else { "ro" };
+    let status = std::process::Command::new("mount")
+        .args(["-o", &format!("remount,{mode}")])
+        .arg(boot_root)
+        .status()
+        .with_context(|| format!("remounting {} {mode}", boot_root.display()))?;
+    if !status.success() {
+        bail!(
+            "remounting {} {mode} failed with {status}",
+            boot_root.display()
+        );
+    }
     Ok(())
 }
 
@@ -1156,12 +1482,6 @@ fn stage_slot_artifacts(
         image_artifact_path(image_store, None, legacy_uki_name)?
     };
 
-    // The UKI is published last: at every earlier crash point sd-boot can see
-    // only the still-running slot, never a UKI that targets a partial root.
-    copy_payload_to_slot(&root, root_device)?;
-    if let Some(verity) = verity {
-        copy_payload_to_slot(&verity, hash_device)?;
-    }
     let destination = layout.boot_root.join(uki_entry);
     let parent = destination
         .parent()
@@ -1176,12 +1496,23 @@ fn stage_slot_artifacts(
     let temp = staging_dir.join(format!("slot-{slot_name}.efi"));
     if !temp.exists() {
         if let Some(reusable) = reusable_uki.filter(|path| path.is_file()) {
+            // Disarm the prior inactive-slot UKI before touching its root.
+            // A crash from this point until candidate publication leaves no
+            // firmware-discoverable entry pointing at a partial slot.
             std::fs::rename(reusable, &temp)?;
             if let Some(reusable_parent) = reusable.parent() {
                 sync_directory(reusable_parent)?;
             }
             sync_directory(&staging_dir)?;
         }
+    }
+
+    // The replacement UKI is published last: at every earlier crash point
+    // sd-boot can see only the still-running slot, never a UKI that targets a
+    // partial root.
+    copy_payload_to_slot(&root, root_device)?;
+    if let Some(verity) = verity {
+        copy_payload_to_slot(&verity, hash_device)?;
     }
     let mut input = OpenOptions::new().read(true).open(&uki)?;
     let mut output = OpenOptions::new()
@@ -1343,19 +1674,11 @@ where
         .context("target image has invalid module ABI")?;
     let baselib_digest = read_toplevel_meta(toplevel, "baselib-digest")?;
     let recorded_uki = read_toplevel_meta(toplevel, "uki-path")?;
-    let uki_path = Path::new(&recorded_uki);
-    if uki_path.is_absolute()
-        || uki_path
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        bail!("target image records unsafe UKI path {recorded_uki:?}");
-    }
-    let entry_id = uki_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("target UKI has no UTF-8 entry name")?
-        .to_string();
+    // Validate the firmware namespace before either inactive root or the ESP
+    // is touched. A merely relative path is not sufficient: image metadata
+    // must never be able to overwrite loader configuration or another ESP
+    // subtree, and every staged A/B candidate must carry a live boot count.
+    let entry_id = validate_staged_uki_path(&recorded_uki)?;
 
     if let Some(pending) = state.pending.and_then(|number| {
         state
@@ -1391,13 +1714,28 @@ where
         reusable_uki.as_deref(),
     )?;
 
-    let number = state
-        .generations
-        .iter()
-        .map(|generation| generation.number)
-        .max()
-        .unwrap_or(0)
-        + 1;
+    // A failed counted-boot attempt leaves an authenticated generation record
+    // behind after fallback. Re-arm that record instead of appending a second
+    // entry for the same immutable toplevel: early boot deliberately requires
+    // a unique toplevel match when it authenticates the running image.
+    let existing = state.generations.iter().position(|generation| {
+        generation.toplevel == package.store_path && generation.slot == target_slot
+    });
+    let number = existing.map_or_else(
+        || {
+            state
+                .generations
+                .iter()
+                .map(|generation| generation.number)
+                .max()
+                .unwrap_or(0)
+                + 1
+        },
+        |index| state.generations[index].number,
+    );
+    let created_at = existing.map_or_else(chrono_iso8601_now, |index| {
+        state.generations[index].created_at.clone()
+    });
     let generation = ImageGeneration {
         number,
         slot: target_slot,
@@ -1418,9 +1756,13 @@ where
         expected_pcr11: image_uki_for_slot(image, target_slot)?
             .and_then(|uki| uki.expected_pcr11.clone())
             .or_else(|| image.expected_pcr11.clone()),
-        created_at: chrono_iso8601_now(),
+        created_at,
     };
-    state.generations.push(generation.clone());
+    if let Some(index) = existing {
+        state.generations[index] = generation.clone();
+    } else {
+        state.generations.push(generation.clone());
+    }
     crate::store::create_baselib_gc_root(
         &profile.join(format!("image-gen-{number}")),
         module_abi,
@@ -1499,16 +1841,18 @@ pub async fn rollback_image_generation(
         ));
         return Ok(());
     }
-    select_image_default_with(profile, &mut state, target.number, &entry_id, |entry| {
-        let status = std::process::Command::new("bootctl")
-            .arg("set-default")
-            .arg(entry)
-            .status()
-            .context("running bootctl set-default")?;
-        if !status.success() {
-            bail!("bootctl set-default failed with {status}");
-        }
-        Ok(())
+    with_writable_boot(|| {
+        select_image_default_with(profile, &mut state, target.number, &entry_id, |entry| {
+            let status = std::process::Command::new("bootctl")
+                .arg("set-default")
+                .arg(entry)
+                .status()
+                .context("running bootctl set-default")?;
+            if !status.success() {
+                bail!("bootctl set-default failed with {status}");
+            }
+            Ok(())
+        })
     })?;
     printer.success(&format!(
         "Image generation {} is the durable next-boot default.",
@@ -1547,6 +1891,11 @@ fn resolve_installed_uki_entry(boot_root: &Path, recorded: &str) -> Result<Strin
         .map_or_else(|| boot_root.to_path_buf(), |parent| boot_root.join(parent));
     let exact = directory.join(file);
     if exact.is_file() {
+        if entry_remaining_tries(file) == Some(0) {
+            bail!(
+                "recorded UKI {recorded:?} has exhausted its boot count; restage it before selecting it as default"
+            );
+        }
         return Ok(file.to_string());
     }
     if directory.join(&stable).is_file() {
@@ -1559,17 +1908,27 @@ fn resolve_installed_uki_entry(boot_root: &Path, recorded: &str) -> Result<Strin
         .with_context(|| format!("reading ESP UKI directory {}", directory.display()))?
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| {
-            name.strip_prefix(stable_stem)
+        .filter_map(|name| {
+            let remaining = name
+                .strip_prefix(stable_stem)
                 .and_then(|suffix| suffix.strip_prefix('+'))
                 .and_then(|suffix| suffix.strip_suffix(".efi"))
-                .is_some_and(valid_boot_count_suffix)
+                .and_then(boot_count_remaining)?;
+            Some((remaining, name))
         })
         .collect::<Vec<_>>();
+    let exhausted = counted.iter().any(|(remaining, _)| *remaining == 0);
+    counted.retain(|(remaining, _)| *remaining > 0);
     counted.sort();
-    counted
-        .pop()
-        .with_context(|| format!("no installed UKI matches {recorded:?}"))
+    if let Some((_, name)) = counted.pop() {
+        return Ok(name);
+    }
+    if exhausted {
+        bail!(
+            "all installed UKIs matching {recorded:?} have exhausted their boot count; restage the image before rollback"
+        );
+    }
+    bail!("no installed UKI matches {recorded:?}")
 }
 
 fn stable_uki_entry_id(entry: &str) -> Result<String> {
@@ -1595,6 +1954,52 @@ fn valid_boot_count_suffix(suffix: &str) -> bool {
             .next()
             .is_none_or(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
         && parts.next().is_none()
+}
+
+fn boot_count_remaining(suffix: &str) -> Option<u32> {
+    if !valid_boot_count_suffix(suffix) {
+        return None;
+    }
+    suffix.split('-').next()?.parse().ok()
+}
+
+fn entry_remaining_tries(entry: &str) -> Option<u32> {
+    let stem = entry.strip_suffix(".efi")?;
+    let (_, suffix) = stem.rsplit_once('+')?;
+    boot_count_remaining(suffix)
+}
+
+fn validate_staged_uki_path(recorded: &str) -> Result<String> {
+    let path = Path::new(recorded);
+    let components = path.components().collect::<Vec<_>>();
+    let [
+        std::path::Component::Normal(efi),
+        std::path::Component::Normal(linux),
+        std::path::Component::Normal(file),
+    ] = components.as_slice()
+    else {
+        bail!("target image records unsafe UKI path {recorded:?}");
+    };
+    if *efi != "EFI" || *linux != "Linux" {
+        bail!("target UKI must be installed below EFI/Linux: {recorded:?}");
+    }
+    let file = file
+        .to_str()
+        .context("target UKI entry name is not valid UTF-8")?;
+    let stem = file
+        .strip_suffix(".efi")
+        .context("target UKI entry must end in .efi")?;
+    let (base, tries) = stem
+        .rsplit_once('+')
+        .context("target UKI entry has no terminal boot-count suffix")?;
+    if base.is_empty()
+        || tries.is_empty()
+        || !tries.bytes().all(|byte| byte.is_ascii_digit())
+        || tries.parse::<u32>().ok().is_none_or(|tries| tries == 0)
+    {
+        bail!("target UKI entry has an invalid live boot-count suffix: {file:?}");
+    }
+    Ok(file.to_string())
 }
 
 fn select_image_default_with<F>(
@@ -1627,43 +2032,91 @@ where
         };
         write_atomic_durable(&intent_path, &serde_json::to_vec_pretty(&intent)?)?;
     }
-    select(entry_id)?;
-    let mut candidate = state.clone();
-    candidate.default = target;
-    candidate.pending = Some(target);
+    // Publish the complete staged-generation record before changing firmware
+    // state. If the machine loses power after `set-default`, early boot can
+    // authenticate the candidate from this record instead of inventing seed
+    // provenance for an otherwise unknown image.
+    let mut prepared = state.clone();
+    prepared.pending = Some(target);
     write_atomic_durable(
         &profile.join(IMAGE_STATE_FILE),
-        &serde_json::to_vec_pretty(&candidate)?,
+        &serde_json::to_vec_pretty(&prepared)?,
+    )?;
+    *state = prepared;
+
+    select(entry_id)?;
+    let mut committed = state.clone();
+    committed.default = target;
+    write_atomic_durable(
+        &profile.join(IMAGE_STATE_FILE),
+        &serde_json::to_vec_pretty(&committed)?,
     )?;
     remove_file_durable(&intent_path)?;
-    *state = candidate;
+    *state = committed;
     Ok(())
 }
 
-fn direct_reactivate_config_generation_with<F>(
+fn direct_reactivate_config_generation_with<F, G, H, I>(
     profile_path: &Path,
     state: &mut ConfigGenerationState,
     running_toplevel: &Path,
     target: &ConfigGeneration,
     printer: &Printer,
     run_activate: F,
+    publish_credentials: G,
+    persist_attestation: H,
+    publish_record: I,
 ) -> Result<()>
 where
-    F: FnOnce(&Path, u32, &str) -> Result<Option<i32>>,
+    F: FnOnce(
+        &Path,
+        u32,
+        &str,
+        &mut dyn FnMut(crate::config_eval::activation::CredentialBarrier<'_>) -> Result<()>,
+    ) -> Result<Option<i32>>,
+    G: FnMut(crate::config_eval::activation::CredentialBarrier<'_>) -> Result<()>,
+    H: FnOnce() -> Result<()>,
+    I: FnOnce(i32) -> Result<()>,
 {
     let activate = running_toplevel.join("activate");
     let nonce = write_activation_intent_pub(profile_path, state, target.number)?;
-    let degraded = match run_activate(&activate, target.number, &nonce)? {
-        Some(0) => false,
-        Some(5) => {
-            printer.warning(
-                "Configuration rollback succeeded, but cleanup of the previous generation's mounts failed.",
-            );
-            false
+    let mut reconcile_credentials = publish_credentials;
+    let mut validated_staged_view = false;
+    let mut crossed_barrier = false;
+    let mut barrier = |event: crate::config_eval::activation::CredentialBarrier<'_>| match event {
+        event @ crate::config_eval::activation::CredentialBarrier::StagedView(_) => {
+            if validated_staged_view || crossed_barrier {
+                bail!("configuration rollback repeated its staged credential validation");
+            }
+            reconcile_credentials(event)?;
+            validated_staged_view = true;
+            Ok(())
         }
-        Some(6) => true,
+        event @ crate::config_eval::activation::CredentialBarrier::Publish(_) => {
+            if !validated_staged_view || crossed_barrier {
+                return Err(
+                    crate::config_eval::activation::ActivationFailure::rescue(
+                        "configuration rollback crossed an invalid credential publication barrier; rescue mode is required",
+                    )
+                    .into(),
+                );
+            }
+            reconcile_credentials(event).map_err(|error| {
+                crate::config_eval::activation::ActivationFailure::rescue(format!(
+                    "configuration rollback swapped /etc but credential publication failed: {error:#}; rescue mode is required"
+                ))
+            })?;
+            crossed_barrier = true;
+            Ok(())
+        }
+    };
+    let activation_exit = match run_activate(&activate, target.number, &nonce, &mut barrier)? {
+        Some(exit @ (0 | 5 | 6)) => exit,
         Some(4) | None => {
-            bail!("FATAL: configuration rollback left /etc indeterminate; rescue mode is required")
+            return Err(crate::config_eval::activation::ActivationFailure::rescue(
+                "configuration rollback left /etc indeterminate; rescue mode is required",
+            )
+            .into());
         }
         other => {
             clear_activation_intent_pub(profile_path)?;
@@ -1672,7 +2125,47 @@ where
             )
         }
     };
-    commit_current_generation(profile_path, state, target.number)?;
+    if !validated_staged_view || !crossed_barrier {
+        return Err(
+            crate::config_eval::activation::ActivationFailure::rescue(
+                "configuration rollback swapped /etc without publishing credentials; rescue mode is required",
+            )
+            .into(),
+        );
+    }
+    let degraded = match activation_exit {
+        0 => false,
+        5 => {
+            printer.warning(
+                "Configuration rollback succeeded, but cleanup of the previous generation's mounts failed.",
+            );
+            false
+        }
+        6 => true,
+        other => {
+            return Err(
+                crate::config_eval::activation::ActivationFailure::rescue(format!(
+                    "configuration rollback returned impossible post-swap exit {other}; rescue mode is required"
+                ))
+                .into(),
+            );
+        }
+    };
+    persist_attestation().map_err(|error| {
+        crate::config_eval::activation::ActivationFailure::rescue(format!(
+            "configuration rollback swapped /etc but attestation publication failed: {error:#}; rescue mode is required"
+        ))
+    })?;
+    commit_current_generation(profile_path, state, target.number).map_err(|error| {
+        crate::config_eval::activation::ActivationFailure::rescue(format!(
+            "configuration rollback swapped /etc but pointer publication failed: {error:#}; rescue mode is required"
+        ))
+    })?;
+    publish_record(activation_exit).map_err(|error| {
+        crate::config_eval::activation::ActivationFailure::rescue(format!(
+            "configuration rollback committed its pointer but activation record publication failed: {error:#}; rescue mode is required"
+        ))
+    })?;
     if degraded {
         bail!(
             "Configuration generation {} is live, but one or more units failed to restart",
@@ -2083,6 +2576,7 @@ pub(crate) fn commit_current_generation_pub(
 fn load_generation_state(profile_path: &Path) -> Result<ConfigGenerationState> {
     recover_activation_intent(profile_path)?;
     recover_generation_commit(profile_path)?;
+    crate::clean::recover_config_prune_pub(profile_path)?;
     let state_path = profile_path.join(SYSTEM_STATE_FILE);
     if !state_path.exists() {
         return Ok(ConfigGenerationState {
@@ -2245,7 +2739,10 @@ fn recover_activation_intent(profile_path: &Path) -> Result<()> {
         .join(format!("gen-{}", intent.generation))
         .join(format!(".etc-live-{}", intent.nonce));
     if !live_marker.is_file() {
-        return Ok(());
+        // The exact transaction never crossed the /etc swap. Its prepared
+        // generation remains available for diagnosis, but it cannot become
+        // current and the stale intent must not affect the next switch.
+        return remove_file_durable(&path);
     }
     if !intent
         .state
@@ -2258,11 +2755,15 @@ fn recover_activation_intent(profile_path: &Path) -> Result<()> {
             intent.generation
         );
     }
-    let mut recovered = intent.state;
-    recovered.current = intent.generation;
-    publish_current_symlink(profile_path, intent.generation)?;
-    save_generation_state(profile_path, &recovered)?;
-    remove_file_durable(&path)
+    // Crossing the /etc swap is necessary but no longer sufficient to publish
+    // a generation: credential reconciliation, generation attestation, and
+    // the transaction-bound activation proof happen afterward. This loader
+    // lacks the authenticated inputs needed to resume those phases, so it
+    // fails closed and leaves both marker and intent for rescue diagnostics.
+    bail!(
+        "activation transaction {} crossed the /etc swap without a complete generation proof; rescue mode is required",
+        intent.nonce
+    )
 }
 
 /// Save system generation state to disk.
@@ -2424,18 +2925,32 @@ fn sync_directory(path: &Path) -> Result<()> {
 // used by that reconciler and by the kernel-upgrade path.
 // ---------------------------------------------------------------------------
 
-/// Warn (but do not fail) when a unit lifecycle job ended in something other
-/// than `done`. The hard failure is the post-activation `failed_units` scan
-/// in [`activate_post_etc_swap`] — a job can report a transient non-`done` result
-/// yet the unit still settle active, so the authoritative gate is the final
-/// state.
-fn warn_if_job_not_done(printer: &Printer, verb: &str, unit: &str, result: &JobResult) {
+/// Classifies one unit lifecycle attempt for the activation health result.
+///
+/// Both a D-Bus error and every terminal result other than `done` degrade the
+/// activation. Callers keep iterating so one failed consumer never prevents a
+/// later selected consumer from being attempted.
+fn reconcile_job_failed<E: std::fmt::Display>(
+    printer: &Printer,
+    verb: &str,
+    unit: &str,
+    result: std::result::Result<JobResult, E>,
+) -> bool {
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            printer.warning(&format!("  {verb} {unit}: {error}"));
+            return true;
+        }
+    };
     if !result.is_done() {
         printer.warning(&format!(
             "  {verb} {unit}: systemd job result '{}'",
             result.label(),
         ));
+        return true;
     }
+    false
 }
 
 /// Render a [`FailedUnitsReport`] for human display: a one-line summary per
@@ -2682,10 +3197,12 @@ async fn activate_pre_etc_swap_inner(
 
     for unit in &plan.stopped {
         printer.plain(&format!("  stopping   {unit}"));
-        match client.stop_unit(unit).await {
-            Ok(outcome) => warn_if_job_not_done(printer, "stop", unit, &outcome.result),
-            Err(e) => printer.warning(&format!("  stop {unit}: {e:#}")),
-        }
+        let _ = reconcile_job_failed(
+            printer,
+            "stop",
+            unit,
+            client.stop_unit(unit).await.map(|outcome| outcome.result),
+        );
     }
 
     println!("{}", plan_path.display());
@@ -2733,31 +3250,38 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
 
     client.daemon_reload().await.context("daemon-reload")?;
 
+    let mut action_failed = false;
     for unit in &plan.to_reload {
         printer.plain(&format!("  reloading  {unit}"));
-        let outcome = client
-            .reload_unit(unit)
-            .await
-            .with_context(|| format!("reloading {unit}"))?;
-        warn_if_job_not_done(printer, "reload", unit, &outcome.result);
+        action_failed |= reconcile_job_failed(
+            printer,
+            "reload",
+            unit,
+            client.reload_unit(unit).await.map(|outcome| outcome.result),
+        );
     }
 
     for unit in &plan.to_restart {
         printer.plain(&format!("  restarting {unit}"));
-        let outcome = client
-            .restart_unit(unit)
-            .await
-            .with_context(|| format!("restarting {unit}"))?;
-        warn_if_job_not_done(printer, "restart", unit, &outcome.result);
+        action_failed |= reconcile_job_failed(
+            printer,
+            "restart",
+            unit,
+            client
+                .restart_unit(unit)
+                .await
+                .map(|outcome| outcome.result),
+        );
     }
 
     for unit in &plan.to_start {
         printer.plain(&format!("  starting   {unit}"));
-        let outcome = client
-            .start_unit(unit)
-            .await
-            .with_context(|| format!("starting {unit}"))?;
-        warn_if_job_not_done(printer, "start", unit, &outcome.result);
+        action_failed |= reconcile_job_failed(
+            printer,
+            "start",
+            unit,
+            client.start_unit(unit).await.map(|outcome| outcome.result),
+        );
     }
 
     // Drain late job events so the scan below sees settled unit states. Do not
@@ -2784,6 +3308,11 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
 
     if !report.is_empty() {
         printer.error(&format_failed_units(&report));
+        return Ok(RECONCILE_FAILED_UNITS);
+    }
+
+    if action_failed {
+        printer.error("one or more daemon reconciliation actions failed");
         return Ok(RECONCILE_FAILED_UNITS);
     }
 
@@ -2902,6 +3431,154 @@ fn read_validated_plan(path: &Path) -> Result<Plan> {
         );
     }
     Ok(plan)
+}
+
+/// Folds credential-triggered consumer restarts into the post-swap plan.
+///
+/// A unit already scheduled to start remains a single start. Otherwise a
+/// credential change supersedes a reload with one restart. The updated plan
+/// is durably replaced before the activation script is allowed to continue.
+///
+/// # Errors
+///
+/// Returns an error if the plan fails validation, cannot be serialized, or
+/// cannot be replaced durably.
+pub(crate) fn augment_reconcile_plan_with_credential_units(
+    path: &Path,
+    units: &[String],
+) -> Result<()> {
+    augment_reconcile_plan_with_credential_units_and(path, units, |unit| {
+        let output = std::process::Command::new("systemctl")
+            .args(["show", "--property=After", "--value", unit])
+            .output()
+            .with_context(|| format!("querying ordering dependencies of {unit}"))?;
+        if !output.status.success() {
+            bail!(
+                "systemctl failed to query ordering dependencies of {unit}: {}",
+                output.status
+            );
+        }
+        Ok(String::from_utf8(output.stdout)
+            .with_context(|| format!("reading ordering dependencies of {unit}"))?
+            .split_whitespace()
+            .map(str::to_string)
+            .collect())
+    })
+}
+
+fn augment_reconcile_plan_with_credential_units_and<F>(
+    path: &Path,
+    units: &[String],
+    after: F,
+) -> Result<()>
+where
+    F: FnMut(&str) -> Result<Vec<String>>,
+{
+    let parent = path
+        .parent()
+        .with_context(|| format!("plan {} has no parent", path.display()))?;
+    if !cfg!(test) {
+        if parent != Path::new(APM_RUN_DIR) {
+            bail!(
+                "credential reconciliation plan {} is outside {}",
+                path.display(),
+                APM_RUN_DIR
+            );
+        }
+        validate_secure_dir(parent)?;
+    }
+    let mut plan = read_validated_plan(path)?;
+    let start_units = plan.to_start.iter().collect::<BTreeSet<_>>();
+    let credential_restarts = units
+        .iter()
+        .filter(|unit| !start_units.contains(unit))
+        .cloned()
+        .collect::<Vec<_>>();
+    let credential_restart_set = credential_restarts.iter().collect::<BTreeSet<_>>();
+    let restart_insert_at = plan
+        .to_restart
+        .iter()
+        .position(|unit| credential_restart_set.contains(unit))
+        .unwrap_or(plan.to_restart.len());
+
+    for unit in units {
+        plan.to_reload.retain(|candidate| candidate != unit);
+    }
+    plan.to_restart
+        .retain(|unit| !credential_restart_set.contains(unit));
+    let restart_insert_at = restart_insert_at.min(plan.to_restart.len());
+    plan.to_restart
+        .splice(restart_insert_at..restart_insert_at, credential_restarts);
+    deduplicate_units_preserving_order(&mut plan.to_restart);
+    plan.to_restart = dependency_order_restart_plan(&plan.to_restart, after)?;
+    deduplicate_units_preserving_order(&mut plan.to_reload);
+    deduplicate_units_preserving_order(&mut plan.to_restart);
+    deduplicate_units_preserving_order(&mut plan.to_start);
+    replace_reconcile_plan(path, &plan)
+}
+
+fn dependency_order_restart_plan<F>(units: &[String], mut after: F) -> Result<Vec<String>>
+where
+    F: FnMut(&str) -> Result<Vec<String>>,
+{
+    let members = units.iter().cloned().collect::<BTreeSet<_>>();
+    let mut prerequisites = std::collections::BTreeMap::<String, BTreeSet<String>>::new();
+    for unit in units {
+        prerequisites.insert(
+            unit.clone(),
+            after(unit)?
+                .into_iter()
+                .filter(|dependency| members.contains(dependency))
+                .collect(),
+        );
+    }
+    let mut ordered = Vec::with_capacity(units.len());
+    let mut remaining = members;
+    while !remaining.is_empty() {
+        let next = units.iter().find(|unit| {
+            remaining.contains(*unit)
+                && prerequisites
+                    .get(*unit)
+                    .is_none_or(|dependencies| dependencies.is_disjoint(&remaining))
+        });
+        let Some(next) = next else {
+            ordered.extend(
+                units
+                    .iter()
+                    .filter(|unit| remaining.contains(*unit))
+                    .cloned(),
+            );
+            break;
+        };
+        remaining.remove(next);
+        ordered.push(next.clone());
+    }
+    Ok(ordered)
+}
+
+fn deduplicate_units_preserving_order(units: &mut Vec<String>) {
+    let mut seen = BTreeSet::new();
+    units.retain(|unit| seen.insert(unit.clone()));
+}
+
+fn replace_reconcile_plan(path: &Path, plan: &Plan) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("plan {} has no parent", path.display()))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("staging updated plan in {}", parent.display()))?;
+    serde_json::to_writer(temp.as_file_mut(), plan)
+        .context("serializing updated activation plan")?;
+    temp.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("setting updated plan mode in {}", parent.display()))?;
+    temp.as_file()
+        .sync_all()
+        .with_context(|| format!("syncing updated plan in {}", parent.display()))?;
+    temp.persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| format!("publishing updated plan {}", path.display()))?;
+    sync_directory(parent)
 }
 
 /// `fstat(2)` the already-open file descriptor, so the metadata check cannot
@@ -3749,6 +4426,118 @@ mod tests {
     }
 
     #[test]
+    fn inactive_slot_writer_follows_by_partlabel_style_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("root.img");
+        let target = tmp.path().join("root-b-device");
+        let by_partlabel = tmp.path().join("root-b");
+        std::fs::write(&source, b"new-root").unwrap();
+        std::fs::write(&target, vec![b'x'; 64]).unwrap();
+        std::os::unix::fs::symlink(&target, &by_partlabel).unwrap();
+
+        copy_payload_to_slot(&source, &by_partlabel).unwrap();
+
+        assert!(std::fs::read(&target).unwrap().starts_with(b"new-root"));
+    }
+
+    #[test]
+    fn writable_boot_bracket_restores_read_only_after_failure() {
+        let tmp = TempDir::new().unwrap();
+        let events = std::cell::RefCell::new(Vec::new());
+        let error = with_writable_boot_using(
+            tmp.path(),
+            |_path, writable| {
+                events.borrow_mut().push(if writable { "rw" } else { "ro" });
+                Ok(())
+            },
+            || -> Result<()> {
+                events.borrow_mut().push("action");
+                bail!("injected staging failure")
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("injected staging failure"));
+        assert_eq!(*events.borrow(), ["rw", "action", "ro"]);
+    }
+
+    #[test]
+    fn writable_boot_validation_requires_the_expected_esp_device() {
+        let tmp = TempDir::new().unwrap();
+        let boot = tmp.path().join("boot");
+        let devices = tmp.path().join("devices");
+        std::fs::create_dir_all(&boot).unwrap();
+        std::fs::create_dir_all(&devices).unwrap();
+        let esp = devices.join("esp-device");
+        let wrong = devices.join("wrong-device");
+        std::fs::write(&esp, b"esp").unwrap();
+        std::fs::write(&wrong, b"wrong").unwrap();
+        let boot_mountpoint = std::fs::canonicalize(&boot).unwrap();
+        let expected = devices.join("ESP");
+        std::os::unix::fs::symlink(&esp, &expected).unwrap();
+        let mountinfo = tmp.path().join("mountinfo");
+        std::fs::write(
+            &mountinfo,
+            format!(
+                "31 24 254:1 / {} ro,relatime - vfat {} rw\n",
+                boot_mountpoint.display(),
+                esp.display()
+            ),
+        )
+        .unwrap();
+
+        validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap();
+
+        std::fs::write(
+            &mountinfo,
+            format!(
+                "31 24 254:2 / {} ro,relatime - vfat {} rw\n",
+                boot_mountpoint.display(),
+                wrong.display()
+            ),
+        )
+        .unwrap();
+        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        assert!(error.to_string().contains("expected"));
+
+        std::fs::write(
+            &mountinfo,
+            format!(
+                "31 24 254:1 /subdir {} ro,relatime - vfat {} rw\n",
+                boot_mountpoint.display(),
+                esp.display()
+            ),
+        )
+        .unwrap();
+        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        assert!(error.to_string().contains("bind/subtree"));
+
+        std::fs::write(
+            &mountinfo,
+            format!(
+                "31 24 254:1 / {} ro,relatime - ext4 {} rw\n",
+                boot_mountpoint.display(),
+                esp.display()
+            ),
+        )
+        .unwrap();
+        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, false).unwrap_err();
+        assert!(error.to_string().contains("expected vfat"));
+
+        std::fs::write(
+            &mountinfo,
+            format!(
+                "31 24 254:1 / {} ro,relatime - vfat {} rw\n",
+                boot_mountpoint.display(),
+                esp.display()
+            ),
+        )
+        .unwrap();
+        let error = validate_boot_esp_mount(&boot, &mountinfo, &expected, true).unwrap_err();
+        assert!(error.to_string().contains("block devices"));
+    }
+
+    #[test]
     fn replaced_slot_ukis_are_cleaned_only_after_new_entry_is_kept() {
         let tmp = TempDir::new().unwrap();
         let boot = tmp.path().join("boot");
@@ -4257,11 +5046,22 @@ mod tests {
             Path::new("/nix/store/test-generation-1"),
             &target,
             &printer,
-            |activate, number, _nonce| {
+            |activate, number, _nonce, barrier| {
                 assert_eq!(activate, Path::new("/nix/store/test-generation-1/activate"));
                 assert_eq!(number, 2);
+                barrier(
+                    crate::config_eval::activation::CredentialBarrier::StagedView(Path::new(
+                        "/run/etc/candidate",
+                    )),
+                )?;
+                barrier(crate::config_eval::activation::CredentialBarrier::Publish(
+                    Path::new("/run/apm/test-plan.json"),
+                ))?;
                 Ok(Some(0))
             },
+            |_plan| Ok(()),
+            || Ok(()),
+            |_activation_exit| Ok(()),
         )
         .unwrap();
 
@@ -4273,7 +5073,112 @@ mod tests {
     }
 
     #[test]
-    fn activation_recovery_requires_the_exact_transaction_nonce() {
+    fn same_abi_rollback_credential_failure_refuses_pointer_and_evidence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = generation_state_for_commit();
+        save_generation_state(tmp.path(), &state).unwrap();
+        let target = state.generations[1].clone();
+        let printer = Printer::new(0, true, false);
+        let evidence_published = std::cell::Cell::new(false);
+
+        let error = direct_reactivate_config_generation_with(
+            tmp.path(),
+            &mut state,
+            Path::new("/nix/store/test-generation-1"),
+            &target,
+            &printer,
+            |_activate, _number, _nonce, barrier| {
+                barrier(
+                    crate::config_eval::activation::CredentialBarrier::StagedView(Path::new(
+                        "/run/etc/candidate",
+                    )),
+                )?;
+                barrier(crate::config_eval::activation::CredentialBarrier::Publish(
+                    Path::new("/run/apm/test-plan.json"),
+                ))?;
+                Ok(Some(0))
+            },
+            |event| match event {
+                crate::config_eval::activation::CredentialBarrier::StagedView(_) => Ok(()),
+                crate::config_eval::activation::CredentialBarrier::Publish(_) => {
+                    bail!("injected retained credential publication failure")
+                }
+            },
+            || {
+                evidence_published.set(true);
+                Ok(())
+            },
+            |_activation_exit| {
+                evidence_published.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("retained credential publication failure"),
+            "{error:#}"
+        );
+        assert_eq!(
+            error
+                .downcast_ref::<crate::config_eval::activation::ActivationFailure>()
+                .unwrap()
+                .exit_code(),
+            4
+        );
+        assert_eq!(state.current, 1);
+        assert!(!evidence_published.get());
+        assert_eq!(load_generation_state(tmp.path()).unwrap().current, 1);
+        assert!(!tmp.path().join("current").exists());
+    }
+
+    #[test]
+    fn same_abi_rollback_staged_credential_failure_precedes_live_mutation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut state = generation_state_for_commit();
+        save_generation_state(tmp.path(), &state).unwrap();
+        let target = state.generations[1].clone();
+        let printer = Printer::new(0, true, false);
+        let publish_seen = std::cell::Cell::new(false);
+
+        let error = direct_reactivate_config_generation_with(
+            tmp.path(),
+            &mut state,
+            Path::new("/nix/store/test-generation-1"),
+            &target,
+            &printer,
+            |_activate, _number, _nonce, barrier| {
+                barrier(
+                    crate::config_eval::activation::CredentialBarrier::StagedView(Path::new(
+                        "/run/etc/candidate",
+                    )),
+                )?;
+                publish_seen.set(true);
+                barrier(crate::config_eval::activation::CredentialBarrier::Publish(
+                    Path::new("/run/apm/test-plan.json"),
+                ))?;
+                Ok(Some(0))
+            },
+            |event| match event {
+                crate::config_eval::activation::CredentialBarrier::StagedView(_) => {
+                    bail!("injected staged sealed credential validation failure")
+                }
+                crate::config_eval::activation::CredentialBarrier::Publish(_) => Ok(()),
+            },
+            || Ok(()),
+            |_activation_exit| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("staged sealed credential"));
+        assert!(!publish_seen.get());
+        assert_eq!(state.current, 1);
+        assert_eq!(load_generation_state(tmp.path()).unwrap().current, 1);
+        assert!(!tmp.path().join("current").exists());
+    }
+
+    #[test]
+    fn activation_recovery_never_publishes_an_incomplete_transaction() {
         let tmp = tempfile::TempDir::new().unwrap();
         let state = generation_state_for_commit();
         std::fs::create_dir_all(tmp.path().join("gen-1")).unwrap();
@@ -4299,14 +5204,26 @@ mod tests {
             PathBuf::from("gen-1")
         );
 
+        // A pre-swap crash is safe to clear and retry. Re-create the exact
+        // intent, then prove a post-swap crash requires rescue rather than
+        // bypassing credentials, attestation, and activation proof.
+        std::fs::write(
+            tmp.path().join(ACTIVATION_INTENT),
+            serde_json::to_vec(&intent).unwrap(),
+        )
+        .unwrap();
         std::fs::write(
             tmp.path().join("gen-2/.etc-live-new-transaction"),
             b"2 new-transaction\n",
         )
         .unwrap();
-        let recovered = load_generation_state(tmp.path()).unwrap();
-        assert_eq!(recovered.current, 2);
-        assert!(!tmp.path().join(ACTIVATION_INTENT).exists());
+        let error = load_generation_state(tmp.path()).unwrap_err();
+        assert!(error.to_string().contains("rescue mode is required"));
+        assert_eq!(
+            load_generation_state_readonly(tmp.path()).unwrap().current,
+            1
+        );
+        assert!(tmp.path().join(ACTIVATION_INTENT).exists());
     }
 
     #[test]
@@ -4354,11 +5271,23 @@ mod tests {
         .unwrap_err();
         assert!(error.to_string().contains("injected bootctl failure"));
         assert_eq!(state.default, 1);
+        assert_eq!(state.pending, Some(2));
         assert!(tmp.path().join(IMAGE_TRANSITION_INTENT).is_file());
-        assert!(!tmp.path().join(IMAGE_STATE_FILE).exists());
+        let prepared: ImageGenerationState =
+            serde_json::from_slice(&std::fs::read(tmp.path().join(IMAGE_STATE_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(prepared.default, 1);
+        assert_eq!(prepared.pending, Some(2));
 
+        let prepared_path = tmp.path().join(IMAGE_STATE_FILE);
         let mut selected = String::new();
         select_image_default_with(tmp.path(), &mut state, 2, "aos-2+3.efi", |entry| {
+            let prepared: ImageGenerationState = serde_json::from_slice(&std::fs::read(
+                &prepared_path,
+            )?)
+            .context("the authenticated pending state must precede external boot selection")?;
+            assert_eq!(prepared.default, 1);
+            assert_eq!(prepared.pending, Some(2));
             selected = entry.to_string();
             Ok(())
         })
@@ -4387,6 +5316,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn counted_uki_resolution_rejects_exhausted_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let linux = tmp.path().join("EFI/Linux");
+        std::fs::create_dir_all(&linux).unwrap();
+        std::fs::write(linux.join("aos-server-2+0-3.efi"), b"failed uki").unwrap();
+
+        let error = resolve_installed_uki_entry(tmp.path(), "EFI/Linux/aos-server-2+3.efi")
+            .expect_err("an exhausted image must not become the next boot default");
+        assert!(error.to_string().contains("exhausted"));
+    }
+
+    #[test]
+    fn staged_uki_path_is_confined_and_requires_a_live_terminal_count() {
+        assert_eq!(
+            validate_staged_uki_path("EFI/Linux/aos-1.0+build+3.efi").unwrap(),
+            "aos-1.0+build+3.efi"
+        );
+        for unsafe_path in [
+            "loader/loader.conf+3.efi",
+            "EFI/Linux/nested/aos+3.efi",
+            "EFI/Linux/../loader/aos+3.efi",
+            "/EFI/Linux/aos+3.efi",
+            "EFI/Linux/aos.efi",
+            "EFI/Linux/aos+0.efi",
+            "EFI/Linux/aos+3-0.efi",
+            "EFI/Linux/aos+live.efi",
+        ] {
+            assert!(
+                validate_staged_uki_path(unsafe_path).is_err(),
+                "unexpectedly accepted {unsafe_path:?}"
+            );
+        }
+    }
+
     fn generation_state_for_commit() -> ConfigGenerationState {
         let generation = |number| ConfigGeneration {
             number,
@@ -4412,6 +5376,100 @@ mod tests {
             next: 3,
             generations: vec![generation(1), generation(2)],
         }
+    }
+
+    fn valid_manifest_for_generation_authentication() -> serde_json::Value {
+        serde_json::json!({
+            "schema": "aos.config-manifest/v1",
+            "module_abi": 1,
+            "inputs": {
+                "base_lib": {
+                    "store_path": "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base",
+                    "abi_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "module_abi": 1
+                },
+                "evaluator": {
+                    "store_path": "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-evaluator",
+                    "store_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                "config_modules": {
+                    "closure_hash": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+                    "count": 0,
+                    "store_paths": [],
+                    "nar_hashes": [],
+                    "package_names": [],
+                    "module_abi_compat": []
+                },
+                "host_nix": {
+                    "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "trust_mode": "platform",
+                    "platform": "test",
+                    "signer_key": null,
+                    "store_path": "/nix/store/cccccccccccccccccccccccccccccccc-host-nix"
+                },
+                "instance_facts": {
+                    "facts_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "platform": "test",
+                    "store_path": "/nix/store/dddddddddddddddddddddddddddddddd-facts"
+                }
+            },
+            "packages": [],
+            "packageOutputs": {},
+            "storePaths": [],
+            "etc": {},
+            "jobScripts": {},
+            "units": {},
+            "users": [],
+            "presets": [],
+            "graph": {"edges": {}},
+            "config": {},
+            "credentials": {},
+            "ownership": {
+                "etc": {}, "units": {}, "jobScripts": {}, "users": {},
+                "presets": {}, "storePaths": {}
+            }
+        })
+    }
+
+    #[test]
+    fn current_manifest_authentication_rejects_retained_tampering() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let profile = tmp.path().join("system");
+        let generation_dir = profile.join("gen-1");
+        std::fs::create_dir_all(&generation_dir).unwrap();
+        let mut manifest = valid_manifest_for_generation_authentication();
+        let parsed: crate::config_eval::materialize::ConfigManifest =
+            serde_json::from_value(manifest.clone()).unwrap();
+        parsed.validate().unwrap();
+        let manifest_hash =
+            crate::graph_compile::reproject::hash_cjson(&serde_json::to_value(&parsed).unwrap());
+        std::fs::write(
+            generation_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut state = generation_state_for_commit();
+        state.generations.truncate(1);
+        state.generations[0].manifest_hash = manifest_hash;
+        state.next = 2;
+        save_generation_state(&profile, &state).unwrap();
+        std::os::unix::fs::symlink("gen-1", profile.join("current")).unwrap();
+
+        assert_eq!(
+            authenticated_current_generation_manifest(&profile).unwrap(),
+            Some(generation_dir.join("manifest.json"))
+        );
+
+        manifest["inputs"]["host_nix"]["content_hash"] = serde_json::Value::String(
+            "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".to_string(),
+        );
+        std::fs::write(
+            generation_dir.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let error = authenticated_current_generation_manifest(&profile).unwrap_err();
+        assert!(format!("{error:#}").contains("manifest hash mismatch"));
     }
 
     #[test]
@@ -4590,6 +5648,89 @@ mod tests {
         let path = write_plan(tmp.path(), &plan).unwrap();
         let parsed = read_validated_plan(&path).unwrap();
         assert_eq!(parsed, plan);
+    }
+
+    #[test]
+    fn credential_units_fold_into_plan_once_with_start_precedence() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 9,
+            to_reload: vec!["reload.service".to_string(), "rotate.service".to_string()],
+            to_restart: vec!["restart.service".to_string()],
+            to_start: vec!["new.service".to_string()],
+            ..Default::default()
+        };
+        let path = write_plan(tmp.path(), &plan).unwrap();
+
+        augment_reconcile_plan_with_credential_units_and(
+            &path,
+            &[
+                "new.service".to_string(),
+                "rotate.service".to_string(),
+                "restart.service".to_string(),
+                "unchanged.service".to_string(),
+            ],
+            |_| Ok(Vec::new()),
+        )
+        .unwrap();
+
+        let updated = read_validated_plan(&path).unwrap();
+        assert_eq!(updated.to_reload, vec!["reload.service"]);
+        assert_eq!(
+            updated.to_restart,
+            vec!["rotate.service", "restart.service", "unchanged.service"]
+        );
+        assert_eq!(updated.to_start, vec!["new.service"]);
+    }
+
+    #[test]
+    fn credential_restart_order_includes_existing_planned_dependents() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plan = Plan {
+            schema_version: PLAN_SCHEMA_VERSION,
+            generation: 10,
+            to_restart: vec!["frontend.service".to_string()],
+            ..Default::default()
+        };
+        let path = write_plan(tmp.path(), &plan).unwrap();
+
+        augment_reconcile_plan_with_credential_units_and(
+            &path,
+            &["database.service".to_string()],
+            |unit| match unit {
+                "frontend.service" => Ok(vec!["database.service".to_string()]),
+                _ => Ok(Vec::new()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_validated_plan(&path).unwrap().to_restart,
+            ["database.service", "frontend.service"]
+        );
+    }
+
+    #[test]
+    fn reconcile_attempts_continue_and_any_error_is_degraded() {
+        let printer = Printer::new(0, true, false);
+        let attempts = [
+            ("first.service", Err("injected D-Bus error")),
+            ("second.service", Ok(JobResult::Dependency)),
+            ("third.service", Ok(JobResult::Done)),
+        ];
+        let mut visited = Vec::new();
+        let mut degraded = false;
+        for (unit, outcome) in attempts {
+            visited.push(unit);
+            degraded |= reconcile_job_failed(&printer, "restart", unit, outcome);
+        }
+
+        assert_eq!(
+            visited,
+            ["first.service", "second.service", "third.service"]
+        );
+        assert!(degraded);
     }
 
     #[test]

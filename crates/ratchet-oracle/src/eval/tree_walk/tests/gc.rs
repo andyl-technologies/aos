@@ -1,0 +1,467 @@
+//! Tree-walk GC barrier integration tests.
+
+// Some tests here are gated off under the Candidate-C variant (non-reservation
+// heap geometry / fake pointers), leaving shared helpers unused on that carrier
+// only; the baseline still uses them.
+#![cfg_attr(feature = "candidate_c_value", allow(dead_code))]
+
+use super::*;
+use crate::eval::heap::{HeapAllocationDomain, StackMapSlot};
+use crate::heap::{GcHeapAddress, HeapGeneration, RememberedEdge};
+
+fn gc_address(value: Value) -> GcHeapAddress {
+    GcHeapAddress::new(value.as_heap_ptr().expect("value is heap-backed").as_ptr() as usize)
+        .expect("heap pointer is a valid GC address")
+}
+
+fn force_permanent_attr_thunk(options: TreeWalkOptions) -> (TreeWalk, Value, Value) {
+    force_attr_thunk(
+        "{ a = x: x; }",
+        b"a",
+        options,
+        Some(HeapAllocationDomain::PermanentShared),
+    )
+}
+
+fn force_attr_thunk(
+    source: &str,
+    attr_name: &[u8],
+    mut options: TreeWalkOptions,
+    source_domain: Option<HeapAllocationDomain>,
+) -> (TreeWalk, Value, Value) {
+    let ir = lower(source);
+    let attr = symbol_for(&ir, attr_name);
+    if source_domain.is_some() {
+        // FV-3: domain flipping is a record-table concept; fixtures that
+        // re-home the source thunk need the Tier-B B2 record placement.
+        options.set_record_worker_closures_for_gc_scaffolding(true);
+    }
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = evaluator
+            .heap()
+            .get_attrs(root)
+            .expect("root is an attrset");
+        attrs.get(attr).expect("attr exists")
+    };
+    assert_eq!(thunk_value.tag(), ValueTag::Thunk);
+    if let Some(domain) = source_domain {
+        evaluator
+            .heap
+            .set_allocation_domain_for_test(thunk_value, domain)
+            .expect("test can mark source thunk domain");
+    }
+    let forced = evaluator
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("thunk force succeeds");
+    (evaluator, thunk_value, forced)
+}
+
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
+#[test]
+fn daemon_thunk_forcing_records_remembered_edge() {
+    let (evaluator, thunk_value, forced) = force_permanent_attr_thunk(
+        TreeWalkOptions::with_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational),
+    );
+    let edge = RememberedEdge::new(gc_address(thunk_value), gc_address(forced));
+
+    assert_eq!(forced.tag(), ValueTag::Lambda);
+    assert_eq!(evaluator.thunk_resolve_remembered_set().edges(), &[edge]);
+    assert_eq!(evaluator.thunk_resolve_card_table().len(), 1);
+    assert_eq!(
+        evaluator.thunk_resolve_card_table().dirty_cards()[0].source(),
+        edge.source()
+    );
+}
+
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
+#[test]
+fn daemon_thunk_forcing_skips_young_source_even_for_young_forced_value() {
+    let (evaluator, thunk_value, forced) = force_attr_thunk(
+        "{ a = x: x; }",
+        b"a",
+        TreeWalkOptions::with_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational),
+        None,
+    );
+
+    assert_eq!(forced.tag(), ValueTag::Lambda);
+    assert_eq!(
+        evaluator
+            .heap()
+            .allocation_domain(forced)
+            .expect("forced lambda belongs to this heap"),
+        HeapAllocationDomain::Worker
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(thunk_value)
+            .expect("source thunk belongs to this heap"),
+        HeapGeneration::Young
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(forced)
+            .expect("forced lambda belongs to this heap"),
+        HeapGeneration::Young
+    );
+    assert!(evaluator.thunk_resolve_remembered_set().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
+#[test]
+fn daemon_thunk_forcing_skips_permanent_forced_value_cards() {
+    let (evaluator, thunk_value, forced) = force_attr_thunk(
+        "{ a = (x: x) \"resident\"; }",
+        b"a",
+        TreeWalkOptions::with_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational),
+        Some(HeapAllocationDomain::PermanentShared),
+    );
+
+    assert_eq!(forced.tag(), ValueTag::String);
+    assert_eq!(
+        evaluator
+            .heap()
+            .allocation_domain(forced)
+            .expect("forced string belongs to this heap"),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(thunk_value)
+            .expect("source thunk belongs to this heap"),
+        HeapGeneration::Permanent
+    );
+    assert_eq!(
+        evaluator
+            .heap()
+            .generation(forced)
+            .expect("forced string belongs to this heap"),
+        HeapGeneration::Permanent
+    );
+    assert!(evaluator.thunk_resolve_remembered_set().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
+#[test]
+fn one_shot_thunk_forcing_keeps_remembered_set_empty() {
+    let (evaluator, _thunk_value, forced) = force_permanent_attr_thunk(TreeWalkOptions::new());
+
+    assert_eq!(forced.tag(), ValueTag::Lambda);
+    assert!(evaluator.thunk_resolve_remembered_set().is_empty());
+    assert!(evaluator.thunk_resolve_card_table().is_empty());
+}
+
+// Reconciled for the Candidate-C 8-byte carrier: this test forces a non-
+// reservation heap geometry (GC-stress record placement / chunked / fake
+// pointer) or reads a boxed wide scalar context-free — both unavailable under
+// the single-reservation Candidate-C carrier. Real eval is covered by the
+// byte-parity battery (cutover plan sections 2, 3.6).
+#[cfg(not(feature = "candidate_c_value"))]
+#[test]
+fn daemon_force_cache_replay_runs_barrier_without_remembered_edge_for_permanent_target() {
+    let source = "{ a = [ \"cached\" ]; }";
+    let ir = lower(source);
+    let a = symbol_for(&ir, b"a");
+    let cache = Arc::new(Mutex::new(EvalCacheRuntime::enabled()));
+
+    let mut first = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::new(),
+        "expr.nix",
+        source,
+        cache.clone(),
+    );
+    let root = first.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = first.heap().get_attrs(root).expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    let warmed = first
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("warming force succeeds");
+    let warmed_list = first
+        .heap()
+        .get_list(warmed)
+        .expect("warming result is a list");
+    let warmed_string = warmed_list.get(0).expect("warming list has an element");
+    assert_eq!(
+        first
+            .heap()
+            .get_string(warmed_string)
+            .expect("warming element is a string")
+            .bytes(),
+        b"cached"
+    );
+    assert_eq!(first.stats().cache_hits(), 0);
+    drop(first);
+
+    let mut replay = TreeWalk::with_options_and_source_and_eval_cache(
+        &ir,
+        TreeWalkOptions::with_thunk_resolve_barrier_tier(GenerationalGcTier::DaemonGenerational),
+        "expr.nix",
+        source,
+        cache,
+    );
+    let root = replay.eval_root().expect("attrset evaluates");
+    let thunk_value = {
+        let attrs = replay.heap().get_attrs(root).expect("root is an attrset");
+        attrs.get(a).expect("a exists")
+    };
+    replay
+        .heap
+        .set_allocation_domain_for_test(thunk_value, HeapAllocationDomain::PermanentShared)
+        .expect("test can mark replay source thunk permanent");
+    let forced = replay
+        .force_value(ir.root, Span::new(0, 0), thunk_value)
+        .expect("replay force succeeds");
+
+    let replayed_list = replay
+        .heap()
+        .get_list(forced)
+        .expect("replayed result is a list");
+    let replayed_string = replayed_list.get(0).expect("replayed list has an element");
+    assert_eq!(
+        replay
+            .heap()
+            .get_string(replayed_string)
+            .expect("replayed element is a string")
+            .bytes(),
+        b"cached"
+    );
+    assert_eq!(replay.stats().cache_hits(), 1);
+    assert_eq!(replay.stats().thunks_forced(), 0);
+    assert_eq!(
+        replay
+            .heap()
+            .allocation_domain(forced)
+            .expect("replayed target belongs to this heap"),
+        HeapAllocationDomain::PermanentShared
+    );
+    assert!(
+        replay.thunk_resolve_remembered_set().is_empty(),
+        "force-cache replayed composites rehydrate as permanent targets"
+    );
+    assert!(
+        replay.thunk_resolve_card_table().is_empty(),
+        "force-cache replayed permanent targets do not dirty cards"
+    );
+}
+
+/// A program with plenty of thunk garbage: each call allocates a `heavy`
+/// thunk that is demanded only on the untaken branch, so its record dies with
+/// the call frame once the result is strict. (Bindings must be conditionally
+/// used - a never-used binding would be removed by dead-binding elimination,
+/// and values stored into attrsets are immortal via permanent hash-consing.)
+const SWEEP_FIXTURE: &str = "let\n  pick = n: let heavy = (x: x * x) n; in if n > 0 then n + 1 else heavy;\nin pick 1 + pick 2 + pick 3";
+
+#[test]
+fn sweep_mode_evaluation_is_byte_identical_and_sheds_captures() {
+    let ir = lower(SWEEP_FIXTURE);
+    let baseline =
+        eval_raw_bytes_with_options(&ir, TreeWalkOptions::default()).expect("baseline evaluates");
+
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_gc_sweep_threshold(0);
+    let swept = eval_raw_bytes_with_options(&ir, options.clone()).expect("sweep-mode evaluates");
+    assert_eq!(baseline, swept, "AOS_NIX_GC=sweep must be byte-invisible");
+
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("owned sweep-mode evaluates");
+    let stats = outcome.stats();
+    assert!(
+        stats.thunks_shed() > 0,
+        "forced thunks shed their captures under sweep mode"
+    );
+    assert_eq!(
+        stats.gc_sweeps(),
+        1,
+        "threshold 0 sweeps once at the post-root quiescent point"
+    );
+    assert!(
+        stats.gc_records_swept() > 0,
+        "dead worker records are retired by the quiescent sweep"
+    );
+    assert_eq!(stats.gc_sweeps_skipped_nonquiescent(), 0);
+}
+
+#[test]
+fn raw_traversal_sweeps_between_registered_aggregate_elements() {
+    let source = "let pick = n: let heavy = (x: x * x) n; in if n > 0 then n + 1 else heavy; in [ { a = pick 1; b = pick 2; } (pick 3) ]";
+    let ir = lower(source);
+    let baseline = eval_raw_bytes(&ir).expect("baseline raw traversal evaluates");
+
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_gc_sweep_threshold(0);
+    let evaluator = TreeWalk::with_options(&ir, options);
+    let (swept, evaluator) = eval_raw_bytes_with_evaluator_owned(&ir, evaluator)
+        .expect("registered raw traversal sweeps safely");
+
+    assert_eq!(swept, baseline);
+    assert_eq!(swept, b"[ { a = 2; b = 3; } 4 ]");
+    assert_eq!(
+        evaluator.stats().gc_sweeps(),
+        4,
+        "nested attr/list traversal sweeps after every registered child"
+    );
+    assert!(
+        evaluator.stats().gc_records_swept() > 0,
+        "mid-traversal sweeps retire dead branch captures"
+    );
+    assert_eq!(evaluator.stats().gc_sweeps_skipped_nonquiescent(), 0);
+}
+
+#[test]
+fn sweep_mode_off_by_default_keeps_counters_zero() {
+    let outcome = eval_whnf_owned(&lower(SWEEP_FIXTURE)).expect("expression evaluates");
+    let stats = outcome.stats();
+    assert_eq!(stats.thunks_shed(), 0);
+    assert_eq!(stats.gc_sweeps(), 0);
+    assert_eq!(stats.gc_records_swept(), 0);
+}
+
+#[test]
+fn parallel_mode_pins_sweep_off() {
+    let ir = lower(SWEEP_FIXTURE);
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_gc_sweep_threshold(0);
+    options.set_parallel_thunk_payloads_enabled(true);
+    let outcome = eval_whnf_owned_with_options(&ir, options).expect("parallel-mode evaluates");
+    let stats = outcome.stats();
+    assert_eq!(
+        stats.thunks_shed(),
+        0,
+        "parallel evaluation pins Tier-B reclamation off"
+    );
+    assert_eq!(stats.gc_sweeps(), 0);
+}
+
+#[test]
+fn validation_sweep_preserves_later_forcing() {
+    // Force one attr, sweep with the root as the only extra root, then force
+    // the second attr: the sweep must retire only true garbage, and the still
+    // reachable suspended thunk must keep evaluating correctly afterwards.
+    let ir = lower("{ a = (x: x + 1) 1; b = (y: y * 3) 2; }");
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let (a_value, b_value) = {
+        let attrs = evaluator.heap().get_attrs(root).expect("root is attrs");
+        (
+            attrs.get(symbol_for(&ir, b"a")).expect("a exists"),
+            attrs.get(symbol_for(&ir, b"b")).expect("b exists"),
+        )
+    };
+    let span = Span::new(0, 0);
+    let a_forced = evaluator
+        .force_value(ir.root, span, a_value)
+        .expect("a forces");
+    assert!(a_forced.raw_eq(Value::int(2)));
+
+    let report = evaluator
+        .sweep_heap_for_validation(&[root])
+        .expect("validation sweep succeeds");
+    assert!(report.live_worker_records > 0);
+
+    let b_forced = evaluator
+        .force_value(ir.root, span, b_value)
+        .expect("b still forces after the sweep");
+    assert!(b_forced.raw_eq(Value::int(6)));
+}
+
+#[test]
+fn compiled_safepoint_sweep_marks_finalized_stack_map_roots() {
+    let ir = lower("{ kept = (x: x + 1) 4; garbage = (y: y * y) 9; }");
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    options.set_gc_sweep_threshold(0);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("attrset evaluates");
+    let kept = evaluator
+        .heap()
+        .get_attrs(root)
+        .expect("root is attrs")
+        .get(symbol_for(&ir, b"kept"))
+        .expect("kept exists");
+    let mut compiled_roots = EvalRootSet::new();
+    compiled_roots
+        .try_push_stack_map(0x7000, 2, StackMapSlot::Stack { offset: 48 }, kept)
+        .expect("compiled root records");
+
+    let mut outer_compiled_roots = [root];
+    let report = evaluator
+        .with_transient_value_stack_roots(
+            ir.root,
+            Span::default(),
+            &mut outer_compiled_roots,
+            |eval| {
+                eval.maybe_sweep_heap_at_compiled_safepoint(&compiled_roots, &[])
+                    .map(|report| report.expect("threshold-zero sweep runs"))
+            },
+        )
+        .expect("compiled safepoint sweep succeeds");
+    assert!(report.roots >= 2, "nested compiled roots remain registered");
+    let forced = evaluator
+        .force_value(ir.root, Span::default(), kept)
+        .expect("stack-map-only root remains live");
+    assert!(forced.raw_eq(Value::int(5)));
+    assert_eq!(evaluator.stats().gc_sweeps(), 1);
+}
+
+#[test]
+fn validation_sweep_marks_values_held_only_by_flat_captures() {
+    let mut ir = lower("let x = 1 + 1; in y: x + y");
+    crate::compile::annotate_ir(&mut ir).expect("analysis succeeds");
+    let mut options = TreeWalkOptions::default();
+    options.set_gc_mode(EvalGcMode::Sweep);
+    let mut evaluator = TreeWalk::with_options(&ir, options);
+    let root = evaluator.eval_root().expect("lambda evaluates");
+    let captured = {
+        let lambda = evaluator
+            .heap()
+            .get_lambda(root)
+            .expect("root is a heap-owned lambda");
+        lambda
+            .env()
+            .flat_base()
+            .and_then(|capture| evaluator.flat_capture_values(capture))
+            .expect("lambda uses a resolvable flat plan")[0]
+    };
+    assert_eq!(captured.tag(), ValueTag::Thunk);
+
+    evaluator
+        .sweep_heap_for_validation(&[root])
+        .expect("validation sweep succeeds");
+    evaluator
+        .heap()
+        .get_thunk(captured)
+        .expect("flat-captured thunk remains reachable after sweep");
+}

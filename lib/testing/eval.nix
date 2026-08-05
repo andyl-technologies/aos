@@ -25,6 +25,27 @@
     then throw "aos.security.hardening.kernelLockdown must not exist; kernel lockdown pulls in module signing and is not part of the reproducible public base"
     else "ok";
 
+  assertRecurringLifecycleUnit = name: unit:
+    if unit.unitConfig ? ConditionFirstBoot
+    then throw "${name} must not be guarded by ConditionFirstBoot"
+    else if unit.unitConfig ? ConditionNeedsUpdate
+    then throw "${name} must not be guarded by ConditionNeedsUpdate"
+    else "ok";
+  assertOptionalRecurringLifecycleUnit = name:
+    if builtins.hasAttr name system.config.systemd.services
+    then assertRecurringLifecycleUnit name system.config.systemd.services.${name}
+    else "not-present";
+  rfcLifecycleRecurrence =
+    builtins.seq
+    (assertRecurringLifecycleUnit
+      "aos-repart.service"
+      system.config.boot.initrd.systemd.services.aos-repart)
+    (builtins.seq
+      (assertOptionalRecurringLifecycleUnit "systemd-tmpfiles-setup")
+      (builtins.seq
+        (assertOptionalRecurringLifecycleUnit "systemd-tmpfiles-setup-dev")
+        (assertOptionalRecurringLifecycleUnit "systemd-sysusers")));
+
   # Provisioning and configuration are structural, not optional paths. Their
   # former enable switches must stay deleted and
   # the stock system must always emit every stage.
@@ -43,6 +64,28 @@
     then throw "the stock system must emit aos-graph-compile.service"
     else if !(builtins.hasAttr "aos-activate" system.config.systemd.services)
     then throw "the stock system must emit aos-activate.service"
+    else if !(builtins.hasAttr "aos-credential-recovery" system.config.systemd.services)
+    then throw "the stock system must recover interrupted credential publication"
+    else if
+      !(builtins.hasAttr
+        "aos-credential-recovery"
+        system.config.boot.initrd.systemd.services)
+    then throw "the initrd must recover interrupted credential publication before restoring /etc"
+    else if
+      !(builtins.elem
+        "aos-credential-recovery.service"
+        system.config.systemd.services.aos-eval.requires)
+    then throw "host evaluation must require credential transaction recovery"
+    else if
+      !(builtins.elem
+        "aos-credential-recovery.service"
+        system.config.boot.initrd.systemd.services."aos-config-seed".requires)
+    then throw "the initrd config lower must wait for credential transaction recovery"
+    else if
+      !(containsStr
+        "AOS_ROOT=/sysroot"
+        system.config.boot.initrd.systemd.services."aos-credential-recovery".script)
+    then throw "initrd credential recovery must rebase transaction paths beneath /sysroot"
     else if system.config.systemd.services."aos-pkg-install@".serviceConfig.ProtectSystem != "strict"
     then throw "package config rendering must run with ProtectSystem=strict"
     else if
@@ -112,9 +155,19 @@
     then throw "the initrd configuration backend must carry the AOS materializer closure explicitly"
     else if
       !(containsStr
-        "/sysroot/var/lib/profiles/system/gen-$AOS_PROFILE_GEN/manifest.json"
+        ''generation="/sysroot/var/lib/profiles/system/gen-$AOS_PROFILE_GEN"''
         system.config.boot.initrd.systemd.services."aos-config-seed".script)
-    then throw "initrd configuration restoration must use the current retained generation manifest"
+    then throw "initrd configuration restoration must select the current retained generation"
+    else if
+      !(containsStr
+        ''manifest="$generation/manifest.json"''
+        system.config.boot.initrd.systemd.services."aos-config-seed".script)
+    then throw "initrd configuration restoration must read the selected generation manifest"
+    else if
+      !(containsStr
+        ''"$generation/config-lower/etc.erofs"''
+        system.config.boot.initrd.systemd.services."aos-config-seed".script)
+    then throw "initrd configuration restoration must mount the selected generation lower"
     else if
       !(builtins.elem
         "aos-activate.service"
@@ -237,6 +290,76 @@
         system.config.boot.initrd.systemd.services.aos-repart.after)
     then throw "aos-repart.service must run after restricted provisioning evaluation"
     else "ok";
+
+  # RFC-0011: the edge release artifact is an authenticated capability
+  # substrate, while its service and tuning defaults are selected by host.nix.
+  edgeImage = mkSystem ../../systems/edge.nix;
+  edgeHost = mkSystem [
+    ../../systems/edge.nix
+    {aos.roles.edge.enable = true;}
+  ];
+  edgeHostCustomized = mkSystem [
+    ../../systems/edge.nix
+    {
+      aos.roles.edge.enable = true;
+      aos.services.ssh.enable = false;
+      aos.kernel.sysctl."vm.vfs_cache_pressure" = "50";
+    }
+  ];
+  edgeImageHostBoundary =
+    if !(edgeImage.options.aos.roles.edge ? enable)
+    then throw "the base library must expose aos.roles.edge.enable to host.nix"
+    else if edgeImage.options.aos.profiles ? edge
+    then throw "the image-coupled aos.profiles.edge compatibility option must not remain"
+    else if edgeImage.config.aos.roles.edge.enable
+    then throw "the production edge image must not preselect its runtime role"
+    else if edgeImage.config.aos.services.chrony.enable
+    then throw "the production edge image must not bake chrony runtime policy"
+    else if edgeImage.config.aos.services.ssh.enable
+    then throw "the production edge image must not bake SSH runtime policy"
+    else if edgeImage.config.aos.security.level != null
+    then throw "the production edge image must not bake a security-level policy"
+    else if builtins.hasAttr "vm.vfs_cache_pressure" edgeImage.config.aos.kernel.sysctl
+    then throw "the production edge image must not bake edge runtime sysctls"
+    else if builtins.hasAttr "chronyd" edgeImage.config.systemd.services
+    then throw "the production edge image unexpectedly rendered chronyd.service"
+    else if builtins.hasAttr "sshd" edgeImage.config.systemd.services
+    then throw "the production edge image unexpectedly rendered sshd.service"
+    else if edgeImage.config.aos.filesystems.rootFsType != "erofs"
+    then throw "the production edge image must carry an immutable EROFS root"
+    else if !edgeImage.config.aos.filesystems.rootReadOnly
+    then throw "the production edge image root must be read-only"
+    else if !edgeImage.config.aos.security.verity.enable
+    then throw "the production edge image must authenticate its root with dm-verity"
+    else if edgeImage.config.aos.filesystems.rootDevice != "/dev/mapper/root"
+    then throw "the production edge image must boot through the dm-verity mapper"
+    else if !(builtins.elem "dm_verity" edgeImage.config.aos.boot.initrd.modules)
+    then throw "the production edge image initrd must carry dm_verity"
+    else builtins.seq edgeImage.config.system.build.toplevel.name "ok";
+  edgeHostRole =
+    if !edgeHost.config.aos.services.chrony.enable
+    then throw "aos.roles.edge must enable chrony runtime policy"
+    else if !edgeHost.config.aos.services.ssh.enable
+    then throw "aos.roles.edge must enable SSH runtime policy"
+    else if edgeHost.config.aos.security.level != "standard"
+    then throw "aos.roles.edge must select the standard security posture"
+    else if edgeHost.config.aos.kernel.sysctl."vm.swappiness" != "10"
+    then throw "aos.roles.edge must select its low-memory swappiness policy"
+    else if edgeHost.config.aos.kernel.sysctl."vm.vfs_cache_pressure" != "200"
+    then throw "aos.roles.edge must select its low-memory cache-pressure policy"
+    else if !(builtins.hasAttr "chronyd" edgeHost.config.systemd.services)
+    then throw "aos.roles.edge must render chronyd.service"
+    else if !(builtins.hasAttr "sshd" edgeHost.config.systemd.services)
+    then throw "aos.roles.edge must render sshd.service"
+    else if edgeHost.config.aos.filesystems.rootFsType != edgeImage.config.aos.filesystems.rootFsType
+    then throw "aos.roles.edge must not alter the golden-image filesystem"
+    else if edgeHost.config.aos.security.verity.enable != edgeImage.config.aos.security.verity.enable
+    then throw "aos.roles.edge must not alter golden-image root authentication"
+    else if edgeHostCustomized.config.aos.services.ssh.enable
+    then throw "explicit host SSH policy must override the edge role default"
+    else if edgeHostCustomized.config.aos.kernel.sysctl."vm.vfs_cache_pressure" != "50"
+    then throw "explicit host sysctl policy must override the edge role default"
+    else builtins.seq edgeHost.config.system.build.toplevel.name "ok";
 
   # The early projection declares only aos.provisioning. An unrelated runtime
   # definition can contain a throw and must remain unforced, while a storage
@@ -766,6 +889,8 @@ in
         echo "config keys:    ${builtins.toJSON (builtins.attrNames system.config.aos)}"
         echo "kernelLockdown: removed (${noKernelLockdown})"
         echo "configuration pipeline: structural default (${structuralConfiguration}), closed early projection (${provisioningProjectionIsClosed}), pure JSON (${provisioningProjectionHasNoModuleInternals}), closed package selection (${hostSelectionProjectionIsClosed})"
+        echo "lifecycle units: recurrent provisioning/tmpfiles/sysusers (${rfcLifecycleRecurrence})"
+        echo "edge boundary:   image capability only (${edgeImageHostBoundary}), host-selectable runtime role (${edgeHostRole})"
         echo "apm registries: content (${apmRegistriesContent}), malformed key (${apmRegistriesRejectsMalformedKey}), empty keys (${apmRegistriesRejectsEmptyKeys})"
         echo "apm install boot: etc (${apmInstallAtBootEtc}), invalid config (${apmInstallAtBootRejectsInvalidConfigPackage}), invalid credential (${apmInstallAtBootRejectsInvalidCredentialName}), plaintext credential (${apmInstallAtBootRejectsPlaintextCredential}), invalid system credential (${apmInstallAtBootRejectsInvalidSystemCredentialName}), credential conflict (${apmInstallAtBootRejectsCredentialConflicts}), invalid registry (${apmRegistriesRejectsInvalidName})"
         echo "nsswitch:       explicit hosts/DNS, no nss-mymachines (${nsswitchNoMymachines})"

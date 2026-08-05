@@ -54,6 +54,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
 use rustix::fd::OwnedFd;
 use rustix::fs::{AtFlags, Mode, OFlags, fchmod, mkdirat, openat, symlinkat, unlinkat};
 use serde::{Deserialize, Serialize};
@@ -283,6 +284,35 @@ impl ConfigManifest {
                         bail!("store symlink target {target:?} is not pinned by storePaths");
                     }
                 }
+                EtcEntry::CertificateBundle { mode, parts } => {
+                    validate_mode(mode)?;
+                    if parts.is_empty() {
+                        bail!("manifest certificate bundle {path:?} has no inputs");
+                    }
+                    for (index, part) in parts.iter().enumerate() {
+                        match part {
+                            CertificateBundlePart::Text { text } => {
+                                validate_certificate_pem(text.as_bytes()).with_context(|| {
+                                    format!(
+                                        "validating inline certificate bundle input etc.{path}.parts[{index}]"
+                                    )
+                                })?;
+                            }
+                            CertificateBundlePart::StoreFile { path: source } => {
+                                let root = store_path_root(source).ok_or_else(|| {
+                                    anyhow::anyhow!(
+                                        "invalid certificate bundle store file {source:?}"
+                                    )
+                                })?;
+                                if !self.store_paths.iter().any(|path| path == root) {
+                                    bail!(
+                                        "certificate bundle store file {source:?} is not pinned by storePaths"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         let pinned_store_paths: BTreeSet<&str> =
@@ -306,6 +336,30 @@ impl ConfigManifest {
                     &self.graph,
                     &format!("etc.{path}.target"),
                 )?,
+                EtcEntry::CertificateBundle { parts, .. } => {
+                    for (index, part) in parts.iter().enumerate() {
+                        match part {
+                            CertificateBundlePart::Text { text } => validate_emitted_store_paths(
+                                text,
+                                &pinned_store_paths,
+                                &self.ownership.store_paths,
+                                artifact_owner,
+                                &self.graph,
+                                &format!("etc.{path}.parts[{index}].text"),
+                            )?,
+                            CertificateBundlePart::StoreFile { path: source } => {
+                                validate_emitted_store_paths(
+                                    source,
+                                    &pinned_store_paths,
+                                    &self.ownership.store_paths,
+                                    artifact_owner,
+                                    &self.graph,
+                                    &format!("etc.{path}.parts[{index}].path"),
+                                )?;
+                            }
+                        }
+                    }
+                }
                 EtcEntry::Symlink { .. } => {}
             }
         }
@@ -816,6 +870,31 @@ pub enum EtcEntry {
         /// The verbatim symlink target.
         target: String,
     },
+    /// A certificate-only PEM stream assembled from ordered pure-data and
+    /// authenticated store-file inputs at generation materialization time.
+    CertificateBundle {
+        /// Ordered inputs concatenated byte-for-byte.
+        parts: Vec<CertificateBundlePart>,
+        /// The octal mode string, e.g. `"0644"`.
+        mode: String,
+    },
+}
+
+/// One ordered input to a runtime-materialized certificate bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "kebab-case")]
+pub enum CertificateBundlePart {
+    /// Certificate-only PEM bytes carried directly in the manifest.
+    Text {
+        /// Exact bytes represented as UTF-8 text.
+        text: String,
+    },
+    /// Certificate-only PEM bytes read from an authenticated, pinned store
+    /// path when the generation is materialized.
+    StoreFile {
+        /// Absolute file path beneath a pinned `/nix/store` root.
+        path: String,
+    },
 }
 
 /// A job-script body written to `<root>/aos-job-scripts/<key>`.
@@ -947,6 +1026,18 @@ pub struct EvaluatorInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigModulesInput {
+    /// Registry whose signed release authenticated the module set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+    /// Name-bound semver release tag for the authenticated tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_tag: Option<String>,
+    /// Fingerprint of the roster key that signed the release tag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_signer_key: Option<String>,
+    /// Hash of the consumed authenticated `store/` graph subset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realization: Option<String>,
     /// Set-hash of the authenticated config-output store paths and NAR hashes.
     pub closure_hash: String,
     /// Number of config outputs.
@@ -1081,6 +1172,114 @@ fn validate_mode(mode: &str) -> Result<()> {
         bail!("manifest mode must match 0[0-7]{{3}}: {mode:?}");
     }
     Ok(())
+}
+
+/// Validates a certificate-only PEM stream without accepting private keys,
+/// arbitrary prose, or other PEM object types.
+fn validate_certificate_pem(bytes: &[u8]) -> Result<()> {
+    const BEGIN: &[u8] = b"-----BEGIN CERTIFICATE-----";
+    const END: &[u8] = b"-----END CERTIFICATE-----";
+
+    let mut rest = trim_ascii_whitespace(bytes);
+    let mut count = 0usize;
+    while !rest.is_empty() {
+        let encoded = rest
+            .strip_prefix(BEGIN)
+            .context("certificate PEM input contains non-certificate data")?;
+        let end = find_bytes(encoded, END).context("certificate PEM input has no end marker")?;
+        let body = &encoded[..end];
+        let body = body
+            .iter()
+            .copied()
+            .filter(|byte| !byte.is_ascii_whitespace())
+            .collect::<Vec<_>>();
+        if body.is_empty()
+            || !body
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+        {
+            bail!("certificate PEM input has invalid base64 data");
+        }
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(body)
+            .context("decoding certificate PEM input")?;
+        validate_der_certificate(&der)?;
+        count = count.saturating_add(1);
+        rest = trim_ascii_whitespace(&encoded[end + END.len()..]);
+    }
+    if count == 0 {
+        bail!("certificate PEM input has no certificates");
+    }
+    Ok(())
+}
+
+fn trim_ascii_whitespace(mut bytes: &[u8]) -> &[u8] {
+    while bytes.first().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[1..];
+    }
+    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|candidate| candidate == needle)
+}
+
+/// Checks the outer X.509 DER shape: `SEQUENCE { SEQUENCE, SEQUENCE,
+/// BIT STRING }`. Signature verification is deliberately left to TLS clients;
+/// this boundary only ensures the public certificate channel cannot carry an
+/// unrelated plaintext or private-key payload.
+fn validate_der_certificate(der: &[u8]) -> Result<()> {
+    let (tag, certificate, rest) = der_tlv(der)?;
+    if tag != 0x30 || !rest.is_empty() {
+        bail!("certificate PEM input is not one DER certificate");
+    }
+    let (tbs_tag, _, certificate) = der_tlv(certificate)?;
+    let (algorithm_tag, _, certificate) = der_tlv(certificate)?;
+    let (signature_tag, signature, certificate) = der_tlv(certificate)?;
+    if tbs_tag != 0x30
+        || algorithm_tag != 0x30
+        || signature_tag != 0x03
+        || signature.is_empty()
+        || signature[0] > 7
+        || !certificate.is_empty()
+    {
+        bail!("certificate PEM input has an invalid X.509 DER shape");
+    }
+    Ok(())
+}
+
+fn der_tlv(input: &[u8]) -> Result<(u8, &[u8], &[u8])> {
+    let (&tag, after_tag) = input
+        .split_first()
+        .context("certificate DER is truncated before its tag")?;
+    let (&first_length, after_length) = after_tag
+        .split_first()
+        .context("certificate DER is truncated before its length")?;
+    let (length, body) = if first_length & 0x80 == 0 {
+        (usize::from(first_length), after_length)
+    } else {
+        let width = usize::from(first_length & 0x7f);
+        if width == 0 || width > std::mem::size_of::<usize>() || after_length.len() < width {
+            bail!("certificate DER has an invalid length");
+        }
+        let mut length = 0usize;
+        for byte in &after_length[..width] {
+            length = length
+                .checked_mul(256)
+                .and_then(|value| value.checked_add(usize::from(*byte)))
+                .context("certificate DER length overflows")?;
+        }
+        (length, &after_length[width..])
+    };
+    if body.len() < length {
+        bail!("certificate DER body is truncated");
+    }
+    Ok((tag, &body[..length], &body[length..]))
 }
 
 fn validate_relative_path(path: &str, field: &str) -> Result<()> {
@@ -1728,6 +1927,37 @@ pub fn apply(
                 write_symlink_beneath(&root, target, link)
                     .with_context(|| format!("linking /etc/{target} -> {link}"))?;
             }
+            EtcEntry::CertificateBundle { parts, mode } => {
+                let mut bundle = Vec::new();
+                for (index, part) in parts.iter().enumerate() {
+                    let bytes = match part {
+                        CertificateBundlePart::Text { text } => text.as_bytes().to_vec(),
+                        CertificateBundlePart::StoreFile { path } => {
+                            let metadata = std::fs::symlink_metadata(path).with_context(|| {
+                                format!(
+                                    "inspecting certificate bundle input {index} for /etc/{target}"
+                                )
+                            })?;
+                            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                                bail!(
+                                    "certificate bundle input {index} for /etc/{target} is not a regular store file"
+                                );
+                            }
+                            std::fs::read(path).with_context(|| {
+                                format!(
+                                    "reading certificate bundle input {index} for /etc/{target}"
+                                )
+                            })?
+                        }
+                    };
+                    validate_certificate_pem(&bytes).with_context(|| {
+                        format!("validating certificate bundle input {index} for /etc/{target}")
+                    })?;
+                    bundle.extend_from_slice(&bytes);
+                }
+                write_file_beneath(&root, target, &bundle, mode)
+                    .with_context(|| format!("writing /etc/{target}"))?;
+            }
         }
     }
 
@@ -1947,6 +2177,24 @@ mod tests {
                         stores.insert(root.to_string(), "@base");
                     }
                 }
+                if entry.get("kind").and_then(serde_json::Value::as_str)
+                    == Some("certificate-bundle")
+                {
+                    for part in entry
+                        .get("parts")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                    {
+                        if let Some(root) = part
+                            .get("path")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(store_path_root)
+                        {
+                            stores.insert(root.to_string(), "@base");
+                        }
+                    }
+                }
             }
         }
         if let Some(scripts) = object
@@ -2049,6 +2297,59 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "hello\n");
         let mode = std::fs::metadata(&f).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o640, "mode {mode:o}");
+    }
+
+    #[test]
+    fn materializes_certificate_only_inline_bundle() {
+        let certificate =
+            "-----BEGIN CERTIFICATE-----\nMAgwADAAAwIAAA==\n-----END CERTIFICATE-----\n";
+        let manifest = manifest_from(
+            &serde_json::json!({
+                "schema": "aos.config-manifest/v1",
+                "etc": {
+                    "ssl/certs/ca-certificates.crt": {
+                        "kind": "certificate-bundle",
+                        "mode": "0644",
+                        "parts": [
+                            {"kind": "text", "text": certificate},
+                            {"kind": "text", "text": certificate}
+                        ]
+                    }
+                },
+                "jobScripts": {}
+            })
+            .to_string(),
+        );
+        let root = tempdir();
+        apply(&manifest, &root, DEFAULT_JOB_SCRIPTS_RUNTIME_DIR).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("ssl/certs/ca-certificates.crt")).unwrap(),
+            format!("{certificate}{certificate}")
+        );
+    }
+
+    #[test]
+    fn rejects_non_certificate_inline_bundle_data() {
+        let manifest = manifest_from(
+            r#"{
+                "schema": "aos.config-manifest/v1",
+                "etc": {
+                    "ssl/certs/ca-certificates.crt": {
+                        "kind": "certificate-bundle",
+                        "mode": "0644",
+                        "parts": [{"kind": "text", "text": "password=hunter2\n"}]
+                    }
+                },
+                "jobScripts": {}
+            }"#,
+        );
+        let error = manifest.validate().expect_err("plaintext must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("inline certificate bundle input"),
+            "{error:#}"
+        );
     }
 
     #[test]

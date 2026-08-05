@@ -137,6 +137,65 @@ in {
         config_state=/var/lib/profiles/system/state.json
         [ -s "$image_state" ] && [ -s "$config_state" ] || exit 1
         running=$(${pkgs.jq}/bin/jq -er '.running' "$image_state")
+
+        # Reconcile the userspace-to-firmware selection journal before the
+        # evaluation graph can fail. A crash can leave this intent after the
+        # authenticated pending state or bootloader default was published. At
+        # this point aos-seed-profiles has authenticated the image that really
+        # booted, so the journal no longer needs to block an operator rollback.
+        stable_entry_id() {
+          name=$1
+          case "$name" in
+            */*|"") return 1 ;;
+            *.efi) ;;
+            *) return 1 ;;
+          esac
+          stem=''${name%.efi}
+          case "$stem" in
+            *+*)
+              suffix=''${stem##*+}
+              tries=''${suffix%%-*}
+              case "$tries" in ""|*[!0-9]*) printf '%s\n' "$name"; return 0 ;; esac
+              case "$suffix" in
+                *-*)
+                  completed=''${suffix#*-}
+                  case "$completed" in ""|*[!0-9]*|*-*) printf '%s\n' "$name"; return 0 ;; esac
+                  ;;
+              esac
+              printf '%s.efi\n' "''${stem%+*}"
+              ;;
+            *) printf '%s\n' "$name" ;;
+          esac
+        }
+        transition_intent=/var/lib/profiles/image/.transition-intent.json
+        if [ -s "$transition_intent" ]; then
+          target=$(${pkgs.jq}/bin/jq -er '.target | select(type == "number" and . >= 0 and floor == .)' "$transition_intent")
+          intent_entry=$(${pkgs.jq}/bin/jq -er '.entry_id | select(type == "string" and length > 0)' "$transition_intent")
+          recorded_entry=$(${pkgs.jq}/bin/jq -er \
+            --argjson target "$target" \
+            '.generations[] | select(.number == $target) | .uki_path' \
+            "$image_state")
+          recorded_entry=''${recorded_entry##*/}
+          recorded_stable=$(stable_entry_id "$recorded_entry")
+          intent_stable=$(stable_entry_id "$intent_entry")
+          if [ "$recorded_stable" != "$intent_stable" ]; then
+            echo "aos-firstboot-reeval: image transition intent disagrees with authenticated generation $target" >&2
+            exit 1
+          fi
+          if [ "$target" -eq "$running" ]; then
+            state_update='.default = $running'
+          else
+            state_update='.default = $running | .pending = null'
+          fi
+          ${pkgs.jq}/bin/jq --argjson running "$running" "$state_update" \
+            "$image_state" > "''${image_state}.new"
+          ${pkgs.coreutils}/bin/sync -f "''${image_state}.new"
+          mv "''${image_state}.new" "$image_state"
+          ${pkgs.coreutils}/bin/sync -f /var/lib/profiles/image
+          rm -f "$transition_intent"
+          ${pkgs.coreutils}/bin/sync -f /var/lib/profiles/image
+        fi
+
         parent=$(${pkgs.jq}/bin/jq -er \
           '.current as $current | [.generations[] | select(.number == $current) | .image_gen_parent][0] // 0' \
           "$config_state")
@@ -191,10 +250,43 @@ in {
         StateDirectoryMode = "0700";
       };
       script = ''
+        set -eu
         if [ ! -e "${cfg.hostNix}" ]; then
-          ${pkgs.aos}/bin/aos metadata restore-runtime \
-            --state-dir ${provisioningStateDir} \
-            || echo "aos-eval: cached host input is unavailable or invalid; retaining the active generation" >&2
+          if ! ${pkgs.aos}/bin/aos metadata restore-runtime \
+            --state-dir ${provisioningStateDir}; then
+            echo "aos-eval: cached host input is invalid; retaining the active generation" >&2
+            exit 1
+          fi
+        fi
+
+        # A missing operator input is legitimate only when no operator-backed
+        # generation has ever been committed. If fresh metadata and the
+        # authenticated cache are both absent after a platform/signed
+        # generation, fail closed instead of evaluating `{}` and silently
+        # erasing the host's policy.
+        if [ ! -e "${cfg.hostNix}" ] && [ -s /var/lib/profiles/system/state.json ]; then
+          current=$(${pkgs.jq}/bin/jq -er '.current' /var/lib/profiles/system/state.json)
+          # The seeded image state deliberately has no config generation yet.
+          # Its first stage-2 transaction must be allowed to evaluate the
+          # authenticated image-default empty module and create gen-1.
+          if [ "$current" -eq 0 ] && ${pkgs.jq}/bin/jq -e '.generations == []' \
+            /var/lib/profiles/system/state.json >/dev/null; then
+            :
+          else
+            manifest="/var/lib/profiles/system/gen-$current/manifest.json"
+            [ -s "$manifest" ] || {
+              echo "aos-eval: current generation has no retained host provenance; retaining it" >&2
+              exit 1
+            }
+            trust=$(${pkgs.jq}/bin/jq -er '.inputs.host_nix.trust_mode' "$manifest")
+            case "$trust" in
+              image|image-default) ;;
+              *)
+                echo "aos-eval: operator-backed host input is unavailable; retaining generation $current" >&2
+                exit 1
+                ;;
+            esac
+          fi
         fi
       '';
     };
@@ -203,13 +295,20 @@ in {
       description = "Evaluate host configuration to a converged manifest";
       wantedBy = ["multi-user.target"];
       wants = ["network-online.target"];
-      requires = ["aos-host-config-restore.service" "aos-firstboot-reeval.service"];
+      requires = [
+        "aos-credential-recovery.service"
+        "aos-host-config-restore.service"
+        "aos-firstboot-reeval.service"
+        "aos-nix-db.service"
+      ];
       after = [
         "network-online.target"
         "nix-overlay-setup.service"
         "aos-config-seed.service"
+        "aos-credential-recovery.service"
         "aos-seed-profiles.service"
         "aos-host-config-restore.service"
+        "aos-nix-db.service"
       ];
       before = [
         "aos-install-baked-packages.service"
@@ -225,6 +324,8 @@ in {
         MemoryMax = "2G";
         MemoryHigh = "1536M";
         TasksMax = 4096;
+        CacheDirectory = "aos/nix-eval";
+        CacheDirectoryMode = "0700";
         # These paths must exist before systemd constructs the service's mount
         # namespace for ReadWritePaths. They are runtime state, not image
         # contents, so create them for every boot.
@@ -242,7 +343,7 @@ in {
         # read-only when present, but a no-input boot reaches the image-default
         # fallback rather than failing namespace setup.
         ReadOnlyPaths = ["-${cfg.hostNix}"] ++ lib.optional (cfg.baseLib != null) (toString cfg.baseLib);
-        ReadWritePaths = ["/nix" "/run/aos" "/run/aos-eval"];
+        ReadWritePaths = ["/nix" "/run/aos" "/run/aos-eval" "/var/cache/aos/nix-eval"];
         SystemCallArchitectures = "native";
         SystemCallFilter = [
           "@system-service"
@@ -256,6 +357,11 @@ in {
       script = ''
         set -u
         mkdir -p /run/aos-eval /run/aos
+        # Invalidate every prior attempt's runtime evidence before any
+        # operation which can fail.  `After=`/`Wants=` intentionally keeps a
+        # failed evaluation non-fatal to boot, so downstream path conditions
+        # must never be satisfiable by a same-boot stale manifest or graph.
+        rm -f "${cfg.manifest}" /run/aos/graph.json
         # Confirm delivered bytes against the initrd authorization result. If
         # neither metadata nor the durable last-known-good cache supplied an
         # operator module, use a narrowly marked image-authored empty module.
@@ -269,8 +375,6 @@ in {
           printf '{}\n' > /run/aos-eval/host.nix
           image_default_arg="--image-default-host"
         fi
-        rm -f "${cfg.manifest}" /run/aos/graph.json
-
         # Prefer the immutable running image's os-release. `/etc/os-release`
         # is a configuration overlay and can still belong to the prior image
         # during the first boot after an A/B transition.
@@ -325,6 +429,32 @@ in {
       };
       script = ''
         set -euo pipefail
+        boot_writable=false
+        restore_boot_read_only() {
+          if [ "$boot_writable" = true ]; then
+            ${pkgs.util-linux}/bin/mount -o remount,ro /boot
+          fi
+        }
+        trap restore_boot_read_only EXIT
+
+        expected_esp=$(${pkgs.coreutils}/bin/readlink -f ${lib.escapeShellArg config.aos.filesystems.espDevice})
+        mounted_esp=$(${pkgs.util-linux}/bin/findmnt -n -o SOURCE --target /boot)
+        mounted_esp=$(${pkgs.coreutils}/bin/readlink -f "$mounted_esp")
+        mounted_fstype=$(${pkgs.util-linux}/bin/findmnt -n -o FSTYPE --target /boot)
+        mounted_root=$(${pkgs.util-linux}/bin/findmnt -n -o FSROOT --target /boot)
+        if [ "$mounted_fstype" != vfat ] || [ "$mounted_root" != / ]; then
+          echo "aos-image-boot-commit: /boot must be the root of a vfat ESP" >&2
+          exit 1
+        fi
+        if [ ! -b "$expected_esp" ] || [ ! -b "$mounted_esp" ]; then
+          echo "aos-image-boot-commit: ESP source paths must be block devices" >&2
+          exit 1
+        fi
+        if [ "$mounted_esp" != "$expected_esp" ]; then
+          echo "aos-image-boot-commit: /boot is mounted from $mounted_esp, expected $expected_esp" >&2
+          exit 1
+        fi
+
         state=/var/lib/profiles/image/state.json
         running=$(${pkgs.jq}/bin/jq -er '.running' "$state")
         pending=$(${pkgs.jq}/bin/jq -er '.pending // 0' "$state")
@@ -336,6 +466,40 @@ in {
           echo "aos-image-boot-commit: running config generation has no committed manifest" >&2
           exit 1
         fi
+        manifest_hash=$(${pkgs.jq}/bin/jq -er \
+          '.current as $current | .generations[] | select(.number == $current) | .manifest_hash' \
+          /var/lib/profiles/system/state.json)
+        proof="/var/lib/profiles/system/gen-$current/activation.json"
+        attestation="/var/lib/profiles/system/gen-$current/gen-attestation.json"
+        if ! ${pkgs.jq}/bin/jq -e \
+          --argjson current "$current" --arg hash "$manifest_hash" \
+          '.schema == "aos.config-activation/v1"
+           and .generation == $current
+           and .generation_id == $hash
+           and (.status == "complete" or .status == "degraded")
+           and (.activation_exit == 0 or .activation_exit == 5 or .activation_exit == 6)' \
+          "$proof" >/dev/null; then
+          echo "aos-image-boot-commit: configuration activation proof is incomplete" >&2
+          exit 1
+        fi
+        if ! ${pkgs.jq}/bin/jq -e \
+          --arg hash "$manifest_hash" \
+          '.schema == "aos.gen-attestation/v1"
+           and .generation_id == $hash
+           and .manifest_hash == $hash
+           and .eval_mode == "pure-eval"' \
+          "$attestation" >/dev/null; then
+          echo "aos-image-boot-commit: generation attestation is incomplete" >&2
+          exit 1
+        fi
+        ${lib.optionalString config.aos.boot.secureBoot.measuredBoot.enable ''
+          if ! ${pkgs.jq}/bin/jq -e \
+            '.quote_status == "quoted" and (.quote | type == "string" and length > 0)' \
+            "$attestation" >/dev/null; then
+            echo "aos-image-boot-commit: measured boot requires a quoted generation attestation" >&2
+            exit 1
+          fi
+        ''}
         if [ "$parent" != "$running" ]; then
           echo "aos-image-boot-commit: configuration has not rebound to running image $running" >&2
           exit 1
@@ -343,29 +507,117 @@ in {
         entry=$(${pkgs.jq}/bin/jq -er \
           --argjson running "$running" \
           '.generations[] | select(.number == $running) | .uki_path' "$state")
+        case "$entry" in
+          EFI/Linux/*.efi) ;;
+          *)
+            echo "aos-image-boot-commit: unsafe recorded UKI path $entry" >&2
+            exit 1
+            ;;
+        esac
+        uki_name=''${entry#EFI/Linux/}
+        case "$uki_name" in
+          */*|"")
+            echo "aos-image-boot-commit: unsafe nested UKI path $entry" >&2
+            exit 1
+            ;;
+        esac
+
+        case "$uki_name" in
+          *.efi) ;;
+          *)
+            echo "aos-image-boot-commit: recorded UKI does not end in .efi: $entry" >&2
+            exit 1
+            ;;
+        esac
+        uki_stem=''${uki_name%.efi}
+        case "$uki_stem" in
+          *+*)
+            recorded_tries=''${uki_stem##*+}
+            stable_stem=''${uki_stem%+*}
+            case "$recorded_tries" in
+              ""|*[!0-9]*)
+                echo "aos-image-boot-commit: invalid terminal boot count in $entry" >&2
+                exit 1
+                ;;
+            esac
+            if [ "$recorded_tries" -eq 0 ]; then
+              echo "aos-image-boot-commit: exhausted UKI cannot identify a generation: $entry" >&2
+              exit 1
+            fi
+            ;;
+          *) stable_stem=$uki_stem ;;
+        esac
+        stable="EFI/Linux/''${stable_stem}.efi"
+        stable_path="/boot/$stable"
 
         # Bless only a pending candidate that actually became the running
         # image. When sd-boot has already fallen back, the running known-good
         # entry is normally uncounted and `set-successful` would fail; in that
-        # arm we merely restore it as the durable default below.
+        # arm we merely restore it as the durable default below. A stable file
+        # also means an earlier attempt already completed the rename, making
+        # this step idempotent across a crash before state publication.
         if [ "$pending" -eq "$running" ]; then
-          ${pkgs.systemd}/bin/bootctl set-successful
+          ${pkgs.util-linux}/bin/mount -o remount,rw /boot
+          boot_writable=true
+          live_counted=false
+          for candidate in "/boot/EFI/Linux/''${stable_stem}"+*.efi; do
+            [ -e "$candidate" ] || continue
+            candidate_name=''${candidate##*/}
+            candidate_count=''${candidate_name%.efi}
+            candidate_count=''${candidate_count##*+}
+            tries=''${candidate_count%%-*}
+            case "$tries" in
+              ""|*[!0-9]*) continue ;;
+            esac
+            case "$candidate_count" in
+              *-*)
+                completed=''${candidate_count#*-}
+                case "$completed" in
+                  ""|*[!0-9]*|*-*) continue ;;
+                esac
+                ;;
+            esac
+            if [ "$tries" -gt 0 ]; then
+              live_counted=true
+              break
+            fi
+          done
+          if [ "$live_counted" = true ]; then
+            ${pkgs.systemd}/bin/bootctl set-successful
+          elif [ ! -e "$stable_path" ]; then
+            echo "aos-image-boot-commit: neither a live counted nor stable UKI exists for $entry" >&2
+            exit 1
+          fi
         fi
 
         # A failed pending candidate may already have fallen back to `running`.
         # Resolve the successful entry's stable name after boot-count renaming.
-        case "$entry" in
-          *+*) stable=''${entry%%+*}.efi ;;
-          *) stable=$entry ;;
-        esac
+        if [ "$boot_writable" != true ]; then
+          ${pkgs.util-linux}/bin/mount -o remount,rw /boot
+          boot_writable=true
+        fi
         ${pkgs.systemd}/bin/bootctl set-default "''${stable##*/}"
+
+        # Restore the ESP's steady-state protection before publishing the
+        # transition as complete. If this remount fails, the durable pending
+        # state and runtime marker remain and the next boot retries the
+        # idempotent blessing/reconciliation path.
+        ${pkgs.util-linux}/bin/mount -o remount,ro /boot
+        boot_writable=false
 
         ${pkgs.jq}/bin/jq --argjson running "$running" \
           '.default = $running | .pending = null' "$state" > "''${state}.new"
         ${pkgs.coreutils}/bin/sync -f "''${state}.new"
         mv "''${state}.new" "$state"
         ${pkgs.coreutils}/bin/sync -f "$(dirname "$state")"
+        # A power loss can leave the pre-selection intent after firmware and
+        # state already agree. Successful boot assessment is the authoritative
+        # reconciliation point, so clear it durably here as well as in the
+        # normal userspace selection path.
+        rm -f /var/lib/profiles/image/.transition-intent.json
+        ${pkgs.coreutils}/bin/sync -f /var/lib/profiles/image
         rm -f /run/aos/image-reeval-required
+        trap - EXIT
       '';
     };
 

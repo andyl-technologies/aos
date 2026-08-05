@@ -58,5 +58,18 @@ in
       };
     };
 
+    # The fleet control plane is test infrastructure rather than image policy.
+    # Keep its generated expose module usable on both sides of the RFC-0011
+    # ABI-transition acceptance test; config-module-smoke remains the
+    # deliberately ABI-1-only negative fixture.
+    configModule = {
+      src = ./_aos-test-agent-config;
+      moduleAbiCompat = {
+        min = 1;
+        max = 2;
+      };
+      declares = [];
+    };
+
     meta.description = "AOS exposed package for the VM test guest agent";
   }

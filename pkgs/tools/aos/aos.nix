@@ -2,7 +2,7 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
+  fetchCargoVendor,
   bash,
   git-minimal,
   nix,
@@ -23,6 +23,7 @@
   semodule-utils,
   systemd,
   tpm2-tools,
+  util-linux,
   which,
   zlib,
   zstd,
@@ -42,6 +43,7 @@
   #   nix           nix / nix-store: cache and store operations
   #   systemd       systemctl, for runtime package preset/attach reconciliation
   #   zstd          pack-delta compression and store decompression
+  #   util-linux    mount: scoped EFI System Partition remount transactions
   #   which         check_command_exists() preflight in the drain/sysroot path
   #   bash          wrapper interpreter; avoids relying on /bin/sh on the host
   #   systemd       systemctl: the post-activation reconcile's failed-unit
@@ -52,16 +54,9 @@
   # scrubPhase keeps their store-path references in the wrappers and pulls them
   # into the runtime closure; without that, nuke-refs would rewrite these paths
   # to placeholders and the wrappers would point at nonexistent stores.
-  runtimeTools = [bash nix systemd zstd which];
+  runtimeTools = [bash nix systemd util-linux zstd which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
-  src = builtins.path {
-    path = ../../../crates;
-    name = "aos-crates-src";
-    filter = path: type: let
-      base = baseNameOf path;
-    in
-      base != "target" && base != ".git";
-  };
+  src = import ./_workspace-source.nix {inherit lib;};
 in
   mkCargoPackage {
     pname = "aos";
@@ -69,9 +64,14 @@ in
 
     cargoFlags = "-p aos";
 
-    cargoDeps = fetchCargoDeps {
+    # The native evaluator uses `nix-compat` from the pinned snix monorepo.
+    # The lockfile-driven vendor builder extracts the crate subtree instead of
+    # treating the whole monorepo as a crate root.
+    cargoDeps = fetchCargoVendor {
       inherit src;
-      hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+      name = "aos-vendor-${version}";
+      sourceRoot = "source/crates";
+      hash = "sha256-eEdu9h3X2Dqjg5leuLQhqL33Wh5/kDBqR8s5p3630pI=";
     };
 
     # cmake + libssh2: git2's vendored libgit2 is compiled from source here
@@ -109,6 +109,7 @@ in
       export AOS_CHECKMODULE="${checkpolicy}/bin/checkmodule"
       export AOS_SEMODULE="${policycoreutils}/sbin/semodule"
       export AOS_SEMODULE_PACKAGE="${semodule-utils}/bin/semodule_package"
+      cd crates
     '';
 
     doCheck = true;

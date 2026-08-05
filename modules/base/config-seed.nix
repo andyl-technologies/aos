@@ -24,6 +24,26 @@
     # refactored independently of the initrd package set.
     aos.boot.initrd.extraPackages = [pkgs.aos pkgs.erofs-utils];
 
+    boot.initrd.systemd.services."aos-credential-recovery" = {
+      description = "Recover interrupted AOS credential publication";
+      requiredBy = ["initrd-fs.target"];
+      before = [
+        "aos-config-seed.service"
+        "etc-overlay-setup.service"
+        "initrd-switch-root.target"
+      ];
+      requires = ["mount-var.service"];
+      after = ["mount-var.service"];
+      unitConfig.DefaultDependencies = "no";
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+      };
+      script = ''
+        AOS_ROOT=/sysroot ${pkgs.aos}/bin/.apm-unwrapped recover-credential-transactions
+      '';
+    };
+
     boot.initrd.systemd.services."aos-config-seed" = {
       description = "Seed the per-generation /etc lower for on-host configuration";
       wantedBy = ["initrd-fs.target"];
@@ -34,11 +54,13 @@
       ];
       requires = [
         "mount-var.service"
+        "aos-credential-recovery.service"
         "aos-seed-profiles.service"
         "run-etc-setup.service"
       ];
       after = [
         "mount-var.service"
+        "aos-credential-recovery.service"
         "aos-seed-profiles.service"
         "run-etc-setup.service"
       ];

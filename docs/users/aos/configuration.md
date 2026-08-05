@@ -1,19 +1,19 @@
 # Configure an AOS host
 
-AOS is intended to take machine-specific policy from `host.nix`, without
-requiring each user to build a private system image. That interface is only
-partly active in the current early preview.
+AOS takes machine-specific policy from `host.nix` without requiring each user
+to build a private system image. The public image remains an early preview, but
+the runtime configuration-generation path is active.
 
 | Configuration path | Use it for | Current behavior |
 | --- | --- | --- |
 | Metadata `host.nix` under `aos.provisioning.storage` | First-boot partition layout | Applied once, then checked for drift |
-| Other metadata `host.nix` settings | Hostname, networking, users, access, services, and desired packages | Evaluated to `/run/aos/manifest.json`, but not activated end to end |
+| Other metadata `host.nix` settings | Hostname, networking, users, access, services, and desired packages | Purely evaluated, materialized, and atomically activated as a configuration generation |
 | `apm` | User packages and implemented machine-wide package reconciliation | Active at runtime |
 | System modules in the source tree | Golden-image and release policy | Maintainer workflow, evaluated when the image is built |
 
-The image must currently include the network and access policy needed to reach
-the host. Do not rely on `host.nix` to create users, install SSH keys, or start
-custom services until runtime activation is complete.
+Keep a tested console or image-baked break-glass path while changing network or
+access policy. A failed stage-2 transaction retains the previous generation,
+but a valid configuration can still make a host unreachable.
 
 ## Configure first-boot storage
 
@@ -82,26 +82,92 @@ registry trust, user and system scopes, upgrades, and rollback.
 
 ## Understand runtime `host.nix`
 
-The current evaluator understands settings such as hostname, networking,
-users, services, SSH policy, and `aos.apm.desiredPackages`. It writes the result
-to `/run/aos/manifest.json`, but the boot graph does not yet materialize and
-atomically activate that result as a live system generation. In practice:
+Runtime activation follows one transaction:
 
-- hostname and network changes from metadata do not become live;
-- users, groups, and authorized keys are not installed from metadata;
-- service changes are not applied to systemd;
-- desired packages in the evaluated manifest are not a complete activation
-  path.
+```text
+host.nix + facts + ABI-pinned base library
+  -> pure resolve/evaluate fixpoint
+  -> authenticated package fetch and signed config render
+  -> secretRef resolution
+  -> EROFS /etc lower in gen-N
+  -> atomic pointer and /etc switch
+  -> unit reconciliation and activation record
+```
 
-`apm switch` is not a replacement for a full host-configuration switch; that
-live activation path is also incomplete.
+The resolver imports only authenticated package `config` outputs compatible
+with the running image ABI. Package render failures use the documented soft
+degradation path and are recorded in the projection; evaluation, credential,
+or pre-swap failures leave the active generation unchanged.
+
+Image and configuration generations are independent. An image generation owns
+the kernel, initrd, base module library, evaluator, and A/B slot. A
+configuration generation owns the evaluated manifest and EROFS `/etc`
+lower and records the image generation and module ABI it was built against.
+Same-ABI rollback can reactivate retained configuration directly. Cross-ABI
+rollback re-evaluates retained `host.nix`, facts, and authenticated package
+modules against the running image instead of replaying an incompatible `/etc`.
+
+Preview a candidate without fetching its runtime closure or touching the live
+generation:
+
+```sh
+apm switch --dry-run
+```
+
+By default, APM evaluates the staged runtime `host.nix` with the running
+image's base library and module ABI, and compares it with `current`. Use
+`--from ./host.nix` to preview edited input. `--diff-against` accepts
+`current`, `gen-N`, or an explicit manifest path.
+
+The human report includes `/etc` additions, changes, and removals; unit
+start/restart/stop actions; store paths to fetch; and the provider-resolution
+trace. Put the global `--json` option before the subcommand for
+machine-readable fields:
+
+```sh
+apm --json switch --dry-run
+```
+
+Apply a reviewed configuration with the same evaluator and graph compiler:
+
+```sh
+apm switch --from ./host.nix
+```
+
+`--from` selects the input for this transaction; it does not replace the
+metadata-delivered policy or its last-known-good cache. Update and, in signed
+mode, sign the authoritative metadata input before relying on the change after
+a reboot. For a standalone file in signed mode, also use
+`--require-signed-host-nix` and point `--trusted-config-keys-dir` at the
+applicable trust-anchor directory.
+
+Terminal evaluation failures retain a stable `config-eval.class` journal tag
+and distinct exit code:
+
+| Exit | Class |
+| --- | --- |
+| `10`-`12` | Assertion, undefined option, or conflicting definitions |
+| `13`-`14` | Missing provider or module ABI mismatch |
+| `15`-`17` | Resource kill, non-convergence, or unsatisfiable provider cycle |
+| `18` | Ambiguous provider |
+| `19`-`20` | Fetch failure or unclassified evaluation error |
+| `21`-`22` | Shadowed root or invalid contribution grant |
+
+The default journal message is a one-line operator summary. Repeat the command
+in verbose mode when the complete Nix trace is required.
 
 ## Inspect configuration state
 
 ```sh
 systemctl status aos-eval.service
-journalctl -b -u aos-eval.service
+journalctl -b \
+  -u aos-eval.service \
+  -u aos-graph-compile.service \
+  -u aos-activate.service
 test -s /run/aos/manifest.json && echo "host input evaluated"
+cat /run/aos/activation.json
+readlink /var/lib/profiles/system/current
+cat /var/lib/profiles/system/state.json
 
 cat /var/lib/aos-provisioning/audit.json
 if test -r /run/aos-metadata/storage-coherence; then
@@ -109,8 +175,10 @@ if test -r /run/aos-metadata/storage-coherence; then
 fi
 ```
 
-An evaluated manifest proves that parsing and module evaluation succeeded. It
-does not prove that the settings became active.
+An evaluated manifest proves only that module evaluation converged. The current
+pointer and matching activation record prove that the generation was committed.
+The record's `status` distinguishes `complete` from `degraded`; also inspect
+the command result, failed units, and application health.
 
 Release maintainers who need to change the golden image should use
 [Build and customize release images](../../maintainers/system-images.md).

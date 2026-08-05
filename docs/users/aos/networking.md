@@ -1,11 +1,10 @@
 # Configure networking
 
 AOS uses systemd-networkd for links and addresses and systemd-resolved for
-name resolution. Networking is release-time image policy in the current early
-preview. Runtime `host.nix` understands these options but does not activate
-them yet. The examples below document the active policy and are for release
-maintainers; see
-[Build and customize release images](../../maintainers/system-images.md).
+name resolution. These options can be baked into an image or supplied through
+authenticated runtime `host.nix`; stage-2 activation writes the networkd and
+resolved configuration into a numbered `/etc` generation and reconciles the
+units.
 
 Keep console access while changing static addressing. An incorrect interface
 name, gateway, VLAN, or bond can make an otherwise healthy image unreachable.
@@ -66,7 +65,22 @@ routing, or explicit route tables. Use a reviewed raw networkd unit through
 avoid defining two units that match the same link.
 
 Release maintainers should inspect the generated networkd and resolved files
-in the evaluated system closure before publishing an image.
+in the evaluated system closure before publishing an image. Runtime operators
+should use `apm switch --dry-run` to review file and unit actions before
+committing a network change.
+
+## Use platform network facts
+
+The native AWS, GCP, Azure, DigitalOcean, and OpenStack metadata agents
+normalize instance identity, interfaces, and supported static-network data.
+Those values enter pure evaluation under `host.facts`; the provider response is
+never imported as executable Nix. The initrd can seed a DHCP-less network path
+needed to reach metadata, while the stage-2 module decides the durable network
+policy.
+
+Other providers need an offline metadata or config drive. Confirm the rendered
+interface selector, address, route, and DNS data in the candidate manifest;
+facts describe the platform and do not override explicit authorization policy.
 
 ## Configure DNS
 
@@ -142,5 +156,5 @@ journalctl -b -u systemd-networkd.service -u systemd-resolved.service
 ```
 
 Compare the observed interface name with the system variant. If a static unit
-matches no link, correct the variant and rebuild the image; runtime
-`host.nix` does not currently activate general network changes.
+matches no link, correct the image module or `host.nix`, preview the candidate,
+and activate it from console or another tested access path.

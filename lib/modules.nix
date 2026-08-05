@@ -502,7 +502,15 @@
           name: _:
             args.${name}
             or config._module.args.${name}
-        ) (builtins.functionArgs loaded)
+        ) (
+          # Do not synthesize a throwing value for an optional argument that
+          # the caller did not provide: its function-pattern default must win.
+          # Required arguments retain the lazy `_module.args` fallback.
+          attrsets.filterAttrs (
+            name: hasDefault:
+              !hasDefault || builtins.hasAttr name args
+          ) (builtins.functionArgs loaded)
+        )
       else {};
 
     evaluated =
@@ -633,6 +641,7 @@
       else lib;
 
     result = let
+      structuredErrors = specialArgs.aosStructuredErrors or false;
       # Synthetic internal module that declares the three `_module.*`
       # options used by the engine itself. Without these declarations
       # strict-mode evaluation (see configWithFreeform below) would flag
@@ -1282,17 +1291,54 @@
             _readOnlyCheck =
               if (decl.option.readOnly or false) && builtins.length priorityFilteredDefs > 1
               then
-                throw ''
-                  The option '${pathStr}' is read-only, but it has ${builtins.toString (builtins.length priorityFilteredDefs)} definitions:
-                  ${builtins.concatStringsSep "\n" (
-                    builtins.map (d: "  - in ${d.file or "<unknown>"}: ${builtins.toJSON d.value}") priorityFilteredDefs
-                  )}
-                ''
+                if structuredErrors
+                then throw (builtins.toJSON {
+                  __aosEvalError = {
+                    kind = "conflict";
+                    path = pathStr;
+                    defs = builtins.map (d: {
+                      value = builtins.toJSON d.value;
+                      file = d.file or null;
+                    }) priorityFilteredDefs;
+                  };
+                })
+                else
+                  throw ''
+                    The option '${pathStr}' is read-only, but it has ${builtins.toString (builtins.length priorityFilteredDefs)} definitions:
+                    ${builtins.concatStringsSep "\n" (
+                      builtins.map (d: "  - in ${d.file or "<unknown>"}: ${builtins.toJSON d.value}") priorityFilteredDefs
+                    )}
+                  ''
+              else null;
+
+            # Conflict-rejecting scalar types expose an engine marker so
+            # structured mode can report typed definitions instead of asking
+            # the native evaluator to reverse-engineer a human throw string.
+            _uniqueConflictCheck = let
+              first =
+                if priorityFilteredDefs == []
+                then null
+                else (builtins.head priorityFilteredDefs).value;
+              disagree =
+                first != null
+                && !(builtins.all (d: d.value == first) priorityFilteredDefs);
+            in
+              if structuredErrors && (optType.conflictOnDisagreement or false) && disagree
+              then throw (builtins.toJSON {
+                __aosEvalError = {
+                  kind = "conflict";
+                  path = pathStr;
+                  defs = builtins.map (d: {
+                    value = builtins.toJSON d.value;
+                    file = d.file or null;
+                  }) priorityFilteredDefs;
+                };
+              })
               else null;
 
             # Determine the merged value. `_readOnlyCheck` is forced
             # via `seq` so the throw above fires before the merge runs.
-            mergedValue = builtins.seq _readOnlyCheck (
+            mergedValue = builtins.seq _readOnlyCheck (builtins.seq _uniqueConflictCheck (
               if priorityFilteredDefs == []
               then
                 if !(isNoDefault decl.option.default)
@@ -1309,12 +1355,20 @@
                         decl.option.default;
                     }
                   ]
+                else if structuredErrors
+                then throw (builtins.toJSON {
+                  __aosEvalError = {
+                    kind = "undefined_option";
+                    path = pathStr;
+                    file = decl.file or null;
+                  };
+                })
                 else throw "The option '${pathStr}' is used but has no definition and no default value."
               else let
                 rawMerged = optType.merge decl.path priorityFilteredDefs;
               in
                 rawMerged
-            );
+            ));
 
             # Apply the apply function if present
             finalValue =
@@ -1489,7 +1543,17 @@
               undeclaredDefs
             );
           in
-            throw ''
+            if structuredErrors
+            then throw (builtins.toJSON {
+              __aosEvalError = {
+                kind = "undeclared_write";
+                missing = builtins.map (d: {
+                  path = builtins.concatStringsSep "." d.path;
+                  file = d.file or null;
+                }) undeclaredDefs;
+              };
+            })
+            else throw ''
               The following option(s) are not declared:
               ${formatted}
 
@@ -1498,6 +1562,16 @@
       ));
     in {
       config = configWithFreeform;
+      # Concrete package writes whose conditions were evaluated in this run.
+      # This is evaluator output, not registry-declared interface metadata.
+      _optionWrites = builtins.concatLists (builtins.map (module:
+        if !strings.hasPrefix "package:" (module._provenance or "")
+        then []
+        else builtins.map (path: {
+          package = strings.removePrefix "package:" module._provenance;
+          option = builtins.concatStringsSep "." path;
+        }) (configLeafPaths [] module.config))
+      evaluatedModules);
       # Exposed as the nested options tree (matching nixpkgs'
       # `result.options` shape) so external consumers can introspect
       # with the same `options.path.to.foo.isDefined` pattern that

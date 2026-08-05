@@ -677,6 +677,11 @@ in rec {
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";
     check = elemType.check;
+    # The module engine uses this marker only when structured evaluator
+    # diagnostics are requested. Keeping the marker on the type (rather than
+    # parsing a human error string) lets the native evaluator receive the
+    # complete conflicting definition set as typed data.
+    conflictOnDisagreement = true;
     merge = loc: defs: let
       first = builtins.elemAt defs 0;
       allSame = builtins.all (d: d.value == first.value) defs;

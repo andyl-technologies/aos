@@ -1,15 +1,12 @@
 # Secure an AOS host
 
-AOS security policy is currently built into the published system image. Start
+AOS splits security policy between the immutable image and a machine's runtime
+configuration generation. Boot-critical mechanisms such as Secure Boot,
+lockdown, dm-verity, the module ABI, and image trust anchors belong in the
+image. Hostname, users, SSH, firewall, audit, services, and public trust policy
+can be supplied by authenticated `host.nix` and activated atomically. Start
 with the server baseline, then make explicit decisions about remote access,
 network exposure, audit behavior, and trust roots.
-
-General runtime `host.nix` activation is not complete. Users of the current
-golden image cannot change these module settings at runtime; release
-maintainers must apply them while producing the image. The examples below
-document the policy and its current effect. See
-[Build and customize release images](../../maintainers/system-images.md) for
-the source-build workflow.
 
 Do not treat a successful image build as evidence that a deployment meets a
 particular compliance profile. The module presets configure mechanisms; the
@@ -18,15 +15,13 @@ verification on the deployed hardware.
 
 ## Start with a production baseline
 
-`systems/server.nix` defines the immutable root and boot/storage capability. It
-does not enable the server runtime role on its own. A deployment variant should
-enable that role explicitly:
+`systems/server.nix` and `systems/edge.nix` define immutable roots and
+boot/storage capabilities. They do not enable runtime roles on their own.
+Select the appropriate role in authenticated `host.nix`:
 
 ```nix
-# systems/acme-server.nix
-{...}: {
-  imports = [./server.nix];
-
+# host.nix for a server
+{
   aos.roles.server.enable = true;
   aos.security.level = "standard";
 }
@@ -35,6 +30,9 @@ enable that role explicitly:
 The server role enables chrony, SSH, the standard security preset, and the
 package capabilities used by server deployments. The `standard` preset enables
 the firewall, audit service, kernel hardening, and disables core dumps.
+Resource-constrained hosts can select `aos.roles.edge.enable = true` instead;
+that role enables chrony, SSH, the standard preset, and conservative runtime
+memory tuning without changing the authenticated EROFS/dm-verity image root.
 
 The available levels are:
 
@@ -92,6 +90,11 @@ Prefer a named operator account:
 
 Public SSH keys may be built into an image. Private keys must not be. Keep an
 independent console or recovery path while changing access policy.
+
+Native cloud public keys enter evaluation as typed instance facts, not as an
+automatic grant. A trusted module must explicitly map those facts to an
+account's authorized-keys entry; this keeps provider metadata acquisition
+separate from authorization policy.
 
 ### Use OIDC-backed SSH
 
@@ -235,6 +238,36 @@ The mechanisms currently demonstrated are:
 - optional kernel lockdown with enforced module signing and signed kexec;
 - TPM2 sealing of `/var` to a signed PCR 11 policy and pinned PCR 7 value;
 - dm-verity verification of the read-only EROFS root.
+
+Durable upgrades preserve those bindings per image generation: APM validates
+the signed catalog, writes the inactive root/hash slot and slot-specific UKI,
+and selects the counted entry. A boot is blessed only after configuration has
+been rebound to the running image. This mechanism does not supply production
+signing keys, enrollment, or key custody.
+
+Each committed configuration generation also carries
+`gen-attestation.json`, binding its manifest to the evaluator, base library,
+authenticated package-module inputs, authorized `host.nix`, normalized facts,
+and the running image record's dm-verity root and expected PCR 11 value when
+those are present. Measured-boot policy requires the TPM-backed generation
+quote path to succeed; non-TPM variants record an explicit unquoted state
+rather than pretending to have hardware evidence.
+Every successful activation has a fresh `activation_id`. Reactivating the same
+generation during rollback appends a new CEL event, extends PCR 15 again, and
+replaces its quote, while a crash retry resumes only the retained transaction.
+Inspect the current record with:
+
+```sh
+current=$(readlink -f /var/lib/profiles/system/current)
+cat "$current/gen-attestation.json"
+```
+
+For a remote trust decision, use the public verifier with an enrolled quote
+identity, the host CEL and quote bundle, and a policy populated from the
+verifier's image catalog. It validates the exact embedded quote bytes, PCR
+7/11/15, dm-verity root, authorized host-input source, signed release receipt,
+active key roster, signed module/store graph, and optional independent manifest
+re-derivation. See [Verify runtime attestation evidence](cli.md#verify-runtime-attestation-evidence).
 
 Measured boot writes a generated LUKS recovery key to a configured path under
 `/run` on first sealing. A production deployment must escrow that key off-host
