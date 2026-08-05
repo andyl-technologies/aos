@@ -27,6 +27,172 @@ pub const DEBUG_GATEWAY_PROTOCOL_VERSION: u16 = 1;
 pub const DEBUG_GATEWAY_HEADER_LEN: usize = 20;
 /// Maximum payload accepted in a single debugger-gateway frame.
 pub const DEBUG_GATEWAY_MAX_PAYLOAD: usize = 1024 * 1024;
+/// Fixed prefix length of a backend-status payload.
+pub const DEBUG_GATEWAY_BACKEND_STATUS_PREFIX_LEN: usize = 24;
+
+/// One backend identity reported for control-plane reconciliation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DebugGatewayBackendIdentity {
+    /// Monotonic gateway generation.
+    pub generation: u64,
+    /// Private QEMU RSP Unix-socket endpoint.
+    pub endpoint: String,
+}
+
+/// Active and prepared backend state returned after reconnecting to a gateway.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DebugGatewayBackendStatus {
+    /// Backend currently serving the stable GDB connection.
+    pub active: Option<DebugGatewayBackendIdentity>,
+    /// Validated candidate awaiting commit or abort.
+    pub prepared: Option<DebugGatewayBackendIdentity>,
+}
+
+impl DebugGatewayBackendStatus {
+    /// Encodes active and prepared identities into the version-1 status format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayBackendStatusError`] when an endpoint is empty,
+    /// contains invalid path bytes, or the combined payload exceeds the frame
+    /// limit.
+    pub fn encode(&self) -> Result<Vec<u8>, DebugGatewayBackendStatusError> {
+        let (active_generation, active_endpoint) = encode_backend_identity(self.active.as_ref())?;
+        let (prepared_generation, prepared_endpoint) =
+            encode_backend_identity(self.prepared.as_ref())?;
+        let payload_len = DEBUG_GATEWAY_BACKEND_STATUS_PREFIX_LEN
+            .saturating_add(active_endpoint.len())
+            .saturating_add(prepared_endpoint.len());
+        if payload_len > DEBUG_GATEWAY_MAX_PAYLOAD {
+            return Err(DebugGatewayBackendStatusError::PayloadTooLarge {
+                length: payload_len,
+            });
+        }
+        let active_len = u32::try_from(active_endpoint.len()).map_err(|_| {
+            DebugGatewayBackendStatusError::PayloadTooLarge {
+                length: payload_len,
+            }
+        })?;
+        let prepared_len = u32::try_from(prepared_endpoint.len()).map_err(|_| {
+            DebugGatewayBackendStatusError::PayloadTooLarge {
+                length: payload_len,
+            }
+        })?;
+        let mut bytes = Vec::with_capacity(payload_len);
+        bytes.extend_from_slice(&active_generation.to_be_bytes());
+        bytes.extend_from_slice(&active_len.to_be_bytes());
+        bytes.extend_from_slice(&prepared_generation.to_be_bytes());
+        bytes.extend_from_slice(&prepared_len.to_be_bytes());
+        bytes.extend_from_slice(active_endpoint);
+        bytes.extend_from_slice(prepared_endpoint);
+        Ok(bytes)
+    }
+
+    /// Decodes active and prepared backend identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayBackendStatusError`] for truncation, inconsistent
+    /// lengths, invalid UTF-8, or an invalid identity.
+    pub fn decode(bytes: &[u8]) -> Result<Self, DebugGatewayBackendStatusError> {
+        if bytes.len() < DEBUG_GATEWAY_BACKEND_STATUS_PREFIX_LEN {
+            return Err(DebugGatewayBackendStatusError::Truncated);
+        }
+        let active_generation = u64::from_be_bytes(copy_array(&bytes[0..8]));
+        let active_len = u32::from_be_bytes(copy_array(&bytes[8..12])) as usize;
+        let prepared_generation = u64::from_be_bytes(copy_array(&bytes[12..20]));
+        let prepared_len = u32::from_be_bytes(copy_array(&bytes[20..24])) as usize;
+        let expected = DEBUG_GATEWAY_BACKEND_STATUS_PREFIX_LEN
+            .saturating_add(active_len)
+            .saturating_add(prepared_len);
+        if expected != bytes.len() || expected > DEBUG_GATEWAY_MAX_PAYLOAD {
+            return Err(DebugGatewayBackendStatusError::LengthMismatch {
+                expected,
+                actual: bytes.len(),
+            });
+        }
+        let active_end = DEBUG_GATEWAY_BACKEND_STATUS_PREFIX_LEN + active_len;
+        Ok(Self {
+            active: decode_backend_identity(
+                active_generation,
+                &bytes[DEBUG_GATEWAY_BACKEND_STATUS_PREFIX_LEN..active_end],
+            )?,
+            prepared: decode_backend_identity(prepared_generation, &bytes[active_end..])?,
+        })
+    }
+}
+
+fn copy_array<const N: usize>(bytes: &[u8]) -> [u8; N] {
+    let mut array = [0_u8; N];
+    array.copy_from_slice(bytes);
+    array
+}
+
+fn encode_backend_identity(
+    identity: Option<&DebugGatewayBackendIdentity>,
+) -> Result<(u64, &[u8]), DebugGatewayBackendStatusError> {
+    let Some(identity) = identity else {
+        return Ok((0, &[]));
+    };
+    if identity.generation == 0 || !valid_backend_endpoint(&identity.endpoint) {
+        return Err(DebugGatewayBackendStatusError::InvalidIdentity);
+    }
+    Ok((identity.generation, identity.endpoint.as_bytes()))
+}
+
+fn decode_backend_identity(
+    generation: u64,
+    endpoint: &[u8],
+) -> Result<Option<DebugGatewayBackendIdentity>, DebugGatewayBackendStatusError> {
+    if generation == 0 && endpoint.is_empty() {
+        return Ok(None);
+    }
+    let endpoint = std::str::from_utf8(endpoint)
+        .map_err(|_| DebugGatewayBackendStatusError::InvalidUtf8)?
+        .to_owned();
+    if generation == 0 || !valid_backend_endpoint(&endpoint) {
+        return Err(DebugGatewayBackendStatusError::InvalidIdentity);
+    }
+    Ok(Some(DebugGatewayBackendIdentity {
+        generation,
+        endpoint,
+    }))
+}
+
+fn valid_backend_endpoint(endpoint: &str) -> bool {
+    endpoint.starts_with('/')
+        && !endpoint
+            .bytes()
+            .any(|byte| matches!(byte, 0 | b'\n' | b'\r'))
+}
+
+/// Errors produced by backend-status payloads.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum DebugGatewayBackendStatusError {
+    /// The payload ended before its fixed prefix.
+    #[error("debug gateway backend status payload is truncated")]
+    Truncated,
+    /// The encoded lengths do not match the payload.
+    #[error("debug gateway backend status length mismatch: expected {expected}, actual {actual}")]
+    LengthMismatch {
+        /// Length required by the fixed prefix.
+        expected: usize,
+        /// Length supplied by the peer.
+        actual: usize,
+    },
+    /// An endpoint was not valid UTF-8.
+    #[error("debug gateway backend endpoint is not UTF-8")]
+    InvalidUtf8,
+    /// A present identity used generation zero or an unsafe endpoint.
+    #[error("debug gateway backend identity is invalid")]
+    InvalidIdentity,
+    /// The combined status exceeded the frame payload limit.
+    #[error("debug gateway backend status length {length} exceeds the limit")]
+    PayloadTooLarge {
+        /// Rejected payload length.
+        length: usize,
+    },
+}
 
 /// Stable error codes carried by [`DebugGatewayMessageKind::Error`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -171,6 +337,10 @@ pub enum DebugGatewayMessageKind {
     Ack = 12,
     /// Routes an RSP continue/step request to the scheduler-owning host.
     RunControl = 13,
+    /// Requests active and prepared backend identities for recovery.
+    BackendStatus = 14,
+    /// Returns active and prepared backend identities.
+    BackendStatusAck = 15,
     /// Reports a typed gateway rejection, optionally correlated to a stream.
     Error = 255,
 }
@@ -191,6 +361,8 @@ impl DebugGatewayMessageKind {
             11 => Ok(Self::ChannelClose),
             12 => Ok(Self::Ack),
             13 => Ok(Self::RunControl),
+            14 => Ok(Self::BackendStatus),
+            15 => Ok(Self::BackendStatusAck),
             255 => Ok(Self::Error),
             _ => Err(DebugGatewayDecodeError::UnknownKind { tag }),
         }
@@ -491,6 +663,32 @@ mod tests {
         assert!(matches!(
             DebugGatewayErrorPayload::decode(&[0, 0]),
             Err(DebugGatewayErrorPayloadError::UnknownCode { tag: 0 })
+        ));
+    }
+
+    #[test]
+    fn backend_status_round_trips_for_reconnect_reconciliation() {
+        let status = DebugGatewayBackendStatus {
+            active: Some(DebugGatewayBackendIdentity {
+                generation: 7,
+                endpoint: String::from("/run/crucible/qemu-active.sock"),
+            }),
+            prepared: Some(DebugGatewayBackendIdentity {
+                generation: 8,
+                endpoint: String::from("/run/crucible/qemu-candidate.sock"),
+            }),
+        };
+        let encoded = status
+            .encode()
+            .unwrap_or_else(|error| panic!("status should encode: {error}"));
+        assert_eq!(
+            DebugGatewayBackendStatus::decode(&encoded)
+                .unwrap_or_else(|error| panic!("status should decode: {error}")),
+            status
+        );
+        assert!(matches!(
+            DebugGatewayBackendStatus::decode(&encoded[..encoded.len() - 1]),
+            Err(DebugGatewayBackendStatusError::LengthMismatch { .. })
         ));
     }
 }

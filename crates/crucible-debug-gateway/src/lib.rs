@@ -107,7 +107,10 @@ impl DebugGateway {
         &mut self,
         endpoint: QemuRspEndpoint,
     ) -> Result<PreparedBackend, DebugGatewayError> {
-        if self.prepared.is_some() {
+        if let Some(prepared) = self.prepared.as_ref() {
+            if prepared.endpoint == endpoint {
+                return Ok(prepared.clone());
+            }
             return Err(DebugGatewayError::CandidateAlreadyPrepared);
         }
         self.next_generation = self.next_generation.saturating_add(1);
@@ -132,6 +135,9 @@ impl DebugGateway {
         &mut self,
         generation: BackendGeneration,
     ) -> Result<Option<PreparedBackend>, DebugGatewayError> {
+        if self.active.as_ref().map(|active| active.generation) == Some(generation) {
+            return Ok(None);
+        }
         let Some(prepared) = self.prepared.take() else {
             return Err(DebugGatewayError::UnknownPreparedGeneration { generation });
         };
@@ -473,6 +479,31 @@ mod tests {
                 .hardware_breakpoints
                 .contains(b"Z1,4000,1".as_slice())
         );
+    }
+
+    #[test]
+    fn prepare_and_commit_are_idempotent_after_lost_acknowledgements() {
+        let mut gateway = DebugGateway::new();
+        let first = gateway
+            .prepare_backend(endpoint("candidate"))
+            .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
+        assert_eq!(
+            gateway
+                .prepare_backend(endpoint("candidate"))
+                .unwrap_or_else(|error| panic!("repeated prepare should succeed: {error}")),
+            first
+        );
+
+        gateway
+            .commit_backend(first.generation)
+            .unwrap_or_else(|error| panic!("candidate should commit: {error}"));
+        assert_eq!(
+            gateway
+                .commit_backend(first.generation)
+                .unwrap_or_else(|error| panic!("repeated commit should succeed: {error}")),
+            None
+        );
+        assert_eq!(gateway.active(), Some(&first));
     }
 
     #[test]
