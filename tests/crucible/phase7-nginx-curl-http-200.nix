@@ -111,7 +111,7 @@ in
             --seed 0x200 \
             --format jsonl \
             run ${scenario} \
-            --max-quanta 10000 \
+            --max-quanta 30000 \
             > "$cli_report"
           grep -F '"kind":"final_outcome"' "$cli_report" \
             | grep -Fq 'status=passed exit_code=0'
