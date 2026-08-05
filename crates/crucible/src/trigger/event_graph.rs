@@ -349,103 +349,6 @@ pub(super) fn lower_plan_entry_to_event((index, entry): (usize, &PlanEntry)) -> 
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FaultPlanLoweredAction {
-    at: VirtualTime,
-    kind: &'static str,
-    kind_order: u8,
-    tag: FaultTag,
-    material: String,
-    action: Action,
-}
-
-pub(super) fn lower_fault_plan_actions(entries: &[FaultPlanEntry]) -> Vec<FaultPlanLoweredAction> {
-    let mut actions = Vec::new();
-    for entry in entries {
-        match entry {
-            FaultPlanEntry::At {
-                at,
-                duration,
-                tag,
-                fault,
-            } => {
-                actions.push(inject_fault_plan_action(*at, tag, fault));
-                if let Some(heal_at) = at.ticks.checked_add(duration.nanos()) {
-                    actions.push(heal_fault_plan_action(
-                        VirtualTime { ticks: heal_at },
-                        "heal",
-                        tag,
-                    ));
-                }
-            }
-            FaultPlanEntry::PermanentAt { at, tag, fault } => {
-                actions.push(inject_fault_plan_action(*at, tag, fault));
-            }
-            FaultPlanEntry::Heal { at, tag } => {
-                actions.push(heal_fault_plan_action(*at, "heal", tag));
-            }
-        }
-    }
-    actions.sort_by(|left, right| {
-        left.at
-            .cmp(&right.at)
-            .then_with(|| left.kind_order.cmp(&right.kind_order))
-            .then_with(|| left.material.cmp(&right.material))
-    });
-    actions
-}
-
-pub(super) fn inject_fault_plan_action(
-    at: VirtualTime,
-    tag: &FaultTag,
-    fault: &Fault,
-) -> FaultPlanLoweredAction {
-    FaultPlanLoweredAction {
-        at,
-        kind: "inject",
-        kind_order: 0,
-        tag: tag.clone(),
-        material: format!(
-            "inject\n{}\n{}",
-            fault_tag_sort_material(tag),
-            fault.canonical_material()
-        ),
-        action: Action::InjectFault {
-            tag: tag.clone(),
-            fault: MembershipFault::taxonomy(fault.clone()),
-        },
-    }
-}
-
-pub(super) fn heal_fault_plan_action(
-    at: VirtualTime,
-    kind: &'static str,
-    tag: &FaultTag,
-) -> FaultPlanLoweredAction {
-    FaultPlanLoweredAction {
-        at,
-        kind,
-        kind_order: 1,
-        tag: tag.clone(),
-        material: format!("heal\n{}", fault_tag_sort_material(tag)),
-        action: Action::HealFault { tag: tag.clone() },
-    }
-}
-
-pub(super) fn fault_tag_sort_material(tag: &FaultTag) -> String {
-    format!("tag_len={}\ntag={}", tag.name.len(), tag.name)
-}
-
-pub(super) fn lower_fault_plan_action_to_event(
-    (index, action): (usize, &FaultPlanLoweredAction),
-) -> Event {
-    Event::once(
-        lowered_plan_event_id(index, action.kind, &action.tag),
-        Some(Condition::At { at: action.at }),
-        action.action.clone(),
-    )
-}
-
 pub(super) fn lowered_plan_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
     EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
 }
@@ -456,17 +359,6 @@ pub(super) fn plan_evaluation_times(entries: &[PlanEntry]) -> Vec<VirtualTime> {
         .map(|entry| match entry {
             PlanEntry::Activate { at, .. } | PlanEntry::Heal { at, .. } => *at,
         })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-pub(super) fn fault_plan_action_evaluation_times(
-    actions: &[FaultPlanLoweredAction],
-) -> Vec<VirtualTime> {
-    actions
-        .iter()
-        .map(|action| action.at)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()

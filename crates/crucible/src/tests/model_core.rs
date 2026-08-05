@@ -655,11 +655,11 @@ fn spatial_components_have_independent_content_addresses_and_cross_reuse() {
         .unwrap_or_else(|error| panic!("properties material should be utf8: {error}"));
     assert_eq!(
         world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v1", &world_material)
+        ContentHash::from_canonical_material("crucible.model.world.v3", &world_material)
     );
     assert_eq!(
         plan.content_hash(),
-        ContentHash::from_canonical_material("crucible.model.plan.v2", &plan_material)
+        ContentHash::from_canonical_material("crucible.model.plan.v3", &plan_material)
     );
     assert_eq!(
         properties.content_hash(),
@@ -796,7 +796,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert_eq!(template_scenario, base_scenario);
     assert_eq!(
         base_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v1", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v3", &material)
     );
     assert_eq!(base_world.vm_nodes().len(), 1);
     assert_eq!(base_world.vm_nodes()[0].arch, VmArchitecture::Aarch64);
@@ -2505,7 +2505,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     assert!(material.contains("min_link_latency_ns=1"));
     assert_eq!(
         floor_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v1", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v3", &material)
     );
     assert_ne!(floor_world.id(), raised_latency_world.id());
     assert_ne!(

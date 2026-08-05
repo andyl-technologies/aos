@@ -2005,19 +2005,19 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() {
     assert_eq!(density.millionths(), 125_000);
     assert_eq!(
         authored_world.id().to_hex(),
-        "2f107a46c69f789cd0fa04ed4bca6e7c1d780594789e2167a80bf0dfe3bc21c3"
+        "b4afd4f0a30e03fbaf14fcc2e08721dbcc5360474bdf6aed107bb1f761c59707"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_world.canonical_bytes()).to_hex(),
-        "ccd11b842c868487bd1417fba149d40afe0fb75e012217552da9999a2d081c00"
+        "d1097ed5e56a2532413d1e8cbdcb374e47a3462a15a0f3885cc068cc097dd5cc"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_world.to_compact_binary()).to_hex(),
-        "f0957eef5db5c83edceef71cd8a8288d78c9a0aa05a220084e1487422585abed"
+        "d407e210bfa8f0c9c9c3b082e3a83f5d075ef2a90d95645e7f6ad68263a187d1"
     );
     assert_eq!(
         authored_plan.content_hash().to_hex(),
-        "3a4322d90df8bf9dfa627cf560df41c8387241947b8091e05b73296e093a26a0"
+        "9768633c91991e5b215dc8fb2863373a77ada9295eef8111761eea6230c9a553"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_plan.canonical_bytes()).to_hex(),
@@ -2025,7 +2025,7 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() {
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_plan.to_compact_binary()).to_hex(),
-        "5a954f865e7fcb955ccaca47b20419db44e77e1ce5675bd60b61cec987fbd855"
+        "cf270d9efdc842973ceb6ed9bc83a49819b0d7efc1caf12e5220cff53048b2e3"
     );
     assert_eq!(
         authored_properties.content_hash().to_hex(),
@@ -2041,15 +2041,15 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() {
     );
     assert_eq!(
         authored_form.id().to_hex(),
-        "025994020954701ef480fbab5fda12e62273f7d753d0028e89793f19146cfb64"
+        "a2a868c4bffd871f911e088d89687f35041fe57978488bf53e9d839f22f749f1"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_form.canonical_bytes()).to_hex(),
-        "b948c59b1d3e994606b14ce93bc22e93a54503eda3b677a7cdb45d36566d148a"
+        "b17749df15476bb09b141d316b6d1158809eb1fe3993b9603a089bf6c7d75aa6"
     );
     assert_eq!(
         ContentHash::from_bytes(&authored_form.to_compact_binary()).to_hex(),
-        "c024650301f5ecfc135e96f571336abc4a7a2170dfa3ee338799eb6b8fe6ff40"
+        "15b464f1d9764745c9a2bc2fc8ca31083e7696b87313de6ff7b8607dce9cfc7e"
     );
     assert_eq!(authored_world.id(), canonical_world.id());
     assert_eq!(authored_world.vm_nodes(), canonical_world.vm_nodes());

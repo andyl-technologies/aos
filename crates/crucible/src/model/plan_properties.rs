@@ -395,7 +395,6 @@ pub struct Plan {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum PlanKind {
     ScheduledEntries { entries: Vec<PlanEntry> },
-    FaultPlan { plan: FaultPlan },
     EventGraph { graph: EventGraph },
 }
 
@@ -443,17 +442,7 @@ impl Plan {
     pub fn entries(&self) -> &[PlanEntry] {
         match &self.kind {
             PlanKind::ScheduledEntries { entries } => entries,
-            PlanKind::FaultPlan { .. } => &[],
             PlanKind::EventGraph { .. } => &[],
-        }
-    }
-
-    /// Returns the full-taxonomy fault plan carried by this plan, when present.
-    #[must_use]
-    pub fn fault_plan(&self) -> Option<&FaultPlan> {
-        match &self.kind {
-            PlanKind::FaultPlan { plan } => Some(plan),
-            PlanKind::ScheduledEntries { .. } | PlanKind::EventGraph { .. } => None,
         }
     }
 
@@ -462,7 +451,6 @@ impl Plan {
     pub fn event_graph(&self) -> Option<&EventGraph> {
         match &self.kind {
             PlanKind::ScheduledEntries { .. } => None,
-            PlanKind::FaultPlan { .. } => None,
             PlanKind::EventGraph { graph } => Some(graph),
         }
     }
@@ -477,23 +465,6 @@ impl Plan {
     #[must_use]
     pub fn with_fault_signals(self, fault_signals: FaultSignalPlan) -> Self {
         Self::from_canonical_parts(self.kind, fault_signals)
-    }
-
-    /// Builds a full-taxonomy fault-plan body after validating it against `world`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`],
-    /// [`EngineError::PlanFaultUnknownLinkId`],
-    /// [`EngineError::PlanFaultUnknownDevice`],
-    /// [`EngineError::PlanFaultDeviceKindMismatch`],
-    /// [`EngineError::PlanHealUnknownTag`],
-    /// [`EngineError::PlanHealBeforeActivate`], or
-    /// [`EngineError::PlanFaultDurationOverflow`] when the fault plan cannot be
-    /// layered over `world`.
-    pub fn from_fault_plan_for_world(world: &World, plan: FaultPlan) -> Result<Self, EngineError> {
-        let plan = FaultPlan::from_entries_for_world(world, plan.entries)?;
-        Ok(Self::from_canonical_fault_plan(plan))
     }
 
     /// Builds a graph-native plan after validating it against `world`.
@@ -670,9 +641,6 @@ impl Plan {
             PlanKind::ScheduledEntries { entries } => {
                 validate_plan_entries_for_world(world, entries)
             }
-            PlanKind::FaultPlan { plan } => {
-                validate_fault_plan_entries_for_world(world, plan.entries())
-            }
             PlanKind::EventGraph { graph } => {
                 validate_event_graph_plan(world, assertions, graph.clone())
                     .map(|_| ())
@@ -686,10 +654,6 @@ impl Plan {
         Self::from_canonical_kind(kind)
     }
 
-    fn from_canonical_fault_plan(plan: FaultPlan) -> Self {
-        Self::from_canonical_kind(PlanKind::FaultPlan { plan })
-    }
-
     fn from_canonical_event_graph(graph: EventGraph) -> Self {
         Self::from_canonical_kind(PlanKind::EventGraph { graph })
     }
@@ -701,7 +665,7 @@ impl Plan {
     fn from_canonical_parts(kind: PlanKind, fault_signals: FaultSignalPlan) -> Self {
         let material = plan_parts_material(&kind, &fault_signals);
         Self {
-            id: ContentHash::from_canonical_material("crucible.model.plan.v2", &material),
+            id: ContentHash::from_canonical_material("crucible.model.plan.v3", &material),
             kind,
             fault_signals,
         }
