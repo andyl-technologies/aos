@@ -15,8 +15,8 @@
 //! user:       demo@example.com  /  password "demo"   (Argon2id-hashed)
 //! org:        demo  ("Demo Org")        ─ user is Owner
 //! project:    demo/  (org root)
-//! binding:    local  →  {root}/seed-bucket           (local_fs)
-//! registry:   demo/cdn  (canonical)  bound to `local`, require_signatures=on
+//! binding:    instance/default → {root}/seed-bucket  (local_fs)
+//! registry:   demo/cdn  (canonical)  placed on `default`, signatures required
 //! registry:   demo/private-images  authenticated twin for consumer testing
 //! surface:    curl 8.5.0, openssl 3.2.1, jq 1.7.1    (x86_64-linux each)
 //!             aos-system 1.0.0 as exact raw + QCOW2 disk downloads
@@ -180,32 +180,16 @@ pub async fn seed_dev_with_snapshots(
     )
     .await?;
 
-    // local_fs storage binding rooted under the hub state dir.
+    // Development storage is an instance-owned local binding. Organization
+    // bindings deliberately cannot name host filesystem paths; the explicit
+    // placement grant below authorizes the demo registry to use this binding.
     let bucket = root.join("seed-bucket");
     std::fs::create_dir_all(&bucket)
         .with_context(|| format!("creating seed bucket {}", bucket.display()))?;
-    let org_record = db
-        .org_by_id(org_id)
-        .await?
-        .context("seed org disappeared")?;
     let binding_id = db
-        .create_topology_storage_binding(
-            Some(org_id),
-            &uuid::Uuid::new_v4().simple().to_string(),
-            &org_record.stable_id,
-            "local",
-            "local_fs",
-            Some(&bucket.to_string_lossy()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await?;
+        .ensure_instance_default_binding("local_fs", Some(&bucket.to_string_lossy()), None)
+        .await?
+        .id;
 
     // The live E2E launchers inject the output of the real `apr release`
     // producer here. Ordinary dev seeding retains the small in-process demo.
@@ -261,16 +245,23 @@ pub async fn seed_dev_with_snapshots(
             true,
         )
         .await?;
-    let (registry, public_placement_id) =
-        seed_placement_and_index(db, binding_id, registry_id, DEMO_REGISTRY, &surface_root)
-            .await
-            .context("indexing public seeded registry")?;
+    let (registry, public_placement_id) = seed_placement_and_index(
+        db,
+        binding_id,
+        registry_id,
+        DEMO_REGISTRY,
+        &surface_root,
+        &image_snapshots,
+    )
+    .await
+    .context("indexing public seeded registry")?;
     let (_, private_placement_id) = seed_placement_and_index(
         db,
         binding_id,
         private_registry_id,
         DEMO_PRIVATE_REGISTRY,
         &private_surface_root,
+        &image_snapshots,
     )
     .await
     .context("indexing private seeded registry")?;
@@ -382,23 +373,35 @@ async fn seed_placement_and_index(
     registry_id: i64,
     prefix: &str,
     surface_root: &Path,
+    image_snapshots: &Arc<crate::image_snapshot::ImageSnapshotStore>,
 ) -> Result<(crate::db::RegistryRecord, i64)> {
-    let consumer_scope = db.registry_authorization_scope(registry_id).await?;
+    let registry = db
+        .registry_by_id(registry_id)
+        .await?
+        .context("seeded registry disappeared")?;
+    let consumer_scope = registry.owner_scope_key.clone();
     let binding = db
         .storage_binding(binding_id)
         .await?
         .context("seed storage binding disappeared")?;
-    db.grant_consumer_scope(
-        GrantResource::StorageBinding {
-            id: binding_id,
-            stable_id: &binding.stable_id,
-        },
-        &consumer_scope,
-        "explicit",
-        "seed",
-        &format!("seed-placement-grant-{registry_id}"),
-    )
-    .await?;
+    let binding_resource = GrantResource::StorageBinding {
+        id: binding_id,
+        stable_id: &binding.stable_id,
+    };
+    let binding_grants = db.list_consumer_scope_grants(binding_resource).await?;
+    if !binding_grants
+        .iter()
+        .any(|grant| grant.consumer_scope_key == consumer_scope && grant.state == "active")
+    {
+        db.grant_consumer_scope(
+            binding_resource,
+            &consumer_scope,
+            "explicit",
+            "seed",
+            &format!("seed-placement-grant-{registry_id}"),
+        )
+        .await?;
+    }
     let placement = db
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry_id),
@@ -415,13 +418,9 @@ async fn seed_placement_and_index(
         .await?;
     db.observe_surface_placement(placement.id, "ready", "complete", 1)
         .await?;
-    let registry = db
-        .registry_by_id(registry_id)
-        .await?
-        .context("seeded registry disappeared")?;
     crate::indexer::index_and_record_from_placement(
         db,
-        &LocalFsFetch::new(surface_root),
+        &LocalFsFetch::new(surface_root).with_image_snapshots(Arc::clone(image_snapshots)),
         &registry,
         Some(placement.id),
     )
@@ -549,8 +548,15 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
     let mut system_package: toml::Value = toml::from_str(
         "[package]\nname = \"aos-system\"\ndescription = \"AOS system image\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/aos-system-1.0.0\"\nnar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\nsource_drv = \"/var/lib/store/aos-system-1.0.0.drv\"\nsource_nar_hash = \"sha256:bb\"\nreferences = []\n",
     )?;
-    system_package["versions"][0]["platforms"]["x86_64-linux"]["images"] =
-        toml::Value::try_from(&images)?;
+    system_package
+        .get_mut("versions")
+        .and_then(toml::Value::as_array_mut)
+        .and_then(|versions| versions.first_mut())
+        .and_then(|version| version.get_mut("platforms"))
+        .and_then(|platforms| platforms.get_mut("x86_64-linux"))
+        .and_then(toml::Value::as_table_mut)
+        .context("seed system package is missing its x86_64-linux artifact")?
+        .insert("images".to_string(), toml::Value::try_from(&images)?);
     let system_oid = put_blob(&toml::to_string(&system_package)?)?;
     package_buckets
         .entry('a')
@@ -681,7 +687,7 @@ fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry
         let info_sha256 = hex::encode(Sha256::digest(info));
         ImageEntry {
             format: format.to_string(),
-            store_path: format!("/var/lib/store/aos-system-{format}"),
+            store_path: format!("/var/lib/store/{}-image-{format}", &sha256[..32]),
             nar_hash: format!("sha256:{sha256}"),
             nar_size: bytes.len() as u64,
             delivery: ImageDelivery {
