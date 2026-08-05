@@ -27,18 +27,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// Returns the current Unix timestamp in the active runtime.
 #[must_use]
 pub fn delivery_attestation_now() -> i64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        (js_sys::Date::now() / 1000.0) as i64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs() as i64)
-            .unwrap_or_default()
-    }
+    crate::clock::now_unix_secs()
 }
 
 /// A verified transport assertion supplied by an upstream ingress adapter.
