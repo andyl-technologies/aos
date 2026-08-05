@@ -11,8 +11,10 @@ over the defaults below. Third-party files retain their existing licenses.
 | Original AOS code without a more specific notice | Apache-2.0 |
 | `crucible-protocol` and `crucible-shmem` | MIT OR Apache-2.0 |
 | `crucible-qemu-plugin` | GPL-2.0-only |
-| QEMU and files derived from or linked into QEMU | QEMU's applicable upstream license, commonly GPL-2.0-only |
-| AOS QEMU patch series | The license of the upstream file being modified; new GPL-covered QEMU integration is GPL-2.0-only |
+| `crucible-qemu-trace-plugin` | GPL-2.0-only |
+| QEMU emulator as a combined work | GPL-2.0-only |
+| Individual QEMU source files | The file's notice; unmarked files default to GPL-2.0-or-later under QEMU 10.0's `LICENSE` |
+| AOS QEMU patch series | Modified files retain their upstream license; every created file and its license is listed in the [patch inventory](pkgs/emulation/qemu-patches/LICENSES.md) |
 
 The complete license texts are in [`LICENSES/`](LICENSES/). The root
 [`LICENSE`](LICENSE) remains the Apache License 2.0 default for original AOS
@@ -28,9 +30,16 @@ setup and control plane, and shared memory is the high-throughput data plane.
 The protocol is an interoperability contract, not a shared implementation.
 The data plane avoids per-event socket round trips and payload copies. It does
 not currently avoid every kernel entry: scheduler ceiling publication performs
-a non-private futex wake unconditionally. A future waiter-armed optimization
-may skip that wake when no peer is parked, but it must preserve the documented
-race-free futex protocol and ABI.
+a non-private futex wake unconditionally, and the host writes the plugin eventfd
+at least once per quantum. Frame delivery and service/backpressure producer
+release add futex wakes; repeated plugin wait calls can follow non-actionable
+wake returns; pending host polling can sleep. Unchanged-icount retries and
+serviced host I/O may add eventfd writes. QEMU-side eventfd reads and event-loop
+poll entries are not included in the arithmetic performance model. These wake
+counter writes carry no timing decision or
+payload; the shared region remains the data and synchronization-state contract.
+A future waiter-armed optimization may skip unnecessary futex wakes, but it
+must preserve the documented wake protocol and ABI.
 
 `crucible-protocol` and `crucible-shmem` contain protocol and transport
 definitions used on both sides of that process boundary. Their permissive
@@ -44,6 +53,10 @@ under their MIT option, which is compatible with GPL-2.0-only. Any other code
 compiled into, linked into, or
 dynamically loaded by QEMU must remain within the applicable QEMU/GPL license
 scope. Apache-only host crates must not link to QEMU or include QEMU headers.
+QEMU's combined-work license and its per-file licenses are separate metadata:
+the current patch series creates GPL-2.0-or-later QEMU source files, while the
+Rust and C Crucible QEMU plugins remain explicitly GPL-2.0-only. Packages and
+corresponding-source artifacts must preserve and inventory both GPL scopes.
 
 Shared memory must remain protocol-shaped. It may contain fixed-width fields,
 atomics, offsets, ring entries, sequence numbers, feature bits, and serialized
@@ -69,6 +82,14 @@ source, the complete applied patch series, new QEMU/plugin integration source,
 generated interface files required to build it, build/configuration scripts,
 license notices, and enough identity metadata to match it to the binary. Release
 automation must fail closed if the artifact or license inventory is missing.
+`qemu-crucible` is therefore an internal, non-standalone release component:
+`apr publish` and `apr release --store-path` reject its store path directly.
+They inspect the complete runtime closure, so publishing the plugin or an
+unmarked wrapper around patched QEMU is rejected as well. Publish the
+`crucible` suite root instead. Its indexed release policy directly retains
+both `qemu-crucible` and the matching `qemu-crucible-source` path, so both are
+members of the binary-cache closure without making source a QEMU runtime
+dependency. Generic, unpatched QEMU packages have no such restriction.
 
 This repository document describes project policy and is not legal advice.
 

@@ -22,6 +22,7 @@ in
         || pathString == "${repoRootString}/LICENSES"
         || lib.hasPrefix "${repoRootString}/LICENSES" pathString
         || pathString == "${repoRootString}/LICENSING.md"
+        || pathString == "${repoRootString}/README.md"
         || pathString == "${repoRootString}/CONTRIBUTING.md"
         || pathString == "${repoRootString}/CONTRIBUTOR_LICENSE_AGREEMENT.md"
         || lib.hasPrefix "${repoRootString}/crates" pathString

@@ -19,7 +19,17 @@ data_plane = "shared-memory"
 steady_state_syscalls_required = true
 data_plane_socket_round_trips = false
 scheduler_ceiling_futex_wake = "unconditional-currently"
-wakeup = "non-private-futex"
+additional_futex_wake_categories = [
+  "service-or-backpressure-producer-release",
+  "frame-delivery",
+]
+wakeup = "non-private-futex+plugin-eventfd"
+plugin_eventfd_quantum_wake_write = "minimum-one"
+plugin_eventfd_qemu_registration = "required-before-ready"
+plugin_eventfd_additional_writes = [
+  "unchanged-icount-retry",
+  "host-io-service",
+]
 future_waiter_armed_wake_optimization = "documented-not-implemented"
 
 [representation]

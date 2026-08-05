@@ -13,7 +13,7 @@ guarded by `gate:license-boundary`, an **Always** gate owned by
 ## 37.1 Component and license map
 
 ```text
-Apache-2.0 host process                 GPL-2.0-only QEMU process
+Apache-2.0 host process                 QEMU process (applicable GPL scope)
 ┌──────────────────────────┐           ┌──────────────────────────┐
 │ engine, scheduler,       │           │ patched QEMU             │
 │ assertions, CLI          │           │ crucible-qemu-plugin     │
@@ -40,8 +40,11 @@ Apache-2.0 host process                 GPL-2.0-only QEMU process
 - **[BOUND-3]** Repository, package, and release metadata MUST describe AOS as a
   multi-license aggregate and MUST NOT claim that a distribution containing
   QEMU is wholly Apache-2.0. Third-party notices and more specific upstream file
-  licenses MUST be preserved. *Gate:* `gate:license-boundary`. *Spec:* §37.1,
-  §37.4.
+  licenses MUST be preserved. QEMU is GPL-2.0-only as a combined work; its
+  current Crucible-created source files are GPL-2.0-or-later under explicit
+  notices or QEMU's unmarked-file default, while `crucible-qemu-plugin` remains
+  GPL-2.0-only. Package and corresponding-source metadata MUST inventory both
+  scopes. *Gate:* `gate:license-boundary`. *Spec:* §37.1, §37.4.
 
 ## 37.2 A public process protocol, not an implementation ABI
 
@@ -51,10 +54,13 @@ completes, the socket is quiescent and high-frequency scheduling, clock, frame,
 I/O, observation, and doorbell traffic flows through shared memory. This retains
 the zero-socket-round-trip data path defined by [SHM-1] and [PROTO-1]. The
 current scheduler ceiling path still enters the kernel for an unconditional
-non-private futex wake; shared memory avoids socket serialization and copying,
-not every syscall. A future waiter-armed optimization may make that wake
-conditional after the existing race-free futex protocol exposes a reliable
-waiter state.
+non-private futex wake, and the host writes the plugin eventfd at least once per
+quantum. Frame delivery and service/backpressure producer release may add futex
+wakes; unchanged-icount retries and serviced host I/O may add eventfd writes.
+Those counter writes carry neither timing decisions nor payloads; shared memory
+avoids socket serialization and copying, not every syscall. A future
+waiter-armed optimization may make the futex wake conditional after the
+existing race-free protocol exposes a reliable waiter state.
 
 - **[BOUND-4]** Apache host code and GPL-side QEMU code MUST communicate only as
   separate processes through the versioned control and shared-memory protocols.
@@ -112,7 +118,18 @@ waiter state.
   include the exact QEMU source, all applied patches, plugin and QEMU-side source,
   generated interface files needed to build it, build/configuration scripts,
   retained notices, and a binary/source identity binding. Missing source MUST
-  fail release construction. *Gate:* `gate:license-boundary`. *Spec:* §37.4,
+  fail release construction. The patched `qemu-crucible` output MUST declare
+  itself an internal, non-standalone release component. Registry publication
+  tooling MUST inspect every member of the proposed root's runtime closure and
+  reject raw, plugin, or wrapper roots that transitively contain a restricted
+  component. It may accept the `crucible` aggregate only after an indexed,
+  identity-bound policy accounts for every restricted member and verifies that
+  its direct Nix references include both each patched QEMU component and its
+  matching corresponding-source output. Ambiguous or incomplete pair sets fail
+  closed. This keeps source
+  out of QEMU's runtime dependency closure while ensuring it is co-published in
+  the suite release/cache closure. Generic unpatched QEMU remains independently
+  publishable. *Gate:* `gate:license-boundary`. *Spec:* §37.4,
   [`26-packaging-aos-integration.md`](26-packaging-aos-integration.md).
 
 ## 37.5 Guest assertions compatibility

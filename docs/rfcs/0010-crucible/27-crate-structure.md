@@ -121,9 +121,11 @@ One-line responsibilities:
    crucible-guest       (L2 agent)   ── depends on ──► crucible-shmem      (L1 only)
 ```
 
-The QEMU-loaded plugin deliberately depends **only on the dual-licensed L1
-boundary crates** (the ABI + protocol), never on the engine. The optional guest
-crate uses only its versioned boundary protocol. They run inside
+The QEMU-loaded plugin's **internal Crucible dependencies are only the
+dual-licensed L1 boundary crates** (the ABI + protocol), never the engine. Its
+external production dependency graph is separately checked for a
+GPL-2.0-compatible license choice. The optional guest crate uses only its
+versioned boundary protocol. They run inside
 a different address space (or process) and must share *only* the wire/memory
 contract. The host-side `crucible-qemu` is the sole L2 exception: it may depend
 on `crucible` to implement the concrete host adapter for the engine `Backend`

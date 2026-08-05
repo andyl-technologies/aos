@@ -212,7 +212,7 @@
       }
       {
         label = "separate suite runtime closure";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures]";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [

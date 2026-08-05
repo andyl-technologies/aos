@@ -135,8 +135,9 @@ descriptor handover is [`14-protocol.md`](14-protocol.md) §3.4.
     absent, the plugin obtains the shmem fd and the wake fd from the `Setup`
     frame's `SCM_RIGHTS` ancillary data ([`14-protocol.md`](14-protocol.md) §3.4),
     which is the canonical path.
-  - **`wakefd=N`** — *(optional)* a pre-inherited wake `eventfd`; canonically
-    delivered with the shmem fd in the `Setup` frame's ancillary data.
+  - **`wakefd=N`** — *(optional as a command-line source)* a pre-inherited wake
+    `eventfd`; canonically delivered with the shmem fd in the `Setup` frame's
+    ancillary data. The production wake eventfd itself remains required.
   - **`whitebox=on|off`** — *(optional, default `off`)* enables the guest↔host
     doorbell trap (§12.7).
   - **`coverage=on|off`** — *(optional, default `off`)* enables the basic-block
@@ -195,14 +196,15 @@ fn register(args: &PluginArgs) -> Result<PluginState, RegisterError> {
     let region = ShmemRegion::map(setup.shmem_fd, setup.region_len)?; // validate ABI
     region.validate_header(ABI_VERSION, ack.slot_index, ack.node_count)?; // [PLUG-19]
     let wake = WakeFd::arm(setup.wake_fd)?;
+    let registered_wake = wake.register_with_qemu()?; // required main-loop nudge
     register_net_callbacks(cfg.slot, &region);          // §12.5  (never-mutated ptrs)
     register_blk_callbacks(cfg.slot, &region);          // §12.6
     register_9p_callbacks(cfg.slot, &region);           // §12.6
     if cfg.whitebox { register_doorbell_trap(cfg.slot, &region); } // §12.7
     if cfg.coverage { register_coverage_hook(&region); }           // §12.8
     control.send_setup_ack(0)?;                         // [PLUG-7] step 5
-    region.wait_boot_barrier(cfg.slot, &wake)?;         // §12.9.3 — before first insn
-    Ok(PluginState { time_ctl, region, slot: cfg.slot, wake })
+    region.wait_boot_barrier(cfg.slot)?;                // shared futex; before first insn
+    Ok(PluginState { time_ctl, region, slot: cfg.slot, registered_wake })
 }
 ```
 
@@ -251,8 +253,9 @@ window.
      scheduler-published `max_advance_icount` ceiling;
   4. publish `idle_wake_icount` and set its status to idle
      ([`13-shmem-abi.md`](13-shmem-abi.md) §13.7);
-  5. block on the wake fd / futex until the scheduler raises the ceiling to or
-     past the wake icount (§12.3.3) — *not* a busy spin;
+  5. block on the canonical `wake_signal` futex until the scheduler raises the
+     ceiling to or past the wake icount (§12.3.3) — *not* a busy spin; the
+     required registered eventfd separately nudges QEMU's main loop;
   6. once released, advance virtual time to the authorized wake icount
      (firing due timers and draining bottom-halves as a side effect, §12.3.5);
   7. inject every inbound frame whose `delivery_icount <= current_icount` in the
@@ -298,11 +301,12 @@ armed deadlines — both pure virtual-time quantities.
   race-free publish-precondition / read-counter / wait idiom so there is no
   lost-wake window. The `wake_signal` futex is the canonical, source-of-truth wake
   primitive. The inherited wake **eventfd** ([`14-protocol.md`](14-protocol.md)
-  §3.4) is an OPTIONAL auxiliary nudge that integrates the wait with QEMU's
-  main-loop / AIO event source; when used, it is layered *on top of* the futex (it
-  signals the same wake but does not replace `wake_signal` as the source of
-  truth), so a futex-only reader and an eventfd-driven reader rendezvous on the
-  same `wake_signal`. The plugin MUST NOT busy-spin re-reading the ceiling and
+  §3.4) is a REQUIRED auxiliary main-loop nudge in the production integration:
+  the plugin MUST arm and register it with QEMU before `SetupAck(0)`, and the host
+  MUST write it at least once per quantum. QEMU consumes the eventfd counter to
+  re-enter callbacks that re-read shared state. Eventfd is layered *on top of*
+  the futex and MUST NOT replace `wake_signal` or carry timing state. The plugin
+  MUST NOT busy-spin re-reading the ceiling and
   MUST NOT sleep for a wall-clock interval as a substitute for the wake. *Gate:*
   `gate:layer1-injection`, `gate:scheduler-liveness`. *Spec:* §12.3.3,
   forward-ref [`13-shmem-abi.md`](13-shmem-abi.md) §13.7; routes [INV-8],
@@ -320,10 +324,13 @@ armed deadlines — both pure virtual-time quantities.
 Blocking the single vCPU thread is correct and intended: with `-smp 1` the vCPU
 thread has no guest work to do at HLT, and QEMU's main loop continues on its own
 thread. Parking on the `wake_signal` futex is the mechanism that lets the host
-scheduler's wake (a futex bump, optionally accompanied by a write to the auxiliary
-eventfd for main-loop integration) unblock the plugin without any polling — the
-host raises the ceiling, then wakes, in release order, so the woken plugin
-observes a consistent `(ceiling, pending-inputs)` snapshot ([SCHED-36]).
+scheduler unblock the plugin without polling: the host raises the ceiling, bumps
+`wake_signal`, and issues the non-private futex wake in release order. In the
+production steady state the host MUST also write the eventfd at least once per
+quantum, and the plugin MUST have registered it with QEMU before readiness, so
+QEMU's main loop re-enters callbacks. The shared futex and state remain
+authoritative, and the woken plugin observes a consistent
+`(ceiling, pending-inputs)` snapshot ([SCHED-36]).
 
 ### 12.3.4 Exact next-deadline introspection
 
@@ -769,9 +776,10 @@ section states the plugin's obligations on that channel and at the boot barrier.
   for its slot ([`13-shmem-abi.md`](13-shmem-abi.md) [SHM-11]). The slot's
   ceiling initializes to 0 so the plugin cannot advance before this barrier
   releases; the plugin MUST block on the boot barrier (parking on the `wake_signal`
-  futex as the primary wait primitive, optionally integrated with the main loop via
-  the auxiliary wake eventfd, never a fixed wall-clock sleep used as the gate) until
-  the scheduler raises the ceiling. *Gate:* `gate:layer1-injection`, `gate:layer0-determinism`.
+  futex as the sole barrier wait primitive, never the eventfd or a fixed
+  wall-clock sleep used as the gate) until the scheduler raises the ceiling. The
+  separately registered eventfd remains required for QEMU main-loop integration.
+  *Gate:* `gate:layer1-injection`, `gate:layer0-determinism`.
   *Spec:* §12.9.3, forward-ref [`13-shmem-abi.md`](13-shmem-abi.md) §13.6; routes
   [DET-12], [INV-8].
 
@@ -881,7 +889,8 @@ plugin = the in-VM cdylib (-plugin), single vCPU thread ⇒ state uncontended (P
                   → register callbacks → SetupAck → wait boot barrier        (PLUG-7..8)
   time control: own the clock; no warp, no realtime, no wall-clock           (PLUG-9)
     idle (HLT/WFI): publish icount → exact next deadline → wake = min(timer,
-                    inbound delivery, ceiling) → PARK on wake-fd/futex (no spin)
+                    inbound delivery, ceiling) → PARK on canonical wake_signal
+                    futex (no spin); registered eventfd nudges QEMU main loop
                     → jump (drain timers/BHs) → inject due frames in order    (PLUG-10..16)
     hold HZ ticks across in-flight device I/O (device_io_active)              (PLUG-21..22)
   net: TX → outbound ring (emit icount); RX inject iff delivery<=now, in
@@ -964,16 +973,19 @@ component that makes that purity true *inside* the QEMU process.
   `qemuPluginTimeControl` gate.
 - [x] **T-PLUG-5** Implement the idle (HLT/WFI) callback hot loop: publish
   icount, compute the next local wake from exact timer and inbound delivery
-  signals against the scheduler ceiling, park on the wake fd/futex (no busy spin,
-  no wall-clock timeout), jump on scheduler release, mark done on shutdown wake,
-  inject due frames in deterministic order, and republish running/resume status. —
+  signals against the scheduler ceiling, park on the canonical `wake_signal`
+  futex (no busy spin, no wall-clock timeout) while the required registered
+  eventfd separately nudges QEMU's main loop, jump on scheduler release, mark
+  done on shutdown wake, inject due frames in deterministic order, and
+  republish running/resume status. —
   satisfies [PLUG-10], [PLUG-11], [PLUG-12], [PLUG-13], [PLUG-17]; spec §12.3.2,
   §12.3.3, §12.4.1.
   Completed by `checks.crucible.phase2.qemuLivePluginQuantum`, which observes the
   plugin run the idle hot loop live: at guest HLT idle onset it publishes icount,
   computes the next local wake from the exact `QEMU_CLOCK_VIRTUAL` timer deadline,
-  and parks on the wake fd/futex with no wall-clock timeout; on scheduler release
-  it enqueues the authorized advance and, per the deferred-completion discipline,
+  and parks on the canonical `wake_signal` futex with no wall-clock timeout; the
+  registered eventfd separately drives QEMU main-loop re-entry. On scheduler
+  release it enqueues the authorized advance and, per the deferred-completion discipline,
   waits for the queued-advance completion before mutating architectural state
   rather than advancing eagerly — and with that completion now landing (T-PLUG-7)
   it commits the jump, moving the idle guest to the exact deadline and republishing
@@ -1131,13 +1143,16 @@ component that makes that purity true *inside* the QEMU process.
   memory region header, arm the wake fd, and reply `SetupAck` with the ready
   status so the host can schedule the node.
 - [x] **T-PLUG-18** Implement the boot barrier: block on the initial-ceiling
-  publish before the first instruction, using the wake fd/futex (never a
-  wall-clock sleep as the gate). — satisfies [PLUG-42]; spec §12.9.3.
+  publish before the first instruction using the shared `wake_signal` futex
+  (never the eventfd or a wall-clock sleep as the barrier wait); the eventfd is
+  registered before readiness for QEMU main-loop integration. — satisfies
+  [PLUG-42]; spec §12.9.3.
   Completed by `checks.crucible.phase2.qemuLivePluginInstall`, which loads no
   observation plugin, so the Rust plugin is the sole `sim_shmem` dispatch time
   authority: the guest advances from cold boot to exactly the first host-
   published scheduler ceiling, which is only possible if the plugin blocked on
-  the boot barrier through the wake fd before the first instruction.
+  the boot barrier's shared `wake_signal` futex before the first instruction;
+  the separately registered eventfd remains the required main-loop nudge.
 - [x] **T-PLUG-19** Implement teardown on `shutdown_requested` / `Quit`: wake,
   mark done, stop touching shmem, initiate orderly QEMU shutdown so no child
   leaks. — satisfies [PLUG-43]; spec §12.9.4.

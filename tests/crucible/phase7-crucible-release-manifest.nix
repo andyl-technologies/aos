@@ -172,11 +172,38 @@
     ++ lib.optionals (manifest.components.boundaryCrates.packages != ["crucible-protocol" "crucible-shmem"]) [
       "release manifest boundary-crate inventory is incomplete"
     ]
-    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only"]) [
+    ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"]) [
+      "release manifest QEMU component license inventory is incomplete"
+    ]
+    ++ lib.optionals (manifest.components.qemu.combinedWorkLicense != "GPL-2.0-only") [
+      "release manifest QEMU combined-work license is inaccurate"
+    ]
+    ++ lib.optionals (manifest.components.qemu.createdSourceLicense != "GPL-2.0-or-later") [
+      "release manifest QEMU created-source license is inaccurate"
+    ]
+    ++ lib.optionals (manifest.components.qemu.generatedBoundaryHeaderLicenseOption != "MIT") [
+      "release manifest QEMU boundary-header license option is inaccurate"
+    ]
+    ++ lib.optionals manifest.components.qemu.standaloneRelease [
+      "release manifest must mark patched QEMU non-standalone"
+    ]
+    ++ lib.optionals (manifest.components.qemu.releaseVia != "crucible") [
+      "release manifest must route patched QEMU through the suite"
+    ]
+    ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
+      "release manifest corresponding-source license inventory is incomplete"
+    ]
+    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
       "release manifest aggregate project license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.licensing.licenseSetScope != "primary-project-components") [
       "release manifest does not distinguish its project component license set"
+    ]
+    ++ lib.optionals (manifest.publication.rootPackage != "crucible" || manifest.publication.rawQemuAllowed) [
+      "release manifest publication root policy is inaccurate"
+    ]
+    ++ lib.optionals (manifest.publication.correspondingSourcePath != manifest.components.correspondingSource.path) [
+      "release manifest publication source pairing drifted"
     ]
     ++ lib.optionals (manifest.licensing.thirdPartyLicenseMetadata != "vendored-source-manifests") [
       "release manifest does not identify the location of third-party license metadata"
@@ -402,7 +429,7 @@
       }
       {
         label = "aggregate project licenses include MIT";
-        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only";
+        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later";
       }
       {
         label = "aggregate license scope";
@@ -485,9 +512,18 @@ in
           grep -q "^rpc_abi=$RPC_ABI$" "$manifest_env"
           grep -q '^reproducibility_timestamp_policy=no-wall-clock-timestamps$' "$manifest_env"
           grep -q '^boundary_crates_license=MIT$' "$manifest_env"
-          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only$' "$manifest_env"
+          grep -q '^qemu_component_licenses=GPL-2.0-only,GPL-2.0-or-later,MIT$' "$manifest_env"
+          grep -q '^qemu_combined_work_license=GPL-2.0-only$' "$manifest_env"
+          grep -q '^qemu_created_source_license=GPL-2.0-or-later$' "$manifest_env"
+          grep -q '^qemu_generated_boundary_header_license_option=MIT$' "$manifest_env"
+          grep -q '^qemu_standalone_release=false$' "$manifest_env"
+          grep -q '^qemu_release_via=crucible$' "$manifest_env"
+          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later$' "$manifest_env"
           grep -q '^aggregate_license_scope=primary-project-components$' "$manifest_env"
           grep -q '^third_party_license_metadata=vendored-source-manifests$' "$manifest_env"
+          grep -q '^publication_root_package=crucible$' "$manifest_env"
+          grep -q '^publication_raw_qemu_allowed=false$' "$manifest_env"
+          grep -q '^publication_policy=aggregate-direct-reference-pair$' "$manifest_env"
           grep -q "\"sourceStoreHash\":\"$CRUCIBLE_SOURCE_STORE_HASH\"" "$manifest_json"
           grep -q "\"patchSeriesHash\":\"$QEMU_PATCH_SERIES_HASH\"" "$manifest_json"
           grep -q "\"buildId\":\"$QEMU_BUILD_ID\"" "$manifest_json"

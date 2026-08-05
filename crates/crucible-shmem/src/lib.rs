@@ -13,9 +13,12 @@
 //! copies on the data path while allowing Apache-licensed hosts and GPL
 //! QEMU-side code to implement the same protocol independently. The current
 //! scheduler ceiling publication performs a non-private futex wake even when
-//! no peer is parked, so this is not a zero-syscall steady state. A future
-//! waiter-armed optimization may make that wake conditional without changing
-//! the public process boundary or the race-free futex protocol.
+//! no peer is parked, and the host writes QEMU's plugin eventfd at least once
+//! per quantum. Frame delivery and service/backpressure producer release can
+//! add futex wakes; unchanged-icount retries and serviced host I/O can add
+//! eventfd writes, so this is not a zero-syscall steady state. These wakeups carry no
+//! timing decision or payload. A future waiter-armed optimization may make the
+//! futex wake conditional without changing the public process boundary.
 //!
 //! Module map: the crate root owns the initial frame-entry layout, the
 //! delivery-icount contract, the Lamport SPSC frame queue, and the per-node
