@@ -2,7 +2,8 @@
 
 This file specifies Crucible's **failure-triage capability**: the offline,
 deterministic projection that turns a *ledger of discovered findings* — the
-property violations and divergences emitted by interactive runs, state-space
+property violations, divergences, and concrete execution timeouts emitted by
+interactive runs, state-space
 search, and coverage-guided fuzzing ([`22-advanced-features.md`](22-advanced-features.md)
 §22.8) — into a small set of **root-cause clusters**, each with one
 **signature-preserving minimal representative** and a **per-cluster report**.

@@ -173,36 +173,12 @@ pub(super) fn build_triage_minimization(
         TriageMinimizeArg::None => {
             let mut runs = Vec::new();
             for cluster in &clustering.clusters {
-                let representative = cluster.representative_member().ok_or_else(|| {
-                    CliError::Triage("triage cluster has no representative".to_string())
-                })?;
-                let representative_evidence = evidence
-                    .get(&representative.reproduction_artifact)
-                    .ok_or_else(|| {
-                    artifact_error("missing representative evidence in findings ledger")
-                })?;
-                let target_signature_key = representative
-                    .signature
-                    .signature_key(plan.policy)
-                    .map_err(|_| {
-                        CliError::Triage(
-                            "triage representative signature does not project under policy"
-                                .to_string(),
-                        )
-                    })?;
-                runs.push(crucible_model::FailureSignaturePreservingMinimizationRun {
-                    cluster_id: cluster.id,
-                    representative_artifact: representative.reproduction_artifact,
-                    target_signature_key: target_signature_key.clone(),
-                    minimized_signature_key: target_signature_key,
-                    minimization: crucible_model::MinimizationRun {
-                        seed: crucible::Seed::default(),
-                        target_fingerprint: representative_evidence.finding.finding_fingerprint,
-                        original: representative_evidence.finding.clone(),
-                        minimized: representative_evidence.finding.clone(),
-                        attempts: Vec::new(),
-                    },
-                });
+                runs.push(triage_no_op_minimization_run(
+                    plan.policy,
+                    cluster,
+                    evidence,
+                    crucible_model::FailureMinimizationDisposition::NotRequested,
+                )?);
             }
             Ok(crucible::FailureSignaturePreservingMinimizationResult {
                 policy: plan.policy,
@@ -211,11 +187,29 @@ pub(super) fn build_triage_minimization(
         }
         TriageMinimizeArg::Representative | TriageMinimizeArg::All => {
             let templates = triage_signature_templates_by_fingerprint(clustering, evidence)?;
-            clustering
-                .minimize_representatives(
-                    crucible_model::MinimizationConfig::new(crucible::Seed::default()),
-                    |artifact| {
-                        evidence
+            let mut runs = Vec::new();
+            for cluster in &clustering.clusters {
+                let representative = cluster.representative_member().ok_or_else(|| {
+                    CliError::Triage("triage cluster has no representative".to_string())
+                })?;
+                if representative.signature.failure_kind == crucible::FailureKind::Timeout {
+                    runs.push(triage_no_op_minimization_run(
+                        plan.policy,
+                        cluster,
+                        evidence,
+                        crucible_model::FailureMinimizationDisposition::NotApplicableTimeout,
+                    )?);
+                    continue;
+                }
+                let single_cluster = crucible::FailureClusteringResult {
+                    policy: clustering.policy,
+                    clusters: vec![cluster.clone()],
+                };
+                let mut minimized = single_cluster
+                    .minimize_representatives(
+                        crucible_model::MinimizationConfig::new(crucible::Seed::default()),
+                        |artifact| {
+                            evidence
                             .get(&artifact)
                             .map(|item| item.finding.clone())
                             .ok_or(
@@ -224,26 +218,70 @@ pub(super) fn build_triage_minimization(
                                     reason: "representative evidence missing from findings ledger",
                                 },
                             )
-                    },
-                    |candidate| {
-                        if let Some(item) = evidence.get(&candidate.artifact.id()) {
-                            return Ok(Some(item.discovery_signature.clone()));
-                        }
-                        let template = templates.get(&candidate.finding_fingerprint).ok_or(
+                        },
+                        |candidate| {
+                            if let Some(item) = evidence.get(&candidate.artifact.id()) {
+                                return Ok(Some(item.discovery_signature.clone()));
+                            }
+                            let template = templates.get(&candidate.finding_fingerprint).ok_or(
                             crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
                                 operation: "triage-minimization",
                                 reason: "candidate evidence template missing from findings ledger",
                             },
                         )?;
-                        triage_evidence_for_finding(candidate.clone(), template)
-                            .map(|item| Some(item.discovery_signature))
-                    },
-                )
-                .map_err(|_| {
-                    CliError::Triage("triage signature-preserving minimization failed".to_string())
-                })
+                            triage_evidence_for_finding(candidate.clone(), template)
+                                .map(|item| Some(item.discovery_signature))
+                        },
+                    )
+                    .map_err(|_| {
+                        CliError::Triage(
+                            "triage signature-preserving minimization failed".to_string(),
+                        )
+                    })?;
+                runs.append(&mut minimized.runs);
+            }
+            Ok(crucible::FailureSignaturePreservingMinimizationResult {
+                policy: plan.policy,
+                runs,
+            })
         }
     }
+}
+
+pub(super) fn triage_no_op_minimization_run(
+    policy: crucible::SignaturePolicy,
+    cluster: &crucible::FailureCluster,
+    evidence: &BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+    disposition: crucible_model::FailureMinimizationDisposition,
+) -> Result<crucible_model::FailureSignaturePreservingMinimizationRun, CliError> {
+    let representative = cluster
+        .representative_member()
+        .ok_or_else(|| CliError::Triage("triage cluster has no representative".to_string()))?;
+    let representative_evidence = evidence
+        .get(&representative.reproduction_artifact)
+        .ok_or_else(|| artifact_error("missing representative evidence in findings ledger"))?;
+    let target_signature_key = representative
+        .signature
+        .signature_key(policy)
+        .map_err(|_| {
+            CliError::Triage(
+                "triage representative signature does not project under policy".to_string(),
+            )
+        })?;
+    Ok(crucible_model::FailureSignaturePreservingMinimizationRun {
+        cluster_id: cluster.id,
+        representative_artifact: representative.reproduction_artifact,
+        target_signature_key: target_signature_key.clone(),
+        minimized_signature_key: target_signature_key,
+        disposition,
+        minimization: crucible_model::MinimizationRun {
+            seed: crucible::Seed::default(),
+            target_fingerprint: representative_evidence.finding.finding_fingerprint,
+            original: representative_evidence.finding.clone(),
+            minimized: representative_evidence.finding.clone(),
+            attempts: Vec::new(),
+        },
+    })
 }
 
 pub(super) fn triage_signature_templates_by_fingerprint(
@@ -355,6 +393,13 @@ pub(super) fn recompute_triage_evidence_signature(
                 "triage divergence evidence is not supported by this ledger parser".to_string(),
             ));
         }
+        crucible_model::FailureClusterReportFailure::Timeout(timeout) => {
+            crucible_model::FailureSignature::from_recorded_timeout(
+                &item.finding,
+                &item.recorded_event_log,
+                timeout,
+            )
+        }
     }
     .map_err(|_| CliError::Triage("triage signature recomputation failed".to_string()))
 }
@@ -375,6 +420,12 @@ pub(super) fn triage_evidence_for_finding(
                 reason: "divergence evidence is not supported by this ledger parser",
             },
         ),
+        crucible_model::FailureClusterReportFailure::Timeout(_) => Err(
+            crucible_model::EngineError::UnifiedOperationEvidenceMismatch {
+                operation: "triage-evidence",
+                reason: "timeout candidates require live budget replay and are not minimized",
+            },
+        ),
     }
 }
 
@@ -382,23 +433,43 @@ pub(super) fn triage_property_evidence_for_violation(
     finding: crucible::FindingReproductionArtifact,
     violation: crucible_model::HostAssertionViolation,
 ) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
+    triage_property_evidence_for_violation_with_recording(
+        finding,
+        violation,
+        crucible::ContentHash::default(),
+        Vec::new(),
+    )
+}
+
+pub(super) fn triage_property_evidence_for_violation_with_recording(
+    finding: crucible::FindingReproductionArtifact,
+    violation: crucible_model::HostAssertionViolation,
+    coverage_fingerprint: crucible::ContentHash,
+    recorded_event_frames: Vec<Vec<u8>>,
+) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
+    let at = crucible::EventLogTime {
+        virtual_time: violation.at_virtual_time,
+        icount: crucible::EventLogIcountStamp {
+            node: violation.node.clone(),
+            icount: violation.at_icount.unwrap_or(crucible::Icount {
+                retired: violation.at_virtual_time.ticks,
+            }),
+        },
+    };
     let entries = vec![
-        crucible::SchedulerEventLogEntry::assertion_state_observation(
+        crucible::SchedulerEventLogEntry::assertion_state_observation_with_time(
             0,
-            violation.at_virtual_time,
+            at,
             violation.assertion.clone(),
             crucible::AssertionPhase::Violated,
         ),
     ];
-    let event_log_artifact = finding.artifact.event_log_debug_artifact(
-        crucible::EventLogOffset::new(crucible::ContentHash::default(), 0, 0),
-        &entries,
-    );
-    let recorded_event_log = crucible_model::FailureRecordedEventLog::from_recorded_artifact(
-        &finding,
-        &event_log_artifact,
-        &entries,
-    )?;
+    let recorded_event_log =
+        crucible_model::FailureRecordedEventLog::from_causal_entries_and_coverage(
+            &finding,
+            &entries,
+            coverage_fingerprint,
+        )?;
     let failure = crucible_model::FailureClusterReportFailure::property(
         crucible_model::FailurePropertyViolationRecord::new(violation),
     );
@@ -420,6 +491,44 @@ pub(super) fn triage_property_evidence_for_violation(
         recorded_event_log,
         failure,
         discovery_signature,
+        recorded_event_frames,
+    })
+}
+
+pub(super) fn triage_timeout_evidence(
+    finding: crucible::FindingReproductionArtifact,
+    timeout: crucible_model::FailureTimeoutRecord,
+    coverage_fingerprint: crucible::ContentHash,
+    recorded_event_frames: Vec<Vec<u8>>,
+) -> Result<TriageFindingEvidence, crucible_model::EngineError> {
+    let budget_kind = match timeout.budget_kind {
+        crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta => "execution-quanta",
+        crucible_model::FailureTimeoutBudgetKind::VirtualTime => "virtual-time",
+    };
+    let entries = vec![
+        crucible::SchedulerEventLogEntry::execution_budget_exhausted(
+            0,
+            timeout.at_virtual_time,
+            budget_kind,
+        ),
+    ];
+    let recorded_event_log =
+        crucible_model::FailureRecordedEventLog::from_causal_entries_and_coverage(
+            &finding,
+            &entries,
+            coverage_fingerprint,
+        )?;
+    let discovery_signature = crucible_model::FailureSignature::from_recorded_timeout(
+        &finding,
+        &recorded_event_log,
+        &timeout,
+    )?;
+    Ok(TriageFindingEvidence {
+        finding,
+        recorded_event_log,
+        failure: crucible_model::FailureClusterReportFailure::timeout(timeout),
+        discovery_signature,
+        recorded_event_frames,
     })
 }
 
@@ -488,6 +597,7 @@ pub(super) fn looks_like_failure_findings_ledger(bytes: &[u8]) -> bool {
         .is_some_and(|schema| {
             schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1
                 || schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2
+                || schema == FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3
         })
 }
 
@@ -503,6 +613,9 @@ pub(super) fn parse_failure_findings_ledger_bytes(
         }
         Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2) => {
             parse_failure_findings_ledger_v2_bytes(store, bytes, text)
+        }
+        Some(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3) => {
+            parse_failure_findings_ledger_v3_bytes(store, bytes, text)
         }
         _ => Err(artifact_error(
             "unsupported findings ledger artifact schema",
@@ -583,6 +696,333 @@ pub(super) fn parse_failure_findings_ledger_v2_bytes(
         evidence,
         artifact_bytes: bytes.to_vec(),
     })
+}
+
+pub(super) fn parse_failure_findings_ledger_v3_bytes(
+    store: &crucible::LocalDagStore,
+    bytes: &[u8],
+    text: &str,
+) -> Result<LoadedTriageFindings, CliError> {
+    let mut by_index = BTreeMap::<usize, BTreeMap<String, String>>::new();
+    let mut finding_count = None;
+    for line in text.lines().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("finding_count=") {
+            if finding_count
+                .replace(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| artifact_error("malformed v3 findings count"))?,
+                )
+                .is_some()
+            {
+                return Err(artifact_error("duplicate v3 findings count"));
+            }
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("finding.") else {
+            return Err(artifact_error("malformed v3 signed findings ledger line"));
+        };
+        let Some((index, field_value)) = rest.split_once('.') else {
+            return Err(artifact_error("malformed v3 signed findings ledger field"));
+        };
+        let index = index
+            .parse::<usize>()
+            .map_err(|_| artifact_error("malformed v3 signed findings ledger index"))?;
+        let Some((field, value)) = field_value.split_once('=') else {
+            return Err(artifact_error("malformed v3 signed findings ledger value"));
+        };
+        if by_index
+            .entry(index)
+            .or_default()
+            .insert(field.to_owned(), value.to_owned())
+            .is_some()
+        {
+            return Err(artifact_error("duplicate v3 signed findings ledger field"));
+        }
+    }
+    let finding_count = finding_count
+        .ok_or_else(|| artifact_error("v3 signed findings ledger is missing finding count"))?;
+    if by_index.len() != finding_count || by_index.keys().copied().ne(0..finding_count) {
+        return Err(artifact_error(
+            "v3 signed findings ledger count or indices are not canonical",
+        ));
+    }
+
+    let mut findings = Vec::new();
+    let mut evidence = BTreeMap::new();
+    for (index, fields) in by_index {
+        let item = parse_triage_v3_finding_evidence(store, index, &fields)?;
+        findings.push(crucible::FailureClusterFinding::new(
+            item.finding.artifact.id(),
+            item.discovery_signature.clone(),
+        ));
+        if evidence.insert(item.finding.artifact.id(), item).is_some() {
+            return Err(artifact_error(
+                "v3 signed findings ledger repeats a reproduction artifact",
+            ));
+        }
+    }
+    let ledger = crucible::FailureFindingsLedger::from_signed_findings(findings)
+        .map_err(|_| artifact_error("v3 signed findings ledger contains conflicting signatures"))?;
+    Ok(LoadedTriageFindings {
+        ledger,
+        evidence,
+        artifact_bytes: bytes.to_vec(),
+    })
+}
+
+pub(super) fn parse_triage_v3_finding_evidence(
+    store: &crucible::LocalDagStore,
+    index: usize,
+    fields: &BTreeMap<String, String>,
+) -> Result<TriageFindingEvidence, CliError> {
+    let artifact = parse_required_hash_field(fields, "artifact")?;
+    let discovery_path = parse_triage_discovery_path(required_field(fields, "discovery_path")?)?;
+    let finding_fingerprint = parse_required_hash_field(fields, "finding_fingerprint")?;
+    let coverage_fingerprint = parse_required_hash_field(fields, "coverage_fingerprint")?;
+    let finding = crucible::FindingReproductionArtifact::load_from_store(
+        discovery_path,
+        finding_fingerprint,
+        store,
+        artifact,
+    )
+    .map_err(|error| artifact_error(format!("finding {index} artifact is invalid: {error}")))?;
+    let frames = parse_v3_event_frames(fields)?;
+    let item = match required_field(fields, "evidence")? {
+        "property" => {
+            let assertion =
+                crucible::AssertionId::from_name(parse_hex_string_field(fields, "assertion_hex")?);
+            let message = parse_hex_string_field(fields, "message_hex")?;
+            let quantifier = parse_assertion_quantifier(required_field(fields, "quantifier")?)?;
+            let at_virtual_time = parse_u64_field(fields, "at_virtual_time")?;
+            let at_icount = parse_optional_u64_field(fields, "at_icount")?
+                .map(|retired| crucible::Icount { retired });
+            let node = parse_optional_hex_string_field(fields, "node_hex")?
+                .map(|name| crucible::NodeId { name });
+            let detail = parse_hex_string_field(fields, "detail_hex")?;
+            let violation = crucible_model::HostAssertionViolation {
+                assertion,
+                message,
+                quantifier,
+                event_kind: String::from("assertion_state_changed"),
+                at_icount,
+                at_virtual_time: crucible::VirtualTime {
+                    ticks: at_virtual_time,
+                },
+                node,
+                detail,
+                reproduction_artifact: finding.artifact.id(),
+            };
+            triage_property_evidence_for_violation_with_recording(
+                finding,
+                violation,
+                coverage_fingerprint,
+                frames,
+            )
+        }
+        "timeout" => {
+            let budget_kind = match required_field(fields, "budget_kind")? {
+                "execution-quanta" => crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
+                "virtual-time" => crucible_model::FailureTimeoutBudgetKind::VirtualTime,
+                _ => return Err(artifact_error("unsupported timeout budget kind")),
+            };
+            let timeout = crucible_model::FailureTimeoutRecord::new(
+                budget_kind,
+                parse_optional_u64_field(fields, "configured_limit")?,
+                parse_u64_field(fields, "observed_quanta")?,
+                crucible::VirtualTime {
+                    ticks: parse_u64_field(fields, "at_virtual_time")?,
+                },
+                parse_optional_u64_field(fields, "at_icount")?
+                    .map(|retired| crucible::Icount { retired }),
+                parse_optional_hex_string_field(fields, "node_hex")?
+                    .map(|name| crucible::NodeId { name }),
+                finding.artifact.id(),
+            );
+            triage_timeout_evidence(finding, timeout, coverage_fingerprint, frames)
+        }
+        _ => return Err(artifact_error("unsupported v3 findings evidence kind")),
+    }
+    .map_err(|_| artifact_error(format!("finding {index} signature evidence is invalid")))?;
+
+    let expected_signature = parse_required_hash_field(fields, "discovery_signature")?;
+    if item.discovery_signature.content_hash() != expected_signature {
+        return Err(artifact_error(format!(
+            "finding {index} discovery signature does not match recorded evidence"
+        )));
+    }
+    let material = parse_hex_string_field(fields, "discovery_signature_material_hex")?;
+    if item.discovery_signature.canonical_material() != material {
+        return Err(artifact_error(format!(
+            "finding {index} discovery signature material does not match recorded evidence"
+        )));
+    }
+    Ok(item)
+}
+
+pub(super) fn failure_findings_ledger_v3_bytes(
+    evidence: &[TriageFindingEvidence],
+) -> Result<Vec<u8>, CliError> {
+    let mut canonical_evidence = BTreeMap::new();
+    for item in evidence {
+        let artifact = item.finding.artifact.id();
+        if let Some(existing) = canonical_evidence.insert(artifact, item) {
+            if existing != item {
+                return Err(artifact_error(
+                    "cannot write conflicting evidence for one reproduction artifact",
+                ));
+            }
+        }
+    }
+    let mut lines = vec![
+        String::from(FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3),
+        format!("finding_count={}", canonical_evidence.len()),
+    ];
+    for (index, item) in canonical_evidence.values().enumerate() {
+        let prefix = format!("finding.{index}");
+        lines.push(format!(
+            "{prefix}.artifact={}",
+            item.finding.artifact.id().to_hex()
+        ));
+        lines.push(format!(
+            "{prefix}.discovery_path={}",
+            triage_discovery_path_label(item.finding.discovery_path)
+        ));
+        lines.push(format!(
+            "{prefix}.finding_fingerprint={}",
+            item.finding.finding_fingerprint.to_hex()
+        ));
+        lines.push(format!(
+            "{prefix}.coverage_fingerprint={}",
+            item.recorded_event_log.coverage_fingerprint().to_hex()
+        ));
+        lines.push(format!(
+            "{prefix}.discovery_signature={}",
+            item.discovery_signature.content_hash().to_hex()
+        ));
+        lines.push(format!(
+            "{prefix}.discovery_signature_material_hex={}",
+            ledger_hex(item.discovery_signature.canonical_material().as_bytes())
+        ));
+        match &item.failure {
+            crucible_model::FailureClusterReportFailure::Property(record) => {
+                lines.push(format!("{prefix}.evidence=property"));
+                lines.push(format!(
+                    "{prefix}.assertion_hex={}",
+                    ledger_hex(record.violation.assertion.name.as_bytes())
+                ));
+                lines.push(format!(
+                    "{prefix}.message_hex={}",
+                    ledger_hex(record.violation.message.as_bytes())
+                ));
+                lines.push(format!(
+                    "{prefix}.quantifier={}",
+                    assertion_quantifier_label(record.violation.quantifier)
+                ));
+                lines.push(format!(
+                    "{prefix}.at_virtual_time={}",
+                    record.violation.at_virtual_time.ticks
+                ));
+                lines.push(format!(
+                    "{prefix}.at_icount={}",
+                    optional_u64_label(record.violation.at_icount.map(|value| value.retired))
+                ));
+                lines.push(format!(
+                    "{prefix}.node_hex={}",
+                    optional_hex_string_label(
+                        record
+                            .violation
+                            .node
+                            .as_ref()
+                            .map(|node| node.name.as_str())
+                    )
+                ));
+                lines.push(format!(
+                    "{prefix}.detail_hex={}",
+                    ledger_hex(record.violation.detail.as_bytes())
+                ));
+            }
+            crucible_model::FailureClusterReportFailure::Timeout(timeout) => {
+                lines.push(format!("{prefix}.evidence=timeout"));
+                lines.push(format!(
+                    "{prefix}.budget_kind={}",
+                    match timeout.budget_kind {
+                        crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta => {
+                            "execution-quanta"
+                        }
+                        crucible_model::FailureTimeoutBudgetKind::VirtualTime => "virtual-time",
+                    }
+                ));
+                lines.push(format!(
+                    "{prefix}.configured_limit={}",
+                    optional_u64_label(timeout.configured_limit)
+                ));
+                lines.push(format!(
+                    "{prefix}.observed_quanta={}",
+                    timeout.observed_quanta
+                ));
+                lines.push(format!(
+                    "{prefix}.at_virtual_time={}",
+                    timeout.at_virtual_time.ticks
+                ));
+                lines.push(format!(
+                    "{prefix}.at_icount={}",
+                    optional_u64_label(timeout.at_icount.map(|value| value.retired))
+                ));
+                lines.push(format!(
+                    "{prefix}.node_hex={}",
+                    optional_hex_string_label(timeout.node.as_ref().map(|node| node.name.as_str()))
+                ));
+            }
+            crucible_model::FailureClusterReportFailure::Divergence(_) => {
+                return Err(artifact_error(
+                    "v3 findings ledger writer does not support divergence evidence",
+                ));
+            }
+        }
+        lines.push(format!(
+            "{prefix}.event_frame_count={}",
+            item.recorded_event_frames.len()
+        ));
+        for (frame_index, frame) in item.recorded_event_frames.iter().enumerate() {
+            lines.push(format!(
+                "{prefix}.event_frame.{frame_index}={}",
+                ledger_hex(frame)
+            ));
+        }
+    }
+    lines.push(String::new());
+    Ok(lines.join("\n").into_bytes())
+}
+
+pub(super) fn write_failure_findings_ledger_v3(
+    artifact_dir: &Path,
+    findings_out: Option<&Path>,
+    evidence: &[TriageFindingEvidence],
+) -> Result<(PathBuf, crucible::ContentHash, Vec<u8>), CliError> {
+    if evidence.is_empty() {
+        return Err(artifact_error(
+            "cannot write a signed findings ledger without findings",
+        ));
+    }
+    let bytes = failure_findings_ledger_v3_bytes(evidence)?;
+    let digest = crucible::ContentHash::from_bytes(&bytes);
+    let path = findings_out.map(Path::to_path_buf).unwrap_or_else(|| {
+        artifact_dir
+            .join("findings")
+            .join(format!("{}.crucible-findings", digest.to_hex()))
+    });
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, &bytes)?;
+    Ok((path, digest, bytes))
 }
 
 pub(super) fn parse_triage_property_finding_evidence(
@@ -714,6 +1154,94 @@ pub(super) fn parse_assertion_quantifier(
             "malformed signed findings ledger assertion quantifier",
         )),
     }
+}
+
+pub(super) fn assertion_quantifier_label(
+    value: crucible_model::AssertionQuantifierKind,
+) -> &'static str {
+    match value {
+        crucible_model::AssertionQuantifierKind::Always => "always",
+        crucible_model::AssertionQuantifierKind::Sometimes => "sometimes",
+        crucible_model::AssertionQuantifierKind::Eventually => "eventually",
+        crucible_model::AssertionQuantifierKind::Reachable => "reachable",
+        crucible_model::AssertionQuantifierKind::AfterQuiescence => "after-quiescence",
+        crucible_model::AssertionQuantifierKind::GuestAlways => "guest-always",
+        crucible_model::AssertionQuantifierKind::GuestSometimes => "guest-sometimes",
+        crucible_model::AssertionQuantifierKind::GuestReachable => "guest-reachable",
+        crucible_model::AssertionQuantifierKind::GuestUnreachable => "guest-unreachable",
+    }
+}
+
+pub(super) fn triage_discovery_path_label(value: crucible::FindingDiscoveryPath) -> &'static str {
+    match value {
+        crucible::FindingDiscoveryPath::InteractiveFork => "interactive-fork",
+        crucible::FindingDiscoveryPath::StateSpaceSearch => "state-space-search",
+        crucible::FindingDiscoveryPath::CoverageGuidedFuzzing => "coverage-guided-fuzzing",
+        crucible::FindingDiscoveryPath::RetainedCorpusEntry => "retained-corpus-entry",
+    }
+}
+
+pub(super) fn ledger_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(super) fn parse_hex_string_field(
+    fields: &BTreeMap<String, String>,
+    field: &'static str,
+) -> Result<String, CliError> {
+    let bytes = parse_hex_bytes(0, field, required_field(fields, field)?)?;
+    String::from_utf8(bytes).map_err(|error| {
+        artifact_error(format!(
+            "signed findings ledger `{field}` is not UTF-8: {error}"
+        ))
+    })
+}
+
+pub(super) fn parse_optional_hex_string_field(
+    fields: &BTreeMap<String, String>,
+    field: &'static str,
+) -> Result<Option<String>, CliError> {
+    match required_field(fields, field)? {
+        "none" => Ok(None),
+        _ => parse_hex_string_field(fields, field).map(Some),
+    }
+}
+
+pub(super) fn parse_optional_u64_field(
+    fields: &BTreeMap<String, String>,
+    field: &'static str,
+) -> Result<Option<u64>, CliError> {
+    match required_field(fields, field)? {
+        "none" => Ok(None),
+        value => parse_triage_u64(field, value).map(Some),
+    }
+}
+
+pub(super) fn parse_v3_event_frames(
+    fields: &BTreeMap<String, String>,
+) -> Result<Vec<Vec<u8>>, CliError> {
+    let count = parse_u64_field(fields, "event_frame_count")?;
+    let mut frames = Vec::new();
+    for index in 0..count {
+        let field = format!("event_frame.{index}");
+        let value = fields.get(&field).ok_or_else(|| {
+            artifact_error(format!("signed findings ledger is missing `{field}`"))
+        })?;
+        frames.push(parse_hex_bytes(index as usize, "event_frame", value)?);
+    }
+    Ok(frames)
+}
+
+pub(super) fn optional_u64_label(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| String::from("none"))
+}
+
+pub(super) fn optional_hex_string_label(value: Option<&str>) -> String {
+    value
+        .map(|value| ledger_hex(value.as_bytes()))
+        .unwrap_or_else(|| String::from("none"))
 }
 
 pub(super) fn write_triage_report(
