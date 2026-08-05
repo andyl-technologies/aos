@@ -197,7 +197,8 @@ impl FaultSignalPlan {
                     endpoint: endpoint.id.as_str().to_owned(),
                     signal: endpoint.truth_trajectory.as_str().to_owned(),
                 })?;
-            if node.domain != SignalDomain::VirtualTime || node.output != expected_trajectory_shape {
+            if node.domain != SignalDomain::VirtualTime || node.output != expected_trajectory_shape
+            {
                 return Err(FaultSignalAuthoringError::InvalidTrajectorySignal {
                     endpoint: endpoint.id.as_str().to_owned(),
                     signal: endpoint.truth_trajectory.as_str().to_owned(),

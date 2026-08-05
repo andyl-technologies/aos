@@ -15,6 +15,7 @@ use std::fmt;
 
 use super::ContentHash;
 
+mod adapter_runtime;
 mod authoring;
 mod binding;
 mod binding_runtime;
@@ -39,6 +40,7 @@ mod trace;
 mod trace_import;
 mod wire;
 
+pub use adapter_runtime::*;
 pub(crate) use authoring::*;
 pub use binding::*;
 pub use binding_runtime::*;
