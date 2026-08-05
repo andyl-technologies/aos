@@ -1,0 +1,158 @@
+# 14 — QEMU fault-mutation patch series
+
+The complete node adapter requires thirteen new single-purpose patches after the
+currently carried `0046-crucible-translation-prefetch-helper.patch`. Each patch
+has its own specification in this directory and remains part of the one atomic
+RFC-0012 implementation PR.
+
+This directory specifies engineering and licensing boundaries; it is not legal
+advice. The controlling repository policies are
+[`LICENSING.md`](../../../../LICENSING.md), the
+[`Crucible/QEMU process boundary`](../../0010-crucible/37-licensing-process-boundary.md),
+the existing [`QEMU patch-series contract`](../../0010-crucible/11-qemu-patches.md),
+and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-patches/README.md).
+
+## 14.1 Ordered patch inventory
+
+| Number and patch name | Responsibility | Risk |
+| --- | --- | --- |
+| [`0047-crucible-fault-command-abi`](01-command-abi.md) | Closed fault command/result ABI, capability registry, dispatcher shell | Feature |
+| [`0048-crucible-fault-safe-boundary`](02-safe-boundary.md) | Exact-icount quiescence, authorization, command commit and acknowledgement | Determinism-critical |
+| [`0049-crucible-memory-boundary-mutate`](03-memory-boundary-mutation.md) | Atomic GPA/GVA memory impulse mutation and evidence | Feature |
+| [`0050-crucible-memory-access-faults`](04-memory-access-faults.md) | Load/store/fetch/DMA transforms, poison, retention, rowhammer, service | Determinism-critical |
+| [`0051-crucible-register-mutate`](05-register-mutation.md) | Architecture-typed register bit/field mutation | Feature |
+| [`0052-crucible-instruction-faults`](06-instruction-faults.md) | Instruction result corruption, skip/replay, exception hooks | Determinism-critical |
+| [`0053-crucible-interrupt-faults`](07-interrupt-faults.md) | Drop/delay/duplicate/replace/storm across interrupt lifecycle | Determinism-critical |
+| [`0054-crucible-hardware-error-inject`](08-hardware-errors.md) | x86 machine check, AArch64 hardware error, ECC/platform reporting | Determinism-critical |
+| [`0055-crucible-vcpu-service-control`](09-vcpu-service.md) | Capacity throttling, stall, offline, deterministic service credits | Determinism-critical |
+| [`0056-crucible-node-lifecycle-faults`](10-node-lifecycle.md) | Crash, hang, boot failure, reset, power cycle and state-loss policy | Determinism-critical |
+| [`0057-crucible-guest-clock-faults`](11-guest-clocks.md) | Offset, drift, jump, freeze, jitter, source failure and timer consistency | Determinism-critical |
+| [`0058-crucible-accelerator-fault-device`](12-accelerator-device.md) | Production QEMU co-sim accelerator device and fault hooks | Feature plus determinism-critical service hooks |
+| [`0059-crucible-fault-vmstate`](13-vmstate-and-final-gates.md) | VMState for all fault state, terminal capability/evidence, aggregate gates | Determinism-critical |
+
+The numbers are reserved by this RFC. If the existing series grows before
+implementation, the PR may renumber the files while preserving this exact order
+and names; all references and `_series.nix` update atomically.
+
+## 14.2 Process and license boundary
+
+```text
+Apache-2.0 host process               QEMU process / applicable GPL scope
+┌────────────────────────────┐       ┌──────────────────────────────────┐
+│ signal/binding/adapters    │       │ crucible-qemu-plugin GPL-2.0-only│
+│ schedules typed effect     │       │ validates command + calls patch │
+│                            │       │                                  │
+│ dual MIT/Apache protocol   │◄═════►│ patched QEMU source/files        │
+│ fixed-width SHM entries    │ SHM   │ upstream/per-file GPL scope      │
+└────────────────────────────┘       └──────────────────────────────────┘
+```
+
+- Host crates never include QEMU headers, link QEMU libraries, use QEMU structs,
+  or invoke patch/plugin functions.
+- The public shared-memory command/result protocol lives only in the dual-
+  licensed boundary crates and contains fixed-width integers, byte payloads,
+  offsets, lengths, versions, IDs, and digests—never native pointers or QEMU
+  objects.
+- The GPL-2.0-only plugin translates validated protocol messages into in-process
+  QEMU patch calls. No Apache-only crate is linked into or loaded by QEMU.
+- Modified upstream files retain their notices. New unmarked QEMU files follow
+  the pinned QEMU default, currently GPL-2.0-or-later, unless an explicit
+  per-file notice applies. New files update `LICENSES.md` in the same commit.
+- Every commit touching QEMU patches or in-QEMU/plugin code carries a DCO
+  `Signed-off-by` line. Commit messages and patches contain no AI attribution.
+- Distribution of the patched binary includes identity-matched complete
+  corresponding source: pinned QEMU, all patches, plugin/QEMU-side sources,
+  generated ABI inputs, build scripts, and notices.
+
+- **[QFP-1]** `gate:license-boundary` MUST reject any QEMU-private type or direct
+  call crossing into the Apache host and any Apache-only dependency on the GPL
+  side.
+- **[QFP-2]** Every new patch MUST update the ordered series identity,
+  corresponding-source closure, catalog, invariant mapping, microtest inventory,
+  and license inventory where applicable.
+
+## 14.3 Common command/result protocol
+
+The public protocol transports a closed command envelope:
+
+```text
+FaultCommandHeaderV1 {
+  abi_major: u16
+  abi_minor: u16
+  command_kind: u16
+  command_flags: u16
+  semantic_version: u32
+  command_sequence: u64
+  target_node_hash: [u8; 32]
+  target_icount: u64
+  authorization_ceiling_icount: u64
+  binding_hash: [u8; 32]
+  opportunity_hash: [u8; 32]
+  expected_precondition_hash: [u8; 32]
+  payload_offset: u64
+  payload_length: u32
+  reserved_zero: u32
+}
+```
+
+The result contains the same sequence/kind/version, status, observed/applied
+icount, QEMU capability version, before/after/evidence hashes, typed result
+offset/length, and reserved zero fields. Command kinds and payload layouts are
+generated from the [closed registry](../08-executable-effect-contracts.md) and
+versioned in the boundary crates.
+
+Statuses are `applied`, `not_applicable`, `precondition_mismatch`,
+`invalid_target`, `invalid_phase`, `unsupported_capability`, `past_boundary`,
+`resource_limit`, `guest_rejected`, and `internal_error`. Any status except
+`applied` is a loud run outcome unless the effect contract explicitly expects
+`not_applicable` as an opportunity result.
+
+The host reserves a command slot, writes payload, publishes with release order,
+and rings the existing eventfd. The plugin acquires, validates, and arms it. QEMU
+applies only at the exact authorized boundary and publishes one result with
+release order. Slots are not reused until the host acquires the result. Ring
+exhaustion fails before losing or overwriting a command.
+
+## 14.4 Common per-patch acceptance template
+
+Every patch document fixes:
+
+1. exact capability and effect keys;
+2. command and result payload fields;
+3. QEMU subsystems/touch points and activation predicate;
+4. boundary phase and all-vCPU/device quiescence requirement;
+5. mutation/state semantics and composition with other commands;
+6. failure acknowledgement and replay preconditions;
+7. VMState/dirty-tracking/fingerprint obligations;
+8. focused live microtests, rollback/revert sensitivity, and non-sim inertness;
+9. architecture/device coverage;
+10. licensing, DCO, inventory, and corresponding-source updates.
+
+Mock, fake, and test-double backends are prohibited. Pure host algebra tests may
+exercise composition without a backend, but every capability requires a live
+patched-QEMU test that proves the guest or QEMU architectural/device state
+changed exactly as specified.
+
+## 14.5 Inertness
+
+All patches require `-accel sim`, the matched plugin, successful fault ABI
+negotiation, and the relevant armed capability. Without all predicates, upstream
+behavior is unchanged. Pure additive plugin exports return unsupported when not
+armed. Hooks in shared QEMU paths take the verbatim upstream branch when the
+sim-fault predicate is false.
+
+- **[QFP-3]** Each patch has a focused microtest that is green with the patch,
+  red when that patch alone is reverted, and proves non-sim behavior equals the
+  unpatched pinned QEMU.
+- **[QFP-4]** Empty enabled rule indexes receive dedicated overhead and
+  determinism tests; inertness is not inferred from the absence of authored
+  faults.
+- **[QFP-5]** No patch may use GDB, QMP memory/register writes, host timing, or an
+  unversioned callback as the canonical mutation mechanism.
+
+## 14.6 Review ownership and commits
+
+The implementation remains one PR, but each numbered patch is a separate signed
+commit with its microtest and documentation update. Boundary-crate ABI commits
+precede dependent GPL-side commits and remain independently reviewable. Squashing
+the patch series into one opaque QEMU change is prohibited.
