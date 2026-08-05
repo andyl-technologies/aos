@@ -15,7 +15,7 @@ set -e
 if [ -e /run/aos/manifest.json ]; then
   exit 0
 fi
-AOS_EXPOSE_START_NO_WAIT=1 /nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
+AOS_EXPOSE_START_NO_WAIT=1 /nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
 <<aos-job-script-end>>
 RemainAfterExit=true
 TimeoutStartSec=2min

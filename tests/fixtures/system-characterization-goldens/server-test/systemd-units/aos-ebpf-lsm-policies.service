@@ -9,7 +9,7 @@ Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:
 AmbientCapabilities=
 CapabilityBoundingSet=CAP_BPF CAP_SYS_ADMIN CAP_SYS_RESOURCE
 DevicePolicy=closed
-ExecStart=/nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/apm _load-ebpf-lsm-policies --system
+ExecStart=/nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/apm _load-ebpf-lsm-policies --system
 ExecStartPre=/nix/store/b9rmcxc61q7smck6zpcn250if7ijwmx9-aos-prepare-ebpf-lsm-bpffs/bin/aos-prepare-ebpf-lsm-bpffs
 LimitMEMLOCK=infinity
 MemoryDenyWriteExecute=true

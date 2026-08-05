@@ -57,6 +57,28 @@
   runtimeTools = [bash nix systemd util-linux zstd which];
   runtimeBinPath = lib.makeBinPath runtimeTools;
   src = import ./_workspace-source.nix {inherit lib;};
+  applicationTestPackages = [
+    "aos"
+    "aos-cache"
+    "aos-core"
+    "aos-doc"
+    "aos-hub"
+    "aos-hub-core"
+    "aos-hub-worker"
+    "aos-net"
+    "aos-package"
+    "aos-profile"
+    "aos-proto"
+    "aos-proto-types"
+    "aos-registry-spa"
+    "aos-registry-surface"
+    "aos-remote"
+    "aos-server"
+    "aos-systemd"
+  ];
+  applicationTestFlags = builtins.concatStringsSep " " (
+    map (package: "-p ${package}") applicationTestPackages
+  );
 in
   mkCargoPackage {
     pname = "aos";
@@ -113,12 +135,12 @@ in
     '';
 
     doCheck = true;
-    # This package owns the AOS CLI/server workspace surface. Crucible has its
-    # own full-repository package and gate suite (`pkgs.crucible`), whose source
-    # includes RFC and Nix wiring files required by its harness lints. Selecting
-    # the AOS package family here keeps those repository-aware tests in their
-    # correct derivation now that both projects share one Cargo workspace.
-    cargoTestFlags = "-p 'aos*'";
+    # This package owns the AOS application and package-manager test surface.
+    # Native evaluator components are tested by `pkgs.aos-evaluator-tests`,
+    # whose source intentionally includes the repository Nix/fuzz corpus. Keep
+    # those repository-aware tests out of the shipped CLI derivation so edits
+    # to unrelated Nix sources do not change the runtime package identity.
+    cargoTestFlags = applicationTestFlags;
     # Run the workspace test suite in the debug profile while the binary itself
     # ships release (installed from target/release). The registry-hub's
     # integration tests stand up loopback HTTP servers and register

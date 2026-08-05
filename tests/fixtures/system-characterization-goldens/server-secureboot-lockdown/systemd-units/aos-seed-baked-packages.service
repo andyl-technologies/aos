@@ -19,9 +19,9 @@ if [ ! -e "$profile/state.json" ]; then
       case "$1" in
   aos-test-agent)
   /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/lhbb4w57r6j89m0409rc1l1g8xr86kl8-aos-test-agent-0 "$profile/gen-1/usr/lhbb4w57r6j89m0409rc1l1g8xr86kl8"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/fj1kx6gs8pbmq3g2qnkbylvjibsqik5a-expose-aos-test-agent "$profile/gen-1/expose/fj1kx6gs8pbmq3g2qnkbylvjibsqik5a"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/gnh3jfh515gs1cg512dhyc084mi4fijp-aos-package-aos-test-agent-meta.json/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json "$profile/meta/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/gnh3jfh515gs1cg512dhyc084mi4fijp-aos-package-aos-test-agent-meta.json/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json "$profile/gen-1/meta/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json"
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/isxz4dkz7qqf0s97f98hwjxkaasshva8-expose-aos-test-agent "$profile/gen-1/expose/isxz4dkz7qqf0s97f98hwjxkaasshva8"
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/086d7p8hprjy151ynrqlv03sc9y75gl0-aos-package-aos-test-agent-meta.json/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json "$profile/meta/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json"
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/086d7p8hprjy151ynrqlv03sc9y75gl0-aos-package-aos-test-agent-meta.json/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json "$profile/gen-1/meta/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json"
   ;;
 
         *)
@@ -39,7 +39,7 @@ if [ ! -e "$profile/state.json" ]; then
     /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp -a /nix/store/gx7f39szwm6b3b4fm1j976n0iai810c3-aos-package-profile-seed/. "$profile/"
   fi
 fi
-AOS_EXPOSE_START_NO_WAIT=1 /nix/store/indby2gl39x5b91336n6gqv0rrbrli2d-aos-reconcile-exposed-units/bin/aos-reconcile-exposed-units --system
+AOS_EXPOSE_START_NO_WAIT=1 /nix/store/61vv1jz0kvrjsj1bpzf6lskv5rlsy96l-aos-reconcile-exposed-units/bin/aos-reconcile-exposed-units --system
 <<aos-job-script-end>>
 RemainAfterExit=true
 Type=oneshot

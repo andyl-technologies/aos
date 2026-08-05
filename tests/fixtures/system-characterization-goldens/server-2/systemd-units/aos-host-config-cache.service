@@ -10,7 +10,7 @@ ExecStart=<<aos-job-script>>
 set -e
 
 if [ -s "/run/aos/manifest.json" ] && [ -s "/run/aos-metadata/host.nix" ]; then
-  /nix/store/azkmyl7hh0vqyk0l4b5sjjniwda4nm4f-aos-0.1.0/bin/aos metadata cache-runtime \
+  /nix/store/apag7nvpzi1k39lszb3kkag18j6dhmyd-aos-0.1.0/bin/aos metadata cache-runtime \
     --state-dir /var/lib/aos-provisioning
 fi
 <<aos-job-script-end>>

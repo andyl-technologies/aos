@@ -1,6 +1,6 @@
 [Unit]
 After=local-fs.target
-Before=multi-user.target
+Before=aos-eval.service multi-user.target
 Description=Seed Nix store database and AOS GC roots
 
 [Service]
@@ -18,10 +18,24 @@ if [ -r /aos-registration ]; then
   /nix/store/s06fk05p64jrww40ncam4kncidjbnblv-nix-2.24.12/bin/nix-store --load-db < /aos-registration
 fi
 
-# Nix's GC follows symlinks under gcroots recursively. This bridge makes
-# apm's existing profile generation symlinks visible to Nix GC.
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p /nix/var/nix/gcroots
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
+# Nix recursively scans directories below gcroots, but does not follow
+# a symlink whose target is an external directory. Bind the durable APM
+# profile tree into a real gcroots directory so every generation root
+# is visible to collection without duplicating profile state.
+/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p \
+  /var/lib/profiles \
+  /nix/var/nix/gcroots
+if [ -L /nix/var/nix/gcroots/aos-profiles ]; then
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -f /nix/var/nix/gcroots/aos-profiles
+fi
+/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p \
+  /nix/var/nix/gcroots/aos-profiles
+if ! /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mountpoint -q \
+  /nix/var/nix/gcroots/aos-profiles; then
+  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount --bind \
+    /var/lib/profiles \
+    /nix/var/nix/gcroots/aos-profiles
+fi
 <<aos-job-script-end>>
 RemainAfterExit=true
 Type=oneshot
