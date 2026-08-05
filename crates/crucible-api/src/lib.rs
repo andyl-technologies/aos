@@ -17,7 +17,8 @@
 //! HTTP/2 daemon transport; [`open_set`] owns the dotted-kind plus
 //! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
 //! loop construction; [`vm_resume`] owns the process-local VM resume realization
-//! bridge used by thin CLI callers.
+//! bridge used by thin CLI callers; [`debug_gateway`] owns the Apache-side Unix
+//! control client for the separate GPL debugger gateway process.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -25,6 +26,7 @@
 
 pub mod client;
 pub mod control_responsive;
+pub mod debug_gateway;
 pub mod event_log_stream;
 pub mod lifecycle;
 pub mod open_set;
@@ -47,6 +49,9 @@ pub use control_responsive::{
     ControlAcknowledgementStatus, ControlOperationAcknowledgement, ControlOperationKind,
     ControlResponsiveReport, ControlResponsiveSessionProbe, ControlResponsivenessError,
     ControlSessionState, validate_control_responsiveness,
+};
+pub use debug_gateway::{
+    DEBUG_GATEWAY_V1_CAPABILITY, DebugGatewayClientError, DebugGatewayControlClient,
 };
 pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
