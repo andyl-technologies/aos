@@ -62,6 +62,7 @@ pub fn generated_c_header() -> String {
     emit_coverage_entry(&mut out);
     emit_fingerprint_sample_slot(&mut out);
     emit_whitebox_marker_entry(&mut out);
+    crate::emit_fault_command_c_header(&mut out);
     emit_footer(&mut out);
     out
 }

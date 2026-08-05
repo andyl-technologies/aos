@@ -2158,6 +2158,7 @@ dependencies = [
 name = "crucible-shmem"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "libc",
  "thiserror 2.0.18",
 ]
