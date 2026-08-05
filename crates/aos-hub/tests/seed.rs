@@ -1,7 +1,7 @@
 //! Integration coverage for the dev seed (RFC-0004 `serve --dev --seed`).
 //!
 //! Verifies that [`seed_dev`](aos_hub::seed::seed_dev) populates a
-//! fresh hub with the demo org/user/binding/registry, that the generated
+//! fresh hub with the demo org/user/instance-binding/registry, that the generated
 //! surface verifies and indexes (so `list_packages` shows the seeded
 //! packages), that the demo user can log in with the seeded password, and that
 //! re-running the seed is a safe no-op.
@@ -34,7 +34,17 @@ async fn seed_creates_browsable_registry_and_login() {
         .await
         .unwrap()
         .expect("demo user exists");
-    assert_eq!(db.list_storage_bindings(org.id).await.unwrap().len(), 1);
+    assert!(db.list_storage_bindings(org.id).await.unwrap().is_empty());
+    let binding = db
+        .instance_default_binding()
+        .await
+        .unwrap()
+        .expect("seed instance binding exists");
+    assert_eq!(binding.kind, "local_fs");
+    assert_eq!(
+        binding.local_root_path.as_deref(),
+        Some(root.path().join("seed-bucket").to_string_lossy().as_ref())
+    );
 
     // The demo user can log in with the seeded password.
     let (_, phc) = db
