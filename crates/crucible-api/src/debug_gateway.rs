@@ -1,0 +1,372 @@
+//! Apache-side client for the standalone debugger gateway control protocol.
+//!
+//! The client exchanges versioned owned-byte frames over a Unix socket. It
+//! never links the GPL gateway or QEMU and carries no process-private object.
+//! A new connection negotiates `Hello`, queries backend status, and can then
+//! reconcile idempotent prepare/commit operations after a lost acknowledgement.
+
+use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
+
+use crucible_protocol::debug_gateway::{
+    DEBUG_GATEWAY_HEADER_LEN, DEBUG_GATEWAY_MAX_PAYLOAD, DebugGatewayBackendStatus,
+    DebugGatewayErrorPayload, DebugGatewayFrame, DebugGatewayMessageKind,
+    decode_debug_gateway_frame,
+};
+use thiserror::Error;
+
+/// Version-1 gateway capability token returned by negotiation.
+pub const DEBUG_GATEWAY_V1_CAPABILITY: &[u8] = b"debug-gateway.v1";
+
+/// Blocking control client for one debugger gateway process.
+pub struct DebugGatewayControlClient {
+    stream: UnixStream,
+}
+
+impl DebugGatewayControlClient {
+    /// Connects to and negotiates a debugger gateway control socket.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the socket cannot be connected,
+    /// framing fails, negotiation is rejected, or the peer selects an unknown
+    /// capability contract.
+    pub fn connect(path: impl AsRef<Path>) -> Result<Self, DebugGatewayClientError> {
+        let stream = UnixStream::connect(path).map_err(DebugGatewayClientError::Connect)?;
+        let mut client = Self { stream };
+        let reply = client.request(DebugGatewayMessageKind::Hello, 0, Vec::new())?;
+        if reply.kind != DebugGatewayMessageKind::HelloAck
+            || reply.payload != DEBUG_GATEWAY_V1_CAPABILITY
+        {
+            return Err(DebugGatewayClientError::UnexpectedReply {
+                expected: DebugGatewayMessageKind::HelloAck,
+                actual: reply.kind,
+            });
+        }
+        Ok(client)
+    }
+
+    /// Returns active and prepared backend identities for reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when transport, framing, peer
+    /// rejection, or status decoding fails.
+    pub fn backend_status(&mut self) -> Result<DebugGatewayBackendStatus, DebugGatewayClientError> {
+        let reply = self.request(DebugGatewayMessageKind::BackendStatus, 0, Vec::new())?;
+        if reply.kind != DebugGatewayMessageKind::BackendStatusAck {
+            return Err(DebugGatewayClientError::UnexpectedReply {
+                expected: DebugGatewayMessageKind::BackendStatusAck,
+                actual: reply.kind,
+            });
+        }
+        DebugGatewayBackendStatus::decode(&reply.payload)
+            .map_err(|error| DebugGatewayClientError::InvalidPayload(error.to_string()))
+    }
+
+    /// Connects and validates a candidate private QEMU RSP endpoint.
+    ///
+    /// Repeating the same endpoint after an acknowledgement loss returns the
+    /// original prepared generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when transport, framing, validation,
+    /// or generation decoding fails.
+    pub fn prepare_backend(&mut self, endpoint: &Path) -> Result<u64, DebugGatewayClientError> {
+        let endpoint = endpoint
+            .to_str()
+            .ok_or_else(|| DebugGatewayClientError::InvalidEndpoint(endpoint.to_path_buf()))?;
+        let reply = self.request(
+            DebugGatewayMessageKind::BackendPrepare,
+            0,
+            endpoint.as_bytes().to_vec(),
+        )?;
+        decode_generation_ack(reply)
+    }
+
+    /// Atomically promotes a prepared backend generation.
+    ///
+    /// Repeating a commit for the active generation succeeds, allowing recovery
+    /// when the first acknowledgement was lost.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when transport, framing, promotion,
+    /// or acknowledgement decoding fails.
+    pub fn commit_backend(&mut self, generation: u64) -> Result<(), DebugGatewayClientError> {
+        let reply = self.request(
+            DebugGatewayMessageKind::BackendCommit,
+            0,
+            generation.to_be_bytes().to_vec(),
+        )?;
+        let acknowledged = decode_generation_ack(reply)?;
+        if acknowledged != generation {
+            return Err(DebugGatewayClientError::GenerationMismatch {
+                expected: generation,
+                actual: acknowledged,
+            });
+        }
+        Ok(())
+    }
+
+    /// Drops one prepared backend without disturbing the active backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when transport, framing, or the
+    /// abort operation fails.
+    pub fn abort_backend(&mut self, generation: u64) -> Result<(), DebugGatewayClientError> {
+        let reply = self.request(
+            DebugGatewayMessageKind::BackendAbort,
+            0,
+            generation.to_be_bytes().to_vec(),
+        )?;
+        if reply.kind != DebugGatewayMessageKind::Ack {
+            return Err(DebugGatewayClientError::UnexpectedReply {
+                expected: DebugGatewayMessageKind::Ack,
+                actual: reply.kind,
+            });
+        }
+        Ok(())
+    }
+
+    fn request(
+        &mut self,
+        kind: DebugGatewayMessageKind,
+        stream_id: u32,
+        payload: Vec<u8>,
+    ) -> Result<DebugGatewayFrame, DebugGatewayClientError> {
+        let frame = DebugGatewayFrame::v1(kind, stream_id, payload)
+            .map_err(|error| DebugGatewayClientError::Encode(error.to_string()))?;
+        let encoded = frame
+            .encode()
+            .map_err(|error| DebugGatewayClientError::Encode(error.to_string()))?;
+        self.stream
+            .write_all(&encoded)
+            .map_err(DebugGatewayClientError::Write)?;
+        let reply = read_frame(&mut self.stream)?;
+        if reply.kind == DebugGatewayMessageKind::Error {
+            let payload = DebugGatewayErrorPayload::decode(&reply.payload)
+                .map_err(|error| DebugGatewayClientError::InvalidPayload(error.to_string()))?;
+            return Err(DebugGatewayClientError::Rejected {
+                code: payload.code as u16,
+                detail: payload.detail,
+            });
+        }
+        Ok(reply)
+    }
+}
+
+fn decode_generation_ack(frame: DebugGatewayFrame) -> Result<u64, DebugGatewayClientError> {
+    if frame.kind != DebugGatewayMessageKind::Ack {
+        return Err(DebugGatewayClientError::UnexpectedReply {
+            expected: DebugGatewayMessageKind::Ack,
+            actual: frame.kind,
+        });
+    }
+    let bytes: [u8; 8] = frame.payload.try_into().map_err(|_| {
+        DebugGatewayClientError::InvalidPayload(String::from(
+            "backend acknowledgement must contain one eight-byte generation",
+        ))
+    })?;
+    Ok(u64::from_be_bytes(bytes))
+}
+
+fn read_frame(stream: &mut UnixStream) -> Result<DebugGatewayFrame, DebugGatewayClientError> {
+    let mut header = [0_u8; DEBUG_GATEWAY_HEADER_LEN];
+    stream
+        .read_exact(&mut header)
+        .map_err(DebugGatewayClientError::Read)?;
+    let payload_len = u32::from_be_bytes([header[16], header[17], header[18], header[19]]) as usize;
+    if payload_len > DEBUG_GATEWAY_MAX_PAYLOAD {
+        return Err(DebugGatewayClientError::PayloadTooLarge {
+            length: payload_len,
+        });
+    }
+    let mut bytes = Vec::with_capacity(DEBUG_GATEWAY_HEADER_LEN + payload_len);
+    bytes.extend_from_slice(&header);
+    bytes.resize(DEBUG_GATEWAY_HEADER_LEN + payload_len, 0);
+    stream
+        .read_exact(&mut bytes[DEBUG_GATEWAY_HEADER_LEN..])
+        .map_err(DebugGatewayClientError::Read)?;
+    decode_debug_gateway_frame(&bytes)
+        .map_err(|error| DebugGatewayClientError::Decode(error.to_string()))
+}
+
+/// Errors returned by the debugger gateway control client.
+#[derive(Debug, Error)]
+pub enum DebugGatewayClientError {
+    /// The Unix control socket could not be connected.
+    #[error("connect debugger gateway control socket: {0}")]
+    Connect(#[source] io::Error),
+    /// A request frame could not be encoded.
+    #[error("encode debugger gateway request: {0}")]
+    Encode(String),
+    /// A request could not be written completely.
+    #[error("write debugger gateway request: {0}")]
+    Write(#[source] io::Error),
+    /// A response could not be read completely.
+    #[error("read debugger gateway response: {0}")]
+    Read(#[source] io::Error),
+    /// A response frame was malformed.
+    #[error("decode debugger gateway response: {0}")]
+    Decode(String),
+    /// A response payload was malformed.
+    #[error("invalid debugger gateway response payload: {0}")]
+    InvalidPayload(String),
+    /// A peer response exceeded the fixed frame limit.
+    #[error("debugger gateway response payload length {length} exceeds the limit")]
+    PayloadTooLarge {
+        /// Rejected payload length.
+        length: usize,
+    },
+    /// The gateway rejected a request with a stable code.
+    #[error("debugger gateway rejected request with code {code}: {detail}")]
+    Rejected {
+        /// Stable protocol error code.
+        code: u16,
+        /// Bounded operator diagnostic.
+        detail: String,
+    },
+    /// A response used the wrong message kind.
+    #[error("unexpected debugger gateway reply {actual:?}; expected {expected:?}")]
+    UnexpectedReply {
+        /// Required response kind.
+        expected: DebugGatewayMessageKind,
+        /// Received response kind.
+        actual: DebugGatewayMessageKind,
+    },
+    /// A commit acknowledgement named a different generation.
+    #[error("debugger gateway acknowledged generation {actual}, expected {expected}")]
+    GenerationMismatch {
+        /// Requested generation.
+        expected: u64,
+        /// Acknowledged generation.
+        actual: u64,
+    },
+    /// A QEMU endpoint could not be represented by the protocol.
+    #[error("QEMU debugger endpoint is not valid UTF-8: {0}")]
+    InvalidEndpoint(std::path::PathBuf),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::net::UnixListener;
+    use std::thread;
+
+    use crucible_protocol::debug_gateway::{DebugGatewayBackendIdentity, DebugGatewayErrorCode};
+
+    use super::*;
+
+    fn write_reply(stream: &mut UnixStream, frame: DebugGatewayFrame) {
+        let bytes = frame
+            .encode()
+            .unwrap_or_else(|error| panic!("reply should encode: {error}"));
+        stream
+            .write_all(&bytes)
+            .unwrap_or_else(|error| panic!("reply should write: {error}"));
+    }
+
+    #[test]
+    fn client_negotiates_and_decodes_backend_status() {
+        let directory = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("temporary directory should open: {error}"));
+        let socket = directory.path().join("gateway.sock");
+        let listener = UnixListener::bind(&socket)
+            .unwrap_or_else(|error| panic!("test listener should bind: {error}"));
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .unwrap_or_else(|error| panic!("test connection should accept: {error}"));
+            let hello = read_frame(&mut stream)
+                .unwrap_or_else(|error| panic!("hello should read: {error}"));
+            assert_eq!(hello.kind, DebugGatewayMessageKind::Hello);
+            write_reply(
+                &mut stream,
+                DebugGatewayFrame::v1(
+                    DebugGatewayMessageKind::HelloAck,
+                    0,
+                    DEBUG_GATEWAY_V1_CAPABILITY.to_vec(),
+                )
+                .unwrap_or_else(|error| panic!("hello acknowledgement should build: {error}")),
+            );
+            let status = read_frame(&mut stream)
+                .unwrap_or_else(|error| panic!("status should read: {error}"));
+            assert_eq!(status.kind, DebugGatewayMessageKind::BackendStatus);
+            let payload = DebugGatewayBackendStatus {
+                active: Some(DebugGatewayBackendIdentity {
+                    generation: 4,
+                    endpoint: String::from("/run/crucible/qemu.sock"),
+                }),
+                prepared: None,
+            }
+            .encode()
+            .unwrap_or_else(|error| panic!("status should encode: {error}"));
+            write_reply(
+                &mut stream,
+                DebugGatewayFrame::v1(DebugGatewayMessageKind::BackendStatusAck, 0, payload)
+                    .unwrap_or_else(|error| panic!("status reply should build: {error}")),
+            );
+        });
+
+        let mut client = DebugGatewayControlClient::connect(&socket)
+            .unwrap_or_else(|error| panic!("client should negotiate: {error}"));
+        let status = client
+            .backend_status()
+            .unwrap_or_else(|error| panic!("client should decode status: {error}"));
+        assert_eq!(status.active.map(|identity| identity.generation), Some(4));
+        server
+            .join()
+            .unwrap_or_else(|_| panic!("test server should not panic"));
+    }
+
+    #[test]
+    fn client_preserves_typed_gateway_rejection() {
+        let directory = tempfile::tempdir()
+            .unwrap_or_else(|error| panic!("temporary directory should open: {error}"));
+        let socket = directory.path().join("gateway.sock");
+        let listener = UnixListener::bind(&socket)
+            .unwrap_or_else(|error| panic!("test listener should bind: {error}"));
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .unwrap_or_else(|error| panic!("test connection should accept: {error}"));
+            let _hello = read_frame(&mut stream)
+                .unwrap_or_else(|error| panic!("hello should read: {error}"));
+            write_reply(
+                &mut stream,
+                DebugGatewayFrame::v1(
+                    DebugGatewayMessageKind::HelloAck,
+                    0,
+                    DEBUG_GATEWAY_V1_CAPABILITY.to_vec(),
+                )
+                .unwrap_or_else(|error| panic!("hello acknowledgement should build: {error}")),
+            );
+            let _status = read_frame(&mut stream)
+                .unwrap_or_else(|error| panic!("status should read: {error}"));
+            let payload = DebugGatewayErrorPayload::new(
+                DebugGatewayErrorCode::BackendUnavailable,
+                "candidate failed validation",
+            )
+            .unwrap_or_else(|error| panic!("typed error should build: {error}"));
+            write_reply(
+                &mut stream,
+                DebugGatewayFrame::v1(DebugGatewayMessageKind::Error, 0, payload.encode())
+                    .unwrap_or_else(|error| panic!("error reply should build: {error}")),
+            );
+        });
+
+        let mut client = DebugGatewayControlClient::connect(&socket)
+            .unwrap_or_else(|error| panic!("client should negotiate: {error}"));
+        assert!(matches!(
+            client.backend_status(),
+            Err(DebugGatewayClientError::Rejected { code: 3, detail })
+                if detail == "candidate failed validation"
+        ));
+        server
+            .join()
+            .unwrap_or_else(|_| panic!("test server should not panic"));
+    }
+}
