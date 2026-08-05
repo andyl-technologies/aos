@@ -4,7 +4,7 @@ This tutorial builds a custom two-VM world and runs it through Crucible's live
 QEMU lifecycle. One guest runs Nginx, another runs Curl, and all traffic crosses
 a deterministic link owned by Crucible. The scenario passes only after the
 Curl guest reports that it received an HTTP 200 response and the scenario's
-guest-console assertion becomes satisfied.
+structured guest assertion becomes satisfied.
 
 Run every command from the repository root on an `x86_64-linux` host. QEMU uses
 deterministic software translation, so KVM is not required.
@@ -21,12 +21,13 @@ nix build \
   -o result-crucible-nginx-curl
 ```
 
-The separate guest image contains AOS-built Nginx, Curl, and networking tools.
-It has no Crucible agent or instrumentation; its init selects the preinstalled
-Nginx or Curl role from ordinary kernel boot arguments. Crucible launches the
-image as supplied, puts each node's writes in a disposable overlay, and observes
-its ordinary serial output through an output-only host connection instead of
-modifying the base image or injecting commands into the guest.
+The separate guest image contains AOS-built Nginx, Curl, networking tools, and
+the static `crucible-guest` assertion emitter. It has no resident Crucible agent
+and needs no modified kernel or hypervisor-installed instrumentation. Its init
+selects the preinstalled Nginx or Curl role from ordinary kernel boot arguments,
+and the Curl test invokes the emitter only after it observes status 200.
+Crucible launches the image as supplied, puts each node's writes in a disposable
+overlay, and never injects commands or files into the guest.
 
 Verify the image before the run:
 
@@ -52,8 +53,8 @@ define:
 - an `nginx` VM at `10.0.0.2` and a `curl` VM at `10.0.0.3`;
 - a deterministic link between the two nodes;
 - an assertion that neither node crashes;
-- a guest-console assertion that matches the Curl workload's
-  `CURL_STATUS=200` result; and
+- a declared guest-side `Sometimes` assertion whose truth is emitted by the
+  Curl workload through `crucible-guest`; and
 - a terminal event that passes only after that assertion becomes satisfied.
 
 Build it in the repository development environment:
@@ -110,13 +111,16 @@ CRUCIBLE_KERNEL_CMDLINE="console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init
 
 A successful run exits with status `0`, and its JSONL contains a passing
 `final_outcome`. The scenario can pass only after the Curl guest emits
-`CURL_STATUS=200`, Crucible records that console observation at a deterministic
-scheduler boundary, and the assertion evaluator publishes its satisfied state.
+the `curl-receives-http-200` assertion through the trapped white-box doorbell,
+Crucible records it at the exact retired-instruction count, and the unified
+assertion evaluator publishes its satisfied state.
 
-The check does not inspect plaintext Ethernet payloads. It uses ordinary guest
-console output as the application-level result, so the same assertion pattern
-also works when the request and response travel over HTTPS. No Crucible agent is
-required in the guest, and the host side of the console connection is read-only.
+The check does not inspect plaintext Ethernet payloads or parse console text.
+The guest image contains the hermetically built static `crucible-guest` CLI and
+the Curl node opts into the white-box channel; the Nginx node leaves it disabled.
+This assertion pattern works unchanged when the request and response travel over
+HTTPS. Opaque guest applications can instead use `ConsoleMatch` against their
+existing output without changing their kernel, image, or application.
 
 Verify that the supplied base image is still byte-for-byte identical:
 
@@ -156,7 +160,7 @@ grep -m1 '^id = ' \
 ```
 
 The IDs differ because the seed is part of the immutable scenario definition.
-Run your variant with the same unmodified guest image:
+Run your variant with the same guest image, unmodified by the hypervisor:
 
 ```sh
 CRUCIBLE_KERNEL="$crucible_kernel" \

@@ -21,9 +21,15 @@ launch configuration realizes the determinism contract of
 [`04-determinism-contract.md`](04-determinism-contract.md) §4.6 and the time
 model of [`09-virtual-time-icount.md`](09-virtual-time-icount.md); the
 realization branches (boot/loadvm/replay) are the execution model of
-[`05-execution-model.md`](05-execution-model.md) §5–§7; the three channels are
+[`05-execution-model.md`](05-execution-model.md) §5–§7; the three logical planes are
 the protocol of [`14-protocol.md`](14-protocol.md), the shared-memory ABI of
 [`13-shmem-abi.md`](13-shmem-abi.md), and QMP defined here.
+
+`crucible-qemu` is Apache host-side code. It launches and supervises QEMU as a
+separate process and MUST NOT link to QEMU, include its headers, or expose QEMU
+callback entry points. All Crucible-specific communication crosses the public
+process protocols defined in 13/14 and constrained by
+[`37-licensing-process-boundary.md`](37-licensing-process-boundary.md).
 
 ## 10.1 Why QEMU TCG + `-icount`, not KVM
 
@@ -251,43 +257,52 @@ channels to its child and nothing else owns the child.
   `gate:scheduler-liveness`, `gate:control-responsive`. *Spec:* §10.3; satisfies
   [INV-8], references 05 §10.
 
-### The three channels
+### The three logical communication planes
 
-A VM node communicates with its QEMU child over exactly three channels, each
-with a distinct, non-overlapping role:
+A VM node communicates with its QEMU child through three logical planes, each
+with a distinct, non-overlapping role. The shared-memory plane uses both the
+mapped memfd and kernel wake objects; counting file descriptors would therefore
+misdescribe this as only three kernel objects.
 
 1. **The plugin IPC channel** (14) — a per-node `AF_UNIX` `SOCK_STREAM` pair for
    the *control* handshake only: version negotiation, the one-time handover of
    the shmem fd / wake fd / slot index, and `Quit`. It is silent for the entire
    run between setup and teardown ([PROTO-18]).
-2. **The shared-memory region** (13) — the *hot path*: per-node icount/status,
+2. **The shared-memory data plane** (13) — the *hot path*: per-node icount/status,
    the scheduler's advance ceiling, idle-wake icount, the cross-process futex
    word, and the SPSC frame rings. Every per-quantum timing decision and every
-   cross-node frame delivery flows here, never over a socket ([SHM-2]).
+   cross-node frame payload flows here, never over a socket ([SHM-2]). The host
+   writes the separately handed-over plugin eventfd at least once per quantum
+   only to rouse QEMU to re-read this state; retry and serviced-I/O paths may add
+   counter writes.
 3. **The QMP socket** (§10.4) — out-of-band machine control: capability
    negotiation, `savevm`/`loadvm` for the VM-state half of a checkpoint, and
    `quit` as a shutdown rung.
 
-- **[QEMU-17]** A VM node MUST own exactly three channels to its child — the
+- **[QEMU-17]** A VM node MUST preserve exactly three logical channel roles — the
   plugin IPC control channel (14), the shared-memory region (13), and the QMP
   socket (§10.4) — with the strict role split: control handshake/teardown on
-  plugin IPC, *all* per-quantum timing and frame delivery on shmem, machine
+  plugin IPC, *all* per-quantum timing state and frame payloads on shmem with
+  futex/eventfd kernel wakes, machine
   control (snapshot/quit) on QMP. No per-quantum timing or per-frame data may
   cross the plugin IPC or QMP channels ([SHM-2], [PROTO-1]). *Gate:*
   `gate:abi-conformance`, `gate:layer1-injection`. *Spec:* §10.3; satisfies
   [SHM-2], [PROTO-1].
 
 - **[QEMU-18]** The node's hot path (advance to a ceiling, deliver/emit a frame,
-  observe idle) MUST be expressed as shared-memory atomics plus at most one futex
-  wake ([SHM-1]); it MUST NOT perform a QMP round-trip, a plugin-IPC message, or
-  any other syscall-per-quantum on the advance path. QMP and plugin-IPC traffic
+  observe idle) MUST be expressed as shared-memory atomics, the current
+  unconditional non-private futex wake, a host plugin-eventfd write at least once
+  per quantum, explicit service-release/frame-delivery futex wakes, and explicit
+  retry/service eventfd writes; parked plugin paths MAY issue repeated actual
+  futex waits after non-actionable returns ([SHM-1]); it MUST NOT
+  perform a QMP round-trip or plugin-IPC message on the advance path. QMP and plugin-IPC traffic
   occur only at instantiate/save/teardown boundaries, never per quantum. *Gate:*
   `gate:control-responsive`, `gate:layer1-injection`. *Spec:* §10.3; satisfies
   [SHM-1], [SHM-2].
 
 ```rust,illustrative
 // Illustrative sketch (CONV-1, 00). The host wrapper owns one QEMU child and
-// its three channels; the scheduler sees only the synchronous node interface.
+// its three logical planes; the scheduler sees only the synchronous node interface.
 pub struct QemuNode {
     slot: SlotIndex,                 // index into the shmem per-node array (13, 14)
     child: Option<Child>,            // the one QEMU process this node owns
@@ -604,8 +619,9 @@ The cycle, for one running VM in one quantum:
    converts it to a target icount via the `ceil` map ([TIME-4]), and stores it
    into the node's `max_advance_icount` with release ordering ([SHM-24],
    [TIME-27]).
-3. **Advance.** The futex wake ([SHM-26]/[SHM-27]) releases the parked node; the
-   plugin reads the raised ceiling and lets the guest retire instructions under
+3. **Advance.** The futex wake ([SHM-26]/[SHM-27]) publishes the race-free shared
+   wake, and the host's per-quantum eventfd write rouses QEMU's between-quantum
+   idle wait. The plugin reads the raised ceiling and lets the guest retire instructions under
    `-icount` until `current_icount` reaches the ceiling, then stops and reports
    ([TIME-27], [SHM-25]).
 4. **Frame inject / emit.** A frame destined for this node is delivered when
@@ -625,7 +641,8 @@ The cycle, for one running VM in one quantum:
   the cycle: guest runs to ceiling-or-idle → plugin reports `current_icount`,
   `status`, and (on idle) the exact next-timer `idle_wake_icount` ([TIME-24]) →
   scheduler computes the horizon and stores `max_advance_icount` ([TIME-27]) →
-  futex wake → guest advances under `-icount` to the ceiling → due frames/I/O
+  unconditional futex wake + plugin eventfd write → guest advances under
+  `-icount` to the ceiling → due frames/I/O
   injected at their `delivery_icount` ([SHM-33]) and emitted frames enqueued
   toward the router. Every per-quantum step MUST flow through the shmem region
   ([SHM-2]); no per-quantum QMP or plugin-IPC traffic. *Gate:*
@@ -694,8 +711,10 @@ because nothing determinism-relevant depends on its timing.
   references [QEMU-30], [QEMU-32].
 
 - **[QEMU-41]** The async driver MUST treat the hot advance path as shmem-only
-  ([QEMU-18]): a quantum's advance is a ceiling store plus a futex wake plus a
-  blocking wait (with timeout) for the node to publish its reached icount, with no
+  ([QEMU-18]): a quantum's advance is a ceiling store, an unconditional futex
+  wake, at least one plugin-eventfd write, and a bounded poll for the node to
+  publish its reached icount. Unchanged-icount retries and serviced host I/O may
+  add eventfd writes, with no
   per-quantum socket message or QMP round-trip. Async socket/QMP traffic MUST be
   confined to instantiate (handshake, loadvm), save (savevm), and teardown
   (Quit/quit) boundaries. *Gate:* `gate:control-responsive`,
@@ -708,9 +727,11 @@ because nothing determinism-relevant depends on its timing.
 impl SimNode for QemuNode {
     fn advance_to(&mut self, ceiling: Icount) -> NodeStepResult {
         // Hot path: publish the ceiling, wake the parked node, wait (bounded)
-        // for it to reach the ceiling — all via shmem + one futex, no socket.
+        // for it to reach the ceiling — shmem state plus futex/eventfd wakes,
+        // with no socket round trip or payload copy.
         self.shmem.set_max_advance(ceiling);              // release store (13)
         self.shmem.wake();                                // futex wake (13)
+        self.plugin_eventfd.signal();                     // eventfd counter write
         match self.shmem.wait_reached(self.config.advance_timeout) {
             Ok(reached) => self.report(reached),          // current_icount, status
             Err(Timeout) => self.crashed("advance timed out"), // QEMU-40 / QEMU-32
@@ -735,7 +756,8 @@ impl SimNode for QemuNode {
 
 The host side of the QEMU layer is: launch a TCG `-icount` child with the fully
 enumerated determinism configuration (§10.2); own it as a single scheduling node
-with exactly three channels — plugin-IPC control, shmem hot path, QMP machine
+with exactly three logical planes — plugin-IPC control, shmem plus futex/eventfd
+wakes on the hot path, and QMP machine
 control (§10.3, §10.4); realize any `Configuration` through the one `instantiate`
 function whose branches are loadvm / replay / baked-genesis-load, the only true
 boot living in `bake` (§10.5); never leak a child, on any termination path
@@ -784,10 +806,11 @@ determinism contract (04).
   profile; the full launch builder/spawn path remains tracked by [T-QEMU-1],
   [T-QEMU-3], and [T-QEMU-7].
 - [x] **T-QEMU-3** Implement the `QemuNode` host wrapper owning one child and its
-  three channels (plugin-IPC control, shmem hot path, QMP), exposing the
+  three logical planes (plugin-IPC control, shmem plus futex/eventfd hot path,
+  QMP), exposing the
   synchronous scheduler node interface with the strict control/data split. —
   satisfies [QEMU-16], [QEMU-17], [QEMU-18]; spec §10.3.
-  Completed as the `QemuNode` one-child/three-channel wrapper in
+  Completed as the `QemuNode` one-child/three-plane wrapper in
   `crucible-qemu`: it owns a private `std::process::Child` handle through
   `QemuNodeChild` plus a `QemuNodeChannels` bundle, exposes the synchronous
   `crucible::Backend` boundary, routes current icount/advance/frame/idle/
@@ -882,12 +905,13 @@ determinism contract (04).
   QEMU processes for a validated, content-addressed dump.
 - [x] **T-QEMU-12** Implement the per-quantum data flow at the QEMU level (run to
   ceiling-or-idle → report icount/idle-deadline → scheduler ceiling store →
-  futex wake → advance → frame inject/emit / I/O), entirely over shmem with no
-  per-quantum QMP/plugin-IPC traffic. — satisfies [QEMU-36]; spec §10.8.
+  unconditional futex wake + plugin eventfd write → advance → frame inject/emit
+  / I/O), with state and payloads entirely in shmem and no per-quantum
+  QMP/plugin-IPC traffic. — satisfies [QEMU-36]; spec §10.8.
   Completed as the `crucible-qemu` shared-memory hot path: the
   `QemuQuantumShmemHotPath` adapter observes plugin-published node reports,
   authorizes and stores scheduler ceilings through the node slot, wakes the
-  plugin via the futex word, finishes after a later shared-memory completion
+  plugin via the futex word and eventfd counter, finishes after a later shared-memory completion
   report is visible, moves inbound and outbound frame records through SPSC
   rings, and asserts the per-quantum operation log is shared-memory-only with
   QMP and plugin IPC rejected from the hot path. The exact frame visibility and

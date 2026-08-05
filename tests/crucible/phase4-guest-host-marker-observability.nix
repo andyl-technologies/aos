@@ -7,10 +7,10 @@
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
+  cargoDeps = pkgs.fetchCargoVendor {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   };
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
@@ -38,6 +38,10 @@
   pluginLiveWhitebox = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs;
+  };
+  pluginLiveWhiteboxApi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs;
   };
   mappedQuantum = import ./_rust-module-source.nix {
     inherit lib;
@@ -155,6 +159,20 @@
       {
         label = "live callback marker producer";
         needle = "struct LiveWhiteboxMarkerShmemProducer";
+      }
+      {
+        label = "dedicated doorbell execution callback";
+        needle = "Some(crucible_qemu_plugin_live_whitebox_insn_exec_cb)";
+      }
+      {
+        label = "x86 immediate-port instruction filter";
+        needle = "WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs" pluginLiveWhiteboxApi [
+      {
+        label = "upstream QEMU execution callback binding";
+        needle = "qemu_plugin_register_vcpu_insn_exec_cb";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/mapped_quantum.rs" mappedQuantum [
@@ -286,13 +304,8 @@ in
               cd source
             fi
             mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
                 > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
           '';
         }
         {

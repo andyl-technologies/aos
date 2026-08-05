@@ -610,28 +610,198 @@ struct StorePathInfo {
     closure_size: u64,
 }
 
+const RELEASE_POLICY_RELATIVE_PATH: &str = "nix-support/aos-release-policy";
+
+/// Enforces package-authored restrictions on publishing a store-path root.
+///
+/// Roots whose complete runtime closure contains no AOS release-policy file
+/// retain the generic publication behavior. When any closure member is marked
+/// internal, an indexed policy on the aggregate root must directly reference
+/// that exact component and its identity-matched corresponding-source companion
+/// so static cache generation cannot omit either artifact.
+fn read_release_policy(store_path: &Path) -> Result<Option<BTreeMap<String, String>>> {
+    let policy_path = store_path.join(RELEASE_POLICY_RELATIVE_PATH);
+    if !policy_path.exists() {
+        return Ok(None);
+    }
+    let policy_text = fs::read_to_string(&policy_path)
+        .with_context(|| format!("reading release policy {}", policy_path.display()))?;
+    let mut policy = BTreeMap::new();
+    for (index, line) in policy_text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, value) = line.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!(
+                "malformed release policy {} line {}",
+                policy_path.display(),
+                index + 1
+            )
+        })?;
+        if key.is_empty()
+            || value.is_empty()
+            || policy.insert(key.to_owned(), value.to_owned()).is_some()
+        {
+            bail!(
+                "malformed or duplicate field in release policy {} line {}",
+                policy_path.display(),
+                index + 1
+            );
+        }
+    }
+    if policy.get("policy_version").map(String::as_str) != Some("1") {
+        bail!(
+            "unsupported or missing policy_version in {}",
+            policy_path.display()
+        );
+    }
+    Ok(Some(policy))
+}
+
+fn validate_store_path_release_policy(info: &StorePathInfo) -> Result<()> {
+    let closure_paths = runtime_closure_paths(&info.path)?;
+    validate_store_path_release_policy_in_closure(info, &closure_paths)
+}
+
+fn validate_store_path_release_policy_in_closure(
+    info: &StorePathInfo,
+    closure_paths: &[String],
+) -> Result<()> {
+    let mut restricted = Vec::new();
+    for member in closure_paths {
+        let member_path = Path::new(member);
+        let Some(policy) = read_release_policy(member_path)? else {
+            continue;
+        };
+        match policy.get("standalone_release").map(String::as_str) {
+            Some("false") => {
+                if policy.get("artifact_role").map(String::as_str) != Some("internal-component") {
+                    bail!("restricted closure member {member} has an invalid artifact_role");
+                }
+                let identity = policy.get("corresponding_source_identity").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "restricted closure member {member} lacks corresponding_source_identity"
+                    )
+                })?;
+                restricted.push((member.clone(), identity.clone()));
+            }
+            Some("true") => {}
+            _ => bail!("release policy for {member} must set standalone_release=true or false"),
+        }
+    }
+    if restricted.is_empty() {
+        return Ok(());
+    }
+
+    let root_path = Path::new(&info.path);
+    let root_policy = read_release_policy(root_path)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "publication root {} contains restricted internal component(s) but has no aggregate release policy",
+            info.path
+        )
+    })?;
+    if root_policy.get("standalone_release").map(String::as_str) != Some("true")
+        || root_policy.get("artifact_role").map(String::as_str) != Some("aggregate-release-root")
+    {
+        bail!(
+            "publication root {} contains restricted internal component(s) but is not an aggregate release root",
+            info.path
+        );
+    }
+    let pair_count: usize = root_policy
+        .get("pair_count")
+        .ok_or_else(|| anyhow::anyhow!("aggregate release policy lacks pair_count"))?
+        .parse()
+        .context("parsing aggregate release policy pair_count")?;
+    if pair_count != restricted.len() {
+        bail!(
+            "aggregate release policy declares {pair_count} pair(s), but closure contains {} restricted component(s)",
+            restricted.len()
+        );
+    }
+    let mut paired_members = HashSet::new();
+    for index in 1..=pair_count {
+        let component_field = format!("pair_{index}_component_path");
+        let source_field = format!("pair_{index}_corresponding_source_path");
+        let identity_field = format!("pair_{index}_identity");
+        let component_path = root_policy
+            .get(&component_field)
+            .ok_or_else(|| anyhow::anyhow!("aggregate release policy lacks {component_field}"))?;
+        let source_path = root_policy
+            .get(&source_field)
+            .ok_or_else(|| anyhow::anyhow!("aggregate release policy lacks {source_field}"))?;
+        let identity = root_policy
+            .get(&identity_field)
+            .ok_or_else(|| anyhow::anyhow!("aggregate release policy lacks {identity_field}"))?;
+        if !paired_members.insert(component_path.as_str()) {
+            bail!("aggregate release policy repeats restricted member `{component_path}`");
+        }
+        if !restricted.iter().any(|(member, required_identity)| {
+            member == component_path && required_identity == identity
+        }) {
+            bail!(
+                "aggregate release policy pair {index} does not match a restricted closure member and identity"
+            );
+        }
+        for (field, required_path) in [
+            (component_field.as_str(), component_path.as_str()),
+            (source_field.as_str(), source_path.as_str()),
+        ] {
+            if !Path::new(required_path).exists() {
+                bail!("aggregate release policy names missing {field} `{required_path}`");
+            }
+            let required_hash = extract_hash(required_path);
+            if !info
+                .references
+                .iter()
+                .any(|reference| reference == required_hash)
+            {
+                bail!(
+                    "release root {} does not directly retain {field} `{required_path}`; refusing publication",
+                    info.path
+                );
+            }
+        }
+        let source_info = fs::read_to_string(
+            Path::new(source_path).join("nix-support/qemu-crucible-source-build-info"),
+        )
+        .with_context(|| format!("reading corresponding-source identity from {source_path}"))?;
+        if !source_info
+            .lines()
+            .any(|line| line == format!("qemu_build_id={identity}"))
+        {
+            bail!(
+                "corresponding source `{source_path}` does not match restricted component identity `{identity}`"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn runtime_closure_paths(store_path: &str) -> Result<Vec<String>> {
+    let output = nix_command("nix-store")
+        .args(["-qR", store_path])
+        .output()
+        .with_context(|| format!("running nix-store -qR {store_path}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("nix-store -qR failed for {store_path}: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
 /// Compute the full transitive closure of a store path.
 ///
 /// Returns a list of `(store_hash, Vec<direct_dep_hashes>)` pairs in
 /// dependency order (leaves first, root last).  Uses `nix-store -qR` to
 /// enumerate the closure and `nix-store -q --references` for each member.
 fn compute_closure(store_path: &str) -> Result<Vec<(String, Vec<String>)>> {
-    // Get the full closure via nix-store -qR.
-    let output = nix_command("nix-store")
-        .args(["-qR", store_path])
-        .output()
-        .with_context(|| format!("running nix-store -qR {store_path}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("nix-store -qR failed for {store_path}: {}", stderr.trim());
-    }
-
-    let closure_paths: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect();
+    let closure_paths = runtime_closure_paths(store_path)?;
 
     // For each path in the closure, get its direct references.
     let mut result = Vec::with_capacity(closure_paths.len());
@@ -1484,7 +1654,9 @@ description = ""
 /// cannot be parsed or validated, when the config output references a
 /// derivation, when authored config metadata disagrees with the mechanically
 /// evaluated/scanned interface, or when a file write, the commit, or the
-/// object-store refresh fails.
+/// object-store refresh fails. Policy-bearing internal components also fail
+/// when published directly, and aggregate roots fail unless their restricted
+/// component and corresponding source are direct runtime references.
 ///
 #[allow(clippy::too_many_arguments)]
 pub async fn publish(
@@ -1542,6 +1714,7 @@ pub async fn publish(
 
     printer.step(1, 4, "Introspecting store path...");
     let info = introspect_store_path(store_path)?;
+    validate_store_path_release_policy(&info)?;
     let source_info = if let Some(source_drv) = source_drv {
         Some(
             introspect_store_path(source_drv)
@@ -11523,7 +11696,9 @@ impl Drop for ReleaseLock {
 ///
 /// Fails when the semver does not parse, the registry directory is
 /// missing, the signing key cannot be resolved, the working tree is dirty,
-/// the publish step fails, or any delegated release step fails (see
+/// a policy-bearing internal component is supplied as the store-path root,
+/// an aggregate root does not directly retain its required corresponding
+/// source, the publish step fails, or any delegated release step fails (see
 /// [`release_registry_tree`]).
 #[allow(clippy::too_many_arguments)]
 pub async fn release(
@@ -11564,6 +11739,10 @@ pub async fn release(
 ) -> Result<()> {
     let version = semver::Version::parse(semver)
         .with_context(|| format!("parsing release semver '{semver}'"))?;
+    if let Some(store_path) = store_path {
+        let info = introspect_store_path(store_path)?;
+        validate_store_path_release_policy(&info)?;
+    }
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
     if !dir.exists() {
@@ -13336,6 +13515,145 @@ mod tests {
             store_publish: None,
             cache_max_age_days: 30,
         }
+    }
+
+    fn release_policy_info(path: &Path, references: Vec<String>) -> StorePathInfo {
+        StorePathInfo {
+            path: path.to_string_lossy().into_owned(),
+            nar_hash: String::new(),
+            nar_size: 0,
+            references,
+            closure_size: 0,
+        }
+    }
+
+    fn write_internal_release_policy(path: &Path, identity: &str) {
+        fs::create_dir_all(path.join("nix-support")).unwrap();
+        fs::write(
+            path.join(RELEASE_POLICY_RELATIVE_PATH),
+            format!(
+                "policy_version=1\nartifact_role=internal-component\nstandalone_release=false\nrelease_via=crucible\ncorresponding_source_required=true\ncorresponding_source_identity={identity}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn raw_internal_component_publication_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let qemu = tmp
+            .path()
+            .join("0000000000000000000000000000000a-qemu-crucible");
+        write_internal_release_policy(&qemu, "build-1");
+
+        let error = validate_store_path_release_policy_in_closure(
+            &release_policy_info(&qemu, vec![]),
+            &[qemu.to_string_lossy().into_owned()],
+        )
+        .unwrap_err();
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("is not an aggregate release root"));
+    }
+
+    #[test]
+    fn unmarked_wrapper_around_internal_component_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let wrapper = tmp.path().join("0000000000000000000000000000000a-wrapper");
+        let qemu = tmp.path().join("0000000000000000000000000000000b-qemu");
+        fs::create_dir_all(&wrapper).unwrap();
+        write_internal_release_policy(&qemu, "build-1");
+        let error = validate_store_path_release_policy_in_closure(
+            &release_policy_info(
+                &wrapper,
+                vec![extract_hash(qemu.to_str().unwrap()).to_owned()],
+            ),
+            &[
+                wrapper.to_string_lossy().into_owned(),
+                qemu.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("has no aggregate release policy"));
+    }
+
+    #[test]
+    fn plugin_shaped_wrapper_around_internal_component_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let plugin = tmp
+            .path()
+            .join("0000000000000000000000000000000a-crucible-qemu-plugin");
+        let qemu = tmp.path().join("0000000000000000000000000000000b-qemu");
+        fs::create_dir_all(&plugin).unwrap();
+        write_internal_release_policy(&qemu, "build-1");
+        let error = validate_store_path_release_policy_in_closure(
+            &release_policy_info(
+                &plugin,
+                vec![extract_hash(qemu.to_str().unwrap()).to_owned()],
+            ),
+            &[
+                plugin.to_string_lossy().into_owned(),
+                qemu.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("has no aggregate release policy"));
+    }
+
+    #[test]
+    fn complete_aggregate_publication_retains_matching_source() {
+        let tmp = TempDir::new().unwrap();
+        let suite = tmp.path().join("0000000000000000000000000000000a-crucible");
+        let qemu = tmp
+            .path()
+            .join("0000000000000000000000000000000b-qemu-crucible");
+        let source = tmp
+            .path()
+            .join("0000000000000000000000000000000c-qemu-crucible-source");
+        fs::create_dir_all(suite.join("nix-support")).unwrap();
+        write_internal_release_policy(&qemu, "build-1");
+        fs::create_dir_all(source.join("nix-support")).unwrap();
+        fs::write(
+            source.join("nix-support/qemu-crucible-source-build-info"),
+            "qemu_build_id=build-1\n",
+        )
+        .unwrap();
+        fs::write(
+            suite.join(RELEASE_POLICY_RELATIVE_PATH),
+            format!(
+                "policy_version=1\nartifact_role=aggregate-release-root\nstandalone_release=true\npair_count=1\npair_1_component_path={}\npair_1_corresponding_source_path={}\npair_1_identity=build-1\n",
+                qemu.display(),
+                source.display()
+            ),
+        )
+        .unwrap();
+        let paired = release_policy_info(
+            &suite,
+            vec![
+                extract_hash(qemu.to_str().unwrap()).to_string(),
+                extract_hash(source.to_str().unwrap()).to_string(),
+            ],
+        );
+        validate_store_path_release_policy_in_closure(
+            &paired,
+            &[
+                suite.to_string_lossy().into_owned(),
+                qemu.to_string_lossy().into_owned(),
+                source.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn generic_unmarked_qemu_publication_remains_allowed() {
+        let tmp = TempDir::new().unwrap();
+        let qemu = tmp.path().join("0000000000000000000000000000000a-qemu");
+        fs::create_dir_all(&qemu).unwrap();
+        validate_store_path_release_policy_in_closure(
+            &release_policy_info(&qemu, vec![]),
+            &[qemu.to_string_lossy().into_owned()],
+        )
+        .unwrap();
     }
 
     fn write_publish_selinux_artifacts(root: &Path, label: &str) {

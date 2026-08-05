@@ -36,12 +36,11 @@
   # the stock and patched virtio_pci_ioeventfd_enabled implementations and
   # exercises their actual virtio-rng selection result. The
   # crucible-det-virtio-ioeventfd patch makes virtio_pci_ioeventfd_enabled()
-  # return false under sim-mode icount for the virtio-rng device specifically,
+  # return false under sim-mode icount for virtio-rng and virtio-blk devices,
   # so a guest-issued virtqueue kick is serviced synchronously on the requesting
   # vCPU thread rather than via a host-scheduled main-loop dispatch. This patch
-  # leaves block/9p unchanged; the later 0040 patch synchronizes 9p's initial
-  # kick after its shmem forwarding gap is characterized, while block retains its
-  # device-wait barrier. This supplemental smoke proves only that the patched device
+  # leaves 9p unchanged; the later 0040 patch synchronizes 9p and block kicks
+  # after their forwarding gaps are characterized. This supplemental smoke proves only that the patched device
   # realizes and QEMU executes; the exact-source fixture and the real `/dev/hwrng`
   # request in the paired det-rng-delivery gate exercise the dispatch decision.
   # The effective ioeventfd
@@ -208,7 +207,11 @@
     }
     {
       label = "virtio-rng device-id gate";
-      needle = "if (vdev != NULL && vdev->device_id == VIRTIO_ID_RNG) {";
+      needle = "vdev->device_id == VIRTIO_ID_RNG";
+    }
+    {
+      label = "virtio-blk device-id gate";
+      needle = "vdev->device_id == VIRTIO_ID_BLOCK";
     }
     {
       label = "synchronous dispatch return";
@@ -423,7 +426,8 @@ in
               grep -F -q 'if (icount_enabled() && strcmp(current_accel_name(), "sim") == 0) {' hw/virtio/virtio-pci.c
               grep -F -q '#include "qemu/accel.h"' hw/virtio/virtio-pci.c
               grep -F -q 'VirtIODevice *vdev = virtio_bus_get_device(&proxy->bus);' hw/virtio/virtio-pci.c
-              grep -F -q 'if (vdev != NULL && vdev->device_id == VIRTIO_ID_RNG) {' hw/virtio/virtio-pci.c
+              grep -F -q 'vdev->device_id == VIRTIO_ID_RNG' hw/virtio/virtio-pci.c
+              grep -F -q 'vdev->device_id == VIRTIO_ID_BLOCK' hw/virtio/virtio-pci.c
               grep -F -q '#include "system/cpu-timers.h"' hw/virtio/virtio-pci.c
               grep -F -q '(proxy->flags & VIRTIO_PCI_FLAG_USE_IOEVENTFD) != 0' hw/virtio/virtio-pci.c
             )
@@ -440,7 +444,7 @@ in
             "$TMPDIR/ioeventfd-stock.c.bin" sim 0 rng 1 1 > "$out/stock-sim-no-icount-rng.txt"
             "$TMPDIR/ioeventfd-patched.c.bin" sim 0 rng 1 1 > "$out/patched-sim-no-icount-rng.txt"
             "$TMPDIR/ioeventfd-stock.c.bin" sim 1 block 1 1 > "$out/stock-sim-block.txt"
-            "$TMPDIR/ioeventfd-patched.c.bin" sim 1 block 1 1 > "$out/patched-sim-block.txt"
+            "$TMPDIR/ioeventfd-patched.c.bin" sim 1 block 1 0 > "$out/patched-sim-block.txt"
             "$TMPDIR/ioeventfd-stock.c.bin" sim 1 none 1 1 > "$out/stock-sim-no-device.txt"
             "$TMPDIR/ioeventfd-patched.c.bin" sim 1 none 1 1 > "$out/patched-sim-no-device.txt"
             "$TMPDIR/ioeventfd-stock.c.bin" sim 1 rng 0 0 > "$out/stock-sim-rng-disabled.txt"
@@ -450,13 +454,18 @@ in
               echo "patched sim virtio-rng selection did not differ from stock" >&2
               exit 1
             fi
+            if cmp -s "$out/stock-sim-block.txt" "$out/patched-sim-block.txt"; then
+              echo "patched sim virtio-blk selection did not differ from stock" >&2
+              exit 1
+            fi
             diff -u "$out/stock-plain-icount-rng.txt" "$out/patched-plain-icount-rng.txt"
             diff -u "$out/stock-sim-no-icount-rng.txt" "$out/patched-sim-no-icount-rng.txt"
-            diff -u "$out/stock-sim-block.txt" "$out/patched-sim-block.txt"
             diff -u "$out/stock-sim-no-device.txt" "$out/patched-sim-no-device.txt"
             diff -u "$out/stock-sim-rng-disabled.txt" "$out/patched-sim-rng-disabled.txt"
             grep -q '^ioeventfd_enabled=true$' "$out/stock-sim-rng.txt"
             grep -q '^ioeventfd_enabled=false$' "$out/patched-sim-rng.txt"
+            grep -q '^ioeventfd_enabled=true$' "$out/stock-sim-block.txt"
+            grep -q '^ioeventfd_enabled=false$' "$out/patched-sim-block.txt"
 
             ${qemuRuntimeScript}
 
@@ -472,7 +481,8 @@ in
             stock_vs_patched_sim_rng_discriminated=true
             plain_icount_rng_matches_upstream=true
             sim_without_icount_rng_matches_upstream=true
-            non_rng_sim_icount_matches_upstream=true
+            sim_icount_block_ioeventfd_disabled=true
+            unselected_sim_icount_matches_upstream=true
             configured_ioeventfd_off_matches_upstream=true
             exact_ioeventfd_predicate_exercised=true
             seal_hop=dispatch

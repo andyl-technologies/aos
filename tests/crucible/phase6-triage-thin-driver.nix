@@ -20,10 +20,10 @@
     forbidden;
 
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
+  cargoDeps = pkgs.fetchCargoVendor {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   };
 
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;

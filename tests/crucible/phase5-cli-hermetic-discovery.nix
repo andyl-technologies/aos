@@ -6,10 +6,10 @@
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
+  cargoDeps = pkgs.fetchCargoVendor {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   };
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
@@ -203,16 +203,16 @@
         needle = "crucible-qemu-plugin";
       }
       {
-        label = "compile-time QEMU hint";
-        needle = "CRUCIBLE_AOS_QEMU";
+        label = "runtime QEMU wrapper configuration";
+        needle = "CRUCIBLE_QEMU:=";
       }
       {
-        label = "compile-time plugin hint";
-        needle = "CRUCIBLE_AOS_PLUGIN";
+        label = "runtime plugin wrapper configuration";
+        needle = "CRUCIBLE_PLUGIN:=";
       }
       {
-        label = "runtime QEMU closure";
-        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures]";
+        label = "separate suite runtime closure";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures]";
       }
     ]
     ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPkg [
@@ -292,13 +292,8 @@ in
             cd source
           fi
           mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
               > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
         '';
       }
       {

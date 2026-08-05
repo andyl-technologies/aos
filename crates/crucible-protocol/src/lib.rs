@@ -1,11 +1,11 @@
-//! `crucible-protocol` owns the host/plugin wire protocol and shared channel ABIs.
-//!
+//! SPDX-License-Identifier: MIT OR Apache-2.0
+//! `crucible-protocol` implements the public host/plugin process protocol.
 //! Spec index: RFC-0010 files 14, 16.
 //!
-//! This L1 crate owns the framed IPC message constants, version fields,
-//! encode/decode routines, and golden vectors specified by its indexed RFC-0010
-//! file. Its pure codec operates over owned buffers; its Unix descriptor
-//! handover attaches the shared-memory and wake descriptors to the setup frame.
+//! This dual-licensed L1 crate implements independently implementable framing,
+//! versioned codecs, and golden vectors over owned buffers, without QEMU headers,
+//! callbacks, native pointers, or private types. Its Unix descriptor handover
+//! attaches the shared-memory and wake descriptors to the setup frame.
 //!
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake
@@ -52,9 +52,9 @@ pub use doorbell_abi::{
     WHITEBOX_DOORBELL_AARCH64_ABI, WHITEBOX_DOORBELL_AARCH64_HLT_BYTES,
     WHITEBOX_DOORBELL_AARCH64_RESERVED_IMMEDIATE, WHITEBOX_DOORBELL_ABIS,
     WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION, WHITEBOX_DOORBELL_X86_64_ABI,
-    WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
+    WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES, WHITEBOX_DOORBELL_X86_64_RESERVED_PORT,
     WhiteboxDoorbellAbi, WhiteboxDoorbellArchitecture, WhiteboxDoorbellInstruction,
-    WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_dx_eax_instruction,
+    WhiteboxDoorbellTrapAbi, encode_aarch64_hlt_instruction, encode_x86_64_out_imm8_al_instruction,
     whitebox_doorbell_abi_for_architecture,
 };
 pub use doorbell_frame::{

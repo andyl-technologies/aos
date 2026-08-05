@@ -4,6 +4,12 @@ This section is for people changing the AOS source tree, package graph, system
 modules, release images, or Rust tools. Installing and operating a published
 AOS image should not require any of these workflows.
 
+Before reviewing or merging a contribution, follow the
+[contributor-authorization policy](contributor-licensing.md). It distinguishes
+Andyl employee contributions covered by the company CIAA from external
+contributions that require the project agreement, and defines the fail-closed
+records and identity checks maintainers must preserve.
+
 ## Build the source tree
 
 AOS builds hermetically from its bootstrap tools and AOS packages. It does not
