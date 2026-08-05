@@ -81,22 +81,6 @@ impl Plan {
                 evaluation_times,
             });
         }
-        if let Some(plan) = self.fault_plan() {
-            let actions = lower_fault_plan_actions(plan.entries());
-            let events = actions
-                .iter()
-                .enumerate()
-                .map(lower_fault_plan_action_to_event)
-                .collect::<Vec<_>>();
-            let evaluation_times = fault_plan_action_evaluation_times(&actions);
-            let graph = EventGraph::new_for_world(events, world)?;
-            return Ok(LoweredPlanEventGraph {
-                graph,
-                content_hash: self.content_hash(),
-                canonical_bytes: self.canonical_bytes(),
-                evaluation_times,
-            });
-        }
         let events = self
             .entries()
             .iter()

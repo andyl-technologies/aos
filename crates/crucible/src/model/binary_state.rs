@@ -1739,13 +1739,6 @@ pub(super) fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) 
                 write_plan_entry_binary(entry, writer);
             }
         }
-        PlanKind::FaultPlan { plan } => {
-            writer.write_u64(FAULT_PLAN_BINARY_SENTINEL);
-            writer.write_count(plan.entries().len());
-            for entry in plan.entries() {
-                write_fault_plan_entry_binary(entry, writer);
-            }
-        }
         PlanKind::EventGraph { graph } => {
             writer.write_u64(EVENT_GRAPH_PLAN_BINARY_SENTINEL);
             writer.write_count(graph.events().len());
@@ -1792,13 +1785,6 @@ pub(super) fn read_plan_binary_inner(
         let assertions = assertions.unwrap_or_else(|| event_graph_assertion_references(&events));
         let graph = EventGraph::from_unchecked_events_for_model(events);
         Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
-    } else if count_or_sentinel == FAULT_PLAN_BINARY_SENTINEL {
-        let count = reader.read_collection_count("plan.fault_entry")?;
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            entries.push(read_fault_plan_entry_binary(reader)?);
-        }
-        Plan::from_fault_plan_for_world(world, FaultPlan::from_entries(entries))?
     } else {
         let count = collection_count_from_raw("plan.entry", count_or_sentinel)?;
         let mut entries = Vec::with_capacity(count);

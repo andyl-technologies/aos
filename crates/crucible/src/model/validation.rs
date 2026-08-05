@@ -1663,16 +1663,6 @@ pub(super) fn plan_declared_fault_tags(plan: &Plan) -> BTreeSet<FaultTag> {
                 PlanEntry::Heal { .. } => None,
             })
             .collect(),
-        PlanKind::FaultPlan { plan } => plan
-            .entries()
-            .iter()
-            .filter_map(|entry| match entry {
-                FaultPlanEntry::At { tag, .. } | FaultPlanEntry::PermanentAt { tag, .. } => {
-                    Some(tag.clone())
-                }
-                FaultPlanEntry::Heal { .. } => None,
-            })
-            .collect(),
         PlanKind::EventGraph { graph } => event_graph_declared_fault_tags(graph.events()),
     }
 }
@@ -1970,7 +1960,7 @@ pub(super) fn fault_plan_entry_cmp(
     fault_plan_entry_time(left)
         .cmp(&fault_plan_entry_time(right))
         .then_with(|| fault_plan_entry_kind_order(left).cmp(&fault_plan_entry_kind_order(right)))
-        .then_with(|| fault_plan_entry_material(left).cmp(&fault_plan_entry_material(right)))
+        .then_with(|| left.cmp(right))
 }
 
 pub(super) fn plan_entry_time(entry: &PlanEntry) -> VirtualTime {

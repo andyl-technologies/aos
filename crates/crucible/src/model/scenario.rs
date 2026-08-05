@@ -382,16 +382,19 @@ impl World {
         validate_world_nodes(&nodes)?;
         validate_world_node_defs(&topology_nodes)?;
         validate_world_links_for_node_defs(&topology_nodes, &links)?;
+        let fault_topology_id = ContentHash::default();
+        let material = format!(
+            "{}\nfault-topology={}",
+            world_material(&topology_nodes, &links),
+            fault_topology_id.to_hex()
+        );
         Ok(Self {
-            id: ContentHash::from_canonical_material(
-                world_identity_domain(&topology_nodes),
-                &world_material(&topology_nodes, &links),
-            ),
+            id: ContentHash::from_canonical_material("crucible.model.world.v3", &material),
             topology_nodes,
             nodes,
             links,
             fault_topology: WorldFaultTopology::default(),
-            fault_topology_id: ContentHash::default(),
+            fault_topology_id,
             fault_topology_wire: Vec::new(),
         })
     }
@@ -671,10 +674,8 @@ impl World {
             &canonical_world_node_defs(&self.topology_nodes),
             &canonical_world_links(&self.links),
         );
-        if !self.fault_topology.is_empty() {
-            material.push_str("\nfault-topology=");
-            material.push_str(&self.fault_topology_id.to_hex());
-        }
+        material.push_str("\nfault-topology=");
+        material.push_str(&self.fault_topology_id.to_hex());
         material.into_bytes()
     }
 

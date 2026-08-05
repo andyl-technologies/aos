@@ -961,35 +961,66 @@ impl GuestWorkloadLoadPatternFixture {
         let link_id = workload_pattern_link_id(&link);
         let crash_node = right.id.clone();
         let world = World::from_nodes_and_links(vec![left, right], vec![link])?;
-        let entries = vec![
-            FaultPlanEntry::At {
-                at: VirtualTime { ticks: 20 },
-                duration: FaultDuration::from_nanos(10),
-                tag: FaultTag::from_name("correlated-partition"),
-                fault: Fault::Network(NetworkFault::Partition {
-                    link: link_id.clone(),
-                    direction: PartitionDirection::Bidirectional,
+        let partition_tag = FaultTag::from_name("correlated-partition");
+        let loss_tag = FaultTag::from_name("correlated-loss");
+        let crash_tag = FaultTag::from_name("correlated-crash");
+        let events = vec![
+            Event::once(
+                EventId::from_name("correlated-partition-start"),
+                Some(Condition::At {
+                    at: VirtualTime { ticks: 20 },
                 }),
-            },
-            FaultPlanEntry::At {
-                at: VirtualTime { ticks: 20 },
-                duration: FaultDuration::from_nanos(10),
-                tag: FaultTag::from_name("correlated-loss"),
-                fault: Fault::Network(NetworkFault::Loss {
-                    link: link_id,
-                    rate: FaultRateBasisPoints::from_basis_points(2_500)?,
+                Action::inject_fault(
+                    partition_tag.clone(),
+                    MembershipFault::taxonomy(Fault::Network(NetworkFault::Partition {
+                        link: link_id.clone(),
+                        direction: PartitionDirection::Bidirectional,
+                    })),
+                ),
+            ),
+            Event::once(
+                EventId::from_name("correlated-loss-start"),
+                Some(Condition::At {
+                    at: VirtualTime { ticks: 20 },
                 }),
-            },
-            FaultPlanEntry::PermanentAt {
-                at: VirtualTime { ticks: 20 },
-                tag: FaultTag::from_name("correlated-crash"),
-                fault: Fault::Node(NodeFault::Crash {
-                    node: crash_node,
-                    restart: RestartPolicy::StayDown,
+                Action::inject_fault(
+                    loss_tag.clone(),
+                    MembershipFault::taxonomy(Fault::Network(NetworkFault::Loss {
+                        link: link_id,
+                        rate: FaultRateBasisPoints::from_basis_points(2_500)?,
+                    })),
+                ),
+            ),
+            Event::once(
+                EventId::from_name("correlated-crash-start"),
+                Some(Condition::At {
+                    at: VirtualTime { ticks: 20 },
                 }),
-            },
+                Action::inject_fault(
+                    crash_tag,
+                    MembershipFault::taxonomy(Fault::Node(NodeFault::Crash {
+                        node: crash_node,
+                        restart: RestartPolicy::StayDown,
+                    })),
+                ),
+            ),
+            Event::once(
+                EventId::from_name("correlated-partition-end"),
+                Some(Condition::At {
+                    at: VirtualTime { ticks: 30 },
+                }),
+                Action::heal_fault(partition_tag),
+            ),
+            Event::once(
+                EventId::from_name("correlated-loss-end"),
+                Some(Condition::At {
+                    at: VirtualTime { ticks: 30 },
+                }),
+                Action::heal_fault(loss_tag),
+            ),
         ];
-        let plan = Plan::from_fault_plan_for_world(&world, FaultPlan::from_entries(entries))?;
+        let graph = EventGraph::from_unchecked_events_for_model(events);
+        let plan = Plan::from_event_graph_for_world(&world, graph)?;
         Ok(Self {
             pattern: GuestWorkloadPattern::CorrelatedFailure,
             spike_mode: None,

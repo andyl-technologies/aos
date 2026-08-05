@@ -5,14 +5,14 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    Action, EngineError, Fault, FaultPlanEntry, GuestWorkloadBinary,
-    GuestWorkloadLoadPatternFixture, GuestWorkloadPattern, GuestWorkloadSpikeMode,
-    GuestWorkloadTimeSource, Icount, MembershipFault, NetworkFault, NodeFault, NodeTemplate, Plan,
-    Predicate, Properties, ScenarioBuilder, ScenarioDefForm, Seed,
-    WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED, WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES,
-    WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX, WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER,
-    WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER, WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER,
-    WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME, WhiteBoxPolicy,
+    Action, EngineError, Fault, GuestWorkloadBinary, GuestWorkloadLoadPatternFixture,
+    GuestWorkloadPattern, GuestWorkloadSpikeMode, GuestWorkloadTimeSource, Icount, MembershipFault,
+    NetworkFault, NodeFault, NodeTemplate, Plan, Predicate, Properties, ScenarioBuilder,
+    ScenarioDefForm, Seed, WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED,
+    WORKLOAD_LOAD_PATTERN_BLACK_BOX_CONFIG_SUFFICES, WORKLOAD_LOAD_PATTERN_REQUIRES_WHITE_BOX,
+    WORKLOAD_LOAD_PATTERN_SCENARIO_PARAMETER, WORKLOAD_SPIKE_MODE_SCENARIO_PARAMETER,
+    WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER, WORKLOAD_TIME_VARIATION_REQUIRES_VIRTUAL_TIME,
+    WhiteBoxPolicy,
 };
 
 #[test]
@@ -212,36 +212,40 @@ fn cardinality_growth_fixture_is_guest_key_policy() -> Result<(), EngineError> {
 }
 
 #[test]
-fn correlated_failure_fixture_is_fault_plan_campaign() -> Result<(), EngineError> {
+fn correlated_failure_fixture_is_an_event_graph_campaign() -> Result<(), EngineError> {
     let fixture = GuestWorkloadLoadPatternFixture::correlated_failure_campaign()?;
     assert_eq!(fixture.pattern(), GuestWorkloadPattern::CorrelatedFailure);
     assert_eq!(fixture.world().vm_nodes().len(), 2);
     assert_eq!(fixture.world().links().len(), 1);
-    assert!(fixture.plan().event_graph().is_none());
-
-    let fault_plan = fixture
+    let graph = fixture
         .plan()
-        .fault_plan()
-        .expect("correlated-failure fixture should use a FaultPlan");
-    assert_eq!(fault_plan.entries().len(), 3);
-    assert!(fault_plan.entries().iter().any(|entry| matches!(
-        entry,
-        FaultPlanEntry::At {
-            fault: Fault::Network(NetworkFault::Partition { .. }),
+        .event_graph()
+        .expect("correlated-failure fixture should use an event graph");
+    assert_eq!(graph.events().len(), 5);
+    assert!(graph.events().iter().any(|event| matches!(
+        &event.action,
+        Action::InjectFault {
+            fault: MembershipFault::Taxonomy {
+                fault: Fault::Network(NetworkFault::Partition { .. })
+            },
             ..
         }
     )));
-    assert!(fault_plan.entries().iter().any(|entry| matches!(
-        entry,
-        FaultPlanEntry::At {
-            fault: Fault::Network(NetworkFault::Loss { .. }),
+    assert!(graph.events().iter().any(|event| matches!(
+        &event.action,
+        Action::InjectFault {
+            fault: MembershipFault::Taxonomy {
+                fault: Fault::Network(NetworkFault::Loss { .. })
+            },
             ..
         }
     )));
-    assert!(fault_plan.entries().iter().any(|entry| matches!(
-        entry,
-        FaultPlanEntry::PermanentAt {
-            fault: Fault::Node(NodeFault::Crash { .. }),
+    assert!(graph.events().iter().any(|event| matches!(
+        &event.action,
+        Action::InjectFault {
+            fault: MembershipFault::Taxonomy {
+                fault: Fault::Node(NodeFault::Crash { .. })
+            },
             ..
         }
     )));
@@ -447,7 +451,6 @@ fn assert_fixture_reproduces(
 
 fn assert_empty_plan(plan: &Plan) {
     assert!(plan.entries().is_empty());
-    assert!(plan.fault_plan().is_none());
     assert!(plan.event_graph().is_none());
 }
 

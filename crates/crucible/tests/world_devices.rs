@@ -7,15 +7,13 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    Action, BlockFault, ContentAddressedBlobRef, ContentHash, DagStore, DeviceSchedulingSubNode,
-    DeviceSubNodeBindingError, EngineError, Event, EventGraph, EventGraphError, EventId, Fault,
-    FaultDuration, FaultPlan, FaultPlanEntry, FaultTag, Icount, LinkDef, MembershipFault,
-    MemoryDagStore, NinePFault, NodeId, NodeTemplate, Plan, Properties, ReadyPoint,
-    ReproductionArtifact, RngStreamId, ScenarioDefForm, Schedule, SchedulingNodeKind, Seed,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency, WorldDeviceKind,
-    WorldIoCoreConfig, WorldIoInstantiationError, WorldIoInstantiationLayout, WorldIoLayoutError,
-    WorldIoLayoutPolicy, WorldIoNode, WorldIoNodeKind, WorldNinePLatency, WorldNode, WorldNodeDef,
-    instantiate_world_io_sub_nodes,
+    ContentAddressedBlobRef, ContentHash, DagStore, DeviceSchedulingSubNode,
+    DeviceSubNodeBindingError, EngineError, Icount, LinkDef, MemoryDagStore, NodeId, NodeTemplate,
+    Plan, Properties, ReadyPoint, ReproductionArtifact, RngStreamId, ScenarioDefForm, Schedule,
+    SchedulingNodeKind, Seed, VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency,
+    WorldDeviceKind, WorldIoCoreConfig, WorldIoInstantiationError, WorldIoInstantiationLayout,
+    WorldIoLayoutError, WorldIoLayoutPolicy, WorldIoNode, WorldIoNodeKind, WorldNinePLatency,
+    WorldNode, WorldNodeDef, instantiate_world_io_sub_nodes,
 };
 use crucible_device::{BaseImage, FsTree, FsTreeDecodeError, Node};
 
@@ -466,113 +464,6 @@ fn production_world_instantiation_rejects_malformed_ninep_artifact_bytes() {
 }
 
 #[test]
-fn fault_plan_and_event_graph_resolve_only_derived_device_targets() {
-    let world = world_with_io_nodes(vec![block_node(), ninep_node()]);
-    let disk = world
-        .io_node(&node_id("disk-node"))
-        .expect("disk node exists")
-        .device_id();
-    let share = world
-        .io_node(&node_id("share-node"))
-        .expect("share node exists")
-        .device_id();
-    let block_fault = Fault::Block(BlockFault::Latency {
-        device: disk.clone(),
-        extra: FaultDuration::from_nanos(3),
-        jitter: FaultDuration::from_nanos(1),
-    });
-    let ninep_fault = Fault::NineP(NinePFault::Latency {
-        device: share,
-        extra: FaultDuration::from_nanos(3),
-        jitter: FaultDuration::from_nanos(1),
-    });
-
-    let plan = FaultPlan::from_entries_for_world(
-        &world,
-        vec![
-            permanent_fault("block", block_fault.clone()),
-            permanent_fault("ninep", ninep_fault),
-        ],
-    )
-    .expect("derived device targets should validate");
-    assert_eq!(plan.entries().len(), 2);
-
-    let arbitrary_name = FaultPlan::from_entries_for_world(
-        &world,
-        vec![permanent_fault(
-            "phantom",
-            Fault::Block(BlockFault::Latency {
-                device: crucible::DeviceId::from_name("disk-node"),
-                extra: FaultDuration::from_nanos(1),
-                jitter: FaultDuration::ZERO,
-            }),
-        )],
-    );
-    assert!(matches!(
-        arbitrary_name,
-        Err(EngineError::PlanFaultUnknownDevice { .. })
-    ));
-
-    let wrong_family = FaultPlan::from_entries_for_world(
-        &world,
-        vec![permanent_fault(
-            "wrong-family",
-            Fault::NineP(NinePFault::Latency {
-                device: disk.clone(),
-                extra: FaultDuration::from_nanos(1),
-                jitter: FaultDuration::ZERO,
-            }),
-        )],
-    );
-    assert!(matches!(
-        wrong_family,
-        Err(EngineError::PlanFaultDeviceKindMismatch {
-            device,
-            expected: WorldDeviceKind::NineP,
-            actual: WorldDeviceKind::Block,
-        }) if device == disk
-    ));
-
-    let wrong_graph = EventGraph::new_for_world(
-        vec![Event::once(
-            EventId::from_name("inject-wrong-family"),
-            None,
-            Action::InjectFault {
-                tag: FaultTag::from_name("ninep"),
-                fault: MembershipFault::taxonomy(Fault::NineP(NinePFault::Latency {
-                    device: disk.clone(),
-                    extra: FaultDuration::from_nanos(1),
-                    jitter: FaultDuration::ZERO,
-                })),
-            },
-        )],
-        &world,
-    );
-    assert!(matches!(
-        wrong_graph,
-        Err(EventGraphError::DeviceKindMismatch {
-            device,
-            expected: WorldDeviceKind::NineP,
-            actual: WorldDeviceKind::Block,
-            ..
-        }) if device == disk
-    ));
-
-    EventGraph::new_for_world(
-        vec![Event::once(
-            EventId::from_name("inject-block"),
-            None,
-            Action::InjectFault {
-                tag: FaultTag::from_name("block"),
-                fault: MembershipFault::taxonomy(block_fault),
-            },
-        )],
-        &world,
-    )
-    .expect("derived event-graph device target should validate");
-}
-
-#[test]
 fn v3_outer_envelopes_reject_retired_versions() {
     let world = world_with_io_nodes(vec![block_node()]);
     let form = ScenarioDefForm::from_components(
@@ -644,14 +535,6 @@ fn replace_magic(mut bytes: Vec<u8>, from: &[u8], to: &[u8]) -> Vec<u8> {
     assert!(bytes.starts_with(from));
     bytes[..from.len()].copy_from_slice(to);
     bytes
-}
-
-fn permanent_fault(name: &str, fault: Fault) -> FaultPlanEntry {
-    FaultPlanEntry::PermanentAt {
-        at: VirtualTime { ticks: 1 },
-        tag: FaultTag::from_name(name),
-        fault,
-    }
 }
 
 fn world_with_order(order: [&str; 2]) -> World {

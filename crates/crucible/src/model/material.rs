@@ -35,7 +35,7 @@ pub(super) fn validate_plan_entries_in_toml(value: &str) -> Result<(), EngineErr
     let Some(plan) = toml_plan_table(&value) else {
         return Ok(());
     };
-    for key in ["entry", "fault_entry"] {
+    for key in ["entry"] {
         let Some(entries) = plan.get(key) else {
             continue;
         };
@@ -842,17 +842,13 @@ pub(super) fn serialized_world_identity(world: &World) -> ContentHash {
 
 fn world_content_hash(world: &World, nodes: &[WorldNodeDef], links: &[LinkDef]) -> ContentHash {
     let base = world_material(nodes, links);
-    if world.fault_topology.is_empty() {
-        ContentHash::from_canonical_material(world_identity_domain(nodes), &base)
-    } else {
-        ContentHash::from_canonical_material(
-            "crucible.model.world.v3",
-            &format!(
-                "{base}\nfault-topology={}",
-                world.fault_topology_id.to_hex()
-            ),
-        )
-    }
+    ContentHash::from_canonical_material(
+        "crucible.model.world.v3",
+        &format!(
+            "{base}\nfault-topology={}",
+            world.fault_topology_id.to_hex()
+        ),
+    )
 }
 
 pub(super) fn scenario_world_plan_properties_seed_material(
@@ -903,14 +899,6 @@ pub(super) fn world_material(nodes: &[WorldNodeDef], links: &[LinkDef]) -> Strin
             world_node_defs_material(nodes),
             world_links_material(links),
         )
-    }
-}
-
-pub(super) fn world_identity_domain(nodes: &[WorldNodeDef]) -> &'static str {
-    if nodes.iter().any(|node| matches!(node, WorldNodeDef::Io(_))) {
-        "crucible.model.world.v2"
-    } else {
-        "crucible.model.world.v1"
     }
 }
 
@@ -1029,7 +1017,6 @@ pub(super) fn plan_parts_material(kind: &PlanKind, fault_signals: &FaultSignalPl
 pub(super) fn plan_kind_material(kind: &PlanKind) -> String {
     match kind {
         PlanKind::ScheduledEntries { entries } => scheduled_plan_material(entries),
-        PlanKind::FaultPlan { plan } => fault_plan_material(plan.entries()),
         PlanKind::EventGraph { graph } => event_graph_plan_material(graph),
     }
 }
@@ -1041,10 +1028,6 @@ pub(super) fn scheduled_plan_material(entries: &[PlanEntry]) -> String {
         lines.push(plan_entry_material(entry));
     }
     lines.join("\n")
-}
-
-pub(super) fn fault_plan_material(entries: &[FaultPlanEntry]) -> String {
-    event_graph_plan_material_from_events(&fault_plan_material_events(entries))
 }
 
 pub(super) fn event_graph_plan_material(graph: &EventGraph) -> String {
@@ -1061,107 +1044,6 @@ pub(super) fn event_graph_plan_material_from_events(events: &[Event]) -> String 
     lines.join("\n")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FaultPlanMaterialAction {
-    pub(super) at: VirtualTime,
-    pub(super) kind: &'static str,
-    pub(super) kind_order: u8,
-    pub(super) tag: FaultTag,
-    pub(super) material: String,
-    pub(super) action: Action,
-}
-
-pub(super) fn fault_plan_material_events(entries: &[FaultPlanEntry]) -> Vec<Event> {
-    fault_plan_material_actions(entries)
-        .iter()
-        .enumerate()
-        .map(|(index, action)| {
-            Event::once(
-                fault_plan_material_event_id(index, action.kind, &action.tag),
-                Some(Predicate::At { at: action.at }),
-                action.action.clone(),
-            )
-        })
-        .collect()
-}
-
-pub(super) fn fault_plan_material_actions(
-    entries: &[FaultPlanEntry],
-) -> Vec<FaultPlanMaterialAction> {
-    let mut actions = Vec::new();
-    for entry in entries {
-        match entry {
-            FaultPlanEntry::At {
-                at,
-                duration,
-                tag,
-                fault,
-            } => {
-                actions.push(fault_plan_material_inject_action(*at, tag, fault));
-                if let Some(heal_at) = at.ticks.checked_add(duration.nanos()) {
-                    actions.push(fault_plan_material_heal_action(
-                        VirtualTime { ticks: heal_at },
-                        tag,
-                    ));
-                }
-            }
-            FaultPlanEntry::PermanentAt { at, tag, fault } => {
-                actions.push(fault_plan_material_inject_action(*at, tag, fault));
-            }
-            FaultPlanEntry::Heal { at, tag } => {
-                actions.push(fault_plan_material_heal_action(*at, tag));
-            }
-        }
-    }
-    actions.sort_by(|left, right| {
-        left.at
-            .cmp(&right.at)
-            .then_with(|| left.kind_order.cmp(&right.kind_order))
-            .then_with(|| left.material.cmp(&right.material))
-    });
-    actions
-}
-
-pub(super) fn fault_plan_material_inject_action(
-    at: VirtualTime,
-    tag: &FaultTag,
-    fault: &Fault,
-) -> FaultPlanMaterialAction {
-    FaultPlanMaterialAction {
-        at,
-        kind: "inject",
-        kind_order: 0,
-        tag: tag.clone(),
-        material: format!(
-            "inject\n{}\n{}",
-            fault_tag_material(tag),
-            fault.canonical_material()
-        ),
-        action: Action::InjectFault {
-            tag: tag.clone(),
-            fault: MembershipFault::taxonomy(fault.clone()),
-        },
-    }
-}
-
-pub(super) fn fault_plan_material_heal_action(
-    at: VirtualTime,
-    tag: &FaultTag,
-) -> FaultPlanMaterialAction {
-    FaultPlanMaterialAction {
-        at,
-        kind: "heal",
-        kind_order: 1,
-        tag: tag.clone(),
-        material: format!("heal\n{}", fault_tag_material(tag)),
-        action: Action::HealFault { tag: tag.clone() },
-    }
-}
-
-pub(super) fn fault_plan_material_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
-    EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
-}
-
 pub(super) fn event_material(event: &Event) -> String {
     let trigger = match &event.trigger {
         Some(trigger) => format!("trigger=some\n{}", predicate_material(trigger)),
@@ -1174,40 +1056,6 @@ pub(super) fn event_material(event: &Event) -> String {
         trigger,
         action_material(&event.action)
     )
-}
-
-pub(super) fn fault_plan_entry_material(entry: &FaultPlanEntry) -> String {
-    match entry {
-        FaultPlanEntry::At {
-            at,
-            duration,
-            tag,
-            fault,
-        } => {
-            format!(
-                "fault_plan_entry=at\nplan_at_ticks={}\nduration_nanos={}\n{}\n{}",
-                at.ticks,
-                duration.nanos(),
-                fault_tag_material(tag),
-                fault.canonical_material()
-            )
-        }
-        FaultPlanEntry::PermanentAt { at, tag, fault } => {
-            format!(
-                "fault_plan_entry=permanent-at\nplan_at_ticks={}\n{}\n{}",
-                at.ticks,
-                fault_tag_material(tag),
-                fault.canonical_material()
-            )
-        }
-        FaultPlanEntry::Heal { at, tag } => {
-            format!(
-                "fault_plan_entry=heal\nplan_at_ticks={}\n{}",
-                at.ticks,
-                fault_tag_material(tag)
-            )
-        }
-    }
 }
 
 pub(super) fn plan_entry_material(entry: &PlanEntry) -> String {

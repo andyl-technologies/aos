@@ -233,8 +233,6 @@ pub(super) struct PlanToml {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) entry: Vec<PlanEntryToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) fault_entry: Vec<FaultPlanEntryToml>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) event: Vec<EventToml>,
 }
 
@@ -249,7 +247,6 @@ pub(super) enum FaultModelToml {
 #[serde(rename_all = "snake_case")]
 pub(super) enum PlanKindToml {
     Entries,
-    FaultPlan,
     EventGraph,
 }
 
@@ -261,27 +258,6 @@ pub(super) enum PlanEntryToml {
         at_ticks: u64,
         tag: String,
         fault: MembershipFaultToml,
-    },
-    Heal {
-        at_ticks: u64,
-        tag: String,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum FaultPlanEntryToml {
-    At {
-        at_ticks: u64,
-        duration_nanos: u64,
-        tag: String,
-        fault: FaultToml,
-    },
-    PermanentAt {
-        at_ticks: u64,
-        tag: String,
-        fault: FaultToml,
     },
     Heal {
         at_ticks: u64,
@@ -1171,23 +1147,6 @@ pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
             resource_limits: fault_signals.resource_limits,
             kind: None,
             entry: entries.iter().map(plan_entry_to_toml).collect(),
-            fault_entry: Vec::new(),
-            event: Vec::new(),
-        },
-        PlanKind::FaultPlan { plan: fault_plan } => PlanToml {
-            id: format_content_hash_ref(plan.content_hash()),
-            fault_model: FaultModelToml::SignalBindingsV1,
-            fault_signal_semantic_version: fault_signals.semantic_version,
-            signal: fault_signals.signals,
-            fault_binding: fault_signals.bindings,
-            resource_limits: fault_signals.resource_limits,
-            kind: Some(PlanKindToml::FaultPlan),
-            entry: Vec::new(),
-            fault_entry: fault_plan
-                .entries()
-                .iter()
-                .map(fault_plan_entry_to_toml)
-                .collect(),
             event: Vec::new(),
         },
         PlanKind::EventGraph { graph } => PlanToml {
@@ -1199,7 +1158,6 @@ pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
             resource_limits: fault_signals.resource_limits,
             kind: Some(PlanKindToml::EventGraph),
             entry: Vec::new(),
-            fault_entry: Vec::new(),
             event: graph.events().iter().map(event_to_toml).collect(),
         },
     })
@@ -1233,14 +1191,6 @@ pub(super) fn plan_from_toml_with_assertions(
                 .collect::<Result<Vec<_>, _>>()?;
             Plan::from_entries_for_world(world, entries)?
         }
-        SerializedPlanKind::FaultPlan => {
-            let entries = toml
-                .fault_entry
-                .into_iter()
-                .map(fault_plan_entry_from_toml)
-                .collect::<Result<Vec<_>, _>>()?;
-            Plan::from_fault_plan_for_world(world, FaultPlan::from_entries(entries))?
-        }
         SerializedPlanKind::EventGraph => {
             let events = toml
                 .event
@@ -1259,50 +1209,35 @@ pub(super) fn plan_from_toml_with_assertions(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SerializedPlanKind {
     ScheduledEntries,
-    FaultPlan,
     EventGraph,
 }
 
 pub(super) fn serialized_plan_kind(toml: &PlanToml) -> Result<SerializedPlanKind, EngineError> {
     match toml.kind {
         Some(PlanKindToml::Entries) => {
-            if !toml.event.is_empty() || !toml.fault_entry.is_empty() {
+            if !toml.event.is_empty() {
                 return Err(scenario_serialization_error(
-                    "entries plan must not carry fault-plan or event graph rows",
+                    "entries plan must not carry event graph rows",
                 ));
             }
             Ok(SerializedPlanKind::ScheduledEntries)
         }
-        Some(PlanKindToml::FaultPlan) => {
-            if !toml.entry.is_empty() || !toml.event.is_empty() {
-                return Err(scenario_serialization_error(
-                    "fault plan must not carry legacy entries or event graph rows",
-                ));
-            }
-            Ok(SerializedPlanKind::FaultPlan)
-        }
         Some(PlanKindToml::EventGraph) => {
-            if !toml.entry.is_empty() || !toml.fault_entry.is_empty() {
+            if !toml.entry.is_empty() {
                 return Err(scenario_serialization_error(
-                    "event graph plan must not carry scheduled entries or fault-plan rows",
+                    "event graph plan must not carry scheduled entries",
                 ));
             }
             Ok(SerializedPlanKind::EventGraph)
         }
-        None if toml.event.is_empty() && toml.fault_entry.is_empty() => {
-            Ok(SerializedPlanKind::ScheduledEntries)
-        }
+        None if toml.event.is_empty() => Ok(SerializedPlanKind::ScheduledEntries),
         None => {
-            if !toml.entry.is_empty() || (!toml.event.is_empty() && !toml.fault_entry.is_empty()) {
+            if !toml.entry.is_empty() {
                 return Err(scenario_serialization_error(
-                    "plan must not mix scheduled entries, fault-plan rows, and event graph rows",
+                    "plan must not mix scheduled entries and event graph rows",
                 ));
             }
-            if toml.fault_entry.is_empty() {
-                Ok(SerializedPlanKind::EventGraph)
-            } else {
-                Ok(SerializedPlanKind::FaultPlan)
-            }
+            Ok(SerializedPlanKind::EventGraph)
         }
     }
 }
@@ -1333,62 +1268,6 @@ pub(super) fn plan_entry_from_toml(toml: PlanEntryToml) -> Result<PlanEntry, Eng
             fault: membership_fault_from_toml(fault)?,
         },
         PlanEntryToml::Heal { at_ticks, tag } => PlanEntry::Heal {
-            at: VirtualTime { ticks: at_ticks },
-            tag: FaultTag { name: tag },
-        },
-    })
-}
-
-pub(super) fn fault_plan_entry_to_toml(entry: &FaultPlanEntry) -> FaultPlanEntryToml {
-    match entry {
-        FaultPlanEntry::At {
-            at,
-            duration,
-            tag,
-            fault,
-        } => FaultPlanEntryToml::At {
-            at_ticks: at.ticks,
-            duration_nanos: duration.nanos(),
-            tag: tag.name.clone(),
-            fault: fault_to_toml(fault),
-        },
-        FaultPlanEntry::PermanentAt { at, tag, fault } => FaultPlanEntryToml::PermanentAt {
-            at_ticks: at.ticks,
-            tag: tag.name.clone(),
-            fault: fault_to_toml(fault),
-        },
-        FaultPlanEntry::Heal { at, tag } => FaultPlanEntryToml::Heal {
-            at_ticks: at.ticks,
-            tag: tag.name.clone(),
-        },
-    }
-}
-
-pub(super) fn fault_plan_entry_from_toml(
-    toml: FaultPlanEntryToml,
-) -> Result<FaultPlanEntry, EngineError> {
-    Ok(match toml {
-        FaultPlanEntryToml::At {
-            at_ticks,
-            duration_nanos,
-            tag,
-            fault,
-        } => FaultPlanEntry::At {
-            at: VirtualTime { ticks: at_ticks },
-            duration: FaultDuration::from_nanos(duration_nanos),
-            tag: FaultTag { name: tag },
-            fault: fault_from_toml(fault)?,
-        },
-        FaultPlanEntryToml::PermanentAt {
-            at_ticks,
-            tag,
-            fault,
-        } => FaultPlanEntry::PermanentAt {
-            at: VirtualTime { ticks: at_ticks },
-            tag: FaultTag { name: tag },
-            fault: fault_from_toml(fault)?,
-        },
-        FaultPlanEntryToml::Heal { at_ticks, tag } => FaultPlanEntry::Heal {
             at: VirtualTime { ticks: at_ticks },
             tag: FaultTag { name: tag },
         },
