@@ -3051,6 +3051,52 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
                 },
             ),
         );
+        // Project-nested registry slugs have arbitrary depth. Axum wildcard
+        // routes overlap the explicit one- and two-segment browse routes, so
+        // unmatched GETs are decoded here after those more-specific routes
+        // have had first refusal. Delivery middleware still handles machine
+        // paths before routing; this fallback owns only nested registry homes
+        // and the reserved `/-/` browse namespace.
+        r = r.fallback(
+            |State(state): State<SharedState>,
+             method: Method,
+             headers: HeaderMap,
+             uri: axum::http::Uri| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    if method != Method::GET {
+                        return StatusCode::NOT_FOUND.into_response();
+                    }
+                    let nested = uri.path().trim_start_matches('/');
+                    let marker = format!("/{BROWSE_MARKER}/");
+                    if let Some((slug, rest)) = nested.split_once(&marker) {
+                        if slug.is_empty() || !slug.contains('/') {
+                            return StatusCode::NOT_FOUND.into_response();
+                        }
+                        return browse_dispatch(
+                            svc,
+                            headers,
+                            slug.to_string(),
+                            rest.to_string(),
+                            uri.query().map(str::to_owned),
+                        )
+                        .await;
+                    }
+                    let Some(slug) = nested.strip_suffix('/').filter(|slug| slug.contains('/'))
+                    else {
+                        return StatusCode::NOT_FOUND.into_response();
+                    };
+                    browse_dispatch(
+                        svc,
+                        headers,
+                        slug.to_string(),
+                        String::new(),
+                        uri.query().map(str::to_owned),
+                    )
+                    .await
+                })
+            },
+        );
     }
     // The native shell mounts its rate-limited exchange separately; Worker
     // uses this shared route.

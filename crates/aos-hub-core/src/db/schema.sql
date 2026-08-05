@@ -1856,7 +1856,8 @@ CREATE TABLE topology_event_outbox(
   CHECK(resource_generation_key >= 0),
   CHECK(length(payload_json) <= 1048576),
   CHECK(actor_kind IN('user', 'service_account', 'key', 'system')),
-  CHECK(resource_kind IN('registry', 'binary_cache', 'placement', 'domain',
+  CHECK(resource_kind IN('organization', 'project', 'storage_binding',
+    'registry', 'binary_cache', 'placement', 'domain',
     'network_boundary', 'delivery_endpoint', 'storage_gateway', 'delivery_route',
     'placement_policy', 'retention_subscription', 'population_target',
     'cache_gc_generation', 'storage_binding_credential', 'webhook'))

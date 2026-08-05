@@ -214,11 +214,18 @@ async fn serve_managed(
 }
 
 #[tokio::test]
-async fn nested_registry_home_packages_and_machine_path_resolve() {
+async fn nested_registry_browse_resolves_and_unpublished_bytes_fail_closed() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
+    let object_oid = std::fs::read_to_string(surface.join("info/refs"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let object_path = format!("objects/{}/{}", &object_oid[..2], &object_oid[2..]);
     let db = serve_managed(&surface, &fixture, "public").await;
     let app = router(app_state(db).await).await;
 
@@ -232,13 +239,17 @@ async fn nested_registry_home_packages_and_machine_path_resolve() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("curl"), "{body}");
 
-    // Nested machine path (HEAD) served byte-faithfully from the binding.
-    let (status, body) = get(&app, "/acme/infra/prod/cdn/HEAD", None, None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(
-        body.contains("ref:"),
-        "HEAD should carry a symbolic ref: {body}"
-    );
+    // Indexing alone does not constitute a typed publication. The route is
+    // ready (asserted by the shared fixture), but bytes without exact object
+    // presence evidence fail closed.
+    let (status, body) = get(
+        &app,
+        &format!("/acme/infra/prod/cdn/{object_path}"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 
     // A canonical-prefix sibling that is not a registry is a 404 (boundary).
     let (status, _) = get(&app, "/acme/infra/prod/cdn-staging/", None, None).await;
@@ -246,11 +257,18 @@ async fn nested_registry_home_packages_and_machine_path_resolve() {
 }
 
 #[tokio::test]
-async fn flat_explicit_route_resolves() {
+async fn flat_explicit_route_resolves_and_unpublished_bytes_fail_closed() {
     let dir = tempfile::tempdir().unwrap();
     let surface = dir.path().join("surface");
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
+    let object_oid = std::fs::read_to_string(surface.join("info/refs"))
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    let object_path = format!("objects/{}/{}", &object_oid[..2], &object_oid[2..]);
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
@@ -288,8 +306,8 @@ async fn flat_explicit_route_resolves() {
     assert!(body.contains("Fixture registry"), "{body}");
     let (status, _) = get(&app, "/demo/-/packages", None, None).await;
     assert_eq!(status, StatusCode::OK);
-    let (status, _) = get(&app, "/demo/HEAD", None, None).await;
-    assert_eq!(status, StatusCode::OK);
+    let (status, _) = get(&app, &format!("/demo/{object_path}"), None, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -357,15 +375,15 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
 
     let app = router(app_state(Arc::clone(&db)).await).await;
 
-    // Anonymous: 404 (existence is not disclosed), on home, page, and
-    // machine path alike.
-    for uri in [
-        "/acme/infra/prod/cdn/",
-        "/acme/infra/prod/cdn/-/packages",
-        "/acme/infra/prod/cdn/HEAD",
+    // Data delivery challenges for credentials, while the reserved browse
+    // control path remains non-disclosing.
+    for (uri, expected) in [
+        ("/acme/infra/prod/cdn/", StatusCode::UNAUTHORIZED),
+        ("/acme/infra/prod/cdn/-/packages", StatusCode::NOT_FOUND),
+        ("/acme/infra/prod/cdn/HEAD", StatusCode::UNAUTHORIZED),
     ] {
         let (status, _) = get(&app, uri, None, None).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "anon should not see {uri}");
+        assert_eq!(status, expected, "anon should not see {uri}");
     }
 
     // The member's session sees the registry.
@@ -374,13 +392,15 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("Fixture registry"), "{body}");
 
-    // A bearer token with Read on the registry scope also sees it.
+    // A bearer token with Read on the registry scope also sees its browse
+    // surface. Successful private byte delivery after a typed publication is
+    // covered by the signed-image end-to-end suite.
     let token = bearer(
         Principal::user(user),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Read],
     );
-    let (status, _) = get(&app, "/acme/infra/prod/cdn/HEAD", None, Some(&token)).await;
+    let (status, _) = get(&app, "/acme/infra/prod/cdn/-/packages", None, Some(&token)).await;
     assert_eq!(status, StatusCode::OK);
 }
 
@@ -410,7 +430,7 @@ async fn internal_registry_requires_org_membership() {
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     let (status, _) = get(&app, "/acme/infra/prod/cdn/", None, None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "anon hidden");
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "anon hidden");
 
     let cookie = format!("__Host-aos_session={outsider_session}");
     let (status, _) = get(&app, "/acme/infra/prod/cdn/", Some(&cookie), None).await;
@@ -425,6 +445,9 @@ async fn internal_registry_requires_org_membership() {
 async fn instance_home_lists_only_visible_registries() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
+    for path in ["p", "i", "s"] {
+        db.create_project(org, path, path).await.unwrap();
+    }
 
     // One registry per visibility level, all under acme. No binding/surface is
     // needed: the instance home only lists records and their index state.
@@ -499,7 +522,15 @@ async fn instance_home_lists_only_visible_registries() {
 
     // A bearer token granting Read only on the private scope reveals exactly
     // that registry (plus the always-public one), not the internal one.
-    let token = bearer(Principal::user(outsider), &private, &[Permission::Read]);
+    let private_scope = common::registry_scope(&db, &private).await;
+    db.grant_membership("user", outsider, &private_scope, Role::Viewer.as_str())
+        .await
+        .unwrap();
+    let token = bearer(
+        Principal::user(outsider),
+        &private_scope,
+        &[Permission::Read],
+    );
     let (status, body) = get(&app, "/", None, Some(&token)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(&public), "{body}");
@@ -549,7 +580,10 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     let owner_token = bearer(
         Principal::user(user),
         &org_scope,
-        &[Permission::RegistryConfigure, Permission::StorageManage],
+        &[
+            Permission::RegistryConfigure,
+            Permission::StorageBindingManage,
+        ],
     );
 
     // CreateProject.
@@ -575,9 +609,17 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
             "ownerScopeKey": org_scope,
             "spec": {
                 "name": "primary",
-                "kind": "local_fs",
-                "localRootPath": "/srv/aos-hub",
-                "accessMode": "private"
+                "s3": {
+                    "bucket": "acme-primary",
+                    "prefix": "hub",
+                    "endpoint": {
+                        "scheme": "https",
+                        "dnsName": "objects.example.com",
+                        "port": 443
+                    },
+                    "signingRegion": "us-east-1",
+                    "accessMode": "private"
+                }
             }
         }),
         Some(&owner_token),
@@ -586,8 +628,8 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(
-        value["storageBinding"]["spec"]["localRootPath"],
-        "/srv/aos-hub"
+        value["storageBinding"]["spec"]["s3"]["bucket"],
+        "acme-primary"
     );
 
     // Registry creation is identity-only; placement is a separate topology step.
@@ -600,7 +642,7 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
             "projectPath": "infra/prod",
             "name": "cdn",
             "visibility": "private",
-            "trustKeys": ["cdn:Ed25519:AAAA"]
+            "trustKeys": []
         }),
         Some(&owner_token),
         "create-registry",
@@ -703,7 +745,7 @@ async fn organization_plans_enforce_cas_replay_and_delete_grace() {
         Some(&manager),
     )
     .await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{stale}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{stale}");
 
     let updated_version = updated["organization"]["resourceVersion"].as_str().unwrap();
     let (status, deleted) = planned_rpc(
@@ -812,9 +854,10 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
         .await
         .unwrap();
     assert_eq!(grants.len(), 1);
+    let acme_scope = common::org_scope(&db, "acme").await;
     assert!(grants
         .iter()
-        .any(|(s, r)| s.as_str() == "acme" && *r == Role::Owner));
+        .any(|(s, r)| s.as_str() == acme_scope && *r == Role::Owner));
 }
 
 #[tokio::test]
