@@ -25,9 +25,9 @@ use crucible_debug_gateway::{
     BackendGeneration, DebugGateway, QemuRspEndpoint, RspSessionState, RspStreamDecoder, RspUnit,
 };
 use crucible_protocol::debug_gateway::{
-    DEBUG_GATEWAY_HEADER_LEN, DEBUG_GATEWAY_MAX_PAYLOAD, DebugGatewayErrorCode,
-    DebugGatewayErrorPayload, DebugGatewayFrame, DebugGatewayMessageKind,
-    decode_debug_gateway_frame,
+    DEBUG_GATEWAY_HEADER_LEN, DEBUG_GATEWAY_MAX_PAYLOAD, DebugGatewayBackendIdentity,
+    DebugGatewayBackendStatus, DebugGatewayErrorCode, DebugGatewayErrorPayload, DebugGatewayFrame,
+    DebugGatewayMessageKind, decode_debug_gateway_frame,
 };
 
 struct GatewayProcess {
@@ -79,6 +79,9 @@ impl GatewayProcess {
             }
             DebugGatewayMessageKind::BackendCommit => {
                 let generation = generation_payload(&frame.payload)?;
+                if self.model.active().map(|active| active.generation) == Some(generation) {
+                    return response(DebugGatewayMessageKind::Ack, 0, generation.0.to_be_bytes());
+                }
                 let Some((prepared_generation, stream)) = self.prepared.take() else {
                     return Err(String::from("no candidate QEMU RSP endpoint is prepared"));
                 };
@@ -90,7 +93,7 @@ impl GatewayProcess {
                     .commit_backend(generation)
                     .map_err(|error| error.to_string())?;
                 self._active = Some(stream);
-                response(DebugGatewayMessageKind::Ack, 0, Vec::new())
+                response(DebugGatewayMessageKind::Ack, 0, generation.0.to_be_bytes())
             }
             DebugGatewayMessageKind::BackendAbort => {
                 let generation = generation_payload(&frame.payload)?;
@@ -99,6 +102,17 @@ impl GatewayProcess {
                     .map_err(|error| error.to_string())?;
                 self.prepared = None;
                 response(DebugGatewayMessageKind::Ack, 0, Vec::new())
+            }
+            DebugGatewayMessageKind::BackendStatus => {
+                if !frame.payload.is_empty() {
+                    return Err(String::from("backend status request payload must be empty"));
+                }
+                let status = DebugGatewayBackendStatus {
+                    active: self.model.active().map(backend_identity),
+                    prepared: self.model.prepared().map(backend_identity),
+                };
+                let payload = status.encode().map_err(|error| error.to_string())?;
+                response(DebugGatewayMessageKind::BackendStatusAck, 0, payload)
             }
             DebugGatewayMessageKind::RspData => Err(String::from(
                 "RSP relay is disabled until the persistent asynchronous stream pump is active",
@@ -112,11 +126,21 @@ impl GatewayProcess {
             )),
             DebugGatewayMessageKind::HelloAck
             | DebugGatewayMessageKind::Ack
+            | DebugGatewayMessageKind::BackendStatusAck
             | DebugGatewayMessageKind::RunControl
             | DebugGatewayMessageKind::Error => {
                 Err(String::from("message kind is not a host request"))
             }
         }
+    }
+}
+
+fn backend_identity(
+    backend: &crucible_debug_gateway::PreparedBackend,
+) -> DebugGatewayBackendIdentity {
+    DebugGatewayBackendIdentity {
+        generation: backend.generation.0,
+        endpoint: backend.endpoint.as_str().to_owned(),
     }
 }
 
@@ -297,7 +321,8 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
     match kind {
         DebugGatewayMessageKind::BackendPrepare
         | DebugGatewayMessageKind::BackendCommit
-        | DebugGatewayMessageKind::BackendAbort => DebugGatewayErrorCode::BackendUnavailable,
+        | DebugGatewayMessageKind::BackendAbort
+        | DebugGatewayMessageKind::BackendStatus => DebugGatewayErrorCode::BackendUnavailable,
         DebugGatewayMessageKind::RspData
         | DebugGatewayMessageKind::ExecOpen
         | DebugGatewayMessageKind::PtyOpen
@@ -307,6 +332,7 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
         DebugGatewayMessageKind::Hello
         | DebugGatewayMessageKind::HelloAck
         | DebugGatewayMessageKind::Ack
+        | DebugGatewayMessageKind::BackendStatusAck
         | DebugGatewayMessageKind::RunControl
         | DebugGatewayMessageKind::Error => DebugGatewayErrorCode::InvalidRequest,
     }
@@ -387,6 +413,46 @@ mod tests {
         reader
     }
 
+    fn serve_frames(
+        process: &mut GatewayProcess,
+        frames: Vec<DebugGatewayFrame>,
+    ) -> Vec<DebugGatewayFrame> {
+        let mut bytes = Vec::new();
+        for frame in frames {
+            bytes.extend(
+                frame
+                    .encode()
+                    .unwrap_or_else(|error| panic!("request should encode: {error}")),
+            );
+        }
+        let (mut client, server) = UnixStream::pair()
+            .unwrap_or_else(|error| panic!("Unix stream pair should open: {error}"));
+        client
+            .write_all(&bytes)
+            .unwrap_or_else(|error| panic!("requests should write: {error}"));
+        client
+            .shutdown(std::net::Shutdown::Write)
+            .unwrap_or_else(|error| panic!("test client should half-close: {error}"));
+        serve_connection(process, server)
+            .unwrap_or_else(|error| panic!("requests should be served: {error}"));
+
+        let mut replies = Vec::new();
+        while let Some(bytes) =
+            read_frame(&mut client).unwrap_or_else(|error| panic!("reply should read: {error}"))
+        {
+            replies.push(
+                decode_debug_gateway_frame(&bytes)
+                    .unwrap_or_else(|error| panic!("reply should decode: {error}")),
+            );
+        }
+        replies
+    }
+
+    fn hello() -> DebugGatewayFrame {
+        DebugGatewayFrame::v1(DebugGatewayMessageKind::Hello, 0, b"v1".to_vec())
+            .unwrap_or_else(|error| panic!("hello should build: {error}"))
+    }
+
     #[test]
     fn partial_header_is_a_connection_error_without_mutating_process_state() {
         let mut process = GatewayProcess::new();
@@ -450,5 +516,70 @@ mod tests {
         let bounded = bounded_diagnostic(&message);
         assert_eq!(bounded.chars().count(), 515);
         assert!(bounded.ends_with("..."));
+    }
+
+    #[test]
+    fn reconnect_recovers_prepare_whose_acknowledgement_was_lost() {
+        let mut process = GatewayProcess::new();
+        let endpoint = QemuRspEndpoint::new("/run/crucible/qemu-candidate.sock")
+            .unwrap_or_else(|error| panic!("candidate endpoint should build: {error}"));
+        let prepared = process
+            .model
+            .prepare_backend(endpoint)
+            .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
+        let (stream, peer) = UnixStream::pair()
+            .unwrap_or_else(|error| panic!("backend stream pair should open: {error}"));
+        drop(peer);
+        process.prepared = Some((prepared.generation, stream));
+
+        let status = DebugGatewayFrame::v1(DebugGatewayMessageKind::BackendStatus, 0, Vec::new())
+            .unwrap_or_else(|error| panic!("status request should build: {error}"));
+        let replies = serve_frames(&mut process, vec![hello(), status]);
+        let recovered = DebugGatewayBackendStatus::decode(&replies[1].payload)
+            .unwrap_or_else(|error| panic!("status should decode: {error}"));
+
+        assert_eq!(replies[1].kind, DebugGatewayMessageKind::BackendStatusAck);
+        assert_eq!(
+            recovered.prepared.map(|identity| identity.generation),
+            Some(prepared.generation.0)
+        );
+        assert!(recovered.active.is_none());
+    }
+
+    #[test]
+    fn reconnect_repeats_commit_whose_acknowledgement_was_lost() {
+        let mut process = GatewayProcess::new();
+        let endpoint = QemuRspEndpoint::new("/run/crucible/qemu-candidate.sock")
+            .unwrap_or_else(|error| panic!("candidate endpoint should build: {error}"));
+        let prepared = process
+            .model
+            .prepare_backend(endpoint)
+            .unwrap_or_else(|error| panic!("candidate should prepare: {error}"));
+        let (stream, peer) = UnixStream::pair()
+            .unwrap_or_else(|error| panic!("backend stream pair should open: {error}"));
+        drop(peer);
+        process.prepared = Some((prepared.generation, stream));
+        let commit = DebugGatewayFrame::v1(
+            DebugGatewayMessageKind::BackendCommit,
+            0,
+            prepared.generation.0.to_be_bytes(),
+        )
+        .unwrap_or_else(|error| panic!("commit should build: {error}"));
+
+        let _lost_reply = process
+            .handle(commit.clone())
+            .unwrap_or_else(|error| panic!("first commit should succeed: {error}"));
+        let status = DebugGatewayFrame::v1(DebugGatewayMessageKind::BackendStatus, 0, Vec::new())
+            .unwrap_or_else(|error| panic!("status request should build: {error}"));
+        let replies = serve_frames(&mut process, vec![hello(), commit, status]);
+        let recovered = DebugGatewayBackendStatus::decode(&replies[2].payload)
+            .unwrap_or_else(|error| panic!("status should decode: {error}"));
+
+        assert_eq!(replies[1].kind, DebugGatewayMessageKind::Ack);
+        assert_eq!(
+            recovered.active.map(|identity| identity.generation),
+            Some(prepared.generation.0)
+        );
+        assert!(recovered.prepared.is_none());
     }
 }
