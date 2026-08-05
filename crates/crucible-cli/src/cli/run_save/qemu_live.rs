@@ -219,11 +219,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         } else {
             execute_qemu_fuzz_iterations(&config, &runtime, &run, "guided", plan, backend_plan)?
         };
-    execution.feedback.extend(guided_execution.feedback);
-    execution.findings.extend(guided_execution.findings);
-    execution
-        .reproduction_artifacts
-        .extend(guided_execution.reproduction_artifacts);
+    merge_qemu_fuzz_execution(&mut execution, guided_execution)?;
     report.property_findings = execution
         .findings
         .iter()
@@ -461,6 +457,26 @@ fn push_qemu_fuzz_finding(
     }
     execution.findings.push(evidence);
     execution.reproduction_artifacts.push(reproduction);
+    Ok(())
+}
+
+fn merge_qemu_fuzz_execution(
+    target: &mut QemuFuzzExecution,
+    source: QemuFuzzExecution,
+) -> Result<(), CliError> {
+    if source.findings.len() != source.reproduction_artifacts.len() {
+        return Err(artifact_error(
+            "fuzz phase produced mismatched finding and reproduction counts",
+        ));
+    }
+    target.feedback.extend(source.feedback);
+    for (evidence, reproduction) in source
+        .findings
+        .into_iter()
+        .zip(source.reproduction_artifacts)
+    {
+        push_qemu_fuzz_finding(target, evidence, reproduction)?;
+    }
     Ok(())
 }
 
@@ -723,7 +739,9 @@ mod finding_tests {
         )?;
         let mut execution = QemuFuzzExecution::default();
         push_qemu_fuzz_finding(&mut execution, evidence.clone(), vec![1, 2, 3])?;
-        push_qemu_fuzz_finding(&mut execution, evidence.clone(), vec![1, 2, 3])?;
+        let mut guided = QemuFuzzExecution::default();
+        push_qemu_fuzz_finding(&mut guided, evidence.clone(), vec![1, 2, 3])?;
+        merge_qemu_fuzz_execution(&mut execution, guided)?;
         assert_eq!(execution.findings.len(), 1);
         assert_eq!(execution.reproduction_artifacts.len(), 1);
         assert!(push_qemu_fuzz_finding(&mut execution, evidence, vec![4, 5, 6]).is_err());
