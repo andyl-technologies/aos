@@ -1,3 +1,5 @@
+schema = "crucible.scenario.v2"
+
 [scenario]
 id = "blake3:4d958959578e2e9e8cf538ae1379f0d5c81b2332bd5e79904d0c4d6975b672d0"
 seed = "0x0002000000000000000000000000000000000000000000000000000000000000"
@@ -45,8 +47,20 @@ loss_millionths = 0
 
 [plan]
 id = "blake3:8958e8f640e779d35019cc15505ad706e9b9a196836fba8e1d716ddc740707d8"
+fault_model = "signal_bindings_v1"
 fault_signal_semantic_version = 1
 kind = "event_graph"
+
+[plan.resource_limits]
+nodes = 16384
+edges = 65536
+inputs_per_node = 64
+graph_depth = 4096
+state_bytes = 67108864
+authored_payload_bytes = 16777216
+states_per_node = 4096
+transitions_per_node = 16384
+lookup_points_per_node = 65536
 
 [[plan.event]]
 id = "pass-on-http-200"

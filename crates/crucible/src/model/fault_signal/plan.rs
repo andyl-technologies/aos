@@ -13,8 +13,12 @@ use std::io;
 
 use super::*;
 
-/// Maximum distinct signal programs in one scenario.
-pub const HARD_FAULT_SIGNAL_PROGRAM_LIMIT: usize = 16_384;
+/// Exact maximum signal graphs in one scenario plan.
+///
+/// Public v2 authoring owns one flat `plan.signal` graph. Independent physical
+/// causes are disconnected components in that graph rather than separately
+/// addressable program containers.
+pub const HARD_FAULT_SIGNAL_PROGRAM_LIMIT: usize = 1;
 /// Maximum deterministic persistence bytes for one admitted fault layer.
 pub const HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES: usize = 256 * 1024 * 1024;
 
@@ -60,6 +64,10 @@ impl FaultSignalPlan {
         mut programs: Vec<SignalProgram>,
         mut bindings: Vec<FaultBinding>,
     ) -> Result<Self, FaultSignalPlanError> {
+        programs.sort_by_key(SignalProgram::id);
+        if programs.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
+            return Err(FaultSignalPlanError::DuplicateProgram);
+        }
         if programs.len() > HARD_FAULT_SIGNAL_PROGRAM_LIMIT {
             return Err(FaultSignalPlanError::TooManyPrograms {
                 actual: programs.len(),
@@ -71,10 +79,6 @@ impl FaultSignalPlan {
                 actual: bindings.len(),
                 hard: HARD_FAULT_BINDING_LIMIT,
             });
-        }
-        programs.sort_by_key(SignalProgram::id);
-        if programs.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
-            return Err(FaultSignalPlanError::DuplicateProgram);
         }
         bindings.sort_by(|left, right| left.id().cmp(right.id()));
         if bindings.windows(2).any(|pair| pair[0].id() == pair[1].id()) {

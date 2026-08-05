@@ -168,47 +168,13 @@ impl FaultSignalPlanWire {
             .collect::<Result<Vec<_>, _>>()?;
         FaultSignalPlan::new(programs, bindings).map_err(FaultSignalWireError::Plan)
     }
-
-    /// Converts authored rows into TOML-safe values without narrowing `u64`.
-    pub(crate) fn to_toml_rows(
-        &self,
-    ) -> Result<(Vec<toml::Value>, Vec<toml::Value>), FaultSignalTomlWireError> {
-        let programs = self
-            .signal_program
-            .iter()
-            .map(to_toml_value)
-            .collect::<Result<Vec<_>, _>>()?;
-        let bindings = self
-            .fault_binding
-            .iter()
-            .map(to_toml_value)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok((programs, bindings))
-    }
-
-    /// Reconstructs authored rows from TOML-safe values.
-    pub(crate) fn from_toml_rows(
-        semantic_version: u16,
-        programs: Vec<toml::Value>,
-        bindings: Vec<toml::Value>,
-    ) -> Result<Self, FaultSignalTomlWireError> {
-        Ok(Self {
-            semantic_version,
-            signal_program: programs
-                .into_iter()
-                .map(from_toml_value)
-                .collect::<Result<Vec<_>, _>>()?,
-            fault_binding: bindings
-                .into_iter()
-                .map(from_toml_value)
-                .collect::<Result<Vec<_>, _>>()?,
-        })
-    }
 }
 
 const TOML_U64_PREFIX: &str = "u64:";
 
-fn to_toml_value<T: Serialize>(value: &T) -> Result<toml::Value, FaultSignalTomlWireError> {
+pub(super) fn to_toml_value<T: Serialize>(
+    value: &T,
+) -> Result<toml::Value, FaultSignalTomlWireError> {
     json_to_toml(serde_json::to_value(value).map_err(FaultSignalTomlWireError::Json)?)?
         .ok_or(FaultSignalTomlWireError::TopLevelNull)
 }
@@ -245,7 +211,7 @@ fn json_to_toml(value: serde_json::Value) -> Result<Option<toml::Value>, FaultSi
     })
 }
 
-fn from_toml_value<T: for<'de> Deserialize<'de>>(
+pub(super) fn from_toml_value<T: for<'de> Deserialize<'de>>(
     value: toml::Value,
 ) -> Result<T, FaultSignalTomlWireError> {
     serde_json::from_value(toml_to_json(value)?).map_err(FaultSignalTomlWireError::Json)
@@ -416,7 +382,7 @@ impl SignalProgramWire {
 }
 
 impl FaultBindingWire {
-    fn from_binding(binding: &FaultBinding) -> Self {
+    pub(super) fn from_binding(binding: &FaultBinding) -> Self {
         Self {
             id: binding.id().clone(),
             program: binding.program(),
@@ -440,7 +406,10 @@ impl FaultBindingWire {
         }
     }
 
-    fn admit(self, program: &SignalProgram) -> Result<FaultBinding, FaultSignalWireError> {
+    pub(super) fn admit(
+        self,
+        program: &SignalProgram,
+    ) -> Result<FaultBinding, FaultSignalWireError> {
         validate_mapping_declarations(
             &self.mapping,
             self.transition_declaration.as_ref(),

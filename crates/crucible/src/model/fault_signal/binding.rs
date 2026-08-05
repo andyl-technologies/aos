@@ -918,6 +918,16 @@ pub struct BindingObservabilityPolicy {
     pub retain_mapped_values: bool,
 }
 
+impl Default for BindingObservabilityPolicy {
+    fn default() -> Self {
+        Self {
+            samples: SampleObservation::ChangesAndEffects,
+            record_inactive_opportunities: false,
+            retain_mapped_values: true,
+        }
+    }
+}
+
 /// One fully admitted signal-to-effect binding.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct FaultBinding {

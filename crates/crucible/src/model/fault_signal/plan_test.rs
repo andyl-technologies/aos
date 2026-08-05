@@ -1,8 +1,52 @@
 use super::*;
 use crate::model::{
-    MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES, Plan,
-    ScenarioBinaryReader, ScenarioBinaryWriter, World,
+    Icount, LinkDef, MAX_REPRODUCTION_SCENARIO_BLOB_BYTES, MAX_SCENARIO_BINARY_BLOB_BYTES, NodeId,
+    Plan, ReadyPoint, ScenarioBinaryReader, ScenarioBinaryWriter, VmArchitecture, WhiteBoxPolicy,
+    World, WorldNode,
 };
+
+fn test_link() -> LinkDef {
+    LinkDef::new(
+        NodeId {
+            name: String::from("left"),
+        },
+        NodeId {
+            name: String::from("right"),
+        },
+    )
+    .unwrap_or_else(|error| panic!("test link: {error}"))
+}
+
+fn test_segment_id() -> FaultObjectId {
+    test_link()
+        .fault_segment_id()
+        .unwrap_or_else(|error| panic!("test segment ID: {error}"))
+}
+
+fn test_world() -> World {
+    let nodes = ["left", "right"]
+        .into_iter()
+        .map(|name| WorldNode {
+            id: NodeId {
+                name: name.to_owned(),
+            },
+            arch: VmArchitecture::X86_64,
+            memory_mib: 128,
+            cmdline: String::new(),
+            ready_point: ReadyPoint::FixedIcount {
+                icount: Icount { retired: 0 },
+            },
+            white_box: WhiteBoxPolicy::Disabled,
+            smp_vcpus: 1,
+            icount_shift: 0,
+            kernel: None,
+            root_image: None,
+            initrd: None,
+        })
+        .collect();
+    World::from_nodes_and_links(nodes, vec![test_link()])
+        .unwrap_or_else(|error| panic!("test world: {error}"))
+}
 
 fn signal_id(value: &str) -> SignalId {
     SignalId::parse(value).unwrap_or_else(|error| panic!("invalid test signal ID: {error}"))
@@ -38,7 +82,7 @@ fn binding(program: &SignalProgram) -> FaultBinding {
 fn binding_with_sampling(program: &SignalProgram, sampling: BindingSampling) -> FaultBinding {
     let target = ResolvedTargetSet::new(
         vec![ResolvedFaultTarget::NetworkSegment {
-            segment: object_id("segment-a"),
+            segment: test_segment_id(),
             direction: FaultDirection::AToB,
         }],
         false,
@@ -93,22 +137,83 @@ fn u64_program(value: u64) -> SignalProgram {
     .unwrap_or_else(|error| panic!("invalid u64 program: {error}"))
 }
 
+fn periodic_pulse_program() -> SignalProgram {
+    let output = signal_id("maintenance-window");
+    SignalProgram::new(
+        vec![SignalNode {
+            id: output.clone(),
+            domain: SignalDomain::VirtualTime,
+            output: SignalShape::new(SignalValueType::Bool, SignalUnit::Dimensionless, 0)
+                .unwrap_or_else(|error| panic!("invalid pulse shape: {error}")),
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Source(SignalSourceSpecification::PeriodicPulse {
+                epoch: SignalCoordinate::VirtualTime { nanos: 10 },
+                period: 100,
+                width: 25,
+                phase: 5,
+                inactive: SignalValue::Bool(false),
+                active: SignalValue::Bool(true),
+            }),
+        }],
+        vec![output],
+        SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid pulse program: {error}"))
+}
+
+fn trace_program() -> SignalProgram {
+    let output = signal_id("recorded-vibration");
+    SignalProgram::new(
+        vec![SignalNode {
+            id: output.clone(),
+            domain: SignalDomain::VirtualTime,
+            output: SignalShape::new(
+                SignalValueType::U64,
+                SignalUnit::MicrometresPerSecondSquared,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("invalid trace shape: {error}")),
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Source(SignalSourceSpecification::Trace {
+                artifact: ContentHash::from_bytes(b"normalized-vibration"),
+                raw_provenance: ContentHash::from_bytes(b"raw-vibration"),
+                channel: signal_id("acceleration-rms"),
+                quality_channel: None,
+                quality_accept: None,
+                interpolation: SignalInterpolation::Linear {
+                    rounding: SignalRounding::NearestTiesToEven,
+                    overflow: SignalOverflow::Error,
+                },
+                before: SignalBoundaryBehavior::Error,
+                after: SignalBoundaryBehavior::Constant(SignalValue::U64(7)),
+                missing: MissingSampleBehavior::Error,
+                time_mapping: Some(TraceTimeMapping {
+                    source_epoch: 1_720_000_000_000_000_000,
+                    virtual_epoch_nanos: 0,
+                    scale: ExactRatio::new(1, 1)
+                        .unwrap_or_else(|error| panic!("trace scale: {error}")),
+                    rounding: SignalRounding::Floor,
+                }),
+            }),
+        }],
+        vec![output],
+        SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid trace program: {error}"))
+}
+
 #[test]
-fn program_order_is_canonical_and_duplicates_fail_closed() {
+fn one_plan_level_graph_is_required_and_duplicates_fail_closed() {
     let first = program(false);
     let second = program(true);
-    let plan = FaultSignalPlan::new(vec![second.clone(), first.clone()], Vec::new())
-        .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
-    assert!(
-        plan.programs()
-            .windows(2)
-            .all(|pair| pair[0].id() < pair[1].id())
-    );
+    assert!(matches!(
+        FaultSignalPlan::new(vec![second, first.clone()], Vec::new()),
+        Err(FaultSignalPlanError::TooManyPrograms { hard: 1, .. })
+    ));
     assert!(matches!(
         FaultSignalPlan::new(vec![first.clone(), first], Vec::new()),
         Err(FaultSignalPlanError::DuplicateProgram)
     ));
-    assert_ne!(plan.id(), FaultSignalPlan::empty().id());
 }
 
 #[test]
@@ -137,24 +242,16 @@ fn plan_toml_round_trips_an_admitted_signal_program() {
     let encoded = plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode fault signal plan: {error}"));
-    let decoded = Plan::from_canonical_toml_for_world(
-        &World::from_content_hash(ContentHash::default()),
-        &encoded,
-    )
-    .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
+    let decoded = Plan::from_canonical_toml_for_world(&test_world(), &encoded)
+        .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
 
     assert_eq!(decoded, plan);
-    assert!(encoded.contains("[[signal_program]]"));
+    assert!(encoded.contains("[[signal]]"));
+    assert!(!encoded.contains("signal_program"));
     assert!(encoded.contains("fault_signal_semantic_version = 1"));
 
     let without_version = encoded.replace("fault_signal_semantic_version = 1\n", "");
-    assert!(
-        Plan::from_canonical_toml_for_world(
-            &World::from_content_hash(ContentHash::default()),
-            &without_version,
-        )
-        .is_err()
-    );
+    assert!(Plan::from_canonical_toml_for_world(&test_world(), &without_version,).is_err());
 }
 
 #[test]
@@ -167,14 +264,92 @@ fn plan_toml_round_trips_a_complete_binding_contract() {
     let encoded = plan
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode fault signal plan: {error}"));
-    let decoded = Plan::from_canonical_toml_for_world(
-        &World::from_content_hash(ContentHash::default()),
-        &encoded,
-    )
-    .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
+    let decoded = Plan::from_canonical_toml_for_world(&test_world(), &encoded)
+        .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
 
     assert_eq!(decoded, plan);
     assert!(encoded.contains("[[fault_binding]]"));
+    assert!(encoded.contains("kind = \"network.availability\""));
+    assert!(encoded.contains("kind = \"network_segment\""));
+    assert!(!encoded.contains("parameters ="));
+}
+
+#[test]
+fn singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns() {
+    let program = program(true);
+    let binding = binding(&program);
+    let plan = Plan::empty().with_fault_signals(
+        FaultSignalPlan::new(vec![program], vec![binding])
+            .unwrap_or_else(|error| panic!("binding plan: {error}")),
+    );
+    let canonical = plan
+        .to_canonical_toml()
+        .unwrap_or_else(|error| panic!("encode binding plan: {error}"));
+    let alias = canonical.replace("signals = [\"true-output\"]", "signal = \"true-output\"");
+    let decoded = Plan::from_canonical_toml_for_world(&test_world(), &alias)
+        .unwrap_or_else(|error| panic!("decode singleton alias: {error}"));
+    assert_eq!(decoded, plan);
+    assert!(
+        decoded
+            .to_canonical_toml()
+            .unwrap_or_else(|error| panic!("canonicalize singleton alias: {error}"))
+            .contains("signals = [\"true-output\"]")
+    );
+
+    let unknown_mapping = canonical.replace(
+        "invert = false\nkind = \"active_when_true\"",
+        "invert = false\nkind = \"active_when_true\"\nunknown = 1",
+    );
+    assert!(Plan::from_canonical_toml_for_world(&test_world(), &unknown_mapping,).is_err());
+
+    for rejected in [
+        canonical.replace("kind = \"network_segment\"", "kind = \"sensor_channel\""),
+        canonical.replace(
+            "kind = \"network.availability\"",
+            "kind = \"sensor.dropout\"",
+        ),
+    ] {
+        assert!(Plan::from_canonical_toml_for_world(&test_world(), &rejected,).is_err());
+    }
+}
+
+#[test]
+fn plan_toml_round_trips_flat_analytic_source_fields() {
+    let plan = Plan::empty().with_fault_signals(
+        FaultSignalPlan::new(vec![periodic_pulse_program()], Vec::new())
+            .unwrap_or_else(|error| panic!("pulse plan: {error}")),
+    );
+    let encoded = plan
+        .to_canonical_toml()
+        .unwrap_or_else(|error| panic!("encode pulse plan: {error}"));
+    let decoded = Plan::from_canonical_toml_for_world(&test_world(), &encoded)
+        .unwrap_or_else(|error| panic!("decode pulse plan: {error}"));
+
+    assert_eq!(decoded, plan);
+    assert!(encoded.contains("kind = \"periodic_pulse\""));
+    assert!(!encoded.contains("kind = \"source\""));
+    assert!(!encoded.contains("parameters ="));
+}
+
+#[test]
+fn plan_toml_round_trips_flat_trace_arithmetic_and_boundaries() {
+    let plan = Plan::empty().with_fault_signals(
+        FaultSignalPlan::new(vec![trace_program()], Vec::new())
+            .unwrap_or_else(|error| panic!("trace plan: {error}")),
+    );
+    let encoded = plan
+        .to_canonical_toml()
+        .unwrap_or_else(|error| panic!("encode trace plan: {error}"));
+    let decoded = Plan::from_canonical_toml_for_world(&test_world(), &encoded)
+        .unwrap_or_else(|error| panic!("decode trace plan: {error}"));
+
+    assert_eq!(decoded, plan);
+    assert!(encoded.contains("interpolation = \"linear\""));
+    assert!(encoded.contains("rounding = \"nearest_ties_to_even\""));
+    assert!(encoded.contains("after = \"constant\""));
+    assert!(encoded.contains("after_value = 7"));
+    assert!(encoded.contains("numerator = 1"));
+    assert!(!encoded.contains("scale ="));
 }
 
 #[test]
@@ -185,23 +360,14 @@ fn plan_binary_round_trips_a_complete_binding_contract() {
         .unwrap_or_else(|error| panic!("fault plan admission failed: {error}"));
     let plan = Plan::empty().with_fault_signals(faults);
     let encoded = plan.to_compact_binary();
-    let decoded = Plan::from_compact_binary_for_world(
-        &World::from_content_hash(ContentHash::default()),
-        &encoded,
-    )
-    .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
+    let decoded = Plan::from_compact_binary_for_world(&test_world(), &encoded)
+        .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
 
     assert_eq!(decoded, plan);
     assert!(encoded.starts_with(b"crucible.plan.v3\0"));
     let mut old_magic = encoded.clone();
     old_magic[..b"crucible.plan.v3\0".len()].copy_from_slice(b"crucible.plan.v2\0");
-    assert!(
-        Plan::from_compact_binary_for_world(
-            &World::from_content_hash(ContentHash::default()),
-            &old_magic,
-        )
-        .is_err()
-    );
+    assert!(Plan::from_compact_binary_for_world(&test_world(), &old_magic,).is_err());
 }
 
 #[test]
@@ -335,11 +501,8 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
         .unwrap_or_else(|error| panic!("encode u64::MAX signal: {error}"));
     assert!(numeric_toml.contains("u64:18446744073709551615"));
     assert_eq!(
-        Plan::from_canonical_toml_for_world(
-            &World::from_content_hash(ContentHash::default()),
-            &numeric_toml,
-        )
-        .unwrap_or_else(|error| panic!("decode u64::MAX signal: {error}")),
+        Plan::from_canonical_toml_for_world(&test_world(), &numeric_toml,)
+            .unwrap_or_else(|error| panic!("decode u64::MAX signal: {error}")),
         numeric_plan,
     );
 
@@ -359,11 +522,8 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode max cadence: {error}"));
     assert_eq!(
-        Plan::from_canonical_toml_for_world(
-            &World::from_content_hash(ContentHash::default()),
-            &cadence_toml,
-        )
-        .unwrap_or_else(|error| panic!("decode max cadence: {error}")),
+        Plan::from_canonical_toml_for_world(&test_world(), &cadence_toml,)
+            .unwrap_or_else(|error| panic!("decode max cadence: {error}")),
         cadence_plan,
     );
 }
