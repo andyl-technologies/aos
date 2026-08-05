@@ -2,8 +2,7 @@
 //!
 //! RFC-0004 chapter 14 moves the request hot path's point-key state — sessions,
 //! API tokens, instance config, the host→registry routing table, trust rosters —
-//! off D1 (which carries a ~120 ms per-request session cost) and onto **Workers
-//! KV**, whose hot reads are sub-ms and edge-cached. This is the Worker's
+//! in **Workers KV**, whose hot reads are edge-cached. This is the Worker's
 //! [`KvStore`](aos_hub_core::kv::KvStore) impl over a bound KV namespace (the
 //! `SESSIONS` binding, see [`crate::handlers::bindings`]); the native hub
 //! supplies an in-process [`InMemoryKv`](aos_hub_core::kv::InMemoryKv) (or a

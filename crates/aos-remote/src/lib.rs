@@ -28,11 +28,12 @@ pub mod hub;
 /// The hub's REST `POST /oauth2/token` login exchange (provisioning secret -> JWT).
 pub mod login;
 
+/// Generated Connect-JSON messages for advanced Hub API clients.
+pub use aos_proto_types as hub_types;
 pub use client::AosClient;
-pub use hub::{
-    CreatePlacementInput, HubClient, HubSurfaceRef, UpdatePlacementInput, UploadCredentials,
-};
-pub use login::{exchange_token, TokenGrant};
+pub use hub::hub_rpc;
+pub use hub::{HubClient, HubRpc, HubSurfaceRef};
+pub use login::{TokenGrant, exchange_token};
 
 // Re-export proto types that consumers need.
 pub use aos_proto::aos::build::v1::BuildEvent;
@@ -41,9 +42,5 @@ pub use aos_proto::aos::gc::v1::{EvictionCandidate, GcResponse};
 // (RFC-0004 Phase 5), so the `aos hub …` CLI consumes these from
 // `aos-proto-types` rather than the connectrpc `aos-proto` types.
 pub use aos_proto_types::{
-    AuditEntry, Binding, ChangeRequest, Changeset, Channel, DeletePlacementResponse,
-    DrainPlacementResponse, GitCommit, InstanceSettings, Org, Package, PackageSummary, Placement,
-    PlacementHashRange, PlacementMutationPlan, PlacementObservation, PlacementPromotionPlan,
-    PlacementSpec, PlacementStatus, Project, Registry, Release, RemoveWriteAuthorityPlan,
-    SurfaceWriteAuthority, Webhook,
+    HashRangeV1, Placement, PlacementObservation, PlacementSpec, PlacementStatus,
 };

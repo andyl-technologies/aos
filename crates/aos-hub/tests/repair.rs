@@ -15,6 +15,8 @@
 //!   target facade with an internally minted bearer JWT. The target binding
 //!   ends up holding the narinfo + NAR and the repair job is recorded `done`.
 
+mod common;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -52,9 +54,14 @@ async fn app_state(db: Arc<Database>, external_url: &str) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: hardened_client().await,
+        image_snapshots: None,
         mailer: Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -123,22 +130,11 @@ async fn create_managed_with_keys(
     trust_keys: &[String],
 ) -> i64 {
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", binding_root.to_str().unwrap())
+    let binding =
+        common::create_local_binding(&db, org, "primary", binding_root.to_str().unwrap()).await;
+    db.create_managed_registry(org, "infra/prod", "cdn", visibility, trust_keys, false)
         .await
-        .unwrap();
-    db.create_managed_registry(
-        org,
-        "infra/prod",
-        "cdn",
-        visibility,
-        Some(binding),
-        "cdn",
-        trust_keys,
-        false,
-    )
-    .await
-    .unwrap()
+        .unwrap()
 }
 
 /// [`create_managed_with_visibility`] with `private` visibility.

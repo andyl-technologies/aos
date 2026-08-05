@@ -20,6 +20,7 @@ use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
+use serde::Deserialize;
 use tower::ServiceExt;
 
 /// Deterministic HS256 key so tests can mint matching JWTs.
@@ -42,9 +43,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: std::sync::Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -71,17 +77,12 @@ async fn empty_managed(visibility: &str) -> (Arc<Database>, PathBuf) {
     let root = tempfile::tempdir().unwrap().keep();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", root.to_str().unwrap())
-        .await
-        .unwrap();
+    let binding = common::create_local_binding(&db, org, "primary", root.to_str().unwrap()).await;
     db.create_managed_registry(
         org,
         "infra/prod",
         "cdn",
         visibility,
-        Some(binding),
-        "cdn",
         &[],
         false, // no signature requirement: fixture is signed but trust keys are not pinned
     )
@@ -160,6 +161,43 @@ async fn get(app: &axum::Router, uri: &str, auth: Option<&str>) -> (StatusCode, 
     (status, body.to_vec())
 }
 
+#[derive(Deserialize)]
+struct MultipartInitiateResponse {
+    upload_id: String,
+}
+
+#[derive(Deserialize)]
+struct MultipartPartResponse {
+    part_number: u32,
+    etag: String,
+}
+
+async fn multipart_request(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Vec<u8>,
+) -> (StatusCode, Vec<u8>) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, body.to_vec())
+}
+
 #[tokio::test]
 async fn publish_through_hub_indexes_and_serves() {
     // Build a real surface in a scratch dir (not the binding root).
@@ -212,6 +250,62 @@ async fn publish_through_hub_indexes_and_serves() {
     assert_eq!(status, StatusCode::OK);
     let html = String::from_utf8_lossy(&body);
     assert!(html.contains("curl"), "package should be indexed: {html}");
+}
+
+#[tokio::test]
+async fn nested_registry_multipart_parts_are_concurrency_safe_through_native_router() {
+    let (db, binding_root) = empty_managed("public").await;
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let token = bearer(
+        "multipart-publisher",
+        Principal::service_account(1),
+        "acme/infra/prod/cdn",
+        &[Permission::Publish],
+    );
+    let path = "/acme/infra/prod/cdn/nar/concurrent.nar";
+    let (status, body) = multipart_request(
+        &app,
+        "POST",
+        &format!("{path}?uploads&size=8"),
+        &token,
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let initiated: MultipartInitiateResponse = serde_json::from_slice(&body).unwrap();
+
+    let first_uri = format!("{path}?uploadId={}&partNumber=1", initiated.upload_id);
+    let second_uri = format!("{path}?partNumber=2&uploadId={}", initiated.upload_id);
+    let (first, second) = tokio::join!(
+        multipart_request(&app, "PUT", &first_uri, &token, b"abcd".to_vec()),
+        multipart_request(&app, "PUT", &second_uri, &token, b"efgh".to_vec()),
+    );
+    assert_eq!(first.0, StatusCode::OK);
+    assert_eq!(second.0, StatusCode::OK);
+    let first: MultipartPartResponse = serde_json::from_slice(&first.1).unwrap();
+    let second: MultipartPartResponse = serde_json::from_slice(&second.1).unwrap();
+    assert_eq!((first.part_number, second.part_number), (1, 2));
+
+    let complete = serde_json::to_vec(&serde_json::json!({
+        "parts": [
+            {"part_number": first.part_number, "etag": first.etag},
+            {"part_number": second.part_number, "etag": second.etag},
+        ]
+    }))
+    .unwrap();
+    let (status, _) = multipart_request(
+        &app,
+        "POST",
+        &format!("{path}?uploadId={}", initiated.upload_id),
+        &token,
+        complete,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        std::fs::read(binding_root.join("nar/concurrent.nar")).unwrap(),
+        b"abcdefgh"
+    );
 }
 
 #[tokio::test]
@@ -422,14 +516,9 @@ async fn unowned_phase1_registry_is_not_writable() {
     let fixture = common::standard_registry(&surface);
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    db.register_registry(
-        "demo",
-        surface.to_str().unwrap(),
-        std::slice::from_ref(&fixture.trust_key),
-        true,
-    )
-    .await
-    .unwrap();
+    db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
+        .await
+        .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Even with a valid Publish token, a phase-1 registry with no storage

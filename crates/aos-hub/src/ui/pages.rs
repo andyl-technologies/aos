@@ -21,13 +21,13 @@
 use std::time::Instant;
 
 pub use aos_hub_core::web::browse_pages::{
-    channel_grid_pre, PackageBrowse, PackageClosure, ResolvedDependency, SortColumn, SortDir,
-    LIST_PER_PAGE, PACKAGES_PER_PAGE,
+    channel_grid_pre, DeliveryRouteHealthRow, ImageBrowse, PackageBrowse, PackageClosure,
+    ResolvedDependency, SortColumn, SortDir, LIST_PER_PAGE, PACKAGES_PER_PAGE,
 };
 
 use aos_hub_core::db::{
-    CacheProbeRow, ChannelSummary, FrontendProbeRow, FrontendRecord, IndexStatus, PackageDetail,
-    PackageRow, RegistryRecord, ReleaseRow, RepairJobRow, ValidationRunRow,
+    CacheProbeRow, ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow,
+    RegistryRecord, ReleaseRow, RepairJobRow, ValidationRunRow,
 };
 use aos_hub_core::stack::StackNode;
 
@@ -179,6 +179,27 @@ pub fn channels_index(
     )
 }
 
+/// The signed system-image catalog with direct disk-download actions.
+#[must_use]
+pub fn images_page(
+    registry: &RegistryRecord,
+    status: Option<&IndexStatus>,
+    images: &[IndexedSystemImage],
+    channels: &[ChannelSummary],
+    browse: &ImageBrowse<'_>,
+    started: Instant,
+) -> String {
+    aos_hub_core::web::browse_pages::images_page(
+        registry,
+        status,
+        images,
+        channels,
+        browse,
+        started,
+        &current_session_indicator(),
+    )
+}
+
 /// The releases page: every verified signed tag, newest first by semver.
 ///
 /// Native-hub shim over
@@ -213,8 +234,7 @@ pub fn health_page(
     stack: Option<&StackNode>,
     cache_probes: &[CacheProbeRow],
     repair_jobs: &[RepairJobRow],
-    frontends: &[FrontendRecord],
-    frontend_probes: &[FrontendProbeRow],
+    routes: &[DeliveryRouteHealthRow],
     started: Instant,
 ) -> String {
     aos_hub_core::web::browse_pages::health_page(
@@ -224,8 +244,7 @@ pub fn health_page(
         stack,
         cache_probes,
         repair_jobs,
-        frontends,
-        frontend_probes,
+        routes,
         started,
         &current_session_indicator(),
     )

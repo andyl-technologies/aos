@@ -40,8 +40,8 @@ classifier/dispatcher must change atomically.
 | `POST /-/org/{org}/registries` | retain as collection create |
 | `GET /-/org/{org}/danger` | retain |
 | `POST /-/org/{org}/delete` | remove; use `POST .../danger/delete` |
-| `GET /-/org/{org}/keys` | move to `GET .../hosted-keys` |
-| `POST /-/org/{org}/keys` | move to `POST .../hosted-keys` from `GET .../hosted-keys/new` |
+| `GET /-/org/{org}/keys` | move to `GET .../signing-keys` |
+| `POST /-/org/{org}/keys` | move to `POST .../signing-keys` from `GET .../signing-keys/new` |
 | `GET /-/org/{org}/webhooks` | retain as inventory only |
 | `POST /-/org/{org}/webhooks` | retain as collection create from `GET .../webhooks/new`; move deletion to `POST .../webhooks/{webhook}/delete` |
 | `GET/POST /-/org/{org}/sso` | retain as the SSO configuration resource |

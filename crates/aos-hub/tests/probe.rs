@@ -1,9 +1,9 @@
-//! Cache-freshness probe coverage (RFC-0004 phase-1 "frontend freshness
+//! Consumer-cache freshness probe coverage (RFC-0004 phase-1
 //! probes").
 //!
 //! Builds a registry surface that commits two caches — a reachable `file://`
 //! cache (the surface itself, which carries a `nix-cache-info`) and an
-//! unreachable HTTP cache — indexes it so the `caches` table is populated,
+//! unreachable HTTP cache — indexes it so `advertised_caches` is populated,
 //! probes them, and asserts the recorded statuses plus the health-page table.
 
 mod common;
@@ -39,9 +39,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: hardened_client().await,
+        image_snapshots: None,
         mailer: Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -97,20 +102,14 @@ async fn probes_record_reachable_and_unreachable_caches() {
     // Commit a reachable file:// cache (the surface carries a nix-cache-info)
     // and an unreachable HTTP cache (nothing listens there).
     let caches_toml = format!(
-        "[[caches]]\nurl = \"file://{}\"\npriority = 10\n\n\
-         [[caches]]\nurl = \"http://127.0.0.1:9/\"\npriority = 20\n",
+        "[caches]\nkind = \"try\"\nmembers = [\n  {{ endpoint = \"file://{}\" }},\n  {{ endpoint = \"http://127.0.0.1:9/\" }},\n]\n",
         surface.display()
     );
     let fixture = build_surface(&surface, &caches_toml);
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let id = db
-        .register_registry(
-            "demo",
-            &format!("file://{}", surface.display()),
-            std::slice::from_ref(&fixture.trust_key),
-            true,
-        )
+        .register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
         .await
         .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();

@@ -20,15 +20,12 @@
 //!
 //! Tokens and sessions reach an `allow`-style decision differently:
 //!
-//! - A **JWT** carries explicit permission verbs and a single bound scope,
-//!   so [`token_allows`] decides locally —
-//!   `claims.scope contains target && claims.perms contains perm` — with no
-//!   database read. On the machine plane the JWT's short TTL (not a live
-//!   membership re-check) is the revocation bound: a role revoked at the
-//!   membership level stops minting new JWTs at `/oauth2/token` at once
-//!   (a hard token revoke is immediate), but an already-issued JWT keeps
-//!   its grant until it expires. The RPC and session planes *do* re-check
-//!   live memberships per request via [`require_permission`].
+//! - A **JWT** carries explicit permission verbs and a single bound scope.
+//!   Once the caller loads the target's stable ancestor context,
+//!   [`token_allows`] checks that it contains `claims.scope` and that the
+//!   claims contain the permission. Every machine-plane authorization then
+//!   intersects that claim with the principal's current effective memberships,
+//!   so deleting a principal or revoking a role deadens issued JWTs immediately.
 //! - A **session** carries only the user id, so the gate loads the user's
 //!   current effective scopes from [`crate::db::Database::effective_scopes`]
 //!   and calls [`crate::domain::iam::allow`] directly — role changes take
@@ -46,7 +43,6 @@ use axum::{
 use serde::Serialize;
 
 use crate::auth::jwt::{Claims, JwtKeys};
-use crate::auth::permission_from_str;
 use crate::db::{Database, SessionAuth as DbSessionAuth};
 use crate::domain::{iam, Permission, Scope};
 
@@ -190,16 +186,8 @@ impl FromRequestParts<Arc<AuthState>> for MaybeSession {
 /// authorization paths; the session half goes through
 /// [`session_allows`].
 #[must_use]
-pub fn token_allows(claims: &Claims, perm: Permission, target: &Scope) -> bool {
-    let scope = Scope::parse(&claims.scope);
-    if !scope.contains(target) {
-        return false;
-    }
-    claims
-        .perms
-        .iter()
-        .filter_map(|p| permission_from_str(p))
-        .any(|p| p == perm)
+pub fn token_allows(claims: &Claims, perm: Permission, target: &iam::AuthorizationContext) -> bool {
+    iam::token_allows(claims, perm, target)
 }
 
 /// Decides whether a session's user may perform `perm` on `target`.
@@ -219,30 +207,10 @@ pub async fn session_allows(
     let grants = db
         .effective_scopes(crate::domain::Principal::user(session.user_id))
         .await?;
-    Ok(iam::allow(&grants, perm, target))
-}
-
-/// Requires that a JWT's claims authorize `perm` on `target`, else `403`.
-///
-/// The bearer/JWT bridge to [`crate::domain::iam`]: returns `Ok(())` when
-/// [`token_allows`] is satisfied and a `403 Forbidden` response otherwise.
-///
-/// # Errors
-///
-/// Returns a boxed `403 Forbidden` [`Response`] when the claims do not
-/// authorize the action. The `Err` is boxed to keep the `Ok` path small.
-pub fn require_permission(
-    claims: &Claims,
-    perm: Permission,
-    target: &Scope,
-) -> Result<(), Box<Response>> {
-    if token_allows(claims, perm, target) {
-        Ok(())
-    } else {
-        Err(Box::new(
-            (StatusCode::FORBIDDEN, "insufficient permission").into_response(),
-        ))
-    }
+    let Some(context) = db.authorization_context(target.as_str()).await? else {
+        return Ok(false);
+    };
+    Ok(iam::allow(&grants, perm, &context))
 }
 
 // The CSRF synchronizer-token primitives moved to the wasm-clean
@@ -263,6 +231,7 @@ struct TokenResponse {
     access_token: String,
     token_type: String,
     expires_in: i64,
+    capabilities: [&'static str; 1],
 }
 
 /// Returns a `Router` mounting `POST /oauth2/token`.
@@ -347,6 +316,7 @@ pub async fn oauth2_token_handler(State(state): State<Arc<AuthState>>, parts: Pa
                 access_token,
                 token_type: "Bearer".to_string(),
                 expires_in: state.access_token_ttl,
+                capabilities: ["aos.multipart.v1"],
             })
             .into_response()
         }
@@ -361,45 +331,53 @@ pub async fn oauth2_token_handler(State(state): State<Arc<AuthState>>, parts: Pa
 mod tests {
     use super::*;
 
+    const ORG_SCOPE: &str = "org:00000000000000000000000000000001";
+    const PROJECT_SCOPE: &str = "project:00000000000000000000000000000001";
+    const OTHER_ORG_SCOPE: &str = "org:00000000000000000000000000000002";
+
     #[test]
     fn token_allows_scope_and_perm_matrix() {
         let claims = Claims {
             sub: "t".into(),
             owner_kind: "user".into(),
             owner_id: 1,
-            scope: "acme/infra".into(),
+            scope: ORG_SCOPE.into(),
             perms: vec!["read".into(), "publish".into()],
+            authz_version: crate::auth::jwt::AUTHORIZATION_CLAIMS_VERSION.into(),
             iat: 0,
             exp: 0,
         };
+        let project_context = iam::AuthorizationContext::try_new(
+            Scope::parse(PROJECT_SCOPE),
+            vec![
+                Scope::parse(PROJECT_SCOPE),
+                Scope::parse(ORG_SCOPE),
+                Scope::root(),
+            ],
+        )
+        .unwrap();
+        let org_context = iam::AuthorizationContext::try_new(
+            Scope::parse(ORG_SCOPE),
+            vec![Scope::parse(ORG_SCOPE), Scope::root()],
+        )
+        .unwrap();
+        let other_context = iam::AuthorizationContext::try_new(
+            Scope::parse(OTHER_ORG_SCOPE),
+            vec![Scope::parse(OTHER_ORG_SCOPE), Scope::root()],
+        )
+        .unwrap();
         // Permission held, target under the token scope: allowed.
-        assert!(token_allows(
-            &claims,
-            Permission::Read,
-            &Scope::parse("acme/infra/prod")
-        ));
-        assert!(token_allows(
-            &claims,
-            Permission::Publish,
-            &Scope::parse("acme/infra")
-        ));
+        assert!(token_allows(&claims, Permission::Read, &project_context));
+        assert!(token_allows(&claims, Permission::Publish, &org_context));
         // Permission not held: denied.
         assert!(!token_allows(
             &claims,
             Permission::MembersManage,
-            &Scope::parse("acme/infra")
+            &org_context
         ));
         // Target outside the token scope: denied.
-        assert!(!token_allows(
-            &claims,
-            Permission::Read,
-            &Scope::parse("acme")
-        ));
-        assert!(!token_allows(
-            &claims,
-            Permission::Read,
-            &Scope::parse("globex/infra")
-        ));
+        assert!(!token_allows(&claims, Permission::Read, &other_context));
+        assert!(!token_allows(&claims, Permission::Read, &other_context));
     }
 
     #[tokio::test]
@@ -408,21 +386,36 @@ mod tests {
             sub: "t".into(),
             owner_kind: "user".into(),
             owner_id: 1,
-            scope: "acme".into(),
+            scope: ORG_SCOPE.into(),
             perms: vec!["read".into()],
+            authz_version: crate::auth::jwt::AUTHORIZATION_CLAIMS_VERSION.into(),
             iat: 0,
             exp: 0,
         };
-        assert!(require_permission(&claims, Permission::Read, &Scope::parse("acme")).is_ok());
-        let err = require_permission(&claims, Permission::Publish, &Scope::parse("acme"));
-        assert!(err.is_err());
+        let context = iam::AuthorizationContext::try_new(
+            Scope::parse(ORG_SCOPE),
+            vec![Scope::parse(ORG_SCOPE), Scope::root()],
+        )
+        .unwrap();
+        assert!(token_allows(&claims, Permission::Read, &context));
+        assert!(!token_allows(&claims, Permission::Publish, &context));
     }
 
     #[tokio::test]
     async fn session_allows_uses_current_grants() {
         let db = Database::open_in_memory().await.unwrap();
+        db.create_org("acme", "Acme").await.unwrap();
+        let org = db.org_by_slug("acme").await.unwrap().unwrap();
+        db.create_project(org.id, "infra", "Infra").await.unwrap();
+        let project = db
+            .list_projects(org.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
         let user = db.create_user("dev@acme.com", None).await.unwrap();
-        db.grant_membership("user", user, "acme", "maintainer")
+        db.grant_membership("user", user, &org.stable_id, "maintainer")
             .await
             .unwrap();
         let session = DbSessionAuth {
@@ -435,7 +428,7 @@ mod tests {
             &db,
             &session,
             Permission::Publish,
-            &Scope::parse("acme/infra")
+            &Scope::parse(&project.scope_key)
         )
         .await
         .unwrap());
@@ -444,7 +437,7 @@ mod tests {
             &db,
             &session,
             Permission::MembersManage,
-            &Scope::parse("acme")
+            &Scope::parse(&org.stable_id)
         )
         .await
         .unwrap());

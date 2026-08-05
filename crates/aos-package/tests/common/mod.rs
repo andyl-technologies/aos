@@ -145,14 +145,16 @@ description = "Fixture registry"
 "#,
             self.name
         );
-        for (url, priority) in caches {
-            content.push_str(&format!(
-                r#"
-[[caches]]
-url = "{url}"
-priority = {priority}
-"#,
-            ));
+        if let Some((url, _)) = caches.first() {
+            if caches.len() == 1 {
+                content.push_str(&format!("\n[caches]\nendpoint = \"{url}\"\n"));
+            } else {
+                content.push_str("\n[caches]\nkind = \"try\"\nmembers = [\n");
+                for (url, _) in caches {
+                    content.push_str(&format!("  {{ endpoint = \"{url}\" }},\n"));
+                }
+                content.push_str("]\n");
+            }
         }
         fs::write(self.source.join("registry.toml"), content).context("writing registry.toml")?;
         Ok(())

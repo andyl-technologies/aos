@@ -40,9 +40,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: std::sync::Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -92,9 +97,35 @@ async fn rpc(
 /// `acme/infra/prod/cdn`, returning the registry id.
 async fn managed_registry(db: &Database, visibility: &str) -> i64 {
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    db.create_managed_registry(org, "infra/prod", "cdn", visibility, None, "", &[], true)
+    db.create_managed_registry(org, "infra/prod", "cdn", visibility, &[], true)
         .await
         .unwrap()
+}
+
+async fn update_registry_visibility(
+    db: &Database,
+    registry_id: i64,
+    visibility: &str,
+    actor_id: i64,
+) -> config::ChangeId {
+    let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+    let change_id = config::ChangeId(uuid::Uuid::new_v4().to_string());
+    assert!(db
+        .seed_registry_configuration_for_test(
+            registry_id,
+            registry.resource_version,
+            visibility,
+            &registry.crawl_policy,
+            registry.llms_txt_body.as_deref(),
+            &registry.trust_keys,
+            change_id.as_str(),
+            "user",
+            Some(actor_id),
+            "alice@acme.com",
+        )
+        .await
+        .unwrap());
+    change_id
 }
 
 // -- engine: open -> stage -> review -> apply -------------------------------
@@ -104,12 +135,13 @@ async fn engine_open_stage_review_apply_writes_audit() {
     let db = Database::open_in_memory().await.unwrap();
     let id = managed_registry(&db, "public").await;
     let actor = Principal::user(7);
+    let scope_key = db.registry_authorization_scope(id).await.unwrap();
 
     let change_id = config::open_draft(
         &db,
         &actor,
         "alice@acme.com",
-        &Scope::parse("acme/infra/prod/cdn"),
+        &Scope::parse(&scope_key),
         "flip cdn private",
     )
     .await
@@ -137,9 +169,8 @@ async fn engine_open_stage_review_apply_writes_audit() {
     assert_eq!(diffs[0].new.as_deref(), Some("private"));
 
     // Apply runs the live mutation and writes one audit row.
-    config::apply(&db, &change_id, "registry.visibility", |_rev| {
-        let db = &db;
-        async move { db.set_registry_visibility(id, "private").await }
+    config::apply(&db, &change_id, "registry.visibility", |_rev| async move {
+        Ok(())
     })
     .await
     .unwrap();
@@ -148,7 +179,10 @@ async fn engine_open_stage_review_apply_writes_audit() {
     assert_eq!(cs.status, "applied");
     assert!(cs.applied_at.is_some());
 
-    let audit = db.list_audit("acme").await.unwrap();
+    let audit = db
+        .list_audit(&common::org_scope(&db, "acme").await)
+        .await
+        .unwrap();
     assert_eq!(audit.len(), 1);
     assert_eq!(audit[0].change_id.as_deref(), Some(change_id.as_str()));
     assert_eq!(audit[0].action, "registry.visibility");
@@ -163,10 +197,7 @@ async fn visibility_change_and_revert_round_trip() {
     let id = managed_registry(&db, "public").await;
     let actor = Principal::user(7);
 
-    let change_id =
-        config::change_registry_visibility(&db, &actor, "alice@acme.com", id, "private")
-            .await
-            .unwrap();
+    let change_id = update_registry_visibility(&db, id, "private", 7).await;
     assert_eq!(
         db.registry_by_slug("acme/infra/prod/cdn")
             .await
@@ -215,7 +246,7 @@ async fn visibility_change_and_revert_round_trip() {
         let db = &db;
         async move {
             if let Some(v) = visibility {
-                db.set_registry_visibility(id, &v).await?;
+                update_registry_visibility(db, id, &v, 7).await;
             }
             Ok(())
         }
@@ -238,13 +269,10 @@ async fn revert_flags_conflict_when_object_diverged() {
     let id = managed_registry(&db, "public").await;
     let actor = Principal::user(7);
 
-    let change_id =
-        config::change_registry_visibility(&db, &actor, "alice@acme.com", id, "private")
-            .await
-            .unwrap();
+    let change_id = update_registry_visibility(&db, id, "private", 7).await;
 
     // Someone changes the registry out-of-band after the change-set applied.
-    db.set_registry_visibility(id, "internal").await.unwrap();
+    update_registry_visibility(&db, id, "internal", 7).await;
 
     let draft = config::revert(&db, &change_id, &actor, "alice@acme.com", |t, oid| {
         let is_registry = t == "registry";
@@ -281,7 +309,7 @@ async fn token_revert_renders_as_issue_replacement_not_a_live_token() {
         &db,
         &actor,
         "alice@acme.com",
-        &Scope::parse("acme"),
+        &Scope::parse("instance"),
         "revoke ci token",
     )
     .await
@@ -292,7 +320,7 @@ async fn token_revert_renders_as_issue_replacement_not_a_live_token() {
         "token",
         "tok-123",
         ConfigOp::Delete,
-        Some(serde_json::json!({"id": "tok-123", "scope": "acme"})),
+        Some(serde_json::json!({"id": "tok-123", "scope": "instance"})),
         None,
     )
     .await
@@ -330,12 +358,16 @@ async fn token_revert_renders_as_issue_replacement_not_a_live_token() {
 #[tokio::test]
 async fn membership_revoke_revert_produces_invitation_not_silent_regrant() {
     let db = Database::open_in_memory().await.unwrap();
-    let actor = Principal::user(7);
-    let member = Principal::user(42);
-    let scope = Scope::parse("acme");
+    let actor_id = db.create_user("actor@acme.test", None).await.unwrap();
+    let member_id = db.create_user("member@acme.test", None).await.unwrap();
+    let actor = Principal::user(actor_id);
+    let member = Principal::user(member_id);
+    let org = db.create_org("acme", "Acme").await.unwrap();
+    let scope_key = db.org_by_id(org).await.unwrap().unwrap().stable_id;
+    let scope = Scope::parse(&scope_key);
     // The actor must hold authority over the scope to grant: the engine's
     // privilege ceiling (H1) rejects a grant exceeding the actor's own rank.
-    db.grant_membership("user", 7, "acme", "owner")
+    db.grant_membership("user", actor_id, &scope_key, "owner")
         .await
         .unwrap();
 
@@ -364,7 +396,7 @@ async fn membership_revoke_revert_produces_invitation_not_silent_regrant() {
     .unwrap();
     // The grant is gone after the revoke.
     assert!(db
-        .list_memberships_for("user", 42)
+        .list_memberships_for("user", member_id)
         .await
         .unwrap()
         .is_empty());
@@ -398,13 +430,13 @@ async fn membership_revoke_revert_produces_invitation_not_silent_regrant() {
     .await
     .unwrap();
     assert!(db
-        .list_memberships_for("user", 42)
+        .list_memberships_for("user", member_id)
         .await
         .unwrap()
         .is_empty());
 }
 
-// -- RPC: ListAudit / GetChangeset / RevertChangeset ------------------------
+// -- RPC: ListAudit / GetChangeset ------------------------------------------
 
 #[tokio::test]
 async fn rpc_audit_and_config_authorized_and_rejected() {
@@ -414,19 +446,21 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     // audit.read and registry.configure (require_permission intersects the
     // JWT grant with current memberships).
     let user = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", user, "acme", Role::Owner.as_str())
-        .await
-        .unwrap();
+    db.grant_membership(
+        "user",
+        user,
+        &common::org_scope(&db, "acme").await,
+        Role::Owner.as_str(),
+    )
+    .await
+    .unwrap();
     let actor = Principal::user(user);
     // Produce a real change-set + audit row by flipping visibility.
-    let change_id =
-        config::change_registry_visibility(&db, &actor, "alice@acme.com", id, "private")
-            .await
-            .unwrap();
+    let change_id = update_registry_visibility(&db, id, "private", user).await;
     let app = router(app_state(Arc::clone(&db)).await).await;
 
-    let scope = "acme/infra/prod/cdn";
-    let audit_token = bearer(actor, scope, &[Permission::AuditRead]);
+    let scope = db.registry_authorization_scope(id).await.unwrap();
+    let audit_token = bearer(actor, &scope, &[Permission::AuditRead]);
 
     // ListAudit (authorized): surfaces the entry.
     let (status, value) = rpc(
@@ -437,11 +471,14 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(value["entries"][0]["action"], "registry.visibility");
+    assert_eq!(
+        value["entries"][0]["action"],
+        "registry.configuration.updated"
+    );
     assert_eq!(value["entries"][0]["changeId"], change_id.as_str());
 
     // ListAudit (unauthorized: only Read, not AuditRead): denied.
-    let weak = bearer(actor, scope, &[Permission::Read]);
+    let weak = bearer(actor, &scope, &[Permission::Read]);
     let (status, _) = rpc(
         &app,
         "AuditService/ListAudit",
@@ -474,38 +511,4 @@ async fn rpc_audit_and_config_authorized_and_rejected() {
     assert_eq!(value["revisions"][0]["objectType"], "registry");
     assert_eq!(value["revisions"][0]["diffs"][0]["field"], "visibility");
     assert_eq!(value["revisions"][0]["diffs"][0]["new"], "private");
-
-    // RevertChangeset (needs registry.configure; audit.read alone fails).
-    let (status, _) = rpc(
-        &app,
-        "RegistryConfigurationService/RevertChangeset",
-        serde_json::json!({"changeId": change_id.as_str()}),
-        Some(&audit_token),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "audit.read must not revert");
-
-    // RevertChangeset (authorized): flips visibility back to public.
-    let cfg_token = bearer(actor, scope, &[Permission::RegistryConfigure]);
-    let (status, value) = rpc(
-        &app,
-        "RegistryConfigurationService/RevertChangeset",
-        serde_json::json!({"changeId": change_id.as_str()}),
-        Some(&cfg_token),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(value["changeset"]["status"], "applied");
-    assert_eq!(
-        db.registry_by_slug(scope)
-            .await
-            .unwrap()
-            .unwrap()
-            .visibility,
-        "public",
-        "revert restored live visibility"
-    );
-    // The original is marked reverted_by the new change-set.
-    let original = db.changeset(change_id.as_str()).await.unwrap().unwrap();
-    assert!(original.reverted_by_change_id.is_some());
 }

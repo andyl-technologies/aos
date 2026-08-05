@@ -90,9 +90,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: std::sync::Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -103,17 +108,12 @@ async fn spawn_hub(visibility: &str) -> RunningHub {
     let root = tempfile::tempdir().unwrap().keep();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", root.to_str().unwrap())
-        .await
-        .unwrap();
+    let binding = common::create_local_binding(&db, org, "primary", root.to_str().unwrap()).await;
     db.create_managed_registry(
         org,
         "infra/prod",
         "cdn",
         visibility,
-        Some(binding),
-        "cdn",
         &[],
         false, // fixture is signed, but trust keys are not pinned for this test
     )
@@ -146,7 +146,7 @@ async fn mint_jwt(hub: &RunningHub, perms: &[Permission]) -> String {
         .db
         .create_token(
             Principal::service_account(1),
-            &hub.slug,
+            &common::registry_scope(&hub.db, &hub.slug).await,
             perms,
             Some("client-e2e"),
             None,
@@ -265,7 +265,7 @@ async fn real_backend_publishes_and_reads_back() {
     for (rel, _bytes) in &files {
         let source = surface.join(rel);
         backend
-            .put_static_file(rel, &source, Some(content_type(rel)), None)
+            .put_static_file(rel, &source, Some(content_type(rel)), None, None, None)
             .await
             .unwrap_or_else(|e| panic!("put_static_file {rel}: {e:#}"));
     }
@@ -358,7 +358,7 @@ async fn unauthenticated_backend_upload_is_rejected() {
         .unwrap();
     let source = surface.join("HEAD");
     let err = backend
-        .put_static_file("HEAD", &source, Some("text/plain"), None)
+        .put_static_file("HEAD", &source, Some("text/plain"), None, None, None)
         .await
         .expect_err("an unauthenticated PUT must be rejected by the hub");
     let msg = format!("{err:#}");
@@ -385,7 +385,7 @@ async fn read_only_token_cannot_publish() {
         .unwrap();
     let source = surface.join("HEAD");
     let err = backend
-        .put_static_file("HEAD", &source, Some("text/plain"), None)
+        .put_static_file("HEAD", &source, Some("text/plain"), None, None, None)
         .await
         .expect_err("a Read-only token must not be allowed to publish");
     let msg = format!("{err:#}");

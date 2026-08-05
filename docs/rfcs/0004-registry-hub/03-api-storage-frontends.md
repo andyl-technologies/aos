@@ -11,10 +11,10 @@ third-party tooling share one schema:
 | `RegistryService` | create/import/configure registries, visibility, trust-anchor display, freshness/health, mirror sources |
 | `StorageService` | storage bindings, bucket provisioning, frontend domains, cache stores |
 | `PackageService` | search, package/version/platform metadata, closures, narinfo lookups, reverse-deps |
-| `ChannelService` | channel list, 256-partition state, floor history; advance/init (hosted-key orgs) and prepared advances (BYO-key orgs) |
+| `ChannelService` | channel list, 256-partition state, floor history; reviewed advance/init against an exact signing-key generation |
 | `PublishService` | the write path: stage release, mint upload credentials (`MintUploadCredentials`), finalize, status stream, publish leases |
 | `ValidationService` | consistency-validation runs, per-cache coverage reports, repair jobs |
-| `KeyService` | roster mirror, hosted-key operations, rotation workflows |
+| `KeyService` | roster mirror, signing-key generations, typed usages, rotation and retirement workflows |
 | `TokenService` | provisioning-token CRUD — same semantics as `aos token` |
 | `AuditService` | audit log queries |
 | `GitService` | log/diff/branch/refs read API for the UI and remote `apr` |
@@ -150,8 +150,8 @@ them with client-side entries and sorts by priority descending
 `CacheEntry` in `types.rs`). Each frontend with
 `surfaces.cache && advertised.in_caches` becomes one `[[caches]]` row.
 Because `registry.toml` is signed tree content, the hub cannot silently
-edit the mirror list — updating it is a normal signed publish
-(maintainer-signed change request, or hosted key). That is correct and
+edit the mirror list — updating it is a normal signed publish through a
+reviewed external or provider-custodied signing operation. That is correct and
 desirable: *the mirror list is part of what consumers verify*. When a
 probe finds a mirror stale or dead, the hub alerts and offers a
 one-click "demote mirror" change request.
@@ -183,4 +183,3 @@ registry page. Naming note: replication jobs copy *this* registry
 across its own frontends; `MirrorSource` (next section) tracks an
 *upstream* registry — two unrelated features that both colloquially
 read as "mirroring".
-

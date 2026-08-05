@@ -3,11 +3,9 @@
 ##!
 ##! Compiles `crates/aos-hub-worker` to `wasm32-unknown-unknown` and emits
 ##! the `build/worker/` bundle (the `shim.mjs` ES-module entry plus the
-##! `index.wasm` binary) that `wrangler deploy` uploads and that miniflare loads
-##! via `scriptPath`/`modules`. The RFC-0004 integration VM test
-##! (`checks.integration.worker-*`, defined below) boots this artifact under
-##! miniflare + workerd inside a Firecracker microVM and drives HTTP requests
-##! against the running Worker.
+##! `index.wasm` binary) that `wrangler deploy` uploads. The sibling
+##! `aos-hub-worker-do-e2e` package boots this artifact under workerd with the
+##! production `HubDb` Durable Object topology.
 ##!
 ##! ## Why this bypasses `worker-build`'s build engine
 ##!
@@ -72,9 +70,8 @@
   nodejs,
   protobuf,
   stdenv,
-  # Extra cargo feature flags for the worker build (e.g. "cutover-admin" for the
-  # one-time D1->HubDb data-replay admin path). Space-separated; empty for the
-  # default production build. RFC-0004 ch.14 Phase E.
+  # Extra cargo feature flags for purpose-built test artifacts. Space-separated;
+  # empty for the default production build.
   cargoFeatures ? "",
 }: let
   version = "0.1.0";
@@ -105,10 +102,10 @@ in
     buildDeps = [rust wasm-bindgen-cli nodejs protobuf stdenv.cc];
 
     # The workspace's vendored dependency set, fetched offline. Same shape as
-    # `aos.nix`/`aos-hub.nix` but its own FOD. Iterate fakeHash → real.
+    # `aos.nix`/`aos-hub.nix` but its own fixed-output derivation.
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-k0mK+JO/PJNV2L/hzIpiT/ALzsRVQqir8dU3f99452Q=";
+      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
     };
 
     phases = [
@@ -299,6 +296,17 @@ in
           cp build/worker/shim.mjs   "$out/shim.mjs"
           cp build/worker/index.wasm "$out/index.wasm"
 
+          ${lib.optionalString (cargoFeatures == "") ''
+            # The disk-backed provider and bootstrap endpoint are permitted only
+            # in the purpose-built workerd artifact. Fail the production closure
+            # if an e2e route string survives feature gating.
+            if grep -a -E -q '/_e2e/|aos_e2e_surface_|workerd-e2e' \
+              "$out/shim.mjs" "$out/index.wasm"; then
+              echo "worker-dist: do-e2e code leaked into the production artifact" >&2
+              exit 1
+            fi
+          ''}
+
           # Static assets served by Cloudflare's CDN edge (no Worker invocation).
           # Lay them out under `_assets/` so the on-edge path matches the URL the
           # browse pages + stylesheet reference (e.g. /_assets/style.css), and
@@ -319,367 +327,6 @@ in
         '';
       }
     ];
-
-    # The RFC-0004 worker integration test. Exposed as a package `checks` attr
-    # (→ `checks.integration.aos-hub-worker-dist-read-path`) rather than
-    # `checks.vm.*`, because `checks.vm.*` is currently un-evaluable on this
-    # branch (a pre-existing `mkOption defaultText` bug in lib/modules.nix breaks
-    # the systems-module eval that `checks.vm` forces). `checks.integration.*`
-    # evals cleanly. The test boots node + miniflare + workerd in a headless
-    # Firecracker microVM, loads this artifact, seeds D1 + R2 with a signed
-    # public registry surface (pkgs.aos-hub-worker-fixture), and drives HTTP
-    # requests against the running Worker.
-    checks = {
-      testing,
-      self,
-      pkgs,
-    }: let
-      fixture = pkgs.aos-hub-worker-fixture;
-      miniflareJs = "${pkgs.miniflare}/lib/node_modules/miniflare/dist/src/index.js";
-
-      # The Node ESM driver: construct Miniflare around the built Worker, seed
-      # D1 + R2, dispatch requests, assert the read-path behavior (facade
-      # fidelity, 404, browse render, visibility gating, Cron indexer), and print
-      # PASS/FAIL lines. Written to /tmp in the guest and run with AOS node 22
-      # (global `fetch`/`Response` available; the driver uses dispatchFetch).
-      driver = ''
-        import { Miniflare } from "${miniflareJs}";
-        import { readFileSync, writeFileSync, readdirSync, statSync } from "node:fs";
-        import { join, relative } from "node:path";
-
-        const DIST = "${self}";
-        const SURFACE = "${fixture}/surface";
-        const TRUST_KEY = readFileSync("${fixture}/trust_key", "utf8").trim();
-
-        let failures = 0;
-        // Hard assertion: a failure fails the whole test. The entire read +
-        // indexer surface now runs on core::Database over the D1Backend (f64
-        // integer binds, NULL-tolerant reads), so every check is hard — there
-        // are no longer any pinned-workerd D1 quirks to soft-defer.
-        function check(name, cond, detail) {
-          if (cond) console.log("PASS: " + name);
-          else { failures++; console.log("FAIL: " + name + (detail ? " — " + detail : "")); }
-        }
-
-        // Recursively list every file under a directory as POSIX-relative paths.
-        function walk(dir, base) {
-          const out = [];
-          for (const ent of readdirSync(dir)) {
-            const p = join(dir, ent);
-            if (statSync(p).isDirectory()) out.push(...walk(p, base));
-            else out.push(relative(base, p));
-          }
-          return out;
-        }
-
-        const mf = new Miniflare({
-          // The Worker is an ES module with a sibling wasm import; provide both
-          // as explicit modules. modulesRoot lets the shim's `./index.wasm`
-          // import resolve to the CompiledWasm module.
-          modules: [
-            { type: "ESModule", path: join(DIST, "shim.mjs") },
-            { type: "CompiledWasm", path: join(DIST, "index.wasm") },
-          ],
-          modulesRoot: DIST,
-          compatibilityDate: "2024-09-23",
-          d1Databases: { REGISTRY_DB: "registry-db" },
-          r2Buckets: { REGISTRY_BUCKET: "registry-bucket" },
-          kvNamespaces: { SESSIONS: "sessions" },
-        });
-        await mf.ready;
-
-        // ── Seed D1: schema, a PUBLIC `demo` registry (R2 prefix `demo`) with
-        // the fixture's pinned trust key + signatures required, a PRIVATE
-        // `secret` registry, and one package row so the browse UI renders. ──
-        const db = await mf.getD1Database("REGISTRY_DB");
-        // Create the schema the *shared* way: dispatch the Worker's /_init, which
-        // constructs core::Database over the D1Backend and applies the exact core
-        // MIGRATIONS the native hub uses — not a Worker-local schema subset. The
-        // D1Backend binds integers as JS numbers (f64), so the migration's
-        // schema-version write runs cleanly even under the pinned 2024-09-09
-        // workerd seed (whose D1 rejects BigInt binds).
-        const initRes = await mf.dispatchFetch("http://localhost/_init");
-        check("schema /_init applied", initRes.status === 200, "got " + initRes.status);
-        await db.prepare(
-          "INSERT INTO registries (id, slug, source_url, trust_keys, require_signatures, created_at, visibility, prefix) " +
-          "VALUES (1, 'demo', 'file:///demo', ?1, 1, 100, 'public', 'demo')"
-        ).bind(JSON.stringify([TRUST_KEY])).run();
-        await db.prepare(
-          "INSERT INTO registries (id, slug, source_url, trust_keys, require_signatures, created_at, visibility, prefix) " +
-          "VALUES (2, 'secret', 'file:///secret', '[]', 1, 100, 'private', 'secret')"
-        ).run();
-        await db.prepare(
-          "INSERT INTO packages (id, registry_id, name, description, license, maintainer, sysroot) " +
-          "VALUES (1, 1, 'curl', 'Command-line URL transfers', 'MIT', 'aos', 0)"
-        ).run();
-        await db.prepare(
-          "INSERT INTO package_versions (id, package_id, version, previous) VALUES (1, 1, '8.5.0', NULL)"
-        ).run();
-
-        // ── Seed R2: every fixture surface file under the `demo/` prefix (the
-        // registry's R2 key prefix). Mirrors `apr origin upload`'s layout. ──
-        const bucket = await mf.getR2Bucket("REGISTRY_BUCKET");
-        // Put bodies as ArrayBuffer (a freshly sliced copy, not a Buffer view
-        // over a pooled allocation): miniflare's API proxy serializes
-        // ArrayBuffer cleanly, whereas a Node Buffer trips its devalue
-        // ArrayBufferView assertion.
-        const toArrayBuffer = (buf) =>
-          buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-        const putR2 = (key, buf) => bucket.put(key, toArrayBuffer(buf));
-        for (const rel of walk(SURFACE, SURFACE)) {
-          const body = readFileSync(join(SURFACE, rel));
-          await putR2("demo/" + rel.split("\\").join("/"), body);
-        }
-
-        const ORIGIN = "http://localhost";
-        const get = (p) => mf.dispatchFetch(ORIGIN + p);
-
-        // ── (a) Facade fidelity: nix-cache-info, a narinfo, and a NAR return
-        // the exact R2 bytes with the right content-type/cache-control. ──
-        {
-          const r = await get("/demo/nix-cache-info");
-          const body = await r.text();
-          const expected = readFileSync(join(SURFACE, "nix-cache-info"), "utf8");
-          check("facade nix-cache-info status 200", r.status === 200, "got " + r.status);
-          check("facade nix-cache-info bytes", body === expected);
-          check("facade nix-cache-info content-type",
-            r.headers.get("content-type") === "text/plain; charset=utf-8",
-            r.headers.get("content-type"));
-          check("facade nix-cache-info cache-control",
-            r.headers.get("cache-control") === "public, max-age=60, must-revalidate",
-            r.headers.get("cache-control"));
-        }
-        {
-          const r = await get("/demo/h7j3k8l2m9n4.narinfo");
-          const body = await r.text();
-          const expected = readFileSync(join(SURFACE, "h7j3k8l2m9n4.narinfo"), "utf8");
-          check("facade narinfo status 200", r.status === 200, "got " + r.status);
-          check("facade narinfo bytes", body === expected);
-          check("facade narinfo content-type",
-            r.headers.get("content-type") === "text/x-nix-narinfo",
-            r.headers.get("content-type"));
-        }
-        {
-          const r = await get("/demo/nar/h7j3k8l2m9n4.nar.zst");
-          const buf = Buffer.from(await r.arrayBuffer());
-          const expected = readFileSync(join(SURFACE, "nar/h7j3k8l2m9n4.nar.zst"));
-          check("facade nar status 200", r.status === 200, "got " + r.status);
-          check("facade nar bytes", buf.equals(expected));
-          check("facade nar content-type",
-            r.headers.get("content-type") === "application/zstd",
-            r.headers.get("content-type"));
-          check("facade nar cache-control immutable",
-            r.headers.get("cache-control") === "public, max-age=31536000, immutable",
-            r.headers.get("cache-control"));
-        }
-
-        // ── (b) 404: a missing object and an unknown registry both 404. ──
-        {
-          const r1 = await get("/demo/nar/does-not-exist.nar.zst");
-          check("missing object is 404", r1.status === 404, "got " + r1.status);
-          // Unknown-registry → `registry_by_slug` finds no row → core's
-          // `query_opt` yields a clean `None` (no row), so the worker 404s. This
-          // resolves cleanly under the pinned workerd now that the read path
-          // runs core::Database over the D1Backend (the old worker-crate
-          // `.first(None)` null path 500'd on serde-wasm-bindgen). Hard.
-          const r2 = await get("/nope/nix-cache-info");
-          check("unknown registry is 404", r2.status === 404, "got " + r2.status);
-        }
-
-        // ── (c) Browse render: the registry home + package table render the
-        // seeded registry/package as no-JS HTML. ──
-        {
-          // The hub home (`list_public_registries` → D1 `.all()`) is fully
-          // green under the seed; assert it hard.
-          const home = await get("/");
-          const homeBody = await home.text();
-          check("hub home status 200", home.status === 200, "got " + home.status);
-          check("hub home lists 'demo'", homeBody.includes("demo"));
-
-          // The per-registry package table binds `registry_id` (an i64). The
-          // read path now runs core::Database over the D1Backend, which binds
-          // integers as JS numbers (f64), not the `worker` crate's BigInt that
-          // the pinned 2024-09-09 workerd D1 rejected (D1_TYPE_ERROR). So
-          // browse-by-registry resolves cleanly now. Hard. (The Cron indexer
-          // WRITE path also runs over the D1Backend now — see below.)
-          const r = await get("/demo/-/packages");
-          const body = await r.text();
-          check("browse packages status 200", r.status === 200, "got " + r.status);
-          check("browse packages contains 'curl'", body.includes("curl"));
-        }
-
-        // ── (d) Visibility gating: the PRIVATE registry is not served on the
-        // anonymous read path (404 for both facade and browse). ──
-        {
-          // Private gating: `Reads::registry_by_slug` applies the
-          // `visibility == "public"` filter, so a private registry yields a
-          // clean `None` → 404. Now that the read path runs core::Database (the
-          // old worker-crate null path 500'd under the pinned workerd), this
-          // resolves to a real 404. Hard. (The private surface is never served:
-          // both the 404 and the not-200 invariant hold.)
-          const r1 = await get("/secret/nix-cache-info");
-          check("private registry facade not served (404 expected)", r1.status === 404, "got " + r1.status);
-          check("private registry facade does NOT leak bytes (not 200)", r1.status !== 200, "got " + r1.status);
-          const r2 = await get("/secret/-/packages");
-          check("private registry browse not served (404 expected)", r2.status === 404, "got " + r2.status);
-          check("private registry browse does NOT leak (not 200)", r2.status !== 200, "got " + r2.status);
-        }
-
-        // ── (e) Cron indexer: dispatch the scheduled event; it walks the R2
-        // surface into D1 with full Ed25519 verification + anti-rollback floor.
-        // After a clean run the registry indexes `fresh`, the release + channel
-        // are recorded, and the channel floor is raised to the frontier. ──
-        // miniflare exposes a worker's scheduled handler at its control-plane
-        // `/cdn-cgi/mf/scheduled` endpoint (query params `cron`/`time`); this is
-        // miniflare's own hook, distinct from workerd's internal
-        // `/cdn-cgi/handler/scheduled`. Dispatch it to drive the Cron indexer.
-        const triggerScheduled = () =>
-          mf.dispatchFetch(ORIGIN + "/cdn-cgi/mf/scheduled?cron=" + encodeURIComponent("*/15 * * * *"));
-
-        // The Cron indexer reads the R2 surface (verifying every signature via
-        // the shared `aos-registry-surface` reader) and writes the D1 index over
-        // the D1Backend — same engine as the read path, so its `i64` id binds
-        // cross as JS numbers and succeed under the pinned workerd. After a clean
-        // run the registry indexes `fresh`, the release + channel are recorded,
-        // and the anti-rollback floor is raised to the frontier. All hard.
-        {
-          const sr = await triggerScheduled();
-          check("scheduled trigger accepted", sr.status === 200, "got " + sr.status);
-
-          const idx = await db.prepare(
-            "SELECT state FROM registry_index WHERE registry_id = 1"
-          ).first();
-          check("indexer set registry fresh", idx && idx.state === "fresh",
-            idx ? idx.state : "no row");
-
-          const rel = await db.prepare(
-            "SELECT semver FROM releases WHERE registry_id = 1"
-          ).first();
-          check("indexer recorded release 1.0.0", rel && rel.semver === "1.0.0",
-            rel ? rel.semver : "no row");
-
-          const ch = await db.prepare(
-            "SELECT name, frontier FROM channels WHERE registry_id = 1"
-          ).first();
-          check("indexer recorded channel stable @ 1.0.0",
-            ch && ch.name === "stable" && ch.frontier === "1.0.0",
-            ch ? (ch.name + "@" + ch.frontier) : "no row");
-
-          const floor = await db.prepare(
-            "SELECT floor FROM channel_floors WHERE registry_id = 1 AND channel = 'stable'"
-          ).first();
-          check("indexer raised anti-rollback floor to 1.0.0",
-            floor && floor.floor === "1.0.0", floor ? floor.floor : "no row");
-        }
-
-        // ── (e′) Fail-closed: corrupt the HEAD commit's signature in R2 and
-        // re-index a SECOND registry pointing at the tampered prefix. Nothing
-        // must be recorded (the index fails closed) and the prior good index of
-        // `demo` must be untouched. ──
-        {
-          // Tamper: overwrite the demo HEAD commit object with garbage under a
-          // fresh prefix `bad/`, copying the rest of the surface verbatim.
-          for (const rel of walk(SURFACE, SURFACE)) {
-            const body = readFileSync(join(SURFACE, rel));
-            await putR2("bad/" + rel.split("\\").join("/"), body);
-          }
-          // Flip the HEAD commit loose object to break its signature.
-          await bucket.put("bad/HEAD", "ref: refs/heads/stable\n");
-          // Corrupt the commit object: replace it with an unrelated valid-zlib
-          // blob is complex; instead corrupt info/refs so the advertised HEAD
-          // commit is absent — the indexer fails closed (missing object).
-          await bucket.put("bad/objects/00/00", "garbage");
-
-          await db.prepare(
-            "INSERT INTO registries (id, slug, source_url, trust_keys, require_signatures, created_at, visibility, prefix) " +
-            "VALUES (3, 'bad', 'file:///bad', ?1, 1, 100, 'public', 'bad')"
-          ).bind(JSON.stringify([TRUST_KEY])).run();
-          // Point bad's HEAD commit at a non-existent oid via a tampered refs.
-          await bucket.put("bad/info/refs",
-            "0000000000000000000000000000000000000000000000000000000000000000\trefs/heads/stable\n");
-
-          await triggerScheduled();
-
-          const badIdx = await db.prepare(
-            "SELECT state FROM registry_index WHERE registry_id = 3"
-          ).first();
-          check("fail-closed: bad registry not fresh",
-            !badIdx || badIdx.state !== "fresh", badIdx ? badIdx.state : "no row");
-          const badRel = await db.prepare(
-            "SELECT COUNT(*) AS n FROM releases WHERE registry_id = 3"
-          ).first();
-          // n comes back from D1 as a number; never any release rows for `bad`.
-          check("fail-closed: bad registry recorded no releases",
-            badRel && Number(badRel.n) === 0, badRel ? String(badRel.n) : "no row");
-        }
-
-        await mf.dispose();
-
-        console.log("SUMMARY: hard-failures=" + failures);
-
-        if (failures === 0) {
-          // Write a sentinel the shell can test with coreutils alone (the VM
-          // guest has no grep). The marker line is also printed for the log.
-          writeFileSync("/tmp/worker-ok", "ok\n");
-          console.log("WORKER_READPATH:OK");
-        } else {
-          console.log("WORKER_READPATH:FAIL (" + failures + " hard failures)");
-          process.exit(1);
-        }
-      '';
-    in {
-      read-path = testing.mkVMTest {
-        name = "aos-hub-worker-read-path";
-        # node + miniflare + workerd + the wasm worker is memory-hungry; give
-        # the microVM generous headroom.
-        memory = 2048;
-        rootfsDeps = [
-          pkgs.nodejs
-          pkgs.miniflare
-          pkgs.workerd-source
-          self
-          fixture
-          pkgs.coreutils
-          # miniflare's dispatchFetch connects to workerd over 127.0.0.1, so the
-          # loopback interface must be up — bring it up with iproute2's `ip`.
-          pkgs.iproute2
-        ];
-        testScript = ''
-          echo "==> bringing up loopback (miniflare ↔ workerd talk over 127.0.0.1)"
-          ${pkgs.iproute2}/sbin/ip link set lo up
-
-          echo "==> writing worker integration driver"
-          cat > /tmp/driver.mjs << 'DRIVER_EOF'
-          ${driver}
-          DRIVER_EOF
-
-          echo "==> running miniflare + workerd against the built worker"
-          # miniflare honors MINIFLARE_WORKERD_PATH to use the from-source AOS
-          # workerd (built via AOS Bazel) instead of the npm blob in its closure.
-          export MINIFLARE_WORKERD_PATH="${pkgs.workerd-source}/bin/workerd"
-          export HOME=/tmp
-
-          # A top-level throw in the ESM driver must fail the test. Run node
-          # directly (no pipe, so its exit status propagates), then require the
-          # success sentinel the driver writes — so a silent partial run cannot
-          # masquerade as a pass. The VM guest has no grep, hence the file
-          # sentinel checked with coreutils `test`.
-          rm -f /tmp/worker-ok
-          rc=0
-          ${pkgs.nodejs}/bin/node /tmp/driver.mjs || rc=$?
-          echo "==> driver exit code: $rc"
-          if [ "$rc" -ne 0 ]; then
-            echo "==> driver failed (exit $rc)"
-            exit 1
-          fi
-          if [ ! -f /tmp/worker-ok ]; then
-            echo "==> driver did not write the success sentinel"
-            exit 1
-          fi
-          echo "==> worker read-path assertions all passed"
-        '';
-      };
-    };
 
     meta = {
       description = "Deployable AOS registry-hub Cloudflare Worker artifact (wasm + ES-module shim), built from source";

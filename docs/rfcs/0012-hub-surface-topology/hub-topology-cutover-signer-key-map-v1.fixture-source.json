@@ -5,7 +5,13 @@
       "key_id": "key/release/example",
       "public_key_node_id": "key/release/example",
       "public_key_sha256": "derive:bundle-sha256:key/release/example",
-      "roles": ["plan", "report", "verification"]
+      "roles": ["plan", "report"]
+    },
+    {
+      "key_id": "key/verification/example",
+      "public_key_node_id": "key/verification/example",
+      "public_key_sha256": "derive:bundle-sha256:key/verification/example",
+      "roles": ["verification"]
     }
   ]
 }

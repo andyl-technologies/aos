@@ -143,6 +143,23 @@ the user cannot read its contents at all.
 The nav does not produce dead links, and it never shows an item that will
 respond with a generic forbidden page for the current principal.
 
+#### Normative read-only role contract
+
+The topology cutover defines the two read-only roles exactly:
+
+- **Viewer** grants `read`, `storage_binding.read`, `placement.read`,
+  `placement_policy.read`, `domain.read`, `network_boundary.read`,
+  `delivery_endpoint.read`, `storage_gateway.read`, and `route.read`.
+- **Developer** grants that exact Viewer set plus `tokens.self`.
+
+Neither role grants a topology mutation, audit, credential, configuration, or
+IAM verb. `storage_binding.read` exposes only binding identity, provider kind,
+stable owner scope, resource version, and redacted health/backlinks. Its SQL and
+API projections MUST NOT contain local root paths, object endpoints, buckets,
+prefixes, signing regions, access modes, secret-version references, credential
+fingerprints, or write-credential version references. Those values may be
+queried and rendered only after `storage_binding.manage` succeeds.
+
 ### Nav metadata
 
 Use restrained metadata only when actionable:
@@ -271,7 +288,7 @@ Access & trust
   Identity & access
   Members
   SSO
-  Hosted keys
+  Signing keys
 
 Automation
   Webhooks
@@ -402,15 +419,15 @@ edit them inline.
 
 Owns the organization's editable display name and other non-identity profile
 metadata. Stable organization id, slug, and owner scope are immutable after
-creation. Member roles, SSO, hosted keys, infrastructure, and deletion remain
+creation. Member roles, SSO, signing keys, infrastructure, and deletion remain
 on their dedicated pages; Overview only summarizes and links here.
 
-### Members, SSO, and hosted keys
+### Members, SSO, and signing keys
 
 These remain distinct because their permissions and risk differ. Member
 invitation gets a dedicated workflow rather than a large form below the member
-table. Hosted key use shows which registries/caches depend on the key before
-rotation or retirement.
+table. Signing-key usage shows which registries, caches, and channel purposes
+pin each immutable generation before rotation or retirement.
 
 ### Operations and audit
 
@@ -547,7 +564,7 @@ distinguishes the two and never offers competing edits for the same field.
 
 ### Signing keys and tokens
 
-Signing keys own consumer trust and hosted-key operations. Tokens own Hub API
+Signing keys own consumer trust and provider-custodied operations. Tokens own Hub API
 and upload credentials. They remain separate pages with cross-links where a
 publishing operation needs both.
 

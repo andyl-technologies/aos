@@ -17,7 +17,8 @@
 //!
 //! Static segments (`-`, `_assets`) outrank the wildcard in axum's router,
 //! so the `/-/` namespace structurally cannot be shadowed by machine
-//! paths — and `compat::is_machine_path` rejects everything else.
+//! paths — and [`aos_hub_core::keymap::is_machine_path`] rejects everything
+//! else.
 //!
 //! Every response — pages, machine bytes, assets, errors — carries the
 //! first-party security headers (`Content-Security-Policy:
@@ -27,12 +28,15 @@
 //! machine-surface documents (HTML/JS a `publish`-scoped producer can upload)
 //! are served inert instead — a `sandbox` CSP plus `Content-Disposition:
 //! attachment` — so same-origin producer bytes cannot run script in the
-//! authenticated hub origin (see [`crate::compat::web_surface_csp`]).
+//! authenticated hub origin (see
+//! [`aos_hub_core::keymap::is_producer_document`]).
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::Context as _;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -40,19 +44,15 @@ use axum::routing::get;
 use axum::Router;
 use tower_http::catch_panic::CatchPanicLayer;
 
-/// Maximum inbound request-body size for the RPC, console, and browse surfaces
-/// (8 MiB).
+/// Maximum inbound request-body size for the shared RPC surface (8 MiB).
 ///
-/// ConnectRPC requests, console form posts, and browse reads carry small JSON
-/// or form bodies; capping them well below the process's memory budget keeps a
-/// hostile or buggy client from streaming an unbounded body into a handler that
-/// buffers it. The large surface-upload `PUT` path is exempt — it is scoped to
-/// its own, far larger [`crate::facade::MAX_UPLOAD_BYTES`] limit so legitimate
-/// release packs still upload.
-pub const RPC_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// Connect requests carry small JSON bodies; capping them well below the
+/// process's memory budget keeps a hostile or buggy client from streaming an
+/// unbounded body into a handler that buffers it. The value is owned by the
+/// shared router so native and Worker enforce the same threshold.
+pub const RPC_MAX_BODY_BYTES: usize = aos_hub_core::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES;
 
 use crate::auth::extract::AuthState;
-use crate::compat;
 use crate::db::{Database, IndexStatus, PackageRow, RegistryRecord};
 use crate::domain::{Permission, Principal, Scope};
 use crate::ui::pages;
@@ -102,9 +102,13 @@ pub struct AppState {
     /// Defaults to the placeholder [`crate::auth::oidc::XorSealer`]; a
     /// production deployment supplies a real AEAD/KMS sealer.
     pub sealer: Arc<dyn crate::auth::oidc::SecretSealer>,
+    /// Provider-backed immutable secret versions for storage and webhooks.
+    pub secret_versions: Arc<dyn aos_hub_core::secret_version::SecretVersionResolver>,
     /// Hardened HTTP client for hub-originated OIDC requests (token exchange,
     /// JWKS fetch), with the same timeouts as the surface fetcher.
     pub http: reqwest::Client,
+    /// Hub-private immutable signed-image storage (native deployments only).
+    pub image_snapshots: Option<Arc<crate::image_snapshot::ImageSnapshotStore>>,
     /// Process-local rate limiter for the pre-auth endpoints (device
     /// authorization, magic-link issuance, token exchange, browse/search).
     pub ratelimit: Arc<crate::ratelimit::RateLimiter>,
@@ -116,6 +120,15 @@ pub struct AppState {
     /// when a proxy that strips inbound `X-Forwarded-For` and appends the true
     /// client hop sits in front. See [`crate::ratelimit`] for the trust model.
     pub trusted_proxy: bool,
+    /// Verifier for short-lived assertions from an explicitly configured TLS,
+    /// VPN, or layer-7 ingress adapter.
+    pub delivery_attestation_verifier:
+        Option<Arc<aos_hub_core::delivery_attestation::DeliveryAttestationVerifier>>,
+    /// Runtime-owned signer material for the domain-probe well-known route.
+    pub domain_probe_terminator:
+        Option<Arc<dyn aos_hub_core::topology_probe::DomainProbeTerminatorProvider>>,
+    /// Active and retained privacy keys for permanent route URL reservations.
+    pub route_reservation_keyring: Option<Arc<dyn aos_hub_core::service::RouteReservationKeyring>>,
 }
 
 impl AppState {
@@ -146,9 +159,14 @@ impl AppState {
             // A deterministic placeholder sealer for dev/tests; production
             // supplies a real one via the struct literal.
             sealer: crate::auth::oidc::dev_sealer(),
+            secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
             http: crate::fetch::hardened_client().await,
+            image_snapshots: None,
             ratelimit,
             trusted_proxy: false,
+            delivery_attestation_verifier: None,
+            domain_probe_terminator: None,
+            route_reservation_keyring: None,
         }
     }
 }
@@ -197,11 +215,16 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
         let Some(slug) = target.strip_prefix(base).map(|s| s.trim_start_matches('/')) else {
             return Ok(None);
         };
-        // The registry must exist and be writable (have a storage binding).
+        // The registry must exist and have a fully reconciled write authority.
         let Some(registry) = self.db.registry_by_slug(slug).await? else {
             return Ok(None);
         };
-        if registry.storage_binding_id.is_none() {
+        if self
+            .db
+            .reconciled_surface_writer(aos_hub_core::db::SurfaceTarget::Registry(registry.id))
+            .await
+            .is_err()
+        {
             return Ok(None);
         }
         // Mint an internal bearer JWT granting publish on the registry scope.
@@ -210,7 +233,7 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
         let auth = crate::db::TokenAuth {
             token_id: "hub-repair".to_string(),
             owner: Principal::service_account(0),
-            scope: Scope::parse(&registry.slug),
+            scope: Scope::parse(&self.db.registry_authorization_scope(registry.id).await?),
             permissions: vec![Permission::Publish],
         };
         let jwt = self
@@ -231,6 +254,11 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
 #[derive(Debug, Default, serde::Deserialize)]
 struct SearchParams {
     q: Option<String>,
+    release: Option<String>,
+    channel: Option<String>,
+    architecture: Option<String>,
+    format: Option<String>,
+    target: Option<String>,
     page: Option<usize>,
     /// Package-index filter expression (Wireshark-style display filter).
     filter: Option<String>,
@@ -274,6 +302,11 @@ impl SearchParams {
         for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
             match key.as_ref() {
                 "q" => params.q = Some(value.into_owned()),
+                "release" => params.release = Some(value.into_owned()),
+                "channel" => params.channel = Some(value.into_owned()),
+                "architecture" => params.architecture = Some(value.into_owned()),
+                "format" => params.format = Some(value.into_owned()),
+                "target" => params.target = Some(value.into_owned()),
                 "filter" => params.filter = Some(value.into_owned()),
                 "sort" => params.sort = Some(value.into_owned()),
                 "dir" => params.dir = Some(value.into_owned()),
@@ -300,7 +333,7 @@ impl SearchParams {
 /// *facade-less* [`rpc_router`](aos_hub_core::connect::rpc_router) and keeps
 /// its own richer `/{slug}/{*path}` handler ([`machine_path`] etc.), which the
 /// shared facade does not cover: filesystem autoindex and `http(s)` redirect
-/// ([`compat::serve_machine_path`]), pull-through mirroring, inert
+/// (`serve_registry_machine_path`), pull-through mirroring, inert
 /// producer-document serving, the upload `PUT`/`HEAD`, and session-cookie
 /// authorization. The hub's in-process limiter and surface transports satisfy
 /// the service's ports via [`crate::coreports`].
@@ -310,49 +343,75 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // in-process limiter adapted to the core `RateLimiter` port and the native
     // surface provider (filesystem/HTTP fetchers chosen per a registry's storage
     // binding).
-    let rpc_service = Arc::new(
-        aos_hub_core::service::RpcService::new(
-            Arc::clone(&state.db),
-            state.auth.jwt_keys.clone(),
-            state.external_url.clone(),
-            Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
-            Arc::new(
-                crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
-                    .with_sealer(Arc::clone(&state.sealer)),
-            ),
-            Arc::new(
-                crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
-                    .with_sealer(Arc::clone(&state.sealer)),
-            ),
-            // The shared service's publish lease is the *same* in-memory lease the
-            // hub's own facade `PUT`/`HEAD` shims hold ([`AppState::leases`]), so
-            // pointer-flip serialization is process-wide whether a write arrives via
-            // the hub's `/{slug}/{*path}` route or (in principle) the shared facade
-            // route.
-            Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
-            Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
-            Some(Arc::clone(&state.sealer)),
-        )
-        .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
-            state.http.clone(),
-        ))),
-    );
+    let mut rpc_service = aos_hub_core::service::RpcService::new(
+        Arc::clone(&state.db),
+        state.auth.jwt_keys.clone(),
+        state.external_url.clone(),
+        Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
+        Arc::new(
+            crate::coreports::HubSurfaceProvider::new(
+                Arc::clone(&state.db),
+                state.http.clone(),
+                state.image_snapshots.clone(),
+            )
+            .with_credentials(Arc::clone(&state.secret_versions)),
+        ),
+        Arc::new(
+            crate::coreports::HubSurfaceWriteProvider::new(
+                Arc::clone(&state.db),
+                state.http.clone(),
+            )
+            .with_credentials(Arc::clone(&state.secret_versions)),
+        ),
+        // The shared service's publish lease is the *same* in-memory lease the
+        // hub's own facade `PUT`/`HEAD` shims hold ([`AppState::leases`]), so
+        // pointer-flip serialization is process-wide whether a write arrives via
+        // the hub's `/{slug}/{*path}` route or (in principle) the shared facade
+        // route.
+        Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
+        Arc::new(
+            crate::coreports::HubReindexer::new(
+                Arc::clone(&state.db),
+                state.image_snapshots.clone(),
+            )
+            .with_surface_provider(Arc::new(
+                crate::coreports::HubSurfaceProvider::new(
+                    Arc::clone(&state.db),
+                    state.http.clone(),
+                    state.image_snapshots.clone(),
+                )
+                .with_credentials(Arc::clone(&state.secret_versions))
+                .for_image_indexing(),
+            )),
+        ),
+        Arc::new(
+            aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
+                &state.db,
+            )),
+        ),
+        Some(Arc::clone(&state.sealer)),
+    )
+    .with_secret_versions(Arc::clone(&state.secret_versions))
+    .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
+        state.http.clone(),
+    )));
+    if let Some(provider) = &state.domain_probe_terminator {
+        rpc_service = rpc_service.with_domain_probe_terminator(Arc::clone(provider));
+    }
+    let rpc_service = Arc::new(rpc_service);
     // The shared router owns `/aos.hub.v1.*` and carries its own axum state
     // (the `Arc<RpcService>`), so it is already fully stated; it is merged into
     // the finished AppState-stated router below. The *facade-less* variant is
     // used: the hub keeps its own `/{slug}/{*path}` machine-surface handler
     // (autoindex/http-redirect/pull-through/producer-document/session auth), so
     // merging the shared facade's identical wildcard would panic on the overlap.
-    // A small inbound body cap is scoped to *just* the RPC surface (the large
-    // surface-upload PUT path keeps its own, far larger limit).
-    // `RequestBodyLimitLayer` enforces the cap at the body-stream level (`413
-    // Payload Too Large`) regardless of how the handler consumes the body.
+    // The shared RPC router applies the same small inbound body cap on native
+    // and Worker (`413 Payload Too Large`). The large surface-upload PUT path
+    // keeps its own, far larger route-local limit.
     // Kept for the outermost domain-routing layer below (it captures the service
     // directly, independent of the AppState-typed router's state).
     let dispatch_service = Arc::clone(&rpc_service);
-    let rpc_router = aos_hub_core::connect::rpc_browse_router(rpc_service).layer(
-        tower_http::limit::RequestBodyLimitLayer::new(RPC_MAX_BODY_BYTES),
-    );
+    let rpc_router = aos_hub_core::connect::rpc_browse_router(rpc_service);
 
     // The `/oauth2/token` exchange fragment runs on Arc<AuthState>; bind its
     // state up front so it merges into the AppState-typed router below.
@@ -380,6 +439,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
             get(machine_path)
                 .post(post_machine_path)
                 .put(put_machine_path)
+                .delete(delete_machine_path)
                 .head(head_machine_path)
                 // The surface-upload PUT/POST legitimately carries large release
                 // packs, so this route opts out of the small global RPC body cap
@@ -400,7 +460,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // B): the wasm-clean management handlers, built over the hub's database,
     // JWT keys, rate limiter, mailer, sealer, the hardened reqwest `HttpClient`
     // port, and the native surface read/write and reindex ports (over which the
-    // shared `signing::advance_channel` runs a hosted-key channel advance).
+    // shared retained-control services coordinate reviewed topology changes).
     // It carries its own `ConsoleDeps` state, so — like `rpc_router` — it is
     // merged after `with_state` below. Nested-canonical registry console pages
     // (slugs with slashes, which the flat `/{slug}/-/…` routes can't capture)
@@ -408,15 +468,9 @@ pub async fn router(state: Arc<AppState>) -> Router {
     // [`console_deps`] and `dispatch_nested` — so there is a single console
     // routing table for both flat and nested slugs.
     let mut console_deps = console_deps(&state);
-    // The native hub's default store is its DB-recorded storage root; surface it
-    // so instance settings shows where unbound surfaces live (falls back to
-    // "configured at deploy time" when unset). Only the flat console router (which
-    // serves the instance-settings page) needs it, so it is set here rather than
-    // in the shared `console_deps` builder used by the nested dispatcher.
-    console_deps.default_storage_location = state.db.default_storage_root().await.ok().flatten();
-    // Seed the editable site chrome (title/banner/footer) from D1 at startup so
-    // the masthead reflects persisted branding; a branding save refreshes it
-    // live via `set_site_chrome`.
+    // Seed the editable site chrome (title/banner/footer) from the database at
+    // startup so the masthead reflects persisted branding; a branding save
+    // refreshes it live via `set_site_chrome`.
     if let Ok(s) = state.db.instance_settings().await {
         aos_hub_core::web::console_render::set_site_chrome(
             s.site_title.as_deref(),
@@ -429,8 +483,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
         aos_hub_core::web::console_render::set_caches_public(s.caches_public);
     }
     let console_router = aos_hub_core::web::console::console_router(console_deps);
-    // Kept for the outermost client-IP injection layer below, which runs after
-    // `with_state` moves `state` into the router.
+    // Kept for the outermost client-IP injection layer below.
     let ip_state = Arc::clone(&state);
     let app = router
         .merge(oauth2)
@@ -441,7 +494,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
             Arc::clone(&state),
             resolve_session,
         ))
-        .with_state(state)
+        .with_state(Arc::clone(&state))
         // The shared Connect-JSON RPC router carries its own `Arc<RpcService>`
         // state, so it is merged after `with_state` (when the surrounding router
         // is `Router<()>` too). Its static `/aos.hub.v1.*` paths win over
@@ -460,7 +513,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
         // CSP (the passkey pages) is still honored.
         .merge(console_router)
         // Router-wide inbound body cap. The RPC surface is already bounded to
-        // the smaller `RPC_MAX_BODY_BYTES` by its own sub-router layer above
+        // the smaller `RPC_MAX_BODY_BYTES` by its shared sub-router layer
         // (which, being closer to the handler, wins for those routes). This
         // outer default bounds every *other* route — including the
         // nested-canonical upload fallback — at the surface-upload limit, so a
@@ -482,10 +535,13 @@ pub async fn router(state: Arc<AppState>) -> Router {
             ip_state,
             inject_client_ip,
         ));
-    // Domain-routed frontends (RFC-0004): a request on a per-registry/per-cache
-    // proxied domain is rewritten to its bound `/{slug}/…` identity by `Host`
-    // before any route matches. Outermost so it runs first on the way in.
-    aos_hub_core::connect::with_frontend_dispatch(app, dispatch_service)
+    // Typed domain/IP endpoints select the most-specific delivery route before
+    // any internal handler matches. Outermost so it runs first on the way in.
+    aos_hub_core::connect::with_delivery_route_dispatch(
+        app,
+        dispatch_service,
+        state.delivery_attestation_verifier.clone(),
+    )
 }
 
 /// Resolve the current session and run the request with the user's email in
@@ -684,7 +740,7 @@ async fn healthz(State(state): State<Arc<AppState>>) -> Response {
 /// `POST /oauth2/device_authorization` form (RFC 8628).
 #[derive(Debug, Default, serde::Deserialize)]
 struct DeviceAuthForm {
-    /// Requested scope path (defaults to the instance root when omitted).
+    /// Requested stable scope identity (defaults to the instance root when omitted).
     scope: Option<String>,
     /// Requested permission verb (repeatable via the form encoding; defaults
     /// to `read`).
@@ -1054,6 +1110,49 @@ async fn resolve_package_closure(
 /// registry console pages, which never read it (it backs the instance-settings
 /// page, served by the flat console router, where [`serve`] sets it explicitly).
 fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDeps {
+    let surface: Arc<dyn aos_hub_core::fetch::SurfaceProvider> = Arc::new(
+        crate::coreports::HubSurfaceProvider::new(
+            Arc::clone(&state.db),
+            state.http.clone(),
+            state.image_snapshots.clone(),
+        )
+        .with_credentials(Arc::clone(&state.secret_versions)),
+    );
+    let surface_write: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> = Arc::new(
+        crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db), state.http.clone())
+            .with_credentials(Arc::clone(&state.secret_versions)),
+    );
+    let reindexer: Arc<dyn aos_hub_core::reindex::Reindexer> = Arc::new(
+        crate::coreports::HubReindexer::new(Arc::clone(&state.db), state.image_snapshots.clone())
+            .with_surface_provider(Arc::new(
+                crate::coreports::HubSurfaceProvider::new(
+                    Arc::clone(&state.db),
+                    state.http.clone(),
+                    state.image_snapshots.clone(),
+                )
+                .with_credentials(Arc::clone(&state.secret_versions))
+                .for_image_indexing(),
+            )),
+    );
+    let topology: Arc<dyn aos_hub_core::web::console::TopologyConsole> = Arc::new(
+        aos_hub_core::service::RpcService::new(
+            Arc::clone(&state.db),
+            state.auth.jwt_keys.clone(),
+            state.external_url.clone(),
+            Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
+            Arc::clone(&surface),
+            Arc::clone(&surface_write),
+            Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
+            Arc::clone(&reindexer),
+            Arc::new(
+                aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
+                    &state.db,
+                )),
+            ),
+            Some(Arc::clone(&state.sealer)),
+        )
+        .with_secret_versions(Arc::clone(&state.secret_versions)),
+    );
     aos_hub_core::web::console::ConsoleDeps {
         db: Arc::clone(&state.db),
         jwt_keys: state.auth.jwt_keys.clone(),
@@ -1063,20 +1162,28 @@ fn console_deps(state: &Arc<AppState>) -> aos_hub_core::web::console::ConsoleDep
         mailer: Arc::clone(&state.mailer),
         sealer: Arc::clone(&state.sealer),
         http: Arc::new(crate::coreports::HubHttpClient::new(state.http.clone())),
-        surface: Arc::new(
-            crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
-        ),
-        surface_write: Arc::new(
-            crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
-        ),
-        reindexer: Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
+        surface,
+        surface_write,
+        reindexer,
         default_storage_location: None,
         // The native hub's in-process database is already colocated and fast, so
         // it runs without a KV cache; token-revocation is immediate via the DB.
         kv: None,
+        topology,
     }
+}
+
+/// Builds native console dependencies for cross-shell request-contract tests.
+///
+/// This narrow adapter is compiled only with the non-default `test-support`
+/// feature. Production hub and Worker builds therefore expose no constructor
+/// whose sole purpose is a foreign crate's test harness.
+#[cfg(feature = "test-support")]
+#[must_use]
+pub fn console_deps_for_worker_test(
+    state: &Arc<AppState>,
+) -> aos_hub_core::web::console::ConsoleDeps {
+    console_deps(state)
 }
 
 /// The `/{slug}/{*path}` route: a flat phase-1 machine path, or — when the
@@ -1116,7 +1223,15 @@ async fn machine_path(
                 Ok(auth) => auth,
                 Err(deny) => return *deny,
             };
-            serve_registry_machine_path(&state, &registry, &path, &headers, auth).await
+            serve_registry_machine_path(
+                &state,
+                &registry,
+                &path,
+                &headers,
+                auth,
+                aos_hub_core::image_http::ImageMethod::Get,
+            )
+            .await
         }
         // Not a flat registry: resolve a nested machine/browse path.
         Ok(None) => {
@@ -1127,7 +1242,7 @@ async fn machine_path(
             // (Range-aware, never buffered into RAM); `nix-cache-info` is
             // generated from the cache's config.
             if nested.status() == StatusCode::NOT_FOUND {
-                if let Ok(Some(cache)) = state.db.cache_by_slug(&slug).await {
+                if let Ok(Some(cache)) = state.db.binary_cache_by_slug(&slug).await {
                     let auth = match authorize_cache_read(&state, &cache, &headers).await {
                         Ok(auth) => auth,
                         Err(deny) => return *deny,
@@ -1143,10 +1258,27 @@ async fn machine_path(
                                 .any(|kv| kv == "explore" || kv.starts_with("explore="))
                         })
                     {
-                        let Some(root) = state.db.cache_surface_root(cache.id).await.ok().flatten()
+                        let Ok(placement) = state
+                            .db
+                            .reconciled_surface_reader(
+                                aos_hub_core::db::SurfaceTarget::BinaryCache(cache.id),
+                            )
+                            .await
                         else {
                             return StatusCode::NOT_FOUND.into_response();
                         };
+                        let Ok(Some(binding)) =
+                            state.db.storage_binding(placement.storage_binding_id).await
+                        else {
+                            return StatusCode::NOT_FOUND.into_response();
+                        };
+                        if binding.kind != "local_fs" {
+                            return StatusCode::NOT_IMPLEMENTED.into_response();
+                        }
+                        let Some(local_root) = binding.local_root_path else {
+                            return StatusCode::NOT_FOUND.into_response();
+                        };
+                        let root = PathBuf::from(local_root).join(placement.prefix);
                         return nar_explore_page(&slug, &root, &path).await;
                     }
                     // The ONE shared streaming cache-read path — identical code to
@@ -1174,18 +1306,17 @@ async fn machine_path(
     }
 }
 
-/// The `POST /{slug}/{*path}` route: a producer-console mutation on a
-/// nested-canonical registry (`/-/settings/tokens`, `/-/channels/{name}/
-/// console`, …).
+/// The `POST /{slug}/{*path}` route: a console mutation or multipart surface write.
 ///
 /// A flat single-segment slug's console POSTs are served by the explicit
 /// console routes; a nested registry's slug spans `/`, so its POSTs land
 /// here and are dispatched to the shared
 /// [`dispatch_nested`](aos_hub_core::web::console::dispatch_nested). Anything
-/// that is not a recognized console path is a `404`.
+/// A non-console path is resolved to an exact registry or cache surface and
+/// dispatched through the shared multipart protocol.
 async fn post_machine_path(
     State(state): State<Arc<AppState>>,
-    Path((_slug, _path)): Path<(String, String)>,
+    Path((slug, path)): Path<(String, String)>,
     uri: axum::http::Uri,
     headers: HeaderMap,
     body: axum::body::Bytes,
@@ -1193,23 +1324,49 @@ async fn post_machine_path(
     match aos_hub_core::web::console::dispatch_nested(
         console_deps(&state),
         axum::http::Method::POST,
-        uri,
-        headers,
-        body,
+        uri.clone(),
+        headers.clone(),
+        body.clone(),
     )
     .await
     {
         Some(response) => response,
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => match resolve_write_target(&state, &slug, &path).await {
+            Ok(Some((resource_slug, tail))) => {
+                crate::facade::multipart_machine_path(
+                    &state,
+                    &resource_slug,
+                    &tail,
+                    axum::http::Method::POST,
+                    uri.query().map(str::to_owned),
+                    headers,
+                    body,
+                )
+                .await
+            }
+            Ok(None) if matches!(state.db.binary_cache_by_slug(&slug).await, Ok(Some(_))) => {
+                crate::facade::multipart_machine_path(
+                    &state,
+                    &slug,
+                    &path,
+                    axum::http::Method::POST,
+                    uri.query().map(str::to_owned),
+                    headers,
+                    body,
+                )
+                .await
+            }
+            Ok(None) => StatusCode::NOT_FOUND.into_response(),
+            Err(error) => internal(error),
+        },
     }
 }
 
-/// The `PUT /{slug}/{*path}` route: write one surface file to a managed
-/// registry through the upload facade.
+/// The `PUT /{slug}/{*path}` route: writes one managed registry/cache surface path.
 ///
-/// A flat single-segment slug that names a registry writes directly; any
+/// A flat single-segment slug that names a surface writes directly; any
 /// other shape (a nested-canonical slug, or no flat match) is resolved by
-/// longest registry-slug prefix and the remaining tail is the surface
+/// longest registry-or-cache slug prefix and the remaining tail is the surface
 /// path. The body extractor is last so axum buffers it only for the write
 /// methods.
 async fn put_machine_path(
@@ -1222,7 +1379,7 @@ async fn put_machine_path(
     if let Some(response) = aos_hub_core::web::console::dispatch_nested(
         console_deps(&state),
         axum::http::Method::PUT,
-        uri,
+        uri.clone(),
         headers.clone(),
         body.clone(),
     )
@@ -1233,17 +1390,91 @@ async fn put_machine_path(
 
     match resolve_write_target(&state, &slug, &path).await {
         Ok(Some((registry_slug, tail))) => {
-            crate::facade::put_machine_path(&state, &registry_slug, &tail, &headers, body).await
+            if uri.query().is_some() {
+                crate::facade::multipart_machine_path(
+                    &state,
+                    &registry_slug,
+                    &tail,
+                    axum::http::Method::PUT,
+                    uri.query().map(str::to_owned),
+                    headers,
+                    body,
+                )
+                .await
+            } else {
+                crate::facade::put_machine_path(&state, &registry_slug, &tail, &headers, body).await
+            }
         }
         // A managed cache: the shared `put_machine_path` has a cache branch
-        // (content-addressed write + hosted-key narinfo signing), so
+        // (content-addressed write plus its pinned signing-key usage), so
         // `nix copy --to <hub>/<cache>` works against caches too — mirroring the
         // HEAD handler's cache fallthrough.
-        Ok(None) if matches!(state.db.cache_by_slug(&slug).await, Ok(Some(_))) => {
-            crate::facade::put_machine_path(&state, &slug, &path, &headers, body).await
+        Ok(None) if matches!(state.db.binary_cache_by_slug(&slug).await, Ok(Some(_))) => {
+            if uri.query().is_some() {
+                crate::facade::multipart_machine_path(
+                    &state,
+                    &slug,
+                    &path,
+                    axum::http::Method::PUT,
+                    uri.query().map(str::to_owned),
+                    headers,
+                    body,
+                )
+                .await
+            } else {
+                crate::facade::put_machine_path(&state, &slug, &path, &headers, body).await
+            }
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
+    }
+}
+
+/// The `DELETE /{slug}/{*path}?uploadId=...` multipart-abort route.
+async fn delete_machine_path(
+    State(state): State<Arc<AppState>>,
+    Path((slug, path)): Path<(String, String)>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(response) = aos_hub_core::web::console::dispatch_nested(
+        console_deps(&state),
+        axum::http::Method::DELETE,
+        uri.clone(),
+        headers.clone(),
+        axum::body::Bytes::new(),
+    )
+    .await
+    {
+        return response;
+    }
+    match resolve_write_target(&state, &slug, &path).await {
+        Ok(Some((resource_slug, tail))) => {
+            crate::facade::multipart_machine_path(
+                &state,
+                &resource_slug,
+                &tail,
+                axum::http::Method::DELETE,
+                uri.query().map(str::to_owned),
+                headers,
+                axum::body::Bytes::new(),
+            )
+            .await
+        }
+        Ok(None) if matches!(state.db.binary_cache_by_slug(&slug).await, Ok(Some(_))) => {
+            crate::facade::multipart_machine_path(
+                &state,
+                &slug,
+                &path,
+                axum::http::Method::DELETE,
+                uri.query().map(str::to_owned),
+                headers,
+                axum::body::Bytes::new(),
+            )
+            .await
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => internal(error),
     }
 }
 
@@ -1269,12 +1500,37 @@ async fn head_machine_path(
 
     match resolve_write_target(&state, &slug, &path).await {
         Ok(Some((registry_slug, tail))) => {
-            crate::facade::head_machine_path(&state, &registry_slug, &tail, &headers).await
+            if tail.starts_with("images/") {
+                let Some(registry) = state
+                    .db
+                    .registry_by_slug(&registry_slug)
+                    .await
+                    .ok()
+                    .flatten()
+                else {
+                    return StatusCode::NOT_FOUND.into_response();
+                };
+                let auth = match authorize_registry_read(&state, &registry, &headers).await {
+                    Ok(auth) => auth,
+                    Err(deny) => return *deny,
+                };
+                serve_registry_machine_path(
+                    &state,
+                    &registry,
+                    &tail,
+                    &headers,
+                    auth,
+                    aos_hub_core::image_http::ImageMethod::Head,
+                )
+                .await
+            } else {
+                crate::facade::head_machine_path(&state, &registry_slug, &tail, &headers).await
+            }
         }
         // A managed cache: the shared `head_machine_path` has a cache branch
         // (read-visibility + surface existence), so a substituter's `.narinfo`
         // HEAD probe works against caches too.
-        Ok(None) if matches!(state.db.cache_by_slug(&slug).await, Ok(Some(_))) => {
+        Ok(None) if matches!(state.db.binary_cache_by_slug(&slug).await, Ok(Some(_))) => {
             crate::facade::head_machine_path(&state, &slug, &path, &headers).await
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -1282,13 +1538,12 @@ async fn head_machine_path(
     }
 }
 
-/// Resolve a `PUT`/`HEAD` request's `(slug, path)` capture into the target
-/// registry slug and the surface-relative tail.
+/// Resolve a machine request's `(slug, path)` capture into an exact registry
+/// or cache slug and the surface-relative tail.
 ///
-/// A flat slug that names a registry wins directly (tail = `path`);
+/// A flat slug that names either surface kind wins directly (tail = `path`);
 /// otherwise the full `{slug}/{path}` is resolved by longest
-/// registry-slug prefix, exactly as [`resolve_by_prefix`] does for reads.
-/// `Ok(None)` means no registry owns the path.
+/// surface-slug prefix. `Ok(None)` means no surface owns the path.
 ///
 /// # Errors
 ///
@@ -1298,29 +1553,42 @@ async fn resolve_write_target(
     slug: &str,
     path: &str,
 ) -> Result<Option<(String, String)>, anyhow::Error> {
-    if state.db.registry_by_slug(slug).await?.is_some() {
+    if state.db.registry_by_slug(slug).await?.is_some()
+        || state.db.binary_cache_by_slug(slug).await?.is_some()
+    {
         return Ok(Some((slug.to_string(), path.to_string())));
     }
     let full = format!("{slug}/{path}");
     let decoded = percent_decode(&full);
-    match resolve_by_prefix(state, decoded.trim_end_matches('/')).await? {
-        Some((registry, tail)) if !tail.is_empty() => Ok(Some((registry.slug, tail))),
-        _ => Ok(None),
+    let full = decoded.trim_end_matches('/');
+    let mut candidate = full;
+    loop {
+        if state.db.registry_by_slug(candidate).await?.is_some()
+            || state.db.binary_cache_by_slug(candidate).await?.is_some()
+        {
+            let tail = full[candidate.len()..].trim_start_matches('/').to_string();
+            return Ok((!tail.is_empty()).then(|| (candidate.to_string(), tail)));
+        }
+        match candidate.rsplit_once('/') {
+            Some((head, _)) => candidate = head,
+            None => return Ok(None),
+        }
     }
 }
 
 /// Serves a registry machine path through the shared placement-aware streamer.
 ///
 /// Native and Worker requests use the same ordered selection, Range handling,
-/// and pre-body failover contract. An unplaced migration surface uses the
-/// resource reader; only an atomic unplaced miss may enter the native-only
-/// pull-through compatibility path, which the final topology cutover removes.
+/// and pre-body failover contract. Every read resolves through explicit
+/// placements; the steady-state runtime has no resource binding/prefix
+/// fallback.
 async fn serve_registry_machine_path(
     state: &AppState,
     registry: &RegistryRecord,
     path: &str,
     headers: &HeaderMap,
     auth: ReadAuthorization<'_>,
+    image_method: aos_hub_core::image_http::ImageMethod,
 ) -> Response {
     use aos_hub_core::service::RegistryServeOutcome;
 
@@ -1328,99 +1596,14 @@ async fn serve_registry_machine_path(
         .get(axum::http::header::RANGE)
         .and_then(|value| value.to_str().ok());
     match crate::facade::write_service(state)
-        .registry_serve(auth, registry, path, range)
+        .registry_serve(auth, registry, path, range, image_method)
         .await
     {
         Ok(RegistryServeOutcome::Response(response)) => response,
         Ok(RegistryServeOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
-        Ok(RegistryServeOutcome::UnplacedNotFound) => {
-            // Transitional pull-through exists only for an atomic
-            // zero-placement migration snapshot. A configured topology miss
-            // never writes into the resource-level legacy root.
-            let root = match state.db.registry_surface_root(registry.id).await {
-                Ok(Some(root)) => root,
-                Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-                Err(error) => return internal(error),
-            };
-            pull_through_machine_path(state, registry, &root, path)
-                .await
-                .unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
-        }
         Err(error) => StatusCode::from_u16(error.http_status())
             .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
             .into_response(),
-    }
-}
-
-/// Pull-through fetch-on-miss for a proxied pull-through mirror.
-///
-/// When `registry` is a `pullthrough` mirror, fetches the missing machine
-/// `path` from its upstream, verifies it (loose objects by oid; narinfos by
-/// `Sig:` against the registry's trust roster; NARs by hash against their
-/// verified narinfo; pointers fetched live and not frozen), persists the
-/// hash-checked objects into the binding `root`, and serves the bytes with the
-/// path's machine cache-control. Returns `None` when the registry is not a
-/// pull-through mirror, the path is not a machine path, or the upstream lacks
-/// it — letting the caller fall back to its `404`. A verification failure or
-/// upstream error maps to `502 Bad Gateway` so a tampered narinfo/NAR is
-/// refused rather than proxied, and the proxy never hangs or 500s.
-async fn pull_through_machine_path(
-    state: &AppState,
-    registry: &RegistryRecord,
-    root: &std::path::Path,
-    path: &str,
-) -> Option<Response> {
-    if !compat::is_machine_path(path) {
-        return None;
-    }
-    let source = match state.db.mirror_source(registry.id).await {
-        Ok(Some(source)) if source.mode == "pullthrough" => source,
-        Ok(_) => return None,
-        Err(err) => return Some(internal(err)),
-    };
-    // Defense in depth: a pull-through fetch reaches out over the network, so
-    // re-validate the configured upstream is a safe remote target before each
-    // request (creation already validated it).
-    if let Err(err) = crate::fetch::is_safe_remote_url(&source.upstream_url) {
-        return Some(internal(err));
-    }
-    let fetch = match crate::fetch::fetch_for_url(&source.upstream_url).await {
-        Ok(fetch) => fetch,
-        Err(err) => return Some(internal(err)),
-    };
-    match crate::mirror::fetch_through(
-        fetch.as_ref(),
-        root,
-        path,
-        &registry.trust_keys,
-        source.verify,
-    )
-    .await
-    {
-        Ok(Some(result)) => {
-            let mut response = result.bytes.into_response();
-            let headers = response.headers_mut();
-            headers.insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(compat::content_type(path)),
-            );
-            headers.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static(compat::cache_control(path)),
-            );
-            Some(response)
-        }
-        // Upstream definitively lacks the path: fall back to the local 404.
-        Ok(None) => None,
-        Err(err) => {
-            tracing::warn!(
-                slug = %registry.slug,
-                %path,
-                error = %format!("{err:#}"),
-                "pull-through fetch failed"
-            );
-            Some(StatusCode::BAD_GATEWAY.into_response())
-        }
     }
 }
 
@@ -1429,6 +1612,7 @@ enum PageKind {
     Home,
     Packages,
     Package(String),
+    Images,
     Channels,
     Channel(String),
     Releases,
@@ -1471,10 +1655,13 @@ async fn nested_catch_all(
     }
 
     match method {
-        axum::http::Method::PUT | axum::http::Method::HEAD => {
+        axum::http::Method::PUT
+        | axum::http::Method::POST
+        | axum::http::Method::DELETE
+        | axum::http::Method::HEAD => {
             resolve_nested_write(&state, &method, &uri, &headers, body).await
         }
-        axum::http::Method::GET | axum::http::Method::POST => {
+        axum::http::Method::GET => {
             resolve_nested(&state, &uri, &headers, peer, Instant::now()).await
         }
         _ => resolve_nested(&state, &uri, &headers, peer, Instant::now()).await,
@@ -1495,16 +1682,30 @@ async fn resolve_nested_write(
     body: axum::body::Bytes,
 ) -> Response {
     let decoded = percent_decode(uri.path().trim_start_matches('/'));
-    let target = match resolve_by_prefix(state, decoded.trim_end_matches('/')).await {
-        Ok(Some((registry, tail))) if !tail.is_empty() => (registry.slug, tail),
-        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+    let Some((leading, remainder)) = decoded.split_once('/') else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let target = match resolve_write_target(state, leading, remainder).await {
+        Ok(Some(target)) => target,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
     };
     let (slug, tail) = target;
-    if method == axum::http::Method::PUT {
+    if method == axum::http::Method::HEAD {
+        crate::facade::head_machine_path(state, &slug, &tail, headers).await
+    } else if method == axum::http::Method::PUT && uri.query().is_none() {
         crate::facade::put_machine_path(state, &slug, &tail, headers, body).await
     } else {
-        crate::facade::head_machine_path(state, &slug, &tail, headers).await
+        crate::facade::multipart_machine_path(
+            state,
+            &slug,
+            &tail,
+            method.clone(),
+            uri.query().map(str::to_owned),
+            headers.clone(),
+            body,
+        )
+        .await
     }
 }
 
@@ -1568,7 +1769,15 @@ async fn resolve_nested(
                 )
                 .await
             } else {
-                serve_registry_machine_path(state, &registry, &tail, headers, auth).await
+                serve_registry_machine_path(
+                    state,
+                    &registry,
+                    &tail,
+                    headers,
+                    auth,
+                    aos_hub_core::image_http::ImageMethod::Get,
+                )
+                .await
             }
         }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -1581,6 +1790,7 @@ fn parse_page(rest: &str) -> Option<PageKind> {
     let rest = rest.trim_end_matches('/');
     match rest {
         "packages" => Some(PageKind::Packages),
+        "images" => Some(PageKind::Images),
         "channels" => Some(PageKind::Channels),
         "releases" => Some(PageKind::Releases),
         "health" => Some(PageKind::Health),
@@ -1637,7 +1847,7 @@ async fn render_page(
     // The org-scoped (`org/registry/-/…`) URLs reach the package browser and
     // registry home through here rather than the flat routes; throttle the
     // same expensive, anonymous page kinds per IP so this path is no weaker.
-    if matches!(page, PageKind::Home | PageKind::Packages) {
+    if matches!(page, PageKind::Home | PageKind::Packages | PageKind::Images) {
         if let Some(limited) = browse_rate_limited(state, headers, peer) {
             return limited;
         }
@@ -1669,6 +1879,25 @@ async fn render_page(
                 }
                 None => None,
             },
+            PageKind::Images => {
+                let images = state.db.list_system_images(registry.id).await?;
+                let channels = state.db.list_channels(registry.id).await?;
+                Some(pages::images_page(
+                    registry,
+                    status.as_ref(),
+                    &images,
+                    &channels,
+                    &pages::ImageBrowse {
+                        query: params.q.as_deref(),
+                        release: params.release.as_deref(),
+                        channel: params.channel.as_deref(),
+                        architecture: params.architecture.as_deref(),
+                        format: params.format.as_deref(),
+                        target: params.target.as_deref(),
+                    },
+                    started,
+                ))
+            }
             PageKind::Channels => {
                 let channels = state.db.list_channels(registry.id).await?;
                 Some(pages::channels_index(
@@ -1727,8 +1956,34 @@ async fn render_page(
                     .db
                     .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)
                     .await?;
-                let frontends = state.db.list_frontends(registry.id).await?;
-                let frontend_probes = state.db.list_frontend_probes(registry.id).await?;
+                let route_records = state
+                    .db
+                    .list_delivery_routes(aos_hub_core::db::SurfaceTarget::Registry(registry.id))
+                    .await?;
+                let mut routes = Vec::new();
+                for route in route_records {
+                    let Some(snapshot) = state.db.delivery_route_snapshot(&route.id).await? else {
+                        continue;
+                    };
+                    let mut capabilities = Vec::new();
+                    if snapshot.spec.serves_git {
+                        capabilities.push("git".to_string());
+                    }
+                    if snapshot.spec.serves_cache {
+                        capabilities.push("cache".to_string());
+                    }
+                    if snapshot.spec.serves_web {
+                        capabilities.push("web".to_string());
+                    }
+                    routes.push(pages::DeliveryRouteHealthRow {
+                        id: route.id,
+                        endpoint_id: route.endpoint_id,
+                        base_path: route.base_path,
+                        mode: route.mode,
+                        enabled: route.enabled,
+                        capabilities,
+                    });
+                }
                 Some(pages::health_page(
                     registry,
                     status.as_ref(),
@@ -1736,8 +1991,7 @@ async fn render_page(
                     stack.as_ref(),
                     &probes,
                     &repair_jobs,
-                    &frontends,
-                    &frontend_probes,
+                    &routes,
                     started,
                 ))
             }
@@ -1758,14 +2012,26 @@ async fn render_home(
 ) -> Result<String, anyhow::Error> {
     let channels = state.db.list_channels(registry.id).await?;
     let packages = state.db.list_packages(registry.id).await?;
-    let caches = state.db.list_advertised_caches(registry.id).await?;
+    let caches: Vec<(String, u32)> = state
+        .db
+        .registry_cache_stack_entries(registry.id)
+        .await?
+        .into_iter()
+        .map(|entry| {
+            Ok((
+                entry.committed_url,
+                u32::try_from(entry.resolved_priority)
+                    .context("consumer-cache priority is outside the u32 range")?,
+            ))
+        })
+        .collect::<Result<_, anyhow::Error>>()?;
     let roster = state.db.list_roster(registry.id).await?;
     let validations = state.db.latest_validation_runs(registry.id).await?;
-    let external = format!(
-        "{}/{}",
-        state.external_url.trim_end_matches('/'),
-        registry.slug
-    );
+    let external = state
+        .db
+        .ready_registry_canonical_url(registry.id)
+        .await?
+        .context("registry has no canonical Git delivery route")?;
     Ok(pages::registry_home(
         registry,
         status,
@@ -1804,10 +2070,16 @@ async fn registry_manage_link(
     else {
         return false;
     };
+    let Ok(scope_key) = state.db.registry_authorization_scope(registry.id).await else {
+        return false;
+    };
+    let Ok(Some(context)) = state.db.authorization_context(&scope_key).await else {
+        return false;
+    };
     crate::domain::iam::allow(
         &grants,
         crate::domain::Permission::RegistryConfigure,
-        &crate::domain::Scope::parse(&registry.slug),
+        &context,
     )
 }
 
@@ -1864,10 +2136,16 @@ pub(crate) async fn authorize_registry_read<'a>(
         // Private (or any unknown visibility, fail closed): require Read on
         // the registry scope from a session or a bearer token.
         _ => {
-            let scope = Scope::parse(&registry.slug);
+            let scope = Scope::parse(
+                &state
+                    .db
+                    .registry_authorization_scope(registry.id)
+                    .await
+                    .map_err(|_| denied())?,
+            );
             if session_allows_read(state, headers, &scope).await {
                 Ok(ReadAuthorization::PreauthorizedSession)
-            } else if bearer_allows_read(state, headers, &scope) {
+            } else if bearer_allows_read(state, headers, &scope).await {
                 Ok(ReadAuthorization::AuthorizationHeader(
                     authorization_header(headers),
                 ))
@@ -1886,7 +2164,7 @@ pub(crate) async fn authorize_registry_read<'a>(
 /// response to send on denial.
 pub(crate) async fn authorize_cache_read<'a>(
     state: &AppState,
-    cache: &crate::db::Cache,
+    cache: &crate::db::BinaryCache,
     headers: &'a HeaderMap,
 ) -> Result<ReadAuthorization<'a>, Box<Response>> {
     let denied = || Box::new(StatusCode::NOT_FOUND.into_response());
@@ -1917,14 +2195,14 @@ pub(crate) async fn authorize_cache_read<'a>(
         _ => {
             let scope = match cache.org_id {
                 Some(org_id) => match state.db.org_by_id(org_id).await.ok().flatten() {
-                    Some(org) => Scope::parse(&org.slug),
+                    Some(org) => Scope::parse(&org.stable_id),
                     None => return Err(denied()),
                 },
                 None => Scope::root(),
             };
             if session_allows_read(state, headers, &scope).await {
                 Ok(ReadAuthorization::PreauthorizedSession)
-            } else if bearer_allows_read(state, headers, &scope) {
+            } else if bearer_allows_read(state, headers, &scope).await {
                 Ok(ReadAuthorization::AuthorizationHeader(
                     authorization_header(headers),
                 ))
@@ -2079,7 +2357,7 @@ async fn session_is_org_member(state: &AppState, headers: &HeaderMap, org_id: i6
     let Some(org) = state.db.org_by_id(org_id).await.ok().flatten() else {
         return false;
     };
-    let scope = Scope::parse(&org.slug);
+    let scope = Scope::parse(&org.stable_id);
     session_allows_read(state, headers, &scope).await
 }
 
@@ -2098,15 +2376,29 @@ async fn session_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scop
 }
 
 /// Whether a bearer JWT in `headers` grants `Read` at `scope`.
-fn bearer_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> bool {
+async fn bearer_allows_read(state: &AppState, headers: &HeaderMap, scope: &Scope) -> bool {
     let Some(value) = authorization_header(headers) else {
         return false;
     };
     let Some(token) = value.strip_prefix("Bearer ") else {
         return false;
     };
+    let Ok(Some(context)) = state.db.authorization_context(scope.as_str()).await else {
+        return false;
+    };
     match state.auth.jwt_keys.verify(token) {
-        Ok(claims) => crate::auth::extract::token_allows(&claims, Permission::Read, scope),
+        Ok(claims) => {
+            if !crate::auth::extract::token_allows(&claims, Permission::Read, &context) {
+                return false;
+            }
+            let Some(principal) = aos_hub_core::domain::iam::claims_principal(&claims) else {
+                return false;
+            };
+            match state.db.effective_scopes(principal).await {
+                Ok(grants) => aos_hub_core::domain::iam::allow(&grants, Permission::Read, &context),
+                Err(_) => false,
+            }
+        }
         Err(_) => false,
     }
 }

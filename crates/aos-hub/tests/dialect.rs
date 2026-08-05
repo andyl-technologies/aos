@@ -5,15 +5,15 @@
 //! run against every backend the build supports:
 //!
 //! - **sqlite** always, in-memory and hermetic.
-//! - **postgres** when `AOS_HUB_TEST_PG_URL` is set *and* the crate is built
+//! - **postgres** when `AOS_HUB_TEST_PG_URL` is set and the crate is built
 //!   with `--features postgres`.
-//! - **mysql** when `AOS_HUB_TEST_MYSQL_URL` is set *and* the crate is built
+//! - **mysql** when `AOS_HUB_TEST_MYSQL_URL` is set and the crate is built
 //!   with `--features mysql`.
 //!
-//! When an env var is unset (or its feature is off) the corresponding case
-//! prints a skip notice and is a no-op, so the suite passes cleanly with no
-//! live servers. The pg/mysql cases drop and recreate a clean schema before
-//! connecting, so repeated runs against a long-lived server are idempotent.
+//! Developer runs may omit either live server. The hermetic package gate builds
+//! with `required-live-dialects`, which makes a missing feature or URL a hard
+//! failure. The pg/mysql cases drop and recreate a clean schema before
+//! connecting, so repeated runs against long-lived servers are idempotent.
 //!
 //! Run the live cases with, e.g.:
 //!
@@ -23,8 +23,549 @@
 //!   cargo test -p aos-hub --features postgres,mysql --test dialect -- --nocapture
 //! ```
 
+#[cfg(all(
+    feature = "required-live-dialects",
+    not(all(feature = "postgres", feature = "mysql"))
+))]
+compile_error!("required-live-dialects requires both postgres and mysql features");
+
 use aos_hub::db::Database;
 use aos_hub::domain::{Permission, Principal};
+use aos_hub_core::db::{
+    BeginCacheGcGeneration, CacheGcCoverageError, CacheInventoryNarinfoCandidate,
+    CacheObjectPresenceObservation, NewStorageBindingWriteRevision, SurfacePlacementRecord,
+    SurfaceTarget,
+};
+
+mod common;
+
+/// Stages one complete NAR/narinfo candidate for a placement inventory scan.
+async fn stage_dialect_inventory_candidate(
+    db: &Database,
+    cache_id: i64,
+    generation: i64,
+    placement_id: i64,
+    owner_token: &str,
+    identity_digest: &str,
+) {
+    let narinfo_key = "deadbeef.narinfo";
+    let nar_key = "nar/dialect.nar.zst";
+    let narinfo_hash = "a".repeat(64);
+    let nar_hash = "b".repeat(64);
+    for (object_key, content_hash, size) in [
+        (narinfo_key, narinfo_hash.as_str(), 96),
+        (nar_key, nar_hash.as_str(), 3),
+    ] {
+        db.stage_cache_surface_object_identity(
+            cache_id,
+            generation,
+            placement_id,
+            owner_token,
+            object_key,
+            content_hash,
+            size,
+        )
+        .await
+        .unwrap();
+        db.stage_cache_object_presence(
+            owner_token,
+            &CacheObjectPresenceObservation {
+                cache_id,
+                object_key: object_key.to_string(),
+                placement_id,
+                state: "present".to_string(),
+                observed_hash: Some(content_hash.to_string()),
+                observed_size: Some(size),
+                etag: Some(format!("dialect-{placement_id}-{object_key}")),
+                inventory_generation: generation,
+                observed_at: 20,
+            },
+        )
+        .await
+        .unwrap();
+    }
+    db.stage_cache_inventory_narinfo_candidate(
+        owner_token,
+        &CacheInventoryNarinfoCandidate {
+            cache_id,
+            generation,
+            placement_id,
+            store_hash: "deadbeef".to_string(),
+            store_name: "deadbeef-dialect-1.0".to_string(),
+            identity_digest: identity_digest.to_string(),
+            narinfo_object_key: narinfo_key.to_string(),
+            nar_object_key: nar_key.to_string(),
+            nar_hash: "sha256:nar-dialect".to_string(),
+            nar_size: 5,
+            file_hash: nar_hash,
+            file_size: 3,
+            compression: "zstd".to_string(),
+            deriver: None,
+            signature: None,
+            content_address: None,
+            references: Vec::new(),
+            published_at: 20,
+        },
+    )
+    .await
+    .unwrap();
+    db.stage_cache_inventory_manifest(
+        cache_id,
+        generation,
+        placement_id,
+        owner_token,
+        &format!("dialect-placement-{placement_id}"),
+        2,
+        20,
+    )
+    .await
+    .unwrap();
+}
+
+/// Exercises atomic multi-placement inventory publication and fail-closed GC.
+async fn exercise_topology_inventory_and_gc(
+    db: &Database,
+    cache_id: i64,
+    placements: &[SurfacePlacementRecord],
+) {
+    assert_eq!(placements.len(), 2);
+    let owner_token = "dialect-inventory-owner";
+    db.begin_cache_inventory_topology(cache_id, 2, 0, owner_token, 10, 100)
+        .await
+        .unwrap();
+    assert!(db
+        .begin_cache_inventory_topology(cache_id, 2, 0, "dialect-inventory-rival", 11, 130)
+        .await
+        .is_err());
+    db.heartbeat_cache_inventory_topology(cache_id, 2, owner_token, 12, 140)
+        .await
+        .unwrap();
+    stage_dialect_inventory_candidate(
+        db,
+        cache_id,
+        2,
+        placements[0].id,
+        owner_token,
+        &"c".repeat(64),
+    )
+    .await;
+    stage_dialect_inventory_candidate(
+        db,
+        cache_id,
+        2,
+        placements[1].id,
+        owner_token,
+        &"d".repeat(64),
+    )
+    .await;
+    assert!(
+        db.publish_cache_inventory_topology(
+            cache_id,
+            2,
+            owner_token,
+            "dialect-conflicting-inventory",
+            0,
+            "dialect-conflicting-publication",
+            21,
+        )
+        .await
+        .is_err(),
+        "cross-placement metadata drift must roll the publication back"
+    );
+    assert!(db
+        .normalized_cache_object(cache_id, "deadbeef")
+        .await
+        .unwrap()
+        .is_none());
+    db.fail_cache_inventory_topology(cache_id, 2, owner_token)
+        .await
+        .unwrap();
+
+    db.begin_cache_inventory_topology(cache_id, 2, 0, owner_token, 30, 120)
+        .await
+        .unwrap();
+    for placement in placements {
+        stage_dialect_inventory_candidate(
+            db,
+            cache_id,
+            2,
+            placement.id,
+            owner_token,
+            &"e".repeat(64),
+        )
+        .await;
+    }
+    db.publish_cache_inventory_topology(
+        cache_id,
+        2,
+        owner_token,
+        "dialect-corrected-inventory",
+        0,
+        "dialect-corrected-publication",
+        40,
+    )
+    .await
+    .unwrap();
+    let object = db
+        .normalized_cache_object(cache_id, "deadbeef")
+        .await
+        .unwrap()
+        .expect("corrected inventory publishes one normalized object");
+    let state = db.cache_gc_topology_state(cache_id).await.unwrap().unwrap();
+    assert_eq!(state.inventory_generation, 2);
+    assert_eq!(state.epoch, 1);
+    assert!(!state.destructive_enabled);
+
+    db.begin_cache_gc_generation(&BeginCacheGcGeneration {
+        generation_id: "dialect-gc-incomplete".to_string(),
+        cache_id,
+        cutoff_at: 50,
+        expected_epoch: state.epoch,
+        created_at: 50,
+    })
+    .await
+    .unwrap();
+    db.stage_cache_gc_coverage_error(
+        cache_id,
+        "dialect-gc-incomplete",
+        &CacheGcCoverageError {
+            error_id: "dialect-missing-reference".to_string(),
+            kind: "missing_reference".to_string(),
+            store_hash: Some("deadbeef".to_string()),
+            referenced_store_hash: Some("feedface".to_string()),
+            detail: "dialect fixture deliberately omits one referenced object".to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        db.complete_cache_gc_generation(cache_id, "dialect-gc-incomplete", 51)
+            .await
+            .is_err(),
+        "coverage failure must prevent a GC mark generation from publishing"
+    );
+    db.fail_cache_gc_generation(
+        cache_id,
+        "dialect-gc-incomplete",
+        "expected coverage failure",
+        52,
+    )
+    .await
+    .unwrap();
+
+    db.begin_cache_gc_generation(&BeginCacheGcGeneration {
+        generation_id: "dialect-gc-complete".to_string(),
+        cache_id,
+        cutoff_at: 60,
+        expected_epoch: state.epoch,
+        created_at: 60,
+    })
+    .await
+    .unwrap();
+    db.stage_cache_gc_mark(cache_id, "dialect-gc-complete", object.id)
+        .await
+        .unwrap();
+    db.complete_cache_gc_generation(cache_id, "dialect-gc-complete", 61)
+        .await
+        .unwrap();
+}
+
+/// Configures one shared binding revision as the writer for both surfaces.
+async fn configure_dialect_writers(
+    db: &Database,
+    binding_id: i64,
+    registry_id: i64,
+    registry_placement: &SurfacePlacementRecord,
+    cache_id: i64,
+    cache_placement: &SurfacePlacementRecord,
+) -> (i64, i64) {
+    let credential_generation =
+        common::create_valid_write_credential(db, binding_id, "secret://dialect/write/v1").await;
+    let revision = db
+        .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
+            storage_binding_id: binding_id,
+            write_credential_generation: credential_generation,
+            writes_supported: true,
+            conditional_writes_supported: true,
+            revision_fingerprint: "dialect-write-revision-v1".to_string(),
+            capability_fingerprint: "dialect-writes-and-cas".to_string(),
+        })
+        .await
+        .unwrap();
+    db.observe_storage_binding_write_revision(binding_id, revision.revision, "valid", None, None)
+        .await
+        .unwrap();
+    let binding_state = db
+        .storage_binding_write_state(binding_id)
+        .await
+        .unwrap()
+        .unwrap();
+    db.set_current_storage_binding_write_revision(
+        binding_id,
+        revision.revision,
+        binding_state.resource_version,
+    )
+    .await
+    .unwrap();
+    for (surface, placement, incarnation) in [
+        (
+            SurfaceTarget::Registry(registry_id),
+            registry_placement,
+            "dialect-registry-writer",
+        ),
+        (
+            SurfaceTarget::BinaryCache(cache_id),
+            cache_placement,
+            "dialect-cache-writer",
+        ),
+    ] {
+        db.bind_surface_placement_write_capability(placement.id, revision.revision)
+            .await
+            .unwrap();
+        db.create_surface_write_authority(
+            surface,
+            incarnation,
+            placement.id,
+            placement.resource_version,
+            placement.write_spec_version,
+            revision.revision,
+        )
+        .await
+        .unwrap();
+        assert!(
+            db.surface_placement(placement.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .effective_write_enabled
+        );
+    }
+    (revision.revision, credential_generation)
+}
+
+/// Exercises durable multipart admission, replay, conflict, and completion.
+async fn exercise_topology_multipart(
+    db: &Database,
+    org_id: i64,
+    registry_id: i64,
+    registry_placement: &SurfacePlacementRecord,
+    cache_id: i64,
+    cache_placement: &SurfacePlacementRecord,
+    binding_revision: i64,
+    credential_generation: i64,
+) {
+    let body_digest = "1".repeat(64);
+    let other_digest = "2".repeat(64);
+    let intended_hash = "3".repeat(64);
+
+    let observing = db
+        .begin_cache_write_ticket(
+            "dialect-cache-multipart",
+            cache_id,
+            cache_placement.id,
+            cache_placement.resource_version,
+            binding_revision,
+            credential_generation,
+            "nar/multipart.nar.zst",
+            3,
+            "multipart",
+            Some(org_id),
+            0,
+            0,
+            1_000,
+            100,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let active = db
+        .activate_cache_write_ticket(
+            &observing.ticket_id,
+            observing.resource_version,
+            Some(org_id),
+            3,
+            1,
+            None,
+            Some(&intended_hash),
+            101,
+        )
+        .await
+        .unwrap();
+    let active = db
+        .attach_cache_write_backend_upload(
+            &active.ticket_id,
+            active.resource_version,
+            "dialect-cache-backend-upload",
+            102,
+        )
+        .await
+        .unwrap();
+    let admitted = db
+        .admit_cache_write_part(
+            &active.ticket_id,
+            active.resource_version,
+            1,
+            3,
+            &body_digest,
+        )
+        .await
+        .unwrap();
+    let replay = db
+        .admit_cache_write_part(
+            &admitted.ticket_id,
+            admitted.resource_version,
+            1,
+            3,
+            &body_digest,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.uploaded_size, 3, "exact replay cannot double-charge");
+    assert!(db
+        .admit_cache_write_part(
+            &replay.ticket_id,
+            replay.resource_version,
+            1,
+            3,
+            &other_digest,
+        )
+        .await
+        .is_err());
+    db.confirm_cache_write_part(
+        &replay.ticket_id,
+        replay.resource_version,
+        1,
+        "cache-part-etag",
+    )
+    .await
+    .unwrap();
+    let active = db
+        .cache_write_ticket(&replay.ticket_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let completing = db
+        .begin_cache_multipart_completion(&active.ticket_id, active.resource_version, 103)
+        .await
+        .unwrap();
+    let completing = db
+        .reconcile_cache_write_ticket_size(
+            &completing.ticket_id,
+            completing.resource_version,
+            3,
+            104,
+        )
+        .await
+        .unwrap();
+    db.complete_cache_write_ticket(&completing.ticket_id, completing.resource_version, 105)
+        .await
+        .unwrap();
+
+    let observing = db
+        .begin_registry_write_ticket(
+            "dialect-registry-multipart",
+            registry_id,
+            registry_placement.id,
+            registry_placement.resource_version,
+            binding_revision,
+            credential_generation,
+            "objects/aa/multipart",
+            3,
+            "multipart",
+            Some(org_id),
+            0,
+            0,
+            1_000,
+            100,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let active = db
+        .activate_registry_write_ticket(
+            &observing.ticket_id,
+            observing.resource_version,
+            Some(org_id),
+            3,
+            1,
+            None,
+            Some(&intended_hash),
+            101,
+        )
+        .await
+        .unwrap();
+    let active = db
+        .attach_registry_write_backend_upload(
+            &active.ticket_id,
+            active.resource_version,
+            "dialect-registry-backend-upload",
+            102,
+        )
+        .await
+        .unwrap();
+    let admitted = db
+        .admit_registry_write_part(
+            &active.ticket_id,
+            active.resource_version,
+            1,
+            3,
+            &body_digest,
+        )
+        .await
+        .unwrap();
+    let replay = db
+        .admit_registry_write_part(
+            &admitted.ticket_id,
+            admitted.resource_version,
+            1,
+            3,
+            &body_digest,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.uploaded_size, 3, "exact replay cannot double-charge");
+    assert!(db
+        .admit_registry_write_part(
+            &replay.ticket_id,
+            replay.resource_version,
+            1,
+            3,
+            &other_digest,
+        )
+        .await
+        .is_err());
+    db.confirm_registry_write_part(
+        &replay.ticket_id,
+        replay.resource_version,
+        1,
+        "registry-part-etag",
+    )
+    .await
+    .unwrap();
+    let active = db
+        .registry_write_ticket(&replay.ticket_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let completing = db
+        .begin_registry_multipart_completion(&active.ticket_id, active.resource_version, 103)
+        .await
+        .unwrap();
+    let completing = db
+        .reconcile_registry_write_ticket_size(
+            &completing.ticket_id,
+            completing.resource_version,
+            3,
+            104,
+        )
+        .await
+        .unwrap();
+    db.complete_registry_write_ticket(&completing.ticket_id, completing.resource_version, 105)
+        .await
+        .unwrap();
+}
 
 /// Drives the representative cross-section of the `Database` surface against an
 /// already-migrated handle, asserting the parity invariants that must hold on
@@ -32,11 +573,11 @@ use aos_hub::domain::{Permission, Principal};
 ///
 /// Covers: org/user/service-account creation, membership grants and effective
 /// scope resolution, token mint + validation, managed-registry creation,
-/// managed-cache CRUD + link + object index + GC-run lifecycle + metrics, a
-/// config change-set apply, audit record + scoped list, and the webhook
-/// enqueue/list path.
+/// multi-placement cache inventory publication + fail-closed GC, durable cache
+/// and registry multipart writes, a config change-set apply, audit record +
+/// scoped list, and the webhook enqueue/list path.
 async fn exercise(db: &Database) {
-    // The mirror/frontend creation paths SSRF-validate their target; these
+    // Mirror creation SSRF-validates its target; these
     // contract assertions use placeholder hosts, so opt out of the
     // local/internal-address rejection (the non-HTTP scheme rejection still
     // applies). Production never sets this.
@@ -71,13 +612,15 @@ async fn exercise(db: &Database) {
 
     // -- memberships + effective scopes ---------------------------------------
     let principal = Principal::user(alice);
-    db.grant_membership(principal.kind.as_str(), principal.id, "acme", "admin")
+    let org_scope = common::org_scope(db, "acme").await;
+    let project_scope = common::project_scope(db, "acme", "infra").await;
+    db.grant_membership(principal.kind.as_str(), principal.id, &org_scope, "admin")
         .await
         .unwrap();
     db.grant_membership(
         principal.kind.as_str(),
         principal.id,
-        "acme/infra/prod/cdn",
+        &project_scope,
         "maintainer",
     )
     .await
@@ -88,13 +631,13 @@ async fn exercise(db: &Database) {
         db.list_memberships_for("user", alice).await.unwrap().len(),
         2
     );
-    assert_eq!(db.list_members_of_scope("acme").await.unwrap().len(), 1);
+    assert_eq!(db.list_members_of_scope(&org_scope).await.unwrap().len(), 1);
 
     // -- tokens ----------------------------------------------------------------
     let (token_id, secret) = db
         .create_token(
             principal,
-            "acme/infra",
+            &project_scope,
             &[Permission::Read, Permission::Publish],
             Some("ci token"),
             None,
@@ -108,7 +651,7 @@ async fn exercise(db: &Database) {
         .expect("freshly minted token validates");
     assert_eq!(auth.token_id, token_id);
     assert_eq!(auth.owner, principal);
-    assert_eq!(auth.scope.as_str(), "acme/infra");
+    assert_eq!(auth.scope.as_str(), project_scope);
     assert_eq!(
         auth.permissions,
         vec![Permission::Read, Permission::Publish]
@@ -122,18 +665,13 @@ async fn exercise(db: &Database) {
     );
 
     // -- storage binding + managed registry -----------------------------------
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", "/srv/aos-hub")
-        .await
-        .unwrap();
+    let binding = common::create_local_binding(&db, org, "primary", "/srv/aos-hub").await;
     let reg = db
         .create_managed_registry(
             org,
             "infra/prod",
             "cdn",
             "private",
-            Some(binding),
-            "infra/prod/cdn",
             &["cdn:Ed25519:AAAA".to_string()],
             true,
         )
@@ -146,20 +684,25 @@ async fn exercise(db: &Database) {
         .expect("managed registry resolves by scope");
     assert_eq!(record.id, reg);
     assert_eq!(record.visibility, "private");
-    assert_eq!(record.storage_binding_id, Some(binding));
+    let registry_scope = db.registry_authorization_scope(reg).await.unwrap();
+    let registry_placement = common::create_ready_placement(
+        db,
+        aos_hub::db::SurfaceTarget::Registry(reg),
+        binding,
+        "primary",
+        "infra/prod/cdn",
+    )
+    .await;
 
     // -- managed caches (v22+) -------------------------------------------------
-    // Exercise the cache schema on every dialect: create, link to a registry,
-    // index an object, recompute usage, run the GC-run lifecycle, and read the
-    // instance-wide metrics aggregate.
+    // Exercise the final cache topology on every dialect: two simultaneous
+    // placements, atomic inventory publication, fail-closed GC, and the same
+    // durable multipart protocol used by both cache and registry writes.
     let cache = db
-        .create_cache(
+        .create_binary_cache(
             Some(org),
             "acme-cache",
             "Acme Cache",
-            Some(binding),
-            "cache",
-            None,
             "public",
             40,
             "zstd",
@@ -168,51 +711,55 @@ async fn exercise(db: &Database) {
         .await
         .unwrap();
     assert_eq!(
-        db.cache_by_slug("acme-cache").await.unwrap().unwrap().id,
+        db.binary_cache_by_slug("acme-cache")
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
         cache
     );
-    db.link_cache(cache, reg, true, true).await.unwrap();
-    assert_eq!(db.list_cache_links(cache).await.unwrap().len(), 1);
-    db.upsert_cache_object(&aos_hub_core::db::CacheObject {
-        cache_id: cache,
-        store_hash: "cafe".into(),
-        store_name: "cafe-hello-1.0".into(),
-        nar_url: "nar/aa.nar.zst".into(),
-        nar_hash: "sha256:aa".into(),
-        nar_size: 200,
-        file_hash: "aa".into(),
-        file_size: 120,
-        compression: "zstd".into(),
-        deriver: None,
-        refs: vec![],
-        sig: None,
-        ca: None,
-        uploaded_at: 0,
-        last_accessed_at: None,
-    })
-    .await
-    .unwrap();
-    let usage = db.refresh_cache_usage(cache).await.unwrap();
+    let cache_primary = common::create_ready_placement(
+        db,
+        SurfaceTarget::BinaryCache(cache),
+        binding,
+        "cache-primary",
+        "cache/primary",
+    )
+    .await;
+    let cache_replica = common::create_ready_placement(
+        db,
+        SurfaceTarget::BinaryCache(cache),
+        binding,
+        "cache-replica",
+        "cache/replica",
+    )
+    .await;
+    exercise_topology_inventory_and_gc(db, cache, &[cache_primary.clone(), cache_replica]).await;
+    let usage = db.cache_usage(cache).await.unwrap();
     assert_eq!(usage.object_count, 1);
-    assert_eq!(usage.used_bytes, 120);
+    assert_eq!(usage.used_bytes, 3);
     assert_eq!(
-        db.search_cache_objects(cache, "hello", 10)
+        db.search_normalized_cache_objects(cache, "dialect", 10)
             .await
             .unwrap()
             .len(),
         1
     );
-    let run = db.start_cache_gc_run(cache).await.unwrap();
-    db.finish_cache_gc_run(run, "ok", None, 1, 1, 0, 0)
-        .await
-        .unwrap();
-    assert_eq!(db.list_cache_gc_runs(cache, 10).await.unwrap().len(), 1);
-    let m = db.cache_metrics().await.unwrap();
-    assert_eq!(m.cache_count, 1);
-    assert_eq!(m.object_count, 1);
-    assert_eq!(m.used_bytes, 120);
-    assert_eq!(m.gc_runs_ok, 1);
-
+    let (binding_revision, credential_generation) =
+        configure_dialect_writers(db, binding, reg, &registry_placement, cache, &cache_primary)
+            .await;
+    db.add_org_usage(org, 0, 0).await.unwrap();
+    exercise_topology_multipart(
+        db,
+        org,
+        reg,
+        &registry_placement,
+        cache,
+        &cache_primary,
+        binding_revision,
+        credential_generation,
+    )
+    .await;
     // -- configuration change-set ---------------------------------------------
     let change_id = "00000000-0000-4000-8000-000000000001";
     db.create_changeset(
@@ -220,7 +767,7 @@ async fn exercise(db: &Database) {
         "user",
         Some(alice),
         "alice@acme.com",
-        "acme/infra/prod/cdn",
+        &registry_scope,
         Some("make cdn public"),
     )
     .await
@@ -228,7 +775,7 @@ async fn exercise(db: &Database) {
     db.add_revision(
         change_id,
         "registry",
-        "acme/infra/prod/cdn",
+        &registry_scope,
         "update",
         Some(r#"{"visibility":"private"}"#),
         Some(r#"{"visibility":"public"}"#),
@@ -251,7 +798,22 @@ async fn exercise(db: &Database) {
     .await
     .unwrap();
     if touched.lock().unwrap().iter().any(|&r| r) {
-        db.set_registry_visibility(reg, "public").await.unwrap();
+        let current = db.registry_by_id(reg).await.unwrap().unwrap();
+        assert!(db
+            .seed_registry_configuration_for_test(
+                reg,
+                current.resource_version,
+                "public",
+                &current.crawl_policy,
+                current.llms_txt_body.as_deref(),
+                &current.trust_keys,
+                "00000000-0000-4000-8000-000000000002",
+                "user",
+                Some(alice),
+                "alice@acme.com",
+            )
+            .await
+            .unwrap());
     }
     assert_eq!(
         db.registry_by_slug("acme/infra/prod/cdn")
@@ -274,7 +836,7 @@ async fn exercise(db: &Database) {
         Some(alice),
         "alice@acme.com",
         "registry.visibility",
-        "acme/infra/prod/cdn",
+        &registry_scope,
         Some(change_id),
         None,
         None,
@@ -282,7 +844,7 @@ async fn exercise(db: &Database) {
     )
     .await
     .unwrap();
-    let org_audit = db.list_audit("acme").await.unwrap();
+    let org_audit = db.list_audit(&org_scope).await.unwrap();
     assert_eq!(
         org_audit.len(),
         1,
@@ -296,29 +858,47 @@ async fn exercise(db: &Database) {
 
     // -- webhooks --------------------------------------------------------------
     let hook = db
-        .create_webhook(
+        .seed_webhook_for_test(
             org,
             "https://ci.acme/hook",
-            "shared-secret",
-            &["index.completed".to_string()],
+            "native://acme/webhook/v1",
+            "043a718774c572bd8a25adbeb1bfcd5c0256ae11cecf9f9c3f925d0e52beaf89",
+            &[],
         )
         .await
         .unwrap();
     assert_eq!(db.list_webhooks(org).await.unwrap().len(), 1);
+    db.seed_topology_event_for_test(
+        "webhook.created",
+        &org_scope,
+        "webhook",
+        &format!("webhook:{hook}"),
+    )
+    .await
+    .unwrap();
+    db.seed_topology_event_for_test(
+        "webhook.deleted",
+        &org_scope,
+        "webhook",
+        &format!("webhook:{hook}"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(db.materialize_topology_events().await.unwrap(), 2);
     let delivery = db
-        .enqueue_delivery(
+        .seed_delivery_for_test(
             hook,
             "index.completed",
             r#"{"registry":"acme/infra/prod/cdn"}"#,
         )
         .await
         .unwrap();
-    let due = db.due_deliveries(i64::MAX).await.unwrap();
-    assert_eq!(due.len(), 1);
-    assert_eq!(due[0].id, delivery);
-    assert_eq!(due[0].url, "https://ci.acme/hook");
+    let due = db.claim_due_deliveries(i64::MAX, 100, 30).await.unwrap();
+    assert_eq!(due.len(), 3);
+    assert!(due.iter().any(|row| row.id == delivery));
+    assert!(due.iter().all(|row| row.url == "https://ci.acme/hook"));
     let (pending, delivered, failed) = db.delivery_status_counts().await.unwrap();
-    assert_eq!((pending, delivered, failed), (1, 0, 0));
+    assert_eq!((pending, delivered, failed), (3, 0, 0));
 
     // -- validation findings + repair jobs (v14) ------------------------------
     // Record a deep run with one missing and one corrupt finding, then assert
@@ -373,7 +953,7 @@ async fn exercise(db: &Database) {
     assert_eq!(jobs[0].store_hash, "absent01");
     assert_eq!(jobs[0].source_cache_url, "file:///srv/good");
 
-    // -- mirror sources + frontends (v16) -------------------------------------
+    // -- mirror sources -------------------------------------------------------
     // A mirror source round-trips and `is_mirror` flips; the last-sync record
     // updates without clobbering the frontier on a later failure.
     assert!(!db.is_mirror(reg).await.unwrap());
@@ -398,39 +978,6 @@ async fn exercise(db: &Database) {
     // The frontier from the prior OK sync survives the later failure.
     assert_eq!(source.upstream_frontier.as_deref(), Some("2.0.0"));
     assert_eq!(db.list_mirror_sources().await.unwrap().len(), 1);
-
-    // A frontend CRUD round-trip plus a probe upsert.
-    let fe = db
-        .create_frontend(
-            reg,
-            "cdn.acme.com",
-            "",
-            "direct",
-            true,
-            true,
-            false,
-            200,
-            true,
-        )
-        .await
-        .unwrap();
-    let frontends = db.list_frontends(reg).await.unwrap();
-    assert_eq!(frontends.len(), 1);
-    assert_eq!(frontends[0].domain, "cdn.acme.com");
-    assert_eq!(frontends[0].mode, "direct");
-    assert!(frontends[0].serves_cache);
-    assert!(!frontends[0].serves_web);
-    db.upsert_frontend_probe(fe, "ok", Some("8.5.0"), Some(0), 12, 300)
-        .await
-        .unwrap();
-    let probes = db.list_frontend_probes(reg).await.unwrap();
-    assert_eq!(probes.len(), 1);
-    assert_eq!(probes[0].status.as_deref(), Some("ok"));
-    assert_eq!(probes[0].observed_frontier.as_deref(), Some("8.5.0"));
-    assert!(db.delete_frontend(fe).await.unwrap());
-    assert!(db.list_frontends(reg).await.unwrap().is_empty());
-    // The probe row cascades away with its frontend.
-    assert!(db.list_frontend_probes(reg).await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -444,7 +991,11 @@ async fn sqlite_contract() {
 #[tokio::test]
 async fn postgres_contract() {
     let Ok(url) = std::env::var("AOS_HUB_TEST_PG_URL") else {
+        #[cfg(feature = "required-live-dialects")]
+        panic!("AOS_HUB_TEST_PG_URL is required by the live dialect gate");
+        #[cfg(not(feature = "required-live-dialects"))]
         println!("dialect contract: postgres SKIPPED (AOS_HUB_TEST_PG_URL unset)");
+        #[cfg(not(feature = "required-live-dialects"))]
         return;
     };
     reset_pg_schema(&url);
@@ -459,7 +1010,11 @@ async fn postgres_contract() {
 #[tokio::test]
 async fn mysql_contract() {
     let Ok(url) = std::env::var("AOS_HUB_TEST_MYSQL_URL") else {
+        #[cfg(feature = "required-live-dialects")]
+        panic!("AOS_HUB_TEST_MYSQL_URL is required by the live dialect gate");
+        #[cfg(not(feature = "required-live-dialects"))]
         println!("dialect contract: mysql SKIPPED (AOS_HUB_TEST_MYSQL_URL unset)");
+        #[cfg(not(feature = "required-live-dialects"))]
         return;
     };
     reset_mysql_schema(&url);

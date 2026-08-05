@@ -531,4 +531,6 @@ derived URL, eligibility, access posture, and route health on the surface.
 Instance and organization topology defaults may nominate a storage binding,
 delivery endpoint, and gateway for creation workflows. Organization values
 override instance values. Defaults never retarget an existing placement or
-route; that always requires its own impact plan and apply.
+route; that always requires its own impact plan and apply. Defaults affect only
+proposal construction: creating a registry or cache never creates a placement,
+and every placement remains an independently planned and applied object.

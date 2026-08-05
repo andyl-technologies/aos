@@ -2,14 +2,17 @@
 name = "aos-proto-types"
 version = "0.1.0"
 edition = "2021"
-description = "wasm-clean message structs for the aos.hub.v1 API: generated from the .proto with prost-build + serde, the Connect-JSON lingua franca shared by the native hub, the Cloudflare Worker, and aos-remote — no connectrpc/buffa runtime"
+description = "wasm-clean message structs for the aos.hub.v1 API: generated from the .proto with prost-build + pbjson, the Connect-JSON lingua franca shared by the native hub, the Cloudflare Worker, and aos-remote — no connectrpc/buffa runtime"
 
 [dependencies]
 prost = { workspace = true }
+pbjson = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]
+pbjson-build = { workspace = true }
+prost = { workspace = true }
 prost-build = { workspace = true }
-
-[dev-dependencies]
+prost-types = "0.13"
 serde_json = { workspace = true }

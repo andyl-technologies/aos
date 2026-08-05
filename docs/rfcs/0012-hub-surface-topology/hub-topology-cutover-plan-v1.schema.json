@@ -375,7 +375,7 @@
       }
     },
     "resourceKind": {
-      "enum": ["instance", "organization", "project", "registry", "registry_publication", "binary_cache", "surface", "storage_binding", "binding_capability_observation", "credential_generation", "binding_write_revision", "binding_grant", "storage_default", "placement", "placement_manifest", "write_authority", "delivery_endpoint", "domain", "network_boundary", "storage_gateway", "delivery_route", "route_configuration", "placement_policy", "equivalence_set", "publication_binding", "population_target", "retention_subscription", "inventory_generation"]
+      "enum": ["instance", "organization", "project", "registry", "registry_publication", "binary_cache", "surface", "storage_binding", "binding_capability_observation", "storage_binding_credential", "binding_write_revision", "binding_grant", "storage_default", "placement", "placement_manifest", "write_authority", "delivery_endpoint", "domain", "network_boundary", "storage_gateway", "delivery_route", "route_configuration", "placement_policy", "equivalence_set", "publication_binding", "population_target", "retention_subscription", "inventory_generation"]
     },
     "resourceRef": {
       "type": "object",

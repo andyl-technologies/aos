@@ -1,6 +1,6 @@
 ##! aos-hub — multi-tenant AOS registry management hub (RFC-0004)
 ##!
-##! Builds the `aos-hub` binary from the shared `crates/` cargo
+##! Builds the `aos-hub` and `aos-hub-egress` binaries from the shared `crates/` cargo
 ##! workspace, mirroring `pkgs/tools/aos/aos.nix`. The hub is a self-contained
 ##! axum server: a sqlite database (rusqlite, bundled) plus a `file://`/HTTP
 ##! surface reader, so unlike `aos` it shells out to no external tools at
@@ -35,8 +35,10 @@ in
     pname = "aos-hub";
     inherit version src;
 
-    # Build only the hub binary out of the workspace.
-    cargoFlags = "-p aos-hub";
+    # Build the hub package's control-plane and fixed egress binaries.
+    # PostgreSQL is the strongly-consistent shared nonce store for replicated
+    # aos-hub-egress deployments. SQLite remains available for a singleton.
+    cargoFlags = "-p aos-hub --features postgres";
 
     # The workspace's vendored dependency set. This hash is the
     # `fetchCargoDeps` fixed-output over the whole workspace Cargo.lock; it is
@@ -45,7 +47,7 @@ in
     # gained `hmac` for the phase-4 webhook HMAC signatures).
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-k0mK+JO/PJNV2L/hzIpiT/ALzsRVQqir8dU3f99452Q=";
+      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
     };
 
     buildDeps = [perl pkg-config openssl protobuf];

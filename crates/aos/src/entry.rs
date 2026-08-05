@@ -110,6 +110,11 @@ async fn run(cli: &Cli) -> Result<()> {
         return commands::hub::run(&printer, command).await;
     }
 
+    // Signed image discovery and downloads use only the Hub API.
+    if let Commands::Image { command } = &cli.command {
+        return commands::image::run(command, &printer).await;
+    }
+
     let nix = NixRunner::new(cli.verbose, cli.quiet)?;
 
     match &cli.command {
@@ -210,6 +215,7 @@ async fn run(cli: &Cli) -> Result<()> {
         Commands::Cache { .. } => unreachable!(),
         Commands::Metadata { .. } => unreachable!(),
         Commands::Hub { .. } => unreachable!(),
+        Commands::Image { .. } => unreachable!(),
     }
 }
 

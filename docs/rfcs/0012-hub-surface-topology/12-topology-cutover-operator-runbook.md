@@ -16,8 +16,11 @@ Production tooling must run `aos hub topology cutover verify` over the closed
 bundle before it is allowed to close write admission. The trusted root public
 key, its SHA-256 fingerprint, and the running verifier executable are
 out-of-band inputs. The root first authenticates the external bundle-manifest
-envelope, then the root-signed signer-key map authorizes the exact plan,
-report, and verification keys. Only authenticated bundle bytes may define a
+envelope, then the root-signed signer-key map authorizes one plan/report
+authority and a cryptographically distinct verification authority. The
+verification payload binds the authenticated plan and report payload and raw
+signature digests, and its validated `authored_at` is after report completion.
+Only authenticated bundle bytes may define a
 schema, ruleset, fixture, evidence node, or document relationship. The
 manifest's single `verifier` entry must be byte-for-byte identical to the
 running executable; the verifier reports the SHA-256 of those bytes.
@@ -61,16 +64,26 @@ The operator aborts before the switch if any invariant cannot be proved:
 
 ## Artifact rules
 
-Plans, reports, verification payloads, and the signer-key map use RFC 8785 JSON
-Canonicalization Scheme over integer-only UTF-8 I-JSON. They are complete
+Plans, reports, verification payloads, and the signer-key map use the closed
+`aos-cutover-jcs-ascii-v1` dialect: RFC 8785 JSON Canonicalization Scheme over
+integer-only UTF-8 I-JSON with ASCII-only object member names. ASCII member
+names therefore have identical UTF-8 byte and RFC 8785 UTF-16 sort order; the
+parser rejects duplicate members and the canonicalizer rejects any non-ASCII
+member name instead of silently defining a second ordering. They are complete
 unsigned payloads: none contains a self-hash or its own signature identity, and
 every signature envelope has `omitted_json_pointers: []`. The detached Ed25519
 signature signs a domain-separated SHA-256 of the complete canonical payload.
 The final root-signed manifest is outside the directory it authenticates and
 lists every regular file in that directory by node ID, relative path, media
-type, role, exact size, and SHA-256. Undeclared files, absent files, duplicate
-paths or nodes, symlinks, special files, and graph edges to undeclared nodes
-fail closed.
+type, role, exact size, and SHA-256. Every bundle, source, recipe, trust, and key
+file must have link count one, and no file identity may occur twice within or
+across those inputs. Undeclared files, absent files, duplicate paths or nodes,
+hard links, symlinks, special files, and graph edges to undeclared nodes fail
+closed. Bundle and source roots and every descendant directory and present file
+are opened without following links and retained by descriptor for the complete
+command. Reads use retained file descriptors and publications use retained
+parent descriptors; a final namespace and identity check rejects replacement
+after admission.
 
 Every named reference is typed against that entry's exact kind, role, and
 media type. In particular, each backup destination must match its plan
@@ -288,9 +301,9 @@ compare two arrays or two property values:
 The repository checks in source fixtures, not precomputed signed outputs.
 `derive:sha256:<label>` values are deterministically materialized before schema
 validation and signing; bundle-byte and running-executable markers are resolved
-from the actual bytes. The fixture manifest currently contains 74 cases. The
+from the actual bytes. The fixture manifest currently contains 77 cases. The
 verification sidecar's case, passed, and failed counts are recomputed from
-those actual case results and must equal `74`, `74`, and `0`; declared counts
+those actual case results and must equal `77`, `77`, and `0`; declared counts
 are not trusted. The matrix
 covers success, rollback,
 failed-closed, native zero-Durable-Object operation, schema closure, mapping
@@ -588,47 +601,87 @@ cutover blocker.
 
 The checked
 `hub-topology-cutover-bundle-generation-v1.fixture.json` is the complete
-fixture layout and graph. Assemble a fresh directory at its declared paths from
-the fixture-source payloads, schemas, interface manifests, evidence fixtures,
-the release public key, and the exact `aos` executable that will perform
-verification. Private keys and the out-of-band root public key are never bundle
-entries.
+fixture layout and graph. Assemble an immutable source directory containing the
+fixture-source payloads and generation schemas. Separately assemble a fresh
+bundle directory at the declared paths with the interface manifests, evidence
+fixtures, contract schemas, and release public key. Invoke
+`materialize-verifier` through the installed `aos` wrapper to install the exact
+executable bytes at the recipe's declared verifier path. Generated documents,
+envelopes, and signatures are absent until one generation transaction writes them.
+Private keys and the
+out-of-band root public key are never bundle entries.
+
+Before the source tree is made immutable, the independent verification
+authority runs the declared evidence and digest procedures and authors the
+verification source payload after the report is complete. All three document
+source payloads are final before generation. `generate` captures the complete
+source and bundle descriptor graphs once, then creates the key map, plan,
+report, verification, and final manifest in dependency order without releasing
+that snapshot. This single transaction is the source-freeze receipt.
 
 Generate the authenticated artifacts in dependency order:
 
-1. Generate the root-signed signer-key-map envelope.
-2. Generate the plan envelope and raw signature.
-3. Generate the report envelope and raw signature.
-4. Run the authenticated verifier to compute the verification payload, then
-   generate its envelope and raw signature.
-5. Generate the external root-signed bundle-manifest envelope.
-6. Invoke a fresh process of the exact bundled verifier against the closed
+1. Materialize the exact running verifier at the recipe-declared path.
+2. Generate all authenticated artifacts and the external root-signed manifest
+   in one descriptor-frozen transaction.
+3. Invoke a fresh process of the exact bundled verifier against the closed
    directory and external envelope.
 
-The generation and verification interfaces are:
+The materialization, generation, and verification interfaces below are exact.
+The first command must be invoked through the installed `aos` wrapper: that
+wrapper `exec`s the packaged unwrapped executable, so the materializer observes
+and copies the same executable bytes that the eventual bundled process runs.
 
 ```sh
+aos hub topology cutover materialize-verifier \
+  --bundle /approved/cutover-bundle \
+  --bundle-recipe /approved/bundle-generation.json
+
 aos hub topology cutover generate \
   --bundle /approved/cutover-bundle \
-  --bundle-manifest /approved/bundle-generation.json \
-  --signing-key /operator/keys/release.pk8 \
-  --signer-key-id key/release/example \
-  --signer-role plan
+  --bundle-source /approved/cutover-source \
+  --bundle-recipe /approved/bundle-generation.json \
+  --bundle-manifest-output /approved/cutover-bundle.manifest.json \
+  --root-signing-key /operator/keys/release-root.pk8 \
+  --document-signing-key /operator/keys/document-signer.pk8 \
+  --verification-signing-key /operator/keys/verification-signer.pk8 \
+  --trusted-root-public-key /operator/trust/release-root.pub \
+  --root-signer-key-id key/root/example \
+  --document-signer-key-id key/release/example \
+  --verification-signer-key-id key/verification/example
 
-aos hub topology cutover verify \
+/approved/cutover-bundle/bin/aos hub topology cutover verify \
   --bundle /approved/cutover-bundle \
   --bundle-manifest /approved/cutover-bundle.manifest.json \
   --trusted-root-public-key /operator/trust/release-root.pub \
   --trusted-root-sha256 "$AOS_CUTOVER_TRUST_ROOT_SHA256"
 ```
 
-Repeat `generate` with signer roles `key_map_root`, `report`,
-`verification`, and finally `bundle_root` at the corresponding stages.
+The root signs only the key map and bundle root. The document authority signs
+plan and report; the distinct verification authority signs only verification.
+All three verifying keys and signer IDs differ; paths or IDs alone do not
+establish cryptographic separation.
+The immutable source tree, recipe, three private signing keys, trusted root public key,
+and fresh final manifest output all live outside the bundle. Generated payloads
+are read from the source tree and written to fresh paths in the closed bundle.
+Before its first write, generation proves that all 12 payload, raw-signature,
+and envelope leaves are absent. Any preexisting generated leaf fails, even when
+its bytes equal the candidate. A late `EEXIST` may leave a partial untrusted
+bundle; that directory is never resumed or verified, and replay against it must
+fail preflight. Operators assemble a fresh bundle directory instead. Bundle and
+source stages use descriptor-relative, no-follow
+access; publication uses a no-replace atomic link followed by parent-directory
+synchronization. A preexisting final-manifest path always fails, including when
+its bytes equal the candidate manifest, and an `EEXIST` race never counts as a
+successful retry.
 Generation canonicalizes and materializes source fixtures before signing.
 Verification performs no network I/O and emits exactly one closed JSON result.
 Any parse, custom-dialect schema, unsupported keyword, canonicalization,
 bundle-closure, graph-reference, Ed25519, signer-role, fixture, semantic, or
-running-executable identity failure exits nonzero.
+running-executable identity failure exits nonzero. A success result reports
+`signatures_verified: 5`: the root signature on the external manifest plus the
+four detached signatures on the key map, plan, report, and verification
+payloads. The count is derived from those completed verification stages.
 
 For a fast developer diagnostic, validate JSON syntax and run the semantic
 matrix from the repository root:

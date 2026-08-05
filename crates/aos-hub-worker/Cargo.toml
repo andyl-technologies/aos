@@ -2,12 +2,12 @@
 name = "aos-hub-worker"
 version = "0.1.0"
 edition = "2021"
-description = "The Cloudflare Workers read-path target for the AOS registry hub (RFC-0004): an R2-backed machine facade, a D1-backed browse UI and JSON read API, and a Cron-triggered indexer — reusing the pure, wasm-clean aos-registry-surface reader"
+description = "Cloudflare Worker shell for AOS Hub over HubDb colocated SQLite, R2 surfaces, and the shared runtime-neutral application"
 
 # A `cdylib` for the wasm32 Workers runtime; an `rlib` so the pure modules
 # (sql, keymap, render, model) compile and test on the native host. The crate
 # is a workspace member, but only its pure modules build for the native target
-# — the worker glue (handlers, D1/R2/KV access, the indexer) is gated behind
+# — the worker glue (handlers, HubDb/R2/KV access, the indexer) is gated behind
 # `#[cfg(target_arch = "wasm32")]`, exactly like the sibling `aos-registry-spa`
 # crate. Build the deployable wasm with
 # `cargo build -p aos-hub-worker --target wasm32-unknown-unknown`.
@@ -16,20 +16,13 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-# Per-statement query timing (RFC-0004 ch.14 Phase A): wraps the request's D1
-# backend in `aos_hub_core::backend::TimingBackend` and emits a `Server-Timing`
-# response header so the per-request D1 session cost is visible in `wrangler
-# tail` / the network panel. For the preview Worker only — off in production.
+# Per-statement query timing for development observability.
 query-timing = ["aos-hub-core/query-timing"]
-# One-time D1->HubDb data-replay admin path (`POST /_admin/sql`, seal-gated).
-# NOT in the production build — enable only to run a migration, then redeploy the
-# default build. RFC-0004 ch.14 Phase E cutover.
-cutover-admin = []
 # DO-SQLite end-to-end probe endpoint (`POST /_e2e/managed-registry-bootstrap`),
 # used only by the `aos-hub-worker-do-e2e` check to exercise the managed-registry
-# create + read path against the real DO SQLite engine under workerd. NOT in the
+# write/API paths against the real DO SQLite engine under workerd. NOT in the
 # production build.
-do-e2e = []
+do-e2e = ["aos-hub-core/do-e2e-test-support"]
 
 [dependencies]
 # The pure, wasm-clean registry reader — the exact verifier the native hub
@@ -37,14 +30,16 @@ do-e2e = []
 # signature verification in the Cron indexer, so the Worker's read of the
 # surface cannot drift from the rest of AOS.
 aos-registry-surface = { workspace = true }
+ed25519-dalek = { workspace = true }
+toml = { workspace = true }
 # The shared runtime-agnostic core (RFC-0004 Phase 5): the Database/Backend
-# abstraction the Worker drives over D1, so the Worker runs the exact same
+# abstraction the Worker drives over HubDb colocated SQLite, so the Worker runs the exact same
 # read/write logic as the native hub rather than a divergent reimplementation.
 aos-hub-core = { workspace = true }
-# The D1 Backend impl is async over the trait; #[async_trait(?Send)] because the
-# Worker is single-threaded and D1 futures are !Send.
+# The Worker backend impl is async over the trait; #[async_trait(?Send)] because
+# Worker JavaScript futures are !Send.
 async-trait = { workspace = true }
-# JsValue marshalling for D1 bind/raw (param ↔ JS value).
+# JsValue marshalling for the HubDb bridge (parameter/value ↔ JS value).
 wasm-bindgen = "0.2"
 js-sys = "0.3"
 # Await the JS Promise returned by the Cloudflare Email Service binding
@@ -64,16 +59,18 @@ hex = { workspace = true }
 # in the Worker's `HttpClient` console port. Pure-Rust and wasm-clean (the same
 # url-family crate the native side pulls transitively).
 form_urlencoded = "1"
+url = { workspace = true }
 # Trust-anchor fingerprints in the browse UI (key_fingerprint), matching the
 # native hub's ssh-keygen-style SHA256 form. Both are wasm-clean.
 base64 = { workspace = true }
+rand = { workspace = true }
 sha2 = { workspace = true }
 # Semver ordering for the Cron indexer (release-tag classification + channel
 # frontier selection), matching the native indexer.
 semver = { workspace = true }
 
-# The Workers runtime bindings (workers-rs). `d1` enables the D1 sqlite driver
-# binding; the default features carry R2, KV, the Router, and the event macros.
+# The Workers runtime bindings (workers-rs); the selected features carry R2,
+# KV, the Router, queues, and the event macros.
 # This dependency only links into the wasm32 target; on native it resolves but
 # its glue is never referenced (the worker modules are cfg-gated out).
 worker = { version = "0.8", features = ["queue"] }
@@ -98,9 +95,6 @@ futures-util = "0.3"
 send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]
-# The `gen_surface` example (the worker integration test's fixture generator)
-# signs the surface with a deterministic maintainer key. Already in the
-# workspace lockfile via aos-registry-surface, so this adds no new dependency.
-ed25519-dalek = { workspace = true }
+aos-hub = { workspace = true, features = ["test-support"] }
 # Drives the native unit test for the pure Worker request-routing seam.
 tokio = { workspace = true, features = ["macros", "rt"] }

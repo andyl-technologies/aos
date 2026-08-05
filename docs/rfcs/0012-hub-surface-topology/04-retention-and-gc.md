@@ -251,6 +251,16 @@ logical metadata becomes active only after its reference edges and required NAR
 presence are durable. The cache object-graph generation advances in that same
 control-plane transition.
 
+Cache-wide inventory is a leased, single-owner generation. The scanner
+heartbeats its durable owner token while paging every placement, and all staged
+object, presence, candidate, manifest, and publication writes are fenced by
+that token. A second scanner cannot take over a live lease. Once the lease has
+expired, it may delete the abandoned unpublished generation and recreate that
+same successor generation atomically; cascades discard the abandoned staging
+set before the new owner can publish. Cleanup from the crashed or delayed owner
+is owner-fenced and cannot delete the replacement. This makes process death and
+cleanup failure recoverable without allowing two inventories to interleave.
+
 ## Marking the closure
 
 Root reasons name top-level store hashes. GC walks the transitive closure using
@@ -309,14 +319,14 @@ authority.
 Informational root, graph, inventory, and topology generation fields remain in
 plans for explanation, but the single epoch is the portable race arbiter.
 
-Native SQL transactions and Worker D1 atomic batches implement the same rule.
+Native SQL transactions and Worker Durable Object atomic batches implement the same rule.
 A one-row mutation combines its domain and epoch CAS in one statement and sets
 `epoch_owner_token` to its operation token. A multi-row mutation first creates
 a claim unique on `(cache_id, expected_epoch)`, advances the epoch while setting
 that claim as `epoch_owner_token`, and gates every write and final assertion on
 both the claim and matching owner token. It uses the final `CHECK (ok = 1)`
 pattern defined for GC apply below and never assumes that a zero affected-row
-statement aborts a D1 batch. A root refresh and GC apply, or two applies, racing
+statement aborts a Durable Object batch. A root refresh and GC apply, or two applies, racing
 from one epoch therefore have exactly one winner.
 
 ## Logical GC and placement GC
@@ -458,7 +468,7 @@ subscriptions and root sizes.
 
 ## Immutable plan and guarded apply
 
-`PlanCacheGc` first creates a complete mark, then records an immutable,
+`PlanRunCacheGc` first creates a complete mark, then records an immutable,
 expiring candidate manifest. For every candidate it includes eligibility
 reason, `unreferenced_since`, logical object version, projected bytes, and every
 placement action and dependency. Estimated NAR bytes distinguish shared bytes
@@ -475,7 +485,7 @@ candidates. Any mismatch rejects the whole logical apply as stale with zero new
 tombstones or deletion jobs.
 
 Successful apply uses one guarded statement batch inside a native transaction
-or D1 atomic batch. In order it:
+or Durable Object atomic batch. In order it:
 
 1. inserts a unique apply claim with one `INSERT ... SELECT` whose predicate
    includes the expected epoch, unused/unexpired plan, actor/scope,
@@ -494,7 +504,7 @@ or D1 atomic batch. In order it:
    verifies the claim and every expected final count.
 
 Every mutation is claim-gated. A missing claim or partial result makes the final
-portable constraint fail, so D1 rolls back without needing to inspect an
+portable constraint fail, so the Durable Object rolls back without needing to inspect an
 intermediate affected-row count. Retrying the same applied plan returns its
 existing operation and jobs. A root refresh, manual-root mutation, lease
 renewal, completed population, changed reference

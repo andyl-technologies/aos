@@ -1,10 +1,9 @@
-//! The Cron-triggered indexer over R2 surfaces, writing the D1 index
-//! (wasm32-only).
+//! Cron-triggered registry and cache reconciliation inside `HubDb`.
 //!
 //! RFC-0004 drives the Worker's indexer from a **Cron Trigger** ("Cron
 //! Triggers/Queues drive the indexer, validator, and mirror jobs"). The
 //! `scheduled` handler walks every public registry's surface — read from the
-//! R2 bucket rather than over HTTP — and replaces its D1 index by calling the
+//! R2 bucket rather than over HTTP — and replaces its derived SQL index by calling the
 //! **shared core indexer** ([`aos_hub_core::indexer::index_and_record`]),
 //! the exact same fetch → verify → load → index orchestration the native hub
 //! runs. One indexer, two shells: the Worker's eventual index is byte-identical
@@ -12,7 +11,7 @@
 //!
 //! # How it wires up
 //!
-//! 1. List the public registries from D1 through the shared
+//! 1. List live registries from the Durable Object's shared
 //!    [`Database`](aos_hub_core::db::Database), projecting each to a core
 //!    [`RegistryRecord`](aos_hub_core::db::RegistryRecord) (not a bespoke
 //!    worker model).
@@ -38,65 +37,97 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use worker::Bucket;
 
-use aos_hub_core::auth::seal::SecretSealer;
-use aos_hub_core::db::Database;
+use aos_hub_core::db::{Database, SurfaceTarget};
 use aos_hub_core::fetch::SurfaceProvider as _;
+use aos_hub_core::secret_version::SecretVersionResolver;
 
+use crate::consoleports::WorkerEgressClient;
 use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 
-/// Index every public registry from R2 into D1 via the shared core indexer.
+/// Index every live registry from its selected placement into HubDb SQLite.
 ///
-/// Called from the `scheduled` handler. The D1 access goes through the shared
-/// [`Database`](aos_hub_core::db::Database) over the [`D1Backend`] (the same
-/// engine the read path uses); the surface read goes through the
+/// Called from the `scheduled` handler inside `HubDb`. Database access goes
+/// through the shared [`Database`](aos_hub_core::db::Database) over colocated
+/// SQLite; the surface read goes through the
 /// [`R2SurfaceProvider`]. Each registry is indexed independently — one
 /// registry's failure is recorded as its index state and logged, never aborting
 /// the run.
 ///
-/// `sealer` resolves a managed registry's external S3/R2 storage binding
-/// credentials (the same AES-GCM sealer the request path uses); a registry with
+/// `secrets` resolves a managed registry's external S3/R2 storage binding
+/// credentials by immutable provider reference; a registry with
 /// no external binding reads from the hub R2 bucket.
 ///
 /// # Errors
 ///
-/// Returns an error only if the registry list cannot be read from D1.
+/// Returns an error only if the registry inventory cannot be read from HubDb.
 pub async fn index_all(
     backend: Box<dyn aos_hub_core::backend::Backend>,
     bucket: Bucket,
-    sealer: Arc<dyn SecretSealer>,
+    secrets: Arc<dyn SecretVersionResolver>,
+    egress: Arc<WorkerEgressClient>,
 ) -> Result<()> {
     let db = Arc::new(Database::attach(backend));
-    let provider = R2SurfaceProvider::new(bucket, Arc::clone(&db), sealer);
+    let provider = R2SurfaceProvider::new(bucket, Arc::clone(&db), secrets, egress);
 
-    // The Worker serves only `public` registries (RFC-0004 multi-tenancy): the
-    // Cron indexes exactly that subset of the non-tombstoned registries.
-    let registries = db.list_registries().await.context("listing registries")?;
-    for registry in registries
-        .into_iter()
-        .filter(|registry| registry.visibility == "public")
+    // Index every live registry. Private registries still need a fresh derived
+    // index for retention and GC even when no unauthenticated route serves them.
+    let mut registries = db.list_registries().await.context("listing registries")?;
+    for registry in db
+        .list_registries_with_write_tickets()
+        .await
+        .context("listing registry write-fence cleanup")?
     {
-        let fetch = match provider.fetcher(&registry).await {
-            Ok(fetch) => fetch,
+        if !registries.iter().any(|existing| existing.id == registry.id) {
+            registries.push(registry);
+        }
+    }
+    for registry in registries {
+        let placement = match db
+            .reconciled_surface_reader(SurfaceTarget::Registry(registry.id))
+            .await
+        {
+            Ok(placement) => placement,
             Err(err) => {
                 worker::console_log!(
-                    "index {}: resolving R2 surface failed: {err:#}",
+                    "index {}: resolving authoritative reader failed: {err:#}",
                     registry.slug
                 );
                 continue;
             }
         };
-        if let Err(err) =
-            aos_hub_core::indexer::index_and_record(&db, fetch.as_ref(), &registry).await
+        let fetch = match provider.placement_fetcher(&placement).await {
+            Ok(fetch) => fetch,
+            Err(err) => {
+                worker::console_log!(
+                    "index {} placement {}: resolving surface failed: {err:#}",
+                    registry.slug,
+                    placement.id
+                );
+                continue;
+            }
+        };
+        if let Err(err) = aos_hub_core::indexer::index_and_record_from_placement(
+            &db,
+            fetch.as_ref(),
+            &registry,
+            Some(placement.id),
+        )
+        .await
         {
-            // `index_and_record` already persisted the failure as the registry's
-            // index state (stale/failed); this just surfaces it in the Cron log.
-            worker::console_log!("index {} failed: {err:#}", registry.slug);
+            worker::console_log!(
+                "index {} authoritative placement {} failed: {err:#}",
+                registry.slug,
+                placement.id
+            );
         }
     }
+    aos_hub_core::indexer::index_outstanding_write_placements(&db, &provider)
+        .await
+        .context("reconciling outstanding registry write placements")?;
     Ok(())
 }
 
-/// Re-scan every managed cache, reconciling its D1 index against its surface.
+/// Re-scan every managed cache, reconciling its derived index against its surface.
 ///
 /// The Cron counterpart to the registry indexer, for caches: each cache's
 /// `cache_objects` index is a derived view of its surface (the source of
@@ -107,33 +138,53 @@ pub async fn index_all(
 /// is one `list` per cache and no object reads. Each cache is independent — one
 /// failure is logged, never aborting the pass.
 ///
-/// `sealer` resolves a cache's external S3/R2 storage binding credentials when
+/// `secrets` resolves a cache's external S3/R2 storage binding credentials when
 /// its surface lives off the hub R2 bucket.
 ///
 /// # Errors
 ///
-/// Returns an error only if the cache list cannot be read from D1.
+/// Returns an error only if the cache inventory cannot be read from HubDb.
 pub async fn rescan_all(
     backend: Box<dyn aos_hub_core::backend::Backend>,
     bucket: Bucket,
-    sealer: Arc<dyn SecretSealer>,
+    secrets: Arc<dyn SecretVersionResolver>,
+    egress: Arc<WorkerEgressClient>,
 ) -> Result<()> {
     let db = Arc::new(Database::attach(backend));
-    let provider = R2SurfaceProvider::new(bucket, Arc::clone(&db), sealer);
+    let provider = R2SurfaceProvider::new(
+        bucket.clone(),
+        Arc::clone(&db),
+        Arc::clone(&secrets),
+        Arc::clone(&egress),
+    );
+    let writers = R2SurfaceWriteProvider::new(bucket, Arc::clone(&db), secrets, egress);
+    aos_hub_core::cache_scan::recover_expired_registry_writes(
+        &db,
+        &provider,
+        &writers,
+        aos_hub_core::clock::now_unix_secs(),
+    )
+    .await
+    .context("recovering expired registry writes")?;
+    aos_hub_core::cache_scan::reap_due_cache_tombstones(&db, aos_hub_core::clock::now_unix_secs())
+        .await
+        .context("reaping cache tombstones")?;
+    aos_hub_core::cache_scan::recover_expired_cache_writes(
+        &db,
+        &provider,
+        &writers,
+        aos_hub_core::clock::now_unix_secs(),
+        aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
+    )
+    .await
+    .context("recovering expired cache writes")?;
 
-    let caches = db.list_caches().await.context("listing caches")?;
+    let caches = db.list_binary_caches().await.context("listing caches")?;
     for cache in caches {
         if cache.deleted_at.is_some() {
             continue;
         }
-        let fetch = match provider.cache_fetcher(&cache).await {
-            Ok(fetch) => fetch,
-            Err(err) => {
-                worker::console_log!("rescan {}: resolving surface failed: {err:#}", cache.slug);
-                continue;
-            }
-        };
-        match aos_hub_core::cache_scan::rescan_cache(&db, fetch.as_ref(), &cache).await {
+        match aos_hub_core::cache_scan::rescan_cache(&db, &provider, &writers, &cache).await {
             Ok(stats) => {
                 if stats.added > 0 || stats.removed > 0 {
                     worker::console_log!(
@@ -146,86 +197,6 @@ pub async fn rescan_all(
                 }
             }
             Err(err) => worker::console_log!("rescan {} failed: {err:#}", cache.slug),
-        }
-    }
-    Ok(())
-}
-
-/// Garbage-collect every GC-policied managed cache from D1+R2 via the shared
-/// sweep.
-///
-/// The worker half of cache GC: the Cron-driven counterpart to the native hub's
-/// `aos-hub cache gc`. Drives the *same* [`sweep_cache`](aos_hub_core::gc::sweep_cache)
-/// the native path and the `RunCacheGc` RPC use, over the shared
-/// [`Database`](aos_hub_core::db::Database) (D1) and the R2 write surface,
-/// recording each sweep as a `cache_gc_runs` row. Only caches that have opted in
-/// with a GC policy are swept; each cache is independent — one cache's failure is
-/// recorded on its run row and logged, never aborting the pass. `now` is the
-/// Cron tick's Unix time (seconds), supplied by the caller since wasm has no
-/// ambient clock.
-///
-/// `sealer` resolves a cache's external S3/R2 storage binding credentials (the
-/// same AES-GCM sealer the request path uses) when its surface lives off the
-/// hub R2 bucket.
-///
-/// # Errors
-///
-/// Returns an error only if the cache list cannot be read from D1.
-pub async fn gc_all(
-    backend: Box<dyn aos_hub_core::backend::Backend>,
-    bucket: Bucket,
-    now: i64,
-    sealer: Arc<dyn SecretSealer>,
-) -> Result<()> {
-    let db = Arc::new(Database::attach(backend));
-    let writers = R2SurfaceWriteProvider::new(bucket, Arc::clone(&db), sealer);
-
-    let caches = db.list_caches().await.context("listing caches")?;
-    for cache in caches {
-        // Scheduled GC is opt-in per cache: only sweep those with a GC policy.
-        match db.cache_gc_policy(cache.id).await {
-            Ok(Some(_)) => {}
-            Ok(None) => continue,
-            Err(err) => {
-                worker::console_log!("gc {}: loading policy failed: {err:#}", cache.slug);
-                continue;
-            }
-        }
-        let run_id = match db.start_cache_gc_run(cache.id).await {
-            Ok(id) => id,
-            Err(err) => {
-                worker::console_log!("gc {}: opening run failed: {err:#}", cache.slug);
-                continue;
-            }
-        };
-        match aos_hub_core::gc::sweep_cache(&db, &writers, &cache, false, now).await {
-            Ok(stats) => {
-                let _ = db
-                    .finish_cache_gc_run(
-                        run_id,
-                        "ok",
-                        None,
-                        stats.scanned,
-                        stats.retained,
-                        stats.deleted_objects,
-                        stats.freed_bytes,
-                    )
-                    .await;
-                worker::console_log!(
-                    "gc {}: scanned {} retained {} deleted {} freed {}B",
-                    cache.slug,
-                    stats.scanned,
-                    stats.retained,
-                    stats.deleted_objects,
-                    stats.freed_bytes
-                );
-            }
-            Err(err) => {
-                let _ = db
-                    .finish_cache_gc_run(run_id, "failed", Some(format!("{err:#}")), 0, 0, 0, 0)
-                    .await;
-                worker::console_log!("gc {} failed: {err:#}", cache.slug);
-            }
         }
     }
     Ok(())

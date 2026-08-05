@@ -41,7 +41,7 @@ GC plans for every existing surface before it mutates production state.
       explicitly read-only surfaces authority-free and abort on unproven
       declared writability, ambiguity, or collisions.
 - [ ] Implement initial authority creation and promotion as guarded
-      single-row statements shared by native SQL and Worker D1.
+      single-row statements shared by native SQL and Worker Durable Object SQLite.
 - [ ] Implement retry and reviewed cancellation for pending/failed promotions;
       cancellation restores the observed writer only after fencing checks and
       is itself generation guarded.
@@ -278,7 +278,7 @@ source and generated artifacts:
 | resource `advertise_storage_frontend` toggle | removed |
 | `cache_registry_links` / `CacheRegistryLink` | separate retention and population records; signed stack remains registry content |
 | `cache_gc_roots`, `CacheGcRoot`, pin/unpin root RPC shapes | manual retention roots, lease history, and provenance-bearing root reasons |
-| synchronous `RunCacheGc { dry_run }` / DB-first `sweep_cache` | immutable `PlanCacheGc` plus guarded asynchronous `RunCacheGc(plan_id)` |
+| synchronous `RunCacheGc { dry_run }` / DB-first `sweep_cache` | immutable `PlanRunCacheGc` plus guarded asynchronous `RunCacheGc(plan_id)` |
 | cache-global binding/prefix `nar_refcount` and single cache writer | explicit narinfo/NAR surface objects and placement-scoped deletion actions |
 | `cache_gc_runs` aggregate-only rows | topology operation plus versioned GC plan, object, action, and job records |
 | `cache_gc_policy.keep_release_versions` / `keep_channel_frontier` | typed per-subscription retention selectors |
@@ -311,7 +311,7 @@ and Web UI templates may not.
 ## Test matrix
 
 Every relevant case runs against native sqlite/local-fs, native S3-compatible
-storage, and Worker D1/R2 where the runtime supports the binding.
+storage, and Worker Durable Object SQLite/R2 where the runtime supports the binding.
 
 ### Placement cases
 
@@ -366,10 +366,10 @@ storage, and Worker D1/R2 where the runtime supports the binding.
   mutable publication watermark, and native/Worker parity;
 - MySQL affected-row classification rereads authoritative state rather than
   relying on no-change row counts; and
-- SQLite, D1, PostgreSQL, and MySQL pass the same single-statement CAS and
+- SQLite, Durable Object SQLite, PostgreSQL, and MySQL pass the same single-statement CAS and
   fault-injection fixtures.
 - placement-policy builder mutations and publication CAS `build_version` on
-  native transactions and D1 atomic batches; the shared stale-builder fixture
+  native transactions and Durable Object atomic batches; the shared stale-builder fixture
   proves no mutation can land after publication.
 
 ### Route cases
@@ -397,7 +397,7 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 - storage-binding exact grant/revoke gates placements, gateways, and defaults;
   cross-scope and nonexistent bindings fail structurally on every backend;
 - binding, boundary, endpoint-generation, and gateway-generation grant-pin
-  acquisition versus revoke CAS has one winner on native databases and D1;
+  acquisition versus revoke CAS has one winner on native databases and Durable Object SQLite;
   revoke rejects nonzero pins, preserves history, and regrant increments the
   grant generation so an old pin can never revive;
 - stale/mismatched boundary revisions, degraded protection, trusted-ingress
@@ -407,7 +407,7 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 - overlap rollout keeps old and new exact consumers eligible; `retiring`
   rejects new serving-pin acquisition while preserving verified old pins;
   serving-pin acquisition and retire CAS yield one winner on native databases
-  and D1; nonzero serving pins block
+  and Durable Object SQLite; nonzero serving pins block
   final retirement; coordinated mode persists its acknowledged fail-closed
   window and crash-resumes without accepting the wrong revision;
 - native/Worker authorization parity.
@@ -430,7 +430,7 @@ storage, and Worker D1/R2 where the runtime supports the binding.
   signed, and deletion leaves only the URL reservation plus redacted audit;
 - URL reservation creation versus key rotation has one winner, recomputes the
   candidate under every retained key version, rejects reuse across rotations,
-  and fails closed on key loss until backup restore on native databases and D1;
+  and fails closed on key loss until backup restore on native databases and Durable Object SQLite;
 - URL reservation vectors allow the same private IP/path in two distinct
   NetworkBoundary identity fingerprints but deny reuse of that IP/path in one
   boundary; deleting/recreating an identical typed boundary spec still denies
@@ -496,7 +496,7 @@ storage, and Worker D1/R2 where the runtime supports the binding.
   placement change, and
   concurrent double-apply each stale an older incompatible plan;
 - every competing root/graph/inventory/topology/fence mutation and GC apply
-  claims the same epoch row; native transactions and D1 atomic batches choose
+  claims the same epoch row; native transactions and Durable Object atomic batches choose
   the same single winner and roll back partial tombstone/job creation;
 - logical deletion across partial backend failure;
 - complete replicas, shards, archives, partial tiers, and off-policy observed
@@ -512,7 +512,7 @@ storage, and Worker D1/R2 where the runtime supports the binding.
 - direct-route missing access telemetry changes only eviction order;
 - plan actor/scope/expiry/confirmation mismatch rejects; public anonymous
   readers cannot inspect root actors or deletion jobs; and
-- native/Worker plus SQLite, D1, PostgreSQL, and MySQL fixtures produce the
+- native/Worker plus SQLite, Durable Object SQLite, PostgreSQL, and MySQL fixtures produce the
   same guarded-apply and job-transition outcomes.
 
 ## Cutover and rollback

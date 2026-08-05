@@ -12,8 +12,8 @@
 //! write-time DNS pre-check and a connect-time validating resolver around
 //! [`is_safe_remote_url`], and symlink-escape canonicalization around
 //! [`safe_join`]. On the Worker those IO-bound parts are supplied by the
-//! Cloudflare platform's egress policy. The scheme and literal-IP rejections
-//! here run on every target regardless of deployment.
+//! repository-owned hardened-egress HTTPS gateway. The scheme and literal-IP
+//! rejections here run on every target regardless of deployment.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -56,17 +56,12 @@ pub fn fetch_err(message: impl Into<String>) -> anyhow::Error {
 /// Returns a [`FetchError`] when `raw` is not a valid URL or its scheme is not
 /// `http(s)`.
 pub fn require_http_scheme(raw: &str) -> Result<url::Url> {
-    let url = url::Url::parse(raw).map_err(|err| {
-        fetch_err(format!(
-            "mirror/frontend URL '{raw}' is not a valid URL: {err}"
-        ))
-    })?;
+    let url = url::Url::parse(raw).map_err(|_| fetch_err("remote URL is not valid"))?;
     match url.scheme() {
         "http" | "https" => Ok(url),
-        other => Err(fetch_err(format!(
-            "mirror/frontend URL '{raw}' uses unsupported scheme '{other}' \
-             (a network origin must be http(s)://)"
-        ))),
+        _ => Err(fetch_err(
+            "remote URL uses an unsupported scheme; a network origin must be http(s)://",
+        )),
     }
 }
 
@@ -95,7 +90,7 @@ pub fn require_http_scheme(raw: &str) -> Result<url::Url> {
 /// production hub binary and the release Worker never relax the guard — and only
 /// when the variable is set to a truthy value (`1`/`true`/`yes`/`on`).
 /// Integration tests stand up upstream servers on `127.0.0.1`; this lets them
-/// register a local mirror/frontend/webhook URL while a release build always
+/// register a local mirror/webhook URL while a release build always
 /// keeps the guard. The non-`http(s)` scheme rejection is never relaxed.
 #[must_use]
 pub fn allow_local_remotes() -> bool {
@@ -130,6 +125,11 @@ pub fn allow_local_remotes() -> bool {
 
 pub fn is_safe_remote_url(raw: &str) -> Result<()> {
     let url = require_http_scheme(raw)?;
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err(fetch_err(
+            "remote URL must not contain userinfo or a fragment",
+        ));
+    }
     // The dev/test escape hatch relaxes the local/internal rejection (the scheme
     // rejection above always applies). Honored only in debug builds.
     if allow_local_remotes() {
@@ -146,7 +146,7 @@ pub fn is_safe_remote_url(raw: &str) -> Result<()> {
             let ip = IpAddr::V4(v4);
             if !is_global_ip(ip) {
                 return Err(fetch_err(format!(
-                    "mirror/frontend URL '{raw}' resolves to a local/internal address {ip}"
+                    "remote URL resolves to a local/internal address {ip}"
                 )));
             }
         }
@@ -154,15 +154,13 @@ pub fn is_safe_remote_url(raw: &str) -> Result<()> {
             let ip = IpAddr::V6(v6);
             if !is_global_ip(ip) {
                 return Err(fetch_err(format!(
-                    "mirror/frontend URL '{raw}' resolves to a local/internal address {ip}"
+                    "remote URL resolves to a local/internal address {ip}"
                 )));
             }
         }
         Some(url::Host::Domain(_)) => {}
         None => {
-            return Err(fetch_err(format!(
-                "mirror/frontend URL '{raw}' has no host"
-            )));
+            return Err(fetch_err("remote URL has no host"));
         }
     }
     Ok(())
@@ -170,10 +168,9 @@ pub fn is_safe_remote_url(raw: &str) -> Result<()> {
 
 /// Whether `ip` is a globally routable address (not local/internal).
 ///
-/// Rejects loopback, link-local, private/unique-local, unspecified, and broadcast
-/// ranges for both IPv4 and IPv6 (including IPv4-mapped IPv6). The std-stable
-/// predicates are combined manually because `Ipv6Addr::is_unique_local` and
-/// related helpers are not yet stable.
+/// Rejects every non-global-unicast IANA special-purpose family for IPv4 and
+/// IPv6, including multicast, reserved/future-use, site-local, transition and
+/// translation prefixes, and IPv4-mapped/compatible IPv6.
 #[must_use]
 pub fn is_global_ip(ip: IpAddr) -> bool {
     match ip {
@@ -191,6 +188,31 @@ pub fn is_global_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Requires a non-empty DNS answer set containing only global-unicast addresses.
+///
+/// Rejecting the whole set when even one answer is blocked prevents a resolver
+/// or connector from selecting a private address from a mixed public/private
+/// response.
+///
+/// # Errors
+///
+/// Returns a [`FetchError`] for an empty answer set or any non-global address.
+pub fn validate_resolved_addresses(addresses: &[IpAddr]) -> Result<()> {
+    if addresses.is_empty() {
+        return Err(fetch_err("remote hostname resolved to no addresses"));
+    }
+    if let Some(address) = addresses
+        .iter()
+        .copied()
+        .find(|address| !is_global_ip(*address))
+    {
+        return Err(fetch_err(format!(
+            "remote hostname resolved to a non-global address {address}"
+        )));
+    }
+    Ok(())
+}
+
 /// Whether an IPv4 address is globally routable (not local/internal).
 ///
 /// Rejects every IANA special-purpose range that is not globally reachable.
@@ -202,7 +224,8 @@ pub fn is_global_ipv4(v4: Ipv4Addr) -> bool {
     let o = v4.octets();
     // 100.64.0.0/10 — RFC 6598 carrier-grade NAT shared address space.
     let is_cgnat = o[0] == 100 && (o[1] & 0xc0) == 64;
-    // 192.0.0.0/24 — RFC 6890 IETF protocol assignments.
+    // 192.0.0.0/24 — RFC 6890 IETF protocol assignments. Conservatively reject
+    // the complete block; none is a valid arbitrary tenant origin.
     let is_protocol = o[0] == 192 && o[1] == 0 && o[2] == 0;
     // 198.18.0.0/15 — RFC 2544 benchmarking.
     let is_benchmarking = o[0] == 198 && (o[1] & 0xfe) == 18;
@@ -220,7 +243,8 @@ pub fn is_global_ipv4(v4: Ipv4Addr) -> bool {
         || is_cgnat               // 100.64.0.0/10
         || is_protocol            // 192.0.0.0/24
         || is_benchmarking        // 198.18.0.0/15
-        || is_documentation) // 192.0.2/24, 198.51.100/24, 203.0.113/24
+        || is_documentation  // 192.0.2/24, 198.51.100/24, 203.0.113/24
+        || o[0] >= 224) // multicast 224/4 and reserved/future-use 240/4
 }
 
 /// Whether an IPv6 address is globally routable (not local/internal).
@@ -229,12 +253,30 @@ pub fn is_global_ipv6(v6: Ipv6Addr) -> bool {
     let segs = v6.segments();
     let is_unique_local = (segs[0] & 0xfe00) == 0xfc00; // fc00::/7
     let is_link_local = (segs[0] & 0xffc0) == 0xfe80; // fe80::/10
+    let is_site_local = (segs[0] & 0xffc0) == 0xfec0; // fec0::/10 (deprecated)
+    let is_multicast = (segs[0] & 0xff00) == 0xff00; // ff00::/8
     let is_documentation = segs[0] == 0x2001 && segs[1] == 0x0db8; // 2001:db8::/32
+    let is_benchmarking = segs[0] == 0x2001 && segs[1] == 0x0002 && segs[2] == 0; // /48
+    let is_orchid = segs[0] == 0x2001 && matches!(segs[1] & 0xfff0, 0x0010 | 0x0020); // /28
+    let is_discard = segs[0] == 0x0100 && segs[1] == 0 && segs[2] == 0 && segs[3] == 0; // /64
+    let is_local_translation = segs[0] == 0x0064 && segs[1] == 0xff9b && segs[2] == 1; // /48
+    let is_teredo = segs[0] == 0x2001 && segs[1] == 0; // 2001:0000::/32
+    let is_6to4 = segs[0] == 0x2002; // embeds an IPv4 address; reject tunnel bypasses
+    let is_global_unicast_space = (segs[0] & 0xe000) == 0x2000; // 2000::/3
     !(v6.is_loopback()
         || v6.is_unspecified()
         || is_unique_local
         || is_link_local
-        || is_documentation)
+        || is_site_local
+        || is_multicast
+        || is_documentation
+        || is_benchmarking
+        || is_orchid
+        || is_discard
+        || is_local_translation
+        || is_teredo
+        || is_6to4)
+        && is_global_unicast_space
 }
 
 /// Validate a relative surface path before interpolating it into an HTTP URL.
@@ -362,6 +404,8 @@ mod tests {
         assert!(is_safe_remote_url("file:///etc/passwd").is_err());
         assert!(is_safe_remote_url("/srv/secret").is_err());
         assert!(is_safe_remote_url("ftp://example.com/x").is_err());
+        assert!(is_safe_remote_url("https://user:pass@example.com/hook").is_err());
+        assert!(is_safe_remote_url("https://example.com/hook#fragment").is_err());
 
         // Loopback, link-local (cloud metadata), and RFC-1918 literals.
         assert!(is_safe_remote_url("http://127.0.0.1/").is_err());
@@ -381,6 +425,22 @@ mod tests {
     }
 
     #[test]
+    fn rejection_errors_never_echo_credential_bearing_urls() {
+        let marker = "must-not-appear";
+        for raw in [
+            format!("not a url?token={marker}"),
+            format!("ftp://example.com/object?token={marker}"),
+            format!("http://127.0.0.1/object?token={marker}"),
+        ] {
+            let error = is_safe_remote_url(&raw).unwrap_err().to_string();
+            assert!(
+                !error.contains(marker),
+                "URL secret leaked through error: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn is_global_ip_classifies_ranges() {
         assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
         assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254))));
@@ -389,6 +449,21 @@ mod tests {
         assert!(!is_global_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
         assert!(is_global_ip(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))));
         assert!(is_global_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn resolved_address_sets_reject_empty_and_mixed_answers() {
+        assert!(validate_resolved_addresses(&[]).is_err());
+        assert!(validate_resolved_addresses(&[
+            "93.184.216.34".parse().unwrap(),
+            "10.0.0.1".parse().unwrap(),
+        ])
+        .is_err());
+        assert!(validate_resolved_addresses(&[
+            "93.184.216.34".parse().unwrap(),
+            "2606:4700:4700::1111".parse().unwrap(),
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -412,6 +487,38 @@ mod tests {
         assert!(!is_global_ipv4(Ipv4Addr::new(203, 0, 113, 1)));
         // A neighbour outside the documentation /24 is global.
         assert!(is_global_ipv4(Ipv4Addr::new(203, 0, 114, 1)));
+        assert!(!is_global_ipv4(Ipv4Addr::new(224, 0, 0, 1)));
+        assert!(!is_global_ipv4(Ipv4Addr::new(239, 255, 255, 255)));
+        assert!(!is_global_ipv4(Ipv4Addr::new(240, 0, 0, 1)));
+        assert!(!is_global_ipv4(Ipv4Addr::new(255, 255, 255, 254)));
+    }
+
+    #[test]
+    fn is_global_ipv6_rejects_all_special_and_transition_families() {
+        for blocked in [
+            "::",
+            "::1",
+            "::ffff:8.8.8.8",
+            "100::1",
+            "64:ff9b:1::1",
+            "2001::1",
+            "2001:2::1",
+            "2001:10::1",
+            "2001:20::1",
+            "2001:db8::1",
+            "2002:0808:0808::1",
+            "fc00::1",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+        ] {
+            let ip: Ipv6Addr = blocked.parse().unwrap();
+            assert!(
+                !is_global_ipv6(ip),
+                "special IPv6 address passed: {blocked}"
+            );
+        }
+        assert!(is_global_ipv6("2606:4700:4700::1111".parse().unwrap()));
     }
 
     #[test]

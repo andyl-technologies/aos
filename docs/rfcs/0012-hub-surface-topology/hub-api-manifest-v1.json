@@ -2,6 +2,7 @@
    "cli_families" : [
       "instance",
       "org",
+      "signing-key",
       "registry",
       "cache",
       "storage-binding",
@@ -14,7 +15,8 @@
       "endpoint",
       "gateway",
       "route",
-      "operation"
+      "operation",
+      "image"
    ],
    "cli_nested_families" : {
       "org" : [ "audit", "identity", "project", "webhook" ],
@@ -48,6 +50,27 @@
          "service" : "RegistryService"
       },
       {
+         "method" : "ListImages",
+         "path" : "aos.hub.v1.ImageService/ListImages",
+         "request" : "ListImagesRequest",
+         "response" : "ListImagesResponse",
+         "service" : "ImageService"
+      },
+      {
+         "method" : "GetImage",
+         "path" : "aos.hub.v1.ImageService/GetImage",
+         "request" : "GetImageRequest",
+         "response" : "GetImageResponse",
+         "service" : "ImageService"
+      },
+      {
+         "method" : "ResolveImage",
+         "path" : "aos.hub.v1.ImageService/ResolveImage",
+         "request" : "ResolveImageRequest",
+         "response" : "GetImageResponse",
+         "service" : "ImageService"
+      },
+      {
          "method" : "PlanCreateRegistry",
          "path" : "aos.hub.v1.RegistryService/PlanCreateRegistry",
          "request" : "PlanCreateRegistryRequest",
@@ -62,10 +85,31 @@
          "service" : "RegistryService"
       },
       {
-         "method" : "SetCrawlPolicy",
-         "path" : "aos.hub.v1.RegistryService/SetCrawlPolicy",
-         "request" : "SetCrawlPolicyRequest",
-         "response" : "SetCrawlPolicyResponse",
+         "method" : "PlanUpdateRegistry",
+         "path" : "aos.hub.v1.RegistryService/PlanUpdateRegistry",
+         "request" : "PlanUpdateRegistryRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "UpdateRegistry",
+         "path" : "aos.hub.v1.RegistryService/UpdateRegistry",
+         "request" : "ApplyRegistryMutationRequest",
+         "response" : "RegistryResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "PlanDeleteRegistry",
+         "path" : "aos.hub.v1.RegistryService/PlanDeleteRegistry",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RegistryService"
+      },
+      {
+         "method" : "DeleteRegistry",
+         "path" : "aos.hub.v1.RegistryService/DeleteRegistry",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
          "service" : "RegistryService"
       },
       {
@@ -125,17 +169,115 @@
          "service" : "OrganizationService"
       },
       {
-         "method" : "CreateProject",
-         "path" : "aos.hub.v1.ProjectService/CreateProject",
-         "request" : "CreateProjectRequest",
-         "response" : "CreateProjectResponse",
-         "service" : "ProjectService"
+         "method" : "ListSigningKeys",
+         "path" : "aos.hub.v1.SigningKeyService/ListSigningKeys",
+         "request" : "ListSigningKeysRequest",
+         "response" : "ListSigningKeysResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "GetSigningKey",
+         "path" : "aos.hub.v1.SigningKeyService/GetSigningKey",
+         "request" : "GetSigningKeyRequest",
+         "response" : "SigningKeyResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "PlanEnrollSigningKey",
+         "path" : "aos.hub.v1.SigningKeyService/PlanEnrollSigningKey",
+         "request" : "PlanSigningKeyMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "EnrollSigningKey",
+         "path" : "aos.hub.v1.SigningKeyService/EnrollSigningKey",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "SigningKeyResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "PlanRotateSigningKey",
+         "path" : "aos.hub.v1.SigningKeyService/PlanRotateSigningKey",
+         "request" : "PlanSigningKeyMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "RotateSigningKey",
+         "path" : "aos.hub.v1.SigningKeyService/RotateSigningKey",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "SigningKeyResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "PlanRetireSigningKey",
+         "path" : "aos.hub.v1.SigningKeyService/PlanRetireSigningKey",
+         "request" : "PlanRetireSigningKeyRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "RetireSigningKey",
+         "path" : "aos.hub.v1.SigningKeyService/RetireSigningKey",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "SigningKeyResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "PlanSetSigningKeyUsage",
+         "path" : "aos.hub.v1.SigningKeyService/PlanSetSigningKeyUsage",
+         "request" : "PlanSigningKeyUsageRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "SigningKeyService"
+      },
+      {
+         "method" : "SetSigningKeyUsage",
+         "path" : "aos.hub.v1.SigningKeyService/SetSigningKeyUsage",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "SigningKeyUsageResponse",
+         "service" : "SigningKeyService"
       },
       {
          "method" : "ListProjects",
          "path" : "aos.hub.v1.ProjectService/ListProjects",
          "request" : "ListProjectsRequest",
          "response" : "ListProjectsResponse",
+         "service" : "ProjectService"
+      },
+      {
+         "method" : "GetProject",
+         "path" : "aos.hub.v1.ProjectService/GetProject",
+         "request" : "GetProjectRequest",
+         "response" : "ProjectResponse",
+         "service" : "ProjectService"
+      },
+      {
+         "method" : "PlanCreateProject",
+         "path" : "aos.hub.v1.ProjectService/PlanCreateProject",
+         "request" : "PlanCreateProjectRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ProjectService"
+      },
+      {
+         "method" : "CreateProject",
+         "path" : "aos.hub.v1.ProjectService/CreateProject",
+         "request" : "ApplyProjectMutationRequest",
+         "response" : "ProjectResponse",
+         "service" : "ProjectService"
+      },
+      {
+         "method" : "PlanDeleteProject",
+         "path" : "aos.hub.v1.ProjectService/PlanDeleteProject",
+         "request" : "PlanDeleteProjectRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ProjectService"
+      },
+      {
+         "method" : "DeleteProject",
+         "path" : "aos.hub.v1.ProjectService/DeleteProject",
+         "request" : "ApplyProjectMutationRequest",
+         "response" : "DeleteTopologyResourceResponse",
          "service" : "ProjectService"
       },
       {
@@ -195,10 +337,17 @@
          "service" : "StorageBindingService"
       },
       {
+         "method" : "PlanValidateStorageBindingCredential",
+         "path" : "aos.hub.v1.StorageBindingService/PlanValidateStorageBindingCredential",
+         "request" : "PlanValidateStorageBindingCredentialRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageBindingService"
+      },
+      {
          "method" : "ValidateStorageBindingCredential",
          "path" : "aos.hub.v1.StorageBindingService/ValidateStorageBindingCredential",
-         "request" : "ValidateStorageBindingCredentialRequest",
-         "response" : "StorageBindingCredentialResponse",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "OperationResponse",
          "service" : "StorageBindingService"
       },
       {
@@ -244,11 +393,11 @@
          "service" : "StorageBindingService"
       },
       {
-         "method" : "ReconcileStorageBindingWriteRevision",
-         "path" : "aos.hub.v1.StorageBindingService/ReconcileStorageBindingWriteRevision",
-         "request" : "ReconcileStorageBindingWriteRevisionRequest",
+         "method" : "ReportStorageBindingWriteRevision",
+         "path" : "aos.hub.v1.StorageBindingControllerService/ReportStorageBindingWriteRevision",
+         "request" : "ReportStorageBindingWriteRevisionRequest",
          "response" : "StorageBindingWriteRevisionResponse",
-         "service" : "StorageBindingService"
+         "service" : "StorageBindingControllerService"
       },
       {
          "method" : "PlanDeleteStorageBinding",
@@ -370,9 +519,16 @@
          "service" : "DomainService"
       },
       {
+         "method" : "PlanVerifyDomain",
+         "path" : "aos.hub.v1.DomainService/PlanVerifyDomain",
+         "request" : "PlanVerifyDomainRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DomainService"
+      },
+      {
          "method" : "VerifyDomain",
          "path" : "aos.hub.v1.DomainService/VerifyDomain",
-         "request" : "ProbeTopologyResourceRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
          "service" : "DomainService"
       },
@@ -447,18 +603,18 @@
          "service" : "NetworkBoundaryService"
       },
       {
-         "method" : "ProbeNetworkBoundaryRevision",
-         "path" : "aos.hub.v1.NetworkBoundaryService/ProbeNetworkBoundaryRevision",
-         "request" : "GetNetworkBoundaryRevisionRequest",
+         "method" : "CompleteNetworkBoundaryRevisionProbe",
+         "path" : "aos.hub.v1.NetworkBoundaryControllerService/CompleteNetworkBoundaryRevisionProbe",
+         "request" : "CompleteNetworkBoundaryRevisionProbeRequest",
          "response" : "NetworkBoundaryRevisionResponse",
-         "service" : "NetworkBoundaryService"
+         "service" : "NetworkBoundaryControllerService"
       },
       {
-         "method" : "ReconcileNetworkBoundaryRevision",
-         "path" : "aos.hub.v1.NetworkBoundaryService/ReconcileNetworkBoundaryRevision",
-         "request" : "ReconcileNetworkBoundaryRevisionRequest",
+         "method" : "ReportNetworkBoundaryRevision",
+         "path" : "aos.hub.v1.NetworkBoundaryControllerService/ReportNetworkBoundaryRevision",
+         "request" : "ReportNetworkBoundaryRevisionRequest",
          "response" : "NetworkBoundaryRevisionResponse",
-         "service" : "NetworkBoundaryService"
+         "service" : "NetworkBoundaryControllerService"
       },
       {
          "method" : "PlanActivateNetworkBoundaryRevision",
@@ -559,16 +715,44 @@
          "service" : "DeliveryService"
       },
       {
-         "method" : "PlanUpdateDeliveryEndpoint",
-         "path" : "aos.hub.v1.DeliveryService/PlanUpdateDeliveryEndpoint",
-         "request" : "PlanDeliveryEndpointMutationRequest",
+         "method" : "ListDeliveryEndpointGenerations",
+         "path" : "aos.hub.v1.DeliveryService/ListDeliveryEndpointGenerations",
+         "request" : "ListDeliveryEndpointGenerationsRequest",
+         "response" : "ListDeliveryEndpointGenerationsResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "GetDeliveryEndpointGeneration",
+         "path" : "aos.hub.v1.DeliveryService/GetDeliveryEndpointGeneration",
+         "request" : "GetDeliveryEndpointGenerationRequest",
+         "response" : "DeliveryEndpointGenerationResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanStageDeliveryEndpointGeneration",
+         "path" : "aos.hub.v1.DeliveryService/PlanStageDeliveryEndpointGeneration",
+         "request" : "PlanStageDeliveryEndpointGenerationRequest",
          "response" : "TopologyPlanResponse",
          "service" : "DeliveryService"
       },
       {
-         "method" : "UpdateDeliveryEndpoint",
-         "path" : "aos.hub.v1.DeliveryService/UpdateDeliveryEndpoint",
-         "request" : "ApplyDeliveryEndpointMutationRequest",
+         "method" : "StageDeliveryEndpointGeneration",
+         "path" : "aos.hub.v1.DeliveryService/StageDeliveryEndpointGeneration",
+         "request" : "ApplyDeliveryEndpointGenerationRequest",
+         "response" : "DeliveryEndpointGenerationResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "PlanActivateDeliveryEndpointGeneration",
+         "path" : "aos.hub.v1.DeliveryService/PlanActivateDeliveryEndpointGeneration",
+         "request" : "PlanActivateDeliveryEndpointGenerationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "DeliveryService"
+      },
+      {
+         "method" : "ActivateDeliveryEndpointGeneration",
+         "path" : "aos.hub.v1.DeliveryService/ActivateDeliveryEndpointGeneration",
+         "request" : "ApplyDeliveryEndpointGenerationRequest",
          "response" : "DeliveryEndpointResponse",
          "service" : "DeliveryService"
       },
@@ -601,18 +785,18 @@
          "service" : "DeliveryService"
       },
       {
-         "method" : "ProbeDeliveryEndpoint",
-         "path" : "aos.hub.v1.DeliveryService/ProbeDeliveryEndpoint",
-         "request" : "GetTopologyResourceRequest",
+         "method" : "CompleteDeliveryEndpointProbe",
+         "path" : "aos.hub.v1.DeliveryControllerService/CompleteDeliveryEndpointProbe",
+         "request" : "CompleteDeliveryEndpointProbeRequest",
          "response" : "DeliveryEndpointResponse",
-         "service" : "DeliveryService"
+         "service" : "DeliveryControllerService"
       },
       {
-         "method" : "ReconcileDeliveryEndpoint",
-         "path" : "aos.hub.v1.DeliveryService/ReconcileDeliveryEndpoint",
-         "request" : "ReconcileDeliveryEndpointRequest",
+         "method" : "ReportDeliveryEndpoint",
+         "path" : "aos.hub.v1.DeliveryControllerService/ReportDeliveryEndpoint",
+         "request" : "ReportDeliveryEndpointRequest",
          "response" : "DeliveryEndpointResponse",
-         "service" : "DeliveryService"
+         "service" : "DeliveryControllerService"
       },
       {
          "method" : "PlanDeleteDeliveryEndpoint",
@@ -706,11 +890,11 @@
          "service" : "DeliveryService"
       },
       {
-         "method" : "ReconcileStorageGateway",
-         "path" : "aos.hub.v1.DeliveryService/ReconcileStorageGateway",
-         "request" : "ReconcileStorageGatewayRequest",
+         "method" : "ReportStorageGateway",
+         "path" : "aos.hub.v1.DeliveryControllerService/ReportStorageGateway",
+         "request" : "ReportStorageGatewayRequest",
          "response" : "StorageGatewayResponse",
-         "service" : "DeliveryService"
+         "service" : "DeliveryControllerService"
       },
       {
          "method" : "PlanEnableStorageGateway",
@@ -867,11 +1051,11 @@
          "service" : "RouteService"
       },
       {
-         "method" : "ProbeRoute",
-         "path" : "aos.hub.v1.RouteService/ProbeRoute",
-         "request" : "GetTopologyResourceRequest",
-         "response" : "DeliveryRouteResponse",
-         "service" : "RouteService"
+         "method" : "CompleteRouteProbe",
+         "path" : "aos.hub.v1.RouteControllerService/CompleteRouteProbe",
+         "request" : "CompleteRouteProbeRequest",
+         "response" : "OperationResponse",
+         "service" : "RouteControllerService"
       },
       {
          "method" : "ExplainRoute",
@@ -972,11 +1156,11 @@
          "service" : "TopologyService"
       },
       {
-         "method" : "ReconcileWriteAuthority",
-         "path" : "aos.hub.v1.TopologyService/ReconcileWriteAuthority",
-         "request" : "ReconcileWriteAuthorityRequest",
-         "response" : "ReconcileWriteAuthorityResponse",
-         "service" : "TopologyService"
+         "method" : "ReportWriteAuthority",
+         "path" : "aos.hub.v1.TopologyControllerService/ReportWriteAuthority",
+         "request" : "ReportWriteAuthorityRequest",
+         "response" : "WriteAuthorityObservationResponse",
+         "service" : "TopologyControllerService"
       },
       {
          "method" : "PlanRemoveWriteAuthority",
@@ -1035,23 +1219,44 @@
          "service" : "TopologyService"
       },
       {
+         "method" : "PlanScanPlacement",
+         "path" : "aos.hub.v1.TopologyService/PlanScanPlacement",
+         "request" : "PlanScanPlacementRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "TopologyService"
+      },
+      {
          "method" : "ScanPlacement",
          "path" : "aos.hub.v1.TopologyService/ScanPlacement",
-         "request" : "PlacementOperationRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanReplicatePlacement",
+         "path" : "aos.hub.v1.TopologyService/PlanReplicatePlacement",
+         "request" : "PlanReplicatePlacementRequest",
+         "response" : "TopologyPlanResponse",
          "service" : "TopologyService"
       },
       {
          "method" : "ReplicatePlacement",
          "path" : "aos.hub.v1.TopologyService/ReplicatePlacement",
-         "request" : "ReplicatePlacementRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
+         "service" : "TopologyService"
+      },
+      {
+         "method" : "PlanRepairPlacement",
+         "path" : "aos.hub.v1.TopologyService/PlanRepairPlacement",
+         "request" : "PlanRepairPlacementRequest",
+         "response" : "TopologyPlanResponse",
          "service" : "TopologyService"
       },
       {
          "method" : "RepairPlacement",
          "path" : "aos.hub.v1.TopologyService/RepairPlacement",
-         "request" : "RepairPlacementRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
          "service" : "TopologyService"
       },
@@ -1196,9 +1401,16 @@
          "service" : "RegistryMirrorService"
       },
       {
+         "method" : "PlanSyncRegistryMirror",
+         "path" : "aos.hub.v1.RegistryMirrorService/PlanSyncRegistryMirror",
+         "request" : "PlanSyncRegistryMirrorRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "RegistryMirrorService"
+      },
+      {
          "method" : "SyncRegistryMirror",
          "path" : "aos.hub.v1.RegistryMirrorService/SyncRegistryMirror",
-         "request" : "SyncRegistryMirrorRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
          "service" : "RegistryMirrorService"
       },
@@ -1217,10 +1429,17 @@
          "service" : "InstanceService"
       },
       {
-         "method" : "UpdateInstanceSettings",
-         "path" : "aos.hub.v1.InstanceService/UpdateInstanceSettings",
-         "request" : "UpdateInstanceSettingsRequest",
-         "response" : "UpdateInstanceSettingsResponse",
+         "method" : "PlanSetInstanceSettings",
+         "path" : "aos.hub.v1.InstanceService/PlanSetInstanceSettings",
+         "request" : "PlanSetInstanceSettingsRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "SetInstanceSettings",
+         "path" : "aos.hub.v1.InstanceService/SetInstanceSettings",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "GetInstanceSettingsResponse",
          "service" : "InstanceService"
       },
       {
@@ -1235,13 +1454,6 @@
          "path" : "aos.hub.v1.RegistryConfigurationService/GetChangeset",
          "request" : "GetChangesetRequest",
          "response" : "GetChangesetResponse",
-         "service" : "RegistryConfigurationService"
-      },
-      {
-         "method" : "RevertChangeset",
-         "path" : "aos.hub.v1.RegistryConfigurationService/RevertChangeset",
-         "request" : "RevertChangesetRequest",
-         "response" : "RevertChangesetResponse",
          "service" : "RegistryConfigurationService"
       },
       {
@@ -1301,13 +1513,6 @@
          "service" : "GitService"
       },
       {
-         "method" : "CreateWebhook",
-         "path" : "aos.hub.v1.WebhookService/CreateWebhook",
-         "request" : "CreateWebhookRequest",
-         "response" : "CreateWebhookResponse",
-         "service" : "WebhookService"
-      },
-      {
          "method" : "ListWebhooks",
          "path" : "aos.hub.v1.WebhookService/ListWebhooks",
          "request" : "ListWebhooksRequest",
@@ -1315,10 +1520,31 @@
          "service" : "WebhookService"
       },
       {
+         "method" : "PlanCreateWebhook",
+         "path" : "aos.hub.v1.WebhookService/PlanCreateWebhook",
+         "request" : "PlanCreateWebhookRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "WebhookService"
+      },
+      {
+         "method" : "CreateWebhook",
+         "path" : "aos.hub.v1.WebhookService/CreateWebhook",
+         "request" : "ApplyWebhookMutationRequest",
+         "response" : "CreateWebhookResponse",
+         "service" : "WebhookService"
+      },
+      {
+         "method" : "PlanDeleteWebhook",
+         "path" : "aos.hub.v1.WebhookService/PlanDeleteWebhook",
+         "request" : "PlanDeleteWebhookRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "WebhookService"
+      },
+      {
          "method" : "DeleteWebhook",
          "path" : "aos.hub.v1.WebhookService/DeleteWebhook",
-         "request" : "DeleteWebhookRequest",
-         "response" : "DeleteWebhookResponse",
+         "request" : "ApplyWebhookMutationRequest",
+         "response" : "DeleteTopologyResourceResponse",
          "service" : "WebhookService"
       },
       {
@@ -1399,10 +1625,10 @@
          "service" : "BinaryCacheService"
       },
       {
-         "method" : "PlanCacheGc",
-         "path" : "aos.hub.v1.BinaryCacheService/PlanCacheGc",
-         "request" : "PlanCacheGcRequest",
-         "response" : "CacheGcPlanResponse",
+         "method" : "PlanRunCacheGc",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanRunCacheGc",
+         "request" : "PlanRunCacheGcRequest",
+         "response" : "TopologyPlanResponse",
          "service" : "BinaryCacheService"
       },
       {
@@ -1476,9 +1702,16 @@
          "service" : "BinaryCacheService"
       },
       {
+         "method" : "PlanRetryCacheGcDeletionJob",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanRetryCacheGcDeletionJob",
+         "request" : "PlanRetryCacheGcDeletionJobRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
          "method" : "RetryCacheGcDeletionJob",
          "path" : "aos.hub.v1.BinaryCacheService/RetryCacheGcDeletionJob",
-         "request" : "RetryCacheGcDeletionJobRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
          "service" : "BinaryCacheService"
       },
@@ -1574,16 +1807,23 @@
          "service" : "BinaryCacheService"
       },
       {
+         "method" : "PlanRefreshAllRetention",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanRefreshAllRetention",
+         "request" : "PlanRefreshAllRetentionRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "BinaryCacheService"
+      },
+      {
          "method" : "RefreshAllRetention",
          "path" : "aos.hub.v1.BinaryCacheService/RefreshAllRetention",
-         "request" : "RefreshAllRetentionRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
          "service" : "BinaryCacheService"
       },
       {
-         "method" : "PlanPlacementEviction",
-         "path" : "aos.hub.v1.BinaryCacheService/PlanPlacementEviction",
-         "request" : "PlanPlacementEvictionRequest",
+         "method" : "PlanRunPlacementEviction",
+         "path" : "aos.hub.v1.BinaryCacheService/PlanRunPlacementEviction",
+         "request" : "PlanRunPlacementEvictionRequest",
          "response" : "TopologyPlanResponse",
          "service" : "BinaryCacheService"
       },
@@ -1609,18 +1849,18 @@
          "service" : "BinaryCacheService"
       },
       {
-         "method" : "AcknowledgeCacheUpload",
-         "path" : "aos.hub.v1.BinaryCacheService/AcknowledgeCacheUpload",
-         "request" : "AcknowledgeCacheUploadRequest",
-         "response" : "AcknowledgeCacheUploadResponse",
-         "service" : "BinaryCacheService"
+         "method" : "ReportCacheUpload",
+         "path" : "aos.hub.v1.BinaryCacheUploadControllerService/ReportCacheUpload",
+         "request" : "ReportCacheUploadRequest",
+         "response" : "CacheUploadObservationResponse",
+         "service" : "BinaryCacheUploadControllerService"
       },
       {
-         "method" : "RegisterCacheNarinfos",
-         "path" : "aos.hub.v1.BinaryCacheService/RegisterCacheNarinfos",
-         "request" : "RegisterCacheNarinfosRequest",
-         "response" : "RegisterCacheNarinfosResponse",
-         "service" : "BinaryCacheService"
+         "method" : "ReportCacheNarinfos",
+         "path" : "aos.hub.v1.BinaryCacheUploadControllerService/ReportCacheNarinfos",
+         "request" : "ReportCacheNarinfosRequest",
+         "response" : "CacheNarinfoRegistrationResponse",
+         "service" : "BinaryCacheUploadControllerService"
       },
       {
          "method" : "ListRegistryCacheIntegrations",
@@ -1665,9 +1905,9 @@
          "service" : "CacheIntegrationService"
       },
       {
-         "method" : "PlanConsumerCacheChange",
-         "path" : "aos.hub.v1.CacheIntegrationService/PlanConsumerCacheChange",
-         "request" : "PlanConsumerCacheChangeRequest",
+         "method" : "PlanCreateConsumerCacheChangeset",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanCreateConsumerCacheChangeset",
+         "request" : "PlanCreateConsumerCacheChangesetRequest",
          "response" : "TopologyPlanResponse",
          "service" : "CacheIntegrationService"
       },
@@ -1721,9 +1961,16 @@
          "service" : "CacheIntegrationService"
       },
       {
+         "method" : "PlanRefreshRetentionSubscription",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanRefreshRetentionSubscription",
+         "request" : "PlanRefreshRetentionSubscriptionRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
          "method" : "RefreshRetentionSubscription",
          "path" : "aos.hub.v1.CacheIntegrationService/RefreshRetentionSubscription",
-         "request" : "RefreshRetentionSubscriptionRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
          "service" : "CacheIntegrationService"
       },
@@ -1777,9 +2024,16 @@
          "service" : "CacheIntegrationService"
       },
       {
+         "method" : "PlanRunPopulation",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanRunPopulation",
+         "request" : "PlanRunPopulationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
          "method" : "RunPopulation",
          "path" : "aos.hub.v1.CacheIntegrationService/RunPopulation",
-         "request" : "RunPopulationRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
          "service" : "CacheIntegrationService"
       },
@@ -1791,87 +2045,129 @@
          "service" : "CacheIntegrationService"
       },
       {
+         "method" : "PlanRunCoverageValidation",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanRunCoverageValidation",
+         "request" : "PlanCoverageOperationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
          "method" : "RunCoverageValidation",
          "path" : "aos.hub.v1.CacheIntegrationService/RunCoverageValidation",
-         "request" : "GetPopulationTargetRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
+         "service" : "CacheIntegrationService"
+      },
+      {
+         "method" : "PlanRunCoverageRepair",
+         "path" : "aos.hub.v1.CacheIntegrationService/PlanRunCoverageRepair",
+         "request" : "PlanCoverageOperationRequest",
+         "response" : "TopologyPlanResponse",
          "service" : "CacheIntegrationService"
       },
       {
          "method" : "RunCoverageRepair",
          "path" : "aos.hub.v1.CacheIntegrationService/RunCoverageRepair",
-         "request" : "GetPopulationTargetRequest",
+         "request" : "ApplyTopologyPlanRequest",
          "response" : "OperationResponse",
          "service" : "CacheIntegrationService"
       },
       {
          "method" : "GetOperation",
-         "path" : "aos.hub.v1.OperationsService/GetOperation",
+         "path" : "aos.hub.v1.OperationService/GetOperation",
          "request" : "GetOperationRequest",
          "response" : "OperationDetailResponse",
-         "service" : "OperationsService"
+         "service" : "OperationService"
       },
       {
          "method" : "ListOperations",
-         "path" : "aos.hub.v1.OperationsService/ListOperations",
+         "path" : "aos.hub.v1.OperationService/ListOperations",
          "request" : "ListOperationsRequest",
          "response" : "ListOperationsResponse",
-         "service" : "OperationsService"
+         "service" : "OperationService"
       },
       {
          "method" : "WatchOperation",
-         "path" : "aos.hub.v1.OperationsService/WatchOperation",
+         "path" : "aos.hub.v1.OperationService/WatchOperation",
          "request" : "WatchOperationRequest",
          "response" : "WatchOperationResponse",
-         "service" : "OperationsService"
+         "service" : "OperationService"
       },
       {
          "method" : "CancelOperation",
-         "path" : "aos.hub.v1.OperationsService/CancelOperation",
+         "path" : "aos.hub.v1.OperationService/CancelOperation",
          "request" : "MutateOperationRequest",
          "response" : "OperationDetailResponse",
-         "service" : "OperationsService"
+         "service" : "OperationService"
       },
       {
          "method" : "RetryOperation",
-         "path" : "aos.hub.v1.OperationsService/RetryOperation",
+         "path" : "aos.hub.v1.OperationService/RetryOperation",
          "request" : "MutateOperationRequest",
          "response" : "OperationDetailResponse",
-         "service" : "OperationsService"
+         "service" : "OperationService"
       },
       {
-         "method" : "CreateServiceAccount",
-         "path" : "aos.hub.v1.IdentityService/CreateServiceAccount",
-         "request" : "CreateServiceAccountRequest",
-         "response" : "CreateServiceAccountResponse",
+         "method" : "PlanCreateAutomationPrincipal",
+         "path" : "aos.hub.v1.IdentityService/PlanCreateAutomationPrincipal",
+         "request" : "PlanCreateAutomationPrincipalRequest",
+         "response" : "TopologyPlanResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "GrantMembership",
-         "path" : "aos.hub.v1.IdentityService/GrantMembership",
-         "request" : "GrantMembershipRequest",
-         "response" : "GrantMembershipResponse",
+         "method" : "CreateAutomationPrincipal",
+         "path" : "aos.hub.v1.IdentityService/CreateAutomationPrincipal",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "AutomationPrincipalResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "RevokeMembership",
-         "path" : "aos.hub.v1.IdentityService/RevokeMembership",
-         "request" : "RevokeMembershipRequest",
-         "response" : "RevokeMembershipResponse",
+         "method" : "GetMembership",
+         "path" : "aos.hub.v1.IdentityService/GetMembership",
+         "request" : "GetMembershipRequest",
+         "response" : "MembershipResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "MintToken",
-         "path" : "aos.hub.v1.IdentityService/MintToken",
-         "request" : "MintTokenRequest",
-         "response" : "MintTokenResponse",
+         "method" : "PlanSetMembership",
+         "path" : "aos.hub.v1.IdentityService/PlanSetMembership",
+         "request" : "PlanSetMembershipRequest",
+         "response" : "TopologyPlanResponse",
          "service" : "IdentityService"
       },
       {
-         "method" : "RevokeToken",
-         "path" : "aos.hub.v1.IdentityService/RevokeToken",
-         "request" : "RevokeTokenRequest",
-         "response" : "RevokeTokenResponse",
+         "method" : "SetMembership",
+         "path" : "aos.hub.v1.IdentityService/SetMembership",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "MembershipResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanIssueRegistryToken",
+         "path" : "aos.hub.v1.IdentityService/PlanIssueRegistryToken",
+         "request" : "PlanIssueRegistryTokenRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "IssueRegistryToken",
+         "path" : "aos.hub.v1.IdentityService/IssueRegistryToken",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "RegistryTokenResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "PlanRetireRegistryToken",
+         "path" : "aos.hub.v1.IdentityService/PlanRetireRegistryToken",
+         "request" : "PlanRetireRegistryTokenRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "IdentityService"
+      },
+      {
+         "method" : "RetireRegistryToken",
+         "path" : "aos.hub.v1.IdentityService/RetireRegistryToken",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "RegistryTokenRetirementResponse",
          "service" : "IdentityService"
       },
       {
@@ -1903,10 +2199,11 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 265,
+   "rpc_count" : 307,
    "services" : [
       "RegistryService",
       "OrganizationService",
+      "SigningKeyService",
       "ProjectService",
       "StorageBindingService",
       "DomainService",
@@ -1925,7 +2222,13 @@
       "WebhookService",
       "BinaryCacheService",
       "CacheIntegrationService",
-      "OperationsService",
-      "IdentityService"
+      "OperationService",
+      "IdentityService",
+      "StorageBindingControllerService",
+      "NetworkBoundaryControllerService",
+      "DeliveryControllerService",
+      "RouteControllerService",
+      "TopologyControllerService",
+      "BinaryCacheUploadControllerService"
    ]
 }

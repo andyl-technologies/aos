@@ -2,12 +2,13 @@
 //!
 //! This uploads the dumb-HTTP git origin surface in producer-safe,
 //! *phase-major* order across all destinations: every
-//! [`StaticOriginClass::Immutable`] object/cache payload is uploaded to
-//! *every* destination first, and only then are
+//! [`StaticOriginClass::ImageDisk`] payload is uploaded to every destination
+//! first, followed by [`StaticOriginClass::Immutable`] Git/catalog payloads,
+//! then a [`StaticOriginClass::Receipt`] transaction marker, and only then are
 //! [`StaticOriginClass::Mutable`] pointers (`HEAD`, `info/refs`, channel
-//! partitions) uploaded — and only to the destinations whose immutable
-//! phase fully succeeded. A destination that failed the immutable phase
-//! is skipped in the mutable phase and left stale but consistent.
+//! partitions) uploaded. Mutable publication begins only when every required
+//! destination completed every payload and receipt phase; otherwise all
+//! destinations retain their prior pointers.
 //!
 //! The resulting invariant: any pointer visible on any mirror only
 //! references objects present on every mirror that completed the
@@ -17,11 +18,14 @@
 //!
 //! Within each phase the per-destination uploads run concurrently
 //! (`UPLOAD_CONCURRENCY` in flight), and an already-present immutable object
-//! is skipped (an existence check, unless `--no-skip`) so a re-publish only
-//! re-uploads what changed.
+//! Git immutables may be skipped by existence (unless `--no-skip`). Image and
+//! receipt objects are always PUT with their exact SHA-256 metadata so an
+//! existence-only answer can never advance the publication transaction.
 //!
-//! Every file is classified as [`StaticOriginClass::Immutable`]
-//! (content-addressed git objects and release packs) or
+//! Every file is classified as [`StaticOriginClass::ImageDisk`] (direct disk
+//! bytes), [`StaticOriginClass::Immutable`] (content-addressed Git objects,
+//! signed metadata, and release packs), [`StaticOriginClass::Receipt`] (the
+//! commit-scoped publication transaction marker), or
 //! [`StaticOriginClass::Mutable`] (refs, channel partitions, server-info
 //! metadata) and tagged with matching `Cache-Control` and `Content-Type`
 //! headers for CDN-fronted hosting. The static binary cache (narinfos, NARs,
@@ -36,6 +40,8 @@ use aos_cache::backend::{
 };
 use aos_core::output::Printer;
 use futures_util::stream::{StreamExt, TryStreamExt};
+use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 
 use crate::registry::objectstore;
 
@@ -46,12 +52,16 @@ const UPLOAD_CONCURRENCY: usize = 16;
 
 /// Mutability class of a static origin file.
 ///
-/// The `Ord` impl orders `Immutable` before `Mutable`, which is the safe
-/// upload order: payloads land before the pointers that reference them.
+/// The `Ord` impl encodes the safe transaction order: disk bytes, signed
+/// metadata, receipt, then mutable pointers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StaticOriginClass {
+    /// Content-addressed disk-image bytes, published before the signed catalog.
+    ImageDisk,
     /// Content-addressed payload (git objects and release packs).
     Immutable,
+    /// Durable marker proving both immutable phases completed for one commit.
+    Receipt,
     /// Pointer or metadata rewritten on publish (`HEAD`, `info/refs`,
     /// `objects/info/*`, channel partitions).
     Mutable,
@@ -70,6 +80,12 @@ pub struct StaticOriginFile {
     pub content_type: &'static str,
     /// `Cache-Control` header to serve the file with.
     pub cache_control: &'static str,
+    /// Attachment header persisted by CDN-capable object stores.
+    pub content_disposition: Option<String>,
+    /// Lowercase SHA-256 persisted as object integrity metadata.
+    pub sha256: Option<String>,
+    /// Exact expected byte length for content-bound files.
+    pub byte_size: Option<u64>,
 }
 
 /// Summary of a completed static origin upload.
@@ -87,9 +103,11 @@ pub struct StaticOriginUploadReport {
 /// Collect the git-origin file set in safe upload order.
 ///
 /// Walks the registry's git directory (`HEAD`, `info/refs`, `objects/`,
-/// `releases/`, `channels/`), classifies each file, and sorts immutable-first
-/// then by path. Missing optional directories are skipped. The static binary
-/// cache is uploaded separately (see the module docs).
+/// `releases/`, `channels/`) plus its descriptor-pinned
+/// `aos-image-staging/images/` area, classifies each file, and sorts
+/// phase-first then by path. Disk images never enter Git objects or packs.
+/// Missing optional directories are skipped. The static binary cache is
+/// uploaded separately (see the module docs).
 ///
 /// # Errors
 ///
@@ -110,9 +128,51 @@ pub fn collect_static_origin_files(registry_dir: &Path) -> Result<Vec<StaticOrig
     push_dir(&mut files, &git_dir, "releases", |_| {
         Ok(StaticOriginClass::Immutable)
     })?;
+    push_dir(
+        &mut files,
+        &git_dir.join("aos-image-staging"),
+        "images",
+        |path| {
+            if path.ends_with("image-info.json") {
+                Ok(StaticOriginClass::Immutable)
+            } else {
+                Ok(StaticOriginClass::ImageDisk)
+            }
+        },
+    )?;
     push_dir(&mut files, &git_dir, "channels", |_| {
         Ok(StaticOriginClass::Mutable)
     })?;
+    push_dir(
+        &mut files,
+        &git_dir.join("aos-static-origin"),
+        "publication-receipts",
+        |_| Ok(StaticOriginClass::Receipt),
+    )?;
+    let repository = git2::Repository::open(registry_dir)
+        .or_else(|_| git2::Repository::open_bare(&git_dir))
+        .context("opening static origin to resolve its publication commit")?;
+    let commit = repository
+        .head()
+        .context("reading static origin HEAD")?
+        .peel_to_commit()
+        .context("resolving static origin publication commit")?
+        .id();
+    let required = format!("publication-receipts/{commit}.json");
+    if let Some(receipt) = files
+        .iter()
+        .find(|file| file.class == StaticOriginClass::Receipt && file.relative_path == required)
+        .cloned()
+    {
+        add_receipt_image_objects(&mut files, &git_dir, commit, &receipt)?;
+    } else if files.iter().any(|file| {
+        matches!(
+            file.class,
+            StaticOriginClass::ImageDisk | StaticOriginClass::Receipt
+        )
+    }) {
+        bail!("published image catalog has no durable receipt for current commit {commit}");
+    }
 
     files.sort_by(|a, b| {
         a.class
@@ -122,18 +182,100 @@ pub fn collect_static_origin_files(registry_dir: &Path) -> Result<Vec<StaticOrig
     Ok(files)
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ImagePublicationReceipt {
+    schema_version: u32,
+    commit: String,
+    registry: String,
+    catalog_digest: String,
+    objects: Vec<ImagePublicationReceiptObject>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ImagePublicationReceiptObject {
+    key: String,
+    role: String,
+    byte_size: u64,
+    sha256: String,
+}
+
+fn add_receipt_image_objects(
+    files: &mut Vec<StaticOriginFile>,
+    git_dir: &Path,
+    commit: git2::Oid,
+    receipt_file: &StaticOriginFile,
+) -> Result<()> {
+    let bytes =
+        std::fs::read(&receipt_file.source).context("reading current image publication receipt")?;
+    if bytes.len() > 1024 * 1024 {
+        bail!("image publication receipt exceeds the 1 MiB producer limit");
+    }
+    let receipt: ImagePublicationReceipt =
+        serde_json::from_slice(&bytes).context("parsing current image publication receipt")?;
+    if receipt.schema_version != 1 || receipt.commit != commit.to_string() {
+        bail!("image publication receipt does not match current commit");
+    }
+    let mut digest_objects = Vec::with_capacity(receipt.objects.len());
+    let mut seen = std::collections::BTreeSet::new();
+    for object in &receipt.objects {
+        if object.byte_size == 0 || !seen.insert(object.key.clone()) {
+            bail!("image publication receipt contains an invalid or repeated object");
+        }
+        let path_digest = image_sha256(&object.key)?
+            .context("image publication receipt contains a non-canonical object key")?;
+        if path_digest != object.sha256 {
+            bail!("image publication receipt object key and SHA-256 disagree");
+        }
+        let class = match object.role.as_str() {
+            "disk" => StaticOriginClass::ImageDisk,
+            "image-info" => StaticOriginClass::Immutable,
+            _ => bail!("image publication receipt contains an unknown object role"),
+        };
+        digest_objects.push((
+            object.key.as_str(),
+            object.role.as_str(),
+            object.byte_size,
+            object.sha256.as_str(),
+        ));
+        if let Some(file) = files
+            .iter_mut()
+            .find(|file| file.relative_path == object.key)
+        {
+            file.class = class;
+            file.sha256 = Some(object.sha256.clone());
+            file.byte_size = Some(object.byte_size);
+        } else {
+            files.push(StaticOriginFile {
+                relative_path: object.key.clone(),
+                source: git_dir.join("aos-image-staging").join(&object.key),
+                class,
+                content_type: content_type(&object.key),
+                cache_control: cache_control(class),
+                content_disposition: image_content_disposition(&object.key)?,
+                sha256: Some(object.sha256.clone()),
+                byte_size: Some(object.byte_size),
+            });
+        }
+    }
+    let digest =
+        aos_registry_surface::manifest::image_catalog_digest(&receipt.registry, digest_objects);
+    if digest != receipt.catalog_digest {
+        bail!("image publication receipt catalog digest is invalid");
+    }
+    Ok(())
+}
+
 /// Upload the static origin surface to every destination URL in
 /// phase-major order.
 ///
-/// The immutable phase runs first: every [`StaticOriginClass::Immutable`]
-/// file is uploaded to *every* destination before any mutable pointer is
-/// uploaded anywhere. The mutable phase then uploads
-/// [`StaticOriginClass::Mutable`] files only to the destinations whose
-/// immutable phase fully succeeded; a destination that failed the
-/// immutable phase is skipped with a warning and left stale but
-/// consistent. This preserves the cross-mirror invariant: any pointer
-/// visible on any mirror only references objects present on every mirror
-/// that completed the immutable phase.
+/// Disk bytes are uploaded to every destination first. Git objects, the signed
+/// catalog, and per-format metadata follow only on destinations whose disk
+/// phase succeeded. A durable receipt follows both payload phases. Mutable
+/// refs/channels move last only after every required destination has accepted
+/// every receipt. A failed destination leaves all destinations' pointers stale
+/// but consistent; retrying is idempotent.
 ///
 /// Destinations are attempted independently: a failure on one does not
 /// stop uploads to the others.
@@ -177,8 +319,15 @@ pub async fn upload_static_origin_to_all(
         }
     }
 
-    let (phase_failures, skipped_files) =
-        upload_phase_major(&files, &destinations, no_skip, printer).await;
+    let all_destinations_connected = failures.is_empty();
+    let (phase_failures, skipped_files) = upload_phase_major(
+        &files,
+        &destinations,
+        no_skip,
+        all_destinations_connected,
+        printer,
+    )
+    .await;
     failures.extend(phase_failures);
 
     if !failures.is_empty() {
@@ -198,13 +347,15 @@ pub async fn upload_static_origin_to_all(
 
 /// Upload `files` to already-connected destinations in phase-major order.
 ///
-/// Phase 1 uploads every [`StaticOriginClass::Immutable`] file to every
-/// destination; phase 2 uploads [`StaticOriginClass::Mutable`] files only to
-/// the destinations whose immutable phase fully succeeded (a phase-1 failure
-/// leaves that mirror stale but consistent, skipped with a warning). Within a
-/// phase, each destination's files upload concurrently (`UPLOAD_CONCURRENCY` in
-/// flight) and an already-present immutable object is skipped (unless
-/// `no_skip`).
+/// Phase 1 uploads every [`StaticOriginClass::ImageDisk`] file to every
+/// destination. Phase 2 uploads Git/catalog [`StaticOriginClass::Immutable`]
+/// files only where the disk phase succeeded. Phase 3 uploads the durable
+/// [`StaticOriginClass::Receipt`] only where both payload phases succeeded.
+/// Phase 4 uploads [`StaticOriginClass::Mutable`] pointers only where the
+/// receipt succeeded. Within a phase, each destination's files upload concurrently
+/// (`UPLOAD_CONCURRENCY` in flight), and an already-present immutable object is
+/// skipped unless `no_skip` is set. Exact image and receipt objects are never
+/// skipped by existence alone.
 ///
 /// Returns the per-destination failure messages (empty when every destination
 /// completed both phases) and the total number of skipped (already-present)
@@ -213,13 +364,36 @@ async fn upload_phase_major(
     files: &[StaticOriginFile],
     destinations: &[(&str, Box<dyn CacheBackend>)],
     no_skip: bool,
+    all_destinations_ready: bool,
     printer: &Printer,
 ) -> (Vec<String>, usize) {
     let mut failures = Vec::new();
     let mut skipped_files = 0usize;
-    let mut immutable_ok = Vec::with_capacity(destinations.len());
+    let mut immutable_ok = vec![true; destinations.len()];
 
-    for (upload_url, backend) in destinations {
+    for (index, (upload_url, backend)) in destinations.iter().enumerate() {
+        match upload_class(
+            backend.as_ref(),
+            files,
+            StaticOriginClass::ImageDisk,
+            no_skip,
+        )
+        .await
+        {
+            Ok(skipped) => {
+                skipped_files += skipped;
+            }
+            Err(err) => {
+                failures.push(format!("{upload_url}: {err:#}"));
+                immutable_ok[index] = false;
+            }
+        }
+    }
+
+    for (index, (upload_url, backend)) in destinations.iter().enumerate() {
+        if !immutable_ok[index] {
+            continue;
+        }
         match upload_class(
             backend.as_ref(),
             files,
@@ -228,15 +402,34 @@ async fn upload_phase_major(
         )
         .await
         {
-            Ok(skipped) => {
-                skipped_files += skipped;
-                immutable_ok.push(true);
-            }
+            Ok(skipped) => skipped_files += skipped,
             Err(err) => {
                 failures.push(format!("{upload_url}: {err:#}"));
-                immutable_ok.push(false);
+                immutable_ok[index] = false;
             }
         }
+    }
+
+    for (index, (upload_url, backend)) in destinations.iter().enumerate() {
+        if !immutable_ok[index] {
+            continue;
+        }
+        match upload_class(backend.as_ref(), files, StaticOriginClass::Receipt, no_skip).await {
+            Ok(skipped) => skipped_files += skipped,
+            Err(err) => {
+                failures.push(format!("{upload_url}: {err:#}"));
+                immutable_ok[index] = false;
+            }
+        }
+    }
+
+    if !all_destinations_ready || immutable_ok.iter().any(|ready| !ready) {
+        for (upload_url, _) in destinations {
+            printer.warning(&format!(
+                "Skipping mutable pointer upload to {upload_url}: not every required destination completed the receipt phase"
+            ));
+        }
+        return (failures, skipped_files);
     }
 
     for ((upload_url, backend), ok) in destinations.iter().zip(immutable_ok) {
@@ -261,9 +454,9 @@ async fn upload_phase_major(
 /// Upload every file of one mutability class to a single backend, concurrently
 /// (`UPLOAD_CONCURRENCY` in flight).
 ///
-/// An already-present immutable object is skipped via an existence check
-/// (unless `no_skip`). Returns the count of skipped (already-present) files;
-/// errors on the first failed upload.
+/// An already-present Git immutable may be skipped via an existence check
+/// (unless `no_skip`). Exact image and receipt objects are always uploaded.
+/// Returns the count of skipped files; errors on the first failed upload.
 async fn upload_class(
     backend: &dyn CacheBackend,
     files: &[StaticOriginFile],
@@ -272,8 +465,41 @@ async fn upload_class(
 ) -> Result<usize> {
     let results = futures_util::stream::iter(files.iter().filter(|file| file.class == class).map(
         |file| async move {
+            if file.relative_path.starts_with("images/") {
+                let expected_sha256 = file
+                    .sha256
+                    .as_deref()
+                    .context("image delivery object has no signed SHA-256")?;
+                let expected_size = file
+                    .byte_size
+                    .context("image delivery object has no signed byte size")?;
+                if backend
+                    .static_file_identity(&file.relative_path)
+                    .await?
+                    .is_some_and(|identity| {
+                        identity.byte_size == expected_size && identity.sha256 == expected_sha256
+                    })
+                {
+                    return Ok::<bool, anyhow::Error>(true);
+                }
+                let snapshot =
+                    snapshot_local_delivery_object(file, expected_size, expected_sha256)?;
+                backend
+                    .put_static_file(
+                        &file.relative_path,
+                        snapshot.path(),
+                        Some(file.content_type),
+                        Some(file.cache_control),
+                        file.content_disposition.as_deref(),
+                        Some(expected_sha256),
+                    )
+                    .await
+                    .with_context(|| format!("uploading {}", file.relative_path))?;
+                return Ok::<bool, anyhow::Error>(false);
+            }
             if !no_skip
                 && file.class == StaticOriginClass::Immutable
+                && file.sha256.is_none()
                 && backend.exists(&file.relative_path).await?
             {
                 return Ok::<bool, anyhow::Error>(true);
@@ -284,6 +510,8 @@ async fn upload_class(
                     &file.source,
                     Some(file.content_type),
                     Some(file.cache_control),
+                    file.content_disposition.as_deref(),
+                    file.sha256.as_deref(),
                 )
                 .await
                 .with_context(|| format!("uploading {}", file.relative_path))?;
@@ -296,13 +524,85 @@ async fn upload_class(
     Ok(results.into_iter().filter(|skipped| *skipped).count())
 }
 
+fn snapshot_local_delivery_object(
+    file: &StaticOriginFile,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<tempfile::NamedTempFile> {
+    let before = std::fs::symlink_metadata(&file.source)
+        .with_context(|| format!("stat staged image object {}", file.source.display()))?;
+    if before.file_type().is_symlink() || !before.is_file() || before.len() != expected_size {
+        bail!(
+            "staged image object '{}' is absent or does not match signed size",
+            file.relative_path
+        );
+    }
+    let mut source = std::fs::File::open(&file.source)
+        .with_context(|| format!("opening staged image object {}", file.source.display()))?;
+    let opened = source
+        .metadata()
+        .with_context(|| format!("stat opened staged image object {}", file.source.display()))?;
+    if opened.len() != before.len() || opened.modified().ok() != before.modified().ok() {
+        bail!(
+            "staged image object '{}' changed while it was opened",
+            file.relative_path
+        );
+    }
+    let mut snapshot = tempfile::NamedTempFile::new()
+        .context("creating descriptor-stable image upload snapshot")?;
+    let mut hasher = Sha256::new();
+    let mut observed = 0_u64;
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let count = std::io::Read::read(&mut source, &mut buffer)
+            .with_context(|| format!("reading staged image object {}", file.source.display()))?;
+        if count == 0 {
+            break;
+        }
+        observed = observed
+            .checked_add(count as u64)
+            .context("staged image object size overflowed")?;
+        if observed > expected_size {
+            bail!(
+                "staged image object '{}' exceeded signed size",
+                file.relative_path
+            );
+        }
+        hasher.update(&buffer[..count]);
+        std::io::Write::write_all(&mut snapshot, &buffer[..count])
+            .context("writing descriptor-stable image upload snapshot")?;
+    }
+    let after = source
+        .metadata()
+        .with_context(|| format!("restat staged image object {}", file.source.display()))?;
+    if observed != expected_size
+        || after.len() != before.len()
+        || after.modified().ok() != before.modified().ok()
+        || hex::encode(hasher.finalize()) != expected_sha256
+    {
+        bail!(
+            "staged image object '{}' changed or does not match signed identity",
+            file.relative_path
+        );
+    }
+    std::io::Write::flush(&mut snapshot)
+        .context("flushing descriptor-stable image upload snapshot")?;
+    Ok(snapshot)
+}
+
 /// Sum the on-disk size of every collected file.
 fn total_bytes(files: &[StaticOriginFile]) -> Result<u64> {
     let mut bytes = 0u64;
     for file in files {
-        bytes += std::fs::metadata(&file.source)
-            .with_context(|| format!("stat {}", file.source.display()))?
-            .len();
+        bytes += match std::fs::metadata(&file.source) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => file
+                .byte_size
+                .context("missing static-origin source has no signed byte size")?,
+            Err(error) => {
+                return Err(error).with_context(|| format!("stat {}", file.source.display()));
+            }
+        };
     }
     Ok(bytes)
 }
@@ -359,6 +659,9 @@ where
             files.push(StaticOriginFile {
                 content_type: content_type(&relative_path),
                 cache_control: cache_control(class),
+                content_disposition: image_content_disposition(&relative_path)?,
+                sha256: static_sha256(&relative_path, &path)?,
+                byte_size: Some(std::fs::metadata(&path)?.len()),
                 relative_path,
                 source: path,
                 class,
@@ -379,6 +682,9 @@ fn push_source(
     files.push(StaticOriginFile {
         content_type: content_type(&relative_path),
         cache_control: cache_control(class),
+        content_disposition: image_content_disposition(&relative_path)?,
+        sha256: static_sha256(&relative_path, &source)?,
+        byte_size: Some(std::fs::metadata(&source)?.len()),
         relative_path,
         source,
         class,
@@ -423,7 +729,9 @@ fn relative_path(root: &Path, path: &Path) -> Result<String> {
 /// Map a mutability class to its `Cache-Control` header value.
 fn cache_control(class: StaticOriginClass) -> &'static str {
     match class {
-        StaticOriginClass::Immutable => IMMUTABLE_CACHE_CONTROL,
+        StaticOriginClass::ImageDisk
+        | StaticOriginClass::Immutable
+        | StaticOriginClass::Receipt => IMMUTABLE_CACHE_CONTROL,
         StaticOriginClass::Mutable => MUTABLE_CACHE_CONTROL,
     }
 }
@@ -449,6 +757,19 @@ fn content_type(relative_path: &str) -> &'static str {
         "text/javascript"
     } else if relative_path.ends_with(".css") {
         "text/css"
+    } else if relative_path.starts_with("images/") && relative_path.ends_with("image-info.json") {
+        "application/vnd.aos.image-info+json"
+    } else if relative_path.starts_with("images/") && relative_path.ends_with(".img") {
+        "application/vnd.aos.disk-image.raw"
+    } else if relative_path.starts_with("images/") && relative_path.ends_with(".qcow2") {
+        "application/vnd.aos.disk-image.qcow2"
+    } else if relative_path.starts_with("images/") && relative_path.ends_with(".vmdk") {
+        "application/x-vmdk"
+    } else if relative_path.starts_with("images/") && relative_path.ends_with(".vhd") {
+        "application/vnd.aos.disk-image.vhd"
+    } else if relative_path.starts_with("publication-receipts/") && relative_path.ends_with(".json")
+    {
+        "application/vnd.aos.image-publication-receipt+json"
     } else if relative_path.ends_with(".json") {
         "application/json"
     } else {
@@ -456,9 +777,91 @@ fn content_type(relative_path: &str) -> &'static str {
     }
 }
 
+fn image_sha256(relative_path: &str) -> Result<Option<String>> {
+    let Some(rest) = relative_path.strip_prefix("images/sha256/") else {
+        return Ok(None);
+    };
+    let parts = rest.split('/').collect::<Vec<_>>();
+    let digest = match parts.as_slice() {
+        [image, _filename] => *image,
+        [_image, "metadata", info, "image-info.json"] => *info,
+        _ => bail!("non-canonical immutable image object path '{relative_path}'"),
+    };
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("invalid SHA-256 in immutable image object path '{relative_path}'");
+    }
+    Ok(Some(digest.to_string()))
+}
+
+fn static_sha256(relative_path: &str, source: &Path) -> Result<Option<String>> {
+    if let Some(digest) = image_sha256(relative_path)? {
+        return Ok(Some(digest));
+    }
+    if relative_path.starts_with("publication-receipts/") {
+        let bytes = std::fs::read(source)
+            .with_context(|| format!("reading publication receipt {}", source.display()))?;
+        return Ok(Some(hex::encode(Sha256::digest(bytes))));
+    }
+    Ok(None)
+}
+
+fn image_content_disposition(relative_path: &str) -> Result<Option<String>> {
+    if !relative_path.starts_with("images/") {
+        return Ok(None);
+    }
+    let filename = relative_path
+        .rsplit('/')
+        .next()
+        .context("image object path has no filename")?;
+    if filename.is_empty()
+        || !filename.is_ascii()
+        || !filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        || filename.contains("..")
+    {
+        bail!("unsafe immutable image filename '{filename}'");
+    }
+    Ok(Some(format!("attachment; filename=\"{filename}\"")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_upload_snapshot_rejects_same_size_corruption_and_pins_verified_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("aos-test.img");
+        let good = b"signed-image";
+        let corrupt = b"evil--image-";
+        assert_eq!(good.len(), corrupt.len());
+        std::fs::write(&source, good).unwrap();
+        let expected_sha256 = hex::encode(Sha256::digest(good));
+        let file = StaticOriginFile {
+            relative_path: format!("images/sha256/{expected_sha256}/aos-test.img"),
+            source: source.clone(),
+            class: StaticOriginClass::ImageDisk,
+            content_type: "application/vnd.aos.disk-image.raw",
+            cache_control: IMMUTABLE_CACHE_CONTROL,
+            content_disposition: Some("attachment; filename=\"aos-test.img\"".into()),
+            sha256: Some(expected_sha256.clone()),
+            byte_size: Some(good.len() as u64),
+        };
+
+        let snapshot =
+            snapshot_local_delivery_object(&file, good.len() as u64, &expected_sha256).unwrap();
+        std::fs::write(&source, corrupt).unwrap();
+        assert_eq!(std::fs::read(snapshot.path()).unwrap(), good);
+        assert!(
+            snapshot_local_delivery_object(&file, good.len() as u64, &expected_sha256).is_err(),
+            "same-size source corruption must not satisfy the signed digest"
+        );
+    }
 
     #[test]
     fn static_origin_files_are_ordered_immutable_before_mutable() {
@@ -477,6 +880,20 @@ mod tests {
             "releases/1/0/0/objects/pack/pack-demo.pack",
             StaticOriginClass::Immutable
         )));
+        let disk_path = files
+            .iter()
+            .find(|file| file.class == StaticOriginClass::ImageDisk)
+            .unwrap()
+            .relative_path
+            .clone();
+        assert!(paths.contains(&(disk_path.as_str(), StaticOriginClass::ImageDisk)));
+        let receipt_path = files
+            .iter()
+            .find(|file| file.class == StaticOriginClass::Receipt)
+            .unwrap()
+            .relative_path
+            .clone();
+        assert!(paths.contains(&(receipt_path.as_str(), StaticOriginClass::Receipt)));
         assert!(paths.contains(&("HEAD", StaticOriginClass::Mutable)));
         assert!(paths.contains(&("info/refs", StaticOriginClass::Mutable)));
         assert!(paths.contains(&("objects/info/alternates", StaticOriginClass::Mutable)));
@@ -489,6 +906,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {needle}"))
         };
         assert!(pos("objects/aa/object") < pos("HEAD"));
+        assert!(pos(&disk_path) < pos("HEAD"));
+        assert!(pos(&receipt_path) < pos("HEAD"));
         assert!(pos("releases/1/0/0/objects/pack/pack-demo.pack") < pos("objects/info/alternates"));
     }
 
@@ -519,11 +938,78 @@ mod tests {
             "application/octet-stream",
             IMMUTABLE_CACHE_CONTROL,
         );
+        let disk_path = files
+            .iter()
+            .find(|file| file.class == StaticOriginClass::ImageDisk)
+            .unwrap()
+            .relative_path
+            .clone();
+        let disk = files
+            .iter()
+            .find(|file| file.relative_path == disk_path)
+            .unwrap();
+        assert_eq!(disk.content_type, "application/vnd.aos.disk-image.qcow2");
+        assert_eq!(disk.cache_control, IMMUTABLE_CACHE_CONTROL);
+        assert_eq!(disk.sha256.as_deref().map(str::len), Some(64));
+        assert_eq!(
+            disk.content_disposition.as_deref(),
+            Some("attachment; filename=\"aos-test.qcow2\"")
+        );
         assert_static_metadata(
             &files,
             "releases/1/0/0/objects/pack/pack-demo.pack",
             "application/x-git-packed-objects",
             IMMUTABLE_CACHE_CONTROL,
+        );
+        assert_static_metadata(
+            &files,
+            &files
+                .iter()
+                .find(|file| file.class == StaticOriginClass::Receipt)
+                .unwrap()
+                .relative_path,
+            "application/vnd.aos.image-publication-receipt+json",
+            IMMUTABLE_CACHE_CONTROL,
+        );
+        let receipt = files
+            .iter()
+            .find(|file| file.class == StaticOriginClass::Receipt)
+            .unwrap();
+        assert_eq!(receipt.sha256.as_deref().map(str::len), Some(64));
+    }
+
+    #[test]
+    fn staged_image_disks_require_a_publication_receipt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        std::fs::remove_dir_all(root.join("aos-static-origin/publication-receipts")).unwrap();
+
+        let error = collect_static_origin_files(&root).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("no durable receipt for current commit"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn receipt_history_requires_a_receipt_for_current_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        advance_fixture_commit(&root, b"advanced without a receipt");
+        let repository = git2::Repository::open_bare(&root).unwrap();
+        let commit = repository.head().unwrap().peel_to_commit().unwrap().id();
+        std::fs::remove_file(root.join(format!(
+            "aos-static-origin/publication-receipts/{commit}.json"
+        )))
+        .unwrap();
+        std::fs::remove_dir_all(root.join("aos-image-staging")).unwrap();
+
+        let error = collect_static_origin_files(&root).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("no durable receipt for current commit"),
+            "{error:#}"
         );
     }
 
@@ -563,6 +1049,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn later_commit_uses_exact_remote_images_without_local_staging() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        let dest = tmp.path().join("dest");
+        let upload_urls = vec![format!("file://{}", dest.display())];
+        let printer = Printer::new(0, true, false);
+        upload_static_origin_to_all(
+            &root,
+            &upload_urls,
+            &AuthOptions::default(),
+            false,
+            &printer,
+        )
+        .await
+        .unwrap();
+
+        std::fs::remove_dir_all(root.join("aos-image-staging")).unwrap();
+        advance_fixture_commit(&root, b"metadata-two");
+        upload_static_origin_to_all(
+            &root,
+            &upload_urls,
+            &AuthOptions::default(),
+            false,
+            &printer,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read(dest.join("channels/stable/00")).unwrap(),
+            b"metadata-two"
+        );
+
+        let disk = collect_static_origin_files(&root)
+            .unwrap()
+            .into_iter()
+            .find(|file| file.class == StaticOriginClass::ImageDisk)
+            .unwrap();
+        std::fs::write(dest.join(&disk.relative_path), b"wrong remote").unwrap();
+        advance_fixture_commit(&root, b"metadata-three");
+        let error = upload_static_origin_to_all(
+            &root,
+            &upload_urls,
+            &AuthOptions::default(),
+            false,
+            &printer,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("staged image object"),
+            "{error:#}"
+        );
+        assert_eq!(
+            std::fs::read(dest.join("channels/stable/00")).unwrap(),
+            b"metadata-two",
+            "mismatched remote identity must keep mutable pointers stale"
+        );
+    }
+
+    #[tokio::test]
     async fn static_origin_upload_to_all_reports_partial_failures() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("origin.git");
@@ -590,10 +1137,7 @@ mod tests {
         assert!(message.contains("static origin upload failed for 1/3 destination"));
         assert!(message.contains("not-a-url"));
         for dest in [first.path(), second.path()] {
-            assert_eq!(
-                std::fs::read(dest.join("HEAD")).unwrap(),
-                b"ref: refs/heads/stable\n"
-            );
+            assert!(!dest.join("HEAD").exists());
             assert_eq!(
                 std::fs::read(dest.join("objects/aa/object")).unwrap(),
                 b"object"
@@ -615,7 +1159,8 @@ mod tests {
             ("dest-b", Box::new(RecordingBackend::new("dest-b", &log))),
         ];
 
-        let (failures, _skipped) = upload_phase_major(&files, &destinations, false, &printer).await;
+        let (failures, _skipped) =
+            upload_phase_major(&files, &destinations, false, true, &printer).await;
         assert!(failures.is_empty(), "{failures:?}");
 
         let class_of = |path: &str| {
@@ -628,7 +1173,7 @@ mod tests {
         let events = log.lock().unwrap();
         let immutable_count = files
             .iter()
-            .filter(|file| file.class == StaticOriginClass::Immutable)
+            .filter(|file| file.class != StaticOriginClass::Mutable)
             .count();
         assert_eq!(events.len(), files.len() * 2);
 
@@ -639,6 +1184,24 @@ mod tests {
             .position(|(_, path)| class_of(path) == StaticOriginClass::Mutable)
             .unwrap();
         assert_eq!(first_mutable, immutable_count * 2);
+        let image_disk_count = files
+            .iter()
+            .filter(|file| file.class == StaticOriginClass::ImageDisk)
+            .count();
+        let first_catalog = events
+            .iter()
+            .position(|(_, path)| class_of(path) == StaticOriginClass::Immutable)
+            .unwrap();
+        assert_eq!(first_catalog, image_disk_count * 2);
+        let catalog_count = files
+            .iter()
+            .filter(|file| file.class == StaticOriginClass::Immutable)
+            .count();
+        let first_receipt = events
+            .iter()
+            .position(|(_, path)| class_of(path) == StaticOriginClass::Receipt)
+            .unwrap();
+        assert_eq!(first_receipt, (image_disk_count + catalog_count) * 2);
         for dest in ["dest-a", "dest-b"] {
             assert_eq!(
                 events[..first_mutable]
@@ -668,7 +1231,8 @@ mod tests {
             ),
         ];
 
-        let (failures, _skipped) = upload_phase_major(&files, &destinations, false, &printer).await;
+        let (failures, _skipped) =
+            upload_phase_major(&files, &destinations, false, true, &printer).await;
         assert_eq!(failures.len(), 1);
         assert!(failures[0].contains("broken"), "{failures:?}");
         assert!(failures[0].contains("objects/aa/object"), "{failures:?}");
@@ -681,19 +1245,64 @@ mod tests {
                 .unwrap()
                 .class
         };
-        // The failing destination must receive no mutable pointers: it is
-        // left stale but consistent.
+        // A failure at any required destination keeps mutable pointers stale
+        // everywhere, so no placement can discover a partially replicated
+        // image release.
         assert!(
             events
                 .iter()
-                .filter(|(name, _)| name == "broken")
-                .all(|(_, path)| class_of(path) == StaticOriginClass::Immutable),
-            "broken destination must not receive mutable files: {events:?}"
+                .all(|(_, path)| class_of(path) != StaticOriginClass::Mutable),
+            "no destination may receive mutable files: {events:?}"
         );
-        // The healthy destination completes both phases in full.
+        let immutable_count = files
+            .iter()
+            .filter(|file| file.class != StaticOriginClass::Mutable)
+            .count();
         assert_eq!(
             events.iter().filter(|(name, _)| name == "healthy").count(),
-            files.len()
+            immutable_count
+        );
+    }
+
+    #[tokio::test]
+    async fn destination_failing_receipt_phase_keeps_all_refs_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("origin.git");
+        write_fixture_origin(&root);
+        let printer = Printer::new(0, true, false);
+        let files = collect_static_origin_files(&root).unwrap();
+        let receipt = files
+            .iter()
+            .find(|file| file.class == StaticOriginClass::Receipt)
+            .unwrap()
+            .relative_path
+            .clone();
+        let log = UploadLog::default();
+        let destinations: Vec<(&str, Box<dyn CacheBackend>)> = vec![
+            ("healthy", Box::new(RecordingBackend::new("healthy", &log))),
+            (
+                "broken",
+                Box::new(RecordingBackend::new("broken", &log).failing_on(&receipt)),
+            ),
+        ];
+
+        let (failures, _skipped) =
+            upload_phase_major(&files, &destinations, false, true, &printer).await;
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains(&receipt), "{failures:?}");
+        let events = log.lock().unwrap();
+        let class_of = |path: &str| {
+            files
+                .iter()
+                .find(|file| file.relative_path == path)
+                .unwrap()
+                .class
+        };
+        assert!(
+            events
+                .iter()
+                .all(|(_, path)| class_of(path) != StaticOriginClass::Mutable),
+            "receipt failure must keep every destination's refs stale: {events:?}"
         );
     }
 
@@ -715,7 +1324,7 @@ mod tests {
     struct RecordingBackend {
         name: &'static str,
         log: UploadLog,
-        fail_on: Option<&'static str>,
+        fail_on: Option<String>,
     }
 
     impl RecordingBackend {
@@ -727,8 +1336,8 @@ mod tests {
             }
         }
 
-        fn failing_on(mut self, relative_path: &'static str) -> Self {
-            self.fail_on = Some(relative_path);
+        fn failing_on(mut self, relative_path: &str) -> Self {
+            self.fail_on = Some(relative_path.to_string());
             self
         }
     }
@@ -780,8 +1389,10 @@ mod tests {
             _source: &std::path::Path,
             _content_type: Option<&str>,
             _cache_control: Option<&str>,
+            _content_disposition: Option<&str>,
+            _sha256: Option<&str>,
         ) -> Result<()> {
-            if self.fail_on == Some(relative_path) {
+            if self.fail_on.as_deref() == Some(relative_path) {
                 bail!("injected failure uploading {relative_path}");
             }
             self.log
@@ -793,12 +1404,35 @@ mod tests {
     }
 
     fn write_fixture_origin(root: &Path) {
+        let repository = git2::Repository::init_bare(root).unwrap();
+        let tree_oid = repository.treebuilder(None).unwrap().write().unwrap();
+        let tree = repository.find_tree(tree_oid).unwrap();
+        let signature = git2::Signature::now("AOS Test", "aos@example.invalid").unwrap();
+        let commit = repository
+            .commit(
+                Some("refs/heads/stable"),
+                &signature,
+                &signature,
+                "fixture",
+                &tree,
+                &[],
+            )
+            .unwrap();
+        repository.set_head("refs/heads/stable").unwrap();
         std::fs::create_dir_all(root.join("info")).unwrap();
         std::fs::create_dir_all(root.join("objects/aa")).unwrap();
         std::fs::create_dir_all(root.join("objects/info")).unwrap();
         std::fs::create_dir_all(root.join("channels/stable")).unwrap();
         std::fs::create_dir_all(root.join("releases/1/0/0/objects/pack")).unwrap();
-        std::fs::write(root.join("HEAD"), b"ref: refs/heads/stable\n").unwrap();
+        std::fs::create_dir_all(root.join("aos-static-origin/publication-receipts")).unwrap();
+        let disk_bytes = b"qcow2 bytes";
+        let info_bytes = b"{}";
+        let image_sha = hex::encode(Sha256::digest(disk_bytes));
+        let info_sha = hex::encode(Sha256::digest(info_bytes));
+        std::fs::create_dir_all(root.join(format!(
+            "aos-image-staging/images/sha256/{image_sha}/metadata/{info_sha}"
+        )))
+        .unwrap();
         std::fs::write(root.join("info/refs"), b"refs\n").unwrap();
         std::fs::write(root.join("objects/aa/object"), b"object").unwrap();
         std::fs::write(
@@ -812,6 +1446,96 @@ mod tests {
             b"pack",
         )
         .unwrap();
+        std::fs::write(
+            root.join(format!(
+                "aos-image-staging/images/sha256/{image_sha}/aos-test.qcow2"
+            )),
+            disk_bytes,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(format!(
+                "aos-image-staging/images/sha256/{image_sha}/metadata/{info_sha}/image-info.json"
+            )),
+            info_bytes,
+        )
+        .unwrap();
+        let disk_key = format!("images/sha256/{image_sha}/aos-test.qcow2");
+        let info_key = format!("images/sha256/{image_sha}/metadata/{info_sha}/image-info.json");
+        let objects = serde_json::json!([
+            {
+                "key": disk_key.as_str(),
+                "role": "disk",
+                "byteSize": disk_bytes.len(),
+                "sha256": image_sha.as_str(),
+            },
+            {
+                "key": info_key.as_str(),
+                "role": "image-info",
+                "byteSize": info_bytes.len(),
+                "sha256": info_sha.as_str(),
+            }
+        ]);
+        let digest = aos_registry_surface::manifest::image_catalog_digest(
+            "fixture",
+            [
+                (
+                    disk_key.as_str(),
+                    "disk",
+                    disk_bytes.len() as u64,
+                    image_sha.as_str(),
+                ),
+                (
+                    info_key.as_str(),
+                    "image-info",
+                    info_bytes.len() as u64,
+                    info_sha.as_str(),
+                ),
+            ],
+        );
+        std::fs::write(
+            root.join(format!(
+                "aos-static-origin/publication-receipts/{}.json",
+                commit
+            )),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "commit": commit.to_string(),
+                "registry": "fixture",
+                "catalogDigest": digest,
+                "objects": objects,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn advance_fixture_commit(root: &Path, channel: &[u8]) {
+        let repository = git2::Repository::open_bare(root).unwrap();
+        let parent = repository.head().unwrap().peel_to_commit().unwrap();
+        let tree = parent.tree().unwrap();
+        let signature = git2::Signature::now("AOS Test", "aos@example.invalid").unwrap();
+        let commit = repository
+            .commit(
+                Some("refs/heads/stable"),
+                &signature,
+                &signature,
+                "metadata-only fixture",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
+        let receipts = root.join("aos-static-origin/publication-receipts");
+        let prior_path = receipts.join(format!("{}.json", parent.id()));
+        let mut receipt: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(prior_path).unwrap()).unwrap();
+        receipt["commit"] = serde_json::json!(commit.to_string());
+        std::fs::write(
+            receipts.join(format!("{commit}.json")),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(root.join("channels/stable/00"), channel).unwrap();
     }
 
     fn assert_static_metadata(

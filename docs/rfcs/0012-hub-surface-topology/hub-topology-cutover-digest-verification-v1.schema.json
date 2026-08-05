@@ -3,13 +3,23 @@
   "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-digest-verification-v1.schema.json",
   "dialect": "aos-cutover-schema/v1",
   "type": "object",
-  "required": ["schema_version", "document_kind", "dialect", "bundle_id", "result", "verifier_identity", "schema_validation", "recomputed_topology", "reference_validation", "database_restore_validation", "durable_object_aggregates", "blocker_validation", "transition_validation", "gc_validation", "fixture_validation"],
+  "required": ["schema_version", "document_kind", "dialect", "bundle_id", "result", "authored_at", "authenticated_documents", "verifier_identity", "schema_validation", "recomputed_topology", "reference_validation", "database_restore_validation", "durable_object_aggregates", "blocker_validation", "transition_validation", "gc_validation", "fixture_validation"],
   "properties": {
     "schema_version": { "const": "aos.hub.topology-cutover-verification/v1" },
     "document_kind": { "const": "cutover_verification" },
     "dialect": { "const": "aos-cutover-schema/v1" },
     "bundle_id": { "$ref": "#/$defs/stableId" },
     "result": { "const": "verified" },
+    "authored_at": { "type": "string", "format": "utc-date-time" },
+    "authenticated_documents": {
+      "type": "object",
+      "required": ["plan", "report"],
+      "properties": {
+        "plan": { "$ref": "#/$defs/authenticatedDocument" },
+        "report": { "$ref": "#/$defs/authenticatedDocument" }
+      },
+      "additionalProperties": false
+    },
     "verifier_identity": {
       "type": "object",
       "required": ["bundle_node_id", "bundle_entry_sha256", "current_exe_sha256", "byte_identity_matches", "trust_basis"],
@@ -48,6 +58,17 @@
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "stableId": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "authenticatedDocument": {
+      "type": "object",
+      "required": ["payload_node_id", "canonical_payload_sha256", "signature_node_id", "signature_sha256"],
+      "properties": {
+        "payload_node_id": { "$ref": "#/$defs/stableId" },
+        "canonical_payload_sha256": { "$ref": "#/$defs/sha256" },
+        "signature_node_id": { "$ref": "#/$defs/stableId" },
+        "signature_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
     "setValidation": {
       "type": "object",
       "required": ["expected_count", "actual_count", "expected_set_sha256", "actual_set_sha256", "missing_count", "unexpected_count", "duplicate_count", "result"],

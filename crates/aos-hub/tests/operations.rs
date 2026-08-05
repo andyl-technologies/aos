@@ -50,9 +50,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: std::sync::Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -64,15 +69,30 @@ fn machine_service(state: &Arc<AppState>) -> RpcService {
         state.external_url.clone(),
         Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
         Arc::new(
-            aos_hub::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
+            aos_hub::coreports::HubSurfaceProvider::new(
+                Arc::clone(&state.db),
+                state.http.clone(),
+                state.image_snapshots.clone(),
+            )
+            .with_credentials(Arc::clone(&state.secret_versions)),
         ),
         Arc::new(
-            aos_hub::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
+            aos_hub::coreports::HubSurfaceWriteProvider::new(
+                Arc::clone(&state.db),
+                state.http.clone(),
+            )
+            .with_credentials(Arc::clone(&state.secret_versions)),
         ),
         Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
-        Arc::new(aos_hub::coreports::HubReindexer::new(Arc::clone(&state.db))),
+        Arc::new(aos_hub::coreports::HubReindexer::new(
+            Arc::clone(&state.db),
+            state.image_snapshots.clone(),
+        )),
+        Arc::new(
+            aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
+                &state.db,
+            )),
+        ),
         Some(Arc::clone(&state.sealer)),
     )
 }
@@ -121,38 +141,27 @@ async fn machine_get(
 /// Create org "acme", a `local_fs` binding over an empty dir, and a managed
 /// registry at `acme/infra/prod/cdn` bound to it (prefix `cdn`). Returns
 /// `(db, surface_root)`.
-async fn empty_managed() -> (Arc<Database>, PathBuf) {
+async fn empty_managed() -> (Arc<Database>, PathBuf, i64) {
     let root = tempfile::tempdir().unwrap().keep();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", root.to_str().unwrap())
+    let binding = common::create_local_binding(&db, org, "primary", root.to_str().unwrap()).await;
+    let registry = db
+        .create_managed_registry(org, "infra/prod", "cdn", "public", &[], false)
         .await
         .unwrap();
-    db.create_managed_registry(
-        org,
-        "infra/prod",
-        "cdn",
-        "public",
-        Some(binding),
-        "cdn",
-        &[],
-        false,
-    )
-    .await
-    .unwrap();
-    (db, root.join("cdn"))
+    let _ = registry;
+    (db, root.join("cdn"), binding)
 }
 
 #[tokio::test]
 async fn registry_route_streams_ranges_through_the_selected_placement() {
-    let (db, surface) = empty_managed().await;
+    let (db, surface, binding) = empty_managed().await;
     let registry = db
         .registry_by_slug("acme/infra/prod/cdn")
         .await
         .unwrap()
         .unwrap();
-    let binding = registry.storage_binding_id.unwrap();
     let placement = db
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry.id),
@@ -232,31 +241,16 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
     let root = tempfile::tempdir().unwrap().keep();
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("private-org", "Private Org").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", root.to_str().unwrap())
-        .await
-        .unwrap();
+    let binding = common::create_local_binding(&db, org, "primary", root.to_str().unwrap()).await;
     let registry_id = db
-        .create_managed_registry(
-            org,
-            "",
-            "private-registry",
-            "private",
-            Some(binding),
-            "registry",
-            &[],
-            false,
-        )
+        .create_managed_registry(org, "", "private-registry", "private", &[], false)
         .await
         .unwrap();
     let cache_id = db
-        .create_cache(
+        .create_binary_cache(
             Some(org),
             "private-cache",
             "Private Cache",
-            Some(binding),
-            "cache",
-            None,
             "private",
             40,
             "zstd",
@@ -296,14 +290,15 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
         .create_user("member@private.invalid", None)
         .await
         .unwrap();
-    db.grant_membership("user", member, "private-org", "viewer")
+    let private_scope = common::org_scope(&db, "private-org").await;
+    db.grant_membership("user", member, &private_scope, "viewer")
         .await
         .unwrap();
     let session = db.create_session(member, 3600, 0).await.unwrap();
     let cookie = format!("__Host-aos_session={session}");
-    let token = bearer(Principal::user(member), "private-org", &[Permission::Read]);
+    let token = bearer(Principal::user(member), &private_scope, &[Permission::Read]);
     let stale_registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
-    let stale_cache = db.cache_by_id(cache_id).await.unwrap().unwrap();
+    let stale_cache = db.binary_cache_by_id(cache_id).await.unwrap().unwrap();
     let state = app_state(Arc::clone(&db)).await;
     let service = machine_service(&state);
     let app = router(state).await;
@@ -338,13 +333,14 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
     // The service, not the route snapshot, is the final authorization/serve
     // linearization point. A concurrent hard registry delete cascades its
     // placements; a stale record must not fall back to the still-present bytes.
-    assert!(db.delete_registry(registry_id).await.unwrap());
+    assert!(db.seed_delete_registry_for_test(registry_id).await.unwrap());
     match service
         .registry_serve(
             ReadAuthorization::PreauthorizedSession,
             &stale_registry,
             "nar/private.nar",
             None,
+            aos_hub_core::image_http::ImageMethod::Get,
         )
         .await
     {
@@ -355,7 +351,10 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
     // Cache soft-delete leaves both its row and placement intact, making this a
     // stronger regression: the freshly reloaded tombstone must stop the read
     // before placement selection or generated/fallback serving.
-    assert!(db.soft_delete_cache(cache_id, i64::MAX).await.unwrap());
+    assert!(db
+        .soft_delete_binary_cache(cache_id, i64::MAX)
+        .await
+        .unwrap());
     match service
         .cache_serve(
             ReadAuthorization::PreauthorizedSession,
@@ -448,9 +447,35 @@ async fn rpc(
     (status, value)
 }
 
+async fn planned_rpc(
+    app: &axum::Router,
+    plan_method: &str,
+    apply_method: &str,
+    mut plan_body: serde_json::Value,
+    auth: Option<&str>,
+    key: &str,
+) -> (StatusCode, serde_json::Value) {
+    plan_body["idempotencyKey"] = serde_json::Value::String(format!("{key}-plan"));
+    let (status, plan) = rpc(app, plan_method, plan_body, auth).await;
+    if status != StatusCode::OK {
+        return (status, plan);
+    }
+    rpc(
+        app,
+        apply_method,
+        serde_json::json!({
+            "planId": plan["plan"]["planId"],
+            "idempotencyKey": format!("{key}-apply"),
+            "confirmationHash": plan["plan"]["confirmationHash"],
+        }),
+        auth,
+    )
+    .await
+}
+
 #[tokio::test]
 async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
-    let (db, _surface) = empty_managed().await;
+    let (db, _surface, _binding) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     // A tiny byte budget: 10 bytes.
     db.set_org_quota(
@@ -465,7 +490,7 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         Principal::service_account(1),
-        "acme/infra/prod/cdn",
+        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
     );
 
@@ -495,12 +520,12 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
 
 #[tokio::test]
 async fn overwrite_with_larger_payload_charges_the_delta() {
-    let (db, _surface) = empty_managed().await;
+    let (db, _surface, _binding) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         Principal::service_account(1),
-        "acme/infra/prod/cdn",
+        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
     );
 
@@ -578,13 +603,13 @@ async fn signup_policy_gates_create_org() {
     // Default policy is invite-only.
     let fresh = db.create_user("nobody@acme.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(fresh), "", &[]);
+    let token = bearer(Principal::user(fresh), "instance", &[]);
 
     // invite_only blocks a fresh, unaffiliated user.
     let (status, _) = rpc(
         &app,
-        "OrganizationService/CreateOrg",
-        serde_json::json!({"slug": "acme", "name": "Acme"}),
+        "OrganizationService/PlanCreateOrganization",
+        serde_json::json!({"slug": "acme", "displayName": "Acme", "idempotencyKey": "invite-only"}),
         Some(&token),
     )
     .await;
@@ -592,11 +617,13 @@ async fn signup_policy_gates_create_org() {
 
     // Switch to open: the same user may now create an org.
     db.set_signup_policy(SignupPolicy::Open).await.unwrap();
-    let (status, value) = rpc(
+    let (status, value) = planned_rpc(
         &app,
-        "OrganizationService/CreateOrg",
-        serde_json::json!({"slug": "acme", "name": "Acme"}),
+        "OrganizationService/PlanCreateOrganization",
+        "OrganizationService/CreateOrganization",
+        serde_json::json!({"slug": "acme", "displayName": "Acme"}),
         Some(&token),
+        "open-signup",
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
@@ -608,18 +635,24 @@ async fn invite_only_allows_existing_member() {
     // A user who is already a member of *some* org may create another, even
     // under invite-only.
     let member = db.create_user("dev@acme.com", None).await.unwrap();
-    let existing = db.create_org("existing", "Existing").await.unwrap();
-    let _ = existing;
-    db.grant_membership("user", member, "existing", "developer")
-        .await
-        .unwrap();
+    db.create_org("existing", "Existing").await.unwrap();
+    db.grant_membership(
+        "user",
+        member,
+        &common::org_scope(&db, "existing").await,
+        "developer",
+    )
+    .await
+    .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(member), "", &[]);
-    let (status, value) = rpc(
+    let token = bearer(Principal::user(member), "instance", &[]);
+    let (status, value) = planned_rpc(
         &app,
-        "OrganizationService/CreateOrg",
-        serde_json::json!({"slug": "second", "name": "Second"}),
+        "OrganizationService/PlanCreateOrganization",
+        "OrganizationService/CreateOrganization",
+        serde_json::json!({"slug": "second", "displayName": "Second"}),
         Some(&token),
+        "member-signup",
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
@@ -627,7 +660,7 @@ async fn invite_only_allows_existing_member() {
 
 #[tokio::test]
 async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
-    let (db, surface) = empty_managed().await;
+    let (db, surface, _binding) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     // A managed cache so the manifest's cache slice has something to carry.
     let binding = db
@@ -636,13 +669,10 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
         .unwrap()
         .pop()
         .unwrap();
-    db.create_cache(
+    db.create_binary_cache(
         Some(org.id),
         "acme-cache",
         "Acme Cache",
-        Some(binding.id),
-        "cache",
-        None,
         "public",
         40,
         "zstd",
@@ -652,9 +682,14 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     .unwrap();
     // Members and a token (its hash must never appear in the export).
     let alice = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", alice, "acme", "owner")
-        .await
-        .unwrap();
+    db.grant_membership(
+        "user",
+        alice,
+        &common::org_scope(&db, "acme").await,
+        "owner",
+    )
+    .await
+    .unwrap();
     let sa = db
         .create_service_account(org.id, "publisher")
         .await
@@ -662,7 +697,7 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     let (_id, secret) = db
         .create_token(
             Principal::service_account(sa),
-            "acme/infra/prod/cdn",
+            &common::registry_scope(&db, "acme/infra/prod/cdn").await,
             &[Permission::Publish],
             Some("ci"),
             None,
@@ -674,7 +709,7 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         Principal::service_account(sa),
-        "acme/infra/prod/cdn",
+        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
     );
     let (status, _) = put(
@@ -739,11 +774,9 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
-        .await
-        .unwrap();
-    db.create_managed_registry(org, "", "cdn", "public", Some(binding), "cdn", &[], false)
+    let binding =
+        common::create_local_binding(&db, org, "primary", dir.path().to_str().unwrap()).await;
+    db.create_managed_registry(org, "", "cdn", "public", &[], false)
         .await
         .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
@@ -819,657 +852,44 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// Cross-visibility safety: a public registry must not *advertise* a private
-/// cache (its consumers couldn't read it), but may link it without advertising.
+/// The hard-cutover API has no combined cache-link route.
 #[tokio::test]
-async fn link_cache_rejects_advertising_a_less_visible_cache() {
+async fn legacy_link_cache_route_is_absent_and_creates_no_integration() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", "/srv")
+    common::create_local_binding(&db, org, "primary", "/srv").await;
+    db.create_managed_registry(org, "", "pub", "public", &[], false)
         .await
         .unwrap();
-    db.create_managed_registry(org, "", "pub", "public", Some(binding), "pub", &[], false)
+    db.create_binary_cache(Some(org), "priv-cache", "Priv", "private", 40, "zstd", true)
         .await
         .unwrap();
-    db.create_cache(
-        Some(org),
-        "priv-cache",
-        "Priv",
-        Some(binding),
-        "pc",
-        None,
-        "private",
-        40,
-        "zstd",
-        true,
-    )
-    .await
-    .unwrap();
-    // An owner of the org (token grant + live membership; require_permission is
-    // two-sided).
-    let alice = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", alice, "acme", "owner")
-        .await
-        .unwrap();
-    let token = bearer(
-        Principal::user(alice),
-        "acme",
-        &[Permission::RegistryConfigure],
-    );
-
     let app = router(app_state(Arc::clone(&db)).await).await;
-
-    // Advertising the private cache on the public registry is rejected (400).
-    let (status, _v) = rpc(
+    let (status, body) = rpc(
         &app,
         "BinaryCacheService/LinkCache",
         serde_json::json!({
             "cacheSlug": "priv-cache", "registrySlug": "acme/pub", "advertised": true
         }),
-        Some(&token),
+        None,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{_v}");
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 
-    // Linking without advertising is allowed (the cache is reachable only to
-    // those with cache-read authority; the registry does not point consumers at it).
-    let (status, _v) = rpc(
-        &app,
-        "BinaryCacheService/LinkCache",
-        serde_json::json!({
-            "cacheSlug": "priv-cache", "registrySlug": "acme/pub",
-            "advertised": false, "rootsPackages": true
-        }),
-        Some(&token),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{_v}");
-}
-
-/// End-to-end: a key-bearing cache signs uploaded narinfo with its hosted
-/// Ed25519 key, and the served narinfo carries the hub `Sig:` line.
-#[tokio::test]
-async fn keyed_cache_signs_uploaded_narinfo() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
-        .await
-        .unwrap();
-    // A hosted key sealed with the same dev sealer the test AppState wires.
-    let sealer = aos_hub::auth::oidc::dev_sealer();
-    db.create_hosted_key(sealer.as_ref(), org, "acme-cache-key")
-        .await
-        .unwrap();
-    let key_id = db
-        .hosted_key_by_name(org, "acme-cache-key")
+    let registry = db.registry_by_slug("acme/pub").await.unwrap().unwrap();
+    assert!(db
+        .registry_cache_stack_entries(registry.id)
         .await
         .unwrap()
+        .is_empty());
+    assert!(db
+        .list_registry_retention_subscriptions_topology(registry.id)
+        .await
         .unwrap()
-        .id;
-    db.create_cache(
-        Some(org),
-        "signed-cache",
-        "Signed",
-        Some(binding),
-        "sc",
-        Some(key_id),
-        "public",
-        40,
-        "zstd",
-        true,
-    )
-    .await
-    .unwrap();
-    // A cache admin (token grant + live owner membership).
-    let alice = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", alice, "acme", "owner")
+        .is_empty());
+    assert!(db
+        .list_registry_population_targets(registry.id)
         .await
-        .unwrap();
-    let token = bearer(
-        Principal::user(alice),
-        "acme",
-        &[Permission::RegistryConfigure],
-    );
-
-    let app = router(app_state(Arc::clone(&db)).await).await;
-    let narinfo = "StorePath: /nix/store/aaaa-foo-1.0\nURL: nar/bbbb.nar.zst\n\
-                   Compression: zstd\nNarHash: sha256:1xyz\nNarSize: 100\nReferences: \n";
-    let (status, _) = put(
-        &app,
-        "/signed-cache/aaaa.narinfo",
-        &token,
-        narinfo.as_bytes().to_vec(),
-    )
-    .await;
-    assert!(status.is_success(), "upload status {status}");
-
-    // GET the served narinfo back; it must carry the hub signature line.
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/signed-cache/aaaa.narinfo")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&body);
-    assert!(
-        text.contains("Sig: acme-cache-key:"),
-        "served narinfo must carry the hub signature: {text}"
-    );
-    assert!(
-        text.contains("StorePath: /nix/store/aaaa-foo-1.0"),
-        "{text}"
-    );
-
-    // The signed cache's home page advertises its Nix public key to pin.
-    let home = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/signed-cache/")
-                .header(header::ACCEPT, "text/html")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(home.status(), StatusCode::OK);
-    let home_body = axum::body::to_bytes(home.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    let home_text = String::from_utf8_lossy(&home_body);
-    assert!(
-        home_text.contains("extra-trusted-public-keys = acme-cache-key:"),
-        "cache home advertises the trusted public key: {home_text}"
-    );
-}
-
-/// A cache on a private external binding serves a presigned 302 redirect to the
-/// origin instead of bytes (authenticated-origin read; the client fetches S3).
-#[tokio::test]
-async fn private_binding_cache_serves_presigned_302() {
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", "/srv")
-        .await
-        .unwrap();
-    // Seal the origin credentials with the same dev sealer the AppState wires.
-    let sealer = aos_hub::auth::oidc::dev_sealer();
-    let sealed = sealer.seal("AKIDEXAMPLE:secretkey:us-east-1").unwrap();
-    db.set_storage_binding_access(
-        binding,
-        "private",
-        Some("https://bucket.s3.example.com"),
-        Some(&sealed),
-    )
-    .await
-    .unwrap();
-    // A *public* cache (anyone may read) on that *private* binding (bytes are
-    // never served by the hub — only presigned).
-    db.create_cache(
-        Some(org),
-        "ext-cache",
-        "Ext",
-        Some(binding),
-        "pfx",
-        None,
-        "public",
-        40,
-        "zstd",
-        true,
-    )
-    .await
-    .unwrap();
-
-    let app = router(app_state(Arc::clone(&db)).await).await;
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/ext-cache/aaaa.narinfo")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::FOUND, "expected a 302 redirect");
-    let location = resp
-        .headers()
-        .get(header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    assert!(
-        location.starts_with("https://bucket.s3.example.com/pfx/aaaa.narinfo?"),
-        "presigned origin URL: {location}"
-    );
-    assert!(location.contains("X-Amz-Signature="), "{location}");
-    assert!(
-        location.contains("X-Amz-Credential=AKIDEXAMPLE"),
-        "{location}"
-    );
-    // The secret never appears in the redirect.
-    assert!(!location.contains("secretkey"), "secret leaked: {location}");
-
-    // A traversal path must NOT mint a presigned URL escaping the prefix — it is
-    // rejected before signing (and 404s downstream), never a 302.
-    let escape = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/ext-cache/nar/../../other/secret.nar")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_ne!(
-        escape.status(),
-        StatusCode::FOUND,
-        "traversal path must not be presigned"
-    );
-}
-
-/// A cache on a private external binding whose primary frontend opts into
-/// streamed proxying serves the origin's bytes *through the hub* (a `200`/`206`),
-/// not a `302` — proving the shared `cache_serve` streamed-proxy branch and the
-/// native `ReqwestOriginFetch` origin fetcher, range-forwarded end to end.
-#[tokio::test]
-async fn private_binding_cache_streams_origin_when_frontend_opts_in() {
-    // A mock S3-style origin: serves a fixed object, honoring a `bytes=a-b`
-    // Range with a `206` + `Content-Range` so the proxied ranged read is real.
-    let object = b"NARINFO-FROM-PRIVATE-ORIGIN-streamed-through-the-hub\n".to_vec();
-    let total = object.len();
-    let serve_body = object.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let origin_addr = listener.local_addr().unwrap();
-    let mock = axum::Router::new().fallback(move |headers: axum::http::HeaderMap| {
-        let body = serve_body.clone();
-        async move {
-            // Honor a single `bytes=start-end` range; otherwise serve the whole
-            // object. (The fallback ignores the request path — every signed key
-            // resolves to the one fixture object.)
-            if let Some((start, end)) = headers
-                .get(header::RANGE)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("bytes="))
-                .and_then(|v| v.split_once('-'))
-                .and_then(|(s, e)| Some((s.parse::<usize>().ok()?, e.parse::<usize>().ok()?)))
-            {
-                let end = end.min(total - 1);
-                let slice = body[start..=end].to_vec();
-                axum::response::Response::builder()
-                    .status(StatusCode::PARTIAL_CONTENT)
-                    .header(
-                        header::CONTENT_RANGE,
-                        format!("bytes {start}-{end}/{total}"),
-                    )
-                    .header(header::CONTENT_LENGTH, slice.len())
-                    .body(Body::from(slice))
-                    .unwrap()
-            } else {
-                axum::response::Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_LENGTH, body.len())
-                    .body(Body::from(body))
-                    .unwrap()
-            }
-        }
-    });
-    tokio::spawn(async move {
-        axum::serve(listener, mock).await.unwrap();
-    });
-
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", "/srv")
-        .await
-        .unwrap();
-    let sealer = aos_hub::auth::oidc::dev_sealer();
-    let sealed = sealer.seal("AKIDEXAMPLE:secretkey:us-east-1").unwrap();
-    db.set_storage_binding_access(
-        binding,
-        "private",
-        Some(&format!("http://{origin_addr}")),
-        Some(&sealed),
-    )
-    .await
-    .unwrap();
-    let cache = db
-        .create_cache(
-            Some(org),
-            "ext-cache",
-            "Ext",
-            Some(binding),
-            "pfx",
-            None,
-            "public",
-            40,
-            "zstd",
-            true,
-        )
-        .await
-        .unwrap();
-    // A primary, proxied frontend that opts into streaming engages the proxy path.
-    let fe = db
-        .create_cache_frontend(
-            cache,
-            "ext-cache.example.com",
-            "/",
-            "proxied",
-            true,
-            100,
-            true,
-        )
-        .await
-        .unwrap();
-    db.set_frontend_proxy(
-        fe,
-        Some(&aos_hub::db::ProxyConfig {
-            stream: true,
-            ..Default::default()
-        }),
-        true,
-    )
-    .await
-    .unwrap();
-
-    let app = router(app_state(Arc::clone(&db)).await).await;
-
-    // Whole read: streamed through the hub as a 200 carrying the origin's bytes
-    // (NOT a 302 — the client never sees the origin).
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/ext-cache/aaaa.narinfo")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "streamed proxy serves bytes, not a redirect"
-    );
-    let got = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    assert_eq!(
-        got.as_ref(),
-        object.as_slice(),
-        "proxied body matches origin"
-    );
-
-    // Ranged read: the hub forwards the Range to the origin and relays its 206.
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/ext-cache/aaaa.narinfo")
-                .header(header::RANGE, "bytes=0-3")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::PARTIAL_CONTENT,
-        "ranged proxy -> 206"
-    );
-    let cr = resp
-        .headers()
-        .get(header::CONTENT_RANGE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    assert_eq!(cr, format!("bytes 0-3/{total}"), "relayed Content-Range");
-    let got = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    assert_eq!(got.as_ref(), &object[0..=3], "proxied ranged body");
-
-    // The `max_body_bytes` guard rejects an origin object larger than the cap:
-    // shrink it below the object size and the proxied read must fail closed
-    // (not stream an over-cap body through the hub).
-    db.set_frontend_proxy(
-        fe,
-        Some(&aos_hub::db::ProxyConfig {
-            stream: true,
-            max_body_bytes: (total as u64) - 1,
-            ..Default::default()
-        }),
-        true,
-    )
-    .await
-    .unwrap();
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/ext-cache/aaaa.narinfo")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "an over-cap origin object must not be proxied through the hub"
-    );
-}
-
-/// MintCacheUploadCredentials returns a presigned PUT URL for a presign-mode
-/// cache's object, gated on cache-write authority.
-#[tokio::test]
-async fn mint_cache_upload_credentials_returns_presigned_put() {
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", "/srv")
-        .await
-        .unwrap();
-    let sealer = aos_hub::auth::oidc::dev_sealer();
-    let sealed = sealer.seal("AKIDEXAMPLE:secretkey:us-east-1").unwrap();
-    db.set_storage_binding_access(
-        binding,
-        "private",
-        Some("https://bucket.s3.example.com"),
-        Some(&sealed),
-    )
-    .await
-    .unwrap();
-    db.create_cache(
-        Some(org),
-        "ext-cache",
-        "Ext",
-        Some(binding),
-        "pfx",
-        None,
-        "public",
-        40,
-        "zstd",
-        true,
-    )
-    .await
-    .unwrap();
-    let alice = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", alice, "acme", "owner")
-        .await
-        .unwrap();
-    let token = bearer(
-        Principal::user(alice),
-        "acme",
-        &[Permission::RegistryConfigure],
-    );
-
-    let app = router(app_state(Arc::clone(&db)).await).await;
-    let (status, body) = rpc(
-        &app,
-        "BinaryCacheService/MintCacheUploadCredentials",
-        serde_json::json!({"cacheSlug": "ext-cache", "path": "aaaa.narinfo"}),
-        Some(&token),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    let url = body
-        .get("uploadUrl")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    assert!(
-        url.starts_with("https://bucket.s3.example.com/pfx/aaaa.narinfo?"),
-        "{url}"
-    );
-    assert!(url.contains("X-Amz-Signature="), "{url}");
-    assert!(!url.contains("secretkey"), "secret leaked: {url}");
-
-    // Without cache-write authority, the RPC is denied.
-    let (status, _) = rpc(
-        &app,
-        "BinaryCacheService/MintCacheUploadCredentials",
-        serde_json::json!({"cacheSlug": "ext-cache", "path": "aaaa.narinfo"}),
-        None,
-    )
-    .await;
-    assert!(
-        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
-        "unauthenticated mint must be denied, got {status}"
-    );
-}
-
-/// End-to-end GC closure-correctness through the RPC layer with a real
-/// surface: a rooted (pinned) object survives a sweep; an unrooted one is
-/// reclaimed (its narinfo gone). RFC-0004 "11-caches" closure-correctness.
-#[tokio::test]
-async fn cache_gc_keeps_rooted_and_reclaims_unrooted_end_to_end() {
-    let dir = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
-        .await
-        .unwrap();
-    db.create_cache(
-        Some(org),
-        "gc-cache",
-        "GC",
-        Some(binding),
-        "g",
-        None,
-        "public",
-        40,
-        "zstd",
-        true,
-    )
-    .await
-    .unwrap();
-    let alice = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", alice, "acme", "owner")
-        .await
-        .unwrap();
-    let token = bearer(
-        Principal::user(alice),
-        "acme",
-        &[Permission::RegistryConfigure],
-    );
-    let app = router(app_state(Arc::clone(&db)).await).await;
-
-    // Upload a rooted object (aaaa) and an unrooted object (dddd); each narinfo
-    // is indexed via the upload write-through.
-    let narinfo = |hash: &str| {
-        format!(
-            "StorePath: /nix/store/{hash}-pkg\nURL: nar/{hash}.nar\nCompression: none\n\
-             NarHash: sha256:{hash}\nNarSize: 1\nFileHash: sha256:{hash}\nFileSize: 1\nReferences: \n"
-        )
-    };
-    for hash in ["aaaa", "dddd"] {
-        let (s, _) = put(
-            &app,
-            &format!("/gc-cache/{hash}.narinfo"),
-            &token,
-            narinfo(hash).into_bytes(),
-        )
-        .await;
-        assert!(s.is_success(), "upload {hash}: {s}");
-    }
-    // Pin aaaa as a manual GC root.
-    let (s, _) = rpc(
-        &app,
-        "BinaryCacheService/PinCachePath",
-        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}),
-        Some(&token),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-
-    // ttl=0 sweeps unrooted objects immediately (now - uploaded_at >= 0 always),
-    // so reclamation is timing-independent; the rooted closure is never swept.
-    let cache_id = db.cache_by_slug("gc-cache").await.unwrap().unwrap().id;
-    db.set_cache_gc_policy(&aos_hub::db::CacheGcPolicy {
-        cache_id,
-        max_bytes: None,
-        max_objects: None,
-        ttl_unreferenced_secs: Some(0),
-        keep_release_versions: None,
-        keep_channel_frontier: true,
-        schedule_secs: None,
-        updated_at: 0,
-    })
-    .await
-    .unwrap();
-
-    // Run GC: it scans both, retains the rooted closure, reclaims the unrooted.
-    let (s, body) = rpc(
-        &app,
-        "BinaryCacheService/RunCacheGc",
-        serde_json::json!({"cacheSlug": "gc-cache"}),
-        Some(&token),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK, "{body}");
-    assert_eq!(body["scanned"].as_i64(), Some(2), "{body}");
-    assert_eq!(body["retained"].as_i64(), Some(1), "{body}");
-    assert_eq!(body["deletedObjects"].as_i64(), Some(1), "{body}");
-
-    // The rooted object survives; the unrooted one is reclaimed (GetCacheObject
-    // returns 200 with a null `object` for a missing entry).
-    let (s, body) = rpc(
-        &app,
-        "BinaryCacheService/GetCacheObject",
-        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "aaaa"}),
-        Some(&token),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    assert!(
-        body.get("object").is_some_and(|o| !o.is_null()),
-        "rooted object must survive: {body}"
-    );
-    let (s, body) = rpc(
-        &app,
-        "BinaryCacheService/GetCacheObject",
-        serde_json::json!({"cacheSlug": "gc-cache", "storeHash": "dddd"}),
-        Some(&token),
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
-    assert!(
-        body.get("object").is_none_or(|o| o.is_null()),
-        "unrooted object must be reclaimed: {body}"
-    );
+        .unwrap()
+        .is_empty());
 }

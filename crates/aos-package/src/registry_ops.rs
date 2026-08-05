@@ -45,9 +45,10 @@
 //! cloneable.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
-use std::io::Write as _;
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -72,6 +73,10 @@ use crate::registry::membership::{CacheMembership, HeadMembership};
 use crate::registry::nixcache;
 use crate::registry::objectstore;
 use crate::registry::pack;
+use crate::registry::parse::{
+    ImageCompression, ImageDelivery, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+    ImageVerificationState, immutable_image_info_object_key, immutable_image_object_key,
+};
 use crate::registry::sb_certs::{self, RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry::state;
 use crate::registry::static_upload;
@@ -1174,6 +1179,7 @@ fn refresh_registry_object_store(dir: &Path) -> Result<()> {
     objectstore::write_alternates(dir, &releases)?;
     objectstore::ensure_loose_completeness(dir)?;
     objectstore::refresh_server_info(dir)?;
+    persist_image_publication_receipt(dir)?;
     Ok(())
 }
 
@@ -1219,8 +1225,8 @@ fn registry_content_addressed(dir: &Path) -> bool {
 
 /// Resolves the mirror cache URLs committed in a registry's `registry.toml`.
 ///
-/// Flattens the committed `[caches]` cache stack (or a legacy `[[caches]]`
-/// array) and returns the entries sorted by descending priority, or an empty
+/// Flattens the committed `[caches]` cache stack and returns the entries sorted
+/// by descending priority, or an empty
 /// list when the file is missing, unparsable, or lists no caches.
 pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     match read_registry_toml(dir) {
@@ -1422,8 +1428,9 @@ description = ""
 /// given) and the dumb-HTTP object store is refreshed.
 ///
 /// Package name, version, and platform are parsed from the store path
-/// basename and can each be overridden. `--image`/`--image-format` pairs
-/// attach disk-image artifacts to the platform entry, `--sysroot` marks
+/// basename and can each be overridden. `--image`/`--image-format`/
+/// `--image-uki` triples attach disk bytes and their exact canonical UKI to
+/// the platform entry, `--sysroot` marks
 /// the package as a system root, `--previous` records the predecessor
 /// version for delta upgrades, and `--source-drv` records explicit source
 /// provenance for prebuilt binaries whose deriver is not visible to Nix.
@@ -1436,8 +1443,8 @@ description = ""
 ///
 /// Fails when the registry has no writable authoring clone, when the
 /// package name is not safe for registry package paths, when the platform
-/// name is not safe for package metadata, when `--image` and
-/// `--image-format` are not given in pairs, when the `nix path-info` /
+/// name is not safe for package metadata, when the image arguments are not
+/// given in triples or their files/metadata disagree, when the `nix path-info` /
 /// `nix-store` queries fail for the store path, when `--expose-manifest`
 /// cannot be parsed or validated, or when a file write, the commit, or the
 /// object-store refresh fails.
@@ -1462,6 +1469,7 @@ pub async fn publish(
     source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
+    image_uki_paths: &[String],
     expose_manifest_path: Option<&str>,
     bless: bool,
     no_ca: bool,
@@ -1487,12 +1495,16 @@ pub async fn publish(
     };
 
     // Validate image pairs.
-    if image_paths.len() != image_formats.len() {
+    if image_paths.len() != image_formats.len() || image_paths.len() != image_uki_paths.len() {
         bail!(
-            "--image and --image-format must be specified in pairs ({} images, {} formats)",
+            "--image, --image-format, and --image-uki must be specified in triples ({} images, {} formats, {} UKIs)",
             image_paths.len(),
-            image_formats.len()
+            image_formats.len(),
+            image_uki_paths.len()
         );
+    }
+    if !image_paths.is_empty() && !sysroot {
+        bail!("--image, --image-format, and --image-uki are valid only with --sysroot");
     }
 
     printer.step(1, 4, "Introspecting store path...");
@@ -1506,20 +1518,6 @@ pub async fn publish(
         introspect_deriver(&info.path)?
     };
 
-    // Introspect image store paths if provided, deriving Secure Boot facts
-    // from each signed UKI so the catalog mirrors what was actually signed
-    // (RFC-0006 phase 4). The publish-time db-cert verification is enforced
-    // only when a db cert is supplied; absent one, facts are recorded but
-    // not cross-checked here (the closure signature still covers them).
-    let sb_db_cert = sb_db_cert_path(config, &name);
-    let mut image_infos: Vec<(String, StorePathInfo, SbFacts)> = Vec::new();
-    for (img_path, img_fmt) in image_paths.iter().zip(image_formats.iter()) {
-        let img_info = introspect_store_path(img_path)?;
-        let sb = derive_sb_facts(&img_info.path, sb_db_cert.as_deref())
-            .with_context(|| format!("deriving Secure Boot facts for {}", img_info.path))?;
-        image_infos.push((img_fmt.clone(), img_info, sb));
-    }
-
     let (parsed_name, parsed_version) = parse_store_path(&info.path);
     let pkg_name = name_override.unwrap_or(&parsed_name);
     let pkg_version = version_override.unwrap_or(&parsed_version);
@@ -1528,6 +1526,30 @@ pub async fn publish(
         .map(|s| s.to_string())
         .unwrap_or_else(default_platform);
     validate_platform_name(&platform)?;
+
+    // Bind the exact disk, canonical per-format metadata, and paired UKI
+    // before catalog construction. Committed Secure Boot policy is enforced
+    // below.
+    let sb_db_cert = sb_db_cert_path(config, &name);
+    let mut image_infos: Vec<PublishedImage> = Vec::new();
+    for ((img_path, img_fmt), uki_path) in image_paths
+        .iter()
+        .zip(image_formats.iter())
+        .zip(image_uki_paths.iter())
+    {
+        let img_info = introspect_store_path(img_path)?;
+        image_infos.push(inspect_published_image(
+            img_fmt,
+            img_info,
+            Path::new(uki_path),
+            pkg_name,
+            pkg_version,
+            &platform,
+            sb_db_cert.as_deref(),
+        )?);
+    }
+    let sb_catalog = sb_certs::load_sb_certs_toml(&dir)?;
+    apply_publish_sb_policy(&mut image_infos, sb_catalog.as_ref(), sb_db_cert.is_some())?;
     let expose_manifest = expose_manifest_path
         .map(|path| read_publish_expose_manifest(path, pkg_name))
         .transpose()?;
@@ -1549,6 +1571,7 @@ pub async fn publish(
     };
 
     let _publish_lock = RegistryPublishLock::acquire(&dir)?;
+    let direct_image_paths = persist_direct_image_objects(&dir, &image_infos)?;
 
     printer.step(2, 4, "Writing package TOML...");
     let letter = first_letter(pkg_name);
@@ -1686,10 +1709,12 @@ pub async fn publish(
     if let Some(prev) = previous {
         printer.kv("Previous", prev);
     }
-    for (fmt, img_info, sb) in &image_infos {
-        printer.kv(&format!("Image ({fmt})"), &img_info.path);
-        if let Some(cert) = &sb.signer_cert_sha256 {
-            printer.kv(&format!("  SB signer cert ({fmt})"), cert);
+    for image in &image_infos {
+        printer.kv(&format!("Image ({})", image.format), &image.store.path);
+        printer.kv("  File", &image.delivery.filename);
+        printer.kv("  SHA-256", &image.delivery.sha256);
+        if let Some(cert) = &image.sb.signer_cert_sha256 {
+            printer.kv(&format!("  SB signer cert ({})", image.format), cert);
         }
     }
 
@@ -1699,6 +1724,7 @@ pub async fn publish(
         let default_msg = format!("publish {pkg_name} {pkg_version} ({platform})");
         let msg = message.unwrap_or(&default_msg);
         let mut staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
+        staged_paths.extend(direct_image_paths.iter().cloned());
         if let Some(path) = &provenance_path {
             staged_paths.push(path.clone());
         }
@@ -1730,18 +1756,19 @@ pub async fn publish(
         });
         let images = image_infos
             .iter()
-            .map(|(format, image, sb)| {
+            .map(|image| {
                 serde_json::json!({
-                    "format": format.as_str(),
-                    "store_path": image.path.as_str(),
-                    "nar_hash": image.nar_hash.as_str(),
-                    "nar_size": image.nar_size,
-                    "sb_signer_cert_sha256": sb.signer_cert_sha256,
-                    "sbat": sb.sbat.iter().map(|item| serde_json::json!({
+                    "format": image.format.as_str(),
+                    "store_path": image.store.path.as_str(),
+                    "nar_hash": image.store.nar_hash.as_str(),
+                    "nar_size": image.store.nar_size,
+                    "delivery": &image.delivery,
+                    "sb_signer_cert_sha256": image.sb.signer_cert_sha256,
+                    "sbat": image.sb.sbat.iter().map(|item| serde_json::json!({
                         "component": item.component,
                         "generation": item.generation,
                     })).collect::<Vec<_>>(),
-                    "expected_pcr11": sb.expected_pcr11,
+                    "expected_pcr11": image.sb.expected_pcr11,
                 })
             })
             .collect::<Vec<_>>();
@@ -1800,6 +1827,31 @@ pub async fn publish(
     Ok(())
 }
 
+fn apply_publish_sb_policy(
+    images: &mut [PublishedImage],
+    catalog: Option<&SbCertsToml>,
+    has_db_cert: bool,
+) -> Result<()> {
+    for image in images {
+        if let Some(signer) = image.sb.signer_cert_sha256.as_deref()
+            && let Some(catalog) = catalog
+        {
+            if !catalog.accepts_signer(signer) {
+                bail!(
+                    "image UKI signer {signer} is not active in the committed sb-certs.toml policy"
+                );
+            }
+            if !has_db_cert {
+                bail!(
+                    "committed Secure Boot policy requires the matching registry db.pem for publish-time verification"
+                );
+            }
+            image.delivery.uki.verification = ImageVerificationState::PolicyVerified;
+        }
+    }
+    Ok(())
+}
+
 /// Require `dir` to be a git authoring clone; consumer-extracted registry
 /// trees (plain files synced by `apm update`) cannot host publish commits
 /// and are rejected with remediation steps.
@@ -1839,7 +1891,7 @@ fn build_package_toml(
     maintainer: Option<&str>,
     sysroot: bool,
     previous: Option<&str>,
-    image_infos: &[(String, StorePathInfo, SbFacts)],
+    image_infos: &[PublishedImage],
     source_info: Option<&StorePathInfo>,
     expose_manifest: Option<&PublishExposeManifest>,
     expose_artifact_info: Option<&StorePathInfo>,
@@ -2413,89 +2465,1166 @@ struct SbFacts {
     expected_pcr11: Option<String>,
 }
 
-/// Locate the UKI (`.efi` PE/COFF executable) inside an image store path.
+/// A fully validated disk-image publication input.
 ///
-/// Sysroot images attach a single UKI per format under their store path.
-/// Returns the path to the first regular `.efi` file found (recursively),
-/// or `None` when the image carries no UKI (an unsigned/legacy image, for
-/// which no Secure Boot facts are recorded).
-fn find_uki_in_store_path(store_path: &str) -> Option<PathBuf> {
-    fn walk(dir: &Path) -> Option<PathBuf> {
-        let entries = fs::read_dir(dir).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(found) = walk(&path) {
-                    return Some(found);
+/// Unlike the historical NAR-only tuple, this binds the exact disk file and
+/// producer metadata that direct-download consumers receive.
+struct PublishedImage {
+    format: String,
+    store: StorePathInfo,
+    sb: SbFacts,
+    delivery: ImageDelivery,
+    /// Pinned image-output directory that owns the disk and metadata names.
+    directory: ValidatedImageDirectory,
+    /// Exact validated disk source retained for the upload transaction.
+    disk: ValidatedImageFile,
+    /// Exact validated metadata source retained for the upload transaction.
+    image_info: ValidatedImageFile,
+    /// Original producer metadata retained to detect replacement before commit.
+    producer_image_info: ValidatedImageFile,
+    /// Exact UKI whose Secure Boot facts were recorded in the catalog.
+    uki: ValidatedImageFile,
+    /// Byte offset of the ESP in the canonical raw logical disk.
+    esp_offset_bytes: u64,
+    /// Byte interval of the canonical root filesystem payload.
+    root_range: (u64, u64),
+}
+
+struct ValidatedImageDirectory {
+    path: PathBuf,
+    file: fs::File,
+    identity: FileIdentity,
+}
+
+struct ValidatedImageFile {
+    path: PathBuf,
+    file: fs::File,
+    identity: FileIdentity,
+    sha256: String,
+    path_bound: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct FileIdentity {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    links: u64,
+}
+
+/// Delivery fields emitted by every system image derivation's
+/// `image-info.json`.
+///
+/// The complete, versioned public producer manifest. Unknown top-level and
+/// nested fields are rejected so private build-environment data can never be
+/// uploaded accidentally.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerImageInfo {
+    schema_version: u32,
+    name: String,
+    version: String,
+    architecture: String,
+    platform: String,
+    format: String,
+    filename: String,
+    object_key: String,
+    media_type: String,
+    compression: ImageCompression,
+    byte_size: u64,
+    virtual_size_bytes: u64,
+    sha256: String,
+    logical_disk_sha256: String,
+    rootfs_sha256: String,
+    compatible_targets: Vec<ImageTarget>,
+    uki: PortableUkiInfo,
+    #[serde(default)]
+    disk_size_mi_b: Option<u64>,
+    #[serde(default)]
+    esp_size_mi_b: Option<u64>,
+    #[serde(default)]
+    root_size_mi_b: Option<u64>,
+    #[serde(default)]
+    partition_table: Option<String>,
+    #[serde(default)]
+    kernel_params: Option<String>,
+    #[serde(default)]
+    partitions: Vec<ProducerPartitionInfo>,
+    #[serde(default)]
+    esp: Option<ProducerEspInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PortableUkiInfo {
+    filename: String,
+    esp_path: String,
+    byte_size: u64,
+    sha256: String,
+    signed: bool,
+    measured: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerPartitionInfo {
+    number: u32,
+    label: String,
+    #[serde(rename = "type")]
+    kind: String,
+    filesystem: String,
+    size_mi_b: u64,
+    offset_bytes: u64,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProducerEspInfo {
+    uki: String,
+    sd_boot: String,
+}
+
+const MAX_IMAGE_INFO_BYTES: u64 = 1024 * 1024;
+
+/// Validates one image store output and constructs its signed delivery entry.
+///
+/// The output must be a real directory containing exactly two direct regular
+/// files: `image-info.json` and the declared disk filename. The exact UKI is a
+/// separate paired publisher input, keeping its internal store path out of the
+/// public metadata and image NAR. No symlink, directory, device, or additional
+/// file is accepted, so a publisher can never guess which bytes an entry names.
+fn inspect_published_image(
+    format: &str,
+    store: StorePathInfo,
+    uki_path: &Path,
+    name: &str,
+    release: &str,
+    platform: &str,
+    db_cert: Option<&Path>,
+) -> Result<PublishedImage> {
+    if store_dir_from_store_path(&store.path).is_none() {
+        bail!("published image output must be a canonical Nix store path");
+    }
+    let canonical_store = fs::canonicalize(&store.path)
+        .with_context(|| format!("canonicalizing image output {}", store.path))?;
+    if canonical_store != Path::new(&store.path) {
+        bail!("published image output must not traverse aliases or symlinks");
+    }
+    let Some(uki_store) = uki_path.parent() else {
+        bail!("published UKI must live directly in a Nix store output");
+    };
+    let Some(uki_store_text) = uki_store.to_str() else {
+        bail!("published UKI store path is not UTF-8");
+    };
+    if store_dir_from_store_path(uki_store_text).is_none()
+        || fs::canonicalize(uki_store)? != uki_store
+    {
+        bail!("published UKI must live directly in a canonical Nix store output");
+    }
+    let image = inspect_published_image_with(
+        format,
+        store,
+        uki_path,
+        name,
+        release,
+        platform,
+        db_cert,
+        derive_sb_facts,
+    )?;
+    verify_embedded_uki(&image)?;
+    Ok(image)
+}
+
+fn inspect_published_image_with<F>(
+    format: &str,
+    store: StorePathInfo,
+    uki_path: &Path,
+    name: &str,
+    release: &str,
+    platform: &str,
+    db_cert: Option<&Path>,
+    derive_secure_boot: F,
+) -> Result<PublishedImage>
+where
+    F: FnOnce(&Path, Option<&Path>) -> Result<SbFacts>,
+{
+    let root_path = PathBuf::from(&store.path);
+    let root = root_path.as_path();
+    let root_meta = fs::symlink_metadata(root)
+        .with_context(|| format!("inspecting image output {}", root.display()))?;
+    if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
+        bail!(
+            "image output must be a real directory containing one disk file and image-info.json: {}",
+            root.display()
+        );
+    }
+    let root_handle = rustix::fs::open(
+        root,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .with_context(|| format!("opening image output directory {}", root.display()))?;
+    let root_file = fs::File::from(root_handle);
+    let root_identity = file_identity(&root_file.metadata()?);
+    if file_identity(&root_meta) != root_identity {
+        bail!("image output directory identity changed while opening");
+    }
+
+    let info_path = root.join("image-info.json");
+    let (mut info_file, info_identity) =
+        open_stable_regular_file_at(&root_file, "image-info.json", &info_path)?;
+    if info_identity.len == 0 || info_identity.len > MAX_IMAGE_INFO_BYTES {
+        bail!("image-info.json size must be between 1 and {MAX_IMAGE_INFO_BYTES} bytes");
+    }
+    let mut info_bytes = Vec::with_capacity(info_identity.len as usize);
+    (&mut info_file)
+        .take(MAX_IMAGE_INFO_BYTES + 1)
+        .read_to_end(&mut info_bytes)
+        .with_context(|| format!("reading image metadata {}", info_path.display()))?;
+    if info_bytes.len() as u64 != info_identity.len {
+        bail!("image-info.json length changed while it was being read");
+    }
+    verify_stable_regular_file(&info_path, &info_file, &info_identity)?;
+    let producer: ProducerImageInfo = serde_json::from_slice(&info_bytes)
+        .with_context(|| format!("parsing {}", info_path.display()))?;
+    let public_text = std::str::from_utf8(&info_bytes).context("image-info.json is not UTF-8")?;
+    if public_text.contains("/nix/store/")
+        || public_text.contains("/aos/store/")
+        || public_text.contains("file://")
+    {
+        bail!("image-info.json contains a private build or filesystem path");
+    }
+    validate_single_filename(&producer.filename, "image filename")?;
+    validate_single_filename(&producer.uki.filename, "UKI filename")?;
+    validate_portable_relative_path(&producer.uki.esp_path, "UKI ESP path")?;
+    if producer.virtual_size_bytes == 0 {
+        bail!("image-info virtualSizeBytes must be non-zero");
+    }
+    validate_lower_sha256(&producer.logical_disk_sha256, "logical disk")?;
+    validate_lower_sha256(&producer.rootfs_sha256, "root filesystem")?;
+    validate_package_name(&producer.name).context("validating image-info name")?;
+    if producer.name != name {
+        bail!("image-info name does not match the signed package name");
+    }
+    if producer.partition_table.as_deref() != Some("gpt")
+        || producer.kernel_params.is_none()
+        || producer.partitions.is_empty()
+        || producer.esp.is_none()
+    {
+        bail!(
+            "image-info must declare canonical GPT layout, kernel parameters, partitions, and ESP facts"
+        );
+    }
+    let mut partition_numbers = HashSet::new();
+    let mut partition_ranges = Vec::new();
+    for partition in &producer.partitions {
+        if !partition_numbers.insert(partition.number)
+            || partition.label.is_empty()
+            || partition.kind.is_empty()
+            || partition.filesystem.is_empty()
+            || partition.size_bytes == 0
+            || partition.size_mi_b != partition.size_bytes / (1024 * 1024)
+            || partition
+                .offset_bytes
+                .checked_add(partition.size_bytes)
+                .is_none_or(|end| end > producer.virtual_size_bytes)
+        {
+            bail!("image-info contains an invalid partition layout");
+        }
+        partition_ranges.push((
+            partition.offset_bytes,
+            partition.offset_bytes + partition.size_bytes,
+        ));
+    }
+    partition_ranges.sort_unstable();
+    if partition_ranges
+        .windows(2)
+        .any(|ranges| ranges[0].1 > ranges[1].0)
+    {
+        bail!("image-info partition layout overlaps");
+    }
+    if producer
+        .esp
+        .as_ref()
+        .is_some_and(|esp| esp.uki != producer.uki.esp_path)
+    {
+        bail!("image-info ESP UKI path disagrees with the signed UKI identity");
+    }
+    let esp_offset_bytes = producer
+        .partitions
+        .iter()
+        .find(|partition| partition.kind == "esp" && partition.filesystem == "vfat")
+        .map(|partition| partition.offset_bytes)
+        .context("image-info must identify exactly one vfat ESP partition")?;
+    if producer
+        .partitions
+        .iter()
+        .filter(|partition| partition.kind == "esp" && partition.filesystem == "vfat")
+        .count()
+        != 1
+    {
+        bail!("image-info must identify exactly one vfat ESP partition");
+    }
+    let roots = producer
+        .partitions
+        .iter()
+        .filter(|partition| partition.kind == "root" && partition.label == "root-a")
+        .collect::<Vec<_>>();
+    if roots.len() != 1 {
+        bail!("image-info must identify exactly one root-a filesystem partition");
+    }
+    let root_range = (roots[0].offset_bytes, roots[0].size_bytes);
+    if let Some(esp) = &producer.esp {
+        validate_portable_relative_path(&esp.sd_boot, "systemd-boot ESP path")?;
+    }
+    if producer
+        .disk_size_mi_b
+        .is_some_and(|size| size != producer.virtual_size_bytes / (1024 * 1024))
+        || producer.esp_size_mi_b == Some(0)
+        || producer.root_size_mi_b == Some(0)
+    {
+        bail!("image-info MiB summaries disagree with the exact logical layout");
+    }
+
+    let mut entry_count = 0_u8;
+    for entry in fs::read_dir(root)
+        .with_context(|| format!("enumerating image output {}", root.display()))?
+    {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_file() {
+            bail!(
+                "image output contains a symlink, directory, or special entry: {}",
+                entry.path().display()
+            );
+        }
+        let name = entry.file_name();
+        if name != std::ffi::OsStr::new("image-info.json")
+            && name != std::ffi::OsStr::new(producer.filename.as_str())
+        {
+            bail!(
+                "image output contains an ambiguous unreferenced artifact: {}",
+                entry.path().display()
+            );
+        }
+        entry_count = entry_count
+            .checked_add(1)
+            .context("image output contains too many entries")?;
+    }
+    if entry_count != 2 {
+        bail!("image output must contain exactly one disk file and image-info.json");
+    }
+
+    let image_path = root.join(&producer.filename);
+    let (mut image_file, image_identity) =
+        open_stable_regular_file_at(&root_file, &producer.filename, &image_path)?;
+    let actual_sha256 = sha256_open_file(&mut image_file, &image_path)?;
+    verify_stable_regular_file(&image_path, &image_file, &image_identity)?;
+    let actual_size = image_identity.len;
+    if producer.format != format {
+        bail!(
+            "--image-format '{format}' does not match image-info format '{}'",
+            producer.format
+        );
+    }
+    if producer.version != release {
+        bail!("image-info version does not match the signed package release");
+    }
+    if producer.platform != platform {
+        bail!("image-info platform does not match the signed platform");
+    }
+    if producer.byte_size != actual_size {
+        bail!("image-info byteSize does not match the disk file");
+    }
+    if producer.sha256 != actual_sha256 {
+        bail!("image-info sha256 does not match the disk file");
+    }
+    if format == "raw" && producer.logical_disk_sha256 != actual_sha256 {
+        bail!("raw image SHA-256 must equal its canonical logical disk SHA-256");
+    }
+    let expected_key = immutable_image_object_key(&actual_sha256, &producer.filename);
+    if producer.object_key != expected_key {
+        bail!("image-info objectKey is not the canonical immutable key");
+    }
+
+    if !producer.uki.filename.ends_with(".efi") {
+        bail!("image-info UKI filename must end in .efi");
+    }
+    let (mut uki_file, uki_identity) = open_stable_regular_file(uki_path)?;
+    let uki_sha256 = sha256_open_file(&mut uki_file, uki_path)?;
+    verify_stable_regular_file(uki_path, &uki_file, &uki_identity)?;
+    if producer.uki.byte_size != uki_identity.len || producer.uki.sha256 != uki_sha256 {
+        bail!("image-info UKI size or SHA-256 does not match the associated UKI");
+    }
+
+    let logical_identity = serde_json::json!({
+        "schemaVersion": producer.schema_version,
+        "release": &producer.version,
+        "platform": &producer.platform,
+        "architecture": &producer.architecture,
+        "virtualSizeBytes": producer.virtual_size_bytes,
+        "logicalDiskSha256": &producer.logical_disk_sha256,
+        "rootfsSha256": &producer.rootfs_sha256,
+        "partitionTable": &producer.partition_table,
+        "kernelParams": &producer.kernel_params,
+        "partitions": &producer.partitions,
+        "uki": &producer.uki,
+    });
+    let logical_image_id = sha256_hex(&serde_json::to_vec(&logical_identity)?);
+    let producer_uki_signed = producer.uki.signed;
+    let producer_uki_measured = producer.uki.measured;
+
+    // Derive every verification claim from the exact pinned UKI descriptor.
+    // The outer production path additionally proves these bytes are embedded
+    // at the signed ESP path before the catalog can be committed.
+    let (_verification_file, verification_path) = inheritable_procfd(&uki_file, uki_path)?;
+    let sb = derive_secure_boot(&verification_path, db_cert)
+        .with_context(|| format!("deriving Secure Boot facts for {}", uki_path.display()))?;
+    verify_stable_regular_file(uki_path, &uki_file, &uki_identity)?;
+    if producer_uki_signed != sb.signer_cert_sha256.is_some() {
+        bail!("image-info UKI signed state does not match its Authenticode signature");
+    }
+    if producer_uki_measured != sb.expected_pcr11.is_some() {
+        bail!("image-info UKI measured state does not match its PCR-11 policy");
+    }
+
+    let mut canonical_info_bytes =
+        serde_json::to_vec(&producer).context("serializing canonical public image-info.json")?;
+    canonical_info_bytes.push(b'\n');
+    let info_sha256 = sha256_hex(&canonical_info_bytes);
+    let mut canonical_info_file =
+        tempfile::tempfile().context("creating pinned canonical image-info.json")?;
+    canonical_info_file
+        .write_all(&canonical_info_bytes)
+        .context("writing pinned canonical image-info.json")?;
+    canonical_info_file.seek(SeekFrom::Start(0))?;
+    let canonical_info_identity = file_identity(&canonical_info_file.metadata()?);
+    let delivery = ImageDelivery {
+        schema_version: producer.schema_version,
+        release: release.to_string(),
+        platform: producer.platform,
+        architecture: producer.architecture,
+        logical_image_id,
+        logical_disk_sha256: producer.logical_disk_sha256,
+        rootfs_sha256: producer.rootfs_sha256,
+        filename: producer.filename,
+        object_key: producer.object_key,
+        media_type: producer.media_type,
+        compression: producer.compression,
+        byte_size: producer.byte_size,
+        sha256: producer.sha256,
+        compatible_targets: producer.compatible_targets,
+        uki: ImageUkiIdentity {
+            filename: producer.uki.filename,
+            esp_path: producer.uki.esp_path,
+            byte_size: producer.uki.byte_size,
+            sha256: producer.uki.sha256,
+            verification: if producer_uki_signed {
+                ImageVerificationState::SignedUnverified
+            } else {
+                ImageVerificationState::Unsigned
+            },
+            signer_cert_sha256: sb.signer_cert_sha256.clone(),
+            sbat: sb.sbat.clone(),
+            measured: producer_uki_measured,
+            expected_pcr11: sb.expected_pcr11.clone(),
+        },
+        image_info: ImageInfoReference {
+            filename: "image-info.json".to_string(),
+            object_key: immutable_image_info_object_key(&actual_sha256, &info_sha256),
+            media_type: "application/vnd.aos.image-info+json".to_string(),
+            byte_size: canonical_info_bytes.len() as u64,
+            sha256: info_sha256.clone(),
+        },
+    };
+    delivery
+        .validate(format, release, platform)
+        .with_context(|| format!("validating direct delivery contract for {format}"))?;
+    Ok(PublishedImage {
+        format: format.to_string(),
+        store,
+        sb,
+        delivery,
+        directory: ValidatedImageDirectory {
+            path: root_path,
+            file: root_file,
+            identity: root_identity,
+        },
+        disk: ValidatedImageFile {
+            path: image_path,
+            file: image_file,
+            identity: image_identity,
+            sha256: actual_sha256,
+            path_bound: true,
+        },
+        image_info: ValidatedImageFile {
+            path: PathBuf::from("<canonical image-info.json>"),
+            file: canonical_info_file,
+            identity: canonical_info_identity,
+            sha256: info_sha256,
+            path_bound: false,
+        },
+        producer_image_info: ValidatedImageFile {
+            path: info_path,
+            file: info_file,
+            identity: info_identity,
+            sha256: sha256_hex(&info_bytes),
+            path_bound: true,
+        },
+        uki: ValidatedImageFile {
+            path: uki_path.to_path_buf(),
+            file: uki_file,
+            identity: uki_identity,
+            sha256: uki_sha256,
+            path_bound: true,
+        },
+        esp_offset_bytes,
+        root_range,
+    })
+}
+
+fn validate_lower_sha256(value: &str, label: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("{label} SHA-256 must be 64 lowercase hexadecimal characters");
+    }
+    Ok(())
+}
+
+/// Persists the deterministic transaction marker uploaded after image/catalog
+/// immutables and before any release or channel pointer.
+fn persist_image_publication_receipt(registry_dir: &Path) -> Result<()> {
+    let repository = git2::Repository::open(registry_dir).context("opening image registry")?;
+    let commit = repository
+        .head()
+        .context("reading image publication HEAD")?
+        .peel_to_commit()
+        .context("resolving image publication commit")?;
+    let commit_id = commit.id().to_string();
+    let tree = commit.tree().context("reading image publication tree")?;
+    let objects = committed_image_receipt_objects(&repository, &tree)?;
+    if objects.is_empty() {
+        return Ok(());
+    }
+    let registry = committed_registry_identity(&repository, &tree)?;
+    let catalog_digest = aos_registry_surface::manifest::image_catalog_digest(
+        &registry,
+        objects.values().map(|object| {
+            (
+                object.key.as_str(),
+                object.role,
+                object.byte_size,
+                object.sha256.as_str(),
+            )
+        }),
+    );
+    let bytes = serde_json::to_vec(&ImagePublicationReceipt {
+        schema_version: 1,
+        commit: &commit_id,
+        registry: &registry,
+        catalog_digest: &catalog_digest,
+        objects: objects.into_values().collect(),
+    })?;
+    let git_dir = objectstore::repo_git_dir(registry_dir)?;
+    let destination = git_dir
+        .join("aos-static-origin/publication-receipts")
+        .join(format!("{commit_id}.json"));
+    if let Some(existing) = fs::read(&destination)
+        .ok()
+        .filter(|existing| existing == &bytes)
+    {
+        let _ = existing;
+        return Ok(());
+    }
+    if destination.exists() {
+        bail!("image publication receipt for commit {commit_id} has conflicting bytes");
+    }
+    let parent = destination
+        .parent()
+        .context("publication receipt has no parent")?;
+    fs::create_dir_all(parent)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".aos-image-receipt-")
+        .tempfile_in(parent)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file_mut().sync_all()?;
+    temporary
+        .persist_noclobber(&destination)
+        .map_err(|error| error.error)
+        .with_context(|| format!("persisting image publication receipt for {commit_id}"))?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImagePublicationReceipt<'a> {
+    schema_version: u32,
+    commit: &'a str,
+    registry: &'a str,
+    catalog_digest: &'a str,
+    objects: Vec<ImagePublicationReceiptObject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImagePublicationReceiptObject {
+    key: String,
+    role: &'static str,
+    byte_size: u64,
+    sha256: String,
+}
+
+fn committed_registry_identity(
+    repository: &git2::Repository,
+    root: &git2::Tree<'_>,
+) -> Result<String> {
+    let entry = root
+        .get_name("registry.toml")
+        .context("image publication commit has no registry.toml")?;
+    let blob = entry
+        .to_object(repository)
+        .context("reading committed registry.toml")?
+        .peel_to_blob()
+        .context("committed registry.toml is not a file")?;
+    let content =
+        std::str::from_utf8(blob.content()).context("committed registry.toml is not UTF-8")?;
+    let root: RegistryRootConfig =
+        toml::from_str(content).context("parsing committed registry.toml")?;
+    if root.registry.name.is_empty() {
+        bail!("committed registry identity is empty");
+    }
+    Ok(root.registry.name)
+}
+
+/// Collects every image object identity from the exact committed package tree.
+///
+/// A receipt describes the full signed image catalog at that commit, rather
+/// than only the formats added by the latest command. This makes a fresh
+/// indexer able to validate the transaction marker without reconstructing
+/// publication history.
+fn committed_image_receipt_objects(
+    repository: &git2::Repository,
+    root: &git2::Tree<'_>,
+) -> Result<BTreeMap<String, ImagePublicationReceiptObject>> {
+    let Some(packages_entry) = root.get_name("packages") else {
+        return Ok(BTreeMap::new());
+    };
+    let packages = packages_entry
+        .to_object(repository)
+        .context("reading committed packages tree")?
+        .peel_to_tree()
+        .context("committed packages path is not a tree")?;
+    let mut objects = BTreeMap::new();
+    for bucket_entry in &packages {
+        let bucket = bucket_entry
+            .to_object(repository)
+            .context("reading committed package bucket")?
+            .peel_to_tree()
+            .context("committed package bucket is not a tree")?;
+        for package_entry in &bucket {
+            let name = package_entry
+                .name()
+                .context("committed package has no name")?;
+            if !name.ends_with(".toml") {
+                continue;
+            }
+            let blob = package_entry
+                .to_object(repository)
+                .with_context(|| format!("reading committed package '{name}'"))?
+                .peel_to_blob()
+                .with_context(|| format!("committed package '{name}' is not a file"))?;
+            let content = std::str::from_utf8(blob.content())
+                .with_context(|| format!("committed package '{name}' is not UTF-8"))?;
+            let package = crate::registry::parse::parse_package_file(content)
+                .with_context(|| format!("parsing committed package '{name}'"))?;
+            if !package.package.sysroot {
+                continue;
+            }
+            for version in package.versions {
+                for (platform, artifact) in version.platforms {
+                    for image in artifact.images {
+                        image.validate_delivery(&version.version, &platform)?;
+                        insert_image_receipt_object(
+                            &mut objects,
+                            ImagePublicationReceiptObject {
+                                key: image.delivery.object_key,
+                                role: "disk",
+                                byte_size: image.delivery.byte_size,
+                                sha256: image.delivery.sha256,
+                            },
+                        )?;
+                        insert_image_receipt_object(
+                            &mut objects,
+                            ImagePublicationReceiptObject {
+                                key: image.delivery.image_info.object_key,
+                                role: "image-info",
+                                byte_size: image.delivery.image_info.byte_size,
+                                sha256: image.delivery.image_info.sha256,
+                            },
+                        )?;
+                    }
                 }
-            } else if path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
-            {
-                return Some(path);
             }
         }
-        None
     }
-    let root = Path::new(store_path);
-    if root.is_file() {
-        return root
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("efi"))
-            .then(|| root.to_path_buf());
-    }
-    walk(root)
+    Ok(objects)
 }
 
-/// Build a [`Command`] for an external Secure Boot helper (`sbverify`,
-/// `objcopy`, `systemd-measure`) that can be resolved through the caller's
-/// `PATH`.
+fn insert_image_receipt_object(
+    objects: &mut BTreeMap<String, ImagePublicationReceiptObject>,
+    object: ImagePublicationReceiptObject,
+) -> Result<()> {
+    match objects.entry(object.key.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(object);
+        }
+        std::collections::btree_map::Entry::Occupied(entry) if entry.get() == &object => {}
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            bail!(
+                "committed image object key '{}' has conflicting identities",
+                entry.key()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Materializes content-addressed disk and metadata bytes in the registry's
+/// static origin before the signed catalog entry can become visible.
+fn persist_direct_image_objects(
+    registry_dir: &Path,
+    images: &[PublishedImage],
+) -> Result<Vec<PathBuf>> {
+    let git_dir = objectstore::repo_git_dir(registry_dir)?;
+    let staging_dir = git_dir.join("aos-image-staging");
+    let mut committed_paths = Vec::with_capacity(images.len());
+    for image in images {
+        image.recheck_for_commit()?;
+        let info_path = registry_dir.join(&image.delivery.image_info.object_key);
+
+        // Disk images are deliberately never added to the Git tree or object
+        // packs. The persistent, content-addressed staging area is consumed by
+        // static publication before refs/channels move; retries revalidate and
+        // reuse exact bytes at the same key.
+        persist_pinned_object(
+            &staging_dir,
+            &image.delivery.object_key,
+            &image.disk.file,
+            image.delivery.byte_size,
+            &image.delivery.sha256,
+        )?;
+
+        // The canonical per-format metadata is small and belongs in the signed
+        // release tree, while also being staged at its direct HTTP object key.
+        persist_pinned_object(
+            registry_dir,
+            &image.delivery.image_info.object_key,
+            &image.image_info.file,
+            image.delivery.image_info.byte_size,
+            &image.delivery.image_info.sha256,
+        )?;
+        persist_pinned_object(
+            &staging_dir,
+            &image.delivery.image_info.object_key,
+            &image.image_info.file,
+            image.delivery.image_info.byte_size,
+            &image.delivery.image_info.sha256,
+        )?;
+        committed_paths.push(info_path);
+    }
+    Ok(committed_paths)
+}
+
+fn persist_pinned_object(
+    git_dir: &Path,
+    object_key: &str,
+    source: &fs::File,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<()> {
+    validate_portable_relative_path(object_key, "image object key")?;
+    let destination = git_dir.join(object_key);
+    if destination.exists() {
+        let (mut existing, identity) = open_stable_regular_file(&destination)?;
+        let digest = sha256_open_file(&mut existing, &destination)?;
+        if identity.len != expected_size || digest != expected_sha256 {
+            bail!("immutable image object already exists with different bytes: {object_key}");
+        }
+        return Ok(());
+    }
+    let parent = destination
+        .parent()
+        .context("canonical image object key has no parent")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating image object directory {}", parent.display()))?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".aos-image-")
+        .tempfile_in(parent)
+        .with_context(|| format!("creating image object beside {}", destination.display()))?;
+    let mut input = source
+        .try_clone()
+        .context("duplicating pinned image object")?;
+    input.seek(SeekFrom::Start(0))?;
+    std::io::copy(&mut input, temporary.as_file_mut())?;
+    temporary.as_file_mut().sync_all()?;
+    let identity = file_identity(&temporary.as_file().metadata()?);
+    let mut verification = temporary.as_file().try_clone()?;
+    let digest = sha256_open_file(&mut verification, Path::new("<staged image object>"))?;
+    if identity.len != expected_size || digest != expected_sha256 {
+        bail!("staged image object does not match its signed size and SHA-256");
+    }
+    match temporary.persist_noclobber(&destination) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let (mut existing, identity) = open_stable_regular_file(&destination)?;
+            let digest = sha256_open_file(&mut existing, &destination)?;
+            if identity.len != expected_size || digest != expected_sha256 {
+                bail!("immutable image object raced with different bytes: {object_key}");
+            }
+            Ok(())
+        }
+        Err(error) => Err(error.error)
+            .with_context(|| format!("persisting immutable image object {object_key}")),
+    }
+}
+
+/// Duplicates a pinned descriptor and exposes only that descriptor to a child.
+#[cfg(target_os = "linux")]
+fn inheritable_procfd(file: &fs::File, _fallback: &Path) -> Result<(fs::File, PathBuf)> {
+    let duplicate = file
+        .try_clone()
+        .context("duplicating pinned image descriptor")?;
+    rustix::io::fcntl_setfd(&duplicate, rustix::io::FdFlags::empty())
+        .context("making pinned image descriptor inheritable")?;
+    let path = PathBuf::from(format!("/proc/self/fd/{}", duplicate.as_raw_fd()));
+    Ok((duplicate, path))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn inheritable_procfd(file: &fs::File, fallback: &Path) -> Result<(fs::File, PathBuf)> {
+    Ok((
+        file.try_clone()
+            .context("duplicating pinned image descriptor")?,
+        fallback.to_path_buf(),
+    ))
+}
+
+/// Proves that the separately verified UKI is byte-identical to the UKI
+/// embedded in the disk image at the signed ESP path.
+#[cfg(target_os = "linux")]
+fn verify_embedded_uki(image: &PublishedImage) -> Result<()> {
+    let mut raw = tempfile::tempfile().context("creating pinned raw-image verification file")?;
+    let raw_input;
+    let raw_path = if image.format == "raw" {
+        let (file, path) = inheritable_procfd(&image.disk.file, &image.disk.path)?;
+        raw_input = Some(file);
+        path
+    } else {
+        let (input_file, input_path) = inheritable_procfd(&image.disk.file, &image.disk.path)?;
+        let (output_file, output_path) = inheritable_procfd(&raw, Path::new("<raw image>"))?;
+        let qemu_img = std::env::var_os("AOS_QEMU_IMG")
+            .map(PathBuf::from)
+            .context("AOS_QEMU_IMG is required to verify converted image contents")?;
+        let input_format = if image.format == "vhd" {
+            "vpc"
+        } else {
+            image.format.as_str()
+        };
+        let status = Command::new(qemu_img)
+            .args(["convert", "-f", input_format, "-O", "raw"])
+            .arg(&input_path)
+            .arg(&output_path)
+            .status()
+            .context("running qemu-img against pinned image descriptors")?;
+        drop(output_file);
+        drop(input_file);
+        if !status.success() {
+            bail!("qemu-img failed while materializing the canonical disk for UKI verification");
+        }
+        raw.seek(SeekFrom::Start(0))?;
+        let (file, path) = inheritable_procfd(&raw, Path::new("<raw image>"))?;
+        raw_input = Some(file);
+        path
+    };
+
+    let mut logical_disk = if image.format == "raw" {
+        image
+            .disk
+            .file
+            .try_clone()
+            .context("duplicating canonical raw disk")?
+    } else {
+        raw.try_clone()
+            .context("duplicating converted canonical raw disk")?
+    };
+    let logical_disk_sha256 = sha256_open_file(&mut logical_disk, Path::new("<logical disk>"))?;
+    if logical_disk_sha256 != image.delivery.logical_disk_sha256 {
+        bail!("image encoding does not materialize the signed canonical logical disk");
+    }
+    let rootfs_sha256 = sha256_file_range(
+        &mut logical_disk,
+        image.root_range.0,
+        image.root_range.1,
+        "root filesystem partition",
+    )?;
+    if rootfs_sha256 != image.delivery.rootfs_sha256 {
+        bail!("disk root filesystem payload does not match signed logical image identity");
+    }
+
+    let mut extracted = tempfile::tempfile().context("creating pinned embedded-UKI file")?;
+    let (extracted_child, extracted_path) =
+        inheritable_procfd(&extracted, Path::new("<embedded UKI>"))?;
+    let mcopy = std::env::var_os("AOS_MCOPY")
+        .map(PathBuf::from)
+        .context("AOS_MCOPY is required to verify embedded image contents")?;
+    let image_spec = format!("{}@@{}", raw_path.display(), image.esp_offset_bytes);
+    let source = format!("::/{}", image.delivery.uki.esp_path);
+    let status = Command::new(mcopy)
+        .env("MTOOLS_SKIP_CHECK", "1")
+        .args(["-o", "-i"])
+        .arg(image_spec)
+        .arg(source)
+        .arg(&extracted_path)
+        .status()
+        .context("extracting the embedded UKI through pinned descriptors")?;
+    drop(extracted_child);
+    drop(raw_input);
+    if !status.success() {
+        bail!("the declared UKI is not readable from the disk image ESP");
+    }
+    extracted.seek(SeekFrom::Start(0))?;
+    let extracted_identity = file_identity(&extracted.metadata()?);
+    let extracted_sha256 = sha256_open_file(&mut extracted, Path::new("<embedded UKI>"))?;
+    if extracted_identity.len != image.delivery.uki.byte_size
+        || extracted_sha256 != image.delivery.uki.sha256
+    {
+        bail!("the UKI embedded in the disk does not match the signed catalog UKI identity");
+    }
+    Ok(())
+}
+
+fn sha256_file_range(file: &mut fs::File, offset: u64, length: u64, label: &str) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+
+    file.seek(SeekFrom::Start(offset))
+        .with_context(|| format!("seeking to {label}"))?;
+    let mut remaining = length;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    while remaining != 0 {
+        let wanted = usize::try_from(remaining.min(buffer.len() as u64))?;
+        let count = file
+            .read(&mut buffer[..wanted])
+            .with_context(|| format!("reading {label}"))?;
+        if count == 0 {
+            bail!("{label} ended before its signed byte length");
+        }
+        hasher.update(&buffer[..count]);
+        remaining -= count as u64;
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn verify_embedded_uki(_image: &PublishedImage) -> Result<()> {
+    bail!("direct image publication requires Linux descriptor-backed verification")
+}
+
+fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt as _;
+
+    FileIdentity {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        links: metadata.nlink(),
+    }
+}
+
+fn open_stable_regular_file(path: &Path) -> Result<(fs::File, FileIdentity)> {
+    let path_metadata =
+        fs::symlink_metadata(path).with_context(|| format!("inspecting {}", path.display()))?;
+    if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
+        bail!(
+            "artifact must be a regular non-symlink file: {}",
+            path.display()
+        );
+    }
+    let handle = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .with_context(|| format!("opening {}", path.display()))?;
+    let file = fs::File::from(handle);
+    let opened_identity = file_identity(&file.metadata()?);
+    #[cfg(unix)]
+    if opened_identity.links != 1 {
+        bail!(
+            "artifact must have exactly one hard link: {}",
+            path.display()
+        );
+    }
+    if file_identity(&path_metadata) != opened_identity {
+        bail!("artifact identity changed while opening {}", path.display());
+    }
+    Ok((file, opened_identity))
+}
+
+fn open_stable_regular_file_at(
+    directory: &fs::File,
+    name: &str,
+    display_path: &Path,
+) -> Result<(fs::File, FileIdentity)> {
+    let handle = rustix::fs::openat(
+        directory,
+        name,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .with_context(|| format!("opening {}", display_path.display()))?;
+    let file = fs::File::from(handle);
+    let identity = file_identity(&file.metadata()?);
+    #[cfg(unix)]
+    if identity.links != 1 {
+        bail!(
+            "artifact must have exactly one hard link: {}",
+            display_path.display()
+        );
+    }
+    if !file.metadata()?.is_file() {
+        bail!(
+            "artifact must be a regular file: {}",
+            display_path.display()
+        );
+    }
+    Ok((file, identity))
+}
+
+impl ValidatedImageFile {
+    fn recheck(&self) -> Result<()> {
+        if self.path_bound {
+            verify_stable_regular_file(&self.path, &self.file, &self.identity)
+        } else if file_identity(&self.file.metadata()?) != self.identity {
+            bail!("pinned canonical artifact changed before commit")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl PublishedImage {
+    fn recheck_for_commit(&self) -> Result<()> {
+        let path_metadata = fs::symlink_metadata(&self.directory.path)?;
+        if path_metadata.file_type().is_symlink()
+            || !path_metadata.is_dir()
+            || file_identity(&path_metadata) != self.directory.identity
+            || file_identity(&self.directory.file.metadata()?) != self.directory.identity
+        {
+            bail!("image output directory identity changed before commit");
+        }
+        self.disk.recheck()?;
+        self.image_info.recheck()?;
+        self.producer_image_info.recheck()?;
+        self.uki.recheck()?;
+        Ok(())
+    }
+}
+
+fn verify_stable_regular_file(path: &Path, file: &fs::File, expected: &FileIdentity) -> Result<()> {
+    let descriptor_identity = file_identity(&file.metadata()?);
+    let path_metadata =
+        fs::symlink_metadata(path).with_context(|| format!("rechecking {}", path.display()))?;
+    if path_metadata.file_type().is_symlink()
+        || !path_metadata.is_file()
+        || &descriptor_identity != expected
+        || &file_identity(&path_metadata) != expected
+    {
+        bail!("artifact identity changed while reading {}", path.display());
+    }
+    Ok(())
+}
+
+fn validate_single_filename(filename: &str, label: &str) -> Result<()> {
+    if filename.is_empty()
+        || filename.len() > 128
+        || !filename.is_ascii()
+        || !filename
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        || !filename
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        || filename.contains("..")
+    {
+        bail!("{label} must be a portable ASCII basename");
+    }
+    Ok(())
+}
+
+fn validate_portable_relative_path(path: &str, label: &str) -> Result<()> {
+    if path.is_empty() || path.len() > 256 || !path.is_ascii() || path.contains('\\') {
+        bail!("{label} must be a non-empty portable relative path");
+    }
+    for component in path.split('/') {
+        if component.is_empty()
+            || component == "."
+            || component == ".."
+            || !component.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+')
+            })
+        {
+            bail!("{label} must be a non-empty portable relative path");
+        }
+    }
+    Ok(())
+}
+
+/// Returns the lowercase hexadecimal SHA-256 read from one retained file
+/// descriptor without retaining the potentially large artifact in memory.
+fn sha256_open_file(file: &mut fs::File, path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    file.seek(SeekFrom::Start(0))
+        .with_context(|| format!("seeking image bytes {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 128 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("reading image bytes {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+/// Builds a Secure Boot helper command resolved only through the wrapper's
+/// hermetic AOS runtime `PATH`.
 ///
-/// The `aos`/`apm`/`apr` wrappers replace `PATH` with a minimal hermetic tool
-/// set (bash/git/nix/…) and stash the caller's original `PATH` in
-/// `AOS_HOST_PATH`. These SB helpers are *not* in the hermetic set, so a bare
-/// `Command::new` for one of them fails with `NotFound` under the wrappers. We
-/// therefore run them with `PATH` = hermetic entries followed by
-/// `AOS_HOST_PATH`, mirroring [`crate::gitcmd`]'s transport handling: AOS-built
-/// tools keep priority, while host-provided `sbverify`/`objcopy`/
-/// `systemd-measure` become reachable. Outside the wrappers (`AOS_HOST_PATH`
-/// unset) the process `PATH` is left untouched.
+/// `pkgs.aos` includes AOS-built `sbsigntools`, `binutils`, and `systemd` in
+/// that path. Internal verification must never consult `AOS_HOST_PATH`.
 fn sb_tool_command(program: &str) -> Command {
-    let mut cmd = Command::new(program);
-    if let Some(path) = host_augmented_path() {
-        cmd.env("PATH", path);
-    }
-    cmd
-}
-
-/// Concatenate the process `PATH` and the caller's `AOS_HOST_PATH` (hermetic
-/// first), dropping duplicate directories while preserving order.
-///
-/// Returns `None` when `AOS_HOST_PATH` is unset (not running under a wrapper),
-/// so the command inherits the process `PATH` unchanged.
-fn host_augmented_path() -> Option<OsString> {
-    augment_path_with_host(std::env::var_os("PATH"), std::env::var_os("AOS_HOST_PATH"))
-}
-
-/// Pure core of [`host_augmented_path`]: append `host_path` after
-/// `process_path`, de-duplicating directories while preserving order.
-///
-/// Returns `None` when `host_path` is absent (the command should inherit the
-/// process `PATH` unchanged).
-fn augment_path_with_host(
-    process_path: Option<OsString>,
-    host_path: Option<OsString>,
-) -> Option<OsString> {
-    let host_path = host_path?;
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for source in [process_path, Some(host_path)].into_iter().flatten() {
-        for dir in std::env::split_paths(&source) {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
-            }
-        }
-    }
-    std::env::join_paths(dirs).ok()
+    Command::new(program)
 }
 
 /// Hash the signer leaf certificate of a UKI's Authenticode signature.
@@ -3127,34 +4256,29 @@ fn sb_db_cert_path(config: &ApmConfig, registry: &str) -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
-/// Derive Secure Boot facts from an image store path, if it holds a UKI.
+/// Derives Secure Boot facts from the exact UKI named by `image-info.json`.
 ///
-/// Locates the UKI within the image, then extracts the signer cert digest,
-/// SBAT table, and predicted PCR-11. Optionally enforces the publish-time
+/// Extracts the signer cert digest, SBAT table, and predicted PCR-11 without
+/// searching an artifact tree. Optionally enforces the publish-time
 /// rule that an image's embedded signature must verify against `db_cert`
 /// before it can be cataloged.
 ///
-/// Returns an empty [`SbFacts`] (recording nothing) when the image holds no
-/// UKI, preserving the unsigned/dev publish path.
+/// Returns an empty [`SbFacts`] for an explicitly associated unsigned UKI,
+/// preserving unsigned development images without losing byte identity.
 ///
 /// # Errors
 ///
-/// Returns an error when a UKI is present but a Secure Boot fact cannot be
-/// derived, or when `db_cert` is given and the signature does not verify
-/// against it.
-fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbFacts> {
-    let Some(uki) = find_uki_in_store_path(image_store_path) else {
-        return Ok(SbFacts::default());
-    };
-
-    let signer = extract_sb_signer_cert_sha256(&uki)?;
+/// Returns an error when a signed UKI fact cannot be derived, or when
+/// `db_cert` is given and the signature does not verify against it.
+fn derive_sb_facts(uki: &Path, db_cert: Option<&Path>) -> Result<SbFacts> {
+    let signer = extract_sb_signer_cert_sha256(uki)?;
     // An image with no embedded signature carries no SB facts to catalog.
     if signer.is_none() {
         return Ok(SbFacts::default());
     }
 
     if let Some(db_cert) = db_cert {
-        verify_uki_against_db_cert(&uki, db_cert).with_context(|| {
+        verify_uki_against_db_cert(uki, db_cert).with_context(|| {
             "refusing to catalog a component whose signature does not verify \
              against the declared db cert"
                 .to_string()
@@ -3163,8 +4287,8 @@ fn derive_sb_facts(image_store_path: &str, db_cert: Option<&Path>) -> Result<SbF
 
     Ok(SbFacts {
         signer_cert_sha256: signer,
-        sbat: extract_sbat_entries(&uki)?,
-        expected_pcr11: extract_expected_pcr11(&uki)?,
+        sbat: extract_sbat_entries(uki)?,
+        expected_pcr11: extract_expected_pcr11(uki)?,
     })
 }
 
@@ -5065,7 +6189,7 @@ fn package_platform_table(
     version: &str,
     platform: &str,
     info: &StorePathInfo,
-    image_infos: &[(String, StorePathInfo, SbFacts)],
+    image_infos: &[PublishedImage],
     source_drv: &str,
     source_nar_hash: &str,
     expose_manifest: Option<&PublishExposeManifest>,
@@ -5092,28 +6216,55 @@ fn package_platform_table(
     );
 
     if !image_infos.is_empty() {
+        let mut formats = HashSet::new();
+        let first = &image_infos[0];
+        for image in image_infos {
+            image.recheck_for_commit()?;
+            if !formats.insert(image.format.as_str()) {
+                bail!(
+                    "duplicate '{}' image encoding in one platform publication",
+                    image.format
+                );
+            }
+            if image.delivery.logical_image_id != first.delivery.logical_image_id
+                || image.delivery.uki != first.delivery.uki
+                || image.sb.signer_cert_sha256 != first.sb.signer_cert_sha256
+                || image.sb.sbat != first.sb.sbat
+                || image.sb.expected_pcr11 != first.sb.expected_pcr11
+            {
+                bail!(
+                    "all image encodings in one platform publication must share one logical disk and UKI identity"
+                );
+            }
+        }
         let images = image_infos
             .iter()
-            .map(|(format, image, sb)| {
+            .map(|image| {
                 let mut entry = toml::map::Map::new();
-                entry.insert("format".into(), toml::Value::String(format.clone()));
-                entry.insert("store_path".into(), toml::Value::String(image.path.clone()));
+                entry.insert("format".into(), toml::Value::String(image.format.clone()));
+                entry.insert(
+                    "store_path".into(),
+                    toml::Value::String(image.store.path.clone()),
+                );
                 entry.insert(
                     "nar_hash".into(),
-                    toml::Value::String(image.nar_hash.clone()),
+                    toml::Value::String(image.store.nar_hash.clone()),
                 );
-                entry.insert(
-                    "nar_size".into(),
-                    toml::Value::Integer(image.nar_size as i64),
-                );
-                if let Some(cert) = &sb.signer_cert_sha256 {
+                let nar_size = i64::try_from(image.store.nar_size)
+                    .context("image NAR size exceeds signed TOML integer range")?;
+                entry.insert("nar_size".into(), toml::Value::Integer(nar_size));
+                let delivery = toml::Value::try_from(&image.delivery)
+                    .context("serializing image delivery contract")?;
+                entry.insert("delivery".into(), delivery);
+                if let Some(cert) = &image.sb.signer_cert_sha256 {
                     entry.insert(
                         "sb_signer_cert_sha256".into(),
                         toml::Value::String(cert.clone()),
                     );
                 }
-                if !sb.sbat.is_empty() {
-                    let sbat = sb
+                if !image.sb.sbat.is_empty() {
+                    let sbat = image
+                        .sb
                         .sbat
                         .iter()
                         .map(|item| {
@@ -5131,12 +6282,12 @@ fn package_platform_table(
                         .collect::<Vec<_>>();
                     entry.insert("sbat".into(), toml::Value::Array(sbat));
                 }
-                if let Some(pcr11) = &sb.expected_pcr11 {
+                if let Some(pcr11) = &image.sb.expected_pcr11 {
                     entry.insert("expected_pcr11".into(), toml::Value::String(pcr11.clone()));
                 }
-                toml::Value::Table(entry)
+                Ok(toml::Value::Table(entry))
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         table.insert("images".into(), toml::Value::Array(images));
     }
 
@@ -7417,7 +8568,7 @@ async fn change_merge(
 /// cache directory (narinfos plus compressed NARs, signed with `--key`
 /// when given), optionally uploads it to each `--upload-url` (falling back
 /// to the `upload_urls` persisted by `apr origin config` when no flag is
-/// given), and with `--cache-url` upserts the `[[caches]]` pointer in
+/// given), and with `--cache-url` upserts the committed `[caches]` stack in
 /// `registry.toml`, committing the pointer change unless `--no-commit` is
 /// set.
 ///
@@ -7830,7 +8981,7 @@ pub async fn run_cache(
             if let Some(cache_url) = cache_url {
                 if nixcache::upsert_registry_cache(&dir, cache_url, *priority)? {
                     cache_pointer_updated = true;
-                    printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
+                    printer.info(&format!("Updated registry.toml [caches] -> {cache_url}"));
                     if !*no_commit {
                         commit_registry(&dir, "registry: update static cache pointer", None)?;
                         refresh_registry_object_store(&dir)
@@ -10478,7 +11629,7 @@ pub struct ReleaseTreeOptions {
     pub cache_dir: PathBuf,
     /// Nix cache signing key for the generated narinfos.
     pub cache_key: Option<PathBuf>,
-    /// Effective public cache URL to upsert into `registry.toml` `[[caches]]`.
+    /// Effective public cache URL to upsert into the registry cache stack.
     pub cache_url: Option<String>,
     /// Whether `cache_url` came from an explicit `--cache-url`.
     pub cache_url_explicit: bool,
@@ -10523,6 +11674,7 @@ pub struct ReleaseStorePublish {
     pub source_drv: Option<String>,
     pub image_paths: Vec<String>,
     pub image_formats: Vec<String>,
+    pub image_uki_paths: Vec<String>,
     pub bless: bool,
     pub message: Option<String>,
     pub registry: String,
@@ -10622,6 +11774,7 @@ pub async fn release(
     source_drv: Option<&str>,
     image_paths: &[String],
     image_formats: &[String],
+    image_uki_paths: &[String],
     bless: bool,
     message: Option<&str>,
     channel: Option<&str>,
@@ -10675,6 +11828,7 @@ pub async fn release(
         source_drv: source_drv.map(ToString::to_string),
         image_paths: image_paths.to_vec(),
         image_formats: image_formats.to_vec(),
+        image_uki_paths: image_uki_paths.to_vec(),
         bless,
         message: message.map(ToString::to_string),
         registry: registry_name.clone(),
@@ -10736,6 +11890,7 @@ async fn publish_release_store_path(
         publish_opts.source_drv.as_deref(),
         &publish_opts.image_paths,
         &publish_opts.image_formats,
+        &publish_opts.image_uki_paths,
         None,
         publish_opts.bless,
         false,
@@ -10809,7 +11964,7 @@ pub async fn release_registry_tree(
 
     // Publishing cache unit (§9): generate into the internal staging dir, push
     // the cache bytes, and only then commit the advertising pointer. A failed
-    // upload aborts the release here with no tag and no `[[caches]]` entry; a
+    // upload aborts the release here with no tag and no `[caches]` change; a
     // committed pointer lands before the tag so it is part of the snapshot.
     let mut cache_report = None;
     let mut cache_pointer_updated = false;
@@ -10866,7 +12021,7 @@ pub async fn release_registry_tree(
             && nixcache::upsert_registry_cache(dir, cache_url, options.cache_priority)?
         {
             cache_pointer_updated = true;
-            printer.info(&format!("Updated registry.toml [[caches]] -> {cache_url}"));
+            printer.info(&format!("Updated registry.toml [caches] -> {cache_url}"));
             commit_registry(
                 dir,
                 "registry: update static cache pointer",
@@ -11256,7 +12411,7 @@ fn release_plan_steps_json(options: &ReleaseTreeOptions) -> Vec<&'static str> {
         steps.push(if options.init_channel {
             "initialize_channel"
         } else {
-            "advance_channel"
+            "publish_channel_pointer"
         });
     }
     if !options.upload_urls.is_empty() {
@@ -12066,6 +13221,555 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    fn write_direct_image_output(
+        container: &Path,
+        format: &str,
+        targets: serde_json::Value,
+    ) -> StorePathInfo {
+        let root = container.join("image-output");
+        let uki_root = container.join("uki-output");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&uki_root).unwrap();
+        let extension = if format == "raw" { "img" } else { format };
+        let filename = format!("aos-test.{extension}");
+        let image_path = root.join(&filename);
+        fs::write(&image_path, b"exact disk image bytes").unwrap();
+        let (mut image_file, image_identity) = open_stable_regular_file(&image_path).unwrap();
+        let sha256 = sha256_open_file(&mut image_file, &image_path).unwrap();
+        verify_stable_regular_file(&image_path, &image_file, &image_identity).unwrap();
+        let uki_filename = "aos-test.efi";
+        let uki_path = uki_root.join(uki_filename);
+        fs::write(&uki_path, b"unsigned fake UKI bytes").unwrap();
+        let (mut uki_file, uki_identity) = open_stable_regular_file(&uki_path).unwrap();
+        let uki_sha256 = sha256_open_file(&mut uki_file, &uki_path).unwrap();
+        verify_stable_regular_file(&uki_path, &uki_file, &uki_identity).unwrap();
+        let media_type = match format {
+            "raw" => "application/vnd.aos.disk-image.raw",
+            "qcow2" => "application/vnd.aos.disk-image.qcow2",
+            "vmdk" => "application/x-vmdk",
+            "vhd" => "application/vnd.aos.disk-image.vhd",
+            other => panic!("unsupported fixture format {other}"),
+        };
+        let info = serde_json::json!({
+            "schemaVersion": 1,
+            "name": "test",
+            "version": "2026.08",
+            "architecture": "x86_64",
+            "platform": "x86_64-linux",
+            "format": format,
+            "filename": filename,
+            "objectKey": immutable_image_object_key(&sha256, &filename),
+            "mediaType": media_type,
+            "compression": "none",
+            "byteSize": fs::metadata(&image_path).unwrap().len(),
+            "virtualSizeBytes": fs::metadata(&image_path).unwrap().len(),
+            "sha256": &sha256,
+            "logicalDiskSha256": &sha256,
+            "rootfsSha256": "2".repeat(64),
+            "compatibleTargets": targets,
+            "partitionTable": "gpt",
+            "kernelParams": "",
+            "partitions": [{
+                "number": 1,
+                "label": "ESP",
+                "type": "esp",
+                "filesystem": "vfat",
+                "sizeMiB": 0,
+                "offsetBytes": 0,
+                "sizeBytes": 10,
+            }, {
+                "number": 2,
+                "label": "root-a",
+                "type": "root",
+                "filesystem": "fake",
+                "sizeMiB": 0,
+                "offsetBytes": 10,
+                "sizeBytes": fs::metadata(&image_path).unwrap().len() - 10,
+            }],
+            "esp": {"uki": "EFI/Linux/aos-test.efi", "sdBoot": "EFI/systemd/systemd-bootx64.efi"},
+            "uki": {
+                "filename": uki_filename,
+                "espPath": "EFI/Linux/aos-test.efi",
+                "byteSize": uki_identity.len,
+                "sha256": uki_sha256,
+                "signed": false,
+                "measured": false,
+            },
+        });
+        fs::write(
+            root.join("image-info.json"),
+            serde_json::to_vec(&info).unwrap(),
+        )
+        .unwrap();
+        StorePathInfo {
+            path: root.display().to_string(),
+            nar_hash: "sha256:nar".to_string(),
+            nar_size: 128,
+            references: Vec::new(),
+            closure_size: 128,
+        }
+    }
+
+    fn inspect_test_image(
+        format: &str,
+        store: StorePathInfo,
+        release: &str,
+        platform: &str,
+    ) -> Result<PublishedImage> {
+        let uki_path = Path::new(&store.path)
+            .parent()
+            .unwrap()
+            .join("uki-output/aos-test.efi");
+        inspect_published_image_with(
+            format,
+            store,
+            &uki_path,
+            "test",
+            release,
+            platform,
+            None,
+            |_uki, _db_cert| Ok(SbFacts::default()),
+        )
+    }
+
+    fn rewrite_test_image_parent(store: &StorePathInfo, release: &str, platform: &str) {
+        let path = Path::new(&store.path).join("image-info.json");
+        let mut info: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        info["version"] = serde_json::json!(release);
+        info["platform"] = serde_json::json!(platform);
+        info["architecture"] = serde_json::json!(platform.split('-').next().unwrap_or_default());
+        fs::write(path, serde_json::to_vec(&info).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn image_publisher_binds_exact_disk_and_metadata_bytes() {
+        let temp = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            temp.path(),
+            "qcow2",
+            serde_json::json!(["qemu-kvm", "openstack"]),
+        );
+        let image = inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").unwrap();
+        assert_eq!(image.delivery.byte_size, 22);
+        assert_eq!(image.delivery.filename, "aos-test.qcow2");
+        assert_eq!(image.delivery.image_info.filename, "image-info.json");
+        assert!(image.delivery.object_key.contains(&image.delivery.sha256));
+        assert_eq!(image.disk.sha256, image.delivery.sha256);
+        assert_eq!(image.disk.identity.len, image.delivery.byte_size);
+        assert_eq!(image.image_info.sha256, image.delivery.image_info.sha256);
+        assert_eq!(
+            image.uki.path.extension().and_then(|value| value.to_str()),
+            Some("efi")
+        );
+        assert_eq!(image.uki.identity.len, 23);
+        assert_eq!(image.uki.sha256.len(), 64);
+        let mut public_info_file = image.image_info.file.try_clone().unwrap();
+        public_info_file.seek(SeekFrom::Start(0)).unwrap();
+        let mut public_info = String::new();
+        public_info_file.read_to_string(&mut public_info).unwrap();
+        assert!(!public_info.contains("ukiStorePath"));
+        assert_eq!(image.image_info.identity.len, public_info.len() as u64);
+    }
+
+    #[test]
+    fn disk_bytes_stay_out_of_git_while_signed_image_info_is_committed() {
+        let temp = TempDir::new().unwrap();
+        let repo_dir = temp.path().join("registry");
+        let repo = git2::Repository::init(&repo_dir).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "AOS Test").unwrap();
+        config.set_str("user.email", "aos@example.invalid").unwrap();
+        drop(config);
+        let fixture = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(fixture.path(), "raw", serde_json::json!(["bare-metal"]));
+        let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+        let mut paths =
+            persist_direct_image_objects(&repo_dir, std::slice::from_ref(&image)).unwrap();
+        assert_eq!(paths.len(), 1);
+        assert!(paths.iter().all(|path| path.starts_with(&repo_dir)));
+        let package_path = repo_dir.join("packages/t/test.toml");
+        fs::create_dir_all(package_path.parent().unwrap()).unwrap();
+        fs::write(
+            &package_path,
+            build_package_toml(
+                "",
+                "test",
+                "2026.08",
+                "x86_64-linux",
+                &image.store,
+                Some("test system image"),
+                None,
+                Some("MIT"),
+                Some("aos-test"),
+                true,
+                None,
+                std::slice::from_ref(&image),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        paths.push(package_path);
+        let registry_path = repo_dir.join("registry.toml");
+        fs::write(
+            &registry_path,
+            "[registry]\nname = \"test-registry\"\ncontent_addressed = true\n",
+        )
+        .unwrap();
+        paths.push(registry_path);
+        commit_registry_paths(&repo_dir, "publish image objects", &paths, None).unwrap();
+        persist_image_publication_receipt(&repo_dir).unwrap();
+
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        let tree = head.tree().unwrap();
+        assert!(
+            tree.get_path(Path::new(&image.delivery.object_key))
+                .is_err()
+        );
+        assert!(
+            tree.get_path(Path::new(&image.delivery.image_info.object_key))
+                .is_ok()
+        );
+        let git_dir = objectstore::repo_git_dir(&repo_dir).unwrap();
+        let staging = git_dir.join("aos-image-staging");
+        assert!(staging.join(&image.delivery.object_key).is_file());
+        assert!(
+            staging
+                .join(&image.delivery.image_info.object_key)
+                .is_file()
+        );
+        let disk_bytes = fs::read(&image.disk.path).unwrap();
+        let disk_blob = git2::Oid::hash_object(git2::ObjectType::Blob, &disk_bytes).unwrap();
+        assert!(
+            !repo.odb().unwrap().exists(disk_blob),
+            "downloadable disk bytes must not enter loose Git objects or packs"
+        );
+        let receipt_path = git_dir
+            .join("aos-static-origin/publication-receipts")
+            .join(format!("{}.json", head.id()));
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        assert_eq!(receipt["commit"], head.id().to_string());
+        assert_eq!(receipt["registry"], "test-registry");
+        assert_eq!(receipt["catalogDigest"].as_str().unwrap().len(), 64);
+        assert_eq!(receipt["objects"].as_array().unwrap().len(), 2);
+        assert_eq!(receipt["objects"][0]["role"], "disk");
+        assert_eq!(receipt["objects"][1]["role"], "image-info");
+        persist_image_publication_receipt(&repo_dir).unwrap();
+        assert_eq!(
+            fs::read(&receipt_path).unwrap(),
+            serde_json::to_vec(&receipt).unwrap(),
+            "same-commit retry must be byte-idempotent"
+        );
+
+        fs::write(
+            repo_dir.join("registry.toml"),
+            "[registry]\nname = \"test-registry\"\ndescription = \"metadata-only change\"\ncontent_addressed = true\n",
+        )
+        .unwrap();
+        commit_registry_paths(
+            &repo_dir,
+            "metadata-only change",
+            &[repo_dir.join("registry.toml")],
+            None,
+        )
+        .unwrap();
+        persist_image_publication_receipt(&repo_dir).unwrap();
+        let metadata_head = repo.head().unwrap().peel_to_commit().unwrap();
+        assert!(
+            git_dir
+                .join("aos-static-origin/publication-receipts")
+                .join(format!("{}.json", metadata_head.id()))
+                .is_file(),
+            "every new commit containing the catalog needs its own receipt"
+        );
+
+        fs::remove_dir_all(&staging).unwrap();
+        fs::write(
+            repo_dir.join("registry.toml"),
+            "[registry]\nname = \"test-registry\"\ndescription = \"unpublishable\"\ncontent_addressed = true\n",
+        )
+        .unwrap();
+        commit_registry_paths(
+            &repo_dir,
+            "metadata with unavailable image",
+            &[repo_dir.join("registry.toml")],
+            None,
+        )
+        .unwrap();
+        let unavailable_head = repo.head().unwrap().peel_to_commit().unwrap();
+        persist_image_publication_receipt(&repo_dir).unwrap();
+        assert!(
+            git_dir
+                .join("aos-static-origin/publication-receipts")
+                .join(format!("{}.json", unavailable_head.id()))
+                .is_file(),
+            "the receipt is a deterministic catalog manifest, not local placement proof"
+        );
+    }
+
+    #[test]
+    fn failed_image_materialization_cannot_publish_catalog_visibility() {
+        let temp = TempDir::new().unwrap();
+        let repo_dir = temp.path().join("registry");
+        let repo = git2::Repository::init(&repo_dir).unwrap();
+        let fixture = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(fixture.path(), "raw", serde_json::json!(["bare-metal"]));
+        let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+        let git_dir = objectstore::repo_git_dir(&repo_dir).unwrap();
+        let conflicting = git_dir
+            .join("aos-image-staging")
+            .join(&image.delivery.object_key);
+        fs::create_dir_all(conflicting.parent().unwrap()).unwrap();
+        fs::write(&conflicting, b"wrong immutable bytes").unwrap();
+
+        assert!(persist_direct_image_objects(&repo_dir, &[image]).is_err());
+        assert!(repo.head().is_err(), "no catalog commit may become visible");
+    }
+
+    #[test]
+    fn image_publisher_rejects_tamper_ambiguity_and_wrong_targets() {
+        let tamper = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(tamper.path(), "raw", serde_json::json!(["bare-metal"]));
+        fs::write(
+            Path::new(&store.path).join("aos-test.img"),
+            b"changed bytes",
+        )
+        .unwrap();
+        assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
+
+        let ambiguous = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(ambiguous.path(), "raw", serde_json::json!(["bare-metal"]));
+        fs::write(Path::new(&store.path).join("another.img"), b"ambiguous").unwrap();
+        assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
+
+        let wrong_target = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            wrong_target.path(),
+            "qcow2",
+            serde_json::json!(["bare-metal"]),
+        );
+        assert!(inspect_test_image("qcow2", store, "2026.08", "x86_64-linux").is_err());
+    }
+
+    #[test]
+    fn image_publisher_rejects_path_traversal_and_parent_drift() {
+        let traversal = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(traversal.path(), "raw", serde_json::json!(["bare-metal"]));
+        let info_path = Path::new(&store.path).join("image-info.json");
+        let mut info: serde_json::Value =
+            serde_json::from_slice(&fs::read(&info_path).unwrap()).unwrap();
+        info["filename"] = serde_json::json!("../disk.img");
+        fs::write(&info_path, serde_json::to_vec(&info).unwrap()).unwrap();
+        assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
+
+        let drift = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(drift.path(), "raw", serde_json::json!(["bare-metal"]));
+        assert!(inspect_test_image("raw", store, "2026.09", "x86_64-linux").is_err());
+        let store = StorePathInfo {
+            path: drift.path().join("image-output").display().to_string(),
+            nar_hash: "sha256:nar".to_string(),
+            nar_size: 128,
+            references: Vec::new(),
+            closure_size: 128,
+        };
+        assert!(inspect_test_image("raw", store, "2026.08", "aarch64-linux").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_publisher_rejects_symlinked_artifacts() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let target = TempDir::new().unwrap();
+        let external = target.path().join("real.img");
+        let image_path = Path::new(&store.path).join("aos-test.img");
+        fs::rename(&image_path, &external).unwrap();
+        symlink(&external, &image_path).unwrap();
+        assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn image_publisher_rejects_hardlinked_artifacts() {
+        let temp = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        fs::hard_link(
+            Path::new(&store.path).join("aos-test.img"),
+            temp.path().join("disk-alias.img"),
+        )
+        .unwrap();
+        assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
+    }
+
+    #[test]
+    fn pinned_image_recheck_detects_namespace_replacement() {
+        let temp = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let image_path = Path::new(&store.path).join("aos-test.img");
+        let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+        fs::rename(&image_path, temp.path().join("original.img")).unwrap();
+        fs::write(&image_path, b"replacement bytes").unwrap();
+        assert!(image.recheck_for_commit().is_err());
+    }
+
+    #[test]
+    fn image_publisher_hashes_sparse_files_as_logical_bytes() {
+        let temp = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let image_path = Path::new(&store.path).join("aos-test.img");
+        let sparse_size = 2 * 1024 * 1024_u64;
+        OpenOptions::new()
+            .write(true)
+            .open(&image_path)
+            .unwrap()
+            .set_len(sparse_size)
+            .unwrap();
+        let (mut file, _) = open_stable_regular_file(&image_path).unwrap();
+        let sha256 = sha256_open_file(&mut file, &image_path).unwrap();
+        let info_path = Path::new(&store.path).join("image-info.json");
+        let mut info: serde_json::Value =
+            serde_json::from_slice(&fs::read(&info_path).unwrap()).unwrap();
+        info["byteSize"] = serde_json::json!(sparse_size);
+        info["virtualSizeBytes"] = serde_json::json!(sparse_size);
+        info["sha256"] = serde_json::json!(sha256);
+        info["logicalDiskSha256"] = info["sha256"].clone();
+        info["objectKey"] = serde_json::json!(immutable_image_object_key(
+            info["sha256"].as_str().unwrap(),
+            "aos-test.img"
+        ));
+        info["partitions"][0]["sizeMiB"] = serde_json::json!(2);
+        info["partitions"][0]["sizeBytes"] = serde_json::json!(sparse_size);
+        fs::write(&info_path, serde_json::to_vec(&info).unwrap()).unwrap();
+        let image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+        assert_eq!(image.delivery.byte_size, sparse_size);
+    }
+
+    #[test]
+    fn image_publisher_rejects_unknown_or_private_metadata() {
+        for (field, value) in [
+            ("publisherToken", serde_json::json!("secret")),
+            ("buildPath", serde_json::json!("/nix/store/secret-input")),
+        ] {
+            let temp = TempDir::new().unwrap();
+            let store =
+                write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+            let info_path = Path::new(&store.path).join("image-info.json");
+            let mut info: serde_json::Value =
+                serde_json::from_slice(&fs::read(&info_path).unwrap()).unwrap();
+            info[field] = value;
+            fs::write(&info_path, serde_json::to_vec(&info).unwrap()).unwrap();
+            assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
+        }
+    }
+
+    #[test]
+    fn secure_boot_publish_policy_distinguishes_unverified_active_and_revoked() {
+        let temp = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+        let mut image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
+        let signer = "e".repeat(64);
+        image.sb.signer_cert_sha256 = Some(signer.clone());
+        image.delivery.uki.verification = ImageVerificationState::SignedUnverified;
+
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false).unwrap();
+        assert_eq!(
+            image.delivery.uki.verification,
+            ImageVerificationState::SignedUnverified
+        );
+
+        let active = SbCertsToml {
+            active: vec![SbCert {
+                id: "current".into(),
+                cert_sha256: signer.clone(),
+            }],
+            ..SbCertsToml::default()
+        };
+        assert!(
+            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), false)
+                .is_err()
+        );
+        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true).unwrap();
+        assert_eq!(
+            image.delivery.uki.verification,
+            ImageVerificationState::PolicyVerified
+        );
+
+        let revoked = SbCertsToml {
+            active: active.active,
+            revoked: vec![RevokedSbCert {
+                id: "current".into(),
+                reason: Some("rotated".into()),
+            }],
+            ..SbCertsToml::default()
+        };
+        assert!(
+            apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&revoked), true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn image_publisher_rejects_uki_input_or_signature_state_drift() {
+        let input_drift = TempDir::new().unwrap();
+        let store =
+            write_direct_image_output(input_drift.path(), "raw", serde_json::json!(["bare-metal"]));
+        let wrong_uki = input_drift.path().join("uki-output/other.efi");
+        fs::write(&wrong_uki, b"other").unwrap();
+        let result = inspect_published_image_with(
+            "raw",
+            store,
+            &wrong_uki,
+            "test",
+            "2026.08",
+            "x86_64-linux",
+            None,
+            |_uki, _db_cert| Ok(SbFacts::default()),
+        );
+        assert!(result.is_err());
+
+        let signature_drift = TempDir::new().unwrap();
+        let store = write_direct_image_output(
+            signature_drift.path(),
+            "raw",
+            serde_json::json!(["bare-metal"]),
+        );
+        let uki_path = signature_drift.path().join("uki-output/aos-test.efi");
+        let result = inspect_published_image_with(
+            "raw",
+            store,
+            &uki_path,
+            "test",
+            "2026.08",
+            "x86_64-linux",
+            None,
+            |_uki, _db_cert| {
+                Ok(SbFacts {
+                    signer_cert_sha256: Some("c".repeat(64)),
+                    ..SbFacts::default()
+                })
+            },
+        );
+        assert!(result.is_err());
+    }
+
     fn config_module_fixture() -> ConfigModuleMeta {
         ConfigModuleMeta {
             config_output: ConfigOutputMeta {
@@ -12167,6 +13871,7 @@ mod tests {
                     store_path: "/nix/store/imagehash111-webapp-root".into(),
                     nar_hash: "sha256:image".into(),
                     nar_size: 4096,
+                    delivery: crate::types::test_image_delivery("raw"),
                     sb_signer_cert_sha256: None,
                     sbat: Vec::new(),
                     expected_pcr11: None,
@@ -12233,18 +13938,6 @@ mod tests {
                    11:sha256=aaaa\n\
                    11:sha256=bbbb\n";
         assert_eq!(parse_pcr11(out).as_deref(), Some("aaaa"));
-    }
-
-    #[test]
-    fn augment_path_appends_host_after_process_dedup() {
-        use std::ffi::OsString;
-        // No host path -> inherit process PATH unchanged (None).
-        assert!(augment_path_with_host(Some(OsString::from("/a:/b")), None).is_none());
-        // Host path appended after process path, duplicates dropped, order kept.
-        let joined =
-            augment_path_with_host(Some(OsString::from("/a:/b")), Some(OsString::from("/b:/c")))
-                .unwrap();
-        assert_eq!(joined, OsString::from("/a:/b:/c"));
     }
 
     #[test]
@@ -16010,6 +17703,7 @@ references = []
 
     #[test]
     fn build_package_toml_with_sysroot() {
+        let image_fixture = TempDir::new().unwrap();
         let info = StorePathInfo {
             path: "/nix/store/abc123-server-2026.04".into(),
             nar_hash: "sha256:aabb".into(),
@@ -16017,13 +17711,13 @@ references = []
             references: vec!["ref1".into()],
             closure_size: 52428800,
         };
-        let img_info = StorePathInfo {
-            path: "/nix/store/def456-server-2026.04-raw".into(),
-            nar_hash: "sha256:ccdd".into(),
-            nar_size: 8589934592,
-            references: vec![],
-            closure_size: 0,
-        };
+        let img_info = write_direct_image_output(
+            image_fixture.path(),
+            "raw",
+            serde_json::json!(["bare-metal"]),
+        );
+        rewrite_test_image_parent(&img_info, "2026.04", "x86_64-linux");
+        let image = inspect_test_image("raw", img_info, "2026.04", "x86_64-linux").unwrap();
         let content = build_package_toml(
             "",
             "server",
@@ -16036,7 +17730,7 @@ references = []
             Some("aos-team"),
             true,
             Some("2026.03"),
-            &[("raw".to_string(), img_info, SbFacts::default())],
+            &[image],
             None,
             None,
             None,
@@ -16046,11 +17740,15 @@ references = []
         assert!(content.contains("sysroot = true"));
         assert!(content.contains("previous = \"2026.03\""));
         assert!(content.contains("format = \"raw\""));
-        assert!(content.contains("sha256:ccdd"));
+        assert!(content.contains("sha256:nar"));
+        let parsed = crate::registry::parse::parse_package_file(&content).unwrap();
+        let image = &parsed.versions[0].platforms["x86_64-linux"].images[0];
+        assert_eq!(image.delivery.schema_version, 1);
     }
 
     #[test]
     fn build_package_toml_escapes_maintainer_metadata() {
+        let image_fixture = TempDir::new().unwrap();
         let info = StorePathInfo {
             path: "/nix/store/abc123-tool-1.0.0".into(),
             nar_hash: "sha256:aabb".into(),
@@ -16058,13 +17756,13 @@ references = []
             references: vec!["ref\"one".into()],
             closure_size: 84,
         };
-        let img_info = StorePathInfo {
-            path: "/nix/store/def456-tool-image-1.0.0".into(),
-            nar_hash: "sha256:ccdd".into(),
-            nar_size: 128,
-            references: vec![],
-            closure_size: 0,
-        };
+        let img_info = write_direct_image_output(
+            image_fixture.path(),
+            "raw",
+            serde_json::json!(["bare-metal"]),
+        );
+        rewrite_test_image_parent(&img_info, "1.0.0", "x86_64-linux");
+        let image = inspect_test_image("raw", img_info, "1.0.0", "x86_64-linux").unwrap();
 
         let content = build_package_toml(
             "",
@@ -16078,7 +17776,7 @@ references = []
             Some("AOS Team <aos@example.invalid>"),
             false,
             Some("0.9.0+build\"meta"),
-            &[("raw\"image".to_string(), img_info, SbFacts::default())],
+            &[image],
             None,
             None,
             None,
@@ -16115,7 +17813,7 @@ references = []
                 .and_then(|images| images.first())
                 .and_then(|image| image.get("format"))
                 .and_then(|format| format.as_str()),
-            Some("raw\"image")
+            Some("raw")
         );
     }
 

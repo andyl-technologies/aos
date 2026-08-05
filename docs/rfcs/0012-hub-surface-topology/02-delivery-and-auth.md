@@ -196,6 +196,26 @@ identity headers are stripped and never establish an access class or
 principal. Direct routes rely on the provider itself and cannot claim Hub
 authentication.
 
+The implemented Hub-proxy mechanism is a versioned HMAC ingress assertion in
+`X-AOS-Delivery-Attestation`. The operator configures the same secret in the
+trusted adapter and Hub (`--delivery-attestation-key-file` for native Hub or
+the `HUB_DELIVERY_ATTESTATION_KEY` Worker secret). The assertion seals the
+exact method, authority, raw path and query, client-facing scheme, ingress
+kind, route id, immutable route-configuration digest, provider or boundary
+revision, issuance/expiry timestamps, and a one-use nonce. Its lifetime is at
+most 30 seconds. Hub verifies the MAC in constant time, requires canonical
+unpadded base64url, compares the assertion to the selected route's exact pins,
+and atomically claims a nonce digest in shared persistence before serving. The
+assertion header is removed before downstream dispatch. Missing configuration,
+replay, clock skew, route updates, and any request or access-field mismatch all
+fail closed.
+
+This signed adapter is the only implemented trusted-ingress assertion source
+for private-network and external-provider Hub routes in the initial cutover.
+Native mTLS/source-CIDR extraction and provider-specific JWT validation are not
+implicitly supported; adding either requires another explicit verifier adapter
+with the same route binding and durable replay contract.
+
 ### Private network
 
 A route may be restricted by VPN, VPC, tunnel, or source IP. Network location
@@ -330,6 +350,88 @@ complete fallback make a policy invalid.
 The origin abstraction used by native Hub and Worker exposes streaming reads,
 conditional metadata, and optional path-scoped presigning with the same typed
 error classes. Backends do not choose failover or weaken route authorization.
+
+## Webhook durability and delivery identity
+
+A topology mutation inserts its immutable `topology_event_outbox` row in the
+same checked transaction as the mutation. A bounded materializer converts each
+event into its audit record and one `webhook_deliveries` row per matching active
+organization subscription. `(webhook_id, outbox_event_id)` is unique, so a
+materializer retry cannot fan out the same event twice. Operational registry
+events such as index completion also enter this outbox under a deterministic
+semantic identity, so producer retries converge before subscription fanout.
+
+Every delivery receives an immutable `delivery_id`. Queue messages contain only
+that identifier; the consumer reloads the current durable row, wins a bounded
+lease with a fresh fencing token, and may commit an outcome only with that
+token. Active duplicate consumers do no work. An expired lease is recoverable
+after a process or isolate crash. Native Hub performs a bounded periodic claim;
+Worker Cron materializes a bounded event batch, enqueues the resulting stable
+identifiers, and also claims a bounded due batch as a backstop. Thus Queue
+redelivery and Cron overlap are safe and an unavailable Queue cannot strand a
+committed delivery.
+
+Delivery is at least once. A crash after the receiver accepts the HTTP request
+but before Hub commits `delivered` can repeat the POST, so receivers deduplicate
+on `X-AOS-Delivery-ID`. All retries retain that value. Non-2xx responses,
+transport failures, and temporarily unavailable secret or egress providers
+consume the same bounded attempt budget and exponential backoff in both
+runtimes; an unsafe URL or credential-fingerprint drift is terminal. The
+database caps payloads at 1 MiB, claim batches at 100 rows, leases at 300
+seconds, and retained subscriptions at 100 per organization.
+
+Webhook configuration persists only the immutable provider version reference
+and required SHA-256 fingerprint. A delivery resolves that exact version on
+demand, verifies the fingerprint, signs the body, drops the plaintext owner,
+and only then awaits network I/O. The plaintext secret is absent from plans,
+API and CLI responses, revision history, audit data, topology events, queue
+messages, and logs.
+
+## Worker outbound boundary
+
+The Worker never fetches a tenant-, administrator-, provider-, or
+credential-derived URL with the platform Fetch API. Its only global Fetch
+destination is the exact operator-owned HTTPS `HUB_HARDENED_EGRESS_URL`. The
+target URL, closed method, body digest, narrow optional header set, timestamp,
+and random nonce are authenticated under the `aos-hardened-egress-v3` contract.
+Signed webhook POSTs additionally authenticate the closed `X-AOS-Event`,
+`X-AOS-Signature`, and `X-AOS-Delivery-ID` set; arbitrary forwarded headers
+are not part of the protocol.
+
+The repository packages the gateway as `aos-hub-egress`. It disables
+environment proxies and automatic redirects, resolves all addresses at connect
+time, rejects the whole DNS answer set if any address is non-global, and gives
+reqwest only that validated set while preserving hostname SNI. Redirects are
+bounded and revalidated per hop; mutating requests cannot redirect, and a
+request carrying authorization cannot redirect across origins. Request,
+response, redirect, connect, and total-request limits are closed constants.
+
+The gateway rebuilds the response header set rather than forwarding it. It
+signs the request nonce, final URL, connected peer IP, upstream status, and
+timestamp. The Worker accepts bytes only when that evidence is fresh, signed,
+nonce-bound, status-consistent, and names a global peer. Missing configuration,
+an unavailable gateway, stale evidence, an unknown peer, or a signature failure
+fails closed. Gateway failures and logs never include target URLs, presigned
+queries, authorization values, or bodies.
+
+After authenticating the envelope and checking its timestamp, the gateway
+atomically inserts the nonce into a durable strongly-consistent database before
+starting the upstream request. Every replica uses that same database, so the
+nonce primary key gives one admission across replicas and process restarts.
+Replicated deployments use PostgreSQL; file-backed SQLite is valid only for a
+singleton gateway process. Expired rows may be reclaimed, but a live conflict
+always fails before an upstream side effect.
+
+The deployment interface takes `--hardened-egress-url` and an
+operator-provisioned `HUB_EGRESS_SHARED_KEY` encoded as one atomic
+`KEY_ID:KEY` value. It never mints that key. During rotation every gateway
+replica accepts the bounded current/next key-id overlap before the installer
+challenges and atomically changes the Worker's selected id/key. Only after the
+Worker cutover may the old gateway id be removed. The installer completes a
+fresh, mutually authenticated `/v1/challenge` before Worker deployment or
+secret rotation. It installs the scoped provider token separately. The old
+operator-supplied Worker service binding and unsigned evidence-header contract
+do not exist after cutover.
 
 ## Writes
 

@@ -26,6 +26,15 @@ use async_trait::async_trait;
 
 use aos_net::{TransferEngine, TransferEngineConfig, TransferRequest};
 
+/// Trustworthy identity metadata for one backend-relative static object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaticFileIdentity {
+    /// Exact byte length reported by the backend.
+    pub byte_size: u64,
+    /// Exact lowercase SHA-256 metadata, when the backend preserves it.
+    pub sha256: String,
+}
+
 /// Trait for binary cache storage backends.
 ///
 /// Store paths are identified by their *store hash* — the 32-character
@@ -45,6 +54,23 @@ pub trait CacheBackend: Send + Sync {
     /// Returns an error if the existence check itself fails. A clean "not
     /// found" is `Ok(false)`.
     async fn exists(&self, relative_path: &str) -> Result<bool>;
+
+    /// Returns exact identity evidence for an immutable static object.
+    ///
+    /// The default returns `None`: existence alone is not identity evidence.
+    /// Backends should override this only when both size and SHA-256 are
+    /// trustworthy for the exact bytes served at `relative_path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot determine whether trustworthy
+    /// identity evidence is available.
+    async fn static_file_identity(
+        &self,
+        _relative_path: &str,
+    ) -> Result<Option<StaticFileIdentity>> {
+        Ok(None)
+    }
 
     /// Checks whether a narinfo exists for a store hash.
     ///
@@ -116,7 +142,7 @@ pub trait CacheBackend: Send + Sync {
     ///
     /// Returns an error only on a hard transport failure; an unsupported or
     /// not-presignable cache is `Ok(None)`, not an error.
-    async fn mint_upload_url(&self, _path: &str) -> Result<Option<String>> {
+    async fn mint_upload_url(&self, _path: &str, _size: u64) -> Result<Option<String>> {
         Ok(None)
     }
 
@@ -147,7 +173,7 @@ pub trait CacheBackend: Send + Sync {
     /// cache yields an empty map, not an error.
     async fn mint_upload_urls(
         &self,
-        _paths: &[String],
+        _uploads: &[(String, u64)],
     ) -> Result<std::collections::HashMap<String, String>> {
         Ok(std::collections::HashMap::new())
     }
@@ -216,6 +242,8 @@ pub trait CacheBackend: Send + Sync {
         source: &std::path::Path,
         content_type: Option<&str>,
         cache_control: Option<&str>,
+        content_disposition: Option<&str>,
+        sha256: Option<&str>,
     ) -> Result<()>;
 
     /// Returns whether this backend supports AOS pack upload.
@@ -259,7 +287,12 @@ pub trait CacheBackend: Send + Sync {
     ///
     /// Returns an error when the backend does not support multipart or the
     /// request fails. The default always errors.
-    async fn initiate_multipart(&self, _nar_path: &str) -> Result<(String, u64)> {
+    async fn initiate_multipart(
+        &self,
+        _nar_path: &str,
+        _size: u64,
+        _sha256: Option<&str>,
+    ) -> Result<(String, u64)> {
         anyhow::bail!("multipart upload not supported by this backend")
     }
 
@@ -295,6 +328,16 @@ pub trait CacheBackend: Send + Sync {
     ) -> Result<()> {
         anyhow::bail!("multipart upload not supported by this backend")
     }
+
+    /// Abort an in-progress multipart upload after any failed part or complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend does not support multipart or cannot
+    /// confirm the best-effort cleanup request. The default always errors.
+    async fn abort_multipart(&self, _nar_path: &str, _upload_id: &str) -> Result<()> {
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
 }
 
 /// `Cache-Control` for content-addressed payloads that never change in
@@ -322,6 +365,8 @@ pub(crate) fn add_static_metadata_headers(
     request: &mut TransferRequest,
     content_type: Option<&str>,
     cache_control: Option<&str>,
+    content_disposition: Option<&str>,
+    sha256: Option<&str>,
 ) {
     if let Some(content_type) = content_type {
         request
@@ -332,6 +377,17 @@ pub(crate) fn add_static_metadata_headers(
         request
             .headers
             .push(("Cache-Control".to_string(), cache_control.to_string()));
+    }
+    if let Some(content_disposition) = content_disposition {
+        request.headers.push((
+            "Content-Disposition".to_string(),
+            content_disposition.to_string(),
+        ));
+    }
+    if let Some(sha256) = sha256 {
+        request
+            .headers
+            .push(("X-AOS-SHA256".to_string(), sha256.to_string()));
     }
 }
 

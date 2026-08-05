@@ -4,6 +4,21 @@
   "dialect": "aos-cutover-schema/v1",
   "bundle_id": "bundle/fixture/topology-v1",
   "result": "verified",
+  "authored_at": "2026-08-05T03:05:00Z",
+  "authenticated_documents": {
+    "plan": {
+      "payload_node_id": "document/plan",
+      "canonical_payload_sha256": "derive:document-digest:document/plan",
+      "signature_node_id": "signature/plan",
+      "signature_sha256": "derive:bundle-sha256:signature/plan"
+    },
+    "report": {
+      "payload_node_id": "document/report",
+      "canonical_payload_sha256": "derive:document-digest:document/report",
+      "signature_node_id": "signature/report",
+      "signature_sha256": "derive:bundle-sha256:signature/report"
+    }
+  },
   "verifier_identity": {
     "bundle_node_id": "verifier/aos",
     "bundle_entry_sha256": "derive:bundle-sha256:verifier/aos",
@@ -401,7 +416,7 @@
     "transition_count": 6,
     "terminal_state": "closed",
     "chronology_valid": true,
-    "write_open_transition_count": 2,
+    "write_open_transition_count": 1,
     "admitted_target_write_count": 0,
     "result": "pass"
   },
@@ -443,8 +458,8 @@
   },
   "fixture_validation": {
     "manifest_node_id": "manifest/fixtures",
-    "case_count": 74,
-    "passed_count": 74,
+    "case_count": 77,
+    "passed_count": 77,
     "failed_count": 0,
     "native_zero_do_case_passed": true,
     "result": "pass"

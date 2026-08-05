@@ -1,4 +1,4 @@
-//! Pure tenancy authorization: roles, permissions, scope paths, and the
+//! Pure tenancy authorization: roles, permissions, stable scopes, and the
 //! `allow` decision function.
 //!
 //! This module is **IO-free and wasm-clean**: it owns no database handle,
@@ -15,31 +15,28 @@
 //!
 //! # Scope grammar
 //!
-//! A [`Scope`] is a `/`-separated path naming a point in the
-//! org → project → registry hierarchy. Its grammar:
+//! A [`Scope`] is a non-reusable identity naming an authorization boundary.
+//! Human-facing slugs and paths are deliberately absent from its grammar:
 //!
 //! ```text
-//! scope    := ""                                   # instance root
-//!           | org                                  # one organization
-//!           | org "/" project_path                 # a project (materialized path)
-//!           | org "/" project_path "/" registry    # a registry under a project
-//!
-//! org           := segment
-//! registry      := segment
-//! project_path  := segment ("/" segment)*          # arbitrary depth
-//! segment       := one or more chars, no "/"
+//! scope         := "instance"
+//!                | "org:" lower_hex_32
+//!                | "project:" lower_hex_32
+//!                | "registry:" lower_hex_32
+//!                | "cache:" lower_hex_32
+//! lower_hex_32  := 32 lowercase hexadecimal digits
 //! ```
 //!
-//! Containment ([`Scope::contains`]) is prefix-on-segment-boundary, so
-//! `acme` contains `acme/infra` but **not** `acme-corp`. Because role
-//! grants inherit downward, a grant at scope `S` covers every target scope
-//! `T` for which `S.contains(T)` — `S` is `T` or one of its ancestors.
+//! Scope keys contain no hierarchy. [`AuthorizationContext`] carries the
+//! validated ancestor closure loaded from `authorization_scope_ancestors`.
+//! This keeps identity stable across slug changes and reparenting while making
+//! every inheritance decision explicit and auditable.
 //!
 //! # Decision function
 //!
 //! [`allow`] answers "may a principal with these `(scope, role)` grants
 //! perform `permission` on `target`?" — true iff some grant at scope `S`
-//! with role `R` satisfies both `S.contains(target)` and `role_grants(R)`
+//! with role `R` satisfies both `target.ancestors.contains(S)` and `role_grants(R)`
 //! includes `permission`.
 
 /// A role on the five-rung RFC-0004 ladder, grantable at any scope.
@@ -49,13 +46,13 @@
 pub enum Role {
     /// Everything, including delete, ownership transfer, and IAM admin.
     Owner,
-    /// Members, tokens, registries, frontends, storage, hosted keys.
+    /// Members, tokens, registries, delivery topology, storage, signing keys.
     Admin,
     /// Publish, advance channels, manage rosters, repair validation.
     Maintainer,
-    /// Read private registries and self-service own tokens.
+    /// Read private surfaces and topology metadata; self-service own tokens.
     Developer,
-    /// Read-only.
+    /// Read private surfaces and topology metadata without token self-service.
     Viewer,
 }
 
@@ -130,12 +127,63 @@ pub enum Permission {
     TokensManage,
     /// Manage memberships and role grants.
     MembersManage,
-    /// Configure registries and frontends.
+    /// Configure registries and their delivery topology.
     RegistryConfigure,
     /// Manage storage bindings, buckets, and cache stores.
     StorageManage,
+    /// Read storage-binding identity and redacted health information.
+    ///
+    /// Provider coordinates and credential metadata require
+    /// [`Permission::StorageBindingManage`].
+    StorageBindingRead,
+    /// Create, revise, and retire storage bindings.
+    StorageBindingManage,
+    /// Grant a storage binding to another authorization scope.
+    StorageBindingGrant,
+    /// Read placement configuration and observations.
+    PlacementRead,
+    /// Create, reconcile, promote, drain, or remove placements.
+    PlacementManage,
+    /// Read immutable placement-policy revisions.
+    PlacementPolicyRead,
+    /// Create and publish placement-policy revisions.
+    PlacementPolicyManage,
+    /// Read delivery-domain configuration and observations.
+    DomainRead,
+    /// Configure, verify, replace, or delete delivery domains.
+    DomainManage,
+    /// Read network-boundary identities and revisions.
+    NetworkBoundaryRead,
+    /// Create, probe, activate, retire, or delete network boundaries.
+    NetworkBoundaryManage,
+    /// Grant network-boundary revisions across authorization scopes.
+    NetworkBoundaryGrant,
+    /// Read delivery-endpoint identities and generations.
+    DeliveryEndpointRead,
+    /// Create, probe, reconcile, replace, or delete delivery endpoints.
+    DeliveryEndpointManage,
+    /// Grant delivery-endpoint generations across authorization scopes.
+    DeliveryEndpointGrant,
+    /// Read direct-delivery storage gateways and generations.
+    StorageGatewayRead,
+    /// Create, reconcile, enable, disable, replace, or delete gateways.
+    StorageGatewayManage,
+    /// Grant storage-gateway generations across authorization scopes.
+    StorageGatewayGrant,
+    /// Read and explain delivery routes.
+    RouteRead,
+    /// Create, probe, enable, disable, replace, or delete delivery routes.
+    RouteManage,
     /// Reconcile controller-observed surface write authority.
     TopologyReconcile,
+    /// Manage registry-derived retention policy and manual roots.
+    CacheRetentionManage,
+    /// Build and inspect destructive cache-GC plans.
+    CacheGcPlan,
+    /// Apply cache-GC plans and administer deletion work.
+    CacheGcExecute,
+    /// Manage only leases owned by the calling service account.
+    CacheLeaseSelf,
     /// Run consistency-validation repair jobs.
     ValidationRepair,
     /// Read the audit log.
@@ -158,7 +206,31 @@ impl Permission {
             Permission::MembersManage => "members.manage",
             Permission::RegistryConfigure => "registry.configure",
             Permission::StorageManage => "storage.manage",
+            Permission::StorageBindingRead => "storage_binding.read",
+            Permission::StorageBindingManage => "storage_binding.manage",
+            Permission::StorageBindingGrant => "storage_binding.grant",
+            Permission::PlacementRead => "placement.read",
+            Permission::PlacementManage => "placement.manage",
+            Permission::PlacementPolicyRead => "placement_policy.read",
+            Permission::PlacementPolicyManage => "placement_policy.manage",
+            Permission::DomainRead => "domain.read",
+            Permission::DomainManage => "domain.manage",
+            Permission::NetworkBoundaryRead => "network_boundary.read",
+            Permission::NetworkBoundaryManage => "network_boundary.manage",
+            Permission::NetworkBoundaryGrant => "network_boundary.grant",
+            Permission::DeliveryEndpointRead => "delivery_endpoint.read",
+            Permission::DeliveryEndpointManage => "delivery_endpoint.manage",
+            Permission::DeliveryEndpointGrant => "delivery_endpoint.grant",
+            Permission::StorageGatewayRead => "storage_gateway.read",
+            Permission::StorageGatewayManage => "storage_gateway.manage",
+            Permission::StorageGatewayGrant => "storage_gateway.grant",
+            Permission::RouteRead => "route.read",
+            Permission::RouteManage => "route.manage",
             Permission::TopologyReconcile => "topology.reconcile",
+            Permission::CacheRetentionManage => "cache.retention.manage",
+            Permission::CacheGcPlan => "cache.gc.plan",
+            Permission::CacheGcExecute => "cache.gc.execute",
+            Permission::CacheLeaseSelf => "cache.lease.self",
             Permission::ValidationRepair => "validation.repair",
             Permission::AuditRead => "audit.read",
             Permission::IamAdmin => "iam.admin",
@@ -171,13 +243,14 @@ impl Permission {
 /// This is the authoritative encoding of RFC-0004's role table:
 ///
 /// - **Owner** — every verb, including [`Permission::IamAdmin`].
-/// - **Admin** — members, tokens (manage), registries/frontends/storage
+/// - **Admin** — members, tokens (manage), registries/delivery/storage
 ///   configuration, validation repair, audit read, plus the baseline
 ///   read and self-token verbs.
 /// - **Maintainer** — publish, channel advance, roster (key) management,
 ///   validation repair, plus read and self-tokens.
-/// - **Developer** — read and self-service tokens only.
-/// - **Viewer** — read only.
+/// - **Developer** — registry read, specialized topology reads, and
+///   self-service tokens.
+/// - **Viewer** — registry and specialized topology reads only.
 ///
 /// The slices are `'static` and ordered for stable iteration; callers
 /// must treat them as sets.
@@ -195,7 +268,31 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
             MembersManage,
             RegistryConfigure,
             StorageManage,
+            StorageBindingRead,
+            StorageBindingManage,
+            StorageBindingGrant,
+            PlacementRead,
+            PlacementManage,
+            PlacementPolicyRead,
+            PlacementPolicyManage,
+            DomainRead,
+            DomainManage,
+            NetworkBoundaryRead,
+            NetworkBoundaryManage,
+            NetworkBoundaryGrant,
+            DeliveryEndpointRead,
+            DeliveryEndpointManage,
+            DeliveryEndpointGrant,
+            StorageGatewayRead,
+            StorageGatewayManage,
+            StorageGatewayGrant,
+            RouteRead,
+            RouteManage,
             TopologyReconcile,
+            CacheRetentionManage,
+            CacheGcPlan,
+            CacheGcExecute,
+            CacheLeaseSelf,
             ValidationRepair,
             AuditRead,
             IamAdmin,
@@ -207,7 +304,30 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
             MembersManage,
             RegistryConfigure,
             StorageManage,
+            StorageBindingRead,
+            StorageBindingManage,
+            StorageBindingGrant,
+            PlacementRead,
+            PlacementManage,
+            PlacementPolicyRead,
+            PlacementPolicyManage,
+            DomainRead,
+            DomainManage,
+            NetworkBoundaryRead,
+            NetworkBoundaryManage,
+            NetworkBoundaryGrant,
+            DeliveryEndpointRead,
+            DeliveryEndpointManage,
+            DeliveryEndpointGrant,
+            StorageGatewayRead,
+            StorageGatewayManage,
+            StorageGatewayGrant,
+            RouteRead,
+            RouteManage,
             TopologyReconcile,
+            CacheRetentionManage,
+            CacheGcPlan,
+            CacheGcExecute,
             ValidationRepair,
             AuditRead,
         ],
@@ -218,41 +338,105 @@ pub fn role_grants(role: Role) -> &'static [Permission] {
             ChannelAdvance,
             KeysManage,
             ValidationRepair,
+            StorageBindingRead,
+            PlacementRead,
+            PlacementPolicyRead,
+            DomainRead,
+            NetworkBoundaryRead,
+            DeliveryEndpointRead,
+            StorageGatewayRead,
+            RouteRead,
         ],
-        Role::Developer => &[Read, TokensSelf],
-        Role::Viewer => &[Read],
+        Role::Developer => &[
+            Read,
+            TokensSelf,
+            StorageBindingRead,
+            PlacementRead,
+            PlacementPolicyRead,
+            DomainRead,
+            NetworkBoundaryRead,
+            DeliveryEndpointRead,
+            StorageGatewayRead,
+            RouteRead,
+        ],
+        Role::Viewer => &[
+            Read,
+            StorageBindingRead,
+            PlacementRead,
+            PlacementPolicyRead,
+            DomainRead,
+            NetworkBoundaryRead,
+            DeliveryEndpointRead,
+            StorageGatewayRead,
+            RouteRead,
+        ],
     }
 }
 
-/// A scope path naming a point in the org → project → registry hierarchy.
+/// A globally stable authorization resource identity.
 ///
-/// Stored as the raw path string (`""`, `"acme"`, `"acme/infra/prod"`,
-/// `"acme/infra/prod/cdn"`); see the [module docs](self) for the grammar
-/// and containment rules. Construct with [`Scope::parse`].
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
+/// Human slugs, project paths, and parentage are never encoded into the key.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Scope(String);
 
+impl serde::Serialize for Scope {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        if !Self::is_canonical(self.as_str()) {
+            return Err(serde::ser::Error::custom(
+                "unresolved authorization scope cannot be serialized",
+            ));
+        }
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Scope {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::try_parse(&value).ok_or_else(|| {
+            serde::de::Error::custom(format!("non-canonical authorization scope '{value}'"))
+        })
+    }
+}
+
 impl Scope {
-    /// Parses a scope from its path string, normalizing it.
+    /// Parses a canonical stable scope identity.
     ///
-    /// Leading and trailing `/` are trimmed, so `"/acme/"` and `"acme"`
-    /// parse equal; the empty string (or a string of only slashes) is the
-    /// instance-root scope. Parsing never fails: any string is a valid
-    /// scope path, since segments are opaque.
+    /// Prefer [`Scope::try_parse`] at trust boundaries. This convenience is
+    /// for schema-constrained database values and constants; malformed input
+    /// becomes a deliberately unresolved scope that every authorization check
+    /// denies and that cannot be serialized as a grant identity.
     #[must_use]
     pub fn parse(s: &str) -> Scope {
-        Scope(s.trim_matches('/').to_string())
+        Self::try_parse(s).unwrap_or_else(Self::denied)
     }
 
-    /// Returns the instance-root scope (`""`).
+    /// Parses a canonical stable scope identity, rejecting slugs and malformed
+    /// or alias spellings.
+    #[must_use]
+    pub fn try_parse(s: &str) -> Option<Scope> {
+        Self::is_canonical(s).then(|| Scope(s.to_string()))
+    }
+
+    /// Returns a closed fail-denied target for a resource whose stable scope
+    /// could not be resolved. It is never serializable as grant identity.
+    pub(crate) fn denied() -> Scope {
+        Scope("<unresolved>".to_string())
+    }
+
+    /// Returns the instance-root scope.
     #[must_use]
     pub fn root() -> Scope {
-        Scope(String::new())
+        Scope("instance".to_string())
     }
 
-    /// Returns the raw path string of this scope (`""` for the root).
+    /// Returns the exact stable scope key.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -261,75 +445,86 @@ impl Scope {
     /// Returns `true` if this is the instance-root scope.
     #[must_use]
     pub fn is_root(&self) -> bool {
-        self.0.is_empty()
+        self.0 == "instance"
     }
 
     /// Returns `true` if `raw` is already in canonical scope form.
     ///
-    /// A scope is canonical when its raw string equals its segments rejoined
-    /// by single `/` — no leading, trailing, or doubled slash. [`Scope::parse`]
-    /// trims surrounding `/` and the segment iterator drops empty segments, so
-    /// distinct raw strings such as `"/"`, `"/foo"`, `"foo/"`, and `"foo//bar"`
-    /// all normalize onto a shorter canonical path. Such
-    /// "normalization-surprise" inputs are **not** canonical: storing one would
-    /// silently grant authority at an unintended ancestor (e.g. `"/"` collapses
-    /// to the all-containing root scope, and `"/victimorg"` to a victim org's
-    /// scope). A legitimately formed scope — `""` (root), `"acme"`,
-    /// `"acme/cdn"` — is canonical. This is the check the persistence layer
-    /// runs before writing a membership scope.
+    /// Canonical scopes use the closed stable-identity grammar documented by
+    /// this module. Uppercase hexadecimal, human slugs, arbitrary descendants,
+    /// and path-normalization variants are rejected so one authority has only
+    /// one serialized identity.
     #[must_use]
     pub fn is_canonical(raw: &str) -> bool {
-        let scope = Scope::parse(raw);
-        let rejoined = scope.segments().collect::<Vec<_>>().join("/");
-        rejoined == raw
+        if raw == "instance" {
+            return true;
+        }
+        let (prefix, id) = raw.split_once(':').unwrap_or_default();
+        matches!(prefix, "org" | "project" | "registry" | "cache")
+            && id.len() == 32
+            && id.bytes().all(is_lower_hex)
+    }
+}
+
+fn is_lower_hex(byte: u8) -> bool {
+    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+}
+
+/// A target scope together with its validated ancestor closure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorizationContext {
+    target: Scope,
+    ancestors: Vec<Scope>,
+}
+
+impl AuthorizationContext {
+    /// Constructs a context from database-validated canonical identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the target and every ancestor are canonical and
+    /// the closure includes both the target itself and the instance root.
+    pub fn try_new(target: Scope, ancestors: Vec<Scope>) -> Result<Self, &'static str> {
+        if !Scope::is_canonical(target.as_str())
+            || ancestors
+                .iter()
+                .any(|scope| !Scope::is_canonical(scope.as_str()))
+        {
+            return Err("authorization context contains a non-canonical scope");
+        }
+        if ancestors.first() != Some(&target) || !ancestors.last().is_some_and(Scope::is_root) {
+            return Err("authorization context is not ordered from self to instance");
+        }
+        let unique = ancestors
+            .iter()
+            .map(Scope::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        if unique.len() != ancestors.len() {
+            return Err("authorization context contains a duplicate ancestor");
+        }
+        Ok(Self { target, ancestors })
     }
 
-    /// Returns this scope's segments, left to right.
-    ///
-    /// The root scope yields an empty iterator.
-    fn segments(&self) -> impl Iterator<Item = &str> {
-        self.0.split('/').filter(|s| !s.is_empty())
-    }
-
-    /// Returns the parent scope, or `None` for the instance root.
-    ///
-    /// The parent drops the last path segment: the parent of
-    /// `acme/infra/prod` is `acme/infra`, and the parent of `acme` is the
-    /// instance root.
+    /// Returns an exact-scope context for the instance root.
     #[must_use]
-    pub fn parent(&self) -> Option<Scope> {
-        if self.0.is_empty() {
-            return None;
-        }
-        match self.0.rsplit_once('/') {
-            Some((head, _)) => Some(Scope(head.to_string())),
-            None => Some(Scope::root()),
+    pub fn instance() -> Self {
+        let root = Scope::root();
+        Self {
+            target: root.clone(),
+            ancestors: vec![root],
         }
     }
 
-    /// Returns `true` if this scope is `other` or an ancestor of `other`.
-    ///
-    /// Containment is on segment boundaries, so `acme` contains
-    /// `acme/infra` but not `acme-corp`. The instance root contains every
-    /// scope. A scope always contains itself.
+    /// Returns the target resource identity.
     #[must_use]
-    pub fn contains(&self, other: &Scope) -> bool {
-        let mut mine = self.segments();
-        let mut theirs = other.segments();
-        loop {
-            match mine.next() {
-                // Exhausted our segments: every prefix matched, so `other`
-                // is at or below us.
-                None => return true,
-                Some(seg) => match theirs.next() {
-                    // `other` is shorter than us: we cannot be its ancestor.
-                    None => return false,
-                    // A boundary segment diverged: disjoint subtrees.
-                    Some(other_seg) if other_seg != seg => return false,
-                    Some(_) => {}
-                },
-            }
-        }
+    pub fn target(&self) -> &Scope {
+        &self.target
+    }
+
+    /// Returns whether `scope` is the target or one of its ancestors.
+    #[must_use]
+    pub fn is_covered_by(&self, scope: &Scope) -> bool {
+        self.ancestors.iter().any(|ancestor| ancestor == scope)
     }
 }
 
@@ -337,31 +532,43 @@ impl Scope {
 ///
 /// Returns `true` iff some `(scope, role)` grant satisfies both:
 ///
-/// 1. `scope.contains(target)` — the grant is at `target` or an ancestor
-///    (roles inherit downward), and
+/// 1. `scope` is present in the target's validated ancestor closure (roles
+///    inherit downward), and
 /// 2. `role_grants(role)` includes `permission`.
 ///
-/// A grant on a sibling subtree never leaks: `acme/infra` does not cover a
-/// target under `acme/data`. An empty `grants` slice denies everything.
+/// A grant on a sibling subtree never leaks. An empty `grants` slice denies
+/// everything.
 #[must_use]
-pub fn allow(grants: &[(Scope, Role)], permission: Permission, target: &Scope) -> bool {
-    grants
-        .iter()
-        .any(|(scope, role)| scope.contains(target) && role_grants(*role).contains(&permission))
+pub fn allow(
+    grants: &[(Scope, Role)],
+    permission: Permission,
+    target: &AuthorizationContext,
+) -> bool {
+    grants.iter().any(|(scope, role)| {
+        target.is_covered_by(scope) && role_grants(*role).contains(&permission)
+    })
 }
 
 /// Decides whether a JWT's own claims authorize `perm` on `target`.
 ///
-/// Database-free: the token must be bound to a scope that *contains* `target`
-/// and must carry `perm` explicitly. Unknown permission strings in the claims
+/// Database-free once the caller has loaded the context: the token must be
+/// bound to the target or one of its validated ancestors and must carry `perm`
+/// explicitly. Unknown permission strings in the claims
 /// are ignored. This is the token half of the two-sided authorization check —
 /// the principal's *current* [`allow`] grants are the other half — so a revoked
 /// role still denies even on an unexpired token. The bodies live here (shared by
 /// the native hub and the Cloudflare Worker) rather than in either shell.
 #[must_use]
-pub fn token_allows(claims: &crate::auth::jwt::Claims, perm: Permission, target: &Scope) -> bool {
+pub fn token_allows(
+    claims: &crate::auth::jwt::Claims,
+    perm: Permission,
+    target: &AuthorizationContext,
+) -> bool {
+    if !Scope::is_canonical(&claims.scope) {
+        return false;
+    }
     let scope = Scope::parse(&claims.scope);
-    if !scope.contains(target) {
+    if !target.is_covered_by(&scope) {
         return false;
     }
     claims
@@ -434,17 +641,16 @@ impl std::error::Error for SlugError {}
 /// Validates an organization (or registry) slug against the canonical
 /// single-segment ruleset.
 ///
-/// A slug becomes both a `memberships.scope` segment and a top-level URL path
-/// segment, so it is constrained to a conservative, single-segment,
-/// URL-safe charset. This is the **one** authoritative ruleset shared by the
+/// A slug is a top-level URL and display path segment, so it is constrained to
+/// a conservative, single-segment, URL-safe charset. It is never an
+/// authorization identity. This is the **one** authoritative ruleset shared by the
 /// Connect RPC `CreateOrg`, the web console's new-org form, and the `aos`
 /// CLI, so the three surfaces can never drift apart.
 ///
 /// A valid slug is non-empty, is not a reserved name (`RESERVED_SLUGS`), and
 /// consists only of lowercase ASCII letters, ASCII digits, `-`, and `_`.
-/// Crucially it contains **no** `/`, so it cannot smuggle a multi-segment or
-/// leading-slash path (such as `"/"` or `"/victimorg"`) that
-/// [`Scope::parse`] would normalize into an unintended ancestor scope.
+/// Crucially it contains **no** `/`, so it remains one unambiguous routing
+/// segment.
 ///
 /// # Errors
 ///
@@ -520,7 +726,31 @@ mod tests {
             MembersManage,
             RegistryConfigure,
             StorageManage,
+            StorageBindingRead,
+            StorageBindingManage,
+            StorageBindingGrant,
+            PlacementRead,
+            PlacementManage,
+            PlacementPolicyRead,
+            PlacementPolicyManage,
+            DomainRead,
+            DomainManage,
+            NetworkBoundaryRead,
+            NetworkBoundaryManage,
+            NetworkBoundaryGrant,
+            DeliveryEndpointRead,
+            DeliveryEndpointManage,
+            DeliveryEndpointGrant,
+            StorageGatewayRead,
+            StorageGatewayManage,
+            StorageGatewayGrant,
+            RouteRead,
+            RouteManage,
             TopologyReconcile,
+            CacheRetentionManage,
+            CacheGcPlan,
+            CacheGcExecute,
+            CacheLeaseSelf,
             ValidationRepair,
             AuditRead,
             IamAdmin,
@@ -544,7 +774,30 @@ mod tests {
             MembersManage,
             RegistryConfigure,
             StorageManage,
+            StorageBindingRead,
+            StorageBindingManage,
+            StorageBindingGrant,
+            PlacementRead,
+            PlacementManage,
+            PlacementPolicyRead,
+            PlacementPolicyManage,
+            DomainRead,
+            DomainManage,
+            NetworkBoundaryRead,
+            NetworkBoundaryManage,
+            NetworkBoundaryGrant,
+            DeliveryEndpointRead,
+            DeliveryEndpointManage,
+            DeliveryEndpointGrant,
+            StorageGatewayRead,
+            StorageGatewayManage,
+            StorageGatewayGrant,
+            RouteRead,
+            RouteManage,
             TopologyReconcile,
+            CacheRetentionManage,
+            CacheGcPlan,
+            CacheGcExecute,
             ValidationRepair,
             AuditRead,
         ] {
@@ -553,7 +806,33 @@ mod tests {
         assert!(!g.contains(&Publish));
         assert!(!g.contains(&ChannelAdvance));
         assert!(!g.contains(&KeysManage));
+        assert!(!g.contains(&CacheLeaseSelf));
         assert!(!g.contains(&IamAdmin));
+    }
+
+    #[test]
+    fn lease_self_requires_an_explicit_token_permission() {
+        let scope = "org:00000000000000000000000000000001";
+        assert!(!role_grants(Role::Admin).contains(&Permission::CacheLeaseSelf));
+        let claims = crate::auth::jwt::Claims {
+            sub: "service-token".to_string(),
+            owner_kind: "service_account".to_string(),
+            owner_id: 7,
+            scope: scope.to_string(),
+            perms: vec![Permission::CacheLeaseSelf.as_str().to_string()],
+            authz_version: crate::auth::jwt::AUTHORIZATION_CLAIMS_VERSION.to_string(),
+            iat: 0,
+            exp: i64::MAX,
+        };
+        assert!(token_allows(
+            &claims,
+            Permission::CacheLeaseSelf,
+            &AuthorizationContext::try_new(
+                Scope::parse(scope),
+                vec![Scope::parse(scope), Scope::root()],
+            )
+            .unwrap(),
+        ));
     }
 
     #[test]
@@ -577,36 +856,76 @@ mod tests {
     }
 
     #[test]
-    fn developer_grants_read_and_self_tokens() {
+    fn developer_grants_exact_read_topology_and_self_token_set() {
         use Permission::*;
         assert_eq!(
             grant_set(Role::Developer),
-            [Read, TokensSelf].into_iter().collect()
+            [
+                Read,
+                TokensSelf,
+                StorageBindingRead,
+                PlacementRead,
+                PlacementPolicyRead,
+                DomainRead,
+                NetworkBoundaryRead,
+                DeliveryEndpointRead,
+                StorageGatewayRead,
+                RouteRead,
+            ]
+            .into_iter()
+            .collect()
         );
     }
 
     #[test]
-    fn viewer_grants_read_only() {
+    fn viewer_grants_exact_read_topology_set() {
         use Permission::*;
-        assert_eq!(grant_set(Role::Viewer), [Read].into_iter().collect());
+        assert_eq!(
+            grant_set(Role::Viewer),
+            [
+                Read,
+                StorageBindingRead,
+                PlacementRead,
+                PlacementPolicyRead,
+                DomainRead,
+                NetworkBoundaryRead,
+                DeliveryEndpointRead,
+                StorageGatewayRead,
+                RouteRead,
+            ]
+            .into_iter()
+            .collect()
+        );
     }
 
     #[test]
-    fn scope_parse_normalizes() {
-        assert!(Scope::parse("").is_root());
-        assert!(Scope::parse("/").is_root());
-        assert_eq!(Scope::parse("/acme/").as_str(), "acme");
-        assert_eq!(Scope::parse("acme/infra"), Scope::parse("/acme/infra/"));
+    fn scope_parse_accepts_only_exact_stable_identity() {
+        assert!(Scope::parse("instance").is_root());
+        assert!(Scope::try_parse("/instance").is_none());
+        assert!(Scope::try_parse("acme").is_none());
+        assert!(Scope::try_parse("org:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").is_none());
     }
 
     #[test]
     fn scope_is_canonical_blocks_normalization_surprises() {
         // Canonical scopes round-trip and are accepted.
-        for good in ["", "acme", "acme/cdn", "acme/infra/prod/cdn"] {
+        for good in [
+            "instance",
+            "org:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "project:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "registry:cccccccccccccccccccccccccccccccc",
+            "cache:dddddddddddddddddddddddddddddddd",
+        ] {
             assert!(Scope::is_canonical(good), "{good:?} should be canonical");
         }
         // Normalization-surprise inputs are rejected (CR-2).
-        for bad in ["/", "/foo", "foo/", "foo//bar", "/foo/", "//", "/victimorg"] {
+        for bad in [
+            "",
+            "/",
+            "acme",
+            "org:acme",
+            "org:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/p:old/path",
+        ] {
             assert!(!Scope::is_canonical(bad), "{bad:?} should be non-canonical");
         }
     }
@@ -639,104 +958,127 @@ mod tests {
     }
 
     #[test]
-    fn scope_parent_walks_up() {
-        let s = Scope::parse("acme/infra/prod");
-        assert_eq!(s.parent(), Some(Scope::parse("acme/infra")));
-        assert_eq!(
-            Scope::parse("acme/infra").parent(),
-            Some(Scope::parse("acme"))
-        );
-        assert_eq!(Scope::parse("acme").parent(), Some(Scope::root()));
-        assert_eq!(Scope::root().parent(), None);
-    }
-
-    #[test]
-    fn scope_contains_segment_boundary() {
-        let acme = Scope::parse("acme");
-        assert!(acme.contains(&acme), "self-containment");
-        assert!(acme.contains(&Scope::parse("acme/infra")));
-        assert!(acme.contains(&Scope::parse("acme/infra/prod")));
-        // Prefix-on-boundary: a string prefix that is not a segment
-        // prefix does not count.
-        assert!(!acme.contains(&Scope::parse("acme-corp")));
-        assert!(!acme.contains(&Scope::parse("acmexyz")));
-        // A child does not contain its parent.
-        assert!(!Scope::parse("acme/infra").contains(&acme));
-        // The root contains everything.
-        assert!(Scope::root().contains(&Scope::parse("acme/infra/prod/cdn")));
-        assert!(Scope::root().contains(&Scope::root()));
+    fn authorization_context_carries_explicit_ancestry() {
+        let org = Scope::parse("org:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let project = Scope::parse("project:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let context = AuthorizationContext::try_new(
+            project.clone(),
+            vec![project.clone(), org.clone(), Scope::root()],
+        )
+        .unwrap();
+        assert_eq!(context.target(), &project);
+        assert!(context.is_covered_by(&project));
+        assert!(context.is_covered_by(&org));
+        assert!(context.is_covered_by(&Scope::root()));
+        assert!(!context.is_covered_by(&Scope::parse("org:cccccccccccccccccccccccccccccccc")));
     }
 
     #[test]
     fn allow_inheritance_matrix() {
-        let registry = Scope::parse("acme/infra/prod/cdn");
-        let project = Scope::parse("acme/infra/prod");
-        let org = Scope::parse("acme");
-        let sibling_org = Scope::parse("globex");
+        let project = Scope::parse("project:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        let registry = Scope::parse("registry:dddddddddddddddddddddddddddddddd");
+        let org = Scope::parse("org:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let sibling_org = Scope::parse("org:cccccccccccccccccccccccccccccccc");
+        let registry_context = AuthorizationContext::try_new(
+            registry.clone(),
+            vec![
+                registry.clone(),
+                project.clone(),
+                org.clone(),
+                Scope::root(),
+            ],
+        )
+        .unwrap();
+        let project_context = AuthorizationContext::try_new(
+            project.clone(),
+            vec![project.clone(), org.clone(), Scope::root()],
+        )
+        .unwrap();
 
         // 1. Org-admin can configure a registry under the org (downward
         //    inheritance).
         assert!(allow(
             &[(org.clone(), Role::Admin)],
             Permission::RegistryConfigure,
-            &registry,
+            &registry_context,
         ));
         // 2. Org-owner has IamAdmin everywhere under it.
         assert!(allow(
             &[(org.clone(), Role::Owner)],
             Permission::IamAdmin,
-            &registry,
+            &registry_context,
         ));
         // 3. A viewer at the registry scope cannot publish.
         assert!(!allow(
             &[(registry.clone(), Role::Viewer)],
             Permission::Publish,
-            &registry,
+            &registry_context,
         ));
         // 4. A viewer can read at its own scope.
         assert!(allow(
             &[(registry.clone(), Role::Viewer)],
             Permission::Read,
-            &registry,
+            &registry_context,
         ));
         // 5. A grant on a sibling org does not leak.
         assert!(!allow(
             &[(sibling_org, Role::Owner)],
             Permission::Read,
-            &registry,
+            &registry_context,
         ));
         // 6. A registry-scoped grant does NOT apply upward to the project.
         assert!(!allow(
             &[(registry.clone(), Role::Owner)],
             Permission::Read,
-            &project,
+            &project_context,
         ));
         // 7. A maintainer at the project can advance a channel on a
         //    registry beneath it.
         assert!(allow(
             &[(project.clone(), Role::Maintainer)],
             Permission::ChannelAdvance,
-            &registry,
+            &registry_context,
         ));
         // 8. But a project maintainer cannot manage members (admin verb).
         assert!(!allow(
             &[(project.clone(), Role::Maintainer)],
             Permission::MembersManage,
-            &registry,
+            &registry_context,
         ));
         // 9. Multiple grants: the most-privileged covering grant wins.
         assert!(allow(
             &[(registry.clone(), Role::Viewer), (org.clone(), Role::Admin),],
             Permission::RegistryConfigure,
-            &registry,
+            &registry_context,
         ));
         // 10. Empty grants deny.
-        assert!(!allow(&[], Permission::Read, &registry));
+        assert!(!allow(&[], Permission::Read, &registry_context));
         // 11. Instance-root owner covers any target.
         assert!(allow(
             &[(Scope::root(), Role::Owner)],
             Permission::IamAdmin,
-            &registry,
+            &registry_context,
+        ));
+    }
+
+    #[test]
+    fn recreated_slug_does_not_reuse_authority() {
+        let old_registry = Scope::parse("registry:11111111111111111111111111111111");
+        let replacement = Scope::parse("registry:22222222222222222222222222222222");
+        let org = Scope::parse("org:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let replacement_context = AuthorizationContext::try_new(
+            replacement,
+            vec![
+                org,
+                Scope::root(),
+                Scope::parse("registry:22222222222222222222222222222222"),
+            ],
+        )
+        .unwrap();
+        assert!(!allow(
+            &[(old_registry, Role::Owner)],
+            Permission::Read,
+            &replacement_context,
         ));
     }
 }

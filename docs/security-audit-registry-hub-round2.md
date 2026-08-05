@@ -28,7 +28,7 @@ are the top priority.
   so the bytes that passed verification are never the bytes persisted.
 - **Sudo gate omits the highest-value ops** (Medium, M-1). `require_sudo` covers
   only password-change / org-delete / registry-delete; token mint, SSO/IdP
-  config, hosted keys, and membership mutation are ungated.
+  config, signing keys, and membership mutation are ungated.
 
 ### (b) New issues on the deep surfaces
 - RPC read path skips the visibility gate the HTML path enforces; `ListBindings`/

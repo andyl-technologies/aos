@@ -7,21 +7,27 @@ mod common;
 use std::path::Path;
 
 use aos_hub::db::Database;
-use aos_hub::fetch::{fetch_for_url, is_fetch_error, LocalFsFetch, SurfaceFetch};
+use aos_hub::fetch::{fetch_mirror_upstream, is_fetch_error, LocalFsFetch, SurfaceFetch};
 use aos_hub::indexer::index_and_record;
 use aos_hub::validation::validate_presence;
 
 /// Like `common::standard_registry` but with a custom committed
-/// `[[caches]]` list, for validation tests that need local cache dirs.
+/// `[caches]` stack, for validation tests that need local cache dirs.
 fn registry_with_caches(root: &Path, caches: &[(&str, u32)]) -> common::Fixture {
     let fixture = common::Fixture::new(root);
 
     let mut registry_text =
         String::from("[registry]\nname = \"demo\"\ndescription = \"Fixture registry\"\n");
-    for (url, priority) in caches {
-        registry_text.push_str(&format!(
-            "\n[[caches]]\nurl = \"{url}\"\npriority = {priority}\n"
-        ));
+    if let Some((url, _)) = caches.first() {
+        if caches.len() == 1 {
+            registry_text.push_str(&format!("\n[caches]\nendpoint = \"{url}\"\n"));
+        } else {
+            registry_text.push_str("\n[caches]\nkind = \"try\"\nmembers = [\n");
+            for (url, _) in caches {
+                registry_text.push_str(&format!("  {{ endpoint = \"{url}\" }},\n"));
+            }
+            registry_text.push_str("]\n");
+        }
     }
     let registry_toml = fixture.put_blob(&registry_text);
     let keys_toml = fixture.put_blob(&format!(
@@ -60,14 +66,9 @@ fn registry_with_caches(root: &Path, caches: &[(&str, u32)]) -> common::Fixture 
 }
 
 async fn register(db: &Database, fixture: &common::Fixture, surface: &Path) {
-    db.register_registry(
-        "demo",
-        surface.to_str().unwrap(),
-        std::slice::from_ref(&fixture.trust_key),
-        true,
-    )
-    .await
-    .unwrap();
+    db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -142,12 +143,11 @@ async fn channel_rollback_fails_closed() {
 async fn unreachable_source_marks_stale_not_failed() {
     let db = Database::open_in_memory().await.unwrap();
     // Port 1 is essentially never bound; connection is refused immediately.
-    db.register_registry("demo", "http://127.0.0.1:1", &[], true)
-        .await
-        .unwrap();
+    db.register_registry("demo", &[], true).await.unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
-    let fetch =
-        aos_hub::coreports::into_core_fetch(fetch_for_url(&registry.source_url).await.unwrap());
+    let fetch = aos_hub::coreports::into_core_fetch(
+        fetch_mirror_upstream("http://127.0.0.1:1").await.unwrap(),
+    );
 
     let err = index_and_record(&db, fetch.as_ref(), &registry)
         .await

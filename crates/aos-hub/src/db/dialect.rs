@@ -1,7 +1,7 @@
 //! Per-dialect SQL translation, re-exported from [`aos_hub_core::dialect`].
 //!
 //! The translation logic moved to the runtime-agnostic core crate (RFC-0004
-//! Phase 5) so the Cloudflare Worker's D1 backend can share it; this re-export
+//! Phase 5) so the Cloudflare Worker's HubDb backend can share it; this re-export
 //! keeps the hub's `db::dialect::…` paths stable. The tests live here because
 //! several assert against the hub's [`MIGRATIONS`](crate::db::MIGRATIONS) and
 //! [`split_statements`](crate::db::backend::split_statements).
@@ -280,7 +280,7 @@ mod tests {
         {
             assert!(
                 sqlite.contains(&format!("{column} TEXT COLLATE BINARY")),
-                "{column} must use SQLite/D1's bytewise collation: {sqlite}"
+                "{column} must use SQLite's bytewise collation: {sqlite}"
             );
             assert!(
                 postgres.contains(&format!("{column} VARCHAR({capacity}) COLLATE \"C\"")),
@@ -544,46 +544,6 @@ mod tests {
             .expect("git_ref ALTER present");
         let my = Dialect::Mysql.translate(git_ref).unwrap().sql;
         assert!(my.contains("VARCHAR(255)"), "{my}");
-    }
-
-    #[test]
-    fn v16_mirror_and_frontends_migration_translates_for_every_dialect() {
-        // The v16 migration adds mirror_sources, frontends, and frontend_probes.
-        // Its column names (`mode`, `domain`, `verify`, `advertised`, …) avoid
-        // SQL reserved-identifier hazards on every dialect, and the standard
-        // INTEGER PRIMARY KEY / TEXT shapes translate cleanly.
-        let v16 = crate::db::MIGRATIONS
-            .get(15)
-            .expect("v16 mirror/frontends migration");
-        for stmt in crate::db::backend::split_statements(v16) {
-            for dialect in [Dialect::Sqlite, Dialect::Postgres, Dialect::Mysql] {
-                dialect
-                    .translate(&stmt)
-                    .unwrap_or_else(|e| panic!("v16 stmt failed for {dialect:?}: {e}\n{stmt}"));
-            }
-        }
-        // mirror_sources keys on the registry FK (explicit value on every
-        // write), so its PK maps to BIGSERIAL/BIGINT, not an autoincrement.
-        let mirror = crate::db::backend::split_statements(v16)
-            .into_iter()
-            .find(|s| s.contains("CREATE TABLE mirror_sources"))
-            .expect("mirror_sources DDL present");
-        let pg = Dialect::Postgres.translate(&mirror).unwrap().sql;
-        assert!(
-            pg.contains("BIGSERIAL PRIMARY KEY REFERENCES registries(id)"),
-            "{pg}"
-        );
-        // frontends has a synthetic autoincrement id on every dialect; its TEXT
-        // columns (domain, mode, base_path) narrow to an indexable VARCHAR on
-        // mysql so the UNIQUE(domain, base_path) index is valid.
-        let frontends = crate::db::backend::split_statements(v16)
-            .into_iter()
-            .find(|s| s.contains("CREATE TABLE frontends"))
-            .expect("frontends DDL present");
-        let my = Dialect::Mysql.translate(&frontends).unwrap().sql;
-        assert!(my.contains("BIGINT AUTO_INCREMENT PRIMARY KEY"), "{my}");
-        assert!(my.contains("VARCHAR(255)"), "{my}");
-        assert!(!my.contains("TEXT"), "all TEXT narrowed on mysql: {my}");
     }
 
     #[test]

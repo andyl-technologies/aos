@@ -714,7 +714,7 @@ mod tests {
         );
         assert_eq!(hash_range_v1(&narinfo).1, 22_494);
 
-        let digest = std::array::from_fn(|index| index as u8);
+        let digest: [u8; 32] = std::array::from_fn(|index| index as u8);
         let nar = partition_key(PartitionObjectIdentity::Nar {
             algorithm: DigestAlgorithm::Sha256,
             digest: &digest,

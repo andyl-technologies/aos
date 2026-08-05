@@ -60,24 +60,28 @@ async fn make_mirror_registry(
     binding_root: &std::path::Path,
 ) -> (i64, PathBuf) {
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", &binding_root.to_string_lossy())
-        .await
-        .unwrap();
+    let binding =
+        common::create_local_binding(&db, org, "primary", &binding_root.to_string_lossy()).await;
     let reg = db
         .create_managed_registry(
             org,
             "infra/prod",
             "mirror",
             "public",
-            Some(binding),
-            "infra/prod/mirror",
             std::slice::from_ref(&trust_key.to_string()),
             true,
         )
         .await
         .unwrap();
-    let root = db.registry_surface_root(reg).await.unwrap().unwrap();
+    common::create_ready_placement(
+        db,
+        aos_hub::db::SurfaceTarget::Registry(reg),
+        binding,
+        "primary",
+        "infra/prod/mirror",
+    )
+    .await;
+    let root = binding_root.join("infra/prod/mirror");
     (reg, root)
 }
 

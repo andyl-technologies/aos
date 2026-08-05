@@ -51,6 +51,7 @@ blake3 = { version = "1", default-features = false, features = ["std", "pure"] }
 hmac = "0.12"
 base64 = "0.22"
 aes-gcm = "0.10"
+zeroize = "1"
 regex = "1"
 glob = "0.3"
 ignore = "0.4"
@@ -65,6 +66,7 @@ alejandra = "3.1.0"
 
 # HTTP / networking
 bytes = "1"
+http-body-util = "0.1"
 http = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 url = "2"
@@ -168,6 +170,8 @@ connectrpc = { version = "0.3", features = ["server", "client", "client-tls", "a
 buffa = "0.3"
 prost = "0.13"
 prost-build = "0.13"
+pbjson = "0.7"
+pbjson-build = "0.7"
 futures = "0.3"
 webpki-roots = "1"
 rustls-native-certs = "0.8"
@@ -201,3 +205,10 @@ disallowed_types = "deny"
 expect_used = "deny"
 float_arithmetic = "deny"
 unwrap_used = "deny"
+
+# The topology-cutover E2E authenticates and bundles the actual `aos` test
+# executable. Full dependency debug information makes that binary hundreds of
+# MiB and unlike the release artifact operators deploy; tests keep assertions
+# and backtraces while omitting linked DWARF from the executable under test.
+[profile.test]
+debug = 0

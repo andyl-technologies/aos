@@ -191,6 +191,18 @@ impl ToValue for String {
     }
 }
 
+impl ToValue for Vec<u8> {
+    fn to_value(&self) -> Value {
+        Value::Bytes(self.clone())
+    }
+}
+
+impl ToValue for [u8] {
+    fn to_value(&self) -> Value {
+        Value::Bytes(self.to_vec())
+    }
+}
+
 impl<T: ToValue> ToValue for Option<T> {
     fn to_value(&self) -> Value {
         match self {

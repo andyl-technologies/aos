@@ -36,7 +36,7 @@
 //!   [`Statement`](backend::Statement) unit of atomic work, the
 //!   `split_statements`/`with_returning_id`/`prepare` helpers, and the native
 //!   [`SqlxBackend`](backend::SqlxBackend) driver (compiled only off-wasm; the
-//!   Worker supplies a D1 `Backend` instead).
+//!   Worker forwards database operations to the `HubDb` Durable Object).
 //! - [`db`] — the [`Database`](db::Database) handle: the schema `MIGRATIONS`
 //!   and every read/write query method, written once over the [`Backend`](backend::Backend)
 //!   trait so the native hub and the Worker share one implementation.
@@ -50,9 +50,9 @@
 //! - [`retention`] — the canonical comparator-only SemVer selector and stable
 //!   verified-release ordering used to materialize cache root reasons.
 //!
-//! Later phases move the remaining HTTP handlers here too, leaving the
-//! deployment crates as thin shells around their concrete backend (sqlx for
-//! native, D1 for the Worker).
+//! The deployment crates are thin transport shells around the shared core:
+//! sqlx drives native databases, while the Worker bridges requests to the
+//! `HubDb` Durable Object's colocated SQLite database.
 //!
 //! The crate is **wasm-clean on `wasm32-unknown-unknown`**: native-only pieces
 //! (the `sqlx` driver, the secret-key filesystem loader) are gated off that
@@ -71,18 +71,22 @@ pub mod connect;
 pub mod coordinator;
 pub mod crawl;
 pub mod db;
+pub mod delivery;
+pub mod delivery_attestation;
+pub mod delivery_endpoint;
 pub mod dialect;
 pub mod directory;
-pub mod delivery;
-pub mod delivery_endpoint;
 pub mod domain;
+pub mod egress_protocol;
 pub mod email;
 pub mod ephemeral;
 pub mod fetch;
 pub mod filter;
-pub mod gc;
+pub mod gc_controller;
 pub mod git;
 pub mod gitwrite;
+pub mod image_catalog;
+pub mod image_http;
 pub mod indexer;
 pub mod jobs;
 pub mod keymap;
@@ -96,9 +100,11 @@ pub mod reindex;
 pub mod retention;
 pub mod robots;
 pub mod s3surface;
+pub mod secret_version;
 pub mod service;
 pub mod signing;
 pub mod sigv4;
+pub mod storage_credential;
 /// Re-export of the cache-stack node model from `aos-registry-surface`.
 ///
 /// The model lives in the shared wasm-clean surface crate so the `apm`/`apr`
@@ -106,6 +112,7 @@ pub mod sigv4;
 /// this alias keeps existing `crate::stack::…` paths compiling.
 pub use aos_registry_surface::stack;
 pub mod surface_write;
+pub mod topology_probe;
 pub mod url_guard;
 pub mod value;
 pub mod web;

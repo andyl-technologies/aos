@@ -6,6 +6,7 @@ description = "Runtime-agnostic core of the AOS registry hub (RFC-0004 Phase 5):
 
 [dependencies]
 aes-gcm = { workspace = true }
+zeroize = { workspace = true }
 anyhow = { workspace = true }
 argon2 = { workspace = true }
 base64 = { workspace = true }
@@ -31,8 +32,8 @@ password-hash = { version = "0.5", features = ["getrandom"] }
 async-trait = { workspace = true }
 ed25519-dalek = { workspace = true }
 # Concurrent read fan-out in the browse render paths (`web::browse`): a registry
-# page's independent per-`registry.id` D1 reads are dispatched together with
-# `future::join*` instead of serially, so the Worker pays one D1 round-trip wave
+# page's independent per-`registry.id` SQL reads are dispatched together with
+# `future::join*` instead of serially, so the Worker pays one SQL round-trip wave
 # rather than one per query. Pure and wasm-clean (the Worker already links it).
 futures-util = { workspace = true }
 hex = { workspace = true }
@@ -80,17 +81,21 @@ mysql = ["sqlx/mysql"]
 
 # Per-statement query timing (RFC-0004 ch.14 Phase A). Compiles the
 # `TimingBackend` decorator + `QueryTimings`/`Server-Timing` rendering so a
-# deployment (the preview Worker) can surface the per-request D1 session cost.
+# deployment (the preview Worker) can surface the per-request SQL session cost.
 # Off by default: production pays nothing.
 query-timing = []
+# Disposable live-workerd fixtures. This feature is enabled only by the
+# purpose-built `aos-hub-worker-do-e2e` artifact and is absent from production.
+do-e2e-test-support = []
 
 # The concrete native database driver. `sqlx` does not build for
 # wasm32-unknown-unknown, so it is a native-only dependency: the SqlxBackend
 # Backend impl is compiled out of the Cloudflare Worker target, which supplies a
-# D1 Backend instead (RFC-0004 Phase 5). `runtime-tokio` reuses the existing
+# HubDb SQL backend instead (RFC-0004 Phase 5). `runtime-tokio` reuses the existing
 # tokio runtime; the bundled pure-Rust sqlite driver needs no system library.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 sqlx = { workspace = true, features = ["sqlite"] }
+tokio = { workspace = true }
 
 [dev-dependencies]
 # The native SqlxBackend batch tests are async; drive them on a tokio runtime.
@@ -109,6 +114,8 @@ tempfile = { workspace = true }
 # deps are compiled only for wasm32; on native getrandom uses the OS directly.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 # Reads the host JS `Date.now()` wall clock on the Worker (SystemTime::now()
 # panics on wasm32). Native targets use std::time instead. RFC-0004 Phase 5.
 js-sys = "0.3"
@@ -119,7 +126,7 @@ getrandom_03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] 
 # crypto.getRandomValues on the Workers target.
 uuid = { workspace = true, features = ["js"] }
 # The `Send` bridge for the shared Connect-JSON axum router on the
-# single-threaded Worker: SendWrapper makes the `?Send` D1-backed RpcService
+# single-threaded Worker: SendWrapper makes the `?Send` HubDb-backed RpcService
 # state + handler futures satisfy axum's `Send + Sync` bounds (sound with one
 # thread). Native uses the identity bridge and needs no such dep. RFC-0004 Ph5.
 send_wrapper = { version = "0.6", features = ["futures"] }

@@ -20,14 +20,15 @@ use std::sync::Arc;
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
-    ChannelSummary, Database, IndexSnapshot, NewDeliveryRoute, NewDomain,
-    NewStorageBindingWriteRevision, NewSurfacePlacementSpec, RoutePlacementSelector, SurfaceTarget,
-    TokenAuth,
+    ChannelSummary, Database, DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec,
+    DeliveryRouteSpec, IndexSnapshot, NewStorageBindingWriteRevision, NewSurfacePlacementSpec,
+    SurfaceTarget, TokenAuth,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
+use sha2::{Digest as _, Sha256};
 use tower::ServiceExt;
 
 /// Deterministic HS256 key so tests can mint matching JWTs.
@@ -50,9 +51,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -131,6 +137,8 @@ async fn seed_inventory(db: &Database, registry_id: i64) {
         roster: Vec::new(),
         packages: vec![package],
         releases: Vec::new(),
+        release_artifact_snapshots: Vec::new(),
+        release_images: Vec::new(),
         channels: vec![ChannelSummary {
             name: "stable".into(),
             frontier: Some("8.5.0".into()),
@@ -185,21 +193,9 @@ async fn seed_placement(
 async fn private_registry_inventory_is_denied_to_anonymous() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("victim", "Victim").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "b", "local_fs", "/var/lib/aos/storage/victim")
-        .await
-        .unwrap();
+    let binding = common::create_local_binding(&db, org, "b", "/var/lib/aos/storage/victim").await;
     let id = db
-        .create_managed_registry(
-            org,
-            "internal",
-            "secret",
-            "private",
-            Some(binding),
-            "",
-            &[],
-            false,
-        )
+        .create_managed_registry(org, "internal", "secret", "private", &[], false)
         .await
         .unwrap();
     seed_inventory(&db, id).await;
@@ -251,10 +247,16 @@ async fn private_registry_inventory_is_denied_to_anonymous() {
     assert!(is_denied(status), "GetChannel anon denied, got {status}");
 
     // A member with Read on the registry's org scope CAN read it.
-    db.grant_membership("user", 7, "victim", "viewer")
+    let member_id = db.create_user("member@victim.test", None).await.unwrap();
+    let victim_scope = common::org_scope(&db, "victim").await;
+    db.grant_membership("user", member_id, &victim_scope, "viewer")
         .await
         .unwrap();
-    let member = bearer(Principal::user(7), "victim", &[Permission::Read]);
+    let member = bearer(
+        Principal::user(member_id),
+        &victim_scope,
+        &[Permission::Read],
+    );
     let (status, resp) = rpc(
         &app,
         "PackageService/ListPackages",
@@ -271,7 +273,7 @@ async fn public_registry_inventory_reads_anonymously() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
     let id = db
-        .create_managed_registry(org, "", "cdn", "public", None, "", &[], false)
+        .create_managed_registry(org, "", "cdn", "public", &[], false)
         .await
         .unwrap();
     seed_inventory(&db, id).await;
@@ -313,34 +315,13 @@ async fn public_registry_inventory_reads_anonymously() {
 async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("topology", "Topology").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "origin", "local_fs", "/var/lib/aos/topology")
-        .await
-        .unwrap();
+    let binding = common::create_local_binding(&db, org, "origin", "/var/lib/aos/topology").await;
     let public_registry = db
-        .create_managed_registry(
-            org,
-            "",
-            "public",
-            "public",
-            Some(binding),
-            "public",
-            &[],
-            false,
-        )
+        .create_managed_registry(org, "", "public", "public", &[], false)
         .await
         .unwrap();
     let private_registry = db
-        .create_managed_registry(
-            org,
-            "",
-            "private",
-            "private",
-            Some(binding),
-            "private",
-            &[],
-            false,
-        )
+        .create_managed_registry(org, "", "private", "private", &[], false)
         .await
         .unwrap();
     seed_placement(
@@ -412,10 +393,16 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
         "anonymous private placement read: {status}"
     );
 
-    db.grant_membership("user", 44, "topology", "viewer")
+    let member_id = db.create_user("member@topology.test", None).await.unwrap();
+    let topology_scope = common::org_scope(&db, "topology").await;
+    db.grant_membership("user", member_id, &topology_scope, "viewer")
         .await
         .unwrap();
-    let member = bearer(Principal::user(44), "topology", &[Permission::Read]);
+    let member = bearer(
+        Principal::user(member_id),
+        &topology_scope,
+        &[Permission::Read],
+    );
     let (status, resp) = rpc(
         &app,
         "TopologyService/GetPlacement",
@@ -461,30 +448,15 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         .create_org("placement-other", "Placement Other")
         .await
         .unwrap();
-    let binding = db
-        .create_storage_binding(org, "origin", "local_fs", "/var/lib/aos/placements")
-        .await
-        .unwrap();
+    let binding = common::create_local_binding(&db, org, "origin", "/var/lib/aos/placements").await;
     let registry = db
-        .create_managed_registry(
-            org,
-            "",
-            "private",
-            "private",
-            Some(binding),
-            "registry/private",
-            &[],
-            false,
-        )
+        .create_managed_registry(org, "", "private", "private", &[], false)
         .await
         .unwrap();
-    db.create_cache(
+    db.create_binary_cache(
         Some(org),
         "private-cache-write",
         "Private cache write target",
-        Some(binding),
-        "cache/private",
-        None,
         "private",
         40,
         "zstd",
@@ -500,42 +472,57 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         "registry/private",
     )
     .await;
-    db.grant_membership("user", 50, "placement-owner", "admin")
+    let owner_scope = common::org_scope(&db, "placement-owner").await;
+    let other_scope = common::org_scope(&db, "placement-other").await;
+    let owner_admin_id = db.create_user("admin@placement.test", None).await.unwrap();
+    db.grant_membership("user", owner_admin_id, &owner_scope, "admin")
         .await
         .unwrap();
     let owner_admin = bearer(
-        Principal::user(50),
-        "placement-owner",
+        Principal::user(owner_admin_id),
+        &owner_scope,
         &[Permission::Read, Permission::StorageManage],
     );
-    db.grant_membership("user", 51, "placement-other", "admin")
+    let wrong_org_id = db
+        .create_user("admin@other-placement.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", wrong_org_id, &other_scope, "admin")
         .await
         .unwrap();
     let wrong_org = bearer(
-        Principal::user(51),
-        "placement-other",
+        Principal::user(wrong_org_id),
+        &other_scope,
         &[Permission::StorageManage],
     );
-    db.grant_membership("user", 52, "placement-owner", "viewer")
+    let viewer_id = db.create_user("viewer@placement.test", None).await.unwrap();
+    db.grant_membership("user", viewer_id, &owner_scope, "viewer")
         .await
         .unwrap();
-    let viewer = bearer(Principal::user(52), "placement-owner", &[Permission::Read]);
+    let viewer = bearer(
+        Principal::user(viewer_id),
+        &owner_scope,
+        &[Permission::Read],
+    );
     let controller_id = db
         .create_service_account(org, "topology-controller")
         .await
         .unwrap();
-    db.grant_membership("service_account", controller_id, "placement-owner", "admin")
+    db.grant_membership("service_account", controller_id, &owner_scope, "admin")
         .await
         .unwrap();
     let controller = bearer(
         Principal::service_account(controller_id),
-        "placement-owner",
+        &owner_scope,
         &[Permission::StorageManage, Permission::TopologyReconcile],
     );
+    let write_generation =
+        common::create_valid_write_credential(&db, binding, "secret://placement-owner/origin/v1")
+            .await;
     let binding_revision = db
         .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
             storage_binding_id: binding,
-            write_credential_version_ref: "secret://placement-owner/origin/v1".to_string(),
+            write_credential_generation: write_generation,
             writes_supported: true,
             conditional_writes_supported: true,
             revision_fingerprint: "placement-owner-origin-v1".to_string(),
@@ -566,10 +553,13 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     .unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
 
+    let no_writes_generation =
+        common::create_valid_write_credential(&db, binding, "secret://placement-owner/origin/v2")
+            .await;
     let no_writes = db
         .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
             storage_binding_id: binding,
-            write_credential_version_ref: "secret://placement-owner/origin/no-writes".to_string(),
+            write_credential_generation: no_writes_generation,
             writes_supported: false,
             conditional_writes_supported: false,
             revision_fingerprint: "placement-owner-origin-no-writes".to_string(),
@@ -605,10 +595,13 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     .await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED, "no writes: {resp}");
 
+    let ordinary_generation =
+        common::create_valid_write_credential(&db, binding, "secret://placement-owner/origin/v3")
+            .await;
     let ordinary_only = db
         .create_storage_binding_write_revision(&NewStorageBindingWriteRevision {
             storage_binding_id: binding,
-            write_credential_version_ref: "secret://placement-owner/origin/ordinary".to_string(),
+            write_credential_generation: ordinary_generation,
             writes_supported: true,
             conditional_writes_supported: false,
             revision_fingerprint: "placement-owner-origin-ordinary".to_string(),
@@ -1062,31 +1055,66 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     assert_eq!(status, StatusCode::OK, "get read-only authority: {resp}");
     assert!(resp["authority"].is_null());
 
-    let domain = db
-        .create_domain(&NewDomain {
-            org_id: Some(org),
-            hostname: "placement-route.example.com".to_string(),
-            desired_dns_provider: None,
-            desired_tls_provider: None,
-            access_provider_json: "{}".to_string(),
-        })
+    db.create_delivery_endpoint(
+        "endpoint:placement-route-test",
+        &owner_scope,
+        Some(org),
+        "https",
+        &DeliveryEndpointHostInput::Ipv4([192, 0, 2, 44]),
+        443,
+        "instance:public",
+        &DeliveryEndpointRevisionSpec {
+            boundary_revision: 1,
+            ingress_kind: "hub".into(),
+            listener_configuration: "listener:placement-route-test".into(),
+            tls_configuration: "{\"certificate_ref\":\"secret:test\",\"provider\":\"external\",\"require_client_certificate\":false}".into(),
+            probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".into(),
+        },
+        None,
+        "test",
+        "request:placement-route-endpoint",
+    )
         .await
         .unwrap();
+    let access_policy_json = "{}".to_string();
     let route = db
-        .create_delivery_route(&NewDeliveryRoute {
-            domain_id: domain.id,
-            storage_gateway_id: None,
-            gateway_generation: None,
-            base_path: "/replica".to_string(),
-            surface: SurfaceTarget::Registry(registry),
-            mode: "hub_proxy".to_string(),
-            access_policy_json: "{}".to_string(),
-            selector: RoutePlacementSelector::Placement(observed.id),
-            serves_git: true,
-            serves_cache: false,
-            serves_web: false,
-            enabled: false,
-        })
+        .create_delivery_route(
+            "route:placement-pin-test",
+            SurfaceTarget::Registry(registry),
+            &DeliveryRouteSpec {
+                consumer_scope_key: owner_scope.clone(),
+                endpoint_id: "endpoint:placement-route-test".into(),
+                endpoint_generation: 1,
+                endpoint_ingress_kind: "hub".into(),
+                base_path: "/replica".into(),
+                mode: "hub_proxy".into(),
+                access_policy_kind: "public".into(),
+                access_policy_digest: hex::encode(Sha256::digest(access_policy_json.as_bytes())),
+                access_policy_json,
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                storage_gateway_id: None,
+                gateway_generation: None,
+                target_storage_binding_id: None,
+                gateway_client_base_path: None,
+                target_placement_prefix: None,
+                placement_id: Some(observed.id),
+                placement_policy_revision_id: None,
+                serves_git: true,
+                serves_cache: false,
+                serves_web: false,
+                enabled: false,
+            },
+            "https://192.0.2.44/replica",
+            1,
+            &[7_u8; 32],
+            &[(1, vec![7_u8; 32])],
+            None,
+            "test",
+        )
         .await
         .unwrap();
 
@@ -1112,7 +1140,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         "placement is pinned by a direct delivery route"
     );
     assert!(db
-        .delete_delivery_route(route.id, route.resource_version)
+        .delete_delivery_route(&route.id, route.resource_version, "user", None, "test")
         .await
         .unwrap());
 
@@ -1313,18 +1341,13 @@ async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("cache-owner", "Cache Owner").await.unwrap();
     let other_org = db.create_org("other-org", "Other Org").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "cache-origin", "local_fs", "/var/lib/aos/caches")
-        .await
-        .unwrap();
+    let binding =
+        common::create_local_binding(&db, org, "cache-origin", "/var/lib/aos/caches").await;
     let public_cache = db
-        .create_cache(
+        .create_binary_cache(
             Some(org),
             "public-cache",
             "Public cache",
-            Some(binding),
-            "legacy/public",
-            None,
             "public",
             40,
             "zstd",
@@ -1333,13 +1356,10 @@ async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
         .await
         .unwrap();
     let private_cache = db
-        .create_cache(
+        .create_binary_cache(
             Some(org),
             "private-cache",
             "Private cache",
-            Some(binding),
-            "legacy/private",
-            None,
             "private",
             40,
             "zstd",
@@ -1388,10 +1408,16 @@ async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
     .await;
     assert!(is_denied(status), "anonymous private cache read: {status}");
 
-    db.grant_membership("user", 45, "cache-owner", "viewer")
+    let owner_member_id = db.create_user("member@cache.test", None).await.unwrap();
+    let owner_scope = common::org_scope(&db, "cache-owner").await;
+    db.grant_membership("user", owner_member_id, &owner_scope, "viewer")
         .await
         .unwrap();
-    let owner_member = bearer(Principal::user(45), "cache-owner", &[Permission::Read]);
+    let owner_member = bearer(
+        Principal::user(owner_member_id),
+        &owner_scope,
+        &[Permission::Read],
+    );
     let (status, resp) = rpc(
         &app,
         "TopologyService/GetPlacement",
@@ -1402,10 +1428,19 @@ async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
     assert_eq!(status, StatusCode::OK, "cache owner read: {resp}");
     assert_eq!(resp["placement"]["prefix"], "cache/private");
 
-    db.grant_membership("user", 46, "other-org", "viewer")
+    let other_scope = common::org_scope(&db, "other-org").await;
+    let other_member_id = db
+        .create_user("member@other-cache.test", None)
         .await
         .unwrap();
-    let other_member = bearer(Principal::user(46), "other-org", &[Permission::Read]);
+    db.grant_membership("user", other_member_id, &other_scope, "viewer")
+        .await
+        .unwrap();
+    let other_member = bearer(
+        Principal::user(other_member_id),
+        &other_scope,
+        &[Permission::Read],
+    );
     let (status, _) = rpc(
         &app,
         "TopologyService/GetPlacement",
@@ -1420,15 +1455,15 @@ async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
 async fn list_registries_filters_private_and_soft_deleted() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    db.create_managed_registry(org, "", "cdn", "public", None, "", &[], false)
+    db.create_managed_registry(org, "", "cdn", "public", &[], false)
         .await
         .unwrap();
-    db.create_managed_registry(org, "", "secret", "private", None, "", &[], false)
+    db.create_managed_registry(org, "", "secret", "private", &[], false)
         .await
         .unwrap();
     // A second org whose registry is hidden once the org is soft-deleted.
     let gone = db.create_org("gone", "Gone").await.unwrap();
-    db.create_managed_registry(gone, "", "pub", "public", None, "", &[], false)
+    db.create_managed_registry(gone, "", "pub", "public", &[], false)
         .await
         .unwrap();
     db.soft_delete_org(gone, 30 * 86_400).await.unwrap();
@@ -1454,10 +1489,15 @@ async fn list_registries_filters_private_and_soft_deleted() {
 
     // A member of acme additionally sees acme's private registry, but never the
     // soft-deleted org's registry.
-    db.grant_membership("user", 1, "acme", "viewer")
+    let org_scope = common::org_scope(&db, "acme").await;
+    let member_id = db
+        .create_user("registry-member@acme.test", None)
         .await
         .unwrap();
-    let member = bearer(Principal::user(1), "acme", &[Permission::Read]);
+    db.grant_membership("user", member_id, &org_scope, "viewer")
+        .await
+        .unwrap();
+    let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
         "RegistryService/ListRegistries",
@@ -1492,7 +1532,7 @@ async fn list_orgs_requires_membership_and_filters() {
     // Anonymous enumeration is denied (was the per-slug harvest primitive).
     let (status, _resp) = rpc(
         &app,
-        "OrganizationService/ListOrgs",
+        "OrganizationService/ListOrganizations",
         serde_json::json!({}),
         None,
     )
@@ -1500,23 +1540,25 @@ async fn list_orgs_requires_membership_and_filters() {
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
-        "anon ListOrgs must be denied"
+        "anonymous organization enumeration must be denied"
     );
 
     // A member of acme sees only acme, never globex.
-    db.grant_membership("user", 1, "acme", "viewer")
+    let org_scope = common::org_scope(&db, "acme").await;
+    let member_id = db.create_user("org-member@acme.test", None).await.unwrap();
+    db.grant_membership("user", member_id, &org_scope, "viewer")
         .await
         .unwrap();
-    let member = bearer(Principal::user(1), "acme", &[Permission::Read]);
+    let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
-        "OrganizationService/ListOrgs",
+        "OrganizationService/ListOrganizations",
         serde_json::json!({}),
         Some(&member),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "member ListOrgs: {resp}");
-    let slugs: Vec<&str> = resp["orgs"]
+    assert_eq!(status, StatusCode::OK, "member organizations: {resp}");
+    let slugs: Vec<&str> = resp["organizations"]
         .as_array()
         .unwrap()
         .iter()
@@ -1547,10 +1589,15 @@ async fn list_projects_requires_membership() {
     );
 
     // A member sees the org's projects.
-    db.grant_membership("user", 1, "acme", "viewer")
+    let org_scope = common::org_scope(&db, "acme").await;
+    let member_id = db
+        .create_user("project-member@acme.test", None)
         .await
         .unwrap();
-    let member = bearer(Principal::user(1), "acme", &[Permission::Read]);
+    db.grant_membership("user", member_id, &org_scope, "viewer")
+        .await
+        .unwrap();
+    let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
         "ProjectService/ListProjects",
@@ -1563,73 +1610,68 @@ async fn list_projects_requires_membership() {
 }
 
 #[tokio::test]
-async fn list_bindings_requires_membership_and_redacts_root_for_non_admin() {
+async fn list_storage_bindings_requires_storage_management_authority() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    db.create_storage_binding(org, "primary", "local_fs", "/var/lib/aos/storage/acme")
-        .await
-        .unwrap();
+    let org_scope = db.org_by_id(org).await.unwrap().unwrap().stable_id;
+    common::create_local_binding(&db, org, "primary", "/var/lib/aos/storage/acme").await;
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     // Anonymous is denied — the host path never leaks.
     let (status, resp) = rpc(
         &app,
-        "StorageBindingService/ListBindings",
-        serde_json::json!({ "orgSlug": "acme" }),
+        "StorageBindingService/ListStorageBindings",
+        serde_json::json!({ "ownerScopeKey": org_scope }),
         None,
     )
     .await;
     assert_eq!(
         status,
         StatusCode::UNAUTHORIZED,
-        "anon ListBindings denied: {resp}"
+        "anonymous storage inventory denied: {resp}"
     );
 
-    // A non-admin member may list bindings (name/kind) but the host `root` is
-    // redacted — proto3 JSON omits an empty string field entirely.
-    db.grant_membership("user", 2, "acme", "viewer")
+    // A read-only member cannot enumerate infrastructure configuration.
+    let member_id = db
+        .create_user("storage-viewer@acme.test", None)
         .await
         .unwrap();
-    let member = bearer(Principal::user(2), "acme", &[Permission::Read]);
+    db.grant_membership("user", member_id, &org_scope, "viewer")
+        .await
+        .unwrap();
+    let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
     let (status, resp) = rpc(
         &app,
-        "StorageBindingService/ListBindings",
-        serde_json::json!({ "orgSlug": "acme" }),
+        "StorageBindingService/ListStorageBindings",
+        serde_json::json!({ "ownerScopeKey": org_scope }),
         Some(&member),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "member ListBindings: {resp}");
-    assert_eq!(resp["bindings"][0]["name"], "primary");
-    let root = resp["bindings"][0]["root"].as_str().unwrap_or("");
-    assert!(
-        root.is_empty(),
-        "a non-admin member must not see the binding root host path: {resp}"
-    );
-    assert!(
-        !resp.to_string().contains("/var/lib/aos/storage/acme"),
-        "host path must not appear anywhere for a non-admin: {resp}"
-    );
+    assert_eq!(status, StatusCode::FORBIDDEN, "read-only member: {resp}");
 
-    // An admin (registry.configure, plus read as every admin token carries)
-    // sees the real host path.
-    db.grant_membership("user", 3, "acme", "admin")
+    // A storage manager sees the normalized binding spec.
+    let admin_id = db
+        .create_user("storage-admin@acme.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", admin_id, &org_scope, "admin")
         .await
         .unwrap();
     let admin = bearer(
-        Principal::user(3),
-        "acme",
-        &[Permission::Read, Permission::RegistryConfigure],
+        Principal::user(admin_id),
+        &org_scope,
+        &[Permission::StorageManage],
     );
     let (status, resp) = rpc(
         &app,
-        "StorageBindingService/ListBindings",
-        serde_json::json!({ "orgSlug": "acme" }),
+        "StorageBindingService/ListStorageBindings",
+        serde_json::json!({ "ownerScopeKey": org_scope }),
         Some(&admin),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "admin ListBindings: {resp}");
+    assert_eq!(status, StatusCode::OK, "storage manager: {resp}");
     assert_eq!(
-        resp["bindings"][0]["root"], "/var/lib/aos/storage/acme",
-        "an admin sees the binding root"
+        resp["storageBindings"][0]["spec"]["localRootPath"], "/var/lib/aos/storage/acme",
+        "storage manager sees the normalized local root"
     );
 }

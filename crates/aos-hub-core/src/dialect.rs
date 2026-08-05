@@ -40,7 +40,7 @@
 //! `ALTER TABLE` text:
 //!
 //! ```text
-//! source                      sqlite / D1             postgres                  mysql
+//! source                      sqlite / DO SQLite      postgres                  mysql
 //! INTEGER PRIMARY KEY         INTEGER PRIMARY KEY     BIGSERIAL PRIMARY KEY     BIGINT AUTO_INCREMENT PRIMARY KEY
 //! INTEGER                     INTEGER                 BIGINT                    BIGINT
 //! TEXT                        TEXT                    TEXT                      VARCHAR(255) (see note)
@@ -71,7 +71,7 @@
 //! for stable names, normalized paths, hashes, revisions, and other values
 //! whose equality and ordering must not depend on the database's default
 //! collation. The supported capacities are 32, 64, 128, 255, and 512. SQLite
-//! and D1 use their bytewise `BINARY` collation, postgres uses its deterministic
+//! and Durable Object SQLite use bytewise `BINARY` collation, postgres uses its deterministic
 //! `C` collation, and MySQL 8.0.16+ uses its `NO PAD` `utf8mb4_0900_bin`
 //! collation.
 //! The numeric suffix is the maximum accepted UTF-8 byte length in the Hub
@@ -134,7 +134,7 @@ use crate::value::Value;
 /// abstraction and is cheap to copy and pass around.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
-    /// SQLite (and its Cloudflare D1 twin) — the source dialect.
+    /// SQLite, including the Cloudflare Durable Object database dialect.
     Sqlite,
     /// PostgreSQL.
     Postgres,
