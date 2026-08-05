@@ -66,6 +66,7 @@ pub mod boot_barrier;
 pub mod coverage;
 pub mod deadline;
 pub mod device_io;
+pub mod fault_command;
 pub mod fingerprint_sampler;
 pub mod handshake;
 pub mod idle_loop;
@@ -128,11 +129,12 @@ pub use abi::{
 };
 pub use args::{
     PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_NODE, PLUGIN_ARG_APP_RANDOM_SEED,
-    PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FINGERPRINT, PLUGIN_ARG_SHMEMFD, PLUGIN_ARG_SIMFD,
-    PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX, PLUGIN_ARG_WHITEBOX_SETUP,
-    PluginAppRandomConfig, PluginArgs, PluginArgsParseError, PluginInheritedFds,
-    PluginStateDumpConfig, PluginSwitch, WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1,
-    WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1, WhiteboxSetupAttestation,
+    PLUGIN_ARG_COVERAGE, PLUGIN_ARG_FAULT_NODE_HASH, PLUGIN_ARG_FINGERPRINT, PLUGIN_ARG_SHMEMFD,
+    PLUGIN_ARG_SIMFD, PLUGIN_ARG_SLOT, PLUGIN_ARG_WAKEFD, PLUGIN_ARG_WHITEBOX,
+    PLUGIN_ARG_WHITEBOX_SETUP, PluginAppRandomConfig, PluginArgs, PluginArgsParseError,
+    PluginInheritedFds, PluginStateDumpConfig, PluginSwitch,
+    WHITEBOX_SETUP_AARCH64_HLT_UNCLAIMED_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
+    WhiteboxSetupAttestation,
 };
 pub use block_io::{
     BlockGuestCompletion, BlockGuestCompletionError, BlockInboundRing, BlockIoError,
@@ -168,6 +170,11 @@ pub use deadline::{
 pub use device_io::{
     DeviceIoBurstState, DeviceIoFreezeError, DeviceIoRequestOutcome, DeviceIoRequestRelease,
     DeviceIoRequestToken, PluginDeviceIoFreeze,
+};
+pub use fault_command::{
+    FaultCommandBridgeError, QEMU_PLUGIN_CRUCIBLE_FAULT_CANCEL_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_FAULT_CAPABILITIES_SYMBOL, QEMU_PLUGIN_CRUCIBLE_FAULT_POLL_SYMBOL,
+    QEMU_PLUGIN_CRUCIBLE_FAULT_SUBMIT_SYMBOL,
 };
 pub use fingerprint_sampler::{
     FINGERPRINT_FAILURE_DEVICE_STATE, FINGERPRINT_FAILURE_DEVICE_STATE_SCHEMA,

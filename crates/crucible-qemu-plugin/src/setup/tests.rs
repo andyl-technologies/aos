@@ -396,7 +396,7 @@ fn valid_region_file(layout: RegionLayout) -> File {
 }
 
 fn plugin_handshake(slot_index: u32, node_count: u32) -> PluginControlHandshake {
-    let args = PluginArgs::parse(&format!("simfd=3,slot={slot_index}"))
+    let args = PluginArgs::parse(&format!("simfd=3,slot={slot_index},fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111"))
         .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
     let negotiated = NegotiatedHandshake {
         proto_version: CONTROL_PROTOCOL_VERSION,
@@ -422,7 +422,7 @@ fn callback_capabilities() -> PluginCallbackCapabilities {
             panic!("callback prerequisite {step:?} should record: {error}");
         }
     }
-    let args = PluginArgs::parse("simfd=3,slot=0")
+    let args = PluginArgs::parse("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111")
         .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
     sequence
         .register_callbacks_for_test(
@@ -438,7 +438,7 @@ fn owned_callbacks(
     slot: u32,
     completion: PluginSetupCompletion,
 ) -> RequiredOwnedCallbacksRegistered {
-    let args = PluginArgs::parse(&format!("simfd=3,slot={slot}"))
+    let args = PluginArgs::parse(&format!("simfd=3,slot={slot},fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111"))
         .unwrap_or_else(|error| panic!("test plugin args should parse: {error}"));
     RequiredOwnedCallbacksRegistered::for_test(&args, completion)
 }

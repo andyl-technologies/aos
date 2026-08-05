@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 workspace = true
 
 [dependencies]
+blake3 = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }

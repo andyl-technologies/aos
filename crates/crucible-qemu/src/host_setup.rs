@@ -16,8 +16,13 @@ use crucible_protocol::{
     SetupDescriptorFds,
 };
 use crucible_shmem::{
-    ABI_VERSION, RegionAllocation, RegionConfig, RegionLayoutError, RegionSerializationError,
-    RegionSetupValidationError, ValidatedSetupRegion, validate_setup_region_header,
+    ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
+    FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
+    FaultCommandHeaderV1, FaultCommandKind, FaultResultStatus, FaultTransportError,
+    MappedSetupRegionAccessError, RegionAllocation, RegionConfig, RegionLayoutError,
+    RegionSerializationError, RegionSetupValidationError, SetupRegionMapError,
+    ValidatedSetupRegion, decode_fault_capability_manifest, dequeue_fault_result,
+    enqueue_fault_command, mmap_setup_region, validate_setup_region_header,
 };
 use thiserror::Error;
 
@@ -32,6 +37,7 @@ pub struct QemuHostPluginSetup {
     negotiated: NegotiatedHandshake,
     setup_ack: SchedulableNodeSetup,
     region: ValidatedSetupRegion,
+    fault_capabilities: Vec<FaultCapabilityRowV1>,
 }
 
 impl QemuHostPluginSetup {
@@ -57,6 +63,12 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub const fn region(&self) -> ValidatedSetupRegion {
         self.region
+    }
+
+    /// Returns the immutable QEMU fault capabilities admitted before guest start.
+    #[must_use]
+    pub fn fault_capabilities(&self) -> &[FaultCapabilityRowV1] {
+        &self.fault_capabilities
     }
 
     /// Returns the retained host shared-memory descriptor.
@@ -217,11 +229,15 @@ pub fn complete_qemu_host_plugin_setup(
     let bytes = allocation
         .setup_region_bytes()
         .map_err(|source| QemuHostPluginSetupError::RegionSerialization { source })?;
-    write_shmem_setup_region(resources.shmem_fd(), &bytes)?;
+    let (control_socket, shmem_fd, wake_fd, region_len, fault_node_hash) = resources.into_parts();
+    write_shmem_setup_region(shmem_fd.as_raw_fd(), &bytes)?;
     let region = validate_setup_region_header(allocation.header().snapshot(), layout.region_size)
         .map_err(|source| QemuHostPluginSetupError::RegionValidation { source })?;
 
-    let (control_socket, shmem_fd, wake_fd, region_len) = resources.into_parts();
+    let mut admission_region = mmap_setup_region(shmem_fd.as_fd(), region_len)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionMap { source })?;
+    enqueue_capability_query(&mut admission_region, slot_index, fault_node_hash)?;
+
     let mut control = ControlLifecycleStream::connected_unix_stream(control_socket)
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
     let negotiated = control
@@ -244,6 +260,7 @@ pub fn complete_qemu_host_plugin_setup(
     let setup_ack = control
         .host_accept_setup_ack()
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
+    let fault_capabilities = accept_capability_result(&mut admission_region, slot_index)?;
     control
         .enter_run_via_shared_memory()
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
@@ -255,7 +272,96 @@ pub fn complete_qemu_host_plugin_setup(
         negotiated,
         setup_ack,
         region,
+        fault_capabilities,
     })
+}
+
+fn enqueue_capability_query(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+    target_node_hash: [u8; 32],
+) -> Result<(), QemuHostPluginSetupError> {
+    if target_node_hash == [0; 32] {
+        return Err(QemuHostPluginSetupError::AdmissionTargetIdentity);
+    }
+    let transport = region
+        .fault_command_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let mut binding_hasher = blake3::Hasher::new();
+    binding_hasher.update(b"crucible.qemu-fault-capability-admission.v1\0");
+    binding_hasher.update(&target_node_hash);
+    let header = FaultCommandHeaderV1 {
+        abi_major: FAULT_COMMAND_ABI_MAJOR,
+        abi_minor: FAULT_COMMAND_ABI_MINOR,
+        command_kind: FaultCommandKind::QueryCapabilities,
+        command_flags: 0,
+        phase: FaultBoundaryPhase::NodeBoundary,
+        semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+        command_sequence: 1,
+        target_node_hash,
+        target_icount: 0,
+        authorization_ceiling_icount: 0,
+        binding_hash: *binding_hasher.finalize().as_bytes(),
+        opportunity_hash: [0; 32],
+        expected_precondition_hash: [0; 32],
+        payload_hash: [0; 32],
+        payload_offset: 0,
+        payload_length: 0,
+    };
+    enqueue_fault_command(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+        header,
+        &[],
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })
+}
+
+fn accept_capability_result(
+    region: &mut crucible_shmem::MappedSetupRegion,
+    slot_index: u32,
+) -> Result<Vec<FaultCapabilityRowV1>, QemuHostPluginSetupError> {
+    let transport = region
+        .fault_result_transport_mut(slot_index)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionAccess { source })?;
+    let result = dequeue_fault_result(
+        transport.ring,
+        transport.slots,
+        transport.arena_header,
+        transport.arena,
+        transport.arena_region_offset,
+    )
+    .map_err(|source| QemuHostPluginSetupError::AdmissionTransport { source })?
+    .ok_or(QemuHostPluginSetupError::AdmissionResultMissing)?;
+    let (header, payload) = match result {
+        DequeuedFaultResult::Valid { header, payload } => (header, payload),
+        DequeuedFaultResult::Invalid {
+            command_sequence,
+            error,
+        } => {
+            return Err(QemuHostPluginSetupError::AdmissionResultInvalid {
+                command_sequence,
+                source: error,
+            });
+        }
+    };
+    if header.command_sequence != 1
+        || header.command_kind != FaultCommandKind::QueryCapabilities as u16
+        || header.status != FaultResultStatus::Applied
+        || header.phase != FaultBoundaryPhase::NodeBoundary
+    {
+        return Err(QemuHostPluginSetupError::AdmissionResultRejected {
+            command_sequence: header.command_sequence,
+            command_kind: header.command_kind,
+            status: header.status,
+            phase: header.phase,
+        });
+    }
+    decode_fault_capability_manifest(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })
 }
 
 fn write_shmem_setup_region(fd: RawFd, bytes: &[u8]) -> Result<(), QemuHostPluginSetupError> {
@@ -354,6 +460,58 @@ pub enum QemuHostPluginSetupError {
         /// Underlying region validation error.
         source: RegionSetupValidationError,
     },
+    /// The host could not map the setup region for pre-start capability admission.
+    #[error("fault capability admission mapping failed: {source}")]
+    AdmissionMap {
+        /// Shared-memory mapping failure.
+        source: SetupRegionMapError,
+    },
+    /// Spawn resources were not bound to a canonical nonzero node identity.
+    #[error("fault capability admission target identity is the reserved all-zero hash")]
+    AdmissionTargetIdentity,
+    /// The mapped region could not expose this VM's dedicated fault transport.
+    #[error("fault capability admission transport access failed: {source}")]
+    AdmissionAccess {
+        /// Typed mapping failure.
+        source: MappedSetupRegionAccessError,
+    },
+    /// The mandatory capability command/result transport failed.
+    #[error("fault capability admission transport failed: {source}")]
+    AdmissionTransport {
+        /// Lossless ring or arena failure.
+        source: FaultTransportError,
+    },
+    /// The plugin acknowledged setup without publishing the mandatory result.
+    #[error("fault capability admission result is missing after setup acknowledgement")]
+    AdmissionResultMissing,
+    /// The plugin published an ABI-invalid capability result.
+    #[error("fault capability result sequence {command_sequence} is invalid: {source}")]
+    AdmissionResultInvalid {
+        /// Result sequence recovered from the invalid envelope.
+        command_sequence: u64,
+        /// Exact ABI validation failure.
+        source: FaultAbiError,
+    },
+    /// QEMU rejected or miscorrelated the mandatory capability query.
+    #[error(
+        "fault capability result mismatch: sequence={command_sequence} kind={command_kind} status={status:?} phase={phase:?}"
+    )]
+    AdmissionResultRejected {
+        /// Returned sequence.
+        command_sequence: u64,
+        /// Returned raw command kind.
+        command_kind: u16,
+        /// Returned status.
+        status: FaultResultStatus,
+        /// Returned boundary phase.
+        phase: FaultBoundaryPhase,
+    },
+    /// The returned immutable capability manifest was malformed.
+    #[error("fault capability manifest is invalid: {source}")]
+    AdmissionManifest {
+        /// Exact manifest codec failure.
+        source: FaultAbiError,
+    },
     /// The control-protocol lifecycle failed.
     #[error("setup control lifecycle failed")]
     Control {
@@ -363,7 +521,7 @@ pub enum QemuHostPluginSetupError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::error::Error;
@@ -381,8 +539,8 @@ mod tests {
     const EVENTFD_WAKE_PROBE: u64 = 7;
 
     #[test]
-    fn qemu_host_rejects_a_v1_plugin_against_the_v5_region() {
-        assert_eq!(ABI_VERSION, 5);
+    fn qemu_host_rejects_a_v1_plugin_against_the_v6_region() {
+        assert_eq!(ABI_VERSION, 6);
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,
@@ -500,7 +658,7 @@ mod tests {
         let setup = plugin
             .plugin_recv_setup_with_descriptors()
             .map_err(|error| error.to_string())?;
-        let mapped = mmap_setup_region(setup.descriptors.shmem_fd.as_fd(), setup.region_len)
+        let mut mapped = mmap_setup_region(setup.descriptors.shmem_fd.as_fd(), setup.region_len)
             .map_err(|error| error.to_string())?;
         let validated = mapped
             .validate_header()
@@ -508,6 +666,8 @@ mod tests {
         assert_fd_open(setup.descriptors.wake_fd.as_raw_fd()).map_err(|error| error.to_string())?;
         write_eventfd_counter(setup.descriptors.wake_fd.as_raw_fd(), EVENTFD_WAKE_PROBE)
             .map_err(|error| error.to_string())?;
+
+        publish_test_capability_result(&mut mapped).map_err(|error| error.to_string())?;
 
         plugin
             .plugin_send_ready_setup_ack()
@@ -520,6 +680,75 @@ mod tests {
             .map_err(|error| error.to_string())?;
 
         Ok(validated)
+    }
+
+    pub(crate) fn publish_test_capability_result(
+        mapped: &mut crucible_shmem::MappedSetupRegion,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let command_transport = mapped.fault_command_transport_mut(0)?;
+        let command = crucible_shmem::dequeue_fault_command(
+            command_transport.ring,
+            command_transport.slots,
+            command_transport.arena_header,
+            command_transport.arena,
+            command_transport.arena_region_offset,
+        )?
+        .ok_or("capability query was not published before descriptor handoff")?;
+        let header = match command {
+            crucible_shmem::DequeuedFaultCommand::Valid { header, payload } => {
+                if !payload.is_empty() {
+                    return Err("capability query payload must be empty".into());
+                }
+                header
+            }
+            crucible_shmem::DequeuedFaultCommand::Rejected { error, .. } => {
+                return Err(format!("capability query was invalid: {error}").into());
+            }
+        };
+        if header.command_kind != FaultCommandKind::QueryCapabilities
+            || header.command_sequence != 1
+        {
+            return Err("unexpected setup-time fault command".into());
+        }
+        let rows = [FaultCapabilityRowV1 {
+            command_kind: FaultCommandKind::QueryCapabilities,
+            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+            scope: 1,
+            phase_mask: FaultBoundaryPhase::NodeBoundary.bit(),
+            maximum_payload_bytes: 0,
+            maximum_pending_commands: 1,
+            required_feature_bits: 0,
+            capability_hash: *blake3::hash(b"test capability").as_bytes(),
+        }];
+        let payload = crucible_shmem::encode_fault_capability_manifest(&rows)?;
+        let result_transport = mapped.fault_result_transport_mut(0)?;
+        crucible_shmem::enqueue_fault_result(
+            result_transport.ring,
+            result_transport.slots,
+            result_transport.arena_header,
+            result_transport.arena,
+            result_transport.arena_region_offset,
+            crucible_shmem::FaultResultHeaderV1 {
+                abi_major: FAULT_COMMAND_ABI_MAJOR,
+                abi_minor: FAULT_COMMAND_ABI_MINOR,
+                command_kind: FaultCommandKind::QueryCapabilities as u16,
+                status: FaultResultStatus::Applied,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                command_sequence: 1,
+                observed_icount: 0,
+                applied_icount: 0,
+                capability_version: 1,
+                phase: FaultBoundaryPhase::NodeBoundary,
+                before_hash: [0; 32],
+                after_hash: [0; 32],
+                evidence_hash: *blake3::hash(&payload).as_bytes(),
+                result_payload_hash: [0; 32],
+                result_offset: 0,
+                result_length: 0,
+            },
+            &payload,
+        )?;
+        Ok(())
     }
 
     fn assert_fd_open(fd: RawFd) -> Result<(), io::Error> {

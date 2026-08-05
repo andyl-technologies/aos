@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn plugin_args_parse_required_simfd_and_slot() {
-    let args = PluginArgs::parse("simfd=3,slot=2")
+    let args = PluginArgs::parse("simfd=3,slot=2,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111")
         .unwrap_or_else(|error| panic!("minimal args should parse: {error}"));
 
     assert_eq!(args.sim_fd(), 3);
@@ -23,7 +23,7 @@ fn plugin_args_parse_required_simfd_and_slot() {
 #[test]
 fn plugin_args_parse_optional_fds_and_switches() {
     let args = PluginArgs::parse(
-        "simfd=4,slot=1,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on,fingerprint_oracle=on",
+        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on,fingerprint_oracle=on",
     )
     .unwrap_or_else(|error| panic!("complete args should parse: {error}"));
 
@@ -50,7 +50,9 @@ fn plugin_args_parse_optional_fds_and_switches() {
 #[test]
 fn plugin_args_require_fingerprint_for_synchronous_oracle() {
     assert_eq!(
-        PluginArgs::parse("simfd=4,slot=1,fingerprint_oracle=on"),
+        PluginArgs::parse(
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,fingerprint_oracle=on"
+        ),
         Err(PluginArgsParseError::FingerprintOracleWithoutFingerprint)
     );
 }
@@ -58,7 +60,7 @@ fn plugin_args_require_fingerprint_for_synchronous_oracle() {
 #[test]
 fn plugin_args_parse_terminal_state_dump_as_complete_group() {
     let args = PluginArgs::parse(
-        "simfd=4,slot=1,fingerprint=on,state_dump_target=4000001,state_dump_path=/tmp/dump.bin",
+        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,fingerprint=on,state_dump_target=4000001,state_dump_path=/tmp/dump.bin",
     )
     .unwrap_or_else(|error| panic!("state-dump args should parse: {error}"));
     let dump = args
@@ -71,16 +73,20 @@ fn plugin_args_parse_terminal_state_dump_as_complete_group() {
 #[test]
 fn plugin_args_reject_incomplete_or_unscoped_state_dump() {
     assert_eq!(
-        PluginArgs::parse("simfd=4,slot=1,fingerprint=on,state_dump_target=1"),
+        PluginArgs::parse(
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,fingerprint=on,state_dump_target=1"
+        ),
         Err(PluginArgsParseError::IncompleteStateDump)
     );
     assert_eq!(
-        PluginArgs::parse("simfd=4,slot=1,state_dump_target=1,state_dump_path=/tmp/dump.bin"),
+        PluginArgs::parse(
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,state_dump_target=1,state_dump_path=/tmp/dump.bin"
+        ),
         Err(PluginArgsParseError::StateDumpWithoutFingerprint)
     );
     assert!(matches!(
         PluginArgs::parse(
-            "simfd=4,slot=1,fingerprint=on,state_dump_target=1,state_dump_path=relative"
+            "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,fingerprint=on,state_dump_target=1,state_dump_path=relative"
         ),
         Err(PluginArgsParseError::InvalidStateDumpPath { .. })
     ));
@@ -89,7 +95,9 @@ fn plugin_args_reject_incomplete_or_unscoped_state_dump() {
 #[test]
 fn plugin_args_reject_missing_required_keys() {
     assert_eq!(
-        PluginArgs::parse("slot=0"),
+        PluginArgs::parse(
+            "slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111"
+        ),
         Err(PluginArgsParseError::MissingRequiredKey { key: "simfd" })
     );
     assert_eq!(
@@ -107,13 +115,17 @@ fn plugin_args_reject_malformed_unknown_and_duplicate_keys() {
         })
     );
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=0,mode=on"),
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,mode=on"
+        ),
         Err(PluginArgsParseError::UnknownKey {
             key: String::from("mode"),
         })
     );
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=0,slot=1"),
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,slot=1"
+        ),
         Err(PluginArgsParseError::DuplicateKey {
             key: String::from("slot"),
         })
@@ -123,28 +135,36 @@ fn plugin_args_reject_malformed_unknown_and_duplicate_keys() {
 #[test]
 fn plugin_args_reject_bad_fd_slot_and_switch_values() {
     assert_eq!(
-        PluginArgs::parse("simfd=-1,slot=0"),
+        PluginArgs::parse(
+            "simfd=-1,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111"
+        ),
         Err(PluginArgsParseError::InvalidFd {
             key: "simfd",
             value: String::from("-1"),
         })
     );
     assert_eq!(
-        PluginArgs::parse("simfd=control,slot=0"),
+        PluginArgs::parse(
+            "simfd=control,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111"
+        ),
         Err(PluginArgsParseError::InvalidFd {
             key: "simfd",
             value: String::from("control"),
         })
     );
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=guest"),
+        PluginArgs::parse(
+            "simfd=3,slot=guest,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111"
+        ),
         Err(PluginArgsParseError::InvalidSlot {
             key: "slot",
             value: String::from("guest"),
         })
     );
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=0,coverage=true"),
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,coverage=true"
+        ),
         Err(PluginArgsParseError::InvalidSwitch {
             key: "coverage",
             value: String::from("true"),
@@ -155,20 +175,26 @@ fn plugin_args_reject_bad_fd_slot_and_switch_values() {
 #[test]
 fn plugin_args_require_whitebox_setup_attestation_exactly_when_enabled() {
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=0,whitebox=on"),
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on"
+        ),
         Err(PluginArgsParseError::MissingWhiteboxSetup {
             key: PLUGIN_ARG_WHITEBOX_SETUP,
         })
     );
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=0,whitebox=on,whitebox_setup=x86-port-00e8-unclaimed-v1"),
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=on,whitebox_setup=x86-port-00e8-unclaimed-v1"
+        ),
         Err(PluginArgsParseError::InvalidWhiteboxSetup {
             key: PLUGIN_ARG_WHITEBOX_SETUP,
             value: String::from("x86-port-00e8-unclaimed-v1"),
         })
     );
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=0,whitebox=off,whitebox_setup=x86-port-00e7-unclaimed-v1"),
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=off,whitebox_setup=x86-port-00e7-unclaimed-v1"
+        ),
         Err(PluginArgsParseError::WhiteboxSetupWhileDisabled {
             key: PLUGIN_ARG_WHITEBOX_SETUP,
         })
@@ -178,18 +204,22 @@ fn plugin_args_require_whitebox_setup_attestation_exactly_when_enabled() {
 #[test]
 fn plugin_args_reject_partial_inherited_descriptor_pair() {
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=0,shmemfd=4"),
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,shmemfd=4"
+        ),
         Err(PluginArgsParseError::IncompleteInheritedDescriptors)
     );
     assert_eq!(
-        PluginArgs::parse("simfd=3,slot=0,wakefd=5"),
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,wakefd=5"
+        ),
         Err(PluginArgsParseError::IncompleteInheritedDescriptors)
     );
 }
 
 #[test]
 fn plugin_args_validate_slot_against_node_count() {
-    let args = PluginArgs::parse("simfd=3,slot=2")
+    let args = PluginArgs::parse("simfd=3,slot=2,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111")
         .unwrap_or_else(|error| panic!("args should parse: {error}"));
 
     assert_eq!(args.validate_slot_index(3), Ok(()));

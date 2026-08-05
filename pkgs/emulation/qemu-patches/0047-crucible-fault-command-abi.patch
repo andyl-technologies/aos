@@ -1,4 +1,21 @@
+From f8df9f7257aa5aaf322a049feffea025a189fb88 Mon Sep 17 00:00:00 2001
+From: Crucible Patch Regenerator <crucible@aos.invalid>
+Date: Mon, 1 Jan 2001 00:00:01 +0000
+Subject: [PATCH] 0047-crucible-fault-command-abi
+
+Signed-off-by: Crucible Patch Regenerator <crucible@aos.invalid>
+---
+ MAINTAINERS                   |   1 +
+ include/qemu/crucible-fault.h |  44 +++
+ include/qemu/qemu-plugin.h    | 120 ++++++++
+ plugins/crucible-fault.c      | 522 ++++++++++++++++++++++++++++++++++
+ plugins/meson.build           |   3 +-
+ 5 files changed, 688 insertions(+), 2 deletions(-)
+ create mode 100644 include/qemu/crucible-fault.h
+ create mode 100644 plugins/crucible-fault.c
+
 diff --git a/MAINTAINERS b/MAINTAINERS
+index d54b557..8314a96 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
 @@ -3836,6 +3836,7 @@ R: Pierrick Bouvier <pierrick.bouvier@linaro.org>
@@ -11,6 +28,7 @@ diff --git a/MAINTAINERS b/MAINTAINERS
  F: contrib/plugins/
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
+index 0000000..21a4741
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
 @@ -0,0 +1,44 @@
@@ -59,6 +77,7 @@ new file mode 100644
 +
 +#endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index d8fde5e..7658f29 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1787,6 +1787,126 @@ void qemu_plugin_crucible_pause_vm(void);
@@ -190,9 +209,10 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   *
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
+index 0000000..1f574c0
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,506 @@
+@@ -0,0 +1,522 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -487,6 +507,22 @@ new file mode 100644
 +            return status;
 +        }
 +    }
++    if (command->command_kind == CRUCIBLE_FAULT_COMMAND_QUERY_CAPABILITIES) {
++        struct qemu_plugin_crucible_fault_result result;
++
++        memset(&result, 0, sizeof(result));
++        result.command_kind = command->command_kind;
++        result.status = CRUCIBLE_FAULT_STATUS_APPLIED;
++        result.phase = command->phase;
++        result.semantic_version = command->semantic_version;
++        result.command_sequence = command->command_sequence;
++        result.observed_icount = qemu_plugin_icount_raw();
++        result.applied_icount = result.observed_icount;
++        result.capability_version = 1;
++        crucible_fault_queue_result(&result, NULL);
++        g_mutex_unlock(&crucible_fault_lock);
++        return 0;
++    }
 +
 +    pending = g_new0(CruciblePendingFault, 1);
 +    pending->command = *command;
@@ -700,6 +736,7 @@ new file mode 100644
 +
 +type_init(crucible_fault_register_abi_handlers)
 diff --git a/plugins/meson.build b/plugins/meson.build
+index 3be8245..955a3ec 100644
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -59,7 +59,6 @@ if host_os == 'windows'

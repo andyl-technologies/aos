@@ -420,8 +420,9 @@ impl OwnedCallbackRegistrar for SuccessfulCallbackRegistrar {
     fn register(
         &self,
         args: &PluginArgs,
-        _state: Pin<&mut OwnedCallbackRuntimeState>,
+        mut state: Pin<&mut OwnedCallbackRuntimeState>,
     ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
+        state.as_mut().allow_missing_fault_command_state_for_test();
         Ok(OwnedCallbackRegistrationMask::required_for(args))
     }
 }
@@ -697,6 +698,7 @@ impl OwnedCallbackRegistrar for RecordingSuccessfulCallbackRegistrar {
         args: &PluginArgs,
         mut state: Pin<&mut OwnedCallbackRuntimeState>,
     ) -> Result<OwnedCallbackRegistrationMask, OwnedCallbackRegistrationError> {
+        state.as_mut().allow_missing_fault_command_state_for_test();
         let userdata = state.as_mut().userdata();
         let state = state.as_ref().get_ref();
         self.state_address.set(userdata as usize);
@@ -870,6 +872,7 @@ fn live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion() {
                 register_block: Some(capture_block_registration),
                 register_block_wait: Some(capture_block_wait_registration),
                 register_ninep: Some(capture_ninep_registration),
+                fault_commands: crate::fault_command::QemuFaultCommandApis::test_stub(),
                 request_shutdown: test_request_shutdown,
             },
         ),

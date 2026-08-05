@@ -42,7 +42,7 @@ fn registration_ready_token_consumes_sequence() {
 fn registration_order_parse_step_uses_fail_closed_args() {
     let mut sequence = PluginRegistrationSequence::new();
 
-    let args = match sequence.parse_arguments("simfd=3,slot=1") {
+    let args = match sequence.parse_arguments("simfd=3,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111") {
         Ok(args) => args,
         Err(error) => panic!("valid arguments should parse and record: {error}"),
     };
@@ -56,7 +56,7 @@ fn registration_order_parse_step_uses_fail_closed_args() {
 
     let mut failed = PluginRegistrationSequence::new();
     let error = failed
-        .parse_arguments("slot=0")
+        .parse_arguments("slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111")
         .err()
         .unwrap_or_else(|| panic!("missing simfd should fail"));
     let PluginRegistrationSequenceError::StepFailed { failure } = error else {
@@ -82,7 +82,7 @@ fn registration_order_parse_step_uses_fail_closed_args() {
 fn registration_order_performs_control_handshake_after_parse() {
     let mut sequence = PluginRegistrationSequence::new();
     let args = sequence
-        .parse_arguments("simfd=3,slot=1")
+        .parse_arguments("simfd=3,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111")
         .unwrap_or_else(|error| panic!("valid arguments should parse: {error}"));
     let mut io = handshake_io(1, 4);
 
@@ -109,7 +109,9 @@ fn registration_order_performs_control_handshake_after_parse() {
 #[test]
 fn registration_order_rejects_control_handshake_before_parse_without_io() {
     let mut sequence = PluginRegistrationSequence::new();
-    let args = registration_args("simfd=3,slot=0");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111",
+    );
     let mut io = handshake_io(0, 1);
 
     assert_eq!(
@@ -127,7 +129,7 @@ fn registration_order_rejects_control_handshake_before_parse_without_io() {
 fn registration_order_fails_loud_when_handshake_slot_disagrees_with_launch_args() {
     let mut sequence = PluginRegistrationSequence::new();
     let args = sequence
-        .parse_arguments("simfd=3,slot=0")
+        .parse_arguments("simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111")
         .unwrap_or_else(|error| panic!("valid arguments should parse: {error}"));
     let mut io = handshake_io(1, 2);
 
@@ -266,7 +268,9 @@ fn registration_order_waits_boot_barrier_before_first_instruction() {
 fn registration_order_requires_ready_setup_ack_helper() {
     let mut sequence = PluginRegistrationSequence::new();
     record_steps_through_wake_fd(&mut sequence);
-    let args = registration_args("simfd=3,slot=0");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111",
+    );
     sequence
         .register_callbacks_for_test(
             &args,
@@ -334,7 +338,9 @@ fn registration_order_reuses_canonical_time_control_plan() {
 fn registration_order_records_callbacks_after_exact_deadline_capability_check() {
     let mut sequence = PluginRegistrationSequence::new();
     record_steps_through_wake_fd(&mut sequence);
-    let args = registration_args("simfd=3,slot=0");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111",
+    );
 
     let capabilities = match sequence.register_callbacks_for_test(
         &args,
@@ -373,7 +379,9 @@ fn registration_order_records_callbacks_after_exact_deadline_capability_check() 
 fn registration_order_fails_loud_when_exact_deadline_capability_missing() {
     let mut sequence = PluginRegistrationSequence::new();
     record_steps_through_wake_fd(&mut sequence);
-    let args = registration_args("simfd=3,slot=0");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111",
+    );
 
     let error = sequence
         .register_callbacks_for_test(
@@ -407,7 +415,9 @@ fn registration_order_fails_loud_when_exact_deadline_capability_missing() {
 fn registration_order_fails_loud_when_queued_idle_advance_missing() {
     let mut sequence = PluginRegistrationSequence::new();
     record_steps_through_wake_fd(&mut sequence);
-    let args = registration_args("simfd=3,slot=0");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111",
+    );
 
     let error = sequence
         .register_callbacks_for_test(
@@ -441,7 +451,9 @@ fn registration_order_fails_loud_when_queued_idle_advance_missing() {
 fn registration_coverage_on_requires_basic_block_callback_capability() {
     let mut sequence = PluginRegistrationSequence::new();
     record_steps_through_wake_fd(&mut sequence);
-    let args = registration_args("simfd=3,slot=0,coverage=on");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,coverage=on",
+    );
 
     let error = sequence
         .register_callbacks_for_test(
@@ -475,7 +487,9 @@ fn registration_coverage_on_requires_basic_block_callback_capability() {
 fn registration_coverage_on_builds_basic_block_callback_token() {
     let mut sequence = PluginRegistrationSequence::new();
     record_steps_through_wake_fd(&mut sequence);
-    let args = registration_args("simfd=3,slot=0,coverage=on");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,coverage=on",
+    );
     let capabilities = sequence
         .register_callbacks_for_test(
             &args,
@@ -523,7 +537,9 @@ fn record_steps_through_setup_ack(
     sequence: &mut PluginRegistrationSequence,
 ) -> PluginReadySetupAck {
     record_steps_through_wake_fd(sequence);
-    let args = registration_args("simfd=3,slot=0");
+    let args = registration_args(
+        "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111",
+    );
     if let Err(error) = sequence.register_callbacks_for_test(
         &args,
         Some(registration_test_deadline),

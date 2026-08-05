@@ -514,13 +514,15 @@ fn plugin_peer_complete_setup(
     let setup = plugin
         .plugin_recv_setup_with_descriptors()
         .map_err(|error| error.to_string())?;
-    let mapped =
+    let mut mapped =
         crucible_shmem::mmap_setup_region(setup.descriptors.shmem_fd.as_fd(), setup.region_len)
             .map_err(|error| error.to_string())?;
     let validated = mapped
         .validate_header()
         .map_err(|error| error.to_string())?;
     assert_fd_open(setup.descriptors.wake_fd.as_raw_fd()).map_err(|error| error.to_string())?;
+    crate::host_setup::tests::publish_test_capability_result(&mut mapped)
+        .map_err(|error| error.to_string())?;
 
     plugin
         .plugin_send_ready_setup_ack()

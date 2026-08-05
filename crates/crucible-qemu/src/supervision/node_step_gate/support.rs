@@ -239,8 +239,9 @@ pub(super) fn live_node_plugin_config(
     profile: &crate::DeterministicLaunchProfile,
     vm: &QemuVmLaunchConfig,
     run_directory: &Path,
+    node_name: &str,
 ) -> Result<QemuLaunchPluginConfig, QemuLiveNodeStepGateError> {
-    let plugin_base = live_node_plugin_base(config);
+    let plugin_base = live_node_plugin_base(config).with_fault_target_node(node_name);
     let mut plugin = if config.whitebox == QemuLaunchPluginSwitch::On {
         let probe_command = profile
             .qemu_launch_command(

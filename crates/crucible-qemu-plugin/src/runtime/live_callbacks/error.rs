@@ -12,6 +12,15 @@ pub enum LiveVcpuTimeCallbackError {
         /// Missing QEMU symbol.
         symbol: &'static str,
     },
+    /// The live fault-command bridge failed setup or dispatch.
+    #[error("live QEMU fault command bridge failed: {source}")]
+    FaultCommands {
+        /// Typed bridge failure.
+        source: crate::FaultCommandBridgeError,
+    },
+    /// Required live fault-command callback state was not installed.
+    #[error("live QEMU fault command callback state is unavailable")]
+    FaultCommandStateUnavailable,
     /// The live preemption command or QEMU injection was rejected.
     #[error("live preemption injection failed: {source}")]
     Preemption {

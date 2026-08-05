@@ -4,7 +4,7 @@
 //! `-plugin` shared-object path:
 //!
 //! ```text
-//! -plugin /nix/store/.../crucible-qemu-plugin.so,simfd=3,slot=0,whitebox=off,coverage=off
+//! -plugin /nix/store/.../crucible-qemu-plugin.so,simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,whitebox=off,coverage=off
 //! ```
 //!
 //! This module owns only the safe, typed parsing contract. The FFI registration
@@ -29,6 +29,8 @@ pub use whitebox::{
 pub const PLUGIN_ARG_SIMFD: &str = "simfd";
 /// The required shared-memory node-slot argument key.
 pub const PLUGIN_ARG_SLOT: &str = "slot";
+/// The required 32-byte lowercase-hex fault target identity.
+pub const PLUGIN_ARG_FAULT_NODE_HASH: &str = "fault_node_hash";
 /// The optional pre-inherited shared-memory fd argument key.
 pub const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 /// The optional pre-inherited wake fd argument key.
@@ -74,6 +76,7 @@ impl PluginStateDumpConfig {
 pub struct PluginArgs {
     sim_fd: i32,
     slot: u32,
+    fault_node_hash: [u8; 32],
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
     whitebox_setup: Option<WhiteboxSetupAttestation>,
@@ -98,6 +101,7 @@ impl PluginArgs {
 
         let sim_fd = parse_required_fd(&parsed, PLUGIN_ARG_SIMFD)?;
         let slot = parse_required_u32(&parsed, PLUGIN_ARG_SLOT)?;
+        let fault_node_hash = parse_required_hash(&parsed, PLUGIN_ARG_FAULT_NODE_HASH)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
         let whitebox_setup = whitebox::parse(&parsed, whitebox)?;
         let app_random = app_random::parse(&parsed, whitebox)?;
@@ -113,6 +117,7 @@ impl PluginArgs {
         Ok(Self {
             sim_fd,
             slot,
+            fault_node_hash,
             inherited_fds,
             whitebox,
             whitebox_setup,
@@ -134,6 +139,12 @@ impl PluginArgs {
     #[must_use]
     pub const fn slot(&self) -> u32 {
         self.slot
+    }
+
+    /// Returns the exact fault target identity authenticated for this process.
+    #[must_use]
+    pub const fn fault_node_hash(&self) -> [u8; 32] {
+        self.fault_node_hash
     }
 
     /// Returns optional pre-inherited setup descriptors.
@@ -273,6 +284,14 @@ pub enum PluginArgsParseError {
         /// Key whose value was rejected.
         key: &'static str,
         /// Rejected value.
+        value: String,
+    },
+    /// A required 32-byte hash was not canonical lowercase hexadecimal.
+    #[error("plugin hash argument `{key}` is invalid: `{value}`")]
+    InvalidHash {
+        /// Argument key.
+        key: &'static str,
+        /// Rejected text.
         value: String,
     },
     /// A feature switch was not `on` or `off`.
@@ -428,6 +447,52 @@ fn parse_required_u32(
         })
 }
 
+fn parse_required_hash(
+    parsed: &ParsedPluginArgs<'_>,
+    key: &'static str,
+) -> Result<[u8; 32], PluginArgsParseError> {
+    let Some(value) = parsed.value(key) else {
+        return Err(PluginArgsParseError::MissingRequiredKey { key });
+    };
+    if value.len() != 64
+        || value
+            .bytes()
+            .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+    {
+        return Err(PluginArgsParseError::InvalidHash {
+            key,
+            value: value.to_owned(),
+        });
+    }
+    let mut hash = [0_u8; 32];
+    for (output, pair) in hash.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        let high = hex_nibble(pair[0]).ok_or_else(|| PluginArgsParseError::InvalidHash {
+            key,
+            value: value.to_owned(),
+        })?;
+        let low = hex_nibble(pair[1]).ok_or_else(|| PluginArgsParseError::InvalidHash {
+            key,
+            value: value.to_owned(),
+        })?;
+        *output = (high << 4) | low;
+    }
+    if hash == [0; 32] {
+        return Err(PluginArgsParseError::InvalidHash {
+            key,
+            value: value.to_owned(),
+        });
+    }
+    Ok(hash)
+}
+
+const fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        _ => None,
+    }
+}
+
 fn parse_optional_switch(
     parsed: &ParsedPluginArgs<'_>,
     key: &'static str,
@@ -500,6 +565,7 @@ fn is_known_key(key: &str) -> bool {
         key,
         PLUGIN_ARG_SIMFD
             | PLUGIN_ARG_SLOT
+            | PLUGIN_ARG_FAULT_NODE_HASH
             | PLUGIN_ARG_SHMEMFD
             | PLUGIN_ARG_WAKEFD
             | PLUGIN_ARG_WHITEBOX

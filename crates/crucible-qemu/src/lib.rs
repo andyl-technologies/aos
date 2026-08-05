@@ -139,8 +139,8 @@ pub use launch::{
     QemuLaunchCommandError, QemuLaunchInheritedFds, QemuLaunchPluginConfig, QemuLaunchPluginSwitch,
     QemuPreSpawnLaunchValidation, QemuPreSpawnLaunchValidationError, QemuQmpChannelConfig,
     QemuRootImageFormat, QemuVmLaunchConfig, QemuWhiteboxSetupError, QemuWhiteboxSetupValidation,
-    probe_x86_whitebox_setup, validate_aarch64_whitebox_setup, validate_pre_spawn_qemu_launch_args,
-    validate_x86_whitebox_hmp_mtree,
+    probe_x86_whitebox_setup, qemu_fault_target_hash, validate_aarch64_whitebox_setup,
+    validate_pre_spawn_qemu_launch_args, validate_x86_whitebox_hmp_mtree,
 };
 #[cfg(target_os = "linux")]
 pub use live_coverage_gate::{

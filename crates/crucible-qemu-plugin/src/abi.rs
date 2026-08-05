@@ -742,6 +742,12 @@ pub enum QemuPluginAbiError {
         /// Underlying vCPU introspection error.
         source: VcpuIntrospectionError,
     },
+    /// The required closed QEMU fault registry is unavailable or malformed.
+    #[error("QEMU plugin fault-command capability failed: {source}")]
+    FaultCommandCapability {
+        /// Underlying fault bridge capability error.
+        source: crate::FaultCommandBridgeError,
+    },
     /// A required T-PATCH-11 runtime API export is unavailable.
     #[error("QEMU plugin runtime API capability {symbol} is unavailable")]
     RuntimeApiCapability {
@@ -1954,6 +1960,8 @@ fn install_owned_boundary(
     let register_block = resolve_qemu_register_blk_cb_symbol();
     let register_block_wait = resolve_qemu_register_blk_wait_cb_symbol();
     let register_ninep = resolve_qemu_register_9p_cb_symbol();
+    let fault_commands = crate::fault_command::QemuFaultCommandApis::resolve()
+        .map_err(|source| QemuPluginAbiError::FaultCommandCapability { source })?;
     let state = install_required_runtime_api_scaffold(
         boundary.execution_model,
         clock_deadline_ns,
@@ -1998,6 +2006,7 @@ fn install_owned_boundary(
         register_block,
         register_block_wait,
         register_ninep,
+        fault_commands,
     };
     let callback_registrar = crate::runtime::FailClosedOwnedCallbackRegistrar::production(
         plugin_id,
