@@ -1,11 +1,11 @@
-//! `crucible-protocol` owns the host/plugin wire protocol and shared channel ABIs.
-//!
+//! SPDX-License-Identifier: MIT OR Apache-2.0
+//! `crucible-protocol` implements the public host/plugin process protocol.
 //! Spec index: RFC-0010 files 14, 16.
 //!
-//! This L1 crate owns the framed IPC message constants, version fields,
-//! encode/decode routines, and golden vectors specified by its indexed RFC-0010
-//! file. Its pure codec operates over owned buffers; its Unix descriptor
-//! handover attaches the shared-memory and wake descriptors to the setup frame.
+//! This dual-licensed L1 crate implements independently implementable framing,
+//! versioned codecs, and golden vectors over owned buffers, without QEMU headers,
+//! callbacks, native pointers, or private types. Its Unix descriptor handover
+//! attaches the shared-memory and wake descriptors to the setup frame.
 //!
 //! Module map: the crate root owns the frame-format constants, closed tag
 //! registry, message bodies, pure codec, frame I/O helpers, handshake

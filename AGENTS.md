@@ -1,5 +1,67 @@
 # ANDYL OS — Build Principles
 
+## Contribution authorization
+
+These rules apply before merging changes, independently of the file licenses
+described below. The complete policy is in [`CONTRIBUTING.md`](CONTRIBUTING.md)
+and the
+[`maintainer contributor-authorization guide`](docs/maintainers/contributor-licensing.md).
+
+- Every external human contributor must have an active acceptance of the AOS
+  External Contributor License Agreement bound to the contributor's stable
+  GitHub user ID before merge.
+- Current Andyl, Inc. employees contributing within their authorized employment
+  scope are covered by Andyl's standard CIAA and a verified internal
+  authorization record. They do not accept the external agreement.
+- Contractors, former employees, and contributors whose employee authorization
+  cannot be verified use the external path. A company email address alone is
+  not proof of employee authorization.
+- AOS does not use a separate organization-level contributor agreement. An
+  external contributor must already have any employer permission needed to make
+  the external agreement's grants and representations.
+- The authorization check fails closed. Never merge when authorization is
+  missing, disabled, superseded, mismatched, unavailable, or indeterminate, and
+  never commit private employee or acceptance records to this repository.
+- QEMU-side changes additionally require the DCO sign-off documented in
+  [`CONTRIBUTING.md`](CONTRIBUTING.md); it does not replace contribution
+  authorization.
+
+## Crucible/QEMU license boundary
+
+These invariants are mandatory for maintainers and automated agents. The
+normative policy is [`LICENSING.md`](LICENSING.md) and RFC-0010
+[`37-licensing-process-boundary.md`](docs/rfcs/0010-crucible/37-licensing-process-boundary.md).
+
+- The Apache-licensed Crucible host and GPL-side QEMU/plugin MUST remain
+  separate processes. Their only integration surfaces are the versioned Unix
+  socket control protocol and versioned shared-memory data protocol.
+- Shared memory is a public process protocol. It MUST NOT contain native
+  pointers, QEMU private structures, function/callback tables, Rust-native enum
+  layouts, or other process-private objects. Cross-region references are checked
+  offsets; changes require explicit compatibility/version handling.
+- Code compiled into, linked into, or dynamically loaded by QEMU belongs to the
+  applicable QEMU/GPL-compatible scope. Apache-only crates MUST NOT link QEMU,
+  include QEMU headers, or expose QEMU callback entry points.
+- Preserve QEMU's per-file licenses. The emulator is GPL-2.0-only as a combined
+  work, while unmarked QEMU 10.0 source files default to GPL-2.0-or-later.
+  Changes that create or remove QEMU files MUST update
+  `pkgs/emulation/qemu-patches/LICENSES.md`.
+- Do not publish `qemu-crucible` as a standalone store-path root. Publish the
+  `crucible` suite, whose enforced release policy co-retains the matching
+  `qemu-crucible-source` output. Publication checks scan the full closure, so
+  plugin or unmarked wrapper roots are not valid bypasses. Keep generic
+  unpatched QEMU unrestricted.
+- `crucible-protocol` and `crucible-shmem` are permissive boundary components;
+  neither may acquire a dependency on a QEMU implementation or QEMU headers.
+- Boundary changes MUST pass `gate:abi-conformance` and
+  `gate:license-boundary`. A distributed patched-QEMU binary MUST have a
+  matching complete corresponding-source artifact; release automation fails
+  closed when it is absent.
+
+Guest assertion semantics and evaluation remain Apache host-side. QEMU/plugin
+observation changes remain GPL-side and cross the boundary only through the
+versioned shared-memory or doorbell protocol.
+
 ## Hermetic builds from source
 
 All packages in this repository MUST be built hermetically from source using

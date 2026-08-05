@@ -138,6 +138,12 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
         status: GateStatus::Implemented,
     },
     GateSpec {
+        name: "gate:license-boundary",
+        phase: GatePhase::Always,
+        owner: "crucible-harness",
+        status: GateStatus::Implemented,
+    },
+    GateSpec {
         name: "gate:layer0-determinism",
         phase: GatePhase::Phase1,
         owner: "crucible-sim",

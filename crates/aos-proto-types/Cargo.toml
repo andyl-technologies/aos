@@ -2,6 +2,7 @@
 name = "aos-proto-types"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "wasm-clean message structs for the aos.registry.v1 API (RFC-0004 Phase 5): generated from the .proto with prost-build + serde, the Connect-JSON lingua franca shared by the native hub, the Cloudflare Worker, and aos-remote — no connectrpc/buffa runtime"
 
 [dependencies]

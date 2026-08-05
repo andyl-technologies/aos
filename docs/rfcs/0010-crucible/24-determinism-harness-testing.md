@@ -65,6 +65,7 @@ invariants/requirements it enforces.
 | `gate:any-guest` | L2 guest boot | INV-5, G-2; HARN-6 | An unmodified guest boots deterministically with no image mutation. |
 | `gate:qemu-inert` | AOS QEMU package + patch series | INV-7, G-7; HARN-20, HARN-21 | Sim-off QEMU is behaviorally identical to upstream; each patch has a passing micro-test. |
 | `gate:abi-conformance` | L1 boundary ABIs | G-8; HARN-32, HARN-33, HARN-34 | Shmem layout, protocol, and RPC match frozen golden vectors. |
+| `gate:license-boundary` | Repository and Crucible/QEMU boundary (Always) | BOUND-1..BOUND-12 | `crucible-harness` rejects dependency, license-scope, protocol-shape, package-source, or corresponding-source violations. |
 | `gate:patch-microtests` | QEMU patch series (per-patch) | INV-7; HARN-20 | Every patch in the series has a focused, passing behavioral test. |
 | `gate:adversarial-determinism` | Cross-layer (Phase ≥ L2) | INV-1, INV-4, INV-9; HARN-11 | N runs under hostile host conditions yield byte-identical canonical logs. |
 | `gate:e2e-determinism` | Final acceptance (all layers) | All headline invariants; HARN-22, HARN-23 | A representative multi-VM, fault-injected scenario runs bit-identically across adversarial conditions and reproduces from its artifact. |
@@ -86,6 +87,9 @@ it remains red until its loaded-QEMU proof is green. `gate:fleet-equivalence`
 and `gate:campaign-continuity` (owned
 by [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md))
 are likewise canonical.
+
+`gate:license-boundary` is an **Always** gate owned by `crucible-harness`; it
+runs on every boundary-affecting change and at release construction.
 
 - **[HARN-2]** A gate MUST be a *pure* check: given the same source tree and the
   same seed corpus it MUST produce the same pass/fail verdict on any machine.
@@ -835,6 +839,7 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
   phase0  phase0:blockers                    (S1/S2/S4/S3 plus S11 for G-10)
   phase0  gate:harness-lint                  (every PR, always on)
   phase1  gate:harness-lint                  (first phase exit gate)
+  phase1  gate:license-boundary               (component and process boundary)
   phase1  gate:layer0-determinism            (L0 core)
   phase1  gate:content-address               (store)
   phase1  gate:replay-oracle                 (double-backed replay)

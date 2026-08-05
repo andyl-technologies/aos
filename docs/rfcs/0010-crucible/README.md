@@ -149,6 +149,7 @@ Start here, then read in three bands:
 34. [`34-failure-triage.md`](34-failure-triage.md) — clustering/dedup of discovered failures by root-cause signature, signature-preserving minimization, per-cluster reports.
 35. [`35-distributed-continuous-exploration.md`](35-distributed-continuous-exploration.md) — fleet-scaled search over the shared content-addressed store, persistent campaigns + the coverage ratchet, the reproduction-vs-scheduling determinism boundary.
 36. [`36-time-travel-debugging.md`](36-time-travel-debugging.md) — gdb-stub attach to any checkpoint, reverse/time-travel via restore-nearest+replay, the non-canonical debug branch.
+37. [`37-licensing-process-boundary.md`](37-licensing-process-boundary.md) — the normative license/component map and the public socket-plus-shared-memory process boundary maintainers must preserve.
 
 (Multi-vCPU determinism, concurrency-interleaving exploration, guided/adaptive search, and optional app-controlled randomness are folded into the relevant spec files above — see [01](01-goals-nongoals-invariants.md) [G-10]/[G-11], [05](05-execution-model.md) `Decision::Preemption`/`Decision::AppRandom`, and [22](22-advanced-features.md).)
 
