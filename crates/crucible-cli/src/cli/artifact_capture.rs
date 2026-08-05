@@ -113,3 +113,33 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
         &model_payloads,
     )
 }
+
+/// Encodes one search/fuzz finding as a CLI replay artifact.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the finding's embedded model reproduction or the
+/// selected backend identity cannot be encoded as a replayable artifact.
+pub(crate) fn finding_reproduction_artifact_bytes(
+    backend: Option<&ResolvedLocalBackend>,
+    finding: &crucible::FindingReproductionArtifact,
+    producer: &str,
+) -> Result<Vec<u8>, CliError> {
+    let canonical_log = canonical_log_entries_from_engine_schedule(finding.artifact.schedule());
+    let fingerprint_samples = vec![VerifyFingerprintSample {
+        index: 0,
+        instruction: 0,
+        node: producer.to_owned(),
+        digest: cli_digest_from_engine_hash(finding.finding_fingerprint),
+    }];
+    let extra_payloads =
+        model_reproduction_artifact_payloads(&finding.artifact, finding.replay.state);
+    verify_reproduction_artifact_bytes_with_components(
+        seed_to_u64(finding.artifact.seed()),
+        backend,
+        &finding.artifact.scenario_def(),
+        &canonical_log,
+        &fingerprint_samples,
+        &extra_payloads,
+    )
+}

@@ -184,8 +184,9 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
     let warmup = family
         .fuzz_coverage_guided(plan.config, &[])
         .map_err(|error| backend_error(format!("QEMU fuzz warm-up policy failed: {error}")))?;
-    let feedback = execute_qemu_fuzz_iterations(&config, &runtime, &warmup, "warm-up")?;
-    let (run, report) = if let Some(corpus) = &plan.corpus {
+    let mut execution =
+        execute_qemu_fuzz_iterations(&config, &runtime, &warmup, "warm-up", plan, backend_plan)?;
+    let (run, mut report) = if let Some(corpus) = &plan.corpus {
         fs::create_dir_all(corpus).map_err(|error| {
             backend_error(format!(
                 "QEMU fuzz could not create corpus `{}`: {error}",
@@ -198,7 +199,7 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
                 &store,
                 plan.config,
                 crucible::CoverageGuidedCorpusConfig::new(plan.config.meta_seed),
-                &feedback,
+                &execution.feedback,
             )
             .map_err(|error| backend_error(format!("QEMU fuzz corpus policy failed: {error}")))?;
         (
@@ -207,15 +208,41 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
         )
     } else {
         let run = family
-            .fuzz_coverage_guided(plan.config, &feedback)
+            .fuzz_coverage_guided(plan.config, &execution.feedback)
             .map_err(|error| backend_error(format!("QEMU fuzz policy failed: {error}")))?;
         let report = local_double_fuzz_report_from_run(plan, &run);
         (run, report)
     };
-    let guided_feedback = execute_qemu_fuzz_iterations(&config, &runtime, &run, "guided")?;
+    let guided_execution =
+        if plan.on_violation == SearchOnViolationArg::Stop && !execution.findings.is_empty() {
+            QemuFuzzExecution::default()
+        } else {
+            execute_qemu_fuzz_iterations(&config, &runtime, &run, "guided", plan, backend_plan)?
+        };
+    merge_qemu_fuzz_execution(&mut execution, guided_execution)?;
+    report.property_findings = execution
+        .findings
+        .iter()
+        .filter(|finding| {
+            matches!(
+                finding.failure,
+                crucible_model::FailureClusterReportFailure::Property(_)
+            )
+        })
+        .count();
+    report.timeout_findings = execution
+        .findings
+        .iter()
+        .filter(|finding| {
+            matches!(
+                finding.failure,
+                crucible_model::FailureClusterReportFailure::Timeout(_)
+            )
+        })
+        .count();
     let mut outcome = backend_command_outcome(thin_plan, backend_plan, ergonomics_plan);
     apply_local_double_fuzz_report(&mut outcome, plan, &report);
-    for (index, feedback) in guided_feedback.iter().enumerate() {
+    for (index, feedback) in execution.feedback.iter().enumerate() {
         outcome.canonical_log.push(CanonicalLogEntry {
             sequence: outcome.canonical_log.len() as u64,
             virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -228,8 +255,23 @@ pub(crate) fn run_local_qemu_fuzz_workflow(
             ),
         });
     }
+    attach_qemu_findings_outputs(
+        &mut outcome,
+        &plan.store_root,
+        &plan.artifact_dir,
+        plan.findings_out.as_deref(),
+        execution.findings,
+        execution.reproduction_artifacts,
+    )?;
     append_qemu_control_plane_execution_proof(&mut outcome, backend, "fuzz-live-campaign");
     Ok(outcome)
+}
+
+#[derive(Default)]
+struct QemuFuzzExecution {
+    feedback: Vec<crucible::EventLogCoverageFeedback>,
+    findings: Vec<TriageFindingEvidence>,
+    reproduction_artifacts: Vec<Vec<u8>>,
 }
 
 fn execute_qemu_fuzz_iterations(
@@ -237,11 +279,16 @@ fn execute_qemu_fuzz_iterations(
     runtime: &tokio::runtime::Runtime,
     run: &crucible::CoverageGuidedFuzzRun,
     phase: &str,
-) -> Result<Vec<crucible::EventLogCoverageFeedback>, CliError> {
-    let mut feedback = Vec::with_capacity(run.iterations.len());
+    plan: &FuzzDriverPlan,
+    backend_plan: &BackendSelectionPlan,
+) -> Result<QemuFuzzExecution, CliError> {
+    let mut execution = QemuFuzzExecution {
+        feedback: Vec::with_capacity(run.iterations.len()),
+        ..QemuFuzzExecution::default()
+    };
     for iteration in &run.iterations {
         let form = iteration.scenario.form().clone();
-        let run_plan = qemu_fuzz_iteration_plan(iteration.sequence, form);
+        let run_plan = qemu_fuzz_iteration_plan(iteration.sequence, form.clone());
         // crucible-lint: allow host-nondeterminism-state -- genesis is reconstructed from canonical scenario material, not host observations.
         let branch_base = crucible::Configuration::genesis(iteration.scenario.scenario_def());
         let iteration_config = config.clone().with_branch_prefix_overrides(
@@ -260,7 +307,9 @@ fn execute_qemu_fuzz_iterations(
                 iteration.sequence,
             )));
         }
-        if report.coverage_feedback.projection().is_empty() {
+        if report.status == BackendCommandStatus::Passed
+            && report.coverage_feedback.projection().is_empty()
+        {
             return Err(backend_error(format!(
                 "QEMU fuzz {phase} iteration {} produced no basic-block coverage",
                 iteration.sequence,
@@ -284,9 +333,420 @@ fn execute_qemu_fuzz_iterations(
                 iteration.sequence,
             )));
         }
-        feedback.push(report.coverage_feedback);
+        let finding =
+            qemu_fuzz_finding_evidence(&form, &report, phase, iteration.sequence, backend_plan)?;
+        execution.feedback.push(report.coverage_feedback);
+        if let Some((evidence, reproduction)) = finding {
+            let store = crucible::LocalDagStore::new(plan.store_root.clone());
+            let stored = evidence
+                .finding
+                .store_artifact(&store)
+                .map_err(CliError::Store)?;
+            if stored != evidence.finding.artifact.id() {
+                return Err(artifact_error(
+                    "stored fuzz finding artifact did not match its content identity",
+                ));
+            }
+            push_qemu_fuzz_finding(&mut execution, evidence, reproduction)?;
+            if plan.on_violation == SearchOnViolationArg::Stop {
+                break;
+            }
+        }
     }
-    Ok(feedback)
+    Ok(execution)
+}
+
+fn qemu_fuzz_finding_evidence(
+    form: &crucible::ScenarioDefForm,
+    report: &RunWorkflowReport,
+    phase: &str,
+    sequence: u64,
+    backend_plan: &BackendSelectionPlan,
+) -> Result<Option<(crate::cli_report::TriageFindingEvidence, Vec<u8>)>, CliError> {
+    if report.status == BackendCommandStatus::Passed {
+        return Ok(None);
+    }
+    let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
+        backend_error(format!(
+            "QEMU fuzz {phase} iteration {sequence} did not retain a terminal configuration"
+        ))
+    })?;
+    let finding_fingerprint = crucible::ContentHash::from_canonical_material(
+        "crucible.live-qemu-fuzz-finding.v2",
+        &format!(
+            "configuration={}\noutcome={}",
+            terminal.id().to_hex(),
+            report.status.label()
+        ),
+    );
+    let finding = crucible::FindingReproductionArtifact::capture(
+        crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
+        finding_fingerprint,
+        form,
+        terminal,
+    )
+    .map_err(|error| backend_error(format!("capture QEMU fuzz finding: {error}")))?;
+    let evidence = match report.status {
+        BackendCommandStatus::Failed => {
+            let violation = qemu_property_violation_from_frames(
+                form,
+                &report.streamed_event_frames,
+                finding.artifact.id(),
+            )?;
+            crate::cli_triage_debug::triage_property_evidence_for_violation_with_recording(
+                finding,
+                violation,
+                report.coverage_feedback.fingerprint(),
+                report.streamed_event_frames.clone(),
+            )
+        }
+        BackendCommandStatus::Timeout => {
+            let timeout = crucible_model::FailureTimeoutRecord::new(
+                crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
+                None,
+                report.final_quanta,
+                crucible::VirtualTime {
+                    ticks: report.final_frontier_ticks,
+                },
+                None,
+                None,
+                finding.artifact.id(),
+            );
+            crate::cli_triage_debug::triage_timeout_evidence(
+                finding,
+                timeout,
+                report.coverage_feedback.fingerprint(),
+                report.streamed_event_frames.clone(),
+            )
+        }
+        BackendCommandStatus::Crashed => {
+            return Err(backend_error(format!(
+                "QEMU fuzz {phase} iteration {sequence} crashed before producing campaign evidence"
+            )));
+        }
+        BackendCommandStatus::Passed => return Ok(None),
+    }
+    .map_err(|error| backend_error(format!("build QEMU fuzz finding evidence: {error}")))?;
+    let reproduction = finding_reproduction_artifact_bytes(
+        backend_plan.resolved_backend.as_ref(),
+        &evidence.finding,
+        "fuzz",
+    )?;
+    Ok(Some((evidence, reproduction)))
+}
+
+fn push_qemu_fuzz_finding(
+    execution: &mut QemuFuzzExecution,
+    evidence: TriageFindingEvidence,
+    reproduction: Vec<u8>,
+) -> Result<(), CliError> {
+    let artifact = evidence.finding.artifact.id();
+    if let Some(index) = execution
+        .findings
+        .iter()
+        .position(|existing| existing.finding.artifact.id() == artifact)
+    {
+        if execution.findings[index] != evidence
+            || execution.reproduction_artifacts.get(index) != Some(&reproduction)
+        {
+            return Err(artifact_error(
+                "repeated fuzz reproduction produced conflicting deterministic evidence",
+            ));
+        }
+        return Ok(());
+    }
+    execution.findings.push(evidence);
+    execution.reproduction_artifacts.push(reproduction);
+    Ok(())
+}
+
+fn merge_qemu_fuzz_execution(
+    target: &mut QemuFuzzExecution,
+    source: QemuFuzzExecution,
+) -> Result<(), CliError> {
+    if source.findings.len() != source.reproduction_artifacts.len() {
+        return Err(artifact_error(
+            "fuzz phase produced mismatched finding and reproduction counts",
+        ));
+    }
+    target.feedback.extend(source.feedback);
+    for (evidence, reproduction) in source
+        .findings
+        .into_iter()
+        .zip(source.reproduction_artifacts)
+    {
+        push_qemu_fuzz_finding(target, evidence, reproduction)?;
+    }
+    Ok(())
+}
+
+fn qemu_property_violation_from_frames(
+    form: &crucible::ScenarioDefForm,
+    frames: &[Vec<u8>],
+    reproduction_artifact: crucible::ContentHash,
+) -> Result<crucible_model::HostAssertionViolation, CliError> {
+    let mut violations = Vec::new();
+    for frame in frames {
+        let text = std::str::from_utf8(frame)
+            .map_err(|error| backend_error(format!("QEMU event frame is not UTF-8: {error}")))?;
+        if canonical_frame_value(text, "kind") != Some("crucible.event.assertion_state_changed") {
+            continue;
+        }
+        let Some(assertion_name) = canonical_frame_string_attribute(text, "id")? else {
+            continue;
+        };
+        if canonical_frame_string_attribute(text, "new_state")?.as_deref() != Some("Violated") {
+            continue;
+        }
+        let assertion = form
+            .properties()
+            .assertions()
+            .iter()
+            .find(|candidate| candidate.id.name == assertion_name)
+            .ok_or_else(|| {
+                backend_error(format!(
+                    "QEMU violation referenced undeclared assertion `{assertion_name}`"
+                ))
+            })?;
+        let at_virtual_time = canonical_frame_u64(text, "virtual-time-ticks")?;
+        let at_icount = canonical_frame_u64(text, "icount-retired")?;
+        let node = match canonical_frame_value(text, "icount-node") {
+            Some("none") | None => None,
+            Some(value) => Some(crucible::NodeId {
+                name: canonical_frame_hex_string("icount-node", value)?,
+            }),
+        };
+        violations.push(crucible_model::HostAssertionViolation {
+            assertion: assertion.id.clone(),
+            message: assertion.message.clone(),
+            quantifier: assertion.quantifier_kind(),
+            event_kind: String::from("assertion_state_changed"),
+            at_icount: Some(crucible::Icount { retired: at_icount }),
+            at_virtual_time: crucible::VirtualTime {
+                ticks: at_virtual_time,
+            },
+            node,
+            detail: String::from("assertion entered the Violated state"),
+            reproduction_artifact,
+        });
+    }
+    violations.sort_by(|left, right| {
+        (
+            left.assertion.name.as_str(),
+            left.at_virtual_time.ticks,
+            left.at_icount.map(|value| value.retired),
+            left.node.as_ref().map(|node| node.name.as_str()),
+        )
+            .cmp(&(
+                right.assertion.name.as_str(),
+                right.at_virtual_time.ticks,
+                right.at_icount.map(|value| value.retired),
+                right.node.as_ref().map(|node| node.name.as_str()),
+            ))
+    });
+    violations.into_iter().next().ok_or_else(|| {
+        backend_error("failed QEMU iteration did not stream an assertion violation event")
+    })
+}
+
+fn canonical_frame_value<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        line.strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix('='))
+    })
+}
+
+fn canonical_frame_u64(text: &str, key: &'static str) -> Result<u64, CliError> {
+    canonical_frame_value(text, key)
+        .ok_or_else(|| backend_error(format!("QEMU event frame is missing `{key}`")))?
+        .parse::<u64>()
+        .map_err(|_| backend_error(format!("QEMU event frame has invalid `{key}`")))
+}
+
+fn canonical_frame_string_attribute(
+    text: &str,
+    requested_name: &str,
+) -> Result<Option<String>, CliError> {
+    for line in text
+        .lines()
+        .filter_map(|line| line.strip_prefix("attribute="))
+    {
+        let mut fields = line.split('|');
+        let Some(name_hex) = fields.next() else {
+            continue;
+        };
+        let Some(kind) = fields.next() else {
+            continue;
+        };
+        let Some(value_hex) = fields.next() else {
+            continue;
+        };
+        if canonical_frame_hex_string("attribute-name", name_hex)? == requested_name {
+            if kind != "string" {
+                return Err(backend_error(format!(
+                    "QEMU event attribute `{requested_name}` is not a string"
+                )));
+            }
+            return canonical_frame_hex_string(requested_name, value_hex).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn canonical_frame_hex_string(field: &str, value: &str) -> Result<String, CliError> {
+    let bytes = parse_hex_bytes(0, field, value)?;
+    String::from_utf8(bytes)
+        .map_err(|error| backend_error(format!("QEMU event `{field}` is not UTF-8: {error}")))
+}
+
+fn attach_qemu_findings_outputs(
+    outcome: &mut BackendCommandOutcome,
+    store_root: &Path,
+    artifact_dir: &Path,
+    findings_out: Option<&Path>,
+    findings: Vec<crate::cli_report::TriageFindingEvidence>,
+    reproduction_artifacts: Vec<Vec<u8>>,
+) -> Result<(), CliError> {
+    if findings.is_empty() {
+        return Ok(());
+    }
+    let (path, digest, ledger_bytes) = crate::cli_triage_debug::write_failure_findings_ledger_v3(
+        artifact_dir,
+        findings_out,
+        &findings,
+    )?;
+    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
+    let stored = store.put(&ledger_bytes).map_err(CliError::Store)?;
+    if stored != digest {
+        return Err(artifact_error(
+            "stored findings ledger did not match its content identity",
+        ));
+    }
+    outcome.stdout.push(format!(
+        "findings-ledger\tpath={}\tdigest={}\tfindings={}",
+        path.display(),
+        format_content_hash_ref(digest),
+        findings.len()
+    ));
+    outcome.canonical_log.push(CanonicalLogEntry {
+        sequence: outcome.canonical_log.len() as u64,
+        virtual_time_ticks: outcome.canonical_log.len() as u64,
+        node: String::from("crucible"),
+        kind: String::from("signed_findings_ledger"),
+        summary: format!(
+            "digest={} findings={}",
+            format_content_hash_ref(digest),
+            findings.len()
+        ),
+    });
+    match reproduction_artifacts.as_slice() {
+        [artifact] => outcome.reproduction_artifact = Some(artifact.clone()),
+        artifacts => {
+            outcome.side_reproduction_artifacts = artifacts
+                .iter()
+                .enumerate()
+                .map(|(index, artifact)| (format!("finding-{index}"), artifact.clone()))
+                .collect();
+        }
+    }
+    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+    Ok(())
+}
+
+#[cfg(test)]
+mod finding_tests {
+    use super::*;
+
+    #[test]
+    fn live_qemu_property_evidence_reads_exact_stream_frame()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_api::OpenSetAttributeValue::String as Text;
+
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let assertion = scenario
+            .properties()
+            .assertions()
+            .first()
+            .ok_or_else(|| std::io::Error::other("fixture has no assertion"))?;
+        let frame = crucible_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_api::EventLogCursor::new(4),
+            next_cursor: crucible_api::EventLogCursor::new(5),
+            event: crucible_api::OpenSetEventEnvelope {
+                sequence: 4,
+                at: crucible_api::OpenSetEventTime {
+                    virtual_time_ticks: 17,
+                    icount_retired: 23,
+                    icount_node: Some(String::from("fixture-node")),
+                },
+                source: crucible_api::OpenSetEventSource::Node {
+                    node: String::from("fixture-node"),
+                },
+                level: crucible::EventLevel::Info,
+                observational: false,
+                payload: crucible_api::OpenSetPayload::new(
+                    "crucible.event.assertion_state_changed",
+                    [
+                        (String::from("id"), Text(assertion.id.name.clone())),
+                        (String::from("new_state"), Text(String::from("Violated"))),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+        let exact_frame = canonical_streaming_event_frame_bytes(&frame);
+        let artifact = crucible::ContentHash::from_bytes(b"live-qemu-property-frame");
+        let violation = qemu_property_violation_from_frames(&scenario, &[exact_frame], artifact)?;
+
+        assert_eq!(violation.assertion, assertion.id);
+        assert_eq!(violation.quantifier, assertion.quantifier_kind());
+        assert_eq!(violation.at_virtual_time.ticks, 17);
+        assert_eq!(violation.at_icount.map(|value| value.retired), Some(23));
+        assert_eq!(
+            violation.node.as_ref().map(|node| node.name.as_str()),
+            Some("fixture-node")
+        );
+        assert_eq!(violation.reproduction_artifact, artifact);
+        Ok(())
+    }
+
+    #[test]
+    fn collect_fuzz_deduplicates_identical_phase_reproductions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let configuration = crucible::Configuration::genesis(scenario.scenario_def());
+        let finding = crucible::FindingReproductionArtifact::capture(
+            crucible::FindingDiscoveryPath::CoverageGuidedFuzzing,
+            crucible::ContentHash::from_bytes(b"repeated-fuzz-timeout"),
+            &scenario,
+            &configuration,
+        )?;
+        let timeout = crucible_model::FailureTimeoutRecord::new(
+            crucible_model::FailureTimeoutBudgetKind::ExecutionQuanta,
+            Some(10),
+            10,
+            crucible::VirtualTime { ticks: 4 },
+            None,
+            None,
+            finding.artifact.id(),
+        );
+        let evidence = crate::cli_triage_debug::triage_timeout_evidence(
+            finding,
+            timeout,
+            crucible::ContentHash::from_bytes(b"repeated-fuzz-coverage"),
+            Vec::new(),
+        )?;
+        let mut execution = QemuFuzzExecution::default();
+        push_qemu_fuzz_finding(&mut execution, evidence.clone(), vec![1, 2, 3])?;
+        let mut guided = QemuFuzzExecution::default();
+        push_qemu_fuzz_finding(&mut guided, evidence.clone(), vec![1, 2, 3])?;
+        merge_qemu_fuzz_execution(&mut execution, guided)?;
+        assert_eq!(execution.findings.len(), 1);
+        assert_eq!(execution.reproduction_artifacts.len(), 1);
+        assert!(push_qemu_fuzz_finding(&mut execution, evidence, vec![4, 5, 6]).is_err());
+        Ok(())
+    }
 }
 
 fn qemu_fuzz_iteration_plan(sequence: u64, form: crucible::ScenarioDefForm) -> RunInvocationPlan {

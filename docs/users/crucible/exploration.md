@@ -28,10 +28,12 @@ The strategies are:
 useful for a real campaign. Set both state and depth bounds explicitly in CI.
 
 `--on-violation` defaults to `stop`; `collect` is the alternate policy value.
-The current production QEMU loop still explores its supplied bound after a
-failure under either value and exports only the first discovered counterexample,
-so do not use `collect` as a multiple-artifact retention mechanism yet. A
-counterexample exits with status `1` and produces a normal reproduction artifact.
+`stop` ends the campaign after its first property violation or concrete
+execution timeout. `collect` continues within the supplied bounds and retains
+every distinct finding. Repeated identical reproductions are deduplicated. Each
+retained finding receives a reproduction artifact and an entry in the
+campaign's signed findings ledger. A property counterexample exits with status
+`1`; a concrete timeout without a property finding exits with status `2`.
 
 Advanced searches may load schedule-named assertion truths:
 
@@ -55,7 +57,8 @@ basic-block coverage back into later selection:
   fuzz builtin:fault-campaign \
   --runs 100 \
   --coverage basic-block \
-  --corpus .crucible/corpus
+  --corpus .crucible/corpus \
+  --on-violation collect
 ```
 
 The family may be supplied as a positional argument or with `--family`, but not
@@ -69,11 +72,10 @@ Only `basic-block` coverage is currently exposed. `--runs` defaults to `1`.
 Use an explicit seed for the campaign identity and an explicit corpus directory
 if accepted cases must survive between invocations.
 
-The production QEMU driver currently treats this command as a coverage and
-corpus campaign. It does not promote a failed or timed-out iteration to a
-non-passing `fuzz` outcome or emit a failure artifact. Use bounded `search`, or
-run retained scenarios directly, when failure classification and artifact
-capture are required.
+Fuzz uses the same `--on-violation stop|collect` policy as search. Property
+violations and concrete execution timeouts become non-passing outcomes, replay
+artifacts, and signed-ledger entries. If both kinds are collected, the property
+failure status `1` takes precedence over timeout status `2`.
 
 The built-in fault campaign also has a deterministic proof path used by the
 repository gates. It is useful as a workflow smoke test, not as evidence that a
@@ -116,13 +118,18 @@ Compare a result with another content-addressed triage result using:
 By default, triage reports go to `--artifact-dir`, and triage objects use the
 same default `<artifact-dir>/store` as other offline operations.
 
-The current implementation requires an engine-owned signed findings ledger with
-discovery-time signature evidence. Although the input loader accepts a
-directory or one reproduction artifact, a non-empty artifact-only input is
-rejected because it cannot reconstruct those signatures. No installed CLI
-command currently assembles a signed ledger from ordinary `search` or `fuzz`
-output; the example above therefore assumes a ledger produced by repository
-checks or internal campaign orchestration.
+Search and fuzz write a signed v3 ledger automatically when they retain at
+least one finding. Its default location is
+`<artifact-dir>/findings/<digest>.crucible-findings`; use
+`--findings-out <path>` on either command when automation needs a fixed path.
+The ledger binds each artifact to its exact event frames, coverage fingerprint,
+typed finding evidence, and discovery signature. `triage
+--recompute-signatures` verifies that binding.
+
+Timeout clusters are reportable but not shrinkable by the offline model
+minimizer. When minimization is requested, triage retains the original timeout
+representative and records `not-applicable-timeout` with zero attempted
+candidates. `--minimize none` instead records `not-requested`.
 
 ## Distributed campaigns
 
