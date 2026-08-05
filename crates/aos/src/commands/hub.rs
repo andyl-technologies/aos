@@ -2812,7 +2812,7 @@ async fn cache_gc(printer: &Printer, command: &HubCacheGcCmd) -> Result<()> {
         HubCacheGcCmd::FirstSweep { command } => cache_gc_first_sweep(printer, command).await,
         HubCacheGcCmd::Run {
             access,
-            cache,
+            cache: _,
             plan_id,
             confirm_hash,
             idempotency_key,
@@ -8063,7 +8063,7 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                 Ok(committed) => print_topology_message(printer, &committed),
                 Err(error) => {
                     let abort = client
-                        .call_topology::<_, hub_types::RegistryPublication>(
+                        .call_topology(
                             HubTopologyMethod::AbortRegistryPublication,
                             &hub_types::AbortRegistryPublicationRequest { publication_id },
                         )

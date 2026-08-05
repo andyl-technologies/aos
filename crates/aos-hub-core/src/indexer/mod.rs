@@ -62,7 +62,7 @@ use crate::db::{
     ChannelSummary, Database, IndexSnapshot, RegistryRecord, ReleaseArtifactSnapshot,
     ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact,
 };
-use crate::fetch::{SurfaceFetch, SurfaceProvider};
+use crate::fetch::SurfaceFetch;
 
 use self::load::{load_registry_tree, ObjectReader};
 

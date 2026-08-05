@@ -409,7 +409,7 @@ impl SecureDestination {
         Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
     }
 
-    fn commit(mut self) -> Result<()> {
+    fn commit(self) -> Result<()> {
         self.commit_with_hook(|| {})
     }
 

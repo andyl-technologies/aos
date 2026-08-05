@@ -426,7 +426,7 @@ fn emit_failure_and_exit(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{Context as _, anyhow};
+    use anyhow::anyhow;
 
     use super::*;
 

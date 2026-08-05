@@ -29,7 +29,7 @@ use super::semantics::{compare_instants, scan_sensitive_contract, validate_canon
 use super::{
     BUNDLE_DOMAIN, BundleDocuments, BundleEntry, BundleManifest, BundleManifestEnvelope,
     CutoverErrorCode, DIALECT_NAME, DOCUMENT_DOMAIN, GenerationLayout, GenerationRecipe,
-    KEY_MAP_DOMAIN, MachineResult, RunningExecutable, SignatureEnvelope, SignerKey, SignerKeyMap,
+    KEY_MAP_DOMAIN, MachineResult, RunningExecutable, SignatureEnvelope, SignerKeyMap,
     VerifiedInputs, classify_error, typed_error,
 };
 
@@ -1230,7 +1230,7 @@ fn validate_generation_array_order(
     kind: &str,
     current: &Value,
 ) -> Result<()> {
-    let mut load = |node_id: &str, label: &str| -> Result<Value> {
+    let load = |node_id: &str, label: &str| -> Result<Value> {
         let layout = generation_layout(recipe, node_id)?;
         parse_json(&source.read(&layout.path)?, label)
     };
@@ -2992,6 +2992,7 @@ fn pin_fresh_external_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::hub_cutover_verify::SignerKey;
     use anyhow::Context as _;
     use std::fs;
 

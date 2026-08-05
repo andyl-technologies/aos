@@ -2137,14 +2137,8 @@ async fn org_view(
         let can_manage = session
             .allows(&deps.db, Permission::MembersManage, &scope)
             .await;
-        let can_audit = session
-            .allows(&deps.db, Permission::AuditRead, &scope)
-            .await;
         let can_configure = session
             .allows(&deps.db, Permission::RegistryConfigure, &scope)
-            .await;
-        let can_manage_keys = session
-            .allows(&deps.db, Permission::KeysManage, &scope)
             .await;
         let can_delete = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
         Ok::<_, anyhow::Error>(Some(console::org_dashboard(
@@ -2163,9 +2157,7 @@ async fn org_view(
             &gateways,
             topology_defaults.as_ref(),
             can_manage,
-            can_audit,
             can_configure,
-            can_manage_keys,
             can_manage_storage,
             can_delete,
             owner_count,
@@ -3543,10 +3535,6 @@ async fn cache_apply_placement_lifecycle(
         Ok(bearer) => bearer,
         Err(error) => return internal(error),
     };
-    let operation = match action {
-        PlacementLifecycleAction::Drain => "drain",
-        PlacementLifecycleAction::Delete => "delete",
-    };
     match deps
         .topology
         .apply_placement_lifecycle(
@@ -4168,9 +4156,9 @@ pub(crate) async fn org_invite_member(
         return (StatusCode::BAD_REQUEST, "invalid email").into_response();
     }
     let result = async {
-        let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
+        if deps.db.org_by_slug(&org_slug).await?.is_none() {
             anyhow::bail!("no org");
-        };
+        }
         let invitee = deps.db.find_or_create_user(&email).await?;
         let target = Principal::user(invitee);
         if let Err(reject) =
@@ -6290,33 +6278,6 @@ pub(crate) async fn registry_settings(
     registry_settings_view(&deps, &session, &registry, None, "overview", started).await
 }
 
-/// Returns the committed `[caches]` priority for `url`, matching by URL with
-/// trailing slashes normalized so a route URL `https://c/` matches a committed
-/// `https://c`.
-fn committed_priority(
-    committed: &std::collections::BTreeMap<String, u32>,
-    url: &str,
-) -> Option<u32> {
-    let target = url.trim_end_matches('/');
-    committed
-        .iter()
-        .find(|(committed_url, _)| committed_url.trim_end_matches('/') == target)
-        .map(|(_, priority)| *priority)
-}
-
-/// Removes the committed-URL entry matching `url` (trailing-slash-normalized),
-/// so what remains is the set of committed URLs with no managed-cache match.
-fn remove_matching_url(committed: &mut std::collections::BTreeMap<String, u32>, url: &str) {
-    let target = url.trim_end_matches('/').to_string();
-    let key = committed
-        .keys()
-        .find(|committed_url| committed_url.trim_end_matches('/') == target)
-        .cloned();
-    if let Some(key) = key {
-        committed.remove(&key);
-    }
-}
-
 /// Renders one exact registry management section.
 async fn registry_settings_view(
     deps: &ConsoleDeps,
@@ -6952,10 +6913,6 @@ async fn registry_apply_placement_lifecycle(
     let bearer = match session.topology_bearer(&deps, scope) {
         Ok(bearer) => bearer,
         Err(error) => return internal(error),
-    };
-    let operation = match action {
-        PlacementLifecycleAction::Drain => "drain",
-        PlacementLifecycleAction::Delete => "delete",
     };
     match deps
         .topology

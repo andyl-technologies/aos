@@ -123,7 +123,6 @@ struct PlacementScan {
 pub async fn rescan_cache(
     db: &Database,
     surfaces: &dyn SurfaceProvider,
-    writers: &dyn SurfaceWriteProvider,
     cache: &BinaryCache,
 ) -> Result<RescanStats> {
     let now = clock::now_unix_secs();
@@ -427,9 +426,6 @@ async fn build_inventory(
     let mut scans = Vec::with_capacity(placements.len());
     let mut aggregate_listing_budget = SurfaceListingBudget::default();
     let mut retained_budget = InventoryRetainedBudget::default();
-    let mut next_heartbeat_at = now
-        .checked_add(CACHE_INVENTORY_HEARTBEAT_SECS)
-        .context("cache inventory heartbeat deadline overflowed")?;
     for placement in placements {
         let fetch = surfaces
             .placement_fetcher(&placement)
@@ -456,7 +452,7 @@ async fn build_inventory(
                 inventory_lease_deadline(heartbeat_at)?,
             )
             .await?;
-            next_heartbeat_at = heartbeat_at
+            let mut next_heartbeat_at = heartbeat_at
                 .checked_add(CACHE_INVENTORY_HEARTBEAT_SECS)
                 .context("cache inventory heartbeat deadline overflowed")?;
             pages = pages
@@ -1138,10 +1134,7 @@ mod tests {
         assert_eq!(db.test_org_usage(1).await.unwrap(), (1, 1));
 
         let cache = db.binary_cache_by_id(1).await.unwrap().unwrap();
-        let writers = RecoveryWriters;
-        rescan_cache(&db, &surfaces, &writers, &cache)
-            .await
-            .unwrap();
+        rescan_cache(&db, &surfaces, &cache).await.unwrap();
         let cache = db
             .test_cache_write_ticket_settlement("cache-multipart-post")
             .await

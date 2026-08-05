@@ -186,6 +186,7 @@ pub fn images_page(
     status: Option<&IndexStatus>,
     images: &[IndexedSystemImage],
     channels: &[ChannelSummary],
+    download_base: Option<&str>,
     browse: &ImageBrowse<'_>,
     started: Instant,
 ) -> String {
@@ -194,6 +195,7 @@ pub fn images_page(
         status,
         images,
         channels,
+        download_base,
         browse,
         started,
         &current_session_indicator(),
