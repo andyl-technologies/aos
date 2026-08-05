@@ -2086,6 +2086,7 @@ dependencies = [
 name = "crucible-debug-gateway"
 version = "0.1.0"
 dependencies = [
+ "crucible-api",
  "crucible-protocol",
  "thiserror 2.0.18",
 ]

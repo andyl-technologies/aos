@@ -51,7 +51,8 @@ pub use control_responsive::{
     ControlSessionState, validate_control_responsiveness,
 };
 pub use debug_gateway::{
-    DEBUG_GATEWAY_V1_CAPABILITY, DebugGatewayClientError, DebugGatewayControlClient,
+    DEBUG_GATEWAY_STARTUP_TIMEOUT, DEBUG_GATEWAY_V1_CAPABILITY, DebugGatewayClientError,
+    DebugGatewayControlClient, DebugGatewayProcess,
 };
 pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
