@@ -11,4 +11,5 @@ workspace = true
 [dependencies]
 blake3 = { workspace = true }
 libc = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }

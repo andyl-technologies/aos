@@ -5,7 +5,11 @@
 //! identifiers, byte transforms, and digests only; no QEMU type or pointer is
 //! part of the contract.
 
+use core::fmt::Write as _;
+
 use thiserror::Error;
+
+use crate::HARD_FAULT_PAYLOAD_BYTES;
 
 /// Eight-byte magic for a version-1 memory-mutation payload.
 pub const MEMORY_MUTATION_PAYLOAD_MAGIC_V1: [u8; 8] = *b"CRUCMEM1";
@@ -13,12 +17,41 @@ pub const MEMORY_MUTATION_PAYLOAD_MAGIC_V1: [u8; 8] = *b"CRUCMEM1";
 pub const MEMORY_MUTATION_PAYLOAD_VERSION_V1: u16 = 1;
 /// Exact fixed header size before transform bytes.
 pub const MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES: usize = 104;
+/// Payload semantic-version field offset.
+pub const MEMORY_MUTATION_VERSION_OFFSET: usize = 8;
+/// Payload address-space field offset.
+pub const MEMORY_MUTATION_ADDRESS_SPACE_OFFSET: usize = 10;
+/// Payload transform-kind field offset.
+pub const MEMORY_MUTATION_TRANSFORM_OFFSET: usize = 12;
+/// Payload atomicity field offset.
+pub const MEMORY_MUTATION_ATOMICITY_OFFSET: usize = 14;
+/// Payload vCPU-index field offset.
+pub const MEMORY_MUTATION_VCPU_INDEX_OFFSET: usize = 16;
+/// Payload changed-byte length field offset.
+pub const MEMORY_MUTATION_LENGTH_OFFSET: usize = 20;
+/// Payload first guest-address field offset.
+pub const MEMORY_MUTATION_ADDRESS_OFFSET: usize = 24;
+/// Payload mask-length field offset.
+pub const MEMORY_MUTATION_MASK_LENGTH_OFFSET: usize = 32;
+/// Payload replacement-value length field offset.
+pub const MEMORY_MUTATION_VALUES_LENGTH_OFFSET: usize = 36;
+/// Payload expected translation SHA-256 field offset.
+pub const MEMORY_MUTATION_TRANSLATION_SHA256_OFFSET: usize = 40;
+/// Payload reserved-byte field offset.
+pub const MEMORY_MUTATION_RESERVED_OFFSET: usize = 72;
+/// Payload transform body offset.
+pub const MEMORY_MUTATION_BODY_OFFSET: usize = MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES;
 /// Default maximum bytes changed by one memory-mutation effect.
 pub const DEFAULT_MEMORY_MUTATION_BYTES: u32 = 1_048_576;
 /// Hard maximum bytes changed by one memory-mutation effect.
 pub const HARD_MEMORY_MUTATION_BYTES: u32 = 16_777_216;
 /// Reserved vCPU identifier for a GPA mutation with no translation context.
 pub const MEMORY_MUTATION_NO_VCPU: u32 = u32::MAX;
+
+const _: () = assert!(
+    HARD_FAULT_PAYLOAD_BYTES as usize
+        == MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES + 2 * HARD_MEMORY_MUTATION_BYTES as usize
+);
 
 /// Address space selected by one memory mutation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +64,7 @@ pub enum MemoryMutationAddressSpace {
 }
 
 impl MemoryMutationAddressSpace {
-    fn decode(value: u16) -> Result<Self, MemoryMutationPayloadError> {
+    pub(crate) fn decode(value: u16) -> Result<Self, MemoryMutationPayloadError> {
         match value {
             1 => Ok(Self::GuestPhysical),
             2 => Ok(Self::GuestVirtual),
@@ -51,7 +84,7 @@ pub enum MemoryMutationTransformKind {
 }
 
 impl MemoryMutationTransformKind {
-    fn decode(value: u16) -> Result<Self, MemoryMutationPayloadError> {
+    pub(crate) fn decode(value: u16) -> Result<Self, MemoryMutationPayloadError> {
         match value {
             1 => Ok(Self::BitFlip),
             2 => Ok(Self::Replace),
@@ -115,6 +148,9 @@ impl MemoryMutationPayloadV1 {
             .checked_add(self.mask.len())
             .and_then(|value| value.checked_add(self.values.len()))
             .ok_or(MemoryMutationPayloadError::Length)?;
+        if capacity > HARD_FAULT_PAYLOAD_BYTES as usize {
+            return Err(MemoryMutationPayloadError::Length);
+        }
         let mut bytes = Vec::with_capacity(capacity);
         bytes.extend_from_slice(&MEMORY_MUTATION_PAYLOAD_MAGIC_V1);
         bytes.extend_from_slice(&MEMORY_MUTATION_PAYLOAD_VERSION_V1.to_le_bytes());
@@ -170,7 +206,10 @@ impl MemoryMutationPayloadV1 {
             .checked_add(mask_len)
             .and_then(|value| value.checked_add(values_len))
             .ok_or(MemoryMutationPayloadError::Length)?;
-        if length != mask_len || bytes.len() != expected_len {
+        if length != mask_len
+            || expected_len > HARD_FAULT_PAYLOAD_BYTES as usize
+            || bytes.len() != expected_len
+        {
             return Err(MemoryMutationPayloadError::Length);
         }
         let mut expected_translation_sha256 = [0_u8; 32];
@@ -265,6 +304,101 @@ pub enum MemoryMutationPayloadError {
     Reserved,
 }
 
+pub(crate) fn emit_memory_fault_c_header(out: &mut String) {
+    macro_rules! define {
+        ($name:literal, $value:expr) => {
+            let _ = writeln!(out, "#define {} {}", $name, $value);
+        };
+    }
+    out.push_str("\n/* Versioned QEMU memory-fault payload ABI. */\n");
+    out.push_str("#define CRUCIBLE_MEMORY_MUTATION_PAYLOAD_MAGIC_V1 \"CRUCMEM1\"\n");
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_PAYLOAD_VERSION_V1",
+        MEMORY_MUTATION_PAYLOAD_VERSION_V1
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES",
+        MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_DEFAULT_BYTES",
+        DEFAULT_MEMORY_MUTATION_BYTES
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_HARD_BYTES",
+        HARD_MEMORY_MUTATION_BYTES
+    );
+    define!("CRUCIBLE_MEMORY_MUTATION_NO_VCPU", MEMORY_MUTATION_NO_VCPU);
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_VERSION_OFFSET",
+        MEMORY_MUTATION_VERSION_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_ADDRESS_SPACE_OFFSET",
+        MEMORY_MUTATION_ADDRESS_SPACE_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_TRANSFORM_OFFSET",
+        MEMORY_MUTATION_TRANSFORM_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_ATOMICITY_OFFSET",
+        MEMORY_MUTATION_ATOMICITY_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_VCPU_INDEX_OFFSET",
+        MEMORY_MUTATION_VCPU_INDEX_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_LENGTH_OFFSET",
+        MEMORY_MUTATION_LENGTH_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_ADDRESS_OFFSET",
+        MEMORY_MUTATION_ADDRESS_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_MASK_LENGTH_OFFSET",
+        MEMORY_MUTATION_MASK_LENGTH_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_VALUES_LENGTH_OFFSET",
+        MEMORY_MUTATION_VALUES_LENGTH_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_TRANSLATION_SHA256_OFFSET",
+        MEMORY_MUTATION_TRANSLATION_SHA256_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_RESERVED_OFFSET",
+        MEMORY_MUTATION_RESERVED_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET",
+        MEMORY_MUTATION_BODY_OFFSET
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA",
+        MemoryMutationAddressSpace::GuestPhysical as u16
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_ADDRESS_GVA",
+        MemoryMutationAddressSpace::GuestVirtual as u16
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_TRANSFORM_BIT_FLIP",
+        MemoryMutationTransformKind::BitFlip as u16
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE",
+        MemoryMutationTransformKind::Replace as u16
+    );
+    define!(
+        "CRUCIBLE_MEMORY_MUTATION_ATOMIC_ALL_OR_NOTHING",
+        MemoryMutationAtomicity::AllOrNothing as u16
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +450,28 @@ mod tests {
             invalid.encode(),
             Err(MemoryMutationPayloadError::AddressOverflow)
         );
+    }
+
+    #[test]
+    fn memory_mutation_payload_bounds_match_the_transport_envelope() {
+        let maximum = MemoryMutationPayloadV1 {
+            address_space: MemoryMutationAddressSpace::GuestPhysical,
+            transform: MemoryMutationTransformKind::Replace,
+            atomicity: MemoryMutationAtomicity::AllOrNothing,
+            vcpu_index: MEMORY_MUTATION_NO_VCPU,
+            address: 0,
+            mask: vec![0xff; HARD_MEMORY_MUTATION_BYTES as usize],
+            values: vec![0xa5; HARD_MEMORY_MUTATION_BYTES as usize],
+            expected_translation_sha256: [0; 32],
+        };
+        let encoded = maximum
+            .encode()
+            .unwrap_or_else(|error| panic!("encode maximum mutation: {error}"));
+        assert_eq!(encoded.len(), HARD_FAULT_PAYLOAD_BYTES as usize);
+
+        let mut above = maximum;
+        above.mask.push(0xff);
+        above.values.push(0xa5);
+        assert_eq!(above.encode(), Err(MemoryMutationPayloadError::Length));
     }
 }

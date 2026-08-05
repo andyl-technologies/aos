@@ -277,7 +277,7 @@ fn run_once(
         resources.into_setup_resources(),
         region_config,
         GATE_SLOT,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        command.fault_capability_requirement(),
     )
     .map_err(|source| QemuLiveNetworkIoGateError::HostSetup { source })?;
     if !setup.setup_ack().can_schedule() {

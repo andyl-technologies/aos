@@ -470,6 +470,7 @@ pub struct QemuLaunchCommand {
     qmp: Option<QemuQmpChannelConfig>,
     plugin_coverage: QemuLaunchPluginSwitch,
     plugin_fault_node_hash: [u8; 32],
+    fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
 }
 
 impl QemuLaunchCommand {
@@ -515,6 +516,12 @@ impl QemuLaunchCommand {
         self.plugin_fault_node_hash
     }
 
+    /// Returns the exact fault manifest bound to this launch identity.
+    #[must_use]
+    pub const fn fault_capability_requirement(&self) -> &crate::QemuFaultCapabilityRequirement {
+        &self.fault_capability_requirement
+    }
+
     /// Appends one content-addressed observation-only QEMU plugin.
     ///
     /// This is used by loaded-QEMU gates that need an independent fingerprint
@@ -550,6 +557,10 @@ impl QemuLaunchCommand {
         lines.push("crucible.qemu-launch-command.v1".to_owned());
         lines.push("command_line_in_hash=executable-and-argv".to_owned());
         lines.push(format!("executable={}", self.executable));
+        lines.push(format!(
+            "fault_capability_manifest_v1={}",
+            lower_hex(self.fault_capability_requirement.digest())
+        ));
         for (index, argument) in self.args.iter().enumerate() {
             lines.push(format!("argv[{index}]={argument}"));
         }
@@ -568,6 +579,7 @@ pub struct QemuLaunchCommandBuilder {
     qmp: Option<QemuQmpChannelConfig>,
     translation_prefetch: Option<QemuTranslationPrefetchExperiment>,
     console_capture: bool,
+    fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -594,6 +606,7 @@ impl QemuLaunchCommandBuilder {
             qmp: None,
             translation_prefetch: None,
             console_capture: false,
+            fault_capability_requirement: crate::QemuFaultCapabilityRequirement::current_v1(),
         }
     }
 
@@ -618,6 +631,16 @@ impl QemuLaunchCommandBuilder {
     #[must_use]
     pub const fn with_console_capture(mut self) -> Self {
         self.console_capture = true;
+        self
+    }
+
+    /// Returns a builder requiring one exact launch-derived fault manifest.
+    #[must_use]
+    pub fn with_fault_capability_requirement(
+        mut self,
+        requirement: crate::QemuFaultCapabilityRequirement,
+    ) -> Self {
+        self.fault_capability_requirement = requirement;
         self
     }
 
@@ -711,8 +734,16 @@ impl QemuLaunchCommandBuilder {
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
+            fault_capability_requirement: self.fault_capability_requirement,
         })
     }
+}
+
+fn lower_hex(bytes: [u8; 32]) -> String {
+    bytes
+        .into_iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn replace_option_value(

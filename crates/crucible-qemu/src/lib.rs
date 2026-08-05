@@ -44,6 +44,7 @@ mod block_realization_gate;
 mod coverage;
 mod crash_detection;
 mod determinism_boundary;
+mod fault_capability;
 mod gdbstub_proxy;
 #[cfg(target_os = "linux")]
 mod host_setup;
@@ -106,14 +107,14 @@ pub use determinism_boundary::{
     REQUIRED_QEMU_FINGERPRINT_COMPONENTS, REQUIRED_QEMU_FINGERPRINT_EVENT_BOUNDARIES,
     qemu_entropy_elimination_microtests, validate_qemu_determinism_boundary,
 };
+pub use fault_capability::QemuFaultCapabilityRequirement;
 pub use gdbstub_proxy::{
     QemuGdbstubBreakpointPolicy, QemuGdbstubProxy, QemuGdbstubProxyError, QemuGdbstubProxyListener,
     QemuGdbstubProxyServer, QemuGdbstubProxySessionReport,
 };
 #[cfg(target_os = "linux")]
 pub use host_setup::{
-    QemuFaultCapabilityRequirement, QemuHostPluginSetup, QemuHostPluginSetupError,
-    complete_qemu_host_plugin_setup,
+    QemuHostPluginSetup, QemuHostPluginSetupError, complete_qemu_host_plugin_setup,
 };
 pub use host_worker_pool::{
     QemuHostCompletionOrderKey, QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError,

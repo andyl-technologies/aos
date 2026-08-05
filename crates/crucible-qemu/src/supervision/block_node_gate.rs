@@ -258,7 +258,7 @@ pub fn run_qemu_live_block_node_gate(
         resources.into_setup_resources(),
         region_config,
         GATE_SLOT,
-        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        command.fault_capability_requirement(),
     )
     .map_err(|source| QemuLiveBlockNodeGateError::HostSetup { source })?;
     if !setup.setup_ack().can_schedule() {

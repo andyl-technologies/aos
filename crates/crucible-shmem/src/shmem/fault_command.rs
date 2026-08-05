@@ -16,10 +16,21 @@ pub const FAULT_COMMAND_ABI_MAJOR: u16 = 1;
 pub const FAULT_COMMAND_ABI_MINOR: u16 = 0;
 /// Exact semantic version implemented by every initial command kind.
 pub const FAULT_COMMAND_SEMANTIC_VERSION: u32 = 1;
-/// Default maximum command or result payload bytes.
-pub const DEFAULT_FAULT_PAYLOAD_BYTES: u32 = 1_048_576;
+/// Default maximum encoded command or result payload bytes.
+///
+/// This is the exact envelope for a default 1 MiB replacement mutation: the
+/// fixed memory payload header, one mask byte, and one replacement byte per
+/// selected guest byte.
+pub const DEFAULT_FAULT_PAYLOAD_BYTES: u32 = 2_097_256;
 /// Hard maximum command or result payload bytes.
-pub const HARD_FAULT_PAYLOAD_BYTES: u32 = 16_777_216;
+///
+/// This admits the 16 MiB memory-mutation ceiling with one mask byte and one
+/// replacement byte per changed byte plus the fixed version-1 header.
+pub const HARD_FAULT_PAYLOAD_BYTES: u32 = 33_554_536;
+/// Default bytes reserved for each per-node command or result payload arena.
+pub const DEFAULT_FAULT_PAYLOAD_ARENA_BYTES: u32 = DEFAULT_FAULT_PAYLOAD_BYTES;
+/// Hard ceiling for each per-node command or result payload arena.
+pub const HARD_FAULT_PAYLOAD_ARENA_BYTES: u32 = HARD_FAULT_PAYLOAD_BYTES;
 /// Default command and result ring capacity per node.
 pub const DEFAULT_FAULT_COMMAND_CAPACITY: u32 = 4_096;
 /// Hard command and result ring capacity per node.
@@ -346,6 +357,10 @@ pub enum FaultCapabilityScope {
     Aarch64 = 3,
     /// Capability applies to an explicitly identified virtio device class.
     Virtio = 4,
+    /// Capability applies to a non-virtio device class named by its schema.
+    Device = 5,
+    /// Capability applies to an accelerator class named by its schema.
+    Accelerator = 6,
 }
 
 impl FaultCapabilityScope {
@@ -360,6 +375,8 @@ impl FaultCapabilityScope {
             2 => Ok(Self::X86_64),
             3 => Ok(Self::Aarch64),
             4 => Ok(Self::Virtio),
+            5 => Ok(Self::Device),
+            6 => Ok(Self::Accelerator),
             _ => Err(FaultAbiError::CapabilityInvariant),
         }
     }
@@ -1797,6 +1814,14 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
         HARD_FAULT_PAYLOAD_BYTES
     );
     define!(
+        "CRUCIBLE_FAULT_DEFAULT_PAYLOAD_ARENA_BYTES",
+        DEFAULT_FAULT_PAYLOAD_ARENA_BYTES
+    );
+    define!(
+        "CRUCIBLE_FAULT_HARD_PAYLOAD_ARENA_BYTES",
+        HARD_FAULT_PAYLOAD_ARENA_BYTES
+    );
+    define!(
         "CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY",
         DEFAULT_FAULT_COMMAND_CAPACITY
     );
@@ -1843,6 +1868,14 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
     define!(
         "CRUCIBLE_FAULT_CAPABILITY_SCOPE_VIRTIO",
         FaultCapabilityScope::Virtio as u16
+    );
+    define!(
+        "CRUCIBLE_FAULT_CAPABILITY_SCOPE_DEVICE",
+        FaultCapabilityScope::Device as u16
+    );
+    define!(
+        "CRUCIBLE_FAULT_CAPABILITY_SCOPE_ACCELERATOR",
+        FaultCapabilityScope::Accelerator as u16
     );
     define!(
         "CRUCIBLE_FAULT_CAPABILITY_FEATURES_V1_MASK",
@@ -2342,6 +2375,8 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_fault_payload_arena_header, write
 /* Headers and rows are byte arrays; use the offsets above with explicit little-endian loads/stores. */
 "#,
     );
+    crate::fault_memory::emit_memory_fault_c_header(out);
+    crate::fault_memory_evidence::emit_memory_evidence_c_header(out);
 }
 
 #[cfg(test)]
