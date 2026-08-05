@@ -496,7 +496,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
             return Rendered::NotFound;
         }
         let auth = auth_header(headers);
-        return match svc.facade_fetch(auth.as_deref(), slug, "index.html").await {
+        return match svc.surface_fetch(auth.as_deref(), slug, "index.html").await {
             Ok(Some(object)) => Rendered::Json(String::from_utf8_lossy(&object.bytes).into_owned()),
             _ => Rendered::NotAcceptable,
         };
@@ -601,11 +601,18 @@ pub async fn images(
         session_indicator(svc, headers),
     )
     .await;
+    let download_base = svc
+        .db
+        .ready_registry_canonical_url(registry.id)
+        .await
+        .ok()
+        .flatten();
     Rendered::Html(pages::images_page(
         &registry,
         status.as_ref(),
         &images.unwrap_or_default(),
         &channels.unwrap_or_default(),
+        download_base.as_deref(),
         &pages::ImageBrowse {
             query: query.q.as_deref(),
             release: query.release.as_deref(),
@@ -1004,7 +1011,7 @@ pub async fn cache_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Re
         }
         let auth = auth_header(headers);
         return match svc
-            .facade_fetch(auth.as_deref(), slug, "nix-cache-info")
+            .surface_fetch(auth.as_deref(), slug, "nix-cache-info")
             .await
         {
             Ok(Some(o)) => Rendered::Json(String::from_utf8_lossy(&o.bytes).into_owned()),

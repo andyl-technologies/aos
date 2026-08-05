@@ -121,9 +121,6 @@ pub async fn index_all(
             );
         }
     }
-    aos_hub_core::indexer::index_outstanding_write_placements(&db, &provider)
-        .await
-        .context("reconciling outstanding registry write placements")?;
     Ok(())
 }
 
@@ -133,8 +130,8 @@ pub async fn index_all(
 /// `cache_objects` index is a derived view of its surface (the source of
 /// truth), so this walks each cache's surface through the [`R2SurfaceProvider`]
 /// and runs the shared [`rescan_cache`](aos_hub_core::cache_scan::rescan_cache)
-/// to add narinfos that drifted in via a direct presigned upload (which bypasses
-/// the facade write-through) and prune rows whose narinfo is gone. Steady state
+/// to add narinfos that drifted in via a direct presigned upload and prune rows
+/// whose narinfo is gone. Steady state
 /// is one `list` per cache and no object reads. Each cache is independent — one
 /// failure is logged, never aborting the pass.
 ///
@@ -158,14 +155,6 @@ pub async fn rescan_all(
         Arc::clone(&egress),
     );
     let writers = R2SurfaceWriteProvider::new(bucket, Arc::clone(&db), secrets, egress);
-    aos_hub_core::cache_scan::recover_expired_registry_writes(
-        &db,
-        &provider,
-        &writers,
-        aos_hub_core::clock::now_unix_secs(),
-    )
-    .await
-    .context("recovering expired registry writes")?;
     aos_hub_core::cache_scan::reap_due_cache_tombstones(&db, aos_hub_core::clock::now_unix_secs())
         .await
         .context("reaping cache tombstones")?;

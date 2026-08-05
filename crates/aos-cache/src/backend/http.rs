@@ -41,13 +41,10 @@ pub struct HttpBackend {
     headers: Vec<(String, String)>,
     /// Whether the authenticated target speaks the AOS API.
     is_aos: bool,
-    /// Whether token exchange explicitly negotiated multipart facade v1.
+    /// Whether token exchange identified the topology-native Hub API.
+    is_hub: bool,
+    /// Whether token exchange explicitly negotiated multipart upload v1.
     multipart_v1: bool,
-    /// Latches once a presigned-mint attempt comes back unsupported (no route,
-    /// cache not found, or not presign-configured), so the remaining NAR uploads
-    /// skip the mint RPC and go straight to the facade instead of paying a
-    /// failed round-trip each.
-    mint_disabled: std::sync::atomic::AtomicBool,
 }
 
 /// OAuth2 token-endpoint response, including explicitly negotiated features.
@@ -106,8 +103,8 @@ impl HttpBackend {
             origin,
             headers,
             is_aos,
+            is_hub: false,
             multipart_v1: false,
-            mint_disabled: std::sync::atomic::AtomicBool::new(false),
         };
 
         // If we have an AOS token, authenticate to get a JWT.
@@ -154,6 +151,10 @@ impl HttpBackend {
             .capabilities
             .iter()
             .any(|capability| capability == "aos.multipart.v1");
+        self.is_hub = token_resp
+            .capabilities
+            .iter()
+            .any(|capability| capability == "aos.hub.topology.v1");
 
         // Update the auth store with the JWT.
         let host = url::Url::parse(&self.base_url)
@@ -274,6 +275,14 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
+        if self.is_hub {
+            let path = format!("{store_hash}.narinfo");
+            let upload_url = self
+                .create_upload_url(&path, content.len() as u64)
+                .await?
+                .context("Hub did not admit the narinfo upload")?;
+            return self.put_to_url(&upload_url, content.as_bytes()).await;
+        }
         if self.is_aos {
             // AOS servers generate narinfo on demand from the ValidPaths DB
             // (see `narinfo_handler` in aos-server/src/routes.rs:155-219).
@@ -313,6 +322,14 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
+        if self.is_hub {
+            let path = format!("nar/{filename}");
+            let upload_url = self
+                .create_upload_url(&path, data.len() as u64)
+                .await?
+                .context("Hub requires multipart for this NAR upload")?;
+            return self.put_to_url(&upload_url, data).await;
+        }
         // TODO(aos-cache push >1MB): when is_aos == true, this path is
         // broken on two axes:
         //   1. URL: PUT goes to {base_url}/nar/{filename}, but the
@@ -343,13 +360,7 @@ impl CacheBackend for HttpBackend {
         Ok(())
     }
 
-    async fn mint_upload_url(&self, path: &str, size: u64) -> Result<Option<String>> {
-        use std::sync::atomic::Ordering;
-        // Once a mint attempt comes back unsupported, skip the RPC for the rest
-        // of the push and go straight to the facade.
-        if self.mint_disabled.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
+    async fn create_upload_url(&self, path: &str, size: u64) -> Result<Option<String>> {
         // Only attempt against an authenticated AOS hub: a provisioning-token
         // backend (`is_aos`) or one carrying an explicit `Authorization` header.
         // An unauthenticated plain-HTTP cache cannot presign, so skip the RPC.
@@ -361,38 +372,29 @@ impl CacheBackend for HttpBackend {
         if !has_auth {
             return Ok(None);
         }
-        // The cache slug is the view path `base_url` encodes beyond the origin
-        // (e.g. `https://host/default` -> `default`).
-        let Some(slug) = self
-            .base_url
-            .strip_prefix(&self.origin)
-            .map(|s| s.trim_matches('/'))
-            .filter(|s| !s.is_empty())
-        else {
-            return Ok(None);
-        };
-        // `MintCacheUploadCredentials` lives at the root (Connect-JSON), not
+        // `CreateCacheObjectUploads` lives at the root (Connect-JSON), not
         // under the view path.
         let url = format!(
-            "{}/aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials",
+            "{}/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
             self.origin
         );
         // Connect-JSON uses the protobuf JSON mapping (camelCase field names).
-        let body = serde_json::json!({ "cacheSlug": slug, "path": path, "size": size }).to_string();
+        let body = serde_json::json!({
+            "deliveryUrl": self.base_url,
+            "path": path,
+            "size": size
+        })
+        .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
         req.headers
             .push(("Content-Type".to_string(), "application/json".to_string()));
         let req = self.add_headers(req);
-        // A cache that can't presign (no route, cache not found, or not
-        // presign-configured) must not fail the push: latch mint off and fall
-        // back to the facade.
-        let result = match self.engine.execute(req).await {
-            Ok(result) if result.status < 400 => result,
-            _ => {
-                self.mint_disabled.store(true, Ordering::Relaxed);
-                return Ok(None);
-            }
-        };
+        let result = self.engine.execute(req).await?;
+        anyhow::ensure!(
+            result.status < 400,
+            "creating cache object upload failed with HTTP {}",
+            result.status
+        );
         let url = result
             .body
             .as_deref()
@@ -406,17 +408,21 @@ impl CacheBackend for HttpBackend {
             })
             .map(|resp| resp.upload_url)
             .filter(|u| !u.is_empty());
-        if url.is_none() {
-            self.mint_disabled.store(true, Ordering::Relaxed);
-        }
         Ok(url)
     }
 
     async fn put_to_url(&self, url: &str, data: &[u8]) -> Result<()> {
-        // The presigned URL embeds its own (query-string) SigV4 authorization
-        // and targets the origin host directly, so attach NO credential headers
-        // and none of the backend's view headers.
+        // Direct-origin URLs embed SigV4 authorization. Typed Hub-proxy URLs
+        // stay on the Hub control origin and require the caller's normal auth.
         let req = TransferRequest::put(url, data.to_vec());
+        let req = if url.starts_with(&format!(
+            "{}/aos.hub.v1.BinaryCacheService/UploadObject/",
+            self.origin
+        )) {
+            self.add_headers(req)
+        } else {
+            req
+        };
         let result = self
             .engine
             .execute(req)
@@ -432,13 +438,12 @@ impl CacheBackend for HttpBackend {
         Ok(())
     }
 
-    async fn mint_upload_urls(
+    async fn create_upload_urls(
         &self,
         uploads: &[(String, u64)],
     ) -> Result<std::collections::HashMap<String, String>> {
-        use std::sync::atomic::Ordering;
         let empty = std::collections::HashMap::new();
-        if uploads.is_empty() || self.mint_disabled.load(Ordering::Relaxed) {
+        if uploads.is_empty() {
             return Ok(empty);
         }
         let has_auth = self.is_aos
@@ -449,33 +454,28 @@ impl CacheBackend for HttpBackend {
         if !has_auth {
             return Ok(empty);
         }
-        let Some(slug) = self
-            .base_url
-            .strip_prefix(&self.origin)
-            .map(|s| s.trim_matches('/'))
-            .filter(|s| !s.is_empty())
-        else {
-            return Ok(empty);
-        };
         let url = format!(
-            "{}/aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials",
+            "{}/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
             self.origin
         );
         let paths: Vec<&str> = uploads.iter().map(|(path, _)| path.as_str()).collect();
         let sizes: Vec<u64> = uploads.iter().map(|(_, size)| *size).collect();
-        let body =
-            serde_json::json!({ "cacheSlug": slug, "paths": paths, "sizes": sizes }).to_string();
+        let body = serde_json::json!({
+            "deliveryUrl": self.base_url,
+            "paths": paths,
+            "sizes": sizes
+        })
+        .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
         req.headers
             .push(("Content-Type".to_string(), "application/json".to_string()));
         let req = self.add_headers(req);
-        let result = match self.engine.execute(req).await {
-            Ok(result) if result.status < 400 => result,
-            _ => {
-                self.mint_disabled.store(true, Ordering::Relaxed);
-                return Ok(empty);
-            }
-        };
+        let result = self.engine.execute(req).await?;
+        anyhow::ensure!(
+            result.status < 400,
+            "creating cache object uploads failed with HTTP {}",
+            result.status
+        );
         let Some(body) = result.body else {
             return Ok(empty);
         };
@@ -499,9 +499,6 @@ impl CacheBackend for HttpBackend {
             .filter(|u| !u.upload_url.is_empty())
             .map(|u| (u.path, u.upload_url))
             .collect();
-        if map.is_empty() {
-            self.mint_disabled.store(true, Ordering::Relaxed);
-        }
         Ok(map)
     }
 
@@ -509,7 +506,7 @@ impl CacheBackend for HttpBackend {
         if narinfos.is_empty() {
             return Ok(());
         }
-        if self.is_aos {
+        if self.is_aos && !self.is_hub {
             // AOS pack-mode servers synthesise narinfo from registered paths.
             return Ok(());
         }
@@ -529,18 +526,20 @@ impl CacheBackend for HttpBackend {
         size: u64,
         sha256: Option<&str>,
     ) -> Result<(String, u64)> {
-        let query = {
-            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-            serializer
-                .append_pair("uploads", "")
-                .append_pair("size", &size.to_string());
-            if let Some(sha256) = sha256 {
-                serializer.append_pair("sha256", sha256);
-            }
-            serializer.finish()
-        };
-        let url = format!("{}?{query}", self.nar_url(nar_path));
-        let req = self.add_headers(TransferRequest::post(&url, Vec::new()));
+        let url = format!(
+            "{}/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
+            self.origin
+        );
+        let body = serde_json::json!({
+            "deliveryUrl": self.base_url,
+            "path": nar_path,
+            "byteSize": size,
+            "sha256": sha256.unwrap_or_default(),
+        });
+        let mut req = TransferRequest::post(&url, serde_json::to_vec(&body)?);
+        req.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
+        let req = self.add_headers(req);
         let result = self
             .engine
             .execute(req)
@@ -557,7 +556,9 @@ impl CacheBackend for HttpBackend {
             .ok_or_else(|| anyhow::anyhow!("empty initiate-multipart response"))?;
         #[derive(serde::Deserialize)]
         struct InitiateResp {
+            #[serde(rename = "uploadId")]
             upload_id: String,
+            #[serde(rename = "partSize")]
             part_size: u64,
         }
         let resp: InitiateResp =
@@ -572,11 +573,11 @@ impl CacheBackend for HttpBackend {
         part_number: u32,
         data: &[u8],
     ) -> Result<(u32, String)> {
-        let qs = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("uploadId", upload_id)
-            .append_pair("partNumber", &part_number.to_string())
-            .finish();
-        let url = format!("{}?{qs}", self.nar_url(nar_path));
+        let _ = nar_path;
+        let url = format!(
+            "{}/aos.hub.v1.BinaryCacheService/UploadPart/{upload_id}/{part_number}",
+            self.origin
+        );
         let mut req = TransferRequest::put(&url, data.to_vec());
         add_static_metadata_headers(&mut req, Some("application/x-nix-nar"), None, None, None);
         let req = self.add_headers(req);
@@ -596,6 +597,7 @@ impl CacheBackend for HttpBackend {
             .ok_or_else(|| anyhow::anyhow!("empty upload-part response"))?;
         #[derive(serde::Deserialize)]
         struct PartResp {
+            #[serde(rename = "partNumber")]
             part_number: u32,
             etag: String,
         }
@@ -610,28 +612,18 @@ impl CacheBackend for HttpBackend {
         upload_id: &str,
         parts: &[(u32, String)],
     ) -> Result<()> {
-        let qs = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("uploadId", upload_id)
-            .finish();
-        let url = format!("{}?{qs}", self.nar_url(nar_path));
-        #[derive(serde::Serialize)]
-        struct CompletePart {
-            part_number: u32,
-            etag: String,
-        }
-        #[derive(serde::Serialize)]
-        struct CompleteReq {
-            parts: Vec<CompletePart>,
-        }
-        let payload = serde_json::to_vec(&CompleteReq {
-            parts: parts
-                .iter()
-                .map(|(n, e)| CompletePart {
-                    part_number: *n,
-                    etag: e.clone(),
-                })
-                .collect(),
-        })?;
+        let url = format!(
+            "{}/aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload",
+            self.origin
+        );
+        let _ = nar_path;
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "uploadId": upload_id,
+            "parts": parts.iter().map(|(number, etag)| serde_json::json!({
+                "partNumber": number,
+                "etag": etag,
+            })).collect::<Vec<_>>(),
+        }))?;
         let mut req = TransferRequest::post(&url, payload);
         req.headers
             .push(("Content-Type".to_string(), "application/json".to_string()));
@@ -651,13 +643,17 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn abort_multipart(&self, nar_path: &str, upload_id: &str) -> Result<()> {
-        let qs = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("uploadId", upload_id)
-            .finish();
-        let url = format!("{}?{qs}", self.nar_url(nar_path));
-        let mut req = TransferRequest::post(&url, Vec::new());
-        req.method = aos_net::Method::Delete;
-        req.body = None;
+        let _ = nar_path;
+        let url = format!(
+            "{}/aos.hub.v1.BinaryCacheService/AbortCacheMultipartUpload",
+            self.origin
+        );
+        let mut req = TransferRequest::post(
+            &url,
+            serde_json::to_vec(&serde_json::json!({ "uploadId": upload_id }))?,
+        );
+        req.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
         let req = self.add_headers(req);
         let result = self
             .engine
@@ -674,7 +670,7 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
-        if self.is_aos {
+        if self.is_aos && !self.is_hub {
             // AOS server has a batch endpoint.
             let url = format!("{}/query-missing", self.base_url);
             let paths: Vec<String> = store_hashes.iter().map(|h| h.to_string()).collect();
@@ -757,7 +753,7 @@ impl CacheBackend for HttpBackend {
         let size = std::fs::metadata(source)
             .with_context(|| format!("stat static file {}", source.display()))?
             .len();
-        if self.is_aos && size > MULTIPART_THRESHOLD {
+        if self.is_hub && size > MULTIPART_THRESHOLD {
             if !self.supports_multipart() {
                 anyhow::bail!(
                     "AOS server did not negotiate multipart support for large static file {relative_path}"
@@ -817,6 +813,15 @@ impl CacheBackend for HttpBackend {
             }
             return Ok(());
         }
+        if self.is_hub {
+            let bytes = std::fs::read(source)
+                .with_context(|| format!("reading static file {}", source.display()))?;
+            let upload_url = self
+                .create_upload_url(relative_path, size)
+                .await?
+                .context("Hub did not admit the static-file upload")?;
+            return self.put_to_url(&upload_url, &bytes).await;
+        }
         let url = self.static_file_url(relative_path);
         let mut req = TransferRequest::put_file(&url, source.to_path_buf());
         add_static_metadata_headers(
@@ -842,7 +847,7 @@ impl CacheBackend for HttpBackend {
     }
 
     fn supports_pack(&self) -> bool {
-        self.is_aos
+        self.is_aos && !self.is_hub
     }
 
     async fn upload_pack(&self, data: &[u8]) -> Result<Vec<String>> {

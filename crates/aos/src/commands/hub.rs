@@ -8022,39 +8022,60 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
             let publication: hub_types::RegistryPublication = client
                 .call_topology(HubTopologyMethod::BeginRegistryPublication, &request)
                 .await?;
-            anyhow::ensure!(
-                publication.objects.len() == request.objects.len(),
-                "Hub publication response changed the declared object count"
-            );
-            for object in &publication.objects {
-                let declared = request
-                    .objects
-                    .iter()
-                    .find(|declared| declared.path == object.path)
-                    .context("Hub publication response introduced an undeclared path")?;
+            let publication_id = publication.publication_id.clone();
+            let result: Result<hub_types::RegistryPublication> = async {
                 anyhow::ensure!(
-                    declared.sha256 == object.sha256
-                        && declared.byte_size == object.byte_size
-                        && declared.kind == object.kind,
-                    "Hub publication response changed the identity of {}",
-                    object.path
+                    publication.objects.len() == request.objects.len(),
+                    "Hub publication response changed the declared object count"
                 );
-                let path = root.join(&object.path);
-                verify_publication_file(&path, object)?;
+                for object in &publication.objects {
+                    let declared = request
+                        .objects
+                        .iter()
+                        .find(|declared| declared.path == object.path)
+                        .context("Hub publication response introduced an undeclared path")?;
+                    anyhow::ensure!(
+                        declared.sha256 == object.sha256
+                            && declared.byte_size == object.byte_size
+                            && declared.kind == object.kind
+                            && declared.media_type == object.media_type,
+                        "Hub publication response changed the identity of {}",
+                        object.path
+                    );
+                    let path = root.join(&object.path);
+                    verify_publication_file(&path, object)?;
+                    client
+                        .upload_publication_object(&object.upload_url, &path)
+                        .await
+                        .with_context(|| format!("uploading publication path {}", object.path))?;
+                }
                 client
-                    .upload_publication_object(&object.upload_url, &path)
+                    .call_topology(
+                        HubTopologyMethod::CommitRegistryPublication,
+                        &hub_types::CommitRegistryPublicationRequest {
+                            publication_id: publication_id.clone(),
+                        },
+                    )
                     .await
-                    .with_context(|| format!("uploading publication path {}", object.path))?;
             }
-            let committed: hub_types::RegistryPublication = client
-                .call_topology(
-                    HubTopologyMethod::CommitRegistryPublication,
-                    &hub_types::CommitRegistryPublicationRequest {
-                        publication_id: publication.publication_id,
-                    },
-                )
-                .await?;
-            print_topology_message(printer, &committed)
+            .await;
+            match result {
+                Ok(committed) => print_topology_message(printer, &committed),
+                Err(error) => {
+                    let abort = client
+                        .call_topology::<_, hub_types::RegistryPublication>(
+                            HubTopologyMethod::AbortRegistryPublication,
+                            &hub_types::AbortRegistryPublicationRequest { publication_id },
+                        )
+                        .await;
+                    match abort {
+                        Ok(_) => Err(error.context("the incomplete publication was aborted")),
+                        Err(abort_error) => Err(error.context(format!(
+                            "aborting the incomplete publication also failed: {abort_error:#}"
+                        ))),
+                    }
+                }
+            }
         }
         HubPublishCmd::Begin {
             access,
@@ -8096,6 +8117,21 @@ async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
                 &client,
                 HubTopologyMethod::CommitRegistryPublication,
                 &hub_types::CommitRegistryPublicationRequest {
+                    publication_id: publication_id.clone(),
+                },
+            )
+            .await
+        }
+        HubPublishCmd::Abort {
+            access,
+            publication_id,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::RegistryPublication>(
+                printer,
+                &client,
+                HubTopologyMethod::AbortRegistryPublication,
+                &hub_types::AbortRegistryPublicationRequest {
                     publication_id: publication_id.clone(),
                 },
             )

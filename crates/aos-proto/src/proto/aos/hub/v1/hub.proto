@@ -342,6 +342,8 @@ service PublishService {
       returns (RegistryPublication);
   rpc CommitRegistryPublication(CommitRegistryPublicationRequest)
       returns (RegistryPublication);
+  rpc AbortRegistryPublication(AbortRegistryPublicationRequest)
+      returns (RegistryPublication);
 }
 
 // Git read API for the UI and remote `apr` (RFC-0012 "API: aos.hub.v1"
@@ -1517,6 +1519,10 @@ message CommitRegistryPublicationRequest {
   string publication_id = 1;
 }
 
+message AbortRegistryPublicationRequest {
+  string publication_id = 1;
+}
+
 message RegistryPublicationObject {
   int64 object_id = 1;
   string path = 2;
@@ -1753,8 +1759,14 @@ service BinaryCacheService {
   rpc PlanRunPlacementEviction(PlanRunPlacementEvictionRequest) returns (TopologyPlanResponse);
   rpc RunPlacementEviction(ApplyTopologyPlanRequest) returns (OperationResponse);
   rpc CacheClosure(CacheClosureRequest) returns (CacheClosureResponse);
-  rpc MintCacheUploadCredentials(MintCacheUploadCredentialsRequest)
-      returns (MintCacheUploadCredentialsResponse);
+  rpc CreateCacheObjectUploads(CreateCacheObjectUploadsRequest)
+      returns (CreateCacheObjectUploadsResponse);
+  rpc BeginCacheMultipartUpload(BeginCacheMultipartUploadRequest)
+      returns (BeginCacheMultipartUploadResponse);
+  rpc CompleteCacheMultipartUpload(CompleteCacheMultipartUploadRequest)
+      returns (CacheMultipartUploadResponse);
+  rpc AbortCacheMultipartUpload(AbortCacheMultipartUploadRequest)
+      returns (CacheMultipartUploadResponse);
 }
 
 service CacheIntegrationService {
@@ -2436,47 +2448,82 @@ message CacheClosureResponse {
   uint64 total_size = 2;
 }
 
-message MintCacheUploadCredentialsRequest {
+message CreateCacheObjectUploadsRequest {
   string cache_id = 1;
   // Single object path under the cache (e.g. `<hash>.narinfo` or `nar/<file>`).
-  // Used for a one-off mint; for bulk uploads use `paths` instead.
+  // Used for one upload; for bulk admission use `paths` instead.
   string path = 2;
-  // Batch of object paths to mint URLs for in one round-trip. When non-empty,
+  // Batch of object paths to admit in one round-trip. When non-empty,
   // the response's `uploads` is populated (parallel to this list) and the
   // single-path `upload_url` is unused.
   repeated string paths = 3;
-  // Declared byte size for `path`; the hub reserves quota before minting.
+  // Declared byte size for `path`.
   uint64 size = 4;
   // Declared sizes parallel to `paths` for batch minting.
   repeated uint64 sizes = 5;
+  // Exact configured delivery URL when the caller does not already know the
+  // cache's immutable stable id. Every simultaneously active route resolves
+  // to the same logical cache.
+  string delivery_url = 6;
 }
 
-message MintCacheUploadCredentialsResponse {
-  // A short-lived presigned PUT URL the client uploads the object's bytes to
-  // directly (the origin, not the hub). Empty when the cache's binding is not a
-  // presign-configured private external origin (upload through the facade
-  // instead). The URL carries no long-lived secret.
+message CreateCacheObjectUploadsResponse {
+  // Exact PUT URL. This is either a short-lived direct-origin capability or an
+  // authenticated typed Hub-proxy URL. Empty only when multipart is required.
   string upload_url = 1;
-  // Unix seconds the presigned URL expires.
+  // Unix seconds the direct-origin URL expires. Zero for an authenticated Hub
+  // proxy URL or when multipart is required.
   int64 expires_at = 2;
-  // Batch results, one per requested `paths` entry (same order). Each carries
-  // its own (possibly empty) presigned URL.
-  repeated PresignedUpload uploads = 3;
-  // Durable write ticket for the single-path URL. The fence remains active
-  // until URL expiry and a later complete inventory.
+  // Batch results, one per requested `paths` entry in the same order.
+  repeated CacheObjectUpload uploads = 3;
+  // Durable write ticket for a direct-origin or Hub-proxy upload. Empty only
+  // when multipart admission is required.
   string upload_ticket_id = 4;
 }
 
-// One presigned upload URL within a batch mint response.
-message PresignedUpload {
+// One exact cache-object upload admission.
+message CacheObjectUpload {
   // The cache-relative object path this URL uploads to.
   string path = 1;
-  // The presigned PUT URL; empty when the path is not presignable.
+  // Direct-origin or typed Hub-proxy PUT URL; empty when multipart is required.
   string upload_url = 2;
-  // Unix seconds the presigned URL expires.
+  // Unix seconds the direct-origin URL expires. Zero for an authenticated Hub
+  // proxy URL or when multipart is required.
   int64 expires_at = 3;
-  // Durable write ticket for this URL.
+  // Durable write ticket for a direct-origin or Hub-proxy upload. Empty only
+  // when multipart admission is required.
   string upload_ticket_id = 4;
+}
+
+message BeginCacheMultipartUploadRequest {
+  string cache_id = 1;
+  string delivery_url = 2;
+  string path = 3;
+  uint64 byte_size = 4;
+  string sha256 = 5;
+}
+
+message BeginCacheMultipartUploadResponse {
+  string upload_id = 1;
+  uint64 part_size = 2;
+  string part_upload_url = 3;
+}
+
+message CacheMultipartPart {
+  uint32 part_number = 1;
+  string etag = 2;
+}
+
+message CompleteCacheMultipartUploadRequest {
+  string upload_id = 1;
+  repeated CacheMultipartPart parts = 2;
+}
+
+message AbortCacheMultipartUploadRequest { string upload_id = 1; }
+
+message CacheMultipartUploadResponse {
+  string upload_id = 1;
+  string state = 2;
 }
 
 message ReportCacheUploadRequest {

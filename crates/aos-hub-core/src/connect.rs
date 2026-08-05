@@ -1273,7 +1273,7 @@ struct TokenExchangeResponse {
     access_token: String,
     token_type: &'static str,
     expires_in: i64,
-    capabilities: [&'static str; 1],
+    capabilities: [&'static str; 2],
 }
 
 /// Exchange a provisioning secret for a short-TTL access JWT (`POST
@@ -1320,7 +1320,7 @@ async fn oauth2_token_exchange(svc: &RpcService, headers: &HeaderMap) -> Respons
             access_token,
             token_type: "Bearer",
             expires_in: ACCESS_TOKEN_TTL_SECS,
-            capabilities: ["aos.multipart.v1"],
+            capabilities: ["aos.hub.topology.v1", "aos.multipart.v1"],
         })
         .into_response(),
         Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "token creation error").into_response(),
@@ -2300,13 +2300,18 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
         "/aos.hub.v1.PublishService/CommitRegistryPublication",
         commit_registry_publication
     );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.PublishService/AbortRegistryPublication",
+        abort_registry_publication
+    );
     r = r.route(
         "/aos.hub.v1.PublishService/UploadObject/{publication_id}/{object_id}",
         put(
             |State(state): State<SharedState>,
              Path((publication_id, object_id)): Path<(String, i64)>,
              headers: HeaderMap,
-             body: Bytes| {
+             request: Request| {
                 let svc = from_state(state);
                 send_bridge(async move {
                     match svc
@@ -2314,7 +2319,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
                             auth_header(&headers).as_deref(),
                             &publication_id,
                             object_id,
-                            &body,
+                            request.into_body(),
                         )
                         .await
                     {
@@ -2542,8 +2547,74 @@ fn build(service: Arc<RpcService>, mount_browse: bool, mount_oauth: bool) -> Rou
     );
     r = rpc_route!(
         r,
-        "/aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials",
-        mint_cache_upload_credentials
+        "/aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+        create_cache_object_uploads
+    );
+    r = r.route(
+        "/aos.hub.v1.BinaryCacheService/UploadObject/{cache_id}/{ticket_id}/{encoded_path}",
+        put(
+            |State(state): State<SharedState>,
+             Path((cache_id, ticket_id, encoded_path)): Path<(String, String, String)>,
+             headers: HeaderMap,
+             body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    match svc
+                        .upload_cache_object(
+                            auth_header(&headers).as_deref(),
+                            &cache_id,
+                            &ticket_id,
+                            &encoded_path,
+                            &body,
+                        )
+                        .await
+                    {
+                        Ok(()) => StatusCode::CREATED.into_response(),
+                        Err(error) => error_response(&error),
+                    }
+                })
+            },
+        ),
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
+        begin_cache_multipart_upload
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload",
+        complete_cache_multipart_upload
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.BinaryCacheService/AbortCacheMultipartUpload",
+        abort_cache_multipart_upload
+    );
+    r = r.route(
+        "/aos.hub.v1.BinaryCacheService/UploadPart/{upload_id}/{part_number}",
+        put(
+            |State(state): State<SharedState>,
+             Path((upload_id, part_number)): Path<(String, u32)>,
+             headers: HeaderMap,
+             body: Bytes| {
+                let svc = from_state(state);
+                send_bridge(async move {
+                    match svc
+                        .upload_cache_multipart_part(
+                            auth_header(&headers).as_deref(),
+                            &upload_id,
+                            part_number,
+                            &body,
+                        )
+                        .await
+                    {
+                        Ok(part) => Json(part).into_response(),
+                        Err(error) => error_response(&error),
+                    }
+                })
+            },
+        ),
     );
     // CacheIntegrationService — independent publication, retention, and population facts.
     r = rpc_route!(

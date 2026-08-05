@@ -377,8 +377,14 @@ enum HubTopologyMethod {
     RunPlacementEviction,
     /// Selects the normalized `CacheClosure` Connect operation.
     CacheClosure,
-    /// Selects the normalized `MintCacheUploadCredentials` Connect operation.
-    MintCacheUploadCredentials,
+    /// Selects the normalized `CreateCacheObjectUploads` Connect operation.
+    CreateCacheObjectUploads,
+    /// Selects typed cache multipart admission.
+    BeginCacheMultipartUpload,
+    /// Selects typed cache multipart completion.
+    CompleteCacheMultipartUpload,
+    /// Selects typed cache multipart abort.
+    AbortCacheMultipartUpload,
     ReportCacheUpload,
     ReportCacheNarinfos,
     /// Selects the normalized `ListRegistryCacheIntegrations` Connect operation.
@@ -595,6 +601,8 @@ enum HubTopologyMethod {
     GetRegistryPublication,
     /// Selects exact publication promotion.
     CommitRegistryPublication,
+    /// Selects explicit incomplete-publication retirement.
+    AbortRegistryPublication,
     /// Selects the normalized `GitLog` Connect operation.
     GitLog,
     /// Selects the normalized `GitDiff` Connect operation.
@@ -888,9 +896,12 @@ impl HubTopologyMethod {
             PlanRunPlacementEviction => "aos.hub.v1.BinaryCacheService/PlanRunPlacementEviction",
             RunPlacementEviction => "aos.hub.v1.BinaryCacheService/RunPlacementEviction",
             CacheClosure => "aos.hub.v1.BinaryCacheService/CacheClosure",
-            MintCacheUploadCredentials => {
-                "aos.hub.v1.BinaryCacheService/MintCacheUploadCredentials"
+            CreateCacheObjectUploads => "aos.hub.v1.BinaryCacheService/CreateCacheObjectUploads",
+            BeginCacheMultipartUpload => "aos.hub.v1.BinaryCacheService/BeginCacheMultipartUpload",
+            CompleteCacheMultipartUpload => {
+                "aos.hub.v1.BinaryCacheService/CompleteCacheMultipartUpload"
             }
+            AbortCacheMultipartUpload => "aos.hub.v1.BinaryCacheService/AbortCacheMultipartUpload",
             ReportCacheUpload => "aos.hub.v1.BinaryCacheUploadControllerService/ReportCacheUpload",
             ReportCacheNarinfos => {
                 "aos.hub.v1.BinaryCacheUploadControllerService/ReportCacheNarinfos"
@@ -1068,6 +1079,7 @@ impl HubTopologyMethod {
             BeginRegistryPublication => "aos.hub.v1.PublishService/BeginRegistryPublication",
             GetRegistryPublication => "aos.hub.v1.PublishService/GetRegistryPublication",
             CommitRegistryPublication => "aos.hub.v1.PublishService/CommitRegistryPublication",
+            AbortRegistryPublication => "aos.hub.v1.PublishService/AbortRegistryPublication",
             GitLog => "aos.hub.v1.GitService/GitLog",
             GitDiff => "aos.hub.v1.GitService/GitDiff",
             ListChangeRequests => "aos.hub.v1.GitService/ListChangeRequests",
@@ -1415,6 +1427,7 @@ pub mod hub_rpc {
         BeginRegistryPublication: BeginRegistryPublicationRequest => RegistryPublication;
         GetRegistryPublication: GetRegistryPublicationRequest => RegistryPublication;
         CommitRegistryPublication: CommitRegistryPublicationRequest => RegistryPublication;
+        AbortRegistryPublication: AbortRegistryPublicationRequest => RegistryPublication;
         GitLog: GitLogRequest => GitLogResponse;
         GitDiff: GitDiffRequest => GitDiffResponse;
         ListChangeRequests: ListChangeRequestsRequest => ListChangeRequestsResponse;
@@ -1428,7 +1441,10 @@ pub mod hub_rpc {
         GetRetentionRoot: GetRetentionRootRequest => RetentionRootResponse;
         ListRetentionRoots: ListRetentionRootsRequest => ListRetentionRootsResponse;
         CacheClosure: CacheClosureRequest => CacheClosureResponse;
-        MintCacheUploadCredentials: MintCacheUploadCredentialsRequest => MintCacheUploadCredentialsResponse;
+        CreateCacheObjectUploads: CreateCacheObjectUploadsRequest => CreateCacheObjectUploadsResponse;
+        BeginCacheMultipartUpload: BeginCacheMultipartUploadRequest => BeginCacheMultipartUploadResponse;
+        CompleteCacheMultipartUpload: CompleteCacheMultipartUploadRequest => CacheMultipartUploadResponse;
+        AbortCacheMultipartUpload: AbortCacheMultipartUploadRequest => CacheMultipartUploadResponse;
         ReportCacheUpload: ReportCacheUploadRequest => CacheUploadObservationResponse;
         ReportCacheNarinfos: ReportCacheNarinfosRequest => CacheNarinfoRegistrationResponse;
         GetRetentionSubscription: GetRetentionSubscriptionRequest => RetentionSubscriptionResponse;

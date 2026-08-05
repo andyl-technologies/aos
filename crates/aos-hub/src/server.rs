@@ -133,15 +133,12 @@ impl AppState {
     }
 }
 
-/// A [`RepairAuthorizer`](crate::validation::RepairAuthorizer) for the hub's
-/// own managed registry facade URLs.
+/// A [`RepairAuthorizer`](crate::validation::RepairAuthorizer) for managed
+/// cache delivery routes.
 ///
-/// An http repair target is hub-writable when its URL is a registry's
-/// canonical facade base (`{external_url}/{slug}`). For such a target the
-/// authorizer mints an internal short-lived bearer JWT granting `publish` on
-/// that registry's scope — the same authorization a producer obtains through
-/// `MintUploadCredentials`. For any other URL it returns `None`, so
-/// [`crate::validation::run_repairs`] leaves it plan-only.
+/// Every simultaneously ready route resolves to the same immutable cache id.
+/// The authorizer mints an internal short-lived cache-write JWT; arbitrary or
+/// unhealthy external URLs remain plan-only.
 pub struct HubRepairAuthorizer {
     db: Arc<Database>,
     jwt_keys: crate::auth::jwt::JwtKeys,
@@ -170,39 +167,35 @@ impl crate::validation::RepairAuthorizer for HubRepairAuthorizer {
         &self,
         target_cache_url: &str,
     ) -> anyhow::Result<Option<crate::validation::RepairCredential>> {
-        let base = self.external_url.trim_end_matches('/');
-        let target = target_cache_url.trim_end_matches('/');
-        // The target must be one of this hub's facade base URLs:
-        // {external_url}/{slug}.
-        let Some(slug) = target.strip_prefix(base).map(|s| s.trim_start_matches('/')) else {
-            return Ok(None);
-        };
-        // The registry must exist and have a fully reconciled write authority.
-        let Some(registry) = self.db.registry_by_slug(slug).await? else {
+        let Some(cache) = self
+            .db
+            .binary_cache_by_ready_delivery_url(target_cache_url)
+            .await?
+        else {
             return Ok(None);
         };
         if self
             .db
-            .reconciled_surface_writer(aos_hub_core::db::SurfaceTarget::Registry(registry.id))
+            .reconciled_surface_writer(aos_hub_core::db::SurfaceTarget::BinaryCache(cache.id))
             .await
             .is_err()
         {
             return Ok(None);
         }
-        // Mint an internal bearer JWT granting publish on the registry scope.
-        // The facade authorizes on the JWT's own claims, so a synthetic
+        // The typed upload API authorizes the JWT's own claims, so a synthetic
         // system-owned TokenAuth suffices.
         let auth = crate::db::TokenAuth {
             token_id: "hub-repair".to_string(),
             owner: Principal::service_account(0),
-            scope: Scope::parse(&self.db.registry_authorization_scope(registry.id).await?),
-            permissions: vec![Permission::Publish],
+            scope: Scope::parse(&cache.scope_key),
+            permissions: vec![Permission::RegistryConfigure],
         };
         let jwt = self
             .jwt_keys
-            .mint(&auth, aos_hub_core::service::UPLOAD_CREDENTIAL_TTL_SECS)?;
+            .mint(&auth, aos_hub_core::service::INTERNAL_UPLOAD_AUTH_TTL_SECS)?;
         Ok(Some(crate::validation::RepairCredential {
-            upload_url: format!("{base}/{}", registry.slug),
+            hub_url: self.external_url.trim_end_matches('/').to_string(),
+            cache_id: cache.stable_id,
             bearer_jwt: jwt,
         }))
     }

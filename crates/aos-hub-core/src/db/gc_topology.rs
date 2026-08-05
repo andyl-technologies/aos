@@ -107,53 +107,6 @@ pub struct CacheWriteTicketRecord {
     pub resource_version: i64,
 }
 
-/// Durable identity fence for one registry backend write.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegistryWriteTicketRecord {
-    /// Stable ticket echoed by multipart clients.
-    pub ticket_id: String,
-    /// Owning registry.
-    pub registry_id: i64,
-    /// Placement-relative object key.
-    pub object_key: String,
-    /// Client-declared final object size reserved against quota.
-    pub declared_size: i64,
-    /// Backend-observed final size after multipart completion.
-    pub observed_final_size: Option<i64>,
-    /// Strong byte identity present at the target before admission.
-    pub prior_object: Option<WriteObjectIdentity>,
-    /// Expected SHA-256 of a proxied request body, when known.
-    pub intended_object_hash: Option<String>,
-    /// Multipart bytes durably admitted against the declaration.
-    pub uploaded_size: i64,
-    /// `single` or `multipart`.
-    pub upload_kind: String,
-    /// Exact selected placement.
-    pub placement_id: i64,
-    /// Placement version at authorization.
-    pub placement_resource_version: i64,
-    /// Placement write-spec version at authorization.
-    pub placement_write_spec_version: i64,
-    /// Exact storage binding.
-    pub storage_binding_id: i64,
-    /// Mutable binding row version pinned by this write.
-    pub binding_resource_version: i64,
-    /// Immutable reconciled binding-write revision.
-    pub binding_write_revision: i64,
-    /// Credential purpose pinned by the revision.
-    pub write_credential_purpose: String,
-    /// Immutable credential generation.
-    pub write_credential_generation: i64,
-    /// Backend multipart identity, once attached.
-    pub backend_upload_id: Option<String>,
-    /// Ticket lifecycle.
-    pub state: String,
-    /// Exclusive completion deadline.
-    pub expires_at: i64,
-    /// Optimistic version.
-    pub resource_version: i64,
-}
-
 /// One durable multipart-part admission owned by a write ticket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteTicketPartRecord {
@@ -1346,7 +1299,32 @@ impl Database {
              WHERE ticket_id = ?1 AND resource_version = ?2
                AND state = 'observing' AND active_cache_slot = 1
                AND (quota_org_id = ?3 OR (quota_org_id IS NULL AND ?3 IS NULL))
-               AND expires_at > ?10",
+               AND expires_at > ?10
+               AND EXISTS (SELECT 1 FROM surface_placement_effective placement
+                 JOIN storage_bindings binding
+                   ON binding.id = placement.storage_binding_id
+                 JOIN storage_binding_credential_revisions credential
+                   ON credential.storage_binding_id = binding.id
+                  AND credential.purpose = cache_write_tickets.write_credential_purpose
+                  AND credential.generation = cache_write_tickets.write_credential_generation
+                 JOIN cache_gc_state cache_state
+                   ON cache_state.cache_id = cache_write_tickets.cache_id
+                 WHERE placement.id = cache_write_tickets.placement_id
+                   AND placement.cache_id = cache_write_tickets.cache_id
+                   AND placement.resource_version
+                     = cache_write_tickets.placement_resource_version
+                   AND placement.write_spec_version
+                     = cache_write_tickets.placement_write_spec_version
+                   AND placement.storage_binding_id
+                     = cache_write_tickets.storage_binding_id
+                   AND placement.authority_observed_binding_write_revision
+                     = cache_write_tickets.binding_write_revision
+                   AND placement.effective_write_enabled = 1
+                   AND binding.resource_version
+                     = cache_write_tickets.binding_resource_version
+                   AND credential.validation_state = 'valid'
+                   AND cache_state.inventory_generation
+                     = cache_write_tickets.starting_inventory_generation)",
                 vals![
                     ticket_id,
                     expected_version,
@@ -1650,48 +1628,6 @@ impl Database {
             .await
     }
 
-    /// Returns the durable global registry-write recovery cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the cursor is missing or persistence fails.
-    pub async fn registry_write_recovery_cursor(&self) -> Result<(i64, String, i64)> {
-        let row = self
-            .backend
-            .query_opt(
-                "SELECT after_expires_at, after_ticket_id, resource_version
-             FROM write_recovery_cursors WHERE recovery_kind = 'registry'",
-                &[],
-            )
-            .await?
-            .context("registry write recovery cursor is missing")?;
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-    }
-
-    /// Advances or wraps the durable registry-write recovery cursor under CAS.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a stale cursor or database failure.
-    pub async fn advance_registry_write_recovery_cursor(
-        &self,
-        expected_version: i64,
-        after_expires_at: i64,
-        after_ticket_id: &str,
-        now: i64,
-    ) -> Result<()> {
-        self.backend
-            .checked_batch(&[Statement::new(
-                "UPDATE write_recovery_cursors
-             SET after_expires_at = ?2, after_ticket_id = ?3,
-                 resource_version = resource_version + 1, updated_at = ?4
-             WHERE recovery_kind = 'registry' AND resource_version = ?1",
-                vals![expected_version, after_expires_at, after_ticket_id, now],
-            )
-            .expecting(1)])
-            .await
-    }
-
     /// Records a cache recovery failure and schedules bounded exponential retry.
     ///
     /// # Errors
@@ -1741,44 +1677,6 @@ impl Database {
                 )
                 .unchecked(),
             ])
-            .await
-    }
-
-    /// Records a registry recovery failure and schedules bounded exponential retry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a stale ticket or database failure.
-    pub async fn defer_registry_write_recovery(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        now: i64,
-        error: &str,
-    ) -> Result<()> {
-        self.backend
-            .checked_batch(&[Statement::new(
-                "UPDATE registry_write_tickets
-             SET state = CASE WHEN state = 'completing' AND recovery_attempts >= 7
-                   THEN 'completed_uncovered' ELSE state END,
-                 quota_state = CASE
-                   WHEN state = 'completing' AND recovery_attempts >= 7
-                     AND quota_state = 'reserved' THEN 'committed'
-                   ELSE quota_state END,
-                 finished_at = CASE
-                   WHEN state = 'completing' AND recovery_attempts >= 7 THEN ?3
-                   ELSE finished_at END,
-                 recovery_attempts = recovery_attempts + 1,
-                 recovery_after = ?3 + CASE recovery_attempts
-                   WHEN 0 THEN 15 WHEN 1 THEN 30 WHEN 2 THEN 60
-                   WHEN 3 THEN 120 WHEN 4 THEN 240 WHEN 5 THEN 480
-                   WHEN 6 THEN 960 WHEN 7 THEN 1920 ELSE 3600 END,
-                 recovery_error = ?4, resource_version = resource_version + 1
-             WHERE ticket_id = ?1 AND resource_version = ?2
-               AND state IN ('observing', 'active', 'completing') AND active_object_slot = 1",
-                vals![ticket_id, expected_version, now, error],
-            )
-            .expecting(1)])
             .await
     }
 
@@ -2499,857 +2397,6 @@ impl Database {
                    resource_version = resource_version + 1
                  WHERE ticket_id = ?1 AND resource_version = ?2
                    AND state IN ('observing', 'active') AND active_cache_slot = 1",
-                    vals![ticket_id, expected_version, state, now],
-                )
-                .expecting(1),
-            ])
-            .await
-    }
-
-    /// Creates a durable registry-write fence pinned to reconciled physical identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale authority, an overlapping object write, an
-    /// invalid credential revision, malformed input, or database failure.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn begin_registry_write_ticket(
-        &self,
-        ticket_id: &str,
-        registry_id: i64,
-        placement_id: i64,
-        expected_placement_resource_version: i64,
-        expected_binding_write_revision: i64,
-        expected_write_credential_generation: i64,
-        object_key: &str,
-        declared_size: i64,
-        upload_kind: &str,
-        quota_org_id: Option<i64>,
-        quota_delta_bytes: i64,
-        quota_delta_objects: i64,
-        expires_at: i64,
-        now: i64,
-        prior_object: Option<&WriteObjectIdentity>,
-        intended_object_hash: Option<&str>,
-    ) -> Result<RegistryWriteTicketRecord> {
-        validate_stable_key(ticket_id, "registry write ticket id")?;
-        if prior_object.is_some() || intended_object_hash.is_some() {
-            bail!("observing registry ticket cannot carry baseline identity");
-        }
-        if registry_id <= 0
-            || placement_id <= 0
-            || expected_placement_resource_version <= 0
-            || expected_binding_write_revision <= 0
-            || expected_write_credential_generation <= 0
-            || object_key.is_empty()
-            || declared_size < 0
-            || !matches!(upload_kind, "single" | "multipart")
-            || quota_delta_bytes != 0
-            || quota_delta_objects != 0
-            || (quota_org_id.is_none() && (quota_delta_bytes != 0 || quota_delta_objects != 0))
-            || expires_at <= now
-        {
-            bail!("registry write ticket input is invalid");
-        }
-        let statements = vec![Statement::new(
-            "INSERT INTO registry_write_tickets
-             (ticket_id, registry_id, object_key, declared_size, upload_kind, placement_id,
-              prior_object_size, prior_object_hash, prior_object_etag, intended_object_hash,
-              placement_resource_version, placement_write_spec_version,
-              storage_binding_id, binding_resource_version, binding_write_revision,
-              write_credential_purpose, write_credential_generation,
-              quota_org_id, quota_delta_bytes, quota_delta_objects, quota_state, state,
-              active_object_slot, expires_at, created_at)
-             SELECT ?1, ?2, ?4, ?11, ?5, placement.id, ?12, ?13, ?14, ?15,
-                    placement.resource_version,
-                    placement.write_spec_version, binding.id, binding.resource_version,
-                    revision.revision, revision.write_credential_purpose,
-                    revision.write_credential_generation, ?6, ?7, ?8,
-                    CASE WHEN ?6 IS NULL THEN 'none' ELSE 'pending' END,
-                    'observing', 1, ?9, ?10
-             FROM surface_placement_effective placement
-             JOIN storage_bindings binding ON binding.id = placement.storage_binding_id
-             JOIN storage_binding_write_revisions revision
-               ON revision.storage_binding_id = binding.id
-              AND revision.revision = placement.authority_observed_binding_write_revision
-             JOIN storage_binding_credential_revisions credential
-               ON credential.storage_binding_id = revision.storage_binding_id
-              AND credential.purpose = revision.write_credential_purpose
-              AND credential.generation = revision.write_credential_generation
-             WHERE placement.id = ?3 AND placement.registry_id = ?2
-               AND placement.resource_version = ?16
-               AND revision.revision = ?17
-               AND revision.write_credential_generation = ?18
-               AND placement.effective_write_enabled = 1
-               AND credential.validation_state = 'valid'
-               AND EXISTS (SELECT 1 FROM registries owner
-                 LEFT JOIN orgs org ON org.id = owner.org_id
-                 WHERE owner.id = ?2
-                   AND (owner.org_id IS NULL OR org.deleted_at IS NULL)
-                   AND (owner.org_id = ?6
-                     OR (owner.org_id IS NULL AND ?6 IS NULL)))",
-            vals![
-                ticket_id,
-                registry_id,
-                placement_id,
-                object_key,
-                upload_kind,
-                quota_org_id,
-                quota_delta_bytes,
-                quota_delta_objects,
-                expires_at,
-                now,
-                declared_size,
-                prior_object.map(|identity| identity.size),
-                prior_object.map(|identity| identity.sha256.as_str()),
-                prior_object.and_then(|identity| identity.strong_etag.as_deref()),
-                intended_object_hash,
-                expected_placement_resource_version,
-                expected_binding_write_revision,
-                expected_write_credential_generation
-            ],
-        )
-        .expecting(1)];
-        self.backend.checked_batch(&statements).await?;
-        self.registry_write_ticket(ticket_id)
-            .await?
-            .context("created registry write ticket disappeared")
-    }
-
-    /// Activates an observing registry-write fence after capturing its baseline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid evidence or quota, stale observation state,
-    /// quota exhaustion, or database failure.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn activate_registry_write_ticket(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        quota_org_id: Option<i64>,
-        quota_delta_bytes: i64,
-        quota_delta_objects: i64,
-        prior_object: Option<&WriteObjectIdentity>,
-        intended_object_hash: Option<&str>,
-        now: i64,
-    ) -> Result<RegistryWriteTicketRecord> {
-        validate_write_identities(prior_object, intended_object_hash)?;
-        if quota_delta_objects < 0
-            || (quota_org_id.is_none() && (quota_delta_bytes != 0 || quota_delta_objects != 0))
-        {
-            bail!("registry write activation quota is invalid");
-        }
-        let mut statements =
-            quota_reservation_statements(quota_org_id, quota_delta_bytes, quota_delta_objects, now);
-        statements.push(
-            Statement::new(
-                "UPDATE registry_write_tickets
-             SET prior_object_size = ?6, prior_object_hash = ?7,
-                 prior_object_etag = ?8, intended_object_hash = ?9,
-                 quota_delta_bytes = ?4, quota_delta_objects = ?5,
-                 quota_state = CASE WHEN ?3 IS NULL THEN 'none' ELSE 'reserved' END,
-                 state = 'active', resource_version = resource_version + 1
-             WHERE ticket_id = ?1 AND resource_version = ?2
-               AND state = 'observing' AND active_object_slot = 1
-               AND (quota_org_id = ?3 OR (quota_org_id IS NULL AND ?3 IS NULL))
-               AND expires_at > ?10",
-                vals![
-                    ticket_id,
-                    expected_version,
-                    quota_org_id,
-                    quota_delta_bytes,
-                    quota_delta_objects,
-                    prior_object.map(|identity| identity.size),
-                    prior_object.map(|identity| identity.sha256.as_str()),
-                    prior_object.and_then(|identity| identity.strong_etag.as_deref()),
-                    intended_object_hash,
-                    now
-                ],
-            )
-            .expecting(1),
-        );
-        self.backend.checked_batch(&statements).await?;
-        self.registry_write_ticket(ticket_id)
-            .await?
-            .context("activated registry write ticket disappeared")
-    }
-
-    /// Returns one durable registry-write ticket.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure or malformed persisted data.
-    pub async fn registry_write_ticket(
-        &self,
-        ticket_id: &str,
-    ) -> Result<Option<RegistryWriteTicketRecord>> {
-        validate_stable_key(ticket_id, "registry write ticket id")?;
-        self.backend
-            .query_opt(
-                "SELECT ticket_id, registry_id, object_key, declared_size, observed_final_size, uploaded_size, upload_kind, placement_id,
-                    placement_resource_version, placement_write_spec_version,
-                    storage_binding_id, binding_resource_version, binding_write_revision,
-                    write_credential_purpose, write_credential_generation,
-                    backend_upload_id, state, expires_at, resource_version,
-                    prior_object_size, prior_object_hash, prior_object_etag,
-                    intended_object_hash
-             FROM registry_write_tickets WHERE ticket_id = ?1",
-                &vals![ticket_id],
-            )
-            .await?
-            .map(|row| row_to_registry_write_ticket(&row))
-            .transpose()
-    }
-
-    /// Lists expired active registry writes requiring backend cleanup.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure or malformed persisted data.
-    pub async fn list_expired_registry_write_tickets(
-        &self,
-        now: i64,
-        after_expires_at: i64,
-        after_ticket_id: &str,
-        limit: i64,
-    ) -> Result<Vec<RegistryWriteTicketRecord>> {
-        if !(1..=256).contains(&limit) {
-            bail!("expired registry write ticket page limit must be between 1 and 256");
-        }
-        self.backend
-            .query(
-                "SELECT ticket_id, registry_id, object_key, declared_size, observed_final_size, uploaded_size, upload_kind, placement_id,
-                    placement_resource_version, placement_write_spec_version,
-                    storage_binding_id, binding_resource_version, binding_write_revision,
-                    write_credential_purpose, write_credential_generation,
-                    backend_upload_id, state, expires_at, resource_version,
-                    prior_object_size, prior_object_hash, prior_object_etag,
-                    intended_object_hash
-             FROM registry_write_tickets
-             WHERE state IN ('observing', 'active', 'completing') AND active_object_slot = 1
-               AND expires_at <= ?1 AND recovery_after <= ?1
-               AND (expires_at > ?2 OR (expires_at = ?2 AND ticket_id > ?3))
-             ORDER BY expires_at, ticket_id LIMIT ?4",
-                &vals![now, after_expires_at, after_ticket_id, limit],
-            )
-            .await?
-            .iter()
-            .map(row_to_registry_write_ticket)
-            .collect()
-    }
-
-    /// Validates an active registry ticket against its immutable authority snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for expiry, retargeting, path mismatch, invalid pinned
-    /// credentials, or database failure.
-    pub async fn validate_registry_write_ticket(
-        &self,
-        ticket_id: &str,
-        registry_id: i64,
-        object_key: &str,
-        now: i64,
-    ) -> Result<RegistryWriteTicketRecord> {
-        let row = self.backend.query_opt(
-            "SELECT ticket.ticket_id, ticket.registry_id, ticket.object_key,
-                    ticket.declared_size, ticket.observed_final_size,
-                    ticket.uploaded_size, ticket.upload_kind, ticket.placement_id,
-                    ticket.placement_resource_version,
-                    ticket.placement_write_spec_version, ticket.storage_binding_id,
-                    ticket.binding_resource_version, ticket.binding_write_revision,
-                    ticket.write_credential_purpose, ticket.write_credential_generation,
-                    ticket.backend_upload_id, ticket.state, ticket.expires_at,
-                    ticket.resource_version, ticket.prior_object_size,
-                    ticket.prior_object_hash, ticket.prior_object_etag,
-                    ticket.intended_object_hash
-             FROM registry_write_tickets ticket
-             JOIN surface_placement_effective placement ON placement.id = ticket.placement_id
-               AND placement.registry_id = ticket.registry_id
-             JOIN storage_bindings binding ON binding.id = ticket.storage_binding_id
-             JOIN storage_binding_credential_revisions credential
-               ON credential.storage_binding_id = ticket.storage_binding_id
-              AND credential.purpose = ticket.write_credential_purpose
-              AND credential.generation = ticket.write_credential_generation
-             WHERE ticket.ticket_id = ?1 AND ticket.registry_id = ?2
-               AND ticket.object_key = ?3 AND ticket.state = 'active'
-               AND ticket.active_object_slot = 1 AND ticket.expires_at > ?4
-               AND placement.resource_version = ticket.placement_resource_version
-               AND placement.write_spec_version = ticket.placement_write_spec_version
-               AND placement.storage_binding_id = ticket.storage_binding_id
-               AND placement.authority_observed_binding_write_revision = ticket.binding_write_revision
-               AND placement.effective_write_enabled = 1
-               AND binding.resource_version = ticket.binding_resource_version
-               AND credential.validation_state = 'valid'",
-            &vals![ticket_id, registry_id, object_key, now],
-        ).await?.context("registry write ticket is stale, expired, or retargeted")?;
-        row_to_registry_write_ticket(&row)
-    }
-
-    /// Attaches an opaque backend multipart id under ticket CAS.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale, expired, non-multipart state or database failure.
-    pub async fn attach_registry_write_backend_upload(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        backend_upload_id: &str,
-        now: i64,
-    ) -> Result<RegistryWriteTicketRecord> {
-        if backend_upload_id.is_empty() {
-            bail!("backend multipart upload id is empty");
-        }
-        self.backend
-            .checked_batch(&[Statement::new(
-                "UPDATE registry_write_tickets SET backend_upload_id = ?3,
-               resource_version = resource_version + 1
-             WHERE ticket_id = ?1 AND resource_version = ?2
-               AND upload_kind = 'multipart' AND state = 'active'
-               AND backend_upload_id IS NULL AND expires_at > ?4",
-                vals![ticket_id, expected_version, backend_upload_id, now],
-            )
-            .expecting(1)])
-            .await?;
-        self.registry_write_ticket(ticket_id)
-            .await?
-            .context("multipart registry write ticket disappeared")
-    }
-
-    /// Durably admits one registry multipart part without exceeding declared size.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a negative part size, stale/non-active ticket,
-    /// declared-size overflow, or database failure.
-    pub async fn admit_registry_write_part(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        part_number: u32,
-        part_size: i64,
-        body_digest: &str,
-    ) -> Result<RegistryWriteTicketRecord> {
-        validate_part_body_identity(part_number, part_size, body_digest)?;
-        if part_number == 0 || part_size <= 0 {
-            bail!("multipart part size is invalid");
-        }
-        if let Some(existing) = self
-            .registry_write_ticket_part(ticket_id, part_number)
-            .await?
-        {
-            require_same_part_body(&existing, part_size, body_digest)?;
-            let ticket = self
-                .registry_write_ticket(ticket_id)
-                .await?
-                .context("multipart registry write ticket disappeared")?;
-            if ticket.resource_version < expected_version || ticket.state != "active" {
-                bail!("multipart registry write ticket is stale");
-            }
-            return Ok(ticket);
-        }
-        let admission = self
-            .backend
-            .checked_batch(&[
-                Statement::new(
-                    "INSERT INTO registry_write_ticket_parts
-                     (ticket_id, part_number, admitted_size, body_digest, state)
-                     SELECT ticket_id, ?3, ?4, ?5, 'admitted'
-                     FROM registry_write_tickets
-                     WHERE ticket_id = ?1 AND resource_version >= ?2
-                       AND state = 'active' AND upload_kind = 'multipart'
-                       AND uploaded_size + ?4 <= declared_size",
-                    vals![
-                        ticket_id,
-                        expected_version,
-                        i64::from(part_number),
-                        part_size,
-                        body_digest
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE registry_write_tickets
-                     SET uploaded_size = uploaded_size + ?4,
-                         resource_version = resource_version + 1
-                     WHERE ticket_id = ?1 AND resource_version >= ?2
-                       AND state = 'active' AND upload_kind = 'multipart'
-                       AND EXISTS (SELECT 1 FROM registry_write_ticket_parts part
-                         WHERE part.ticket_id = ?1 AND part.part_number = ?3
-                           AND part.admitted_size = ?4 AND part.body_digest = ?5)
-                       AND uploaded_size + ?4 <= declared_size",
-                    vals![
-                        ticket_id,
-                        expected_version,
-                        i64::from(part_number),
-                        part_size,
-                        body_digest
-                    ],
-                )
-                .expecting(1),
-            ])
-            .await;
-        if let Err(error) = admission {
-            for _ in 0..3 {
-                let Ok(Some(existing)) = self
-                    .registry_write_ticket_part(ticket_id, part_number)
-                    .await
-                else {
-                    continue;
-                };
-                if matches!(
-                    existing.state.as_str(),
-                    "admitted" | "ambiguous" | "confirmed"
-                ) {
-                    require_same_part_body(&existing, part_size, body_digest)?;
-                    if let Ok(Some(ticket)) = self.registry_write_ticket(ticket_id).await {
-                        if ticket.state == "active"
-                            && ticket.resource_version >= expected_version
-                            && ticket.uploaded_size >= existing.admitted_size
-                            && ticket.uploaded_size <= ticket.declared_size
-                        {
-                            return Ok(ticket);
-                        }
-                    }
-                }
-            }
-            return Err(error);
-        }
-        self.registry_write_ticket(ticket_id)
-            .await?
-            .context("admitted registry multipart ticket disappeared")
-    }
-
-    /// Returns one durable registry multipart-part admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid identity, malformed persisted data, or database failure.
-    pub async fn registry_write_ticket_part(
-        &self,
-        ticket_id: &str,
-        part_number: u32,
-    ) -> Result<Option<WriteTicketPartRecord>> {
-        if part_number == 0 {
-            bail!("multipart part number is invalid");
-        }
-        self.backend
-            .query_opt(
-                "SELECT part_number, admitted_size, body_digest, state, etag
-                 FROM registry_write_ticket_parts
-                 WHERE ticket_id = ?1 AND part_number = ?2",
-                &vals![ticket_id, i64::from(part_number)],
-            )
-            .await?
-            .map(|row| row_to_write_ticket_part(&row))
-            .transpose()
-    }
-
-    /// Marks a registry multipart part as possibly accepted after an opaque backend error.
-    pub async fn mark_registry_write_part_ambiguous(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        part_number: u32,
-    ) -> Result<()> {
-        self.transition_registry_write_part(
-            ticket_id,
-            expected_version,
-            part_number,
-            "ambiguous",
-            None,
-        )
-        .await
-    }
-
-    /// Confirms a registry multipart part and stores its backend completion identity.
-    pub async fn confirm_registry_write_part(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        part_number: u32,
-        etag: &str,
-    ) -> Result<()> {
-        self.transition_registry_write_part(
-            ticket_id,
-            expected_version,
-            part_number,
-            "confirmed",
-            Some(etag),
-        )
-        .await
-    }
-
-    async fn transition_registry_write_part(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        part_number: u32,
-        state: &str,
-        etag: Option<&str>,
-    ) -> Result<()> {
-        if part_number == 0 || !matches!(state, "ambiguous" | "confirmed") {
-            bail!("multipart part transition is invalid");
-        }
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE registry_write_ticket_parts
-                     SET state = CASE WHEN state = 'confirmed' THEN state ELSE ?4 END,
-                         etag = CASE WHEN state = 'confirmed' THEN etag ELSE ?5 END
-                     WHERE ticket_id = ?1 AND part_number = ?3
-                       AND (state IN ('admitted', 'ambiguous')
-                         OR (state = 'confirmed' AND ?4 = 'ambiguous')
-                         OR (state = 'confirmed' AND ?4 = 'confirmed' AND etag = ?5))
-                       AND EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                         WHERE ticket.ticket_id = ?1 AND ticket.resource_version >= ?2
-                           AND ticket.state = 'active')",
-                    vals![
-                        ticket_id,
-                        expected_version,
-                        i64::from(part_number),
-                        state,
-                        etag
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE registry_write_tickets SET resource_version = resource_version + 1
-                     WHERE ticket_id = ?1 AND resource_version >= ?2 AND state = 'active'",
-                    vals![ticket_id, expected_version],
-                )
-                .expecting(1),
-            ])
-            .await
-    }
-
-    /// Lists every registry multipart part in completion order.
-    pub async fn registry_write_ticket_parts(
-        &self,
-        ticket_id: &str,
-    ) -> Result<Vec<WriteTicketPartRecord>> {
-        self.backend
-            .query(
-                "SELECT part_number, admitted_size, body_digest, state, etag
-                 FROM registry_write_ticket_parts WHERE ticket_id = ?1 ORDER BY part_number",
-                &vals![ticket_id],
-            )
-            .await?
-            .iter()
-            .map(row_to_write_ticket_part)
-            .collect()
-    }
-
-    /// Durably records registry multipart completion intent before backend mutation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error unless the ticket is active, unexpired, fully uploaded,
-    /// and owns exactly the contiguous confirmed part set `1..=N`.
-    pub async fn begin_registry_multipart_completion(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        now: i64,
-    ) -> Result<RegistryWriteTicketRecord> {
-        self.backend
-            .checked_batch(&[Statement::new(
-                "UPDATE registry_write_tickets SET state = 'completing',
-               resource_version = resource_version + 1
-             WHERE ticket_id = ?1 AND resource_version = ?2
-               AND state = 'active' AND active_object_slot = 1
-               AND upload_kind = 'multipart' AND expires_at > ?3
-               AND uploaded_size = declared_size
-               AND NOT EXISTS (SELECT 1 FROM registry_write_ticket_parts part
-                 WHERE part.ticket_id = registry_write_tickets.ticket_id
-                   AND part.state <> 'confirmed')
-               AND declared_size = (SELECT COALESCE(SUM(part.admitted_size), 0)
-                 FROM registry_write_ticket_parts part
-                 WHERE part.ticket_id = registry_write_tickets.ticket_id)
-               AND 1 = (SELECT COALESCE(MIN(part.part_number), 0)
-                 FROM registry_write_ticket_parts part
-                 WHERE part.ticket_id = registry_write_tickets.ticket_id)
-               AND (SELECT COUNT(*) FROM registry_write_ticket_parts part
-                 WHERE part.ticket_id = registry_write_tickets.ticket_id)
-                 = (SELECT COALESCE(MAX(part.part_number), 0)
-                 FROM registry_write_ticket_parts part
-                 WHERE part.ticket_id = registry_write_tickets.ticket_id)",
-                vals![ticket_id, expected_version, now],
-            )
-            .expecting(1)])
-            .await?;
-        self.registry_write_ticket(ticket_id)
-            .await?
-            .context("completing registry ticket disappeared")
-    }
-
-    /// Completes a registry write into the index-covered delta journal.
-    ///
-    /// # Errors
-    ///
-    /// The topology fence remains active until a later successful index covers
-    /// the write. Returns an error for stale/expired state, changed physical identity,
-    /// invalid pinned credentials, or database failure.
-    pub async fn complete_registry_write_ticket(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        now: i64,
-    ) -> Result<()> {
-        #[cfg(test)]
-        if self
-            .registry_write_ticket(ticket_id)
-            .await?
-            .is_some_and(|ticket| ticket.object_key == "objects/info/injected-finalization-failure")
-        {
-            bail!("injected registry ticket finalization failure");
-        }
-        self.backend.checked_batch(&[Statement::new(
-            "UPDATE registry_write_tickets SET state = 'completed_uncovered',
-               quota_state = CASE WHEN quota_state = 'reserved'
-                 THEN 'committed' ELSE quota_state END,
-               finished_at = ?3,
-               resource_version = resource_version + 1
-             WHERE ticket_id = ?1 AND resource_version = ?2
-               AND active_object_slot = 1 AND expires_at > ?3
-               AND ((upload_kind = 'single' AND state = 'active')
-                 OR (upload_kind = 'multipart' AND state = 'completing'
-                 AND observed_final_size = declared_size
-                 AND uploaded_size = declared_size
-                 AND NOT EXISTS (SELECT 1 FROM registry_write_ticket_parts part
-                   WHERE part.ticket_id = registry_write_tickets.ticket_id
-                     AND part.state <> 'confirmed')
-                 AND declared_size = (SELECT COALESCE(SUM(part.admitted_size), 0)
-                   FROM registry_write_ticket_parts part
-                   WHERE part.ticket_id = registry_write_tickets.ticket_id
-                     AND part.state = 'confirmed')))
-               AND EXISTS (SELECT 1 FROM surface_placement_effective placement
-                 JOIN storage_bindings binding ON binding.id = placement.storage_binding_id
-                 JOIN storage_binding_credential_revisions credential
-                   ON credential.storage_binding_id = binding.id
-                  AND credential.purpose = registry_write_tickets.write_credential_purpose
-                  AND credential.generation = registry_write_tickets.write_credential_generation
-                 WHERE placement.id = registry_write_tickets.placement_id
-                   AND placement.registry_id = registry_write_tickets.registry_id
-                   AND placement.resource_version = registry_write_tickets.placement_resource_version
-                   AND placement.write_spec_version = registry_write_tickets.placement_write_spec_version
-                   AND placement.storage_binding_id = registry_write_tickets.storage_binding_id
-                   AND placement.authority_observed_binding_write_revision = registry_write_tickets.binding_write_revision
-                   AND binding.resource_version = registry_write_tickets.binding_resource_version
-                   AND credential.validation_state = 'valid')",
-            vals![ticket_id, expected_version, now],
-        ).expecting(1)]).await
-    }
-
-    /// Reconciles a completed registry multipart upload to its backend-observed size.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale/non-active state, invalid size, or database failure.
-    pub async fn reconcile_registry_write_ticket_size(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        observed_size: i64,
-        _now: i64,
-    ) -> Result<RegistryWriteTicketRecord> {
-        if observed_size < 0 {
-            bail!("observed registry write size is invalid");
-        }
-        self.backend
-            .checked_batch(&[Statement::new(
-                "UPDATE registry_write_tickets SET observed_final_size = ?3,
-                   resource_version = resource_version + 1
-                 WHERE ticket_id = ?1 AND resource_version = ?2
-                   AND state = 'completing' AND upload_kind = 'multipart'
-                   AND declared_size = ?3 AND uploaded_size = declared_size
-                   AND observed_final_size IS NULL",
-                vals![ticket_id, expected_version, observed_size],
-            )
-            .expecting(1)])
-            .await?;
-        self.registry_write_ticket(ticket_id)
-            .await?
-            .context("reconciled registry ticket disappeared")
-    }
-
-    /// Records an expired registry object's observed size and conservatively charges excess bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid size, stale/non-active state, or database failure.
-    pub async fn observe_expired_registry_write_ticket_size(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        observed_size: i64,
-        now: i64,
-    ) -> Result<RegistryWriteTicketRecord> {
-        if observed_size < 0 {
-            bail!("observed registry write size is invalid");
-        }
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE org_usage
-                     SET used_bytes = CASE WHEN used_bytes + ?3 -
-                           (SELECT declared_size FROM registry_write_tickets
-                            WHERE ticket_id = ?1 AND resource_version = ?2) < 0
-                           THEN 0 ELSE used_bytes + ?3 -
-                           (SELECT declared_size FROM registry_write_tickets
-                            WHERE ticket_id = ?1 AND resource_version = ?2) END,
-                         updated_at = ?4
-                     WHERE org_id = (SELECT quota_org_id FROM registry_write_tickets
-                       WHERE ticket_id = ?1 AND resource_version = ?2
-                         AND state IN ('observing', 'active', 'completing') AND quota_state = 'reserved')",
-                    vals![ticket_id, expected_version, observed_size, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "UPDATE registry_write_tickets
-                     SET observed_final_size = ?3,
-                         quota_delta_bytes = quota_delta_bytes + CASE
-                           WHEN quota_org_id IS NOT NULL THEN ?3 - declared_size ELSE 0 END,
-                         resource_version = resource_version + 1
-                     WHERE ticket_id = ?1 AND resource_version = ?2
-                       AND state IN ('active', 'completing') AND expires_at <= ?4
-                       AND observed_final_size IS NULL",
-                    vals![ticket_id, expected_version, observed_size, now],
-                )
-                .expecting(1),
-            ])
-            .await?;
-        self.registry_write_ticket(ticket_id)
-            .await?
-            .context("observed registry ticket disappeared")
-    }
-
-    /// Preserves an expired registry write as an uncovered, topology-blocking delta.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale/non-expired state or database failure.
-    pub async fn recover_expired_registry_write_ticket(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        now: i64,
-    ) -> Result<()> {
-        self.backend
-            .checked_batch(&[Statement::new(
-                "UPDATE registry_write_tickets
-             SET state = 'completed_uncovered', finished_at = ?3,
-                 quota_state = CASE WHEN quota_state = 'reserved'
-                   THEN 'committed' ELSE quota_state END,
-                 resource_version = resource_version + 1
-             WHERE ticket_id = ?1 AND resource_version = ?2
-               AND state IN ('active', 'completing') AND active_object_slot = 1
-               AND expires_at <= ?3",
-                vals![ticket_id, expected_version, now],
-            )
-            .expecting(1)])
-            .await
-    }
-
-    /// Preserves an ambiguous in-window registry backend result as uncovered.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale/non-active state or database failure.
-    pub async fn mark_registry_write_ticket_uncertain(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        now: i64,
-    ) -> Result<()> {
-        self.backend
-            .checked_batch(&[Statement::new(
-                "UPDATE registry_write_tickets
-             SET state = 'completed_uncovered', finished_at = ?3,
-                 quota_state = CASE WHEN quota_state = 'reserved'
-                   THEN 'committed' ELSE quota_state END,
-                 resource_version = resource_version + 1
-             WHERE ticket_id = ?1 AND resource_version = ?2
-               AND state IN ('observing', 'active', 'completing') AND active_object_slot = 1",
-                vals![ticket_id, expected_version, now],
-            )
-            .expecting(1)])
-            .await
-    }
-
-    /// Releases registry uncertain-write fences covered by a later successful index.
-    ///
-    /// The strict timestamp comparison prevents a same-second recovery concurrent
-    /// with the index from being mistaken for an input to that index.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on database failure.
-    pub async fn cover_registry_write_tickets(
-        &self,
-        registry_id: i64,
-        placement_id: i64,
-        index_started_at: i64,
-    ) -> Result<()> {
-        self.backend
-            .checked_batch(&[Statement::new(
-                "UPDATE registry_write_tickets
-             SET state = 'completed', active_object_slot = NULL,
-                 resource_version = resource_version + 1
-             WHERE registry_id = ?1 AND state = 'completed_uncovered'
-               AND placement_id = ?2
-               AND active_object_slot = 1 AND finished_at < ?3",
-                vals![registry_id, placement_id, index_started_at],
-            )
-            .unchecked()])
-            .await
-    }
-
-    /// Releases a registry ticket after backend-confirmed completion or abort.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale state or database failure.
-    pub async fn abort_registry_write_ticket(
-        &self,
-        ticket_id: &str,
-        expected_version: i64,
-        state: &str,
-        now: i64,
-    ) -> Result<()> {
-        if !matches!(state, "aborted" | "failed") {
-            bail!("registry write terminal state is invalid");
-        }
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE org_usage
-                     SET used_bytes = CASE
-                           WHEN used_bytes - (SELECT quota_delta_bytes
-                             FROM registry_write_tickets WHERE ticket_id = ?1) < 0
-                           THEN 0 ELSE used_bytes - (SELECT quota_delta_bytes
-                             FROM registry_write_tickets WHERE ticket_id = ?1) END,
-                         object_count = CASE
-                           WHEN object_count - (SELECT quota_delta_objects
-                             FROM registry_write_tickets WHERE ticket_id = ?1) < 0
-                           THEN 0 ELSE object_count - (SELECT quota_delta_objects
-                             FROM registry_write_tickets WHERE ticket_id = ?1) END,
-                         updated_at = ?4
-                     WHERE org_id = (SELECT quota_org_id FROM registry_write_tickets
-                       WHERE ticket_id = ?1 AND resource_version = ?2
-                         AND state = 'active' AND quota_state = 'reserved')",
-                    vals![ticket_id, expected_version, state, now],
-                )
-                .unchecked(),
-                Statement::new(
-                    "UPDATE registry_write_tickets SET state = ?3,
-               quota_state = CASE WHEN quota_state IN ('pending', 'reserved')
-                 THEN 'released' ELSE quota_state END, active_object_slot = NULL,
-               finished_at = ?4, resource_version = resource_version + 1
-             WHERE ticket_id = ?1 AND resource_version = ?2
-               AND state IN ('observing', 'active') AND active_object_slot = 1",
                     vals![ticket_id, expected_version, state, now],
                 )
                 .expecting(1),
@@ -10749,32 +9796,6 @@ fn row_to_cache_write_ticket(row: &Row) -> Result<CacheWriteTicketRecord> {
     })
 }
 
-fn row_to_registry_write_ticket(row: &Row) -> Result<RegistryWriteTicketRecord> {
-    Ok(RegistryWriteTicketRecord {
-        ticket_id: row.get(0)?,
-        registry_id: row.get(1)?,
-        object_key: row.get(2)?,
-        declared_size: row.get(3)?,
-        observed_final_size: row.get(4)?,
-        uploaded_size: row.get(5)?,
-        upload_kind: row.get(6)?,
-        placement_id: row.get(7)?,
-        placement_resource_version: row.get(8)?,
-        placement_write_spec_version: row.get(9)?,
-        storage_binding_id: row.get(10)?,
-        binding_resource_version: row.get(11)?,
-        binding_write_revision: row.get(12)?,
-        write_credential_purpose: row.get(13)?,
-        write_credential_generation: row.get(14)?,
-        backend_upload_id: row.get(15)?,
-        state: row.get(16)?,
-        expires_at: row.get(17)?,
-        resource_version: row.get(18)?,
-        prior_object: row_to_write_object_identity(row, 19, 20, 21)?,
-        intended_object_hash: row.get(22)?,
-    })
-}
-
 fn row_to_write_object_identity(
     row: &Row,
     size_index: usize,
@@ -11302,31 +10323,11 @@ impl Database {
                     vec![],
                 )
                 .expecting(6),
-                Statement::new(
-                    "INSERT INTO registry_write_tickets
-                     (ticket_id, registry_id, object_key, declared_size, upload_kind,
-                      placement_id, placement_resource_version,
-                      placement_write_spec_version, storage_binding_id,
-                      binding_resource_version, binding_write_revision,
-                      write_credential_purpose, write_credential_generation,
-                      state, active_object_slot, expires_at, created_at)
-                     VALUES
-                       ('registry-single-pre', 1, 'single-pre', 1, 'single',
-                        2, 1, 1, 1, 1, 1, 'write', 1, 'observing', 1, 100, 1),
-                       ('registry-single-post', 1, 'single-post', 1, 'single',
-                        2, 1, 1, 1, 1, 1, 'write', 1, 'active', 1, 100, 1),
-                       ('registry-multipart-pre', 1, 'multipart-pre', 1, 'multipart',
-                        2, 1, 1, 1, 1, 1, 'write', 1, 'observing', 1, 100, 1),
-                       ('registry-multipart-post', 1, 'multipart-post', 1, 'multipart',
-                        2, 1, 1, 1, 1, 1, 'write', 1, 'active', 1, 100, 1)",
-                    vec![],
-                )
-                .expecting(4),
             ])
             .await
     }
 
-    /// Narrows the write-failure fixture to one quota-backed completing ticket per surface.
+    /// Narrows the write-failure fixture to one quota-backed completing cache ticket.
     pub(crate) async fn prepare_ambiguous_recovery_test_tickets(&self) -> Result<()> {
         self.backend
             .checked_batch(&[
@@ -11335,11 +10336,6 @@ impl Database {
                     vec![],
                 )
                 .expecting(6),
-                Statement::new(
-                    "UPDATE registry_write_tickets SET expires_at = 1000000000",
-                    vec![],
-                )
-                .expecting(4),
                 Statement::new(
                     "UPDATE cache_write_tickets
                      SET state = 'completing', expires_at = 100,
@@ -11350,17 +10346,8 @@ impl Database {
                 )
                 .expecting(1),
                 Statement::new(
-                    "UPDATE registry_write_tickets
-                     SET state = 'completing', expires_at = 100,
-                         quota_org_id = 1, quota_delta_bytes = 1,
-                         quota_delta_objects = 1, quota_state = 'reserved'
-                     WHERE ticket_id = 'registry-multipart-post'",
-                    vec![],
-                )
-                .expecting(1),
-                Statement::new(
                     "UPDATE org_usage
-                     SET used_bytes = 2, object_count = 2, updated_at = 100
+                     SET used_bytes = 1, object_count = 1, updated_at = 100
                      WHERE org_id = 1",
                     vec![],
                 )
@@ -11384,31 +10371,6 @@ impl Database {
             )
             .await?
             .context("cache write ticket disappeared")?;
-        Ok(TestWriteTicketSettlement {
-            state: row.get(0)?,
-            quota_state: row.get(1)?,
-            active_slot: row.get(2)?,
-            covered_inventory_generation: row.get(3)?,
-            recovery_attempts: row.get(4)?,
-            finished_at: row.get(5)?,
-        })
-    }
-
-    /// Returns settlement-only registry ticket state for recovery tests.
-    pub(crate) async fn test_registry_write_ticket_settlement(
-        &self,
-        ticket_id: &str,
-    ) -> Result<TestWriteTicketSettlement> {
-        let row = self
-            .backend
-            .query_opt(
-                "SELECT state, quota_state, active_object_slot,
-                        NULL, recovery_attempts, finished_at
-                 FROM registry_write_tickets WHERE ticket_id = ?1",
-                &vals![ticket_id],
-            )
-            .await?
-            .context("registry write ticket disappeared")?;
         Ok(TestWriteTicketSettlement {
             state: row.get(0)?,
             quota_state: row.get(1)?,
@@ -11454,29 +10416,6 @@ impl Database {
             )
             .await?
             .map(|row| row_to_cache_write_ticket(&row))
-            .transpose()
-    }
-
-    /// Finds the registry ticket created for one injected request path.
-    pub(crate) async fn test_registry_write_ticket_for_key(
-        &self,
-        object_key: &str,
-    ) -> Result<Option<RegistryWriteTicketRecord>> {
-        self.backend
-            .query_opt(
-                "SELECT ticket_id, registry_id, object_key, declared_size,
-                        observed_final_size, uploaded_size, upload_kind, placement_id,
-                        placement_resource_version, placement_write_spec_version,
-                        storage_binding_id, binding_resource_version, binding_write_revision,
-                        write_credential_purpose, write_credential_generation,
-                        backend_upload_id, state, expires_at, resource_version,
-                        prior_object_size, prior_object_hash, prior_object_etag,
-                        intended_object_hash
-                 FROM registry_write_tickets WHERE registry_id = 1 AND object_key = ?1",
-                &vals![object_key],
-            )
-            .await?
-            .map(|row| row_to_registry_write_ticket(&row))
             .transpose()
     }
 }
@@ -11531,20 +10470,12 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         db.install_write_failure_test_tickets().await.unwrap();
         db.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE cache_write_tickets SET declared_size = 8
-                     WHERE ticket_id = 'cache-multipart-post'",
-                    vec![],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE registry_write_tickets SET declared_size = 8
-                     WHERE ticket_id = 'registry-multipart-post'",
-                    vec![],
-                )
-                .expecting(1),
-            ])
+            .checked_batch(&[Statement::new(
+                "UPDATE cache_write_tickets SET declared_size = 8
+                 WHERE ticket_id = 'cache-multipart-post'",
+                vec![],
+            )
+            .expecting(1)])
             .await
             .unwrap();
 
@@ -11583,40 +10514,6 @@ mod tests {
             .admit_cache_write_part("cache-multipart-post", 1, 1, 4, &"3".repeat(64),)
             .await
             .is_err());
-
-        let (registry_one, registry_two) = tokio::join!(
-            db.admit_registry_write_part("registry-multipart-post", 1, 1, 4, &digest_one,),
-            db.admit_registry_write_part("registry-multipart-post", 1, 2, 4, &digest_two,),
-        );
-        registry_one.unwrap();
-        registry_two.unwrap();
-        let (registry_one, registry_two) = tokio::join!(
-            db.confirm_registry_write_part("registry-multipart-post", 1, 1, "etag-1"),
-            db.confirm_registry_write_part("registry-multipart-post", 1, 2, "etag-2"),
-        );
-        registry_one.unwrap();
-        registry_two.unwrap();
-        let ticket = db
-            .registry_write_ticket("registry-multipart-post")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(ticket.uploaded_size, 8);
-        db.confirm_registry_write_part("registry-multipart-post", 1, 1, "etag-1")
-            .await
-            .unwrap();
-        assert!(db
-            .confirm_registry_write_part("registry-multipart-post", 1, 1, "different-etag",)
-            .await
-            .is_err());
-        assert!(db
-            .admit_registry_write_part("registry-multipart-post", 1, 3, 1, &"4".repeat(64),)
-            .await
-            .is_err());
-        assert!(db
-            .admit_registry_write_part("registry-multipart-post", 1, 1, 4, &"3".repeat(64),)
-            .await
-            .is_err());
     }
 
     #[tokio::test]
@@ -11624,20 +10521,12 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         db.install_write_failure_test_tickets().await.unwrap();
         db.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE cache_write_tickets SET declared_size = 4
-                     WHERE ticket_id = 'cache-multipart-post'",
-                    vec![],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE registry_write_tickets SET declared_size = 4
-                     WHERE ticket_id = 'registry-multipart-post'",
-                    vec![],
-                )
-                .expecting(1),
-            ])
+            .checked_batch(&[Statement::new(
+                "UPDATE cache_write_tickets SET declared_size = 4
+                 WHERE ticket_id = 'cache-multipart-post'",
+                vec![],
+            )
+            .expecting(1)])
             .await
             .unwrap();
         let digest = "a".repeat(64);
@@ -11655,19 +10544,6 @@ mod tests {
             .unwrap();
         assert_eq!(cache.uploaded_size, 4);
 
-        let (registry_left, registry_right) = tokio::join!(
-            db.admit_registry_write_part("registry-multipart-post", 1, 1, 4, &digest),
-            db.admit_registry_write_part("registry-multipart-post", 1, 1, 4, &digest),
-        );
-        registry_left.unwrap();
-        registry_right.unwrap();
-        let registry = db
-            .registry_write_ticket("registry-multipart-post")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(registry.uploaded_size, 4);
-
         let conflicting = Database::open_in_memory().await.unwrap();
         conflicting
             .install_write_failure_test_tickets()
@@ -11675,20 +10551,12 @@ mod tests {
             .unwrap();
         conflicting
             .backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE cache_write_tickets SET declared_size = 4
-                     WHERE ticket_id = 'cache-multipart-post'",
-                    vec![],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE registry_write_tickets SET declared_size = 4
-                     WHERE ticket_id = 'registry-multipart-post'",
-                    vec![],
-                )
-                .expecting(1),
-            ])
+            .checked_batch(&[Statement::new(
+                "UPDATE cache_write_tickets SET declared_size = 4
+                 WHERE ticket_id = 'cache-multipart-post'",
+                vec![],
+            )
+            .expecting(1)])
             .await
             .unwrap();
         let digest_left = "b".repeat(64);
@@ -11707,32 +10575,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(cache.uploaded_size, 4);
-
-        let (registry_left, registry_right) = tokio::join!(
-            conflicting
-                .admit_registry_write_part("registry-multipart-post", 1, 1, 4, &digest_left,),
-            conflicting.admit_registry_write_part(
-                "registry-multipart-post",
-                1,
-                1,
-                4,
-                &digest_right,
-            ),
-        );
-        assert_eq!(
-            usize::from(registry_left.is_ok()) + usize::from(registry_right.is_ok()),
-            1
-        );
-        let registry = conflicting
-            .registry_write_ticket("registry-multipart-post")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(registry.uploaded_size, 4);
     }
 
     #[tokio::test]
-    async fn uncertain_writes_commit_quota_and_retain_coverage_fences() {
+    async fn uncertain_cache_writes_commit_quota_and_retain_inventory_fences() {
         let db = Database::open_in_memory().await.unwrap();
         db.install_write_failure_test_tickets().await.unwrap();
         db.prepare_ambiguous_recovery_test_tickets().await.unwrap();
@@ -11754,30 +10600,7 @@ mod tests {
         assert_eq!(cache.active_slot, None);
         assert_eq!(cache.covered_inventory_generation, None);
 
-        let registry = db
-            .registry_write_ticket("registry-multipart-post")
-            .await
-            .unwrap()
-            .unwrap();
-        db.mark_registry_write_ticket_uncertain(&registry.ticket_id, registry.resource_version, 20)
-            .await
-            .unwrap();
-        let registry = db
-            .test_registry_write_ticket_settlement(&registry.ticket_id)
-            .await
-            .unwrap();
-        assert_eq!(registry.state, "completed_uncovered");
-        assert_eq!(registry.quota_state, "committed");
-        assert_eq!(registry.active_slot, Some(1));
-        assert_eq!(db.test_org_usage(1).await.unwrap(), (2, 2));
-
-        db.cover_registry_write_tickets(1, 2, 21).await.unwrap();
-        let registry = db
-            .test_registry_write_ticket_settlement("registry-multipart-post")
-            .await
-            .unwrap();
-        assert_eq!(registry.state, "completed");
-        assert_eq!(registry.active_slot, None);
+        assert_eq!(db.test_org_usage(1).await.unwrap(), (1, 1));
     }
 
     #[tokio::test]
@@ -11800,19 +10623,6 @@ mod tests {
             )
             .await
             .unwrap();
-            let registry = db
-                .registry_write_ticket("registry-multipart-post")
-                .await
-                .unwrap()
-                .unwrap();
-            db.defer_registry_write_recovery(
-                &registry.ticket_id,
-                registry.resource_version,
-                200 + attempt,
-                "opaque or delayed completion evidence",
-            )
-            .await
-            .unwrap();
         }
 
         let cache = db
@@ -11824,15 +10634,7 @@ mod tests {
         assert_eq!(cache.quota_state, "committed");
         assert_eq!(cache.active_slot, None);
         assert_eq!(cache.recovery_attempts, 8);
-        let registry = db
-            .test_registry_write_ticket_settlement("registry-multipart-post")
-            .await
-            .unwrap();
-        assert_eq!(registry.state, "completed_uncovered");
-        assert_eq!(registry.quota_state, "committed");
-        assert_eq!(registry.active_slot, Some(1));
-        assert_eq!(registry.recovery_attempts, 8);
-        assert_eq!(db.test_org_usage(1).await.unwrap(), (2, 2));
+        assert_eq!(db.test_org_usage(1).await.unwrap(), (1, 1));
     }
 
     #[tokio::test]
@@ -11865,10 +10667,6 @@ mod tests {
             .list_expired_cache_write_tickets_global(10, i64::MIN, "", 257)
             .await
             .is_err());
-        assert!(db
-            .list_expired_registry_write_tickets(10, i64::MIN, "", 0)
-            .await
-            .is_err());
     }
 
     #[tokio::test]
@@ -11887,17 +10685,6 @@ mod tests {
             (42, "ticket-42".to_string(), 2)
         );
 
-        assert_eq!(
-            db.registry_write_recovery_cursor().await.unwrap(),
-            (i64::MIN, String::new(), 1)
-        );
-        db.advance_registry_write_recovery_cursor(1, 84, "registry-ticket", 102)
-            .await
-            .unwrap();
-        assert_eq!(
-            db.registry_write_recovery_cursor().await.unwrap(),
-            (84, "registry-ticket".to_string(), 2)
-        );
         assert!(db
             .advance_cache_write_recovery_cursor(1, 43, "stale-ticket", 101)
             .await

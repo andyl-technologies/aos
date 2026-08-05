@@ -1030,10 +1030,6 @@ impl Database {
                          AND (ticket.active_cache_slot = 1 OR
                            (ticket.state = 'completed'
                              AND ticket.covered_inventory_generation IS NULL)))
-                       AND NOT EXISTS (SELECT 1 FROM registry_write_tickets ticket
-                         WHERE ticket.storage_binding_id = excluded.storage_binding_id
-                           AND ticket.write_credential_purpose = excluded.purpose
-                           AND ticket.active_object_slot = 1)
                        AND NOT EXISTS (SELECT 1 FROM object_deletion_jobs job
                          JOIN surface_placements placement
                            ON placement.id = job.placement_id
@@ -3855,6 +3851,56 @@ impl Database {
             .ready_cache_canonical_route_identity(cache_id)
             .await?
             .map(|identity| identity.canonical_url))
+    }
+
+    /// Resolves an exact ready delivery URL to its logical binary cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the URL is ambiguous or on database failure.
+    pub async fn binary_cache_by_ready_delivery_url(
+        &self,
+        delivery_url: &str,
+    ) -> Result<Option<crate::db::BinaryCache>> {
+        let rows = self
+            .backend
+            .query(
+                "SELECT cache.stable_id
+                 FROM delivery_routes route
+                 JOIN delivery_route_heads head ON head.delivery_route_id = route.id
+                 JOIN delivery_route_configurations config
+                   ON config.delivery_route_id = head.delivery_route_id
+                  AND config.configuration_generation = head.configuration_generation
+                  AND config.configuration_digest = head.configuration_digest
+                 JOIN delivery_route_observations route_observation
+                   ON route_observation.delivery_route_id = route.id
+                  AND route_observation.configuration_generation = head.configuration_generation
+                  AND route_observation.configuration_digest = head.configuration_digest
+                 JOIN delivery_route_access_observations access_observation
+                   ON access_observation.delivery_route_id = route.id
+                  AND access_observation.configuration_generation = head.configuration_generation
+                  AND access_observation.configuration_digest = head.configuration_digest
+                  AND access_observation.access_policy_digest = head.access_policy_digest
+                 JOIN binary_caches cache ON cache.id = route.cache_id
+                 LEFT JOIN orgs org ON org.id = cache.org_id
+                 WHERE config.canonical_rendered_url = ?1
+                   AND route.cache_id IS NOT NULL AND route.serves_cache = 1
+                   AND route.enabled = 1
+                   AND route_observation.state IN ('healthy', 'declared')
+                   AND access_observation.state = 'verified'
+                   AND cache.deleted_at IS NULL
+                   AND (cache.org_id IS NULL OR org.deleted_at IS NULL)",
+                &vals![delivery_url.trim_end_matches('/')],
+            )
+            .await?;
+        if rows.len() > 1 {
+            bail!("delivery URL resolves to more than one binary cache");
+        }
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let stable_id: String = row.get(0)?;
+        self.binary_cache_by_stable_id(&stable_id).await
     }
 
     /// Returns the exact ready Nix-cache route identity and immutable URL.
