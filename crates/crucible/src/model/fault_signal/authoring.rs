@@ -15,7 +15,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::model::{
-    World, WorldFaultTargetRef, WorldIoNodeKind, WorldNetworkPathHop, format_content_hash_ref,
+    World, WorldFaultTargetRef, WorldIoNodeKind, WorldNetworkPathHop, WorldStorageKind,
+    format_content_hash_ref,
 };
 
 use super::*;
@@ -1798,6 +1799,18 @@ fn selector_from_toml(
                             forwarder: fault_object_id(forwarder)?,
                         })
                     }
+                    WorldNetworkPathHop::Queue { queue } => {
+                        let declaration = world
+                            .fault_topology()
+                            .network_queues
+                            .iter()
+                            .find(|candidate| &candidate.id == queue)
+                            .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+                        Ok(ResolvedFaultTarget::NetworkQueue {
+                            owner: fault_object_id(&declaration.owner)?,
+                            queue: fault_object_id(queue)?,
+                        })
+                    }
                 })
                 .collect::<Result<Vec<_>, FaultSignalAuthoringError>>()?;
             Ok(TargetSelector::DynamicPath {
@@ -1819,6 +1832,19 @@ fn selector_from_toml(
                 Ok(TargetSelector::TargetSet(resolved))
             }
         }
+    }
+}
+
+pub(super) fn validate_selector_for_world(
+    selector: &TargetSelector,
+    world: &World,
+) -> Result<(), FaultSignalAuthoringError> {
+    let encoded = selector_to_toml(selector)?;
+    let resolved = selector_from_toml(encoded, world)?;
+    if &resolved == selector {
+        Ok(())
+    } else {
+        Err(FaultSignalAuthoringError::InvalidSelector)
     }
 }
 
@@ -1849,16 +1875,7 @@ fn resolve_world_target_ref(
                 direction: *direction,
             }
         }
-        WorldFaultTargetRef::NetworkMedium { medium } => {
-            let declaration = topology
-                .network_media
-                .iter()
-                .find(|candidate| &candidate.id == medium)
-                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
-            let resource = declaration
-                .resources
-                .first()
-                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+        WorldFaultTargetRef::NetworkMedium { medium, resource } => {
             ResolvedFaultTarget::NetworkMedium {
                 medium: fault_object_id(medium)?,
                 resource: fault_object_id(resource)?,
@@ -1880,9 +1897,9 @@ fn resolve_world_target_ref(
                 queue: fault_object_id(queue)?,
             }
         }
-        WorldFaultTargetRef::NetworkPath { path } => ResolvedFaultTarget::NetworkPath {
+        WorldFaultTargetRef::NetworkPath { path, direction } => ResolvedFaultTarget::NetworkPath {
             path_version: fault_object_id(path)?,
-            direction: FaultDirection::AToB,
+            direction: *direction,
         },
         WorldFaultTargetRef::NetworkAttachment { attachment } => {
             let declaration = topology
@@ -1908,6 +1925,7 @@ fn resolve_world_target_ref(
                 .find(|candidate| &candidate.id == plan)
                 .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
             ResolvedFaultTarget::NetworkContact {
+                plan: fault_object_id(&declaration.id)?,
                 endpoint_a: fault_object_id(&declaration.endpoint_a)?,
                 endpoint_b: fault_object_id(&declaration.endpoint_b)?,
                 contact: fault_object_id(contact)?,
@@ -1931,6 +1949,20 @@ fn resolve_world_target_ref(
                 device: node.fault_target_hash(),
             }
         }
+        WorldFaultTargetRef::StorageController {
+            controller,
+            namespace_or_path,
+        } => ResolvedFaultTarget::StorageController {
+            controller: fault_object_id(controller)?,
+            namespace_or_path: fault_object_id(namespace_or_path)?,
+        },
+        WorldFaultTargetRef::StorageArray {
+            array,
+            member_or_path,
+        } => ResolvedFaultTarget::StorageArray {
+            array: fault_object_id(array)?,
+            member_or_path: fault_object_id(member_or_path)?,
+        },
         WorldFaultTargetRef::Node { node } => ResolvedFaultTarget::Node {
             node: fault_object_id(node)?,
         },
@@ -2120,6 +2152,7 @@ fn resolve_authored_target(
             }])
         }
         "network_contact" => {
+            let plan: FaultObjectId = take_typed(&mut value, "plan")?;
             let endpoint_a: FaultObjectId = take_typed(&mut value, "endpoint_a")?;
             let endpoint_b: FaultObjectId = take_typed(&mut value, "endpoint_b")?;
             let contact: FaultObjectId = take_typed(&mut value, "contact")?;
@@ -2128,10 +2161,11 @@ fn resolve_authored_target(
                 .fault_topology()
                 .network_contact_plans
                 .iter()
-                .any(|plan| {
-                    plan.endpoint_a.as_str() == endpoint_a.as_str()
-                        && plan.endpoint_b.as_str() == endpoint_b.as_str()
-                        && plan
+                .any(|candidate| {
+                    candidate.id.as_str() == plan.as_str()
+                        && candidate.endpoint_a.as_str() == endpoint_a.as_str()
+                        && candidate.endpoint_b.as_str() == endpoint_b.as_str()
+                        && candidate
                             .contacts
                             .iter()
                             .any(|candidate| candidate.id.as_str() == contact.as_str())
@@ -2143,6 +2177,7 @@ fn resolve_authored_target(
                 });
             }
             Ok(vec![ResolvedFaultTarget::NetworkContact {
+                plan,
                 endpoint_a,
                 endpoint_b,
                 contact,
@@ -2165,6 +2200,24 @@ fn resolve_authored_target(
                 kind: kind.clone(),
                 id: device,
             })?;
+            let declared = world
+                .fault_topology()
+                .storage_devices
+                .iter()
+                .any(|candidate| {
+                    candidate.device.as_str() == node.id.name
+                        && matches!(
+                            (candidate.kind, kind.as_str()),
+                            (WorldStorageKind::Block, "block_device")
+                                | (WorldStorageKind::NineP, "nine_p_device")
+                        )
+                });
+            if !declared {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: node.id.name.clone(),
+                });
+            }
             let target = if kind == "block_device" {
                 ResolvedFaultTarget::BlockDevice {
                     device: node.fault_target_hash(),
@@ -2176,13 +2229,115 @@ fn resolve_authored_target(
             };
             Ok(vec![target])
         }
+        "block_range" => {
+            let device = take_string(&mut value, "device")?;
+            let start_byte: u64 = take_typed(&mut value, "start_byte")?;
+            let length_bytes: u64 = take_typed(&mut value, "length_bytes")?;
+            ensure_empty(&value, "block range selector")?;
+            let node = world
+                .io_nodes()
+                .find(|node| {
+                    matches!(node.kind, WorldIoNodeKind::Block { .. })
+                        && (node.id.name == device
+                            || format_content_hash_ref(node.fault_target_hash()) == device)
+                })
+                .ok_or_else(|| FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind: kind.clone(),
+                    id: device,
+                })?;
+            let declaration = world
+                .fault_topology()
+                .storage_devices
+                .iter()
+                .find(|candidate| {
+                    candidate.kind == WorldStorageKind::Block
+                        && candidate.device.as_str() == node.id.name
+                })
+                .ok_or_else(|| FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind: kind.clone(),
+                    id: node.id.name.clone(),
+                })?;
+            let end = start_byte
+                .checked_add(length_bytes)
+                .filter(|_| length_bytes > 0)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            if end > declaration.persistence.length_bytes {
+                return Err(FaultSignalAuthoringError::InvalidSelector);
+            }
+            Ok(vec![ResolvedFaultTarget::BlockRange {
+                device: node.fault_target_hash(),
+                start_byte,
+                length_bytes,
+            }])
+        }
+        "storage_controller" => {
+            let controller: FaultObjectId = take_typed(&mut value, "controller")?;
+            let namespace_or_path: FaultObjectId = take_typed(&mut value, "namespace_or_path")?;
+            ensure_empty(&value, "storage controller selector")?;
+            let exists = world
+                .fault_topology()
+                .storage_controllers
+                .iter()
+                .any(|candidate| {
+                    candidate.id.as_str() == controller.as_str()
+                        && (candidate
+                            .namespaces
+                            .iter()
+                            .any(|item| item.id.as_str() == namespace_or_path.as_str())
+                            || candidate
+                                .paths
+                                .iter()
+                                .any(|item| item.id.as_str() == namespace_or_path.as_str()))
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: format!("{controller}:{namespace_or_path}"),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::StorageController {
+                controller,
+                namespace_or_path,
+            }])
+        }
+        "storage_array" => {
+            let array: FaultObjectId = take_typed(&mut value, "array")?;
+            let member_or_path: FaultObjectId = take_typed(&mut value, "member_or_path")?;
+            ensure_empty(&value, "storage array selector")?;
+            let exists = world
+                .fault_topology()
+                .storage_arrays
+                .iter()
+                .any(|candidate| {
+                    candidate.id.as_str() == array.as_str()
+                        && (candidate
+                            .members
+                            .iter()
+                            .any(|item| item.id.as_str() == member_or_path.as_str())
+                            || candidate
+                                .paths
+                                .iter()
+                                .any(|item| item.id.as_str() == member_or_path.as_str()))
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind,
+                    id: format!("{array}:{member_or_path}"),
+                });
+            }
+            Ok(vec![ResolvedFaultTarget::StorageArray {
+                array,
+                member_or_path,
+            }])
+        }
         "node" => {
             let node: FaultObjectId = take_typed(&mut value, "node")?;
             ensure_empty(&value, "node selector")?;
             if !world
-                .vm_nodes()
+                .fault_topology()
+                .node_capabilities
                 .iter()
-                .any(|candidate| candidate.id.name == node.as_str())
+                .any(|candidate| candidate.node.as_str() == node.as_str())
             {
                 return Err(FaultSignalAuthoringError::UnknownWorldTarget {
                     kind,
@@ -2195,9 +2350,15 @@ fn resolve_authored_target(
             let node: FaultObjectId = take_typed(&mut value, "node")?;
             let vcpu = take_typed(&mut value, "vcpu")?;
             ensure_empty(&value, "vcpu selector")?;
-            let valid = world.vm_nodes().iter().any(|candidate| {
-                candidate.id.name == node.as_str() && u32::from(candidate.smp_vcpus) > vcpu
-            });
+            let declared = world
+                .fault_topology()
+                .node_capabilities
+                .iter()
+                .any(|candidate| candidate.node.as_str() == node.as_str());
+            let valid = declared
+                && world.vm_nodes().iter().any(|candidate| {
+                    candidate.id.name == node.as_str() && u32::from(candidate.smp_vcpus) > vcpu
+                });
             if !valid {
                 return Err(FaultSignalAuthoringError::UnknownWorldTarget {
                     kind,
@@ -2205,6 +2366,159 @@ fn resolve_authored_target(
                 });
             }
             Ok(vec![ResolvedFaultTarget::Vcpu { node, vcpu }])
+        }
+        "register" => {
+            let node: FaultObjectId = take_typed(&mut value, "node")?;
+            let vcpu: u32 = take_typed(&mut value, "vcpu")?;
+            let architecture: FaultObjectId = take_typed(&mut value, "architecture")?;
+            let register: FaultObjectId = take_typed(&mut value, "register")?;
+            let first_bit: u16 = take_typed(&mut value, "first_bit")?;
+            let bit_count: u16 = take_typed(&mut value, "bit_count")?;
+            ensure_empty(&value, "register selector")?;
+            let vm = world
+                .vm_nodes()
+                .iter()
+                .find(|candidate| candidate.id.name == node.as_str())
+                .ok_or_else(|| FaultSignalAuthoringError::UnknownWorldTarget {
+                    kind: kind.clone(),
+                    id: node.to_string(),
+                })?;
+            let capabilities = world
+                .fault_topology()
+                .node_capabilities
+                .iter()
+                .find(|candidate| candidate.node.as_str() == node.as_str())
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            let row = capabilities
+                .registers
+                .iter()
+                .find(|candidate| candidate.id.as_str() == register.as_str())
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            let end = first_bit
+                .checked_add(bit_count)
+                .filter(|_| bit_count > 0)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            if architecture.as_str() != capabilities.architecture.as_str()
+                || vcpu >= u32::from(vm.smp_vcpus)
+                || end > row.width_bits
+                || (!row.per_vcpu && vcpu != 0)
+            {
+                return Err(FaultSignalAuthoringError::InvalidSelector);
+            }
+            Ok(vec![ResolvedFaultTarget::Register {
+                node,
+                vcpu,
+                architecture,
+                register,
+                first_bit,
+                bit_count,
+            }])
+        }
+        "memory_range" => {
+            let node: FaultObjectId = take_typed(&mut value, "node")?;
+            let address_space: FaultObjectId = take_typed(&mut value, "address_space")?;
+            let guest_physical_address: u64 = take_typed(&mut value, "guest_physical_address")?;
+            let length_bytes: u64 = take_typed(&mut value, "length_bytes")?;
+            ensure_empty(&value, "memory range selector")?;
+            let capabilities = world
+                .fault_topology()
+                .node_capabilities
+                .iter()
+                .find(|candidate| candidate.node.as_str() == node.as_str())
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            let space = capabilities
+                .address_spaces
+                .iter()
+                .find(|candidate| candidate.id.as_str() == address_space.as_str())
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            let end = guest_physical_address
+                .checked_add(length_bytes)
+                .filter(|_| length_bytes > 0)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            let space_end = space
+                .start_address
+                .checked_add(space.length_bytes)
+                .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
+            if guest_physical_address < space.start_address || end > space_end {
+                return Err(FaultSignalAuthoringError::InvalidSelector);
+            }
+            Ok(vec![ResolvedFaultTarget::MemoryRange {
+                node,
+                address_space,
+                guest_physical_address,
+                length_bytes,
+            }])
+        }
+        "interrupt" => {
+            let node: FaultObjectId = take_typed(&mut value, "node")?;
+            let controller: FaultObjectId = take_typed(&mut value, "controller")?;
+            let source: FaultObjectId = take_typed(&mut value, "source")?;
+            let target_vcpu: u32 = take_typed(&mut value, "target_vcpu")?;
+            let vector: u32 = take_typed(&mut value, "vector")?;
+            ensure_empty(&value, "interrupt selector")?;
+            let exists = world
+                .fault_topology()
+                .node_capabilities
+                .iter()
+                .find(|candidate| candidate.node.as_str() == node.as_str())
+                .is_some_and(|capabilities| {
+                    capabilities.interrupts.iter().any(|row| {
+                        row.controller.as_str() == controller.as_str()
+                            && row.source.as_str() == source.as_str()
+                            && row.vector == vector
+                            && row.target_vcpus.contains(&target_vcpu)
+                    })
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::InvalidSelector);
+            }
+            Ok(vec![ResolvedFaultTarget::Interrupt {
+                node,
+                controller,
+                source,
+                target_vcpu,
+                vector,
+            }])
+        }
+        "clock_source" => {
+            let node: FaultObjectId = take_typed(&mut value, "node")?;
+            let source: FaultObjectId = take_typed(&mut value, "source")?;
+            ensure_empty(&value, "clock source selector")?;
+            let exists = world
+                .fault_topology()
+                .node_capabilities
+                .iter()
+                .find(|candidate| candidate.node.as_str() == node.as_str())
+                .is_some_and(|capabilities| {
+                    capabilities
+                        .clock_sources
+                        .iter()
+                        .any(|row| row.id.as_str() == source.as_str())
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::InvalidSelector);
+            }
+            Ok(vec![ResolvedFaultTarget::ClockSource { node, source }])
+        }
+        "accelerator" => {
+            let node: FaultObjectId = take_typed(&mut value, "node")?;
+            let device: FaultObjectId = take_typed(&mut value, "device")?;
+            ensure_empty(&value, "accelerator selector")?;
+            let exists = world
+                .fault_topology()
+                .node_capabilities
+                .iter()
+                .find(|candidate| candidate.node.as_str() == node.as_str())
+                .is_some_and(|capabilities| {
+                    capabilities
+                        .accelerators
+                        .iter()
+                        .any(|row| row.id.as_str() == device.as_str())
+                });
+            if !exists {
+                return Err(FaultSignalAuthoringError::InvalidSelector);
+            }
+            Ok(vec![ResolvedFaultTarget::Accelerator { node, device }])
         }
         _ => Err(FaultSignalAuthoringError::UnknownKind(kind)),
     }

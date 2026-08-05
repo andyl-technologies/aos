@@ -836,6 +836,12 @@ mod temporal_graph;
 mod time;
 #[path = "model/toml.rs"]
 mod toml_codec;
+mod toml {
+    pub(super) use super::toml_codec::{
+        deserialize_u64_toml_number_or_string, serialize_u64_toml_number_or_string,
+    };
+    pub(super) use ::toml::*;
+}
 mod topology_faults;
 mod validation;
 mod workload;

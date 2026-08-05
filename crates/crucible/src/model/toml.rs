@@ -116,6 +116,10 @@ pub(super) struct WorldToml {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) storage_device: Vec<WorldStorageFaultDevice>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) storage_controller: Vec<WorldStorageController>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) storage_array: Vec<WorldStorageArray>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) node_fault_capabilities: Vec<WorldNodeFaultCapabilities>,
 }
 
@@ -763,7 +767,7 @@ where
     if *value <= i64::MAX as u64 {
         serializer.serialize_u64(*value)
     } else {
-        serializer.serialize_str(&value.to_string())
+        serializer.serialize_str(&format!("u64:{value}"))
     }
 }
 
@@ -779,7 +783,7 @@ where
         type Value = u64;
 
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a non-negative integer or decimal u64 string")
+            formatter.write_str("a non-negative integer or canonical u64:<decimal> string")
         }
 
         fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
@@ -800,9 +804,26 @@ where
         where
             E: de::Error,
         {
-            value
+            let decimal = value
+                .strip_prefix("u64:")
+                .ok_or_else(|| E::custom("wide u64 string must use the `u64:` prefix"))?;
+            if decimal.is_empty()
+                || decimal.starts_with('0')
+                || !decimal.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return Err(E::custom(
+                    "wide u64 string is not canonical unsigned decimal",
+                ));
+            }
+            let parsed = decimal
                 .parse::<u64>()
-                .map_err(|error| E::custom(format!("invalid u64 string `{value}`: {error}")))
+                .map_err(|error| E::custom(format!("invalid wide u64 `{value}`: {error}")))?;
+            if parsed <= i64::MAX as u64 {
+                return Err(E::custom(
+                    "u64: string is reserved for values greater than i64::MAX",
+                ));
+            }
+            Ok(parsed)
         }
     }
 
@@ -872,6 +893,8 @@ pub(super) fn world_to_toml(world: &World) -> WorldToml {
         network_contact_plan: fault_topology.network_contact_plans.clone(),
         mobile_endpoint: fault_topology.mobile_endpoints.clone(),
         storage_device: fault_topology.storage_devices.clone(),
+        storage_controller: fault_topology.storage_controllers.clone(),
+        storage_array: fault_topology.storage_arrays.clone(),
         node_fault_capabilities: fault_topology.node_capabilities.clone(),
     }
 }
@@ -889,6 +912,8 @@ pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
         network_contact_plans: toml.network_contact_plan,
         mobile_endpoints: toml.mobile_endpoint,
         storage_devices: toml.storage_device,
+        storage_controllers: toml.storage_controller,
+        storage_arrays: toml.storage_array,
         node_capabilities: toml.node_fault_capabilities,
     };
     let id = parse_content_hash_ref(&toml.id)?;

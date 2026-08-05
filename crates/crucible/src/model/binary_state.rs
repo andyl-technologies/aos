@@ -1810,6 +1810,9 @@ pub(super) fn read_plan_binary_inner(
     let fault_signals =
         FaultSignalPlan::from_wire_bytes(reader.read_binary_blob("plan.fault_signals")?)
             .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    fault_signals
+        .validate_for_world(world)
+        .map_err(|error| scenario_serialization_error(error.to_string()))?;
     let plan = plan.with_fault_signals(fault_signals);
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
