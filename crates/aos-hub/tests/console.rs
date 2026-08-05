@@ -370,12 +370,20 @@ async fn serve_managed(
         .await
         .unwrap()
         .unwrap();
-    common::create_ready_placement(
+    let placement = common::create_ready_placement(
         &db,
         aos_hub::db::SurfaceTarget::Registry(registry.id),
         binding,
         "primary",
         dir_name,
+    )
+    .await;
+    common::configure_write_authority(
+        &db,
+        aos_hub::db::SurfaceTarget::Registry(registry.id),
+        binding,
+        &placement,
+        "console-fixture-writer",
     )
     .await;
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
@@ -1577,7 +1585,7 @@ async fn config_edit_and_change_request_console_flow() {
 
     // A git-backed draft change-set now exists for the registry.
     let drafts: Vec<_> = db
-        .list_changesets("acme/infra/prod/cdn")
+        .list_changesets(&common::registry_scope(&db, "acme/infra/prod/cdn").await)
         .await
         .unwrap()
         .into_iter()

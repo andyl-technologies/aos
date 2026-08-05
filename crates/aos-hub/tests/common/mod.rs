@@ -148,6 +148,57 @@ pub async fn create_ready_placement(
         .unwrap()
 }
 
+/// Configures a ready placement as the reconciled writer for its surface.
+pub async fn configure_write_authority(
+    db: &aos_hub::db::Database,
+    surface: aos_hub::db::SurfaceTarget,
+    binding_id: i64,
+    placement: &aos_hub::db::SurfacePlacementRecord,
+    incarnation_id: &str,
+) {
+    let credential_generation =
+        create_valid_write_credential(db, binding_id, "secret://test/write/v1").await;
+    let revision = db
+        .create_storage_binding_write_revision(&aos_hub::db::NewStorageBindingWriteRevision {
+            storage_binding_id: binding_id,
+            write_credential_generation: credential_generation,
+            writes_supported: true,
+            conditional_writes_supported: true,
+            revision_fingerprint: format!("test-write-revision-{binding_id}"),
+            capability_fingerprint: "test-writes-and-conditional-writes".to_string(),
+        })
+        .await
+        .unwrap();
+    db.observe_storage_binding_write_revision(binding_id, revision.revision, "valid", None, None)
+        .await
+        .unwrap();
+    let state = db
+        .storage_binding_write_state(binding_id)
+        .await
+        .unwrap()
+        .unwrap();
+    db.set_current_storage_binding_write_revision(
+        binding_id,
+        revision.revision,
+        state.resource_version,
+    )
+    .await
+    .unwrap();
+    db.bind_surface_placement_write_capability(placement.id, revision.revision)
+        .await
+        .unwrap();
+    db.create_surface_write_authority(
+        surface,
+        incarnation_id,
+        placement.id,
+        placement.resource_version,
+        placement.write_spec_version,
+        revision.revision,
+    )
+    .await
+    .unwrap();
+}
+
 /// Resolve an organization slug to its canonical stable authorization scope.
 ///
 /// Human-readable slugs are resource locators, not authorization scopes. Test
