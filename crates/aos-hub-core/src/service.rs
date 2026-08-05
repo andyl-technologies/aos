@@ -19653,7 +19653,7 @@ impl RpcService {
     ///
     /// Direct, CDN, and Hub-proxied delivery are all explicit routes. An absent
     /// canonical selection is a topology precondition failure rather than an
-    /// instruction to synthesize a legacy Hub URL.
+    /// instruction to synthesize an implicit Hub URL.
     ///
     /// # Errors
     ///

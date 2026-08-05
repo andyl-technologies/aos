@@ -383,7 +383,7 @@ mod entry {
         // The canonical URL is also the exact trusted control-plane authority.
         // It must be deployment configuration: deriving it from the incoming
         // request origin would let an arbitrary `Host` gain access to the API,
-        // console, or legacy slug facade.
+        // console, or delivery routes.
         let external_url = env
             .var(HUB_EXTERNAL_URL)
             .map_err(|_| {

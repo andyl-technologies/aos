@@ -2,7 +2,7 @@
 //!
 //! The Worker runtime's request and response types require JavaScript, but the
 //! ordering invariant between delivery-route rewriting, the nested console,
-//! and the machine facade does not. Keeping that post-conversion pipeline in
+//! and the machine delivery surface does not. Keeping that post-conversion pipeline in
 //! this pure module lets native tests exercise the production Worker ordering
 //! without fabricating Workers runtime objects.
 
@@ -20,8 +20,8 @@ use aos_hub_core::web::console::{dispatch_nested, ConsoleDeps};
 ///
 /// Connect RPC paths are static under `/aos.hub.v1.` and console paths contain
 /// the reserved `/-/` marker. Every remaining `PUT` or `POST` may be the
-/// machine facade. The Worker bridge uses this structural classification to
-/// preserve its request stream and let the facade's 20 MiB/multipart boundary
+/// machine delivery surface. The Worker bridge uses this structural classification to
+/// preserve its request stream and let the delivery handler's 20 MiB/multipart boundary
 /// own buffering, instead of imposing a different pre-router limit based on
 /// query spelling or parameter order.
 #[must_use]

@@ -58,7 +58,7 @@ pub const MAX_NAR_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub(crate) struct LocalFsReadError {
     /// Original IO category, or `None` for a structural containment failure.
     kind: Option<std::io::ErrorKind>,
-    /// Fetch-error marker preserved for the legacy indexer's stale classification.
+    /// Fetch-error marker preserved for indexer stale-state classification.
     #[source]
     marker: FetchError,
 }
