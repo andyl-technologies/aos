@@ -50,7 +50,7 @@ pub struct PerfBenchReport {
     pub replay_cost_by_suffix: Vec<u64>,
     /// Peak host RSS over a representative search ([PERF-23]).
     pub peak_rss_units: u64,
-    /// The advance-path syscall accounting ([PERF-8]): zero per-quantum IPC.
+    /// Arithmetic advance-path kernel-entry accounting ([PERF-8]).
     pub advance_syscalls: AdvanceSyscallCount,
     /// The snapshot capture/restore latency series ([PERF-12], [PERF-17]).
     pub snapshot_latency: Vec<SnapshotLatencyPoint>,
@@ -172,10 +172,19 @@ pub enum PerfBenchError {
         /// The fork count whose RSS rose out of proportion.
         forks: u64,
     },
-    /// The advance path issued a per-quantum IPC round-trip ([PERF-8]).
+    /// The advance path modeled a per-quantum socket/control round trip ([PERF-8]).
     PerQuantumIpcRoundTrip {
-        /// The number of per-quantum IPC round-trips observed.
+        /// The number of modeled socket/QMP/plugin-control round trips.
         round_trips: u64,
+    },
+    /// Advance-path kernel-entry bookkeeping differed from the expected model.
+    AdvanceKernelEntryAccounting {
+        /// The kernel-entry category whose arithmetic differed.
+        entry: &'static str,
+        /// The count required by the current cost model.
+        expected: u64,
+        /// The count produced by the arithmetic bookkeeping.
+        actual: u64,
     },
     /// Snapshot capture cost scaled with total state rather than changed state
     /// ([PERF-17]).
@@ -283,7 +292,15 @@ impl fmt::Display for PerfBenchError {
             ),
             Self::PerQuantumIpcRoundTrip { round_trips } => write!(
                 formatter,
-                "the advance path must issue no per-quantum IPC round-trip; observed {round_trips}"
+                "the advance path must model no per-quantum socket/control round trip; found {round_trips}"
+            ),
+            Self::AdvanceKernelEntryAccounting {
+                entry,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "advance-path {entry} bookkeeping expected {expected}, found {actual}"
             ),
             Self::CaptureNotChangedStateBounded { changed_pages } => write!(
                 formatter,

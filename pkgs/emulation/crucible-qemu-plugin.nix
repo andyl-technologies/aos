@@ -2,7 +2,7 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
+  fetchCargoVendor,
   glib,
   pkg-config,
   qemu-crucible,
@@ -14,10 +14,10 @@ in
     pname = "crucible-qemu-plugin";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
+    cargoDeps = fetchCargoVendor {
       inherit src;
       sourceRoot = "source/crates";
-      hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+      hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
     };
 
     cargoFlags = "-p crucible-qemu-plugin";
@@ -136,7 +136,7 @@ in
       cat > "$out/nix-support/crucible-qemu-plugin-build-info" <<INFO
       package=crucible-qemu-plugin
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       qemu_package=qemu-crucible
       qemu_build_id=${qemu-crucible.passthru.qemuBuildIdentity}
       qemu_sim_capability_marker=${qemu-crucible}/share/aos/crucible/qemu-build-identity.env
@@ -149,12 +149,25 @@ in
       shmem_generated_header=${qemu-crucible}/include/aos/crucible/crucible_shmem_abi.h
       shmem_generated_header_hash=${qemu-crucible.passthru.shmemHeaderHash}
       plugin_abi=crucible-shmem-abi-v$shmem_abi_version
+      component=qemu-in-process-adapter
+      component_license=GPL-2.0-only
       INFO
+
+      mkdir -p "$out/share/licenses/crucible-qemu-plugin"
+      cp ${../../LICENSES/GPL-2.0-only.txt} \
+        "$out/share/licenses/crucible-qemu-plugin/GPL-2.0.txt"
+      cp ${../../LICENSES/MIT.txt} \
+        "$out/share/licenses/crucible-qemu-plugin/MIT.txt"
+      cat > "$out/share/licenses/crucible-qemu-plugin/COMPONENT" <<'LICENSE_SCOPE'
+      crucible-qemu-plugin is an in-process QEMU adapter.
+      SPDX-License-Identifier: GPL-2.0-only
+      crucible-protocol and crucible-shmem are used under their MIT option.
+      LICENSE_SCOPE
     '';
 
     meta = {
       description = "Crucible QEMU plugin cdylib built against AOS QEMU headers";
       homepage = "https://github.com/andyl/andyl-os";
-      license = "MIT";
+      license = "GPL-2.0-only";
     };
   }

@@ -815,15 +815,14 @@ expressive core a fixed virtual-time Plan lacks.
 
 ### 17a.5.1 Worked example: a partition-recovery scenario over observable conditions
 
-A complete partition-recovery scenario, authored with **zero guest-side
-components** — readiness by console banner, an additional black-box coverage gate,
-observable fault injection, a relative-timer heal, and an observable recovery
-assertion:
+A complete partition-recovery scenario with an unmodified guest kernel and image:
+readiness by console banner, an additional coverage gate, observable fault
+injection, a relative-timer heal, and a structured assertion from the
+user-controlled test application:
 
 ```toml
-# A partition-recovery scenario. Every trigger condition is BLACK-BOX OBSERVABLE
-# (console banner, basic-block coverage, network frame, quiescence); no guest
-# marker, no in-guest agent. Times are virtual (09).
+# A partition-recovery scenario. Host facts are directly observable; the
+# application reports semantic convergence with a guest assertion. Times are virtual (09).
 
 [[event]]
 id = "wait-ready"
@@ -848,10 +847,10 @@ action  = { heal_fault = { tag = "split" } }
 
 [[event]]
 id = "pass-when-converged"
-# once a reconciliation frame is observed AFTER the heal, and the system settles,
-# declare pass — all observable.
+# once the guest reports reconciliation AFTER the heal, and the system settles,
+# declare pass.
 trigger = { all_of = [
-  { once = { network_match = { link = "db-0--db-1", predicate = "raft_append_entries_ack" } } },
+  { once = { assertion_state = { name = "replicas-converge", state = "satisfied" } } },
   { quiescent = {} },
 ] }
 action  = { pass = {} }
@@ -861,14 +860,15 @@ action  = { pass = {} }
 name = "replicas-converge"
 kind = "eventually"
 trigger   = { assertion_state = { name = "split-active", state = "satisfied" } }  # after the split
-property  = { network_match = { link = "db-0--db-1", predicate = "raft_log_match" } }
+property  = { assertion_state = { name = "replicas-converge", state = "satisfied" } }
 deadline  = "60s"
 ```
 
 The scenario reads as phases — wait-ready, inject, heal-after-30s, pass-on-converge
 — each gated on an observable condition, with the heal anchored *relative* to the
-observed readiness. Nothing inside the guest participates; the same scenario runs
-bit-identically against any unmodified replica image.
+observed readiness. The host owns readiness, fault, timer, and quiescence facts;
+the user-controlled test application supplies the richer semantic convergence
+assertion without requiring a modified kernel or root image.
 
 ## 17a.6 The trigger-graph validator (build-time)
 

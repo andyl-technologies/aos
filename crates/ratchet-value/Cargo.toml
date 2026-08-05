@@ -2,6 +2,7 @@
 name = "ratchet-value"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [features]
 # RFC-0007 Candidate-C value-ABI cutover variant (task #12). Off by default;

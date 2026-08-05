@@ -2,6 +2,7 @@
 name = "ratchet-core"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [features]
 # Exposes test-only constructors (e.g. `Builtin::test_with_call_arities`) to

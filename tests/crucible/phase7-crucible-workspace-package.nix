@@ -45,11 +45,11 @@
       }
       {
         label = "vendored cargo deps";
-        needle = "cargoDeps = fetchCargoDeps";
+        needle = "cargoDeps = fetchCargoVendor";
       }
       {
         label = "pinned vendored dependency hash binding";
-        needle = "cargoDepsHash = \"sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=\";";
+        needle = "cargoDepsHash = \"sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=\";";
       }
       {
         label = "vendored dependency hash consumed by cargo deps";
@@ -88,8 +88,32 @@
         needle = "cargo test \\\n        --doc";
       }
       {
-        label = "runtime closure uses AOS QEMU/plugin/kernel/fixtures";
-        needle = "runtimeDeps = [openssl qemu-crucible crucible-qemu-plugin linux-crucible crucible-fixtures];";
+        label = "suite runtime closure co-retains controller/QEMU/plugin/source/kernel/fixtures";
+        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
+      }
+      {
+        label = "suite is the aggregate release root";
+        needle = "artifact_role=aggregate-release-root";
+      }
+      {
+        label = "suite release root names corresponding source";
+        needle = "pair_1_corresponding_source_path=" + "$" + "{qemu-crucible-source}";
+      }
+      {
+        label = "suite installs the MIT boundary-crate notice";
+        needle = "cp " + "$" + "{../../../LICENSES/MIT.txt} \"$out/share/licenses/crucible/MIT.txt\"";
+      }
+      {
+        label = "suite build info inventories every project component license";
+        needle = "component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later";
+      }
+      {
+        label = "suite build info names the MIT boundary crates";
+        needle = "boundary_crates=crucible-protocol,crucible-shmem";
+      }
+      {
+        label = "suite metadata inventories every project component license";
+        needle = "license = [\"Apache-2.0\" \"MIT\" \"GPL-2.0-only\" \"GPL-2.0-or-later\"];";
       }
       {
         label = "workspace build info";
@@ -150,7 +174,7 @@ in
             package=crucible
             package_passthru=pkgs.crucible
             build_system=mkCargoPackage
-            cargo_deps=fetchCargoDeps
+            cargo_deps=fetchCargoVendor
             cargo_workspace_flags=workspace-scoped
             RESULT
           '';

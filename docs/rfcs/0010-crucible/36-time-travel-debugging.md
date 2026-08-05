@@ -103,7 +103,7 @@ The capability is, deliberately, an assembly of five existing mechanisms:
 
 ---
 
-## 36.2 Attach: the gdbstub as a fourth out-of-band channel
+## 36.2 Attach: the gdbstub as a fourth out-of-band logical plane
 
 ### 36.2.1 An attach is an instantiate
 
@@ -124,23 +124,25 @@ indistinguishable from any other instantiated runtime — because it *is* one.
   MUST be no debug-specific realization path. *Gate:* `gate:replay-oracle`. *Spec:*
   §36.2.1; cross-ref 05 §5, 10 §10.5.
 
-### 36.2.2 The gdbstub is the fourth channel
+### 36.2.2 The gdbstub is the fourth logical plane
 
-A VM node owns exactly three channels to its QEMU child (10 §10.3): the plugin-IPC
-control channel (handshake/teardown only), the shared-memory region (the per-quantum
-hot path), and the QMP socket (out-of-band machine control). When a debug session is
-active, the node opens a **fourth, out-of-band channel: QEMU's gdbstub**, alongside
-the other three. Like QMP, it is strictly out-of-band: it carries **no per-quantum
+A VM node owns three logical channel roles to its QEMU child (10 §10.3): the plugin-IPC
+control plane (handshake/teardown only), the shared-memory data plane including its
+futex/eventfd wake objects (the per-quantum hot path), and the QMP plane (out-of-band
+machine control). When a debug session is active, the node opens a **fourth,
+out-of-band logical plane: QEMU's gdbstub**, alongside the other three. This is a
+protocol-role count, not a count of kernel objects. Like QMP, it is strictly
+out-of-band: it carries **no per-quantum
 timing and no frame data**, it never participates in the advance/delivery hot path,
 and it is silent with respect to the scheduler's total order. It carries debugger
 read/write/breakpoint/step packets between the operator's gdb-protocol client and
 the node's machine, and nothing else.
 
 ```text
-  the channels a node owns to its QEMU child (10 §10.3, extended here):
+  the logical planes a node owns to its QEMU child (10 §10.3, extended here):
   ──────────────────────────────────────────────────────────────────────────────
   1. plugin-IPC control  handshake + Quit only            (silent during a run)  14
-  2. shared memory       per-quantum hot path: ceiling/clock/futex/frame rings   13
+  2. shared-memory data  ceiling/clock/frame rings + futex/eventfd wake objects  13
   3. QMP                 out-of-band machine control: savevm/loadvm/quit         10 §10.4
   4. gdbstub (DEBUG)     out-of-band debugger packets: read/write/bp/step        THIS FILE
                          carries NO per-quantum timing, NO frame data, NO order  ([SHM-2])
@@ -153,8 +155,9 @@ is what lets Crucible enforce the read-only/mutation boundary (§36.3, §36.5) a
 serve the time-travel verbs (§36.4) that a raw gdbstub has no concept of.
 
 - **[DBG-5]** When a debug session is active, the node MUST open a **fourth,
-  out-of-band channel** — QEMU's gdbstub — alongside the three of 10 §10.3
-  (plugin-IPC control, shared memory, QMP). The gdbstub channel MUST carry **no
+  out-of-band logical plane** — QEMU's gdbstub — alongside the three roles of
+  10 §10.3 (plugin-IPC control, shared-memory data plus futex/eventfd wakes,
+  QMP). The gdbstub channel MUST carry **no
   per-quantum timing and no frame data** ([SHM-2], [PROTO-1]); it MUST NOT
   participate in the advance/delivery hot path or the scheduler's total order, and
   it MUST be active only while a debug session is attached. *Gate:*
@@ -745,7 +748,7 @@ commands (20 §5); the CLI holds **no debug state**.
 - **[DBG-35]** `crucible debug` MUST be a thin wrapper holding **no debug state of
   its own** (23 [CLI-1], [CLI-2]): each flag and verb MUST decompose into existing
   session commands (20 §4) plus the gdbstub proxy (§36.2) — `attach-gdb` opens the
-  fourth channel ([DBG-5]); `goto`/`reverse-step`/`reverse-continue` are
+  fourth logical plane ([DBG-5]); `goto`/`reverse-step`/`reverse-continue` are
   `instantiate` of a resolved coordinate (§36.4) driven as ordinary boundary-deferred
   session commands (20 §5). A debug behavior with no corresponding session/proxy
   operation is a layering defect. *Gate:* `gate:control-responsive`. *Spec:* §36.9;

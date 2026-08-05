@@ -535,7 +535,7 @@ pub fn observable_event_from_whitebox_marker_payload(
     }
 }
 
-pub(super) fn guest_assertion_marker_from_whitebox_body(
+pub(crate) fn guest_assertion_marker_from_whitebox_body(
     body: &crucible_protocol::WhiteboxAssertionMarkerBody,
 ) -> GuestAssertionMarker {
     GuestAssertionMarker::new(

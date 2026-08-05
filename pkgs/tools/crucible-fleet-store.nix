@@ -2,18 +2,18 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
+  fetchCargoVendor,
   grep,
 }: let
   version = "0.1.0";
-  cargoDepsHash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+  cargoDepsHash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   src = import ./crucible/_source.nix {inherit lib;};
 in
   mkCargoPackage {
     pname = "crucible-fleet-store";
     inherit version src;
 
-    cargoDeps = fetchCargoDeps {
+    cargoDeps = fetchCargoVendor {
       inherit src;
       sourceRoot = "source/crates";
       hash = cargoDepsHash;
@@ -98,7 +98,7 @@ in
       cat > "$out/nix-support/crucible-fleet-store-build-info" <<'INFO'
       package=crucible-fleet-store
       build_system=mkCargoPackage
-      cargo_deps=fetchCargoDeps
+      cargo_deps=fetchCargoVendor
       cargo_deps_source_root=source/crates
       cargo_deps_hash=${cargoDepsHash}
       cargo_package=crucible-cas

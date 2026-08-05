@@ -4,10 +4,10 @@
   attrPath ? "checks.crucible.phase7.nginxCurlHttp200",
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
+  cargoDeps = pkgs.fetchCargoVendor {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   };
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   scenario = ./fixtures/nginx-curl-http-200.scenario.toml;
@@ -43,13 +43,8 @@ in
         script = ''
           export CARGO_HOME="$TMPDIR/cargo"
           mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
               > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
         '';
       }
       {
@@ -67,6 +62,16 @@ in
           runner="$TMPDIR/nginx-curl-target/debug/examples/crucible-nginx-curl-http-200"
           "$runner" --emit-scenario > "$TMPDIR/generated.scenario.toml"
           diff -u ${scenario} "$TMPDIR/generated.scenario.toml"
+          grep -Fq 'white_box = "enabled"' "$TMPDIR/generated.scenario.toml"
+          grep -Fq 'kind = "guest_marker"' "$TMPDIR/generated.scenario.toml"
+          if grep -Fq 'kind = "console_match"' "$TMPDIR/generated.scenario.toml"; then
+            echo "application result unexpectedly uses ConsoleMatch" >&2
+            exit 1
+          fi
+          if grep -Eq 'HTTP/1\\.1 200|GET /|CURL_STATUS' "$TMPDIR/generated.scenario.toml"; then
+            echo "application result unexpectedly parses protocol or console text" >&2
+            exit 1
+          fi
 
           vmlinuz=$(ls ${pkgs.linux}/boot/vmlinuz-* | head -1)
           test -n "$vmlinuz"
@@ -101,7 +106,7 @@ in
             --seed 0x200 \
             --format jsonl \
             run ${scenario} \
-            --max-quanta 10000 \
+            --max-quanta 30000 \
             > "$cli_report"
           grep -F '"kind":"final_outcome"' "$cli_report" \
             | grep -Fq 'status=passed exit_code=0'

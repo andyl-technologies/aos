@@ -423,7 +423,10 @@ pub trait QemuQmpMachineControlChannel: Send {
     fn quit(&mut self) -> Result<(), QemuNodeChannelError>;
 }
 
-/// The exact three channels owned by one QEMU node.
+/// The three logical channel roles owned by one QEMU node.
+///
+/// The shared-memory role includes its futex and eventfd wake objects; this
+/// bundle describes protocol planes rather than a count of kernel objects.
 pub struct QemuNodeChannels {
     plugin_control: Box<dyn QemuPluginIpcControlChannel>,
     shmem_hot_path: Box<dyn QemuShmemHotPathChannel>,
@@ -431,7 +434,7 @@ pub struct QemuNodeChannels {
 }
 
 impl QemuNodeChannels {
-    /// Builds the three-channel bundle for one QEMU child.
+    /// Builds the three-plane role bundle for one QEMU child.
     #[must_use]
     pub fn new(
         plugin_control: impl QemuPluginIpcControlChannel + 'static,

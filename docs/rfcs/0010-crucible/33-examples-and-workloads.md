@@ -12,7 +12,7 @@ Two things make this file unusual in the RFC. First, it is **mostly
 illustrative**: Part A is a gallery of concrete scenarios drawn entirely from the
 primitives already specified elsewhere, so its normative content is thin —
 `EX`-prefixed requirements pin only the properties the examples *must* preserve
-(zero guest-side authorability, reproducibility, the repro→explore loop), not new
+(unmodified-guest support, reproducibility, the repro→explore loop), not new
 mechanism. Second, Part B *is* normative: it fixes the workload model
 (`WL`-prefixed requirements), because "where does traffic come from" is a genuine
 design decision for a guest-VM-only harness, and getting it wrong (bolting on a
@@ -51,24 +51,24 @@ white-box channel is [`16-guest-host-channel.md`](16-guest-host-channel.md).
 
 The five examples below progress from the simplest possible run (one client, one
 server, no faults) to a full coverage-guided fault campaign with a reproduced,
-bisected failure. Every example is authored with **zero guest-side components**:
-no in-guest agent, no marker injection, no image modification, any kernel. The
-guest runs an ordinary binary (an HTTP server, a client loop, a replicated
-store); Crucible observes it entirely from outside via the black-box leaf
-conditions of 17a (`ConsoleMatch`, `NetworkMatch`, `CoveragePoint`, `NodeState`,
-`IoPattern`, `Quiescent`). Each example calls this out explicitly under **Any
-kernel**.
+bisected failure. The happy-path example proves the **zero guest-side component**
+path with an opaque workload and `ConsoleMatch`. The distributed-store examples
+use the richer, primary structured guest-assertion path for application semantics
+while leaving the guest kernel and image unmodified. In both modes, Crucible owns
+host facts such as lifecycle, faults, timers, network topology, I/O, and
+quiescence; application code owns application truth.
 
 ### A.0 The example contract (normative)
 
-- **[EX-1]** Every worked example in this file MUST be authorable and runnable
-  with **zero guest-side components**: no in-guest agent, no marker emission, no
-  guest image modification, and no guest kernel patch ([G-2], [G-3], [INV-5]).
-  Readiness, fault triggering, property checking, and pass/fail MUST be expressed
-  only with black-box observable conditions (17a §17a.2 leaves other than
-  `GuestMarker`). An example MUST remain functional and deterministic with the
-  white-box channel compiled out ([TRIG-2], [TRIG-31]). *Gate:* `gate:any-guest`,
-  `gate:e2e-determinism`. *Spec:* §A.
+- **[EX-1]** The worked corpus MUST include a complete scenario authorable and
+  runnable with **zero guest-side components**: no in-guest agent, marker
+  emission, image modification, or guest kernel patch ([G-2], [G-3], [INV-5]).
+  It MUST also demonstrate structured guest assertions as the primary mechanism
+  for semantic application properties in user-controlled workloads. Guest
+  assertions MUST NOT require a patched kernel or Crucible-specific image, and
+  opaque workloads MUST retain the black-box `ConsoleMatch` path. `NetworkMatch`
+  MUST be used for transport properties, not plaintext application-result
+  parsing. *Gate:* `gate:any-guest`, `gate:e2e-determinism`. *Spec:* §A.
 
 - **[EX-2]** Every worked example MUST be reproducible bit-identically from its
   `(seed, ScenarioDef, Schedule)` reproduction artifact (06 §7.1): running
@@ -163,7 +163,7 @@ deadline = "60s"
 [[event]]
 id = "pass-on-quiescence"
 trigger = { all_of = [
-  { assertion_state = { name = "all-requests-succeed", state = "satisfied" } },
+  { once = { assertion_state = { name = "all-requests-succeed", state = "satisfied" } } },
   { quiescent = {} },
 ] }
 action  = { pass = {} }
@@ -198,7 +198,10 @@ let scenario = ScenarioBuilder::new()
     .plan(EventGraph::builder()
         .event("pass-on-quiescence")
             .when(Condition::all_of([
-                Condition::assertion_state("all-requests-succeed", AssertionPhase::Satisfied),
+                Condition::assertion_state(
+                    "all-requests-succeed",
+                    AssertionPhase::Satisfied,
+                ).once(),
                 Condition::quiescent(),
             ]))
             .action(Action::pass())
@@ -230,8 +233,10 @@ emitted artifact lands at the same state ([EX-2]).
 Implementation note (T-EX-1): `crucible::example_corpus` ships the
 `happy-path.scn` corpus fixture as a content-addressed `ScenarioDefForm` with two
 unmodified guest images, in-guest `httpd`/`httpget` workload command-line
-parameters, console-marker readiness, black-box network/lifecycle/quiescence
-predicates, and no `GuestMarker` or white-box dependency. The local corpus runner
+parameters, console-marker readiness, black-box console/lifecycle/quiescence
+predicates, and no `GuestMarker` or white-box dependency. Application success is
+read from the client program's ordinary console result rather than inferred from
+network payload bytes. The local corpus runner
 uses the checked `EventLog` condition-prefix path to append deterministic
 observable events, fires the `pass-on-quiescence` graph event, captures a
 reproduction artifact whose schedule carries the canonical observation script,
@@ -249,12 +254,14 @@ scheduling cannot express, 17a §17a.5); assert the cluster **eventually converg
 after the heal**. This is the worked example 17a §17a.5.1 sketches, completed with
 its `Properties` and three-node topology.
 
-**Any kernel.** The store is an unmodified replicated-database image. Readiness is
-each replica's "ready to accept connections" banner (`ConsoleMatch`) AND a
-black-box coverage point on the cluster-join path (`CoveragePoint`, zero
-instrumentation). The partition is a `Fault::Partition` over still-declared links
-(17, no topology mutation). Recovery is an observed reconciliation frame on the
-wire (`NetworkMatch`) plus `Quiescent`. Nothing inside any guest participates.
+**Unmodified guest image.** The store uses an unmodified kernel and root image;
+the user-controlled test application links the `crucible-guest` emitter and
+reports the semantic `no-split-brain` and `replicas-reconciled` verdicts through
+the structured assertion doorbell. Readiness remains each replica's existing
+"ready to accept connections" banner (`ConsoleMatch`) plus a coverage point on
+the cluster-join path. The partition is a `Fault::Partition` over still-declared
+links (17, no topology mutation). The host owns fault state, timers, lifecycle,
+and quiescence; it does not infer application correctness from packet payloads.
 
 The full trigger graph:
 
@@ -276,7 +283,7 @@ The full trigger graph:
      │
      ▼
   event "pass"        trigger = AllOf[
-     Once(NetworkMatch(db-0--db-1, "reconcile_ack")),   ── recovery observed
+     Once(AssertionState("replicas-reconciled", Satisfied)), ── guest verdict
      Quiescent ]                                          ── system settled
         action = Pass
 ```
@@ -285,7 +292,7 @@ Serializable form (the event graph is the `Plan` component, 17a §17a.7):
 
 ```toml
 # partition-recovery.scn — 3-node replicated store, partition + relative-timer heal.
-# Every trigger is BLACK-BOX OBSERVABLE; zero guest-side components.
+# Host facts are observed directly; application semantics use guest assertions.
 
 [scenario]
 seed = "0x0000000000000063...0000"     # 99
@@ -335,7 +342,7 @@ action  = { heal_fault = { tag = "split" } }
 [[event]]
 id = "pass-on-converge"
 trigger = { all_of = [
-  { once = { network_match = { link = "db-0--db-1", predicate = "reconcile_ack" } } },
+  { once = { assertion_state = { name = "replicas-reconciled", state = "satisfied" } } },
   { quiescent = {} },
 ] }
 action  = { pass = {} }
@@ -343,14 +350,17 @@ action  = { pass = {} }
 # ── Properties: invariant during split + bounded convergence after heal ────
 [[properties.assertion]]
 name = "no-split-brain"
-kind = "always"                        # never two leaders, even mid-partition
-predicate = "at_most_one_leader"
+kind = "guest_unreachable"             # guest must never report two leaders
+
+[[properties.assertion]]
+name = "replicas-reconciled"
+kind = "guest_sometimes"               # guest reports matching committed logs
 
 [[properties.assertion]]
 name = "converges-after-heal"
 kind = "eventually"
 trigger  = { assertion_state = { name = "split-active", state = "satisfied" } }
-property  = { network_match = { link = "db-0--db-1", predicate = "raft_log_match" } }
+property  = { assertion_state = { name = "replicas-reconciled", state = "satisfied" } }
 deadline  = "30s"
 ```
 
@@ -374,8 +384,9 @@ line for the exact `(seed, scenario, schedule)` that exhibited it.
 
 Implementation note (T-EX-2): `crucible::example_corpus` ships the
 `partition-recovery.scn` corpus fixture as a three-node, three-link
-content-addressed `ScenarioDefForm` with unmodified store images and no guest
-component dependency. Its `wait-ready` event uses only observable console and
+content-addressed `ScenarioDefForm` with unmodified kernels and store images;
+the user-controlled store test application emits structured guest assertions.
+Its `wait-ready` event uses observable console and
 basic-block coverage leaves, then applies a grouped `InjectFault("split",
 Isolate(db-0))` plus `ArmTimer("heal-after", 10s)` action through the
 `SingleScheduler` trigger-action path, which models the `db-0 | db-1,db-2`
@@ -383,10 +394,10 @@ split under one stable heal tag. The runner appends the host-visible
 `split-active` assertion-state transition only after the assertion evaluator
 reports the injected split active, advances to the timer boundary for
 `HealFault("split")`, and passes only after the split-active state, healed fault
-state, an observed `reconcile_ack` frame, and quiescence all hold.
-`no-split-brain` is represented as the black-box absence of `split_brain=true`
-network evidence, while `converges-after-heal` is triggered by the
-`split-active` assertion state and satisfied by `raft_log_match`; the captured
+state, the satisfied `replicas-reconciled` guest assertion, and quiescence all
+hold. `no-split-brain` is a structured `guest_unreachable` safety assertion,
+while `converges-after-heal` is triggered by the host-owned `split-active`
+assertion state and satisfied by the guest-reported reconciliation assertion; the captured
 reproduction schedule replays to byte-identical canonical event-log bytes and
 fingerprint streams.
 
@@ -401,7 +412,9 @@ choreographed by `StartNode` — a *baked declared node*, not a topology mutatio
 
 **Any kernel.** Crash is `Fault::Crash` (the modeled VM reset, 17), restart is
 the scheduler bringing the *already-declared, already-baked* node back from its
-ready snapshot (05 §6); convergence is observed on the wire. No guest cooperation.
+ready snapshot (05 §6). The user-controlled store test application reports
+durability and reconciliation through structured guest assertions; no kernel or
+image modification is required.
 
 ```toml
 # crash-restart.scn — crash db-1 right after it commits, restart, reconverge.
@@ -435,21 +448,29 @@ action  = { group = [
 id = "pass-on-reconverge"
 trigger = { all_of = [
   { node_state = { node = "db-1", state = "started" } },   # came back up
-  { once = { network_match = { link = "db-0--db-1", predicate = "raft_log_match" } } },
+  { once = { assertion_state = { name = "committed-write-survived", state = "satisfied" } } },
+  { once = { assertion_state = { name = "replicas-reconciled", state = "satisfied" } } },
   { quiescent = {} },
 ] }
 action  = { pass = {} }
 
 [[properties.assertion]]
 name = "data-not-lost"
-kind = "always"
-predicate = "committed_writes_durable"     # the committed write survives the crash
+kind = "guest_unreachable"                 # guest never reports committed data loss
+
+[[properties.assertion]]
+name = "committed-write-survived"
+kind = "guest_sometimes"
+
+[[properties.assertion]]
+name = "replicas-reconciled"
+kind = "guest_sometimes"
 
 [[properties.assertion]]
 name = "reconverges"
 kind = "eventually"
 trigger  = { node_state = { node = "db-1", state = "crashed" } }
-property  = { network_match = { link = "db-0--db-1", predicate = "raft_log_match" } }
+property  = { assertion_state = { name = "replicas-reconciled", state = "satisfied" } }
 deadline  = "40s"
 ```
 
@@ -469,8 +490,9 @@ all functions of `(scenario, seed, schedule)`.
 
 Implementation note (T-EX-3): `crucible::example_corpus` ships the
 `crash-restart.scn` corpus fixture as a three-node, three-link
-content-addressed `ScenarioDefForm` with unmodified store images and no guest
-component dependency. Its `crash-after-commit` event uses only black-box
+content-addressed `ScenarioDefForm` with unmodified kernels and store images;
+the user-controlled store test application emits structured guest assertions.
+Its `crash-after-commit` event uses only host-visible
 host-visible lifecycle and deterministic block-write observations to prove
 `db-1` was a committing replica before injecting `InjectFault("kill",
 Crash(db-1, FromReadyPoint))`; the replay fixture records the WAL region in the
@@ -489,11 +511,11 @@ The `restart` event uses the `After(5s, "crash-after-commit")` trigger and a
 `HealFault("kill")` + `StartNode(db-1)` action group; the resulting restart
 lifecycle fact is likewise derived from the applied `StartNode` while the
 scheduler restart application proves the crash fault healed with
-`FromReadyPoint`. `data-not-lost` is represented as an `Always` black-box safety
-assertion against `data_lost=true` evidence, while the pass event requires
-positive `committed_write_survived=true` and `raft_log_match` convergence
-frames. The captured reproduction schedule contains only the started/WAL-write
-trigger observation, the relative restart boundary, and the convergence frame,
+`FromReadyPoint`. `data-not-lost` is a structured `guest_unreachable` safety
+assertion, while the pass event requires satisfied `committed-write-survived`
+and `replicas-reconciled` guest assertions. The captured reproduction schedule
+contains only the started/WAL-write trigger observation, the relative restart
+boundary, and the structured guest verdicts,
 and replays to byte-identical canonical event-log bytes and fingerprint streams
 across five independent local reductions.
 
@@ -506,11 +528,12 @@ zero instrumentation); a discovered failure reduces to a **self-contained
 reproduction artifact**; `crucible replay` reproduces it **bit-identically**; and
 `save` / `resume` / `fork` let the developer walk the neighborhood of the failure.
 
-**Any kernel.** The family generates a `Plan` of random faults (partition / loss /
+**Unmodified guest image.** The family generates a `Plan` of random faults (partition / loss /
 crash / latency, 17) over a generated topology, scaled by `fault_density`. Faults
 perturb *modeled* behavior only (17 [FAULT-1]); coverage comes from the plugin's
-TCG-exec hook (12, 22) over the unmodified binary; the only guest-observable input
-is the workload (Part B). No guest-side component anywhere.
+TCG-exec hook (12, 22) over the unmodified binary. The user-controlled test
+application reports split-brain as a structured `guest_unreachable` assertion;
+the host does not parse replicated-store protocol payloads.
 
 ```rust,illustrative
 /// A family over the partition-recovery world: same store image, generated
@@ -1098,7 +1121,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   §A.1.
   Completed by `checks.crucible.phase7.happyPathExample`: the built-in
   `happy-path.scn` fixture is exported from `crucible::example_corpus`, uses only
-  black-box console/network/lifecycle/quiescence predicates with white-box
+  black-box console/lifecycle/quiescence predicates with white-box
   disabled, runs to the `pass-on-quiescence` event, captures a replayable
   reproduction artifact with the canonical observation script in its schedule,
   is exercised by `crucible selftest`, and verifies five independent local
@@ -1111,8 +1134,9 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   Completed by `checks.crucible.phase7.partitionRecoveryExample`: the built-in
   `partition-recovery.scn` fixture is exported from `crucible::example_corpus`,
   uses the observable readiness graph, grouped partition injection plus
-  relative timer, timer-driven heal, and observable convergence pass event, checks
-  `no-split-brain`/`converges-after-heal`, captures a replayable multi-step
+  relative timer, timer-driven heal, and guest-assertion convergence pass event,
+  checks structured `no-split-brain`/`replicas-reconciled` assertions and bounded
+  `converges-after-heal`, captures a replayable multi-step
   reproduction schedule, is exercised by `crucible selftest`, and verifies five
   independent local reductions as byte-identical.
 - [x] **T-EX-3** Ship the crash+restart scenario (A.3) exercising `Fault::Crash`
@@ -1125,8 +1149,8 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `RestartPolicy::FromReadyPoint`, an `After`-anchored `HealFault` +
   `StartNode` restart event, derived crash/restart lifecycle facts, and
   scheduler crash/restart/topology application evidence for the declared
-  triangle; it checks `data-not-lost` as an `Always` black-box safety assertion
-  and `reconverges` as crash-triggered bounded liveness, is exercised by
+  triangle; it checks `data-not-lost` as structured guest safety and uses guest
+  durability/reconciliation verdicts for crash-triggered bounded liveness, is exercised by
   `crucible selftest`, and verifies five independent local reductions as
   byte-identical.
 - [x] **T-EX-4** Ship the fault-campaign `ScenarioFamily` (A.4) and wire it into
@@ -1138,8 +1162,7 @@ PARAMETERIZATION (WL-10,11,12): params live in the ScenarioDef, delivered
   `fault-campaign.fam` fixture exports a deterministic `ScenarioFamily`
   over seed, fault density, topology size, and topology shape; `crucible fuzz
   --family fault-campaign.fam` runs the local proof path with unified event-log
-  basic-block coverage feedback, evaluates a planted black-box
-  `split_brain=true` observation into a violated `no-split-brain`
+  basic-block coverage feedback, evaluates a planted structured guest assertion marker into a violated `no-split-brain`
   `HostAssertionReport`, captures that discoverable finding as a
   self-contained reproduction artifact whose schedule carries the violation
   observation, reconstructs the replay-side assertion log from that artifact,

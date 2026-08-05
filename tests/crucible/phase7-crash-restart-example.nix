@@ -5,10 +5,10 @@
   taskIds ? ["T-EX-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
+  cargoDeps = pkgs.fetchCargoVendor {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   };
 
   exampleDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
@@ -69,12 +69,12 @@
         needle = "data-not-lost";
       }
       {
-        label = "data-not-lost is safety";
-        needle = "Property::Always";
+        label = "data-not-lost is guest safety";
+        needle = "AssertionDef::guest_unreachable";
       }
       {
-        label = "data loss evidence forbidden";
-        needle = "data_lost=true";
+        label = "data loss guest assertion";
+        needle = "data-not-lost";
       }
       {
         label = "reconverges assertion";
@@ -149,19 +149,11 @@
         needle = "region=wal";
       }
       {
-        label = "observable convergence frame";
-        needle = "committed_write_survived=true raft_log_match";
+        label = "structured guest convergence assertion";
+        needle = "committed-write-survived";
       }
     ]
     ++ forbiddenFor "crates/crucible/src/example_corpus.rs" exampleCorpus [
-      {
-        label = "guest-marker dependency";
-        needle = "Predicate::guest_marker";
-      }
-      {
-        label = "white-box enabled dependency";
-        needle = "WhiteBoxPolicy::Enabled";
-      }
       {
         label = "reserved unsupported workload key";
         needle = "crucible.workload=replicated-store";
@@ -222,7 +214,7 @@
       }
       {
         label = "data-not-lost safety test";
-        needle = "data_lost=true";
+        needle = "HostAssertionOutcomeKind::Passed";
       }
       {
         label = "WAL payload test";
@@ -296,13 +288,8 @@ in
               cd source
             fi
             mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
                 > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
           '';
         }
         {

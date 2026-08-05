@@ -2,6 +2,7 @@
 name = "aos-registry-surface"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 description = "Pure-Rust, no-IO reader for the AOS registry wire surface (RFC-0004): loose git objects, SSHSIG verification, signed tags, and refs — compiles to wasm32 for in-browser verification"
 
 [dependencies]

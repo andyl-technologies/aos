@@ -5,13 +5,14 @@
   taskIds ? ["T-ASRT-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = pkgs.fetchCargoDeps {
+  cargoDeps = pkgs.fetchCargoVendor {
     src = crucibleSrc;
     sourceRoot = "source/crates";
-    hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+    hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   };
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
+  propertiesModel = builtins.readFile ../../crates/crucible/src/model/plan_properties.rs;
   crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
   guestMarkerAssertionsTest = builtins.readFile ../../crates/crucible/tests/guest_marker_assertions.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
@@ -296,6 +297,12 @@
         needle = "GuestAssertionDetail";
       }
     ]
+    ++ failuresFor "crates/crucible/src/model/plan_properties.rs" propertiesModel [
+      {
+        label = "declared guest sometimes assertion constructor";
+        needle = "pub fn guest_sometimes";
+      }
+    ]
     ++ failuresFor "crates/crucible/tests/guest_marker_assertions.rs" guestMarkerAssertionsTest [
       {
         label = "payload field test";
@@ -304,6 +311,10 @@
       {
         label = "unified report test";
         needle = "guest_marker_assertions_fold_into_unified_report";
+      }
+      {
+        label = "declared guest assertion outcome test";
+        needle = "declared_guest_assertion_uses_marker_truth_without_duplicate_host_outcome";
       }
       {
         label = "catalog finalization test";
@@ -440,13 +451,8 @@ in
               cd source
             fi
             mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
+            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
                 > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
           '';
         }
         {

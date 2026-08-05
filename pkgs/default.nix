@@ -712,6 +712,9 @@
         enablePlugins = true;
         applyCruciblePatches = false;
       };
+      crucible-controller = callPackage ./tools/crucible/crucible.nix {
+        controllerOnly = true;
+      };
 
       # Interpreter-free git for the system image (shares git.nix's source and
       # version). Used by apm/apr's runtimeTools and the server profile so the

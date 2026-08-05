@@ -50,6 +50,10 @@ fn canonical_gate_statuses_are_current() {
         Some(GateStatus::Implemented)
     ));
     assert!(matches!(
+        find_gate("gate:license-boundary").map(|spec| spec.status),
+        Some(GateStatus::Implemented)
+    ));
+    assert!(matches!(
         find_gate("gate:layer0-determinism").map(|spec| spec.status),
         Some(GateStatus::Implemented)
     ));
@@ -120,6 +124,7 @@ fn canonical_gate_statuses_are_current() {
 
     let expected_phases = BTreeMap::from([
         ("gate:harness-lint", GatePhase::Always),
+        ("gate:license-boundary", GatePhase::Always),
         ("gate:layer0-determinism", GatePhase::Phase1),
         ("gate:single-vm-fingerprint", GatePhase::Phase1),
         ("gate:layer1-injection", GatePhase::Phase2),
