@@ -8993,7 +8993,7 @@ async fn propose_registry_config(
     meta: crate::gitwrite::ProposeMeta,
     started: Instant,
 ) -> Response {
-    let fetch = crate::placement_read::TopologySurfaceFetch::new(
+    let fetch = crate::placement_read::TopologySurfaceFetch::for_verified_git_objects(
         Arc::clone(&deps.db),
         Arc::clone(&deps.surface),
         crate::db::SurfaceTarget::Registry(registry.id),

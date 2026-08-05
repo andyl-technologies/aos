@@ -983,9 +983,15 @@ pub async fn rewrite_for_delivery_route(
     let Some((route, surface_path)) = routes.iter().find_map(|route| {
         strip_route_base_path(&route.base_path, &request_path).map(|path| (route, path))
     }) else {
-        // Public serving is valid only after resolving an explicit delivery
-        // route; no authority may fall through to a resource-slug path.
-        return Err(StatusCode::MISDIRECTED_REQUEST.into_response());
+        // The exact control authority may continue into its RPC, console, and
+        // browse router. That router has no resource-slug byte fallback, so an
+        // unmatched machine path becomes an ordinary 404. Every non-control
+        // authority still requires an explicit delivery route.
+        return if is_control_authority {
+            Ok(request)
+        } else {
+            Err(StatusCode::MISDIRECTED_REQUEST.into_response())
+        };
     };
     if !matches!(*request.method(), Method::GET | Method::HEAD) {
         return Err((

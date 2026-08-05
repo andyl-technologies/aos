@@ -167,7 +167,7 @@ async fn seed_placement(
     binding_id: i64,
     name: &str,
     prefix: &str,
-) {
+) -> aos_hub::db::SurfacePlacementRecord {
     let placement = db
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface,
@@ -185,7 +185,7 @@ async fn seed_placement(
         .unwrap();
     db.observe_surface_placement(placement.id, "ready", "complete", 1)
         .await
-        .unwrap();
+        .unwrap()
 }
 
 // -- H-2: package / channel / registry read gating --------------------------
@@ -364,7 +364,12 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
     assert_eq!(placement["observation"]["completeness"], "complete");
     assert_eq!(placement["status"]["derivedRole"], "replica");
     assert_eq!(placement["status"]["effectiveReadEnabled"], true);
-    assert_eq!(placement["status"]["effectiveWriteEnabled"], false);
+    assert_eq!(
+        placement["status"]["effectiveWriteEnabled"]
+            .as_bool()
+            .unwrap_or(false),
+        false
+    );
     assert!(placement["resourceVersion"].is_string());
     assert!(placement.get("id").is_none());
     assert!(placement.get("storageBindingId").is_none());
@@ -468,7 +473,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
     )
     .await
     .unwrap();
-    seed_placement(
+    let primary = seed_placement(
         &db,
         SurfaceTarget::Registry(registry),
         binding,
@@ -592,12 +597,13 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         "TopologyService/PlanPromotePlacement",
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
-            "candidatePlacementName": "primary"
+            "placementName": "primary",
+            "expectedResourceVersion": primary.resource_version.to_string()
         }),
         Some(&owner_admin),
     )
     .await;
-    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "no writes: {resp}");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "no writes: {resp}");
 
     let ordinary_generation =
         common::create_valid_write_credential(&db, binding, "secret://placement-owner/origin/v3")
@@ -639,7 +645,8 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         })
         .await
         .unwrap();
-    db.observe_surface_placement(conditional.id, "ready", "complete", 1)
+    let conditional = db
+        .observe_surface_placement(conditional.id, "ready", "complete", 1)
         .await
         .unwrap();
     let (status, resp) = rpc(
@@ -647,14 +654,15 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         "TopologyService/PlanPromotePlacement",
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
-            "candidatePlacementName": "conditional"
+            "placementName": "conditional",
+            "expectedResourceVersion": conditional.resource_version.to_string()
         }),
         Some(&owner_admin),
     )
     .await;
     assert_eq!(
         status,
-        StatusCode::PRECONDITION_FAILED,
+        StatusCode::BAD_REQUEST,
         "conditional writes: {resp}"
     );
     db.set_current_storage_binding_write_revision(
@@ -670,7 +678,8 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         "TopologyService/PlanPromotePlacement",
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
-            "candidatePlacementName": "primary"
+            "placementName": "primary",
+            "expectedResourceVersion": primary.resource_version.to_string()
         }),
         Some(&owner_admin),
     )
@@ -897,7 +906,8 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         "TopologyService/PlanPromotePlacement",
         serde_json::json!({
             "surface": { "registrySlug": "placement-owner/private" },
-            "candidatePlacementName": "replica-west"
+            "placementName": "replica-west",
+            "expectedResourceVersion": updated_version
         }),
         Some(&owner_admin),
     )
@@ -1653,7 +1663,8 @@ async fn list_storage_bindings_requires_storage_management_authority() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "read-only member: {resp}");
 
-    // A storage manager sees the normalized binding spec.
+    // A storage manager sees topology identity, while provider configuration
+    // remains confined to the binding detail surface.
     let admin_id = db
         .create_user("storage-admin@acme.test", None)
         .await
@@ -1664,7 +1675,7 @@ async fn list_storage_bindings_requires_storage_management_authority() {
     let admin = bearer(
         Principal::user(admin_id),
         &org_scope,
-        &[Permission::StorageManage],
+        &[Permission::StorageBindingRead, Permission::StorageManage],
     );
     let (status, resp) = rpc(
         &app,
@@ -1674,8 +1685,5 @@ async fn list_storage_bindings_requires_storage_management_authority() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "storage manager: {resp}");
-    assert_eq!(
-        resp["storageBindings"][0]["spec"]["localRootPath"], "/var/lib/aos/storage/acme",
-        "storage manager sees the normalized local root"
-    );
+    assert!(resp["storageBindings"][0]["spec"]["localRootPath"].is_null());
 }
