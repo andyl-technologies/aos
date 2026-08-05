@@ -839,6 +839,7 @@ mod toml_codec;
 mod topology_faults;
 mod validation;
 mod workload;
+mod world_faults;
 
 use binary_plan::*;
 use binary_state::*;
@@ -864,6 +865,7 @@ use toml_codec::*;
 pub use topology_faults::*;
 use validation::*;
 pub use workload::*;
+pub use world_faults::*;
 
 mod store_error;
 #[cfg(test)]

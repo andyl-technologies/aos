@@ -133,6 +133,9 @@ impl World {
             topology_nodes: Vec::new(),
             nodes: Vec::new(),
             links: Vec::new(),
+            fault_topology: WorldFaultTopology::default(),
+            fault_topology_id: ContentHash::default(),
+            fault_topology_wire: Vec::new(),
         }
     }
 
@@ -181,6 +184,9 @@ impl World {
             topology_nodes,
             nodes,
             links,
+            fault_topology: WorldFaultTopology::default(),
+            fault_topology_id: ContentHash::default(),
+            fault_topology_wire: Vec::new(),
         })
     }
 
@@ -236,6 +242,36 @@ impl World {
     #[must_use]
     pub fn links(&self) -> &[LinkDef] {
         &self.links
+    }
+
+    /// Returns the immutable hardware and link registry used by fault selectors.
+    #[must_use]
+    pub const fn fault_topology(&self) -> &WorldFaultTopology {
+        &self.fault_topology
+    }
+
+    /// Attaches and content-addresses the complete executable fault topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorldFaultTopologyError`] when a declaration is malformed,
+    /// references an absent world object, exceeds a hard bound, or cannot be
+    /// encoded into canonical identity material.
+    pub fn with_fault_topology(
+        mut self,
+        topology: WorldFaultTopology,
+    ) -> Result<Self, WorldFaultTopologyError> {
+        let topology = topology.admit(&self)?;
+        let (topology_id, topology_wire) = if topology.is_empty() {
+            (ContentHash::default(), Vec::new())
+        } else {
+            (topology.content_hash()?, topology.canonical_bytes()?)
+        };
+        self.fault_topology = topology;
+        self.fault_topology_id = topology_id;
+        self.fault_topology_wire = topology_wire;
+        self.id = canonical_world_identity(&self);
+        Ok(self)
     }
 
     /// Returns the workload config-tree exports declared by world nodes.
@@ -354,6 +390,9 @@ impl World {
             topology_nodes,
             nodes,
             links,
+            fault_topology: WorldFaultTopology::default(),
+            fault_topology_id: ContentHash::default(),
+            fault_topology_wire: Vec::new(),
         })
     }
 
@@ -606,14 +645,8 @@ impl World {
     /// Serializes this world component as compact binary.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let includes_io_nodes = self.io_nodes().next().is_some();
-        let magic = if includes_io_nodes {
-            WORLD_BINARY_MAGIC_V2
-        } else {
-            WORLD_BINARY_MAGIC_V1
-        };
-        let mut writer = ScenarioBinaryWriter::new(magic);
-        write_world_binary(self, &mut writer, includes_io_nodes);
+        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC_V3);
+        write_world_binary(self, &mut writer);
         writer.finish()
     }
 
@@ -625,12 +658,8 @@ impl World {
     /// or an id mismatch, or a world validation error for invalid topology,
     /// launch fields, ready points, or workload scenario-parameter delivery.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let (mut reader, includes_io_nodes) = scenario_binary_reader_for_versions(
-            bytes,
-            WORLD_BINARY_MAGIC_V1,
-            WORLD_BINARY_MAGIC_V2,
-        )?;
-        let world = read_world_binary(&mut reader, includes_io_nodes)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC_V3)?;
+        let world = read_world_binary(&mut reader)?;
         reader.finish()?;
         Ok(world)
     }
@@ -638,11 +667,15 @@ impl World {
     /// Returns the canonical bytes used to compute this world's content address.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        world_material(
+        let mut material = world_material(
             &canonical_world_node_defs(&self.topology_nodes),
             &canonical_world_links(&self.links),
-        )
-        .into_bytes()
+        );
+        if !self.fault_topology.is_empty() {
+            material.push_str("\nfault-topology=");
+            material.push_str(&self.fault_topology_id.to_hex());
+        }
+        material.into_bytes()
     }
 
     fn scenario_def_from_components(

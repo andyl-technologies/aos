@@ -20,6 +20,9 @@ pub struct World {
     /// separate logical topology collection.
     pub(in crate::model) nodes: Vec<WorldNode>,
     pub(in crate::model) links: Vec<LinkDef>,
+    pub(in crate::model) fault_topology: WorldFaultTopology,
+    pub(in crate::model) fault_topology_id: ContentHash,
+    pub(in crate::model) fault_topology_wire: Vec<u8>,
 }
 
 /// A workload config-tree export declared by one world node.

@@ -829,22 +829,30 @@ pub(super) fn baked_node_icounts(world: &World) -> BTreeMap<NodeId, Icount> {
 pub(super) fn canonical_world_identity(world: &World) -> ContentHash {
     let nodes = canonical_world_node_defs(&world.topology_nodes);
     let links = canonical_world_links(&world.links);
-    if nodes.is_empty() && links.is_empty() {
+    if nodes.is_empty() && links.is_empty() && world.fault_topology.is_empty() {
         return world.id;
     }
-
-    ContentHash::from_canonical_material(
-        world_identity_domain(&nodes),
-        &world_material(&nodes, &links),
-    )
+    world_content_hash(world, &nodes, &links)
 }
 
 pub(super) fn serialized_world_identity(world: &World) -> ContentHash {
     let nodes = canonical_world_node_defs(&world.topology_nodes);
-    ContentHash::from_canonical_material(
-        world_identity_domain(&nodes),
-        &world_material(&nodes, &canonical_world_links(&world.links)),
-    )
+    world_content_hash(world, &nodes, &canonical_world_links(&world.links))
+}
+
+fn world_content_hash(world: &World, nodes: &[WorldNodeDef], links: &[LinkDef]) -> ContentHash {
+    let base = world_material(nodes, links);
+    if world.fault_topology.is_empty() {
+        ContentHash::from_canonical_material(world_identity_domain(nodes), &base)
+    } else {
+        ContentHash::from_canonical_material(
+            "crucible.model.world.v3",
+            &format!(
+                "{base}\nfault-topology={}",
+                world.fault_topology_id.to_hex()
+            ),
+        )
+    }
 }
 
 pub(super) fn scenario_world_plan_properties_seed_material(

@@ -207,28 +207,12 @@ impl<'a> ScenarioBinaryReader<'a> {
     }
 }
 
-pub(super) fn scenario_binary_reader_for_versions<'a>(
-    bytes: &'a [u8],
-    v1_magic: &[u8],
-    v2_magic: &[u8],
-) -> Result<(ScenarioBinaryReader<'a>, bool), EngineError> {
-    if bytes.starts_with(v2_magic) {
-        return Ok((ScenarioBinaryReader::new(bytes, v2_magic)?, true));
-    }
-    if bytes.starts_with(v1_magic) {
-        return Ok((ScenarioBinaryReader::new(bytes, v1_magic)?, false));
-    }
-    Err(scenario_serialization_error("binary magic mismatch"))
-}
-
 pub(super) fn write_scenario_form_binary(
     form: &ScenarioDefForm,
     writer: &mut ScenarioBinaryWriter,
 ) {
-    let includes_devices = form.world.io_nodes().next().is_some();
-    writer.write_u8(u8::from(includes_devices));
     writer.write_hash(form.id());
-    write_world_binary(&form.world, writer, includes_devices);
+    write_world_binary(&form.world, writer);
     write_plan_binary(&form.plan, writer);
     write_properties_binary(&form.properties, writer);
     writer.write_seed(form.seed);
@@ -238,17 +222,8 @@ pub(super) fn write_scenario_form_binary(
 pub(super) fn read_scenario_form_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<ScenarioDefForm, EngineError> {
-    let includes_devices = match reader.read_u8()? {
-        0 => false,
-        1 => true,
-        _ => {
-            return Err(scenario_serialization_error(
-                "invalid scenario world-kind tag",
-            ));
-        }
-    };
     let expected = reader.read_hash()?;
-    let world = read_world_binary(reader, includes_devices)?;
+    let world = read_world_binary(reader)?;
     let plan = read_plan_binary_for_scenario(&world, reader)?;
     let properties = read_properties_binary(&world, reader)?;
     let seed = reader.read_seed()?;
@@ -1468,52 +1443,37 @@ pub(super) fn read_binary_bool(
     }
 }
 
-pub(super) fn write_world_binary(
-    world: &World,
-    writer: &mut ScenarioBinaryWriter,
-    includes_io_nodes: bool,
-) {
+pub(super) fn write_world_binary(world: &World, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(world.id());
-    if includes_io_nodes {
-        writer.write_count(world.topology_nodes().len());
-        for node in world.topology_nodes() {
-            match node {
-                WorldNodeDef::Vm(node) => {
-                    writer.write_u8(0);
-                    write_world_node_binary(node, writer);
-                }
-                WorldNodeDef::Io(node) => write_world_io_node_binary(node, writer),
+    writer.write_count(world.topology_nodes().len());
+    for node in world.topology_nodes() {
+        match node {
+            WorldNodeDef::Vm(node) => {
+                writer.write_u8(0);
+                write_world_node_binary(node, writer);
             }
-        }
-    } else {
-        writer.write_count(world.vm_nodes().len());
-        for node in world.vm_nodes() {
-            write_world_node_binary(node, writer);
+            WorldNodeDef::Io(node) => write_world_io_node_binary(node, writer),
         }
     }
     writer.write_count(world.links().len());
     for link in world.links() {
         write_link_binary(link, writer);
     }
+    writer.write_binary_blob(&world.fault_topology_wire);
 }
 
 pub(super) fn read_world_binary(
     reader: &mut ScenarioBinaryReader<'_>,
-    includes_io_nodes: bool,
 ) -> Result<World, EngineError> {
     let id = reader.read_hash()?;
     let node_count = reader.read_collection_count("world.node")?;
     let mut nodes = Vec::with_capacity(node_count);
     for _ in 0..node_count {
-        nodes.push(if includes_io_nodes {
-            match reader.read_u8()? {
-                0 => WorldNodeDef::Vm(read_world_node_binary(reader)?),
-                1 => WorldNodeDef::Io(read_world_block_node_binary(reader)?),
-                2 => WorldNodeDef::Io(read_world_ninep_node_binary(reader)?),
-                _ => return Err(scenario_serialization_error("invalid world node kind tag")),
-            }
-        } else {
-            WorldNodeDef::Vm(read_world_node_binary(reader)?)
+        nodes.push(match reader.read_u8()? {
+            0 => WorldNodeDef::Vm(read_world_node_binary(reader)?),
+            1 => WorldNodeDef::Io(read_world_block_node_binary(reader)?),
+            2 => WorldNodeDef::Io(read_world_ninep_node_binary(reader)?),
+            _ => return Err(scenario_serialization_error("invalid world node kind tag")),
         });
     }
     let link_count = reader.read_collection_count("world.link")?;
@@ -1521,13 +1481,18 @@ pub(super) fn read_world_binary(
     for _ in 0..link_count {
         links.push(read_link_binary(reader)?);
     }
-    if includes_io_nodes && nodes.iter().all(|node| matches!(node, WorldNodeDef::Vm(_))) {
-        return Err(scenario_serialization_error(
-            "world v2 encoding contains no I/O node",
-        ));
-    }
-    let world = World::from_recorded_node_defs_and_links(id, nodes, links)?;
-    validate_world_serialized_identity(&world)?;
+    let topology_bytes = reader.read_binary_blob("world fault topology")?;
+    let topology = if topology_bytes.is_empty() {
+        WorldFaultTopology::default()
+    } else {
+        serde_json::from_slice(topology_bytes).map_err(|source| {
+            scenario_serialization_error(format!("decode world fault topology: {source}"))
+        })?
+    };
+    let world = World::from_recorded_node_defs_and_links(id, nodes, links)?
+        .with_fault_topology(topology)
+        .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    validate_serialized_id("world", id, serialized_world_identity(&world))?;
     Ok(world)
 }
 
