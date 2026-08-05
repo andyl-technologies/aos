@@ -6,7 +6,7 @@
 
 use std::num::{NonZeroU32, NonZeroU64};
 
-use super::{FaultContractError, FaultObjectId, FaultOperation};
+use super::{FaultAdapter, FaultContractError, FaultObjectId, FaultOperation};
 
 /// The maximum accepted encoded payload size for one effect.
 pub const HARD_EFFECT_PAYLOAD_BYTES: usize = 16_777_216;
@@ -263,6 +263,18 @@ impl OperationSet {
     #[must_use]
     pub fn as_slice(&self) -> &[FaultOperation] {
         &self.0
+    }
+
+    /// Returns the single adapter shared by every operation.
+    #[must_use]
+    pub fn adapter(&self) -> FaultAdapter {
+        self.0[0].adapter()
+    }
+
+    /// Returns whether the canonical set contains `operation`.
+    #[must_use]
+    pub fn contains(&self, operation: FaultOperation) -> bool {
+        self.0.binary_search(&operation).is_ok()
     }
 }
 

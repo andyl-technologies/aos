@@ -15,6 +15,7 @@ use std::fmt;
 
 use super::ContentHash;
 
+mod binding;
 mod canonical;
 mod effect;
 mod effect_parameters;
@@ -23,10 +24,12 @@ mod error;
 mod network_effect;
 mod node_effect;
 mod opportunity;
+mod runtime;
 mod storage_effect;
 #[cfg(test)]
 mod tests;
 
+pub use binding::*;
 use canonical::program_material;
 pub use effect::*;
 pub use effect_parameters::*;
@@ -35,6 +38,7 @@ pub use error::SignalProgramError;
 pub use network_effect::*;
 pub use node_effect::*;
 pub use opportunity::*;
+pub use runtime::*;
 pub use storage_effect::*;
 
 /// Semantic version of the signal evaluator implemented by this crate.
@@ -318,7 +322,9 @@ impl SignalValueType {
         }
     }
 
-    fn is_numeric(&self) -> bool {
+    /// Returns whether this type participates in registered exact arithmetic.
+    #[must_use]
+    pub const fn is_numeric(&self) -> bool {
         matches!(
             self,
             Self::I64
@@ -526,7 +532,9 @@ pub enum SignalValue {
 }
 
 impl SignalValue {
-    fn value_type(&self) -> Option<SignalValueType> {
+    /// Returns the closed value type when this literal is structurally valid.
+    #[must_use]
+    pub fn value_type(&self) -> Option<SignalValueType> {
         match self {
             Self::Bool(_) => Some(SignalValueType::Bool),
             Self::I64(_) => Some(SignalValueType::I64),
@@ -1571,6 +1579,18 @@ impl SignalProgram {
     #[must_use]
     pub fn canonical_material(&self) -> &str {
         &self.canonical_material
+    }
+
+    /// Returns the static shape of an exported output.
+    #[must_use]
+    pub fn exported_shape(&self, id: &SignalId) -> Option<&SignalShape> {
+        if self.exported_outputs.binary_search(id).is_err() {
+            return None;
+        }
+        self.nodes
+            .iter()
+            .find(|node| &node.id == id)
+            .map(|node| &node.output)
     }
 }
 
