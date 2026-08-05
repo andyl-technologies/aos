@@ -28,6 +28,8 @@ mod runtime;
 mod storage_effect;
 #[cfg(test)]
 mod tests;
+mod trace;
+mod trace_import;
 
 pub use binding::*;
 use canonical::program_material;
@@ -40,6 +42,8 @@ pub use node_effect::*;
 pub use opportunity::*;
 pub use runtime::*;
 pub use storage_effect::*;
+pub use trace::*;
+pub use trace_import::*;
 
 /// Semantic version of the signal evaluator implemented by this crate.
 pub const SIGNAL_EVALUATOR_VERSION: u16 = 1;
