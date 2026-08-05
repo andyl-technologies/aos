@@ -8,18 +8,19 @@
 //! 1. **Humans**: server-rendered browse pages (registry home, packages,
 //!    channels, releases) under the reserved `/-/` namespace, in the
 //!    no-JS "release-engineering paper" design language.
-//! 2. **Machines**: a byte-faithful facade over the registry's machine
-//!    paths (`HEAD`, `info/refs`, `objects/…`, `channels/…`,
-//!    `nix-cache-info`, `*.narinfo`, `nar/…`) with the same
-//!    immutable/mutable cache-header split `apr origin upload` writes.
+//! 2. **Machines**: byte-faithful registry and cache delivery through explicit
+//!    topology endpoints and routes. Registries, caches, placements, storage
+//!    bindings, and URLs remain independent resources rather than being
+//!    inferred from a slug.
 //! 3. **Itself**: a checkpointed indexer that re-walks the surface exactly
 //!    as an `apm` client would — loose-object reads, SSH-Ed25519 tag and
 //!    commit verification, name binding — and never displays unverified
 //!    state.
 //!
-//! The hub is a *control plane over a static data plane*: the registry
-//! surface stays the source of truth, the SQL database holds only
-//! registry registration (system of record) plus a rebuildable index.
+//! The hub is a control plane over a static data plane: signed registry
+//! releases remain the source of truth, while SQL records logical resources,
+//! physical placement, delivery topology, retained control, and rebuildable
+//! indexes.
 //!
 //! # Module map
 //!
@@ -53,8 +54,8 @@
 //!   exchange, anonymous browse/search).
 //! - [`validation`] — presence- and integrity-depth cache consistency
 //!   validation, stack-aware coverage, and repair planning.
-//! - [`facade`] — the machine-path write facade: authenticated surface
-//!   uploads, the publish lease, and index-after-flip.
+//! - [`aos_hub_core::surface_write`] — typed publication writes, leases, and
+//!   index-after-commit coordination.
 //! - [`signing`] — pure release-tag and channel-partition signing primitives;
 //!   custody and consumer bindings are governed by retained control.
 //! - [`gitwrite`] — git-backed configuration change requests: writes a

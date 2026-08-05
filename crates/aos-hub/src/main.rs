@@ -343,13 +343,13 @@ enum ValidateCommand {
     /// Plan and execute repairs for a registry's missing cache objects.
     ///
     /// Copies missing objects from a cache that has them into caches that are
-    /// missing them. file:// targets are repaired by copy; hub-served http
-    /// facade targets by authenticated PUT; other http targets are left
+    /// missing them. Local placements are repaired by copy; Hub delivery
+    /// routes use typed authenticated cache uploads; other HTTP targets remain
     /// plan-only.
     Repair {
         /// Canonical registry slug to repair.
         canonical: String,
-        /// Externally reachable base URL identifying this hub's facade caches.
+        /// Externally reachable base URL identifying this Hub's cache routes.
         #[arg(long)]
         external_url: Option<String>,
     },

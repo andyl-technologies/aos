@@ -275,8 +275,8 @@
 //! ```
 //!
 //! - `org_quotas` caps an org's hub-managed storage: bytes, object count,
-//!   registries, and active tokens. A `NULL` cell is unlimited; the upload
-//!   facade rejects an over-quota write with `507 Insufficient Storage`
+//!   registries, and active tokens. A `NULL` cell is unlimited; typed upload
+//!   admission rejects an over-quota write with `507 Insufficient Storage`
 //!   ([`Database::would_exceed_quota`]), matching `aos-server`'s `max_paths`
 //!   contract.
 //! - `org_usage` holds running totals maintained on every successful upload
@@ -606,7 +606,7 @@ pub struct OrgRecord {
 ///
 /// Mirrors the `org_quotas` row. Every cap is optional: `None` means *that*
 /// dimension is unlimited (an org with no `org_quotas` row at all is
-/// unlimited on every dimension). Quotas are enforced at the upload facade
+/// unlimited on every dimension). Quotas are enforced at typed upload admission
 /// (bytes/objects, via [`Database::would_exceed_quota`]) and in the
 /// registry/token create paths (counts).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -13596,7 +13596,7 @@ impl Database {
         if self.registry_by_slug(&slug).await?.is_some() {
             bail!("a registry already exists at '{slug}'");
         }
-        // Slugs are unique across registries and caches (shared facade namespace).
+        // Resource locators are unique across registries and caches.
         if self.binary_cache_by_slug(&slug).await?.is_some() {
             bail!("a cache already exists at '{slug}' (slugs are unique across registries and caches)");
         }
@@ -13769,9 +13769,8 @@ impl Database {
         if self.binary_cache_by_slug(slug).await?.is_some() {
             bail!("a cache already exists at '{slug}'");
         }
-        // Slugs are unique *across* registries and caches: the facade serves both
-        // from one `/{slug}/…` namespace, so a shared slug would route reads and
-        // writes to different objects.
+        // Resource locators are unique across registries and caches so browse
+        // links and control-plane lookup cannot become ambiguous.
         if self.registry_by_slug(slug).await?.is_some() {
             bail!("a registry already exists at '{slug}' (slugs are unique across registries and caches)");
         }
@@ -15117,7 +15116,7 @@ impl Database {
     /// Add `delta_bytes`/`delta_objects` to an org's running usage totals.
     ///
     /// Upserts the `org_usage` row, creating it on first use. Called by the
-    /// upload facade after a successful write of a new object. The totals are
+    /// typed upload path after a successful write of a new object. The totals are
     /// approximate (see [`OrgUsage`]).
     ///
     /// # Errors
@@ -15151,7 +15150,7 @@ impl Database {
     /// by the caller against [`Database::org_quota`]/[`Database::org_usage`].
     ///
     /// This is a *read-only* check and is therefore racy against concurrent
-    /// writers; the upload facade reserves atomically with
+    /// writers; typed upload admission reserves atomically with
     /// [`Database::reserve_org_usage`] instead. This method is retained for
     /// read-only quota reporting.
     ///

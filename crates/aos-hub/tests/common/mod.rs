@@ -16,6 +16,33 @@ use aos_hub::surface::object::{
 use aos_hub::surface::sshsig;
 use aos_hub::surface::tag::render_tag_payload;
 use ed25519_dalek::SigningKey;
+use sha2::{Digest as _, Sha256};
+
+/// Creates a final-topology instance-owned local binding for integration tests.
+pub async fn create_instance_local_binding(
+    db: &aos_hub::db::Database,
+    name: &str,
+    path: &str,
+) -> i64 {
+    db.create_topology_storage_binding(
+        None,
+        &uuid::Uuid::new_v4().simple().to_string(),
+        "instance",
+        name,
+        "local_fs",
+        Some(path),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap()
+}
 
 /// Creates a final-topology local binding for integration-test setup.
 pub async fn create_local_binding(
@@ -47,6 +74,134 @@ pub async fn create_local_binding(
     )
     .await
     .unwrap()
+}
+
+/// Creates and reconciles one native Hub delivery endpoint and route.
+pub async fn configure_hub_delivery_route(
+    db: &aos_hub::db::Database,
+    surface: aos_hub::db::SurfaceTarget,
+    placement_id: i64,
+    owner_scope: &str,
+    endpoint_id: &str,
+    route_id: &str,
+    base_path: &str,
+    audience: &str,
+) {
+    use aos_hub::db::{DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec, DeliveryRouteSpec};
+
+    let (org_id, visibility) = match surface {
+        aos_hub::db::SurfaceTarget::Registry(id) => {
+            let registry = db.registry_by_id(id).await.unwrap().unwrap();
+            (registry.org_id, registry.visibility)
+        }
+        aos_hub::db::SurfaceTarget::BinaryCache(id) => {
+            let cache = db.binary_cache_by_id(id).await.unwrap().unwrap();
+            (cache.org_id, cache.visibility)
+        }
+    };
+    if db.delivery_endpoint(endpoint_id).await.unwrap().is_none() {
+        db.create_delivery_endpoint(
+            endpoint_id,
+            owner_scope,
+            org_id,
+            "http",
+            &DeliveryEndpointHostInput::Ipv4([127, 0, 0, 1]),
+            8420,
+            "instance:test",
+            &DeliveryEndpointRevisionSpec {
+                boundary_revision: 1,
+                ingress_kind: "hub".to_string(),
+                listener_configuration: format!("listener:{endpoint_id}"),
+                tls_configuration: "{}".to_string(),
+                probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+            },
+            Some(1),
+            "test",
+            &format!("request:{endpoint_id}"),
+        )
+        .await
+        .unwrap();
+        db.reconcile_delivery_endpoint(endpoint_id, 1, 1, "healthy", true, false, None, 1)
+            .await
+            .unwrap();
+    }
+
+    let access_policy_json = "{}".to_string();
+    let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
+    let canonical_url = format!("http://127.0.0.1:8420{base_path}");
+    let endpoint = db.delivery_endpoint(endpoint_id).await.unwrap().unwrap();
+    let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest).unwrap();
+    let reservation_digest = aos_hub::db::Database::route_reservation_digest(
+        &[9_u8; 32],
+        &endpoint_digest,
+        base_path,
+        &canonical_url,
+    )
+    .unwrap();
+    let (serves_git, serves_cache, serves_web) = match surface {
+        aos_hub::db::SurfaceTarget::Registry(_) => (true, false, true),
+        aos_hub::db::SurfaceTarget::BinaryCache(_) => (false, true, true),
+    };
+    let route = db
+        .create_delivery_route(
+            route_id,
+            surface,
+            &DeliveryRouteSpec {
+                consumer_scope_key: owner_scope.to_string(),
+                endpoint_id: endpoint_id.to_string(),
+                endpoint_generation: 1,
+                endpoint_ingress_kind: "hub".to_string(),
+                base_path: base_path.to_string(),
+                mode: "hub_proxy".to_string(),
+                access_policy_kind: if visibility == "public" {
+                    "public".to_string()
+                } else {
+                    "hub_auth".to_string()
+                },
+                access_policy_json,
+                access_policy_digest: access_policy_digest.clone(),
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                storage_gateway_id: None,
+                gateway_generation: None,
+                target_storage_binding_id: None,
+                gateway_client_base_path: None,
+                target_placement_prefix: None,
+                placement_id: Some(placement_id),
+                placement_policy_revision_id: None,
+                serves_git,
+                serves_cache,
+                serves_web,
+                enabled: true,
+            },
+            &canonical_url,
+            1,
+            &reservation_digest,
+            &[(1, reservation_digest.to_vec())],
+            None,
+            "test",
+        )
+        .await
+        .unwrap();
+    db.reconcile_delivery_route(
+        route_id,
+        route.configuration_generation.unwrap(),
+        route.configuration_digest.as_deref().unwrap(),
+        &access_policy_digest,
+        "healthy",
+        "verified",
+        None,
+        None,
+        1,
+    )
+    .await
+    .unwrap();
+    db.set_canonical_route(surface, audience, route_id, None)
+        .await
+        .unwrap();
 }
 
 /// Creates and validates the next immutable write-credential generation.

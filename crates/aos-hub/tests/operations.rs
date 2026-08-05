@@ -3,8 +3,8 @@
 //!
 //! Drives the real router and database for the operations surface:
 //!
-//! - the upload facade's `507 Insufficient Storage` quota gate and the running
-//!   usage increment a successful upload makes;
+//! - typed publication admission's `507 Insufficient Storage` quota gate and
+//!   the running usage increment a successful object upload makes;
 //! - the per-endpoint rate limiter returning `429` with `Retry-After` on the
 //!   magic-link issuance and device-authorization paths;
 //! - the instance signup policy gating `OrganizationService.CreateOrg`;
@@ -27,6 +27,7 @@ use aos_hub::server::{router, AppState};
 use aos_hub_core::service::{ReadAuthorization, RpcError, RpcService};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
+use sha2::{Digest as _, Sha256};
 use tower::ServiceExt;
 
 /// Deterministic HS256 key so tests can mint matching JWTs.
@@ -151,40 +152,44 @@ async fn empty_managed() -> (Arc<Database>, PathBuf, i64) {
         .await
         .unwrap();
     let binding = common::create_local_binding(&db, org, "primary", root.to_str().unwrap()).await;
-    let registry = db
+    let registry_id = db
         .create_managed_registry(org, "infra/prod", "cdn", "public", &[], false)
         .await
         .unwrap();
-    let _ = registry;
+    let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+    let placement = common::create_ready_placement(
+        &db,
+        SurfaceTarget::Registry(registry_id),
+        binding,
+        "primary",
+        "cdn",
+    )
+    .await;
+    common::configure_write_authority(
+        &db,
+        SurfaceTarget::Registry(registry_id),
+        binding,
+        &placement,
+        "operations-publication",
+    )
+    .await;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::Registry(registry_id),
+        placement.id,
+        &registry.owner_scope_key,
+        "endpoint:operations-fixture",
+        "route:operations-fixture",
+        "/acme/infra/prod/cdn",
+        "git",
+    )
+    .await;
     (db, root.join("cdn"), binding)
 }
 
 #[tokio::test]
 async fn registry_route_streams_ranges_through_the_selected_placement() {
-    let (db, surface, binding) = empty_managed().await;
-    let registry = db
-        .registry_by_slug("acme/infra/prod/cdn")
-        .await
-        .unwrap()
-        .unwrap();
-    let placement = db
-        .create_surface_placement(&NewSurfacePlacementSpec {
-            surface: SurfaceTarget::Registry(registry.id),
-            name: "primary-read".to_string(),
-            storage_binding_id: binding,
-            prefix: "cdn".to_string(),
-            kind: "complete".to_string(),
-            desired_state: "active".to_string(),
-            hash_range: None,
-            desired_read_enabled: true,
-            read_order: 0,
-            requires_conditional_writes: false,
-        })
-        .await
-        .unwrap();
-    db.observe_surface_placement(placement.id, "ready", "complete", 1)
-        .await
-        .unwrap();
+    let (db, surface, _binding) = empty_managed().await;
     std::fs::create_dir_all(surface.join("nar")).unwrap();
     std::fs::write(surface.join("nar/range.nar"), b"0123456789").unwrap();
     std::fs::create_dir_all(surface.join("web")).unwrap();
@@ -265,6 +270,7 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
         )
         .await
         .unwrap();
+    let private_scope = common::org_scope(&db, "private-org").await;
     for (surface, name, prefix) in [
         (SurfaceTarget::Registry(registry_id), "registry", "registry"),
         (SurfaceTarget::BinaryCache(cache_id), "cache", "cache"),
@@ -287,6 +293,25 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
         db.observe_surface_placement(placement.id, "ready", "complete", 1)
             .await
             .unwrap();
+        let (route_id, base_path, audience) = match surface {
+            SurfaceTarget::Registry(_) => (
+                "route:private-registry",
+                "/private-org/private-registry",
+                "git",
+            ),
+            SurfaceTarget::BinaryCache(_) => ("route:private-cache", "/private-cache", "cache"),
+        };
+        common::configure_hub_delivery_route(
+            &db,
+            surface,
+            placement.id,
+            &private_scope,
+            "endpoint:private-fixture",
+            route_id,
+            base_path,
+            audience,
+        )
+        .await;
     }
     std::fs::create_dir_all(root.join("registry/nar")).unwrap();
     std::fs::write(root.join("registry/nar/private.nar"), b"registry-private").unwrap();
@@ -297,7 +322,6 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
         .create_user("member@private.invalid", None)
         .await
         .unwrap();
-    let private_scope = common::org_scope(&db, "private-org").await;
     db.grant_membership("user", member, &private_scope, "viewer")
         .await
         .unwrap();
@@ -322,7 +346,7 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
     ] {
         for denied_cookie in [None, Some("__Host-aos_session=invalid")] {
             let (status, _) = machine_get(&app, uri, denied_cookie, None).await;
-            assert_eq!(status, StatusCode::NOT_FOUND, "hidden path {uri}");
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "protected route {uri}");
         }
 
         let (status, body) = machine_get(&app, uri, Some(&cookie), None).await;
@@ -334,7 +358,11 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
         assert_eq!(body.as_ref(), expected);
 
         let (status, _) = machine_get(&app, uri, None, Some("invalid")).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "invalid bearer path {uri}");
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "invalid bearer path {uri}"
+        );
     }
 
     // The service, not the route snapshot, is the final authorization/serve
@@ -376,16 +404,17 @@ async fn native_machine_streams_preserve_session_and_bearer_authorization() {
     }
 }
 
-/// `PUT` one surface file, returning the `(status, retry_after)`.
-async fn put(
+/// Uploads one admitted publication object, returning `(status, retry_after)`.
+async fn upload_publication_object(
     app: &axum::Router,
-    uri: &str,
+    upload_url: &str,
     auth: &str,
     body: Vec<u8>,
 ) -> (StatusCode, Option<String>) {
+    let uri = url::Url::parse(upload_url).unwrap().path().to_string();
     let req = Request::builder()
         .method("PUT")
-        .uri(uri)
+        .uri(&uri)
         .header(header::HOST, "127.0.0.1:8420")
         .header(header::AUTHORIZATION, format!("Bearer {auth}"))
         .body(Body::from(body))
@@ -397,6 +426,54 @@ async fn put(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     (resp.status(), retry)
+}
+
+/// Admits one exact publication manifest through the typed API.
+async fn begin_publication(
+    app: &axum::Router,
+    auth: &str,
+    generation: &str,
+    objects: &[(&str, &[u8], &str)],
+) -> (StatusCode, serde_json::Value) {
+    let refs = objects
+        .iter()
+        .find(|(path, _, _)| *path == "info/refs")
+        .map_or(&[][..], |(_, bytes, _)| *bytes);
+    rpc(
+        app,
+        "PublishService/BeginRegistryPublication",
+        serde_json::json!({
+            "registry": "acme/infra/prod/cdn",
+            "generation": generation,
+            "refsDigest": hex::encode(Sha256::digest(refs)),
+            "objects": objects.iter().map(|(path, bytes, kind)| serde_json::json!({
+                "path": path,
+                "sha256": hex::encode(Sha256::digest(bytes)),
+                "byteSize": bytes.len(),
+                "kind": kind,
+                "mediaType": if path.ends_with(".json") {
+                    "application/json"
+                } else if path.ends_with(".toml") {
+                    "application/toml"
+                } else {
+                    "application/octet-stream"
+                },
+            })).collect::<Vec<_>>(),
+        }),
+        Some(auth),
+    )
+    .await
+}
+
+/// Returns the typed upload URL for one path in an admitted publication.
+fn publication_upload_url<'a>(publication: &'a serde_json::Value, path: &str) -> &'a str {
+    publication["objects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|object| object["path"] == path)
+        .and_then(|object| object["uploadUrl"].as_str())
+        .unwrap()
 }
 
 /// POST a form body, returning `(status, retry_after)`.
@@ -504,10 +581,15 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
         &[Permission::Publish],
     );
 
-    // A 4-byte object fits and increments usage.
-    let (status, _) = put(
+    let first = [
+        ("objects/ab/cd", b"data".as_slice(), "immutable"),
+        ("info/refs", b"".as_slice(), "mutable_pointer"),
+    ];
+    let (status, publication) = begin_publication(&app, &token, "quota-fits-v1", &first).await;
+    assert_eq!(status, StatusCode::OK, "{publication}");
+    let (status, _) = upload_publication_object(
         &app,
-        "/acme/infra/prod/cdn/objects/ab/cd",
+        publication_upload_url(&publication, "objects/ab/cd"),
         &token,
         b"data".to_vec(),
     )
@@ -516,10 +598,15 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
     assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
     assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 
-    // A second object pushing past 10 bytes is rejected 507; usage unchanged.
-    let (status, _) = put(
+    let second = [
+        ("objects/ef/gh", b"too-many-bytes".as_slice(), "immutable"),
+        ("info/refs", b"".as_slice(), "mutable_pointer"),
+    ];
+    let (status, publication) = begin_publication(&app, &token, "quota-overflow-v1", &second).await;
+    assert_eq!(status, StatusCode::OK, "{publication}");
+    let (status, _) = upload_publication_object(
         &app,
-        "/acme/infra/prod/cdn/objects/ef/gh",
+        publication_upload_url(&publication, "objects/ef/gh"),
         &token,
         b"too-many-bytes".to_vec(),
     )
@@ -529,7 +616,7 @@ async fn upload_over_byte_quota_returns_507_and_under_increments_usage() {
 }
 
 #[tokio::test]
-async fn overwrite_with_larger_payload_charges_the_delta() {
+async fn immutable_publication_path_rejects_changed_content() {
     let (db, _surface, _binding) = empty_managed().await;
     let org = db.org_by_slug("acme").await.unwrap().unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
@@ -539,10 +626,15 @@ async fn overwrite_with_larger_payload_charges_the_delta() {
         &[Permission::Publish],
     );
 
-    // Initial write of a 4-byte object: usage is 4 bytes / 1 object.
-    let (status, _) = put(
+    let first = [
+        ("objects/ab/cd", b"data".as_slice(), "immutable"),
+        ("info/refs", b"".as_slice(), "mutable_pointer"),
+    ];
+    let (status, publication) = begin_publication(&app, &token, "immutable-v1", &first).await;
+    assert_eq!(status, StatusCode::OK, "{publication}");
+    let (status, _) = upload_publication_object(
         &app,
-        "/acme/infra/prod/cdn/objects/ab/cd",
+        publication_upload_url(&publication, "objects/ab/cd"),
         &token,
         b"data".to_vec(),
     )
@@ -551,28 +643,14 @@ async fn overwrite_with_larger_payload_charges_the_delta() {
     assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
     assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 
-    // Overwrite the same path with a larger 10-byte payload: usage grows by the
-    // 6-byte delta (not the full 10), and the object count is unchanged.
-    let (status, _) = put(
-        &app,
-        "/acme/infra/prod/cdn/objects/ab/cd",
-        &token,
-        b"ten-bytes!".to_vec(),
-    )
-    .await;
-    assert!(status.is_success(), "{status}");
-    assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 10);
-    assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
-
-    // A shrinking overwrite back to 4 bytes subtracts the delta.
-    let (status, _) = put(
-        &app,
-        "/acme/infra/prod/cdn/objects/ab/cd",
-        &token,
-        b"abcd".to_vec(),
-    )
-    .await;
-    assert!(status.is_success(), "{status}");
+    // A later generation cannot assign different bytes to the same immutable
+    // path. Admission fails before any write or quota change.
+    let changed = [
+        ("objects/ab/cd", b"ten-bytes!".as_slice(), "immutable"),
+        ("info/refs", b"".as_slice(), "mutable_pointer"),
+    ];
+    let (status, _) = begin_publication(&app, &token, "immutable-v2", &changed).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
     assert_eq!(db.org_usage(org.id).await.unwrap().used_bytes, 4);
     assert_eq!(db.org_usage(org.id).await.unwrap().object_count, 1);
 }
@@ -715,16 +793,25 @@ async fn org_export_manifest_redacts_secrets_and_surface_round_trips() {
         .await
         .unwrap();
 
-    // Upload a surface so the surface copy has something to round-trip.
+    // Upload an admitted immutable object so the surface copy has something to
+    // round-trip. The typed publication remains intentionally uncommitted: the
+    // export test concerns physical-byte copying, not signed-index promotion.
     let app = router(app_state(Arc::clone(&db)).await).await;
     let token = bearer(
         Principal::service_account(sa),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Publish],
     );
-    let (status, _) = put(
+    let objects = [
+        ("objects/ab/cd", b"surface-bytes".as_slice(), "immutable"),
+        ("info/refs", b"".as_slice(), "mutable_pointer"),
+    ];
+    let (status, publication) =
+        begin_publication(&app, &token, "export-fixture-v1", &objects).await;
+    assert_eq!(status, StatusCode::OK, "{publication}");
+    let (status, _) = upload_publication_object(
         &app,
-        "/acme/infra/prod/cdn/objects/ab/cd",
+        publication_upload_url(&publication, "objects/ab/cd"),
         &token,
         b"surface-bytes".to_vec(),
     )

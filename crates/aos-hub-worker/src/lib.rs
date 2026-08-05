@@ -2,11 +2,11 @@
 //!
 //! RFC-0004 specifies a Cloudflare Workers deployment of the registry hub —
 //! `wasm32-unknown-unknown` via `workers-rs`, with a colocated-SQLite system of record, R2
-//! as a zero-egress facade, KV for sessions, and Cron Triggers driving the
+//! as zero-egress storage, KV for sessions, and Cron Triggers driving the
 //! indexer ("Architecture and runtime targets"). The native hub is a sync
 //! axum + tokio + rusqlite binary that cannot compile to wasm32, so this is a
 //! **separate Worker crate** implementing the RFC's phase-1 Cloudflare
-//! deployment: **read the index + serve the facade**. It deliberately reuses
+//! deployment: **read the index + serve typed delivery routes**. It deliberately reuses
 //! the pure, shared crates rather than porting the native hub:
 //!
 //! - [`aos_registry_surface`] — the wasm-clean reader (objects, tags, refs,
@@ -15,7 +15,7 @@
 //! - [`aos_hub_core`] — the shared `Database` (schema `MIGRATIONS` + read
 //!   queries) the native hub runs, driven over the [`sqldobackend`] so the
 //!   Worker's read path and indexer cannot drift from the hub's.
-//! - The shared facade classification in [`aos_hub_core::keymap`] — re-exported
+//! - The shared machine-object classification in [`aos_hub_core::keymap`] — re-exported
 //!   through [`keymap`] for Worker object-key mapping.
 //!
 //! # What is and isn't here (yet)
@@ -33,8 +33,8 @@
 //!   /aos.hub.v1.{Service}/{Method}`) — the write/publish path,
 //!   authentication (tokens/sessions/SSO/device-flow), private-registry access
 //!   control, and IAM/config/webhook/publish RPCs;
-//! - the machine-path facade (`GET`/`HEAD` `/{slug}/{*path}`), delegating to
-//!   the shared streaming
+//! - exact domain/IP endpoints and delivery routes, resolved before delegating
+//!   to the shared streaming
 //!   [`registry_serve`](aos_hub_core::service::RpcService::registry_serve) and
 //!   [`cache_serve`](aos_hub_core::service::RpcService::cache_serve) paths over
 //!   the placement-aware R2 [`surface`] provider;
@@ -700,10 +700,10 @@ mod entry {
     ///
     /// The shared router ([`aos_hub_core::connect::router`]) owns the
     /// entire request surface — the `aos.hub.v1` RPC methods, the
-    /// machine-path facade (`GET`/`HEAD` `/{slug}/{*path}`), and the no-JS
+    /// typed delivery-route dispatcher, and the no-JS
     /// browse UI + JSON read API (the hub home `/` and the `/{slug}/-/…` pages),
     /// all single-sourced with the native hub. The [`crate::surface`]
-    /// `SurfaceProvider` backs the facade and the `GitService` reads, and the
+    /// `SurfaceProvider` backs delivery and the `GitService` reads, and the
     /// shared [`aos_hub_core::web`] browse reads the same `RpcService` read
     /// methods. The schema is migrated inside the `HubDb` Durable Object on first
     /// use; root bootstrap goes through the seal-gated `HubDb` endpoint — there is

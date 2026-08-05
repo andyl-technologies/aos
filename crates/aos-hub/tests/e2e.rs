@@ -1,4 +1,4 @@
-//! End-to-end: fixture surface → index (verified) → facade + pages.
+//! End-to-end: fixture surface → verified index → typed delivery + pages.
 //!
 //! The local-first loop from RFC-0004's testing story, tier 3: a complete
 //! registry surface on disk, indexed fail-closed with real signature
@@ -69,95 +69,10 @@ async fn request(
     (status, headers, body)
 }
 
-async fn configure_image_delivery_route(
-    db: &Database,
-    registry_id: i64,
-    placement_id: i64,
-    owner_scope: &str,
-    endpoint_id: &str,
-    route_id: &str,
-    base_path: &str,
-) {
-    use aos_hub::db::{DeliveryRouteSpec, SurfaceTarget};
-    use sha2::{Digest as _, Sha256};
-
-    let access_policy_json = "{}".to_string();
-    let access_policy_digest = hex::encode(Sha256::digest(access_policy_json.as_bytes()));
-    let canonical_url = format!("http://127.0.0.1:8420{base_path}");
-    let endpoint = db.delivery_endpoint(endpoint_id).await.unwrap().unwrap();
-    let endpoint_digest = hex::decode(&endpoint.endpoint_identity_digest).unwrap();
-    let reservation_key = [9_u8; 32];
-    let reservation_digest = Database::route_reservation_digest(
-        &reservation_key,
-        &endpoint_digest,
-        base_path,
-        &canonical_url,
-    )
-    .unwrap();
-    let route = db
-        .create_delivery_route(
-            route_id,
-            SurfaceTarget::Registry(registry_id),
-            &DeliveryRouteSpec {
-                consumer_scope_key: owner_scope.to_string(),
-                endpoint_id: endpoint_id.to_string(),
-                endpoint_generation: 1,
-                endpoint_ingress_kind: "hub".to_string(),
-                base_path: base_path.to_string(),
-                mode: "hub_proxy".to_string(),
-                access_policy_kind: "public".to_string(),
-                access_policy_json,
-                access_policy_digest: access_policy_digest.clone(),
-                access_boundary_id: None,
-                access_boundary_revision: None,
-                external_provider_kind: None,
-                external_provider_resource_id: None,
-                external_provider_revision: None,
-                storage_gateway_id: None,
-                gateway_generation: None,
-                target_storage_binding_id: None,
-                gateway_client_base_path: None,
-                target_placement_prefix: None,
-                placement_id: Some(placement_id),
-                placement_policy_revision_id: None,
-                serves_git: true,
-                serves_cache: false,
-                serves_web: true,
-                enabled: true,
-            },
-            &canonical_url,
-            1,
-            &reservation_digest,
-            &[(1, reservation_digest.to_vec())],
-            None,
-            "test",
-        )
-        .await
-        .unwrap();
-    let configuration_digest = route.configuration_digest.as_deref().unwrap();
-    db.reconcile_delivery_route(
-        route_id,
-        route.configuration_generation.unwrap(),
-        configuration_digest,
-        &access_policy_digest,
-        "healthy",
-        "verified",
-        None,
-        None,
-        1,
-    )
-    .await
-    .unwrap();
-    db.set_canonical_route(SurfaceTarget::Registry(registry_id), "git", route_id, None)
-        .await
-        .unwrap();
-}
-
 #[tokio::test]
 async fn signed_system_images_work_end_to_end_for_public_and_private_registries() {
     use aos_hub::db::{
-        DeliveryEndpointHostInput, DeliveryEndpointRevisionSpec, NewSurfacePlacementSpec,
-        SurfaceTarget, TokenAuth, UpdateSurfacePlacementSpec,
+        NewSurfacePlacementSpec, SurfaceTarget, TokenAuth, UpdateSurfacePlacementSpec,
     };
     use aos_hub::domain::{Permission, Principal, Scope};
     use sha2::{Digest as _, Sha256};
@@ -263,57 +178,26 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     }
 
     let owner_scope = common::org_scope(&db, "images").await;
-    db.create_delivery_endpoint(
-        "endpoint:image-fixture",
-        &owner_scope,
-        Some(org),
-        "http",
-        &DeliveryEndpointHostInput::Ipv4([127, 0, 0, 1]),
-        8420,
-        "instance:public",
-        &DeliveryEndpointRevisionSpec {
-            boundary_revision: 1,
-            ingress_kind: "hub".to_string(),
-            listener_configuration: "listener:image-fixture".to_string(),
-            tls_configuration: "{}".to_string(),
-            probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
-        },
-        Some(1),
-        "test",
-        "request:image-fixture-endpoint",
-    )
-    .await
-    .unwrap();
-    db.reconcile_delivery_endpoint(
-        "endpoint:image-fixture",
-        1,
-        1,
-        "healthy",
-        true,
-        false,
-        None,
-        1,
-    )
-    .await
-    .unwrap();
-    configure_image_delivery_route(
+    common::configure_hub_delivery_route(
         &db,
-        public_id,
+        SurfaceTarget::Registry(public_id),
         public_placement_id.unwrap(),
         &owner_scope,
         "endpoint:image-fixture",
         "route:image-public",
         "/images/public",
+        "git",
     )
     .await;
-    configure_image_delivery_route(
+    common::configure_hub_delivery_route(
         &db,
-        private_id,
+        SurfaceTarget::Registry(private_id),
         private_placement_id.unwrap(),
         &owner_scope,
         "endpoint:image-fixture",
         "route:image-private",
         "/images/private",
+        "git",
     )
     .await;
 
@@ -387,7 +271,7 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
 
     // Publish the signed image-bearing surface through the typed producer API.
     // The manifest declares disk bytes directly; no NAR/store indirection or
-    // slug upload facade participates in publication.
+    // Publication uses only the typed manifest and object-upload transaction.
     let refs = std::fs::read(public_surface.join("info/refs")).unwrap();
     let raw_info = std::fs::read(public_surface.join(&public_fixture.raw_info_key)).unwrap();
     let qcow2_info = std::fs::read(public_surface.join(&public_fixture.qcow2_info_key)).unwrap();

@@ -1,17 +1,26 @@
 //! HTTP(S) cache backend: generic binary caches and the AOS server API.
 //!
-//! One backend serves two modes, switched by whether an AOS provisioning
-//! token was supplied:
+//! One backend serves three negotiated modes:
 //!
 //! - **Generic mode** — plain GET/PUT/HEAD on `<hash>.narinfo` and
 //!   `nar/...` URLs, compatible with any Nix binary cache.
-//! - **AOS mode** — the provisioning token is exchanged for a JWT at
-//!   `/oauth2/token`, and the AOS server API is used: batch
+//! - **AOS server mode** — the provisioning token is exchanged for a JWT at
+//!   `/oauth2/token`, and the older standalone server API is used: batch
 //!   `/query-missing`, `/upload-pack` for batched NAR import, and
 //!   server-synthesised narinfo / cache-info (the corresponding client
 //!   puts become no-ops).
+//! - **Hub mode** — token capabilities or successful typed admission select
+//!   `CreateCacheObjectUploads` plus typed multipart. No consumer delivery URL
+//!   is used as an upload endpoint.
 
-use std::{fs::File, io::Read as _, sync::Arc};
+use std::{
+    fs::File,
+    io::Read as _,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -41,10 +50,10 @@ pub struct HttpBackend {
     headers: Vec<(String, String)>,
     /// Whether the authenticated target speaks the AOS API.
     is_aos: bool,
-    /// Whether token exchange identified the topology-native Hub API.
-    is_hub: bool,
-    /// Whether token exchange explicitly negotiated multipart upload v1.
-    multipart_v1: bool,
+    /// Whether authentication or typed upload admission identified the Hub API.
+    is_hub: AtomicBool,
+    /// Whether authentication or typed upload admission enabled multipart upload v1.
+    multipart_v1: AtomicBool,
 }
 
 /// OAuth2 token-endpoint response, including explicitly negotiated features.
@@ -103,8 +112,8 @@ impl HttpBackend {
             origin,
             headers,
             is_aos,
-            is_hub: false,
-            multipart_v1: false,
+            is_hub: AtomicBool::new(false),
+            multipart_v1: AtomicBool::new(false),
         };
 
         // If we have an AOS token, authenticate to get a JWT.
@@ -147,14 +156,20 @@ impl HttpBackend {
             .ok_or_else(|| anyhow::anyhow!("empty authentication response"))?;
         let token_resp: TokenResponse =
             serde_json::from_slice(&body).context("parsing token response")?;
-        self.multipart_v1 = token_resp
-            .capabilities
-            .iter()
-            .any(|capability| capability == "aos.multipart.v1");
-        self.is_hub = token_resp
-            .capabilities
-            .iter()
-            .any(|capability| capability == "aos.hub.topology.v1");
+        self.multipart_v1.store(
+            token_resp
+                .capabilities
+                .iter()
+                .any(|capability| capability == "aos.multipart.v1"),
+            Ordering::Relaxed,
+        );
+        self.is_hub.store(
+            token_resp
+                .capabilities
+                .iter()
+                .any(|capability| capability == "aos.hub.topology.v1"),
+            Ordering::Relaxed,
+        );
 
         // Update the auth store with the JWT.
         let host = url::Url::parse(&self.base_url)
@@ -275,13 +290,15 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
-        if self.is_hub {
+        if self.is_hub.load(Ordering::Relaxed) {
             let path = format!("{store_hash}.narinfo");
             let upload_url = self
-                .create_upload_url(&path, content.len() as u64)
+                .create_object_upload(&path, content.len() as u64)
                 .await?
                 .context("Hub did not admit the narinfo upload")?;
-            return self.put_to_url(&upload_url, content.as_bytes()).await;
+            return self
+                .upload_to_admitted_url(&upload_url, content.as_bytes())
+                .await;
         }
         if self.is_aos {
             // AOS servers generate narinfo on demand from the ValidPaths DB
@@ -322,13 +339,13 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
-        if self.is_hub {
+        if self.is_hub.load(Ordering::Relaxed) {
             let path = format!("nar/{filename}");
             let upload_url = self
-                .create_upload_url(&path, data.len() as u64)
+                .create_object_upload(&path, data.len() as u64)
                 .await?
                 .context("Hub requires multipart for this NAR upload")?;
-            return self.put_to_url(&upload_url, data).await;
+            return self.upload_to_admitted_url(&upload_url, data).await;
         }
         // TODO(aos-cache push >1MB): when is_aos == true, this path is
         // broken on two axes:
@@ -360,10 +377,10 @@ impl CacheBackend for HttpBackend {
         Ok(())
     }
 
-    async fn create_upload_url(&self, path: &str, size: u64) -> Result<Option<String>> {
-        // Only attempt against an authenticated AOS hub: a provisioning-token
+    async fn create_object_upload(&self, path: &str, size: u64) -> Result<Option<String>> {
+        // Only attempt against an authenticated AOS Hub: a provisioning-token
         // backend (`is_aos`) or one carrying an explicit `Authorization` header.
-        // An unauthenticated plain-HTTP cache cannot presign, so skip the RPC.
+        // An unauthenticated plain-HTTP cache cannot request admission, so skip the RPC.
         let has_auth = self.is_aos
             || self
                 .headers
@@ -395,6 +412,11 @@ impl CacheBackend for HttpBackend {
             "creating cache object upload failed with HTTP {}",
             result.status
         );
+        // A successful typed admission is also the capability probe for
+        // callers that supplied an already-minted Authorization header and
+        // therefore did not use the provisioning-token exchange.
+        self.is_hub.store(true, Ordering::Relaxed);
+        self.multipart_v1.store(true, Ordering::Relaxed);
         let url = result
             .body
             .as_deref()
@@ -411,7 +433,7 @@ impl CacheBackend for HttpBackend {
         Ok(url)
     }
 
-    async fn put_to_url(&self, url: &str, data: &[u8]) -> Result<()> {
+    async fn upload_to_admitted_url(&self, url: &str, data: &[u8]) -> Result<()> {
         // Direct-origin URLs embed SigV4 authorization. Typed Hub-proxy URLs
         // stay on the Hub control origin and require the caller's normal auth.
         let req = TransferRequest::put(url, data.to_vec());
@@ -438,7 +460,7 @@ impl CacheBackend for HttpBackend {
         Ok(())
     }
 
-    async fn create_upload_urls(
+    async fn create_object_uploads(
         &self,
         uploads: &[(String, u64)],
     ) -> Result<std::collections::HashMap<String, String>> {
@@ -476,6 +498,8 @@ impl CacheBackend for HttpBackend {
             "creating cache object uploads failed with HTTP {}",
             result.status
         );
+        self.is_hub.store(true, Ordering::Relaxed);
+        self.multipart_v1.store(true, Ordering::Relaxed);
         let Some(body) = result.body else {
             return Ok(empty);
         };
@@ -506,7 +530,7 @@ impl CacheBackend for HttpBackend {
         if narinfos.is_empty() {
             return Ok(());
         }
-        if self.is_aos && !self.is_hub {
+        if self.is_aos && !self.is_hub.load(Ordering::Relaxed) {
             // AOS pack-mode servers synthesise narinfo from registered paths.
             return Ok(());
         }
@@ -517,7 +541,7 @@ impl CacheBackend for HttpBackend {
     }
 
     fn supports_multipart(&self) -> bool {
-        self.multipart_v1
+        self.multipart_v1.load(Ordering::Relaxed)
     }
 
     async fn initiate_multipart(
@@ -670,7 +694,7 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn query_missing(&self, store_hashes: &[&str]) -> Result<Vec<String>> {
-        if self.is_aos && !self.is_hub {
+        if self.is_aos && !self.is_hub.load(Ordering::Relaxed) {
             // AOS server has a batch endpoint.
             let url = format!("{}/query-missing", self.base_url);
             let paths: Vec<String> = store_hashes.iter().map(|h| h.to_string()).collect();
@@ -753,7 +777,21 @@ impl CacheBackend for HttpBackend {
         let size = std::fs::metadata(source)
             .with_context(|| format!("stat static file {}", source.display()))?
             .len();
-        if self.is_hub && size > MULTIPART_THRESHOLD {
+        // A caller may provide a previously minted Authorization header rather
+        // than a provisioning token. Typed admission discovers the Hub before
+        // choosing between direct and multipart delivery.
+        let admitted_url = if self.is_hub.load(Ordering::Relaxed) {
+            None
+        } else if self
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        {
+            self.create_object_upload(relative_path, size).await?
+        } else {
+            None
+        };
+        if self.is_hub.load(Ordering::Relaxed) && size > MULTIPART_THRESHOLD {
             if !self.supports_multipart() {
                 anyhow::bail!(
                     "AOS server did not negotiate multipart support for large static file {relative_path}"
@@ -813,14 +851,17 @@ impl CacheBackend for HttpBackend {
             }
             return Ok(());
         }
-        if self.is_hub {
+        if self.is_hub.load(Ordering::Relaxed) {
             let bytes = std::fs::read(source)
                 .with_context(|| format!("reading static file {}", source.display()))?;
-            let upload_url = self
-                .create_upload_url(relative_path, size)
-                .await?
-                .context("Hub did not admit the static-file upload")?;
-            return self.put_to_url(&upload_url, &bytes).await;
+            let upload_url = match admitted_url {
+                Some(url) => url,
+                None => self
+                    .create_object_upload(relative_path, size)
+                    .await?
+                    .context("Hub did not admit the static-file upload")?,
+            };
+            return self.upload_to_admitted_url(&upload_url, &bytes).await;
         }
         let url = self.static_file_url(relative_path);
         let mut req = TransferRequest::put_file(&url, source.to_path_buf());
@@ -847,7 +888,7 @@ impl CacheBackend for HttpBackend {
     }
 
     fn supports_pack(&self) -> bool {
-        self.is_aos && !self.is_hub
+        self.is_aos && !self.is_hub.load(Ordering::Relaxed)
     }
 
     async fn upload_pack(&self, data: &[u8]) -> Result<Vec<String>> {

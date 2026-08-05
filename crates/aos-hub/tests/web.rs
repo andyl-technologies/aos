@@ -52,6 +52,28 @@ async fn serve_fixture(surface: &Path, fixture: &common::Fixture) -> (axum::Rout
         .await
         .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
+    let binding =
+        common::create_instance_local_binding(&db, "fixture-origin", surface.to_str().unwrap())
+            .await;
+    let placement = common::create_ready_placement(
+        &db,
+        SurfaceTarget::Registry(registry.id),
+        binding,
+        "fixture-primary",
+        "",
+    )
+    .await;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::Registry(registry.id),
+        placement.id,
+        &registry.owner_scope_key,
+        "endpoint:web-fixture",
+        "route:web-fixture",
+        "/demo",
+        "git",
+    )
+    .await;
     index_and_record(&db, &LocalFsFetch::new(surface), &registry)
         .await
         .unwrap();
@@ -666,11 +688,28 @@ async fn cache_browse_and_nar_explorer_over_plain_http() {
         )
         .await
         .unwrap();
-    common::create_ready_placement(
+    let placement = common::create_ready_placement(
         &db,
         SurfaceTarget::BinaryCache(cache),
         binding,
         "primary",
+        "cache",
+    )
+    .await;
+    let owner_scope = db
+        .binary_cache_by_id(cache)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_scope_key;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::BinaryCache(cache),
+        placement.id,
+        &owner_scope,
+        "endpoint:cache-web-fixture",
+        "route:cache-web-fixture",
+        "/acme-cache",
         "cache",
     )
     .await;
@@ -758,12 +797,29 @@ async fn private_cache_machine_read_is_gated_on_the_streaming_path() {
         .create_binary_cache(Some(org), "priv-cache", "Priv", "private", 40, "zstd", true)
         .await
         .unwrap();
-    common::create_ready_placement(
+    let placement = common::create_ready_placement(
         &db,
         SurfaceTarget::BinaryCache(cache),
         binding,
         "primary",
         "pc",
+    )
+    .await;
+    let owner_scope = db
+        .binary_cache_by_id(cache)
+        .await
+        .unwrap()
+        .unwrap()
+        .owner_scope_key;
+    common::configure_hub_delivery_route(
+        &db,
+        SurfaceTarget::BinaryCache(cache),
+        placement.id,
+        &owner_scope,
+        "endpoint:private-cache-web-fixture",
+        "route:private-cache-web-fixture",
+        "/priv-cache",
+        "cache",
     )
     .await;
     // Put the narinfo on the surface too, so a missing gate would actually serve.
