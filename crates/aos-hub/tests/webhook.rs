@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{Database, DueDelivery, SetSurfaceObject, SurfaceTarget, TokenAuth};
+use aos_hub::db::{Database, DueDelivery, TokenAuth};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
 use aos_hub::webhook::{self, WebhookEvent};
@@ -698,7 +698,8 @@ async fn webhook_rpc_create_list_delete_with_authz() {
             Some(&admin),
         )
         .await;
-        assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "failed_precondition");
     }
 
     let (status, plan_body) = rpc(
@@ -849,21 +850,11 @@ async fn metrics_renders_counters() {
     db.seed_delivery_for_test(hook, "index.completed", "{}")
         .await
         .unwrap();
-    // A managed cache with one indexed object so the cache gauges are non-zero.
-    let cache = db
-        .create_binary_cache(Some(org), "acme-cache", "Acme", "public", 40, "zstd", true)
+    // A managed cache exists, but a loose logical surface object is not part of
+    // the normalized, published cache inventory counted by usage metrics.
+    db.create_binary_cache(Some(org), "acme-cache", "Acme", "public", 40, "zstd", true)
         .await
         .unwrap();
-    db.create_surface_object(&SetSurfaceObject {
-        surface: SurfaceTarget::BinaryCache(cache),
-        object_key: "nar/ff.nar.zst".into(),
-        content_hash: Some("ff".into()),
-        size: Some(50),
-        object_kind: "immutable".into(),
-        mutable_publication_id: None,
-    })
-    .await
-    .unwrap();
     let app = router(app_state(db).await).await;
     let resp = app
         .oneshot(
@@ -886,10 +877,10 @@ async fn metrics_renders_counters() {
     assert!(text.contains("aos_hub_registries_by_state{state=\"fresh\"} 0"));
     assert!(text.contains("aos_hub_webhook_deliveries{status=\"pending\"} 1"));
     assert!(text.contains("aos_hub_caches_total 1"));
-    assert!(text.contains("aos_hub_cache_objects_total 1"));
-    assert!(text.contains("aos_hub_cache_bytes_total 50"));
-    assert!(text.contains("aos_hub_cache_gc_runs{status=\"ok\"} 1"));
-    assert!(text.contains("aos_hub_cache_gc_freed_bytes 4096"));
+    assert!(text.contains("aos_hub_cache_objects_total 0"));
+    assert!(text.contains("aos_hub_cache_bytes_total 0"));
+    assert!(text.contains("aos_hub_cache_gc_runs{status=\"ok\"} 0"));
+    assert!(text.contains("aos_hub_cache_gc_freed_bytes 0"));
     assert!(text.contains("aos_hub_build_info{version="));
 }
 
