@@ -116,11 +116,14 @@ The signature is a small, closed tuple. Each field is either a **key** field
 on), as selected by the active `SignaturePolicy` (§34.2.3).
 
 - **`failure_kind`** — the discriminant of *what kind of failure* this is. The
-  closed set is `{ PropertyViolation, Divergence }`: a `PropertyViolation` is a
+  closed set is `{ PropertyViolation, Divergence, Timeout }`: a `PropertyViolation` is a
   failed assertion/property (18 §18.8, 18 §18.10), and a `Divergence` is a
   replay-oracle / determinism failure (07 §6, 24 §5, [INV-10]) — a run whose
   realized state disagrees with its replay-from-ancestor derivation, localized to
-  a first differing decision/instruction by bisection (24 §5, 19 §19.6.2).
+  a first differing decision/instruction by bisection (24 §5, 19 §19.6.2). A
+  `Timeout` is a concrete execution whose configured virtual-time or scheduler-
+  quantum budget was exhausted. Frontier exhaustion without a concrete terminal
+  execution is campaign status, not a finding.
 
 - **`property_id` + `quantifier`** — for a `PropertyViolation`, the violated
   property's stable **id** ([ASRT-5], [GHC-20]) and its **quantifier**
@@ -137,6 +140,8 @@ on), as selected by the active `SignaturePolicy` (§34.2.3).
   quiescence point), reduced to its **event kind** (19 §19.7) and the **node**
   the site belongs to. For a `Divergence` this is the **first differing causal
   entry** localized by bisection (19 §19.6.2, [OBS-28]) — its `kind` and `node`.
+  For a `Timeout` this is the scheduler-owned execution-budget boundary, with
+  event kind `execution_budget_exhausted` and the node active at that boundary.
   **Critically**, the *absolute icount* of this point is **not** a key field by
   default (it is report-only; §34.2.2), and `faulting_node` is recorded under the
   **symmetry-canonical relabeling** (§34.2.2).
@@ -171,7 +176,7 @@ on), as selected by the active `SignaturePolicy` (§34.2.3).
 /// identity, so re-clustering is idempotent (§34.3).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FailureSignature {
-    /// What kind of failure: a property violation or a determinism divergence.
+    /// What kind of failure: a property violation, determinism divergence, or timeout.
     pub failure_kind: FailureKind,
     /// The violated property's id + quantifier (18 §18.10.1), for
     /// `PropertyViolation`. `None` for a `Divergence`.
@@ -196,6 +201,8 @@ pub enum FailureKind {
     PropertyViolation,
     /// A replay-oracle / determinism failure (07 §6, 24 §5, INV-10).
     Divergence,
+    /// A concrete execution exhausted its configured deterministic budget.
+    Timeout,
 }
 ```
 
@@ -210,11 +217,12 @@ pub enum FailureKind {
   `gate:content-address`. *Spec:* §34.2; cross-ref 19 §19.5, 06 [SPAT-27].
 
 - **[TRI-4]** The signature MUST carry at least the fields of §34.2.1:
-  `failure_kind` (`{ PropertyViolation, Divergence }`); for a `PropertyViolation`
+  `failure_kind` (`{ PropertyViolation, Divergence, Timeout }`); for a `PropertyViolation`
   the violated property's `id` and `quantifier` read from the violation record
   (18 §18.10.1, [ASRT-27]); a `first_failing_point` of `{ event_kind,
   faulting_node }` (the violation site of [ASRT-27] for a violation, or the first
-  differing causal entry of bisection (19 [OBS-28]) for a divergence) reduced to
+  differing causal entry of bisection (19 [OBS-28]) for a divergence, or the
+  scheduler-owned execution-budget boundary for a timeout) reduced to
   its event kind (19 §19.7) and node; a `coverage_class` bucketed from the
   deterministic `coverage_fingerprint` (07 §2, [OBS-29]); and an OPTIONAL
   `causal_slice_hash` over the canonicalized causal cone (19 §19.6.2). Each field
@@ -430,6 +438,13 @@ and removes out-of-cone decisions (so the slice hash must be cone-scoped,
 canonical, [TRI-6]). With those normalizations in place, signature preservation
 is *achievable*: a shrink that does not change the policy's key fields is
 accepted, and the result still clusters into the same cluster.
+
+A timeout has no assertion or divergence predicate that the offline model
+shrinker can safely replay. Triage records requested timeout minimization as the
+deterministic no-op disposition `not-applicable-timeout`: it retains the
+original representative, attempts zero candidates, and still recomputes and
+checks the signature. This differs from `--minimize none`, which records
+`not-requested` for every failure kind.
 
 ```text
   minimize_representative(cluster, policy):
@@ -665,14 +680,13 @@ entry) — and MUST fail loudly (exit 1), never be smoothed over ([INV-10]).
 
 ## 34.7 The findings ledger
 
-Triage's input is a **findings ledger**: the set of discovered findings, each a
-self-contained reproduction artifact (22 §22.8.1, 24 §12). The ledger is itself
-**content-addressed** and stored in the `DagStore` (07 §7) like any other
-artifact — it is just the set of artifacts the campaign retained as
-"interesting," exactly the corpus the fuzzer already manages (22 §22.7.2,
-[ADV-26]). Triage does not define a new ledger format; it reads the artifacts a
-campaign already emits ([ADV-28]) and the corpus a fuzzer already stores
-([ADV-26]).
+Triage's input is a **findings ledger**: a signed, canonical evidence envelope
+for the discovered findings. Each entry binds a self-contained reproduction
+artifact (22 §22.8.1, 24 §12) to the exact discovery-time event frames, coverage
+fingerprint, typed property-violation or timeout record, and failure-signature
+bytes. The v3 envelope is content-addressed and stored in the `DagStore` (07 §7);
+the binding makes offline recomputation detect tampering or discovery/triage
+drift. Readers retain compatibility with legacy v1/v2 property-only ledgers.
 
 Because the ledger is content-addressed, a finding appearing in two campaigns is
 **one entry** (dedup, [INV-6]), and a finding's identity is its reproduction
@@ -681,11 +695,11 @@ artifact's content hash — the same identity triage clusters by member hash
 corpus: triage is a projection *over* the same content-addressed substrate, not a
 sidecar database.
 
-- **[TRI-18]** Triage's input findings ledger MUST be a **content-addressed** set
-  of self-contained reproduction artifacts (22 §22.8.1, 24 §12) stored in the
-  `DagStore` (07 §7): triage MUST NOT define a new ledger or finding format but
-  MUST read the artifacts a campaign emits ([ADV-28]) and the corpus a fuzzer
-  stores ([ADV-26]). A finding's identity MUST be its reproduction-artifact
+- **[TRI-18]** Triage's input findings ledger MUST be a **content-addressed**, signed
+  canonical envelope whose entries bind self-contained reproduction artifacts
+  (22 §22.8.1, 24 §12) to exact discovery-time evidence and signature bytes.
+  Search and fuzz MUST emit this envelope directly for retained property and
+  timeout findings. A finding's identity MUST be its reproduction-artifact
   content hash (the member identity of §34.3), so a finding appearing in two
   campaigns is one ledger entry (dedup, [INV-6]). *Gate:* `gate:content-address`.
   *Spec:* §34.7; cross-ref 22 §22.7.2, §22.8.1, [INV-6].
@@ -795,7 +809,7 @@ WHAT (§34.1): failure triage = a deterministic, OFFLINE, content-addressed
   replays ([TRI-1], [TRI-2]).
 
 SIGNATURE (§34.2): a content-addressed tuple from the RECORDED RUN ALONE —
-  failure_kind {PropertyViolation, Divergence} · property id+quantifier (18) ·
+  failure_kind {PropertyViolation, Divergence, Timeout} · property id+quantifier (18) ·
   first_failing_point {event_kind, faulting_node} · coverage_class (bucketed from
   07 §2 coverage_fingerprint) · optional causal_slice_hash (cone, 19 §19.6.2).
   THREE NORMALIZATIONS: icount REPORT-ONLY ([TRI-5]) · node SYMMETRY-CANONICAL
@@ -824,8 +838,9 @@ CLI (§34.6): `crucible triage <findings>` — thin driver, no run state; flags
   Result is a content-addressed DagStore artifact (dedup; --compare = content diff,
   [TRI-16]); fully offline + self-checking via --recompute-signatures ([TRI-17]).
 
-LEDGER (§34.7): content-addressed set of reproduction artifacts in the DagStore;
-  no new format; finding identity = artifact content hash ([TRI-18]).
+LEDGER (§34.7): signed v3 evidence envelope in the DagStore, binding each
+  reproduction artifact to exact event frames, coverage, typed finding evidence,
+  and discovery signature; finding identity = artifact content hash ([TRI-18]).
 
 RISKS (§34.8): signature stability across minimization (THE invariant, §34.8.1) ·
   over/under-clustering (coverage bucketing + symmetry canon + causal-slice knobs,

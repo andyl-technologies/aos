@@ -14,14 +14,17 @@ use crucible::{
     EventLogOffset, EventPayload, EventSource, FailureCausalCone, FailureClusterFinding,
     FailureClusterReport, FailureClusterReportDivergence, FailureClusterReportFailure,
     FailureClusterReportFormat, FailureClusterReportSet, FailureClusteringResult,
-    FailureFindingsLedger, FailureKind, FailurePropertyViolationRecord, FailureRecordedEventLog,
-    FailureSignature, FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
-    FailureSignaturePreservingMinimizationRun, FailureTriageResult, FailureTriageResultIdentity,
+    FailureFindingsLedger, FailureKind, FailureMinimizationDisposition,
+    FailurePropertyViolationRecord, FailureRecordedEventLog, FailureSignature,
+    FailureSignatureNormalization, FailureSignaturePreservingMinimizationResult,
+    FailureSignaturePreservingMinimizationRun, FailureTimeoutBudgetKind, FailureTimeoutRecord,
+    FailureTriageResult, FailureTriageResultIdentity,
     FailureTriageSignatureSelfCheck, FailureTriageSignatureSelfCheckInput, FindingDiscoveryPath,
     FindingReproductionArtifact, HostAssertionViolation, Icount, MarkerId, MemoryDagStore,
     MinimizationConfig, MinimizationRun, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
     OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogPayload,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload,
     SchedulingPoint, Seed, SignaturePolicy, SignaturePolicyLevel, SymmetryClassId,
     SymmetryReductionClasses, VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
@@ -158,6 +161,61 @@ fn failure_signature_reads_divergence_bisection_point() -> Result<(), Box<dyn Er
     assert!(signature.causal_slice_hash.is_some());
     assert_eq!(signature.content_hash(), signature.content_hash());
 
+    Ok(())
+}
+
+#[test]
+fn timeout_signature_keys_stable_budget_domain_not_numeric_counters()
+-> Result<(), Box<dyn Error>> {
+    let scenario = scenario_form()?;
+    let finding = finding_artifact(
+        &scenario,
+        Schedule::empty(),
+        FindingDiscoveryPath::CoverageGuidedFuzzing,
+        finding_hash("timeout"),
+    )?;
+    let at = VirtualTime { ticks: 41 };
+    let entries = vec![SchedulerEventLogEntry::execution_budget_exhausted(
+        0,
+        at,
+        "execution-quanta",
+    )];
+    let recorded_log = FailureRecordedEventLog::from_causal_entries_and_coverage(
+        &finding,
+        &entries,
+        finding_hash("timeout-coverage"),
+    )?;
+    let first = FailureTimeoutRecord::new(
+        FailureTimeoutBudgetKind::ExecutionQuanta,
+        Some(100),
+        100,
+        at,
+        None,
+        None,
+        finding.artifact.id(),
+    );
+    let second = FailureTimeoutRecord::new(
+        FailureTimeoutBudgetKind::ExecutionQuanta,
+        Some(200),
+        173,
+        at,
+        None,
+        None,
+        finding.artifact.id(),
+    );
+
+    let first_signature =
+        FailureSignature::from_recorded_timeout(&finding, &recorded_log, &first)?;
+    let second_signature =
+        FailureSignature::from_recorded_timeout(&finding, &recorded_log, &second)?;
+
+    assert_eq!(first_signature.failure_kind, FailureKind::Timeout);
+    assert!(first_signature.property.is_none());
+    assert_eq!(first_signature, second_signature);
+    assert_eq!(
+        first_signature.first_failing_point.event_kind,
+        "execution_budget_exhausted"
+    );
     Ok(())
 }
 
@@ -1472,6 +1530,7 @@ fn no_op_minimization_run(
         representative_artifact: finding.artifact.id(),
         target_signature_key: signature_key.clone(),
         minimized_signature_key: signature_key,
+        disposition: FailureMinimizationDisposition::NotRequested,
         minimization: MinimizationRun {
             seed: Seed::from_u64(0x5452_4936),
             target_fingerprint: finding.finding_fingerprint,
