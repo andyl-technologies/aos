@@ -166,6 +166,7 @@ fn impossible_math_and_stochastic_parameters_fail_admission() {
                 .unwrap_or_else(|error| panic!("shape must validate: {error}")),
             scale_nanos: 0,
             sampler_version: SIGNAL_EVALUATOR_VERSION,
+            sampler_table: ContentHash::from_bytes(b"weibull-table"),
             key_domain: StochasticKeyDomain::Opportunity,
             maximum_nanos: None,
         }),

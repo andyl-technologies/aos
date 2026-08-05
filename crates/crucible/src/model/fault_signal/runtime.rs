@@ -12,8 +12,6 @@ use super::*;
 
 /// Semantic version of runtime/checkpoint state.
 pub const FAULT_RUNTIME_STATE_VERSION: u16 = 1;
-/// Maximum serialized bytes retained for one signal node.
-pub const HARD_SIGNAL_NODE_RUNTIME_BYTES: usize = 16_777_216;
 /// Maximum active contributions in one run.
 pub const HARD_ACTIVE_CONTRIBUTIONS: usize = 262_144;
 /// Maximum keyed search overrides in one run.
@@ -22,47 +20,6 @@ pub const HARD_SEARCH_OVERRIDES: usize = 262_144;
 pub const HARD_RESOLVED_EFFECT_RECORDS: usize = 4_194_304;
 /// Maximum bytes in one adapter checkpoint payload.
 pub const HARD_ADAPTER_CHECKPOINT_BYTES: usize = 268_435_456;
-
-/// Runtime state for one signal node.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SignalNodeRuntimeState {
-    /// Last coordinate at which the node was evaluated.
-    pub last_coordinate: FaultCoordinate,
-    /// Canonical state-machine or operator bytes.
-    pub state_bytes: Vec<u8>,
-    /// Optional normalized-trace chunk identity.
-    pub trace_chunk: Option<ContentHash>,
-    /// Next sample or event index in that chunk.
-    pub trace_entry: Option<u32>,
-    /// Digest of the last produced value.
-    pub last_value: Option<ContentHash>,
-}
-
-impl SignalNodeRuntimeState {
-    /// Validates bounded bytes and trace-cursor completeness.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError`] when state exceeds its declared or hard
-    /// bound, or exactly one half of a trace cursor is present.
-    pub fn validate(&self, declared_state_bytes: u64) -> Result<(), FaultRuntimeError> {
-        let length = u64::try_from(self.state_bytes.len())
-            .map_err(|_| FaultRuntimeError::CountOverflow("signal_state_bytes"))?;
-        let hard = u64::try_from(HARD_SIGNAL_NODE_RUNTIME_BYTES)
-            .map_err(|_| FaultRuntimeError::CountOverflow("signal_state_hard_limit"))?;
-        if length > declared_state_bytes || length > hard {
-            return Err(FaultRuntimeError::StateLimit {
-                field: "signal_state_bytes",
-                actual: length,
-                configured: declared_state_bytes.min(hard),
-            });
-        }
-        if self.trace_chunk.is_some() != self.trace_entry.is_some() {
-            return Err(FaultRuntimeError::IncompleteTraceCursor);
-        }
-        Ok(())
-    }
-}
 
 /// Mutable activation state for one binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -497,8 +454,8 @@ pub struct FaultRuntimeCheckpoint {
     pub signal_program: ContentHash,
     /// Exact evaluator semantic version.
     pub evaluator_version: u16,
-    /// Per-node mutable evaluator state.
-    pub signals: BTreeMap<SignalId, SignalNodeRuntimeState>,
+    /// Complete canonical evaluator checkpoint.
+    pub evaluator: SignalEvaluatorCheckpoint,
     /// Per-binding transition and mapping state.
     pub bindings: BTreeMap<FaultObjectId, BindingRuntimeState>,
     /// Active persistent contributions.
@@ -544,36 +501,9 @@ impl FaultRuntimeCheckpoint {
                     .map_err(|_| FaultRuntimeError::CountOverflow("runtime_collections"))?,
             });
         }
-        let nodes = program
-            .nodes()
-            .iter()
-            .map(|node| (&node.id, node))
-            .collect::<BTreeMap<_, _>>();
-        let required_signal_state = program
-            .nodes()
-            .iter()
-            .filter(|node| {
-                matches!(node.kind, SignalNodeKind::Stateful { .. })
-                    || matches!(
-                        node.kind,
-                        SignalNodeKind::Source(SignalSourceSpecification::Trace { .. })
-                    )
-            })
-            .map(|node| &node.id)
-            .collect::<BTreeSet<_>>();
-        if self.signals.keys().collect::<BTreeSet<_>>() != required_signal_state {
-            return Err(FaultRuntimeError::IncompleteSignalState);
-        }
-        for (id, state) in &self.signals {
-            let node = nodes
-                .get(id)
-                .ok_or_else(|| FaultRuntimeError::UnknownSignal(id.clone()))?;
-            let declared = match node.kind {
-                SignalNodeKind::Stateful { state_bytes, .. } => state_bytes,
-                _ => 0,
-            };
-            state.validate(declared)?;
-        }
+        self.evaluator
+            .validate_for_program(program)
+            .map_err(|_| FaultRuntimeError::InvalidEvaluatorCheckpoint)?;
         let required_bindings = bindings
             .iter()
             .map(FaultBinding::id)
@@ -674,10 +604,8 @@ pub enum FaultRuntimeError {
         /// Effective maximum.
         configured: u64,
     },
-    /// Trace cursor omitted its chunk or entry half.
-    IncompleteTraceCursor,
-    /// Checkpoint omitted or added signal-node state.
-    IncompleteSignalState,
+    /// Canonical evaluator checkpoint failed version, identity, or content validation.
+    InvalidEvaluatorCheckpoint,
     /// Checkpoint omitted, duplicated, or added binding state.
     IncompleteBindingState,
     /// Checkpoint omitted or added production-adapter state.
@@ -711,8 +639,6 @@ pub enum FaultRuntimeError {
     },
     /// Runtime semantic version or program identity differs.
     VersionOrIdentityMismatch,
-    /// Checkpoint contains state for an unknown signal.
-    UnknownSignal(SignalId),
 }
 
 impl fmt::Display for FaultRuntimeError {
@@ -778,24 +704,6 @@ mod tests {
         assert!(removed.is_some());
         assert_eq!(table.entries().len(), 1);
         assert_eq!(table.composition_groups()[0].contributors.len(), 1);
-    }
-
-    #[test]
-    fn trace_cursor_must_be_complete() {
-        let state = SignalNodeRuntimeState {
-            last_coordinate: FaultCoordinate {
-                virtual_nanos: 0,
-                retired_instructions: None,
-            },
-            state_bytes: Vec::new(),
-            trace_chunk: Some(ContentHash::from_bytes(b"chunk")),
-            trace_entry: None,
-            last_value: None,
-        };
-        assert_eq!(
-            state.validate(0),
-            Err(FaultRuntimeError::IncompleteTraceCursor)
-        );
     }
 
     #[test]

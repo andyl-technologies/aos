@@ -21,10 +21,13 @@ mod effect;
 mod effect_parameters;
 mod effect_registry;
 mod error;
+mod evaluator;
 mod network_effect;
 mod node_effect;
 mod opportunity;
 mod runtime;
+mod sampler;
+mod spatial;
 mod storage_effect;
 #[cfg(test)]
 mod tests;
@@ -37,10 +40,13 @@ pub use effect::*;
 pub use effect_parameters::*;
 pub use effect_registry::*;
 pub use error::SignalProgramError;
+pub use evaluator::*;
 pub use network_effect::*;
 pub use node_effect::*;
 pub use opportunity::*;
 pub use runtime::*;
+pub use sampler::*;
+pub use spatial::*;
 pub use storage_effect::*;
 pub use trace::*;
 pub use trace_import::*;
@@ -354,6 +360,8 @@ pub enum SignalUnit {
     VirtualNanoseconds,
     /// Millimetres.
     Millimetres,
+    /// Squared millimetres.
+    SquareMillimetres,
     /// Millimetres per second.
     MillimetresPerSecond,
     /// Millidegrees.
@@ -398,6 +406,7 @@ impl SignalUnit {
             Self::Dimensionless => "dimensionless",
             Self::VirtualNanoseconds => "virtual_nanoseconds",
             Self::Millimetres => "millimetres",
+            Self::SquareMillimetres => "square_millimetres",
             Self::MillimetresPerSecond => "millimetres_per_second",
             Self::Millidegrees => "millidegrees",
             Self::Millicelsius => "millicelsius",
@@ -858,8 +867,13 @@ pub enum SignalInterpolation {
     HoldPrevious,
     /// Select the nearest sample with deterministic tie-breaking.
     Nearest,
-    /// Use exact rational linear interpolation.
-    Linear,
+    /// Uses exact rational linear interpolation with explicit arithmetic policy.
+    Linear {
+        /// Rounding applied when the exact result is not integral.
+        rounding: SignalRounding,
+        /// Behavior when the interpolated result exceeds its output type.
+        overflow: SignalOverflow,
+    },
 }
 
 /// Stable coordinate for an analytic signal point.
@@ -1151,6 +1165,8 @@ pub enum SignalSourceSpecification {
     TransmitterField {
         /// Transmitter identifier.
         transmitter: SignalId,
+        /// Coordinate frame used by transmitter and receiver positions.
+        coordinate_frame: SignalId,
         /// Input containing receiver position.
         position_signal: SignalId,
         /// Optional input containing receiver orientation.
@@ -1188,6 +1204,8 @@ pub enum SignalSourceSpecification {
         rate: ExactRatio,
         /// Integer sampler semantic version.
         sampler_version: u16,
+        /// Content-addressed normalized inverse-CDF table.
+        sampler_table: ContentHash,
         /// Key domain.
         key_domain: StochasticKeyDomain,
         /// Optional maximum duration after rounding.
@@ -1201,6 +1219,8 @@ pub enum SignalSourceSpecification {
         scale_nanos: u64,
         /// Integer sampler semantic version.
         sampler_version: u16,
+        /// Content-addressed normalized inverse-CDF table.
+        sampler_table: ContentHash,
         /// Key domain.
         key_domain: StochasticKeyDomain,
         /// Optional maximum duration after rounding.
@@ -1291,6 +1311,8 @@ pub enum PureSignalSpecification {
     Delay {
         /// Positive delay in the domain's base coordinate.
         delay: u64,
+        /// Hard maximum retained source samples.
+        retained_samples: u32,
     },
     /// Fixed-cadence sample and hold.
     SampleHold {
@@ -1298,6 +1320,8 @@ pub enum PureSignalSpecification {
         cadence: u64,
         /// Cadence epoch.
         epoch: SignalCoordinate,
+        /// Hard maximum retained source samples.
+        retained_samples: u32,
     },
     /// Bounded window aggregation.
     Window {
@@ -1333,8 +1357,11 @@ pub enum PureSignalSpecification {
         /// Closed orientation convention.
         convention: SignalId,
     },
-    /// Event merge with fixed same-coordinate ordering.
-    MergeEvents,
+    /// Event merge with fixed same-coordinate source-then-sequence ordering.
+    MergeEvents {
+        /// Exclusive upper bound for each source's local same-coordinate sequence.
+        source_sequence_limit: u64,
+    },
     /// Event gate.
     GateEvents,
 }
@@ -1366,6 +1393,8 @@ pub enum StatefulSignalSpecification {
         initial: SignalValue,
         /// Zero selects source change points; otherwise this is a cadence.
         cadence_nanos: u64,
+        /// Number of virtual nanoseconds represented by one input-rate unit.
+        time_unit_nanos: u64,
         /// Rounding policy.
         rounding: SignalRounding,
         /// Overflow policy.
@@ -1377,8 +1406,12 @@ pub enum StatefulSignalSpecification {
         initial: SignalValue,
         /// Positive cadence.
         cadence_nanos: u64,
+        /// Number of virtual nanoseconds represented by one input-rate unit.
+        time_unit_nanos: u64,
         /// Exact decay per cadence.
         decay_ratio: ExactRatio,
+        /// Maximum number of cadence transitions processed by one evaluation.
+        maximum_catch_up_steps: u32,
         /// Rounding policy.
         rounding: SignalRounding,
         /// Overflow policy.
@@ -1710,7 +1743,7 @@ fn canonicalize_node_inputs(node: &mut SignalNode) {
                 | PureSignalOperator::All
                 | PureSignalOperator::Any,
             ..
-        })
+        }) | SignalNodeKind::Pure(PureSignalSpecification::MergeEvents { .. })
     );
     if commutative {
         node.inputs.sort();
@@ -1893,55 +1926,91 @@ fn validate_source(
             quality_channel,
             quality_accept,
             time_mapping,
+            interpolation,
+            missing,
             before,
             after,
             ..
         } => {
             quality_channel.is_some() == quality_accept.is_some()
                 && time_mapping_valid(time_mapping)
+                && (*missing != MissingSampleBehavior::Interpolate
+                    || !matches!(interpolation, SignalInterpolation::Exact))
                 && boundary_valid(before, &node.output.value_type)
                 && boundary_valid(after, &node.output.value_type)
         }
         SignalSourceSpecification::Telemetry { boundary_delay, .. } => *boundary_delay == 1,
-        SignalSourceSpecification::PointSet { outside, .. } => {
-            node.domain == SignalDomain::Spatial && boundary_valid(outside, &node.output.value_type)
-        }
-        SignalSourceSpecification::ZoneMap { .. } => node.domain == SignalDomain::Spatial,
-        SignalSourceSpecification::PathProfile { before, after, .. } => {
+        SignalSourceSpecification::PointSet {
+            interpolation,
+            outside,
+            ..
+        } => {
             node.domain == SignalDomain::Spatial
-                && boundary_valid(before, &node.output.value_type)
-                && boundary_valid(after, &node.output.value_type)
+                && spatial_interpolation_valid(*interpolation, &node.output.value_type)
+                && spatial_boundary_valid(outside, &node.output.value_type)
+        }
+        SignalSourceSpecification::ZoneMap {
+            boundary, overlap, ..
+        } => {
+            node.domain == SignalDomain::Spatial
+                && matches!(boundary.as_str(), "inclusive" | "exclusive")
+                && overlap.as_str() == "priority-then-id"
+        }
+        SignalSourceSpecification::PathProfile {
+            interpolation,
+            before,
+            after,
+            ..
+        } => {
+            node.domain == SignalDomain::Spatial
+                && spatial_interpolation_valid(*interpolation, &node.output.value_type)
+                && spatial_boundary_valid(before, &node.output.value_type)
+                && spatial_boundary_valid(after, &node.output.value_type)
         }
         SignalSourceSpecification::RegularGrid {
             cell_size_mm,
             dimensions,
+            interpolation,
             outside,
             ..
         } => {
             node.domain == SignalDomain::Spatial
                 && cell_size_mm.iter().all(|value| *value > 0)
                 && dimensions.iter().all(|value| *value > 0)
-                && boundary_valid(outside, &node.output.value_type)
+                && spatial_interpolation_valid(*interpolation, &node.output.value_type)
+                && spatial_boundary_valid(outside, &node.output.value_type)
         }
         SignalSourceSpecification::TiledGrid {
             tile_size_mm,
+            interpolation,
             outside,
             ..
         } => {
             node.domain == SignalDomain::Spatial
                 && tile_size_mm.iter().all(|value| *value > 0)
-                && boundary_valid(outside, &node.output.value_type)
+                && spatial_interpolation_valid(*interpolation, &node.output.value_type)
+                && spatial_boundary_valid(outside, &node.output.value_type)
         }
         SignalSourceSpecification::SeededField {
             quantization_mm,
             correlation_mm,
+            distribution,
+            distribution_parameters,
             ..
         } => {
             node.domain == SignalDomain::Spatial
                 && quantization_mm.iter().all(|value| *value > 0)
                 && correlation_mm.iter().all(|value| *value > 0)
+                && seeded_distribution_valid(
+                    distribution,
+                    distribution_parameters,
+                    &node.output.value_type,
+                )
         }
-        SignalSourceSpecification::TransmitterField { .. } => node.domain == SignalDomain::Spatial,
+        SignalSourceSpecification::TransmitterField { model, .. } => matches!(
+            model.as_str(),
+            "free-space" | "log-distance" | "two-ray" | "calibrated-lookup"
+        ),
         SignalSourceSpecification::Bernoulli {
             probability_millionths,
             ..
@@ -1990,11 +2059,44 @@ fn boundary_valid(boundary: &SignalBoundaryBehavior, value_type: &SignalValueTyp
     }
 }
 
+fn spatial_boundary_valid(boundary: &SignalBoundaryBehavior, value_type: &SignalValueType) -> bool {
+    !matches!(boundary, SignalBoundaryBehavior::Repeat) && boundary_valid(boundary, value_type)
+}
+
+fn spatial_interpolation_valid(
+    interpolation: SignalInterpolation,
+    value_type: &SignalValueType,
+) -> bool {
+    !matches!(interpolation, SignalInterpolation::Linear { .. }) || value_type.is_numeric()
+}
+
+fn seeded_distribution_valid(
+    distribution: &SignalId,
+    parameters: &[i64],
+    value_type: &SignalValueType,
+) -> bool {
+    match distribution.as_str() {
+        "uniform-integer" => {
+            value_type == &SignalValueType::I64
+                && parameters.len() == 2
+                && parameters[0] <= parameters[1]
+        }
+        "probability-millionths" => {
+            value_type == &SignalValueType::ProbabilityMillionths
+                && parameters.len() == 1
+                && (0..=1_000_000).contains(&parameters[0])
+        }
+        "signed-hash" => value_type == &SignalValueType::I64 && parameters.is_empty(),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SignalDimension {
     Dimensionless,
     Time,
     Length,
+    SquareLength,
     Velocity,
     Angle,
     Temperature,
@@ -2022,6 +2124,7 @@ fn unit_dimension(unit: SignalUnit) -> SignalDimension {
         SignalUnit::Dimensionless => SignalDimension::Dimensionless,
         SignalUnit::VirtualNanoseconds => SignalDimension::Time,
         SignalUnit::Millimetres => SignalDimension::Length,
+        SignalUnit::SquareMillimetres => SignalDimension::SquareLength,
         SignalUnit::MillimetresPerSecond => SignalDimension::Velocity,
         SignalUnit::Millidegrees => SignalDimension::Angle,
         SignalUnit::Millicelsius => SignalDimension::Temperature,
@@ -2138,10 +2241,15 @@ fn validate_pure(
         PureSignalSpecification::UnitConvert {
             from_unit, to_unit, ..
         } => compatible_units(*from_unit, *to_unit) && *to_unit == node.output.unit,
-        PureSignalSpecification::Delay { delay } => *delay > 0,
-        PureSignalSpecification::SampleHold { cadence, epoch } => {
-            *cadence > 0 && coordinate_domain(epoch) == node.domain
-        }
+        PureSignalSpecification::Delay {
+            delay,
+            retained_samples,
+        } => *delay > 0 && *retained_samples > 0,
+        PureSignalSpecification::SampleHold {
+            cadence,
+            epoch,
+            retained_samples,
+        } => *cadence > 0 && *retained_samples > 0 && coordinate_domain(epoch) == node.domain,
         PureSignalSpecification::Window {
             operator,
             window,
@@ -2156,11 +2264,25 @@ fn validate_pure(
             ) && *window > 0
                 && *retained_samples > 0
         }
-        PureSignalSpecification::Distance { .. }
-        | PureSignalSpecification::ZoneContains { .. }
-        | PureSignalSpecification::FieldSample
-        | PureSignalSpecification::OrientationDelta { .. } => node.domain == SignalDomain::Spatial,
-        PureSignalSpecification::MergeEvents | PureSignalSpecification::GateEvents => {
+        PureSignalSpecification::Distance { metric, .. } => {
+            matches!(
+                metric.as_str(),
+                "manhattan" | "euclidean" | "euclidean-squared"
+            )
+        }
+        PureSignalSpecification::OrientationDelta { convention } => {
+            convention.as_str() == "yaw-pitch-roll-millidegrees"
+        }
+        PureSignalSpecification::ZoneContains { .. } | PureSignalSpecification::FieldSample => true,
+        PureSignalSpecification::MergeEvents {
+            source_sequence_limit,
+        } => {
+            *source_sequence_limit > 0
+                && matches!(node.output.value_type, SignalValueType::Event(_))
+                && u64::try_from(node.inputs.len())
+                    .is_ok_and(|count| count.checked_mul(*source_sequence_limit).is_some())
+        }
+        PureSignalSpecification::GateEvents => {
             matches!(node.output.value_type, SignalValueType::Event(_))
         }
     };
@@ -2223,18 +2345,27 @@ fn validate_stateful(
             initial,
             residence_nanos,
         } => initial.value_type().as_ref() == Some(&node.output.value_type) && *residence_nanos > 0,
-        StatefulSignalSpecification::Integrator { initial, .. } => {
+        StatefulSignalSpecification::Integrator {
+            initial,
+            time_unit_nanos,
+            ..
+        } => {
             initial.value_type().as_ref() == Some(&node.output.value_type)
                 && node.output.value_type.is_numeric()
+                && *time_unit_nanos > 0
         }
         StatefulSignalSpecification::LeakyIntegrator {
             initial,
             cadence_nanos,
+            time_unit_nanos,
+            maximum_catch_up_steps,
             ..
         } => {
             initial.value_type().as_ref() == Some(&node.output.value_type)
                 && node.output.value_type.is_numeric()
                 && *cadence_nanos > 0
+                && *time_unit_nanos > 0
+                && *maximum_catch_up_steps > 0
         }
         StatefulSignalSpecification::FiniteStateMachine {
             states,
@@ -2339,7 +2470,7 @@ impl PureSignalSpecification {
             Self::ZoneContains { .. } => PureSignalOperator::ZoneContains,
             Self::FieldSample => PureSignalOperator::FieldSample,
             Self::OrientationDelta { .. } => PureSignalOperator::OrientationDelta,
-            Self::MergeEvents => PureSignalOperator::MergeEvents,
+            Self::MergeEvents { .. } => PureSignalOperator::MergeEvents,
             Self::GateEvents => PureSignalOperator::GateEvents,
         }
     }
@@ -2545,11 +2676,31 @@ fn validate_input_group(
         return Ok(());
     }
     if let SignalNodeKind::Source(SignalSourceSpecification::TransmitterField { .. }) = &node.kind {
-        let valid = inputs.first().is_some_and(|input| {
+        let position_valid = inputs.first().is_some_and(|input| {
             matches!(input.output.value_type, SignalValueType::Vector3(_))
                 && input.output.unit == SignalUnit::Millimetres
         });
-        if !valid {
+        let orientation_valid = match &node.kind {
+            SignalNodeKind::Source(SignalSourceSpecification::TransmitterField {
+                orientation_signal,
+                ..
+            }) if orientation_signal.is_some() => inputs.get(1).is_some_and(|input| {
+                matches!(input.output.value_type, SignalValueType::Vector3(_))
+                    && input.output.unit == SignalUnit::Millidegrees
+            }),
+            _ => true,
+        };
+        let environment_start = match &node.kind {
+            SignalNodeKind::Source(SignalSourceSpecification::TransmitterField {
+                orientation_signal,
+                ..
+            }) => 1 + usize::from(orientation_signal.is_some()),
+            _ => 1,
+        };
+        let environments_valid = inputs[environment_start..]
+            .iter()
+            .all(|input| input.output == node.output);
+        if !position_valid || !orientation_valid || !environments_valid {
             return Err(SignalProgramError::InputGroupMismatch {
                 node: node.id.clone(),
             });
@@ -2620,6 +2771,67 @@ fn validate_input_group(
                         .all(|(key, _)| key.value_type().as_ref() == Some(&input.output.value_type))
             })
         }
+        PureSignalOperator::FieldSample => {
+            inputs
+                .first()
+                .zip(inputs.get(1))
+                .is_some_and(|(field, position)| {
+                    field.domain == SignalDomain::Spatial
+                        && field.output == node.output
+                        && is_position_shape(&position.output)
+                        && position.output.unit == SignalUnit::Millimetres
+                })
+        }
+        PureSignalOperator::ZoneContains => {
+            inputs
+                .first()
+                .zip(inputs.get(1))
+                .is_some_and(|(position, zones)| {
+                    zones.domain == SignalDomain::Spatial
+                        && matches!(zones.output.value_type, SignalValueType::Enum(_))
+                        && is_position_shape(&position.output)
+                        && position.output.unit == SignalUnit::Millimetres
+                        && node.output.value_type == SignalValueType::Bool
+                })
+        }
+        PureSignalOperator::Distance => {
+            let PureSignalSpecification::Distance { metric, .. } = specification else {
+                return Err(SignalProgramError::InvalidOperator {
+                    node: node.id.clone(),
+                });
+            };
+            inputs
+                .first()
+                .zip(inputs.get(1))
+                .is_some_and(|(left, right)| {
+                    left.output == right.output
+                        && is_position_shape(&left.output)
+                        && left.output.unit == SignalUnit::Millimetres
+                        && node.output.value_type == SignalValueType::I64
+                        && node.output.scale_decimal_exponent == left.output.scale_decimal_exponent
+                        && node.output.unit
+                            == if metric.as_str() == "euclidean-squared" {
+                                SignalUnit::SquareMillimetres
+                            } else {
+                                SignalUnit::Millimetres
+                            }
+                })
+        }
+        PureSignalOperator::OrientationDelta => {
+            inputs
+                .first()
+                .zip(inputs.get(1))
+                .is_some_and(|(left, right)| {
+                    left.output == right.output
+                        && matches!(
+                            left.output.value_type,
+                            SignalValueType::Vector3(ref element)
+                                if element.as_ref() == &SignalValueType::I64
+                        )
+                        && left.output.unit == SignalUnit::Millidegrees
+                        && node.output == left.output
+                })
+        }
         _ => true,
     };
     if !valid {
@@ -2630,12 +2842,19 @@ fn validate_input_group(
     Ok(())
 }
 
+fn is_position_shape(shape: &SignalShape) -> bool {
+    matches!(
+        &shape.value_type,
+        SignalValueType::Vector2(element) | SignalValueType::Vector3(element)
+            if element.as_ref() == &SignalValueType::I64
+    )
+}
+
 fn cross_domain_operator(kind: &SignalNodeKind) -> bool {
     matches!(
         kind,
         SignalNodeKind::Pure(PureSignalSpecification::FieldSample)
             | SignalNodeKind::Pure(PureSignalSpecification::SampleHold { .. })
-            | SignalNodeKind::Source(SignalSourceSpecification::TransmitterField { .. })
     )
 }
 
