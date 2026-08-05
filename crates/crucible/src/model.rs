@@ -66,7 +66,6 @@ const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;
 const MAX_SCENARIO_FAMILY_TOPOLOGY_SIZE: u32 = 256;
 const FAMILY_FAULT_STEP_TICKS: u64 = 20;
 const FAMILY_FAULT_HEAL_DELAY_TICKS: u64 = 5;
-const RANDOM_FAULT_CONFIG_RNG_DOMAIN: &str = "crucible.model.random-fault-config.v1";
 const REPLAY_ORACLE_SEARCH_SAMPLING_DOMAIN: &[u8] = b"crucible.replay-oracle.search-sampling.v1";
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;

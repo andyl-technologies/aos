@@ -170,11 +170,6 @@ pub enum EngineError {
         /// The invalid errno code.
         code: i32,
     },
-    /// A random fault generator configuration has no deterministic legal campaign.
-    RandomFaultConfigInvalid {
-        /// Stable reason for the configuration rejection.
-        reason: &'static str,
-    },
     /// An agent-signal ready point was configured without white-box opt-in.
     WhiteBoxReadyPointWithoutOptIn {
         /// The node whose ready-point configuration is invalid.
@@ -764,9 +759,6 @@ impl fmt::Display for EngineError {
             }
             Self::NinePErrnoMustBePositive { .. } => {
                 f.write_str("9p errno must be a positive integer")
-            }
-            Self::RandomFaultConfigInvalid { reason } => {
-                write!(f, "random fault configuration is invalid: {reason}")
             }
             Self::WhiteBoxReadyPointWithoutOptIn { .. } => {
                 f.write_str("agent-signal ready point requires white-box opt-in")
