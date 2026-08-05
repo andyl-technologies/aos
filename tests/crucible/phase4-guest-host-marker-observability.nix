@@ -39,6 +39,10 @@
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox.rs;
   };
+  pluginLiveWhiteboxApi = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs;
+  };
   mappedQuantum = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/mapped_quantum.rs;
@@ -155,6 +159,20 @@
       {
         label = "live callback marker producer";
         needle = "struct LiveWhiteboxMarkerShmemProducer";
+      }
+      {
+        label = "dedicated doorbell execution callback";
+        needle = "Some(crucible_qemu_plugin_live_whitebox_insn_exec_cb)";
+      }
+      {
+        label = "x86 immediate-port instruction filter";
+        needle = "WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs" pluginLiveWhiteboxApi [
+      {
+        label = "upstream QEMU execution callback binding";
+        needle = "qemu_plugin_register_vcpu_insn_exec_cb";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/mapped_quantum.rs" mappedQuantum [

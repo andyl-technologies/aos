@@ -56,7 +56,7 @@
       }
       {
         label = "x86 bytes documented";
-        needle = "x86_64   out dx,eax, port 0x00e7";
+        needle = "x86_64   out 0xe7,al";
       }
       {
         label = "aarch64 bytes documented";
@@ -80,7 +80,7 @@
     ++ failuresFor "crates/crucible-protocol/src/doorbell_abi.rs" protocolDoorbellAbi [
       {
         label = "instruction ABI version";
-        needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 1;";
+        needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 3;";
       }
       {
         label = "x86 reserved port";
@@ -92,7 +92,7 @@
       }
       {
         label = "x86 bytes";
-        needle = "pub const WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES: [u8; 1]";
+        needle = "pub const WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES: [u8; 2]";
       }
       {
         label = "aarch64 bytes";
@@ -112,7 +112,7 @@
       }
       {
         label = "x86 encoder re-export";
-        needle = "encode_x86_64_out_dx_eax_instruction";
+        needle = "encode_x86_64_out_imm8_al_instruction";
       }
       {
         label = "aarch64 encoder re-export";
@@ -120,7 +120,7 @@
       }
       {
         label = "protocol x86 golden test";
-        needle = "doorbell_abi_x86_64_vector_freezes_out_dx_eax";
+        needle = "doorbell_abi_x86_64_vector_freezes_out_imm8_al";
       }
       {
         label = "protocol aarch64 golden test";
@@ -156,7 +156,7 @@
       }
       {
         label = "x86 byte vector export";
-        needle = "WHITEBOX_DOORBELL_X86_64_OUT_DX_EAX_BYTES";
+        needle = "WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES";
       }
       {
         label = "aarch64 byte vector export";
@@ -194,7 +194,7 @@
       }
       {
         label = "x86 literal vector test";
-        needle = "whitebox_doorbell_x86_64_golden_vector_freezes_out_dx_eax";
+        needle = "whitebox_doorbell_x86_64_golden_vector_freezes_out_imm8_al";
       }
       {
         label = "aarch64 literal vector test";
@@ -316,8 +316,8 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            instruction_abi_version=1
-            x86_64_doorbell_bytes=ef
+            instruction_abi_version=3
+            x86_64_doorbell_bytes=e6-e7
             aarch64_doorbell_bytes=209840d4
             abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
             RESULT

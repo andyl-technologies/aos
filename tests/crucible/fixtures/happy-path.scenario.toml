@@ -1,5 +1,5 @@
 [scenario]
-id = "blake3:5ad816afc401bcf6258fbb82fe2e5f892e943cf58e69d28ecb7f9d3ec68fe42e"
+id = "blake3:dd9956d21ecd402ff847e0f6858640ee1abcfc52e2b468baa44581f2a6411333"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 10
 
@@ -44,7 +44,7 @@ jitter_nanos = 1000000
 loss_millionths = 0
 
 [plan]
-id = "blake3:3dfdafb02043ae87e4270427485a92f4d09a3d2b81675ff954f2210385523790"
+id = "blake3:14c2e657cc57addfb612ed58161750fb7ed34f24a713c1e7e6487a7513d116e0"
 kind = "event_graph"
 
 [[plan.event]]
@@ -55,9 +55,12 @@ policy = "once"
 kind = "all_of"
 
 [[plan.event.trigger.predicates]]
-kind = "node_state"
-node = "client"
-state = "exited"
+kind = "once"
+
+[plan.event.trigger.predicates.predicate]
+kind = "assertion_state"
+name = "all-requests-succeed"
+state = "satisfied"
 
 [[plan.event.trigger.predicates]]
 kind = "quiescent"
@@ -66,7 +69,7 @@ kind = "quiescent"
 kind = "pass"
 
 [properties]
-id = "blake3:52bb1fc1d7e9dc1189a94b6542bdf08c7769ec422aff0804cca0e1dae05ff006"
+id = "blake3:fcff536dd7fc5fa9d761c8376f2ea18b1981bc0ce6a01560e27efd51218de58d"
 
 [[properties.assertion]]
 id = "all-requests-succeed"
@@ -80,23 +83,17 @@ deadline_ticks = 60000000000
 kind = "once"
 
 [properties.assertion.property.trigger.predicate]
-kind = "network_match"
-link = "client--server"
-
-[properties.assertion.property.trigger.predicate.predicate]
-kind = "contains"
-needle_hex = "474554202f"
+kind = "console_match"
+node = "client"
+regex = '(^|\n)CLIENT_STARTED(\r?\n|$)'
 
 [properties.assertion.property.property]
 kind = "all_of"
 
 [[properties.assertion.property.property.predicates]]
-kind = "network_match"
-link = "client--server"
-
-[properties.assertion.property.property.predicates.predicate]
-kind = "contains"
-needle_hex = "687474705f3230305f636f756e743d313030"
+kind = "console_match"
+node = "client"
+regex = '(^|\n)CLIENT_RESULT requests=100 successful=100 failed=0(\r?\n|$)'
 
 [[properties.assertion.property.property.predicates]]
 kind = "node_state"

@@ -2,6 +2,7 @@
   closureDeps = [
     pkgs.bash
     pkgs.coreutils
+    pkgs.crucible-guest
     pkgs.curl
     pkgs.iproute2
     pkgs.nginx
@@ -126,7 +127,10 @@ in
                   --write-out '%{http_code}' \
                   http://10.0.0.2:8080/ || true)
                 if [ "$status" = 200 ]; then
-                  echo CURL_STATUS=200
+                  crucible-guest sometimes \
+                    curl-receives-http-200 \
+                    'Curl receives an HTTP 200 response from Nginx' \
+                    1
                   while :; do
                     sleep 3600
                   done
