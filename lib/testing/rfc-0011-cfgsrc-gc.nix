@@ -20,6 +20,7 @@ in
       pkgs.aos-nix
       pkgs.bash
       pkgs.coreutils
+      pkgs.diffutils
       pkgs.jq
       pkgs.nix
     ];
@@ -200,20 +201,19 @@ in
           root_path "$config_module_store" "$system_profile/gen-1/cfgsrc"
           root_path "$base_v1_store" "$system_profile/gen-1/cfgsrc"
           root_path "$base_v2_store" "$system_profile/gen-1/cfgsrc"
-          ${pkgs.coreutils}/bin/ln -s "$base_v1_store" \
+          base_v1_logical="''${base_v1_store#"$aos_root"}"
+          base_v2_logical="''${base_v2_store#"$aos_root"}"
+          ${pkgs.coreutils}/bin/ln -s "$base_v1_logical" \
             "$profile_root/images/image-gen-1/baselib/1"
-          ${pkgs.coreutils}/bin/ln -s "$base_v2_store" \
+          ${pkgs.coreutils}/bin/ln -s "$base_v2_logical" \
             "$profile_root/images/image-gen-2/baselib/2"
 
           env \
             HOME="$home" \
             XDG_CACHE_HOME="$cache" \
-            AOS_ROOT="$aos_root" \
             AOS_PROFILE_ROOT="$profile_root" \
+            AOS_SWITCH_LOCK_PATH="$work/switch.lock" \
             APM_SYSTEM_CONFIG_DIR="$config_root" \
-            AOS_NIX_STORE_DIR="$store_dir" \
-            AOS_NIX_STATE_DIR="$state_dir" \
-            AOS_NIX_LOG_DIR="$log_dir" \
             NIX_REMOTE="$store_uri" \
             NIX_CONF_DIR="$nix_conf" \
             ${pkgs.aos}/bin/apm gc > "$work/positive-gc.log"
@@ -240,9 +240,9 @@ in
             and .manifest.configValue == "retained-config-output"
             and .manifest.instanceFact == "retained-instance-fact"
           ' "$work/abi-2-eval.json" >/dev/null
-          ${pkgs.coreutils}/bin/cmp \
+          ${pkgs.diffutils}/bin/cmp \
             "$config_output_store" "$work/abi-1-eval.json"
-          if ${pkgs.coreutils}/bin/cmp -s \
+          if ${pkgs.diffutils}/bin/cmp -s \
             "$config_output_store" "$work/abi-2-eval.json"; then
             fail "cross-ABI evaluation replayed the retained ABI-1 output"
           fi
@@ -256,12 +256,9 @@ in
           env \
             HOME="$home" \
             XDG_CACHE_HOME="$cache" \
-            AOS_ROOT="$aos_root" \
             AOS_PROFILE_ROOT="$profile_root" \
+            AOS_SWITCH_LOCK_PATH="$work/switch.lock" \
             APM_SYSTEM_CONFIG_DIR="$config_root" \
-            AOS_NIX_STORE_DIR="$store_dir" \
-            AOS_NIX_STATE_DIR="$state_dir" \
-            AOS_NIX_LOG_DIR="$log_dir" \
             NIX_REMOTE="$store_uri" \
             NIX_CONF_DIR="$nix_conf" \
             ${pkgs.aos}/bin/apm gc > "$work/negative-gc.log"
