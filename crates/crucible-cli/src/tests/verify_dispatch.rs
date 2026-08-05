@@ -2796,7 +2796,7 @@ pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<
 }
 
 #[test]
-pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
+pub(super) fn cli_debug_surface_requires_explicit_fork_for_allow_mutate()
 -> Result<(), Box<dyn Error>> {
     let checkpoint = "blake3:0000000000000000000000000000000000000000000000000000000000000000";
     let cli = Cli::parse_from([
@@ -2807,8 +2807,7 @@ pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
         "--at-checkpoint",
         checkpoint,
         "--allow-mutate",
-        "goto",
-        "vtime:7",
+        "fork-debug",
     ]);
     let Commands::Debug(args) = &cli.command else {
         panic!("expected debug command");
@@ -2821,12 +2820,7 @@ pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
         &plan.coordinate,
         DebugPlanCoordinate::AtCheckpoint(_)
     ));
-    assert!(matches!(
-        &plan.verb,
-        DebugInteractiveVerbPlan::Goto(crucible::DebugCoordinate::VirtualTime(
-            crucible::VirtualTime { ticks: 7 }
-        ))
-    ));
+    assert!(matches!(&plan.verb, DebugInteractiveVerbPlan::ForkDebug));
     assert!(plan.allow_mutate);
     assert!(!plan.read_only);
     assert_eq!(
@@ -2841,6 +2835,36 @@ pub(super) fn cli_debug_surface_supports_session_checkpoint_and_allow_mutate()
         plan.engine_operations
             .contains(&DebugEngineOperation::NonCanonicalBranchFork)
     );
+    assert!(plan.proves_t_dbg_8());
+
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_debug_allow_mutate_does_not_fork_implicitly() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse_from([
+        "crucible",
+        "debug",
+        "--session",
+        "127.0.0.1:7000",
+        "--allow-mutate",
+        "goto",
+        "vtime:7",
+    ]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("expected debug command");
+    };
+
+    let plan = plan_debug_invocation(&cli, args)?;
+
+    assert!(plan.allow_mutate);
+    assert!(plan.read_only);
+    assert!(
+        !plan
+            .session_commands
+            .contains(&SessionCommand::fork_current())
+    );
+    assert!(plan.non_canonical_branch_label.is_none());
     assert!(plan.proves_t_dbg_8());
 
     Ok(())
@@ -2869,6 +2893,14 @@ pub(super) fn cli_debug_surface_rejects_conflicts_and_backend_without_gdbstub() 
         ])
         .is_err()
     );
+
+    let cli = Cli::parse_from(["crucible", "debug", "case.crucible", "fork-debug"]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("expected debug command");
+    };
+    let error = plan_debug_invocation(&cli, args)
+        .expect_err("fork-debug must require explicit mutation authorization");
+    assert!(error.to_string().contains("requires --allow-mutate"));
 
     let cli = Cli::parse_from(["crucible", "--backend", "double", "debug", "case.crucible"]);
     let Commands::Debug(args) = &cli.command else {

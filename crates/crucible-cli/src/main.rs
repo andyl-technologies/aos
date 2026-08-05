@@ -714,7 +714,7 @@ struct DebugArgs {
     /// Keep the canonical run read-only.
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "allow_mutate")]
     read_only: bool,
-    /// Fork a non-canonical branch for mutation.
+    /// Authorize an explicit non-canonical debug fork.
     #[arg(long, action = ArgAction::SetTrue)]
     allow_mutate: bool,
     /// Bound reverse-step replay distance.
@@ -728,6 +728,8 @@ struct DebugArgs {
 enum DebugVerbArgs {
     /// Open the mediated gdbstub channel.
     AttachGdb,
+    /// Explicitly fork a non-canonical whole-world debug branch.
+    ForkDebug,
     /// Move to another debug coordinate.
     Goto {
         /// Coordinate accepted by --at.
