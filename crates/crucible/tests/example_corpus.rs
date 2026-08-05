@@ -6,8 +6,8 @@
 
 use crucible::{
     Action, AssertionPhase, CRASH_RESTART_SCENARIO_NAME, Decision, ExampleCorpusError,
-    ExampleScenarioRunOutcome, FAULT_CAMPAIGN_FAMILY_NAME, FindingDiscoveryPath, FramePredicate,
-    GuestWorkloadBinary, GuestWorkloadParameterKey, HAPPY_PATH_SCENARIO_NAME,
+    ExampleScenarioRunOutcome, FAULT_CAMPAIGN_FAMILY_NAME, FindingDiscoveryPath,
+    GuestAssertionKind, GuestWorkloadBinary, GuestWorkloadParameterKey, HAPPY_PATH_SCENARIO_NAME,
     HostAssertionOutcomeKind, IoEventKind, MembershipFault, ObservableEventPayload,
     PARTITION_RECOVERY_SCENARIO_NAME, Predicate, Property, RestartPolicy, ScenarioDefForm,
     SchedulerTopologyChangeTrigger, UnifiedGraphOperationKind, WhiteBoxPolicy,
@@ -43,8 +43,8 @@ fn partition_recovery_is_shipped_as_builtin_corpus_fixture() -> Result<(), Examp
         .expect("partition recovery should be shipped in the built-in corpus");
 
     assert_eq!(fixture.rfc_section, "33.A.2");
-    assert!(fixture.zero_guest_components);
-    assert!(!fixture.requires_white_box);
+    assert!(!fixture.zero_guest_components);
+    assert!(fixture.requires_white_box);
     assert_eq!(fixture.scenario.world().vm_nodes().len(), 3);
     assert_eq!(fixture.scenario.world().links().len(), 3);
     Ok(())
@@ -59,8 +59,8 @@ fn crash_restart_is_shipped_as_builtin_corpus_fixture() -> Result<(), ExampleCor
         .expect("crash restart should be shipped in the built-in corpus");
 
     assert_eq!(fixture.rfc_section, "33.A.3");
-    assert!(fixture.zero_guest_components);
-    assert!(!fixture.requires_white_box);
+    assert!(!fixture.zero_guest_components);
+    assert!(fixture.requires_white_box);
     assert_eq!(fixture.scenario.world().vm_nodes().len(), 3);
     assert_eq!(fixture.scenario.world().links().len(), 3);
     Ok(())
@@ -102,7 +102,7 @@ fn fault_campaign_is_shipped_as_builtin_family() -> Result<(), ExampleCorpusErro
             .any(|assertion| assertion.id.name == "no-split-brain")
     );
     assert!(sample.form().world().vm_nodes().iter().all(|node| {
-        node.white_box == WhiteBoxPolicy::Disabled && node.cmdline.contains("cluster=crucible-a4")
+        node.white_box == WhiteBoxPolicy::Enabled && node.cmdline.contains("cluster=crucible-a4")
     }));
     Ok(())
 }
@@ -132,10 +132,10 @@ fn fault_campaign_fuzz_replay_save_resume_and_fork_are_proven() -> Result<(), Ex
     assert!(report.violation_observations.iter().any(|observation| {
         matches!(
             observation.payload(),
-            ObservableEventPayload::NetworkDelivered { payload, .. }
-                if payload
-                    .windows(b"split_brain=true".len())
-                    .any(|window| window == b"split_brain=true")
+            ObservableEventPayload::GuestAssertionMarker { marker, .. }
+                if marker.id.name == "no-split-brain"
+                    && marker.kind == GuestAssertionKind::Unreachable
+                    && marker.condition
         )
     }));
     assert!(report.violation_report.verdict().is_failed());
@@ -146,7 +146,9 @@ fn fault_campaign_fuzz_replay_save_resume_and_fork_are_proven() -> Result<(), Ex
             .iter()
             .any(|violation| {
                 violation.assertion.name == "no-split-brain"
-                    && violation.detail.contains("always predicate remains true")
+                    && violation
+                        .detail
+                        .contains("guest unreachable marker was reached")
             })
     );
     assert!(
@@ -200,7 +202,7 @@ fn fault_campaign_fuzz_replay_save_resume_and_fork_are_proven() -> Result<(), Ex
                 .point
                 .key
                 .contains("fault-campaign/violation")
-                && override_decision.choice.name.contains("network-delivered")
+                && override_decision.choice.name.contains("guest-assertion-marker")
     ));
     assert_eq!(report.finding.artifact.replay()?, report.finding.replay);
     assert_eq!(
@@ -295,7 +297,7 @@ fn partition_recovery_uses_observable_trigger_graph() -> Result<(), ExampleCorpu
     let world = fixture.scenario.world();
     assert_eq!(world.vm_nodes().len(), 3);
     for node in world.vm_nodes() {
-        assert_eq!(node.white_box, WhiteBoxPolicy::Disabled);
+        assert_eq!(node.white_box, WhiteBoxPolicy::Enabled);
         assert!(node.kernel.is_some());
         assert!(node.root_image.is_some());
         assert!(node.cmdline.contains("store.role=replica"));
@@ -311,6 +313,7 @@ fn partition_recovery_uses_observable_trigger_graph() -> Result<(), ExampleCorpu
         .collect::<Vec<_>>();
     assert!(assertion_names.contains(&"split-active"));
     assert!(assertion_names.contains(&"no-split-brain"));
+    assert!(assertion_names.contains(&"replicas-reconciled"));
     assert!(assertion_names.contains(&"converges-after-heal"));
     let convergence_assertion = fixture
         .scenario
@@ -326,9 +329,6 @@ fn partition_recovery_uses_observable_trigger_graph() -> Result<(), ExampleCorpu
             ..
         } if name.name == "split-active" && *state == AssertionPhase::Satisfied
     ));
-    for assertion in fixture.scenario.properties().assertions() {
-        assert_black_box_property(&assertion.property);
-    }
 
     let graph = fixture
         .scenario
@@ -384,7 +384,7 @@ fn crash_restart_uses_observable_trigger_graph() -> Result<(), ExampleCorpusErro
     let world = fixture.scenario.world();
     assert_eq!(world.vm_nodes().len(), 3);
     for node in world.vm_nodes() {
-        assert_eq!(node.white_box, WhiteBoxPolicy::Disabled);
+        assert_eq!(node.white_box, WhiteBoxPolicy::Enabled);
         assert!(node.kernel.is_some());
         assert!(node.root_image.is_some());
         assert!(node.cmdline.contains("store.role=replica"));
@@ -407,29 +407,9 @@ fn crash_restart_uses_observable_trigger_graph() -> Result<(), ExampleCorpusErro
         .map(|assertion| assertion.id.name.as_str())
         .collect::<Vec<_>>();
     assert!(assertion_names.contains(&"data-not-lost"));
+    assert!(assertion_names.contains(&"committed-write-survived"));
+    assert!(assertion_names.contains(&"replicas-reconciled"));
     assert!(assertion_names.contains(&"reconverges"));
-    for assertion in fixture.scenario.properties().assertions() {
-        assert_black_box_property(&assertion.property);
-    }
-    let data_not_lost = fixture
-        .scenario
-        .properties()
-        .assertions()
-        .iter()
-        .find(|assertion| assertion.id.name == "data-not-lost")
-        .expect("crash restart declares data-not-lost assertion");
-    assert!(matches!(
-        &data_not_lost.property,
-        Property::Always {
-            predicate: Predicate::Not { predicate },
-        } if matches!(
-            predicate.as_ref(),
-            Predicate::NetworkMatch {
-                predicate: FramePredicate::Contains(bytes),
-                ..
-            } if bytes == b"data_lost=true"
-        )
-    ));
     let reconverges = fixture
         .scenario
         .properties()
@@ -652,6 +632,7 @@ fn partition_recovery_run_passes_and_verify_runs_are_byte_identical()
         .collect::<Vec<_>>();
     assert!(outcome_names.contains(&"split-active"));
     assert!(outcome_names.contains(&"no-split-brain"));
+    assert!(outcome_names.contains(&"replicas-reconciled"));
     assert!(outcome_names.contains(&"converges-after-heal"));
     assert!(
         run.firings
@@ -665,6 +646,10 @@ fn partition_recovery_run_passes_and_verify_runs_are_byte_identical()
     assert_eq!(
         outcome_kind(&run, "no-split-brain"),
         HostAssertionOutcomeKind::Passed
+    );
+    assert_eq!(
+        outcome_kind(&run, "replicas-reconciled"),
+        HostAssertionOutcomeKind::Satisfied
     );
     assert_eq!(
         outcome_kind(&run, "converges-after-heal"),
@@ -727,6 +712,8 @@ fn crash_restart_run_passes_and_verify_runs_are_byte_identical() -> Result<(), E
         .map(|outcome| outcome.assertion.name.as_str())
         .collect::<Vec<_>>();
     assert!(outcome_names.contains(&"data-not-lost"));
+    assert!(outcome_names.contains(&"committed-write-survived"));
+    assert!(outcome_names.contains(&"replicas-reconciled"));
     assert!(outcome_names.contains(&"reconverges"));
     assert!(
         run.firings
@@ -736,6 +723,14 @@ fn crash_restart_run_passes_and_verify_runs_are_byte_identical() -> Result<(), E
     assert_eq!(
         outcome_kind(&run, "data-not-lost"),
         HostAssertionOutcomeKind::Passed
+    );
+    assert_eq!(
+        outcome_kind(&run, "committed-write-survived"),
+        HostAssertionOutcomeKind::Satisfied
+    );
+    assert_eq!(
+        outcome_kind(&run, "replicas-reconciled"),
+        HostAssertionOutcomeKind::Satisfied
     );
     assert_eq!(
         outcome_kind(&run, "reconverges"),
@@ -922,7 +917,7 @@ fn assert_partition_injection(actions: &[Action]) {
 fn assert_convergence_trigger_shape(predicate: &Predicate) {
     assert_black_box_predicate(predicate);
     let Predicate::AllOf { predicates } = predicate else {
-        panic!("pass-on-converge trigger must combine network convergence and quiescence");
+        panic!("pass-on-converge trigger must combine guest-reported convergence and quiescence");
     };
     assert!(predicates.iter().any(|predicate| matches!(
         predicate,
@@ -937,7 +932,7 @@ fn assert_convergence_trigger_shape(predicate: &Predicate) {
     assert!(predicates.iter().any(|predicate| matches!(
         predicate,
         Predicate::Once { predicate }
-            if matches!(predicate.as_ref(), Predicate::NetworkMatch { link: Some(link), .. } if link.name == "db-0--db-1")
+            if matches!(predicate.as_ref(), Predicate::AssertionState { name, state } if name.name == "replicas-reconciled" && *state == AssertionPhase::Satisfied)
     )));
     assert!(
         predicates
@@ -993,10 +988,9 @@ fn assert_crash_reconvergence_trigger_shape(predicate: &Predicate) {
         Predicate::Once { predicate }
             if matches!(
                 predicate.as_ref(),
-                Predicate::NetworkMatch {
-                    predicate: FramePredicate::Contains(bytes),
-                    ..
-                } if bytes == b"committed_write_survived=true"
+                Predicate::AssertionState { name, state }
+                    if name.name == "committed-write-survived"
+                        && *state == AssertionPhase::Satisfied
             )
     )));
     assert!(predicates.iter().any(|predicate| matches!(
@@ -1004,10 +998,9 @@ fn assert_crash_reconvergence_trigger_shape(predicate: &Predicate) {
         Predicate::Once { predicate }
             if matches!(
                 predicate.as_ref(),
-                Predicate::NetworkMatch {
-                    predicate: FramePredicate::Contains(bytes),
-                    ..
-                } if bytes == b"raft_log_match"
+                Predicate::AssertionState { name, state }
+                    if name.name == "replicas-reconciled"
+                        && *state == AssertionPhase::Satisfied
             )
     )));
     assert!(

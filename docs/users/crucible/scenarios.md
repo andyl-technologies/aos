@@ -46,6 +46,12 @@ properties, not to infer an application result from plaintext protocol bytes.
 This distinction keeps application assertions valid for encrypted protocols
 while preserving a zero-guest-component black-box path.
 
+The built-in partition-recovery, crash-restart, and fault-campaign examples use
+this structured guest-assertion path for application semantics. Their host-side
+graphs still own readiness, lifecycle, injected-fault state, timers, I/O facts,
+and quiescence. The happy-path example remains the intentionally opaque
+`ConsoleMatch` reference case.
+
 ### Seed
 
 The seed is part of scenario identity and roots every deterministic random

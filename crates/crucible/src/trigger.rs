@@ -53,6 +53,7 @@ mod guest_assertion_observation;
 mod observability;
 
 pub use assertions::*;
+pub(crate) use conditions::guest_assertion_marker_from_whitebox_body;
 pub use conditions::*;
 pub use evaluation::*;
 pub use event_graph::*;
