@@ -1485,10 +1485,24 @@
          "service" : "ChannelService"
       },
       {
-         "method" : "MintUploadCredentials",
-         "path" : "aos.hub.v1.PublishService/MintUploadCredentials",
-         "request" : "MintUploadCredentialsRequest",
-         "response" : "MintUploadCredentialsResponse",
+         "method" : "BeginRegistryPublication",
+         "path" : "aos.hub.v1.PublishService/BeginRegistryPublication",
+         "request" : "BeginRegistryPublicationRequest",
+         "response" : "RegistryPublication",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "GetRegistryPublication",
+         "path" : "aos.hub.v1.PublishService/GetRegistryPublication",
+         "request" : "GetRegistryPublicationRequest",
+         "response" : "RegistryPublication",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "CommitRegistryPublication",
+         "path" : "aos.hub.v1.PublishService/CommitRegistryPublication",
+         "request" : "CommitRegistryPublicationRequest",
+         "response" : "RegistryPublication",
          "service" : "PublishService"
       },
       {

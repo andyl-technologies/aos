@@ -8010,17 +8010,60 @@ async fn channel(printer: &Printer, command: &HubChannelCmd) -> Result<()> {
 }
 
 async fn publish(printer: &Printer, command: &HubPublishCmd) -> Result<()> {
-    let HubPublishCmd::MintUpload { access, registry } = command;
-    let client = hub_client(&access.hub, access.token.as_deref())?;
-    topology_read::<_, hub_types::MintUploadCredentialsResponse>(
-        printer,
-        &client,
-        HubTopologyMethod::MintUploadCredentials,
-        &hub_types::MintUploadCredentialsRequest {
-            slug: registry.clone(),
-        },
-    )
-    .await
+    match command {
+        HubPublishCmd::Begin {
+            access,
+            registry,
+            manifest,
+        } => {
+            let bytes = std::fs::read(manifest)
+                .with_context(|| format!("reading publication manifest {}", manifest.display()))?;
+            let mut request: hub_types::BeginRegistryPublicationRequest =
+                serde_json::from_slice(&bytes).context("decoding publication manifest")?;
+            if !request.registry.is_empty() && request.registry != *registry {
+                anyhow::bail!("manifest registry does not match the command registry");
+            }
+            request.registry.clone_from(registry);
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::RegistryPublication>(
+                printer,
+                &client,
+                HubTopologyMethod::BeginRegistryPublication,
+                &request,
+            )
+            .await
+        }
+        HubPublishCmd::Show {
+            access,
+            publication_id,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::RegistryPublication>(
+                printer,
+                &client,
+                HubTopologyMethod::GetRegistryPublication,
+                &hub_types::GetRegistryPublicationRequest {
+                    publication_id: publication_id.clone(),
+                },
+            )
+            .await
+        }
+        HubPublishCmd::Commit {
+            access,
+            publication_id,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref())?;
+            topology_read::<_, hub_types::RegistryPublication>(
+                printer,
+                &client,
+                HubTopologyMethod::CommitRegistryPublication,
+                &hub_types::CommitRegistryPublicationRequest {
+                    publication_id: publication_id.clone(),
+                },
+            )
+            .await
+        }
+    }
 }
 
 async fn config(printer: &Printer, command: &HubConfigCmd) -> Result<()> {

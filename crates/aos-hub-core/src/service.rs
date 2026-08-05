@@ -1966,6 +1966,18 @@ fn triggers_reindex(path: &str) -> bool {
     path == "info/refs" || path == "nix-cache-info"
 }
 
+/// Returns a stable media type for a declared registry object.
+fn publication_media_type(path: &str) -> &'static str {
+    match path.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("json") => "application/json",
+        Some("toml") => "application/toml",
+        Some("qcow2") => "application/x-qemu-disk",
+        Some("vmdk") => "application/x-vmdk",
+        Some("vhd") | Some("vhdx") => "application/x-vhd",
+        _ => "application/octet-stream",
+    }
+}
+
 /// The shared, transport-free implementation of the `aos.hub.v1` services.
 ///
 /// Holds only data the method bodies need — the [`Database`], the [`JwtKeys`]
@@ -20608,62 +20620,567 @@ impl RpcService {
         Ok(response)
     }
 
-    /// `PublishService.MintUploadCredentials` — issue a short-lived,
-    /// registry-scoped upload credential.
-    ///
-    /// The caller must already hold `publish` on the registry's canonical scope
-    /// (the same right the upload facade requires). On success the hub mints a
-    /// fresh provisioning token *owned by the calling principal*, scoped to
-    /// exactly that registry with only the `publish` permission and a short
-    /// expiry ([`UPLOAD_CREDENTIAL_TTL_SECS`]). The response carries that token
-    /// (shown once), the canonical facade `upload_url` (`{external_url}/{slug}`),
-    /// and the expiry.
-    ///
-    /// Token ownership keeps the credential clamped: it deadens the instant the
-    /// owner's `publish` grant is removed, so a minted credential never outlives
-    /// the authority that minted it.
+    /// Begins one exact, placement-aware registry publication.
     ///
     /// # Errors
     ///
-    /// Returns [`RpcError::Unauthenticated`] for a missing/invalid bearer JWT,
-    /// [`RpcError::NotFound`] for an unknown registry slug,
-    /// [`RpcError::PermissionDenied`] when the caller lacks `publish` on the
-    /// registry scope or has no resolvable principal, and [`RpcError::Internal`]
-    /// on database failure.
-    pub async fn mint_upload_credentials(
+    /// Returns an authorization error when the caller lacks `publish`, an
+    /// invalid-argument error for a malformed manifest, a failed-precondition
+    /// error when no placement can accept the complete publication, or an
+    /// internal error when durable admission fails.
+    pub async fn begin_registry_publication(
         &self,
         auth: Option<&str>,
-        req: pb::MintUploadCredentialsRequest,
-    ) -> Result<pb::MintUploadCredentialsResponse, RpcError> {
+        req: pb::BeginRegistryPublicationRequest,
+    ) -> Result<pb::RegistryPublication, RpcError> {
         let claims = self.require_claims(auth)?;
-        let registry = self.registry_or_not_found(&req.slug).await?;
+        let registry = self.registry_or_not_found(&req.registry).await?;
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
 
-        let owner = claims_principal(&claims)
-            .ok_or_else(|| RpcError::PermissionDenied("unknown principal kind".into()))?;
-        let expires_at = clock::now_unix_secs() + UPLOAD_CREDENTIAL_TTL_SECS;
-        let (_id, secret) = self
+        if req.objects.is_empty() {
+            return Err(RpcError::invalid("publication manifest must not be empty"));
+        }
+        if req.generation.is_empty() || req.refs_digest.is_empty() {
+            return Err(RpcError::invalid(
+                "publication generation and refs digest are required",
+            ));
+        }
+        let mut paths = BTreeSet::new();
+        let mut canonical = Vec::with_capacity(req.objects.len());
+        for object in &req.objects {
+            if !paths.insert(object.path.as_str()) {
+                return Err(RpcError::invalid("publication paths must be unique"));
+            }
+            if !keymap::is_machine_path(&object.path)
+                || crate::url_guard::validate_http_surface_path(&object.path).is_err()
+            {
+                return Err(RpcError::invalid("publication object path is invalid"));
+            }
+            if !matches!(object.kind.as_str(), "immutable" | "mutable_pointer") {
+                return Err(RpcError::invalid(
+                    "publication object kind must be immutable or mutable_pointer",
+                ));
+            }
+            if (object.kind == "mutable_pointer") != is_mutable_pointer(&object.path) {
+                return Err(RpcError::invalid(
+                    "publication object kind does not match path mutability",
+                ));
+            }
+            if object.byte_size < 0
+                || object.sha256.len() != 64
+                || !object
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(RpcError::invalid(
+                    "publication objects require a lowercase SHA-256 and non-negative size",
+                ));
+            }
+            canonical.push((
+                object.path.clone(),
+                object.sha256.clone(),
+                object.byte_size,
+                object.kind.clone(),
+                object.media_type.clone(),
+            ));
+        }
+        canonical.sort();
+        if !canonical.iter().any(|object| object.3 == "immutable")
+            || !canonical.iter().any(|object| object.3 == "mutable_pointer")
+        {
+            return Err(RpcError::invalid(
+                "publication requires immutable objects and mutable pointers",
+            ));
+        }
+        let placements = self
             .db
-            .create_token(
-                owner,
-                scope.as_str(),
-                &[Permission::Publish],
-                Some("upload credential (MintUploadCredentials)"),
-                Some(expires_at),
-            )
+            .registry_publication_write_placements(registry.id)
             .await
             .map_err(RpcError::internal)?;
-        let upload_url = format!(
-            "{}/{}",
-            self.external_url.trim_end_matches('/'),
-            registry.slug
-        );
-        Ok(pb::MintUploadCredentialsResponse {
-            token: secret,
-            upload_url,
-            expires_at,
+        if placements.is_empty() {
+            return Err(RpcError::FailedPrecondition(
+                "registry has no complete validated publication placement".into(),
+            ));
+        }
+        let manifest_digest = hex::encode(Sha256::digest(
+            serde_json::to_vec(&canonical).map_err(RpcError::internal)?,
+        ));
+        let publication_id = uuid::Uuid::new_v4().simple().to_string();
+        let parent = if req.parent_publication_id.is_empty() {
+            None
+        } else {
+            Some(req.parent_publication_id.clone())
+        };
+        self.db
+            .create_registry_publication(&crate::db::NewRegistryPublication {
+                publication_id: publication_id.clone(),
+                registry_id: registry.id,
+                generation: req.generation,
+                manifest_digest,
+                refs_digest: req.refs_digest,
+                default_commit: (!req.default_commit.is_empty()).then_some(req.default_commit),
+                parent_publication_id: parent,
+            })
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+
+        for object in req.objects {
+            let existing = self
+                .db
+                .surface_object_named(SurfaceTarget::Registry(registry.id), &object.path)
+                .await
+                .map_err(RpcError::internal)?;
+            let surface_object = match existing {
+                Some(existing)
+                    if existing.object_kind == object.kind
+                        && (object.kind == "mutable_pointer"
+                            || (existing.content_hash.as_deref() == Some(&object.sha256)
+                                && existing.size == Some(object.byte_size))) =>
+                {
+                    existing
+                }
+                Some(_) => {
+                    return Err(RpcError::FailedPrecondition(format!(
+                        "publication path '{}' conflicts with its existing object identity",
+                        object.path
+                    )))
+                }
+                None => self
+                    .db
+                    .create_surface_object(&crate::db::SetSurfaceObject {
+                        surface: SurfaceTarget::Registry(registry.id),
+                        object_key: object.path,
+                        content_hash: Some(object.sha256.clone()),
+                        size: Some(object.byte_size),
+                        object_kind: object.kind.clone(),
+                        mutable_publication_id: (object.kind == "mutable_pointer")
+                            .then(|| publication_id.clone()),
+                    })
+                    .await
+                    .map_err(RpcError::internal)?,
+            };
+            self.db
+                .set_registry_publication_object(&crate::db::SetRegistryPublicationObject {
+                    publication_id: publication_id.clone(),
+                    surface_object_id: surface_object.id,
+                    object_kind: object.kind,
+                    expected_hash: object.sha256,
+                    expected_size: object.byte_size,
+                })
+                .await
+                .map_err(RpcError::internal)?;
+        }
+        for placement in placements {
+            self.db
+                .set_registry_publication_placement(&crate::db::SetRegistryPublicationPlacement {
+                    publication_id: publication_id.clone(),
+                    placement_id: placement.id,
+                    required: true,
+                    state: "preparing".into(),
+                    observed_at: clock::now_unix_secs(),
+                })
+                .await
+                .map_err(RpcError::internal)?;
+        }
+        self.registry_publication_response(&publication_id).await
+    }
+
+    /// Returns one publication after enforcing registry publish authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the corresponding authorization, not-found, or database error.
+    pub async fn get_registry_publication(
+        &self,
+        auth: Option<&str>,
+        req: pb::GetRegistryPublicationRequest,
+    ) -> Result<pb::RegistryPublication, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let publication = self
+            .db
+            .registry_publication(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry publication"))?;
+        let registry = self
+            .db
+            .registry_by_id(publication.registry_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry"))?;
+        let scope = self.registry_scope(&registry).await?;
+        self.require_permission(&claims, Permission::Publish, &scope)
+            .await?;
+        self.registry_publication_response(&publication.publication_id)
+            .await
+    }
+
+    /// Stores one declared publication object on every required placement.
+    ///
+    /// The URL carries only the publication and object ids; the path, digest,
+    /// size, placement set, and mutability class all come from the frozen
+    /// manifest. Mutable uploads cannot begin until every immutable byte is
+    /// verified everywhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization error, a manifest/body mismatch, a publication
+    /// ordering failure, or an unavailable error when a placement write or
+    /// exact read-after-write verification fails.
+    pub async fn upload_registry_publication_object(
+        &self,
+        auth: Option<&str>,
+        publication_id: &str,
+        surface_object_id: i64,
+        body: &[u8],
+    ) -> Result<(), RpcError> {
+        let claims = self.require_claims(auth)?;
+        let publication = self
+            .db
+            .registry_publication(publication_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry publication"))?;
+        let registry = self
+            .db
+            .registry_by_id(publication.registry_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry"))?;
+        let scope = self.registry_scope(&registry).await?;
+        self.require_permission(&claims, Permission::Publish, &scope)
+            .await?;
+        let object = self
+            .db
+            .registry_publication_upload_object(publication_id, surface_object_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("publication object"))?;
+        if body.len() as i64 != object.expected_size
+            || hex::encode(Sha256::digest(body)) != object.expected_hash
+        {
+            return Err(RpcError::invalid(
+                "upload bytes do not match the declared size and SHA-256",
+            ));
+        }
+        if body.len() > self.effective_max_upload_bytes().await {
+            return Err(RpcError::ResourceExhausted(
+                "single upload exceeds the configured body limit".into(),
+            ));
+        }
+        if object.object_kind == "immutable" && publication.state != "preparing" {
+            return Err(RpcError::FailedPrecondition(
+                "immutable upload phase is closed".into(),
+            ));
+        }
+        if object.object_kind == "mutable_pointer" {
+            if !self
+                .db
+                .registry_publication_class_is_complete(publication_id, "immutable")
+                .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "all immutable objects must verify before pointer upload".into(),
+                ));
+            }
+            self.lease
+                .acquire(registry.id, publication_id, clock::now_unix_secs())
+                .await
+                .map_err(|holder| {
+                    RpcError::FailedPrecondition(format!(
+                        "registry publication lease is held by {holder}"
+                    ))
+                })?;
+            if publication.state == "preparing"
+                && !self
+                    .db
+                    .advance_registry_publication(
+                        publication_id,
+                        "preparing",
+                        "writing_pointers",
+                        clock::now_unix_secs(),
+                    )
+                    .await
+                    .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "publication pointer phase changed concurrently".into(),
+                ));
+            } else if !matches!(publication.state.as_str(), "preparing" | "writing_pointers") {
+                return Err(RpcError::FailedPrecondition(
+                    "publication no longer accepts pointer uploads".into(),
+                ));
+            }
+        }
+
+        let progress = self
+            .db
+            .registry_publication_placement_records(publication_id)
+            .await
+            .map_err(RpcError::internal)?;
+        for placement_progress in progress {
+            if !placement_progress.required {
+                continue;
+            }
+            let mut placement = self
+                .db
+                .surface_placement(placement_progress.placement_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
+            if object.object_kind == "mutable_pointer" && placement_progress.state == "preparing" {
+                let watermark_version = placement.watermark_resource_version.ok_or_else(|| {
+                    RpcError::FailedPrecondition("placement has no publication watermark".into())
+                })?;
+                placement = self
+                    .db
+                    .begin_registry_pointer_advance(
+                        publication_id,
+                        placement.id,
+                        placement.resource_version,
+                        watermark_version,
+                        clock::now_unix_secs(),
+                    )
+                    .await
+                    .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            }
+            let writer = self
+                .surface_write
+                .placement_writer(&placement)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            writer
+                .write(&object.object_key, body)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            let fetch = self
+                .surface
+                .placement_fetcher(&placement)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
+            let evidence = fetch
+                .inventory_evidence(&object.object_key)
+                .await
+                .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
+                .ok_or_else(|| {
+                    RpcError::Unavailable("uploaded object is absent after write".into())
+                })?;
+            let observed_hash = hex::encode(evidence.sha256);
+            if evidence.size != object.expected_size || observed_hash != object.expected_hash {
+                return Err(RpcError::Unavailable(
+                    "uploaded object failed exact read-after-write verification".into(),
+                ));
+            }
+            self.db
+                .record_registry_publication_object_presence(
+                    publication_id,
+                    object.surface_object_id,
+                    placement.id,
+                    &observed_hash,
+                    evidence.size,
+                    evidence.strong_etag.as_deref(),
+                    clock::now_unix_secs(),
+                )
+                .await
+                .map_err(RpcError::internal)?;
+        }
+        Ok(())
+    }
+
+    /// Commits an exactly complete publication and makes it discoverable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authorization error, a failed precondition while any object
+    /// or placement is incomplete, or an internal error on durable promotion.
+    pub async fn commit_registry_publication(
+        &self,
+        auth: Option<&str>,
+        req: pb::CommitRegistryPublicationRequest,
+    ) -> Result<pb::RegistryPublication, RpcError> {
+        let claims = self.require_claims(auth)?;
+        let publication = self
+            .db
+            .registry_publication(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry publication"))?;
+        let registry = self
+            .db
+            .registry_by_id(publication.registry_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry"))?;
+        let scope = self.registry_scope(&registry).await?;
+        self.require_permission(&claims, Permission::Publish, &scope)
+            .await?;
+        if publication.state == "ready" {
+            return self
+                .registry_publication_response(&req.publication_id)
+                .await;
+        }
+        if publication.state != "writing_pointers"
+            || !self
+                .db
+                .registry_publication_class_is_complete(&req.publication_id, "immutable")
+                .await
+                .map_err(RpcError::internal)?
+            || !self
+                .db
+                .registry_publication_class_is_complete(&req.publication_id, "mutable_pointer")
+                .await
+                .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "publication is not complete on every required placement".into(),
+            ));
+        }
+        for progress in self
+            .db
+            .registry_publication_placement_records(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if !progress.required || progress.state == "ready" {
+                continue;
+            }
+            let placement = self
+                .db
+                .surface_placement(progress.placement_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
+            let watermark_version = placement.watermark_resource_version.ok_or_else(|| {
+                RpcError::FailedPrecondition("placement has no publication watermark".into())
+            })?;
+            self.db
+                .finalize_registry_pointer_advance(
+                    &req.publication_id,
+                    placement.id,
+                    placement.resource_version,
+                    watermark_version,
+                    clock::now_unix_secs(),
+                )
+                .await
+                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        }
+        self.db
+            .promote_registry_publication_mutable_objects(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?;
+        if !self
+            .db
+            .advance_registry_publication(
+                &req.publication_id,
+                "writing_pointers",
+                "ready",
+                clock::now_unix_secs(),
+            )
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "publication could not become ready".into(),
+            ));
+        }
+        let state = self
+            .db
+            .registry_publication_state(registry.id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::Internal)?;
+        self.db
+            .set_current_registry_publication(
+                registry.id,
+                &req.publication_id,
+                Some(state.resource_version),
+            )
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+        self.lease.release(registry.id, &req.publication_id).await;
+        self.reindexer
+            .reindex(&registry)
+            .await
+            .map_err(RpcError::internal)?;
+        self.registry_publication_response(&req.publication_id)
+            .await
+    }
+
+    async fn registry_publication_response(
+        &self,
+        publication_id: &str,
+    ) -> Result<pb::RegistryPublication, RpcError> {
+        let publication = self
+            .db
+            .registry_publication(publication_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry publication"))?;
+        let registry = self
+            .db
+            .registry_by_id(publication.registry_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("registry"))?;
+        let objects = self
+            .db
+            .registry_publication_upload_objects(publication_id)
+            .await
+            .map_err(RpcError::internal)?
+            .into_iter()
+            .map(|object| pb::RegistryPublicationObject {
+                object_id: object.surface_object_id,
+                path: object.object_key.clone(),
+                sha256: object.expected_hash,
+                byte_size: object.expected_size,
+                kind: object.object_kind,
+                media_type: publication_media_type(&object.object_key).into(),
+                upload_url: format!(
+                    "{}/aos.hub.v1.PublishService/UploadObject/{}/{}",
+                    self.external_url.trim_end_matches('/'),
+                    publication_id,
+                    object.surface_object_id
+                ),
+            })
+            .collect();
+        let mut placements = Vec::new();
+        for progress in self
+            .db
+            .registry_publication_placement_records(publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            let placement = self
+                .db
+                .surface_placement(progress.placement_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
+            placements.push(pb::RegistryPublicationPlacement {
+                placement_id: progress.placement_id,
+                name: placement.name,
+                required: progress.required,
+                state: progress.state,
+            });
+        }
+        Ok(pb::RegistryPublication {
+            publication_id: publication.publication_id,
+            registry: registry.slug,
+            ordinal: publication.ordinal,
+            generation: publication.generation,
+            manifest_digest: publication.manifest_digest,
+            refs_digest: publication.refs_digest,
+            default_commit: publication.default_commit.unwrap_or_default(),
+            parent_publication_id: publication.parent_publication_id.unwrap_or_default(),
+            state: publication.state,
+            objects,
+            placements,
+            created_at: publication.created_at,
+            completed_at: publication.completed_at.unwrap_or_default(),
         })
     }
 

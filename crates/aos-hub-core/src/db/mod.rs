@@ -1547,6 +1547,44 @@ pub struct SetRegistryPublicationPlacement {
     pub observed_at: i64,
 }
 
+/// Immutable fields used to begin one registry publication.
+#[derive(Debug, Clone)]
+pub struct NewRegistryPublication {
+    /// Stable opaque publication id.
+    pub publication_id: String,
+    /// Registry receiving the publication.
+    pub registry_id: i64,
+    /// Producer generation identifier.
+    pub generation: String,
+    /// Digest of the complete declared object manifest.
+    pub manifest_digest: String,
+    /// Digest of the complete refs snapshot.
+    pub refs_digest: String,
+    /// Default Git commit, when the registry defines one.
+    pub default_commit: Option<String>,
+    /// Current publication observed by the producer.
+    pub parent_publication_id: Option<String>,
+}
+
+/// One declared publication object together with its stable upload identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryPublicationUploadObjectRecord {
+    /// Publication owning the object.
+    pub publication_id: String,
+    /// Registry owning the object.
+    pub registry_id: i64,
+    /// Stable logical object id used by the typed upload URL.
+    pub surface_object_id: i64,
+    /// Surface-relative machine path.
+    pub object_key: String,
+    /// `immutable` or `mutable_pointer`.
+    pub object_kind: String,
+    /// Exact lowercase SHA-256 digest.
+    pub expected_hash: String,
+    /// Exact byte size.
+    pub expected_size: i64,
+}
+
 /// One physical placement of a registry or binary-cache surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfacePlacementRecord {
@@ -5521,6 +5559,393 @@ impl Database {
             == 1)
     }
 
+    /// Begins an invisible registry publication at the registry's next ordinal.
+    ///
+    /// The parent is compared with the authoritative current publication in the
+    /// same transaction. A producer can therefore never build on a stale head.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identity, a stale parent, duplicate
+    /// generation or manifest identity, a missing registry, or database failure.
+    pub async fn create_registry_publication(
+        &self,
+        input: &NewRegistryPublication,
+    ) -> Result<RegistryPublicationRecord> {
+        validate_key_bytes(&input.publication_id, "publication id", 64)?;
+        validate_key_bytes(&input.generation, "publication generation", 128)?;
+        validate_key_bytes(&input.manifest_digest, "publication manifest digest", 128)?;
+        validate_key_bytes(&input.refs_digest, "publication refs digest", 128)?;
+        if let Some(commit) = input.default_commit.as_deref() {
+            validate_key_bytes(commit, "publication default commit", 128)?;
+        }
+        if let Some(parent) = input.parent_publication_id.as_deref() {
+            validate_key_bytes(parent, "parent publication id", 64)?;
+        }
+        let now = unix_now();
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "INSERT INTO registry_publication_state
+                     (registry_id, current_publication_id, next_ordinal,
+                      resource_version, updated_at)
+                     SELECT id, NULL, 1, 1, ?2 FROM registries WHERE id = ?1
+                     ON CONFLICT(registry_id) DO NOTHING",
+                    vals![input.registry_id, now],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO registry_publications
+                     (publication_id, registry_id, ordinal, generation,
+                      manifest_digest, refs_digest, default_commit,
+                      parent_publication_id, state, created_at)
+                     SELECT ?1, state.registry_id, state.next_ordinal, ?3, ?4,
+                            ?5, ?6, ?7, 'preparing', ?8
+                     FROM registry_publication_state state
+                     JOIN registries registry ON registry.id = state.registry_id
+                     LEFT JOIN orgs org ON org.id = registry.org_id
+                     WHERE state.registry_id = ?2
+                       AND (registry.org_id IS NULL OR org.deleted_at IS NULL)
+                       AND (state.current_publication_id = ?7 OR
+                            (state.current_publication_id IS NULL AND ?7 IS NULL))",
+                    vals![
+                        input.publication_id,
+                        input.registry_id,
+                        input.generation,
+                        input.manifest_digest,
+                        input.refs_digest,
+                        input.default_commit,
+                        input.parent_publication_id,
+                        now
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "UPDATE registry_publication_state
+                     SET next_ordinal = next_ordinal + 1,
+                         resource_version = resource_version + 1,
+                         updated_at = ?3
+                     WHERE registry_id = ?1 AND next_ordinal = (
+                       SELECT ordinal FROM registry_publications
+                       WHERE publication_id = ?2)",
+                    vals![input.registry_id, input.publication_id, now],
+                )
+                .expecting(1),
+            ])
+            .await?;
+        self.registry_publication(&input.publication_id)
+            .await?
+            .context("created registry publication disappeared")
+    }
+
+    /// Returns one registry publication by stable id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn registry_publication(
+        &self,
+        publication_id: &str,
+    ) -> Result<Option<RegistryPublicationRecord>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        self.backend
+            .query_opt(
+                "SELECT publication_id, registry_id, ordinal, generation,
+                        manifest_digest, refs_digest, default_commit,
+                        parent_publication_id, state, created_at, completed_at,
+                        retired_at
+                 FROM registry_publications WHERE publication_id = ?1",
+                &vals![publication_id],
+            )
+            .await?
+            .map(|row| {
+                Ok(RegistryPublicationRecord {
+                    publication_id: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    ordinal: row.get(2)?,
+                    generation: row.get(3)?,
+                    manifest_digest: row.get(4)?,
+                    refs_digest: row.get(5)?,
+                    default_commit: row.get(6)?,
+                    parent_publication_id: row.get(7)?,
+                    state: row.get(8)?,
+                    created_at: row.get(9)?,
+                    completed_at: row.get(10)?,
+                    retired_at: row.get(11)?,
+                })
+            })
+            .transpose()
+    }
+
+    /// Lists the exact object manifest declared by a publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn registry_publication_upload_objects(
+        &self,
+        publication_id: &str,
+    ) -> Result<Vec<RegistryPublicationUploadObjectRecord>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        self.backend
+            .query(
+                "SELECT po.publication_id, po.registry_id, po.surface_object_id,
+                        object.object_key, po.object_kind, po.expected_hash,
+                        po.expected_size
+                 FROM registry_publication_objects po
+                 JOIN surface_objects object ON object.id = po.surface_object_id
+                 WHERE po.publication_id = ?1
+                 ORDER BY CASE po.object_kind WHEN 'immutable' THEN 0 ELSE 1 END,
+                          object.object_key, object.id",
+                &vals![publication_id],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(RegistryPublicationUploadObjectRecord {
+                    publication_id: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    surface_object_id: row.get(2)?,
+                    object_key: row.get(3)?,
+                    object_kind: row.get(4)?,
+                    expected_hash: row.get(5)?,
+                    expected_size: row.get(6)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Returns one declared publication object by its typed upload identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn registry_publication_upload_object(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+    ) -> Result<Option<RegistryPublicationUploadObjectRecord>> {
+        Ok(self
+            .registry_publication_upload_objects(publication_id)
+            .await?
+            .into_iter()
+            .find(|object| object.surface_object_id == surface_object_id))
+    }
+
+    /// Lists the physical placements frozen into a publication manifest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn registry_publication_placement_records(
+        &self,
+        publication_id: &str,
+    ) -> Result<Vec<RegistryPublicationPlacementRecord>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        self.backend
+            .query(
+                "SELECT publication_id, registry_id, placement_id, required,
+                        state, observed_at
+                 FROM registry_publication_placements
+                 WHERE publication_id = ?1 ORDER BY placement_id",
+                &vals![publication_id],
+            )
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(RegistryPublicationPlacementRecord {
+                    publication_id: row.get(0)?,
+                    registry_id: row.get(1)?,
+                    placement_id: row.get(2)?,
+                    required: row.get(3)?,
+                    state: row.get(4)?,
+                    observed_at: row.get(5)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Records exact post-write evidence for one publication object placement.
+    ///
+    /// The expected object identity and same-registry placement are rechecked in
+    /// the insert. This is the only evidence consumed by publication readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for mismatched evidence, a placement outside the
+    /// publication, a terminal publication, or database failure.
+    pub async fn record_registry_publication_object_presence(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+    ) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        validate_key_bytes(observed_hash, "observed object hash", 128)?;
+        if observed_size < 0 {
+            bail!("observed object size cannot be negative");
+        }
+        self.backend
+            .checked_batch(&[
+                Statement::new(
+                    "DELETE FROM object_placements
+                     WHERE surface_object_id = ?2 AND placement_id = ?3
+                       AND registry_id = (SELECT registry_id
+                         FROM registry_publications WHERE publication_id = ?1)",
+                    vals![publication_id, surface_object_id, placement_id],
+                )
+                .unchecked(),
+                Statement::new(
+                    "INSERT INTO object_placements
+                     (surface_object_id, cache_id, registry_id, placement_id,
+                      state, observed_hash, observed_size, etag,
+                      observed_inventory_generation, observed_at)
+                     SELECT object.id, NULL, pub.registry_id, placement.id,
+                            'present', ?4, ?5, ?6, pub.ordinal, ?7
+                     FROM registry_publications pub
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = pub.publication_id
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = pub.registry_id
+                     JOIN registry_publication_placements progress
+                       ON progress.publication_id = pub.publication_id
+                     JOIN surface_placements placement
+                       ON placement.id = progress.placement_id
+                      AND placement.registry_id = pub.registry_id
+                     WHERE pub.publication_id = ?1 AND object.id = ?2
+                       AND placement.id = ?3
+                       AND pub.state IN ('preparing', 'writing_pointers')
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5",
+                    vals![
+                        publication_id,
+                        surface_object_id,
+                        placement_id,
+                        observed_hash,
+                        observed_size,
+                        etag,
+                        observed_at
+                    ],
+                )
+                .expecting(1),
+            ])
+            .await
+    }
+
+    /// Reports whether every required placement has exact evidence for a class.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid class vocabulary or database failure.
+    pub async fn registry_publication_class_is_complete(
+        &self,
+        publication_id: &str,
+        object_kind: &str,
+    ) -> Result<bool> {
+        if !matches!(object_kind, "immutable" | "mutable_pointer") {
+            bail!("invalid publication object kind");
+        }
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM registry_publications pub
+                 WHERE pub.publication_id = ?1
+                   AND EXISTS (SELECT 1 FROM registry_publication_objects po
+                     WHERE po.publication_id = pub.publication_id
+                       AND po.object_kind = ?2)
+                   AND EXISTS (SELECT 1 FROM registry_publication_placements pp
+                     WHERE pp.publication_id = pub.publication_id
+                       AND pp.required = 1)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM registry_publication_objects po
+                     JOIN registry_publication_placements pp
+                       ON pp.publication_id = po.publication_id AND pp.required = 1
+                     WHERE po.publication_id = pub.publication_id
+                       AND po.object_kind = ?2
+                       AND NOT EXISTS (SELECT 1 FROM object_placements presence
+                         WHERE presence.surface_object_id = po.surface_object_id
+                           AND presence.placement_id = pp.placement_id
+                           AND presence.state = 'present'
+                           AND presence.observed_hash = po.expected_hash
+                           AND presence.observed_size = po.expected_size))",
+                &vals![publication_id, object_kind],
+            )
+            .await?;
+        Ok(row.is_some())
+    }
+
+    /// Promotes the declared mutable object identities after all pointer bytes verify.
+    ///
+    /// Publication placement watermarks are cleared before this method is used,
+    /// so current-publication readers fail closed throughout the transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless every required mutable object is present exactly
+    /// and the publication is writing pointers, or on database failure.
+    pub async fn promote_registry_publication_mutable_objects(
+        &self,
+        publication_id: &str,
+    ) -> Result<()> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        let expected: i64 = self
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM registry_publication_objects
+                 WHERE publication_id = ?1 AND object_kind = 'mutable_pointer'",
+                &vals![publication_id],
+            )
+            .await?
+            .context("publication object count disappeared")?
+            .get(0)?;
+        if expected <= 0 {
+            bail!("publication has no mutable pointers");
+        }
+        let affected = self
+            .backend
+            .execute(
+                "UPDATE surface_objects
+                 SET content_hash = (SELECT po.expected_hash
+                       FROM registry_publication_objects po
+                       WHERE po.publication_id = ?1
+                         AND po.surface_object_id = surface_objects.id),
+                     size = (SELECT po.expected_size
+                       FROM registry_publication_objects po
+                       WHERE po.publication_id = ?1
+                         AND po.surface_object_id = surface_objects.id),
+                     mutable_publication_id = ?1, updated_at = ?2,
+                     resource_version = resource_version + 1
+                 WHERE id IN (SELECT po.surface_object_id
+                       FROM registry_publication_objects po
+                       JOIN registry_publications pub
+                         ON pub.publication_id = po.publication_id
+                       WHERE po.publication_id = ?1
+                         AND po.object_kind = 'mutable_pointer'
+                         AND pub.state = 'writing_pointers'
+                         AND NOT EXISTS (
+                           SELECT 1 FROM registry_publication_placements pp
+                           WHERE pp.publication_id = pub.publication_id
+                             AND pp.required = 1 AND NOT EXISTS (
+                               SELECT 1 FROM object_placements presence
+                               WHERE presence.surface_object_id = po.surface_object_id
+                                 AND presence.placement_id = pp.placement_id
+                                 AND presence.state = 'present'
+                                 AND presence.observed_hash = po.expected_hash
+                                 AND presence.observed_size = po.expected_size)))",
+                &vals![publication_id, unix_now()],
+            )
+            .await?;
+        if affected != u64::try_from(expected).context("publication object count overflow")? {
+            bail!("publication mutable objects are incomplete or publication is not writable");
+        }
+        Ok(())
+    }
+
     /// Attaches one same-registry, content-exact object snapshot to a preparing publication.
     ///
     /// # Errors
@@ -5557,9 +5982,8 @@ impl Database {
                ON o.registry_id = pub.registry_id
              WHERE pub.publication_id = ?1 AND o.id = ?2 AND pub.state = 'preparing'
                AND o.lifecycle_state = 'active' AND o.object_kind = ?3
-               AND o.content_hash = ?4 AND o.size = ?5
-               AND (?3 <> 'mutable_pointer'
-                 OR o.mutable_publication_id = pub.publication_id)
+               AND (?3 = 'mutable_pointer'
+                 OR (o.content_hash = ?4 AND o.size = ?5))
              ON CONFLICT(publication_id, surface_object_id) DO UPDATE SET
                object_kind = excluded.object_kind, expected_hash = excluded.expected_hash,
                expected_size = excluded.expected_size",
@@ -6024,9 +6448,11 @@ impl Database {
                  WHERE registry_id = ?1 AND resource_version = ?3 AND EXISTS (
                    SELECT 1 FROM registry_publications pub
                    WHERE pub.publication_id = ?2 AND pub.registry_id = ?1 AND pub.state = 'ready'
-                     AND pub.parent_publication_id = registry_publication_state.current_publication_id
-                     AND pub.ordinal > (SELECT current.ordinal FROM registry_publications current
-                       WHERE current.publication_id = registry_publication_state.current_publication_id)
+                     AND ((registry_publication_state.current_publication_id IS NULL
+                           AND pub.parent_publication_id IS NULL)
+                       OR (pub.parent_publication_id = registry_publication_state.current_publication_id
+                         AND pub.ordinal > (SELECT current.ordinal FROM registry_publications current
+                           WHERE current.publication_id = registry_publication_state.current_publication_id)))
                      AND EXISTS (SELECT 1 FROM registry_publication_placements pp
                        WHERE pp.publication_id = pub.publication_id AND pp.required = 1)
                      AND NOT EXISTS (SELECT 1 FROM registry_publication_placements pp
@@ -6074,6 +6500,35 @@ impl Database {
             resource_version: row.get(3)?,
             updated_at: row.get(4)?,
         })
+    }
+
+    /// Returns the authoritative publication head for a registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn registry_publication_state(
+        &self,
+        registry_id: i64,
+    ) -> Result<Option<RegistryPublicationStateRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT registry_id, current_publication_id, next_ordinal,
+                        resource_version, updated_at
+                 FROM registry_publication_state WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await?
+            .map(|row| {
+                Ok(RegistryPublicationStateRecord {
+                    registry_id: row.get(0)?,
+                    current_publication_id: row.get(1)?,
+                    next_ordinal: row.get(2)?,
+                    resource_version: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })
+            .transpose()
     }
 
     /// Ensures the binding has a nullable, versioned write-state singleton.
@@ -7328,6 +7783,102 @@ impl Database {
             )
             .await?;
         rows.iter().map(row_to_surface_placement).collect()
+    }
+
+    /// Lists complete placements eligible to receive one registry publication.
+    ///
+    /// Publication eligibility is placement-local: every returned placement has
+    /// a current, validated write capability for its own binding. It is not
+    /// inferred from the surface's single mutable write authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn registry_publication_write_placements(
+        &self,
+        registry_id: i64,
+    ) -> Result<Vec<SurfacePlacementRecord>> {
+        let rows = self
+            .backend
+            .query(
+                &format!(
+                    "SELECT {PLACEMENT_COLUMNS} FROM surface_placement_effective p
+                     WHERE p.registry_id = ?1 AND p.kind = 'complete'
+                       AND p.desired_state = 'active' AND p.state = 'ready'
+                       AND p.completeness = 'complete'
+                       AND EXISTS (
+                         SELECT 1 FROM surface_placement_write_capabilities capability
+                         JOIN storage_binding_write_revisions revision
+                           ON revision.storage_binding_id = capability.storage_binding_id
+                          AND revision.revision = capability.binding_write_revision
+                         JOIN storage_binding_write_observations observation
+                           ON observation.storage_binding_id = revision.storage_binding_id
+                          AND observation.revision = revision.revision
+                         JOIN storage_binding_credential_revisions credential
+                           ON credential.storage_binding_id = revision.storage_binding_id
+                          AND credential.purpose = revision.write_credential_purpose
+                          AND credential.generation = revision.write_credential_generation
+                         WHERE capability.placement_id = p.id
+                           AND capability.placement_write_spec_version = p.write_spec_version
+                           AND revision.writes_supported = 1
+                           AND observation.state = 'valid'
+                           AND credential.validation_state = 'valid'
+                           AND (p.requires_conditional_writes = 0
+                             OR revision.conditional_writes_supported = 1))
+                     ORDER BY p.read_order, p.name, p.id"
+                ),
+                &vals![registry_id],
+            )
+            .await?;
+        rows.iter().map(row_to_surface_placement).collect()
+    }
+
+    /// Resolves the newest validated write revision pinned to a placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn placement_publication_write_revision(
+        &self,
+        placement_id: i64,
+    ) -> Result<Option<StorageBindingWriteRevisionRecord>> {
+        self.backend
+            .query_opt(
+                "SELECT revision.storage_binding_id, revision.revision,
+                            revision.write_credential_version_ref,
+                            revision.write_credential_purpose,
+                            revision.write_credential_generation,
+                            revision.writes_supported,
+                            revision.conditional_writes_supported,
+                            revision.revision_fingerprint,
+                            revision.capability_fingerprint, revision.created_at
+                     FROM surface_placements placement
+                     JOIN surface_placement_write_capabilities capability
+                       ON capability.placement_id = placement.id
+                      AND capability.placement_write_spec_version = placement.write_spec_version
+                     JOIN storage_binding_write_revisions revision
+                       ON revision.storage_binding_id = capability.storage_binding_id
+                      AND revision.revision = capability.binding_write_revision
+                     JOIN storage_binding_write_observations observation
+                       ON observation.storage_binding_id = revision.storage_binding_id
+                      AND observation.revision = revision.revision
+                     JOIN storage_binding_credential_revisions credential
+                       ON credential.storage_binding_id = revision.storage_binding_id
+                      AND credential.purpose = revision.write_credential_purpose
+                      AND credential.generation = revision.write_credential_generation
+                     WHERE placement.id = ?1 AND placement.kind = 'complete'
+                       AND placement.desired_state = 'active'
+                       AND revision.writes_supported = 1
+                       AND observation.state = 'valid'
+                       AND credential.validation_state = 'valid'
+                       AND (placement.requires_conditional_writes = 0
+                         OR revision.conditional_writes_supported = 1)
+                     ORDER BY revision.revision DESC LIMIT 1",
+                &vals![placement_id],
+            )
+            .await?
+            .map(|row| row_to_storage_binding_write_revision(&row))
+            .transpose()
     }
 
     /// Returns references that constrain a placement drain or deletion.
@@ -25121,6 +25672,78 @@ source_nar_hash = ""
             )
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn registry_publication_manifest_is_invisible_and_exact() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("publication", &[], false)
+            .await
+            .unwrap();
+        let publication_id = "publication000000000000000000000001";
+        let publication = db
+            .create_registry_publication(&NewRegistryPublication {
+                publication_id: publication_id.into(),
+                registry_id,
+                generation: "generation-1".into(),
+                manifest_digest: "a".repeat(64),
+                refs_digest: "b".repeat(64),
+                default_commit: Some("c".repeat(40)),
+                parent_publication_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(publication.ordinal, 1);
+        assert_eq!(publication.state, "preparing");
+
+        let immutable = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "objects/immutable".into(),
+                content_hash: Some("d".repeat(64)),
+                size: Some(7),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        let pointer = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::Registry(registry_id),
+                object_key: "info/refs".into(),
+                content_hash: Some("e".repeat(64)),
+                size: Some(9),
+                object_kind: "mutable_pointer".into(),
+                mutable_publication_id: Some(publication_id.into()),
+            })
+            .await
+            .unwrap();
+        for (object, kind, hash, size) in [
+            (immutable, "immutable", "d".repeat(64), 7),
+            (pointer, "mutable_pointer", "e".repeat(64), 9),
+        ] {
+            db.set_registry_publication_object(&SetRegistryPublicationObject {
+                publication_id: publication_id.into(),
+                surface_object_id: object.id,
+                object_kind: kind.into(),
+                expected_hash: hash,
+                expected_size: size,
+            })
+            .await
+            .unwrap();
+        }
+        let objects = db
+            .registry_publication_upload_objects(publication_id)
+            .await
+            .unwrap();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].object_kind, "immutable");
+        assert_eq!(objects[1].object_kind, "mutable_pointer");
+        assert!(!db
+            .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
     }
 
     /// Test helper: register a managed registry owned by `org` at `slug` with a

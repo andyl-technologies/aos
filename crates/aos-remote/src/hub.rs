@@ -586,8 +586,12 @@ enum HubTopologyMethod {
     GetImage,
     /// Selects signed system-image resolution.
     ResolveImage,
-    /// Selects the normalized `MintUploadCredentials` Connect operation.
-    MintUploadCredentials,
+    /// Selects placement-aware publication admission.
+    BeginRegistryPublication,
+    /// Selects publication status inspection.
+    GetRegistryPublication,
+    /// Selects exact publication promotion.
+    CommitRegistryPublication,
     /// Selects the normalized `GitLog` Connect operation.
     GitLog,
     /// Selects the normalized `GitDiff` Connect operation.
@@ -1058,7 +1062,9 @@ impl HubTopologyMethod {
             ListImages => "aos.hub.v1.ImageService/ListImages",
             GetImage => "aos.hub.v1.ImageService/GetImage",
             ResolveImage => "aos.hub.v1.ImageService/ResolveImage",
-            MintUploadCredentials => "aos.hub.v1.PublishService/MintUploadCredentials",
+            BeginRegistryPublication => "aos.hub.v1.PublishService/BeginRegistryPublication",
+            GetRegistryPublication => "aos.hub.v1.PublishService/GetRegistryPublication",
+            CommitRegistryPublication => "aos.hub.v1.PublishService/CommitRegistryPublication",
             GitLog => "aos.hub.v1.GitService/GitLog",
             GitDiff => "aos.hub.v1.GitService/GitDiff",
             ListChangeRequests => "aos.hub.v1.GitService/ListChangeRequests",
@@ -1403,7 +1409,9 @@ pub mod hub_rpc {
         ListImages: ListImagesRequest => ListImagesResponse;
         GetImage: GetImageRequest => GetImageResponse;
         ResolveImage: ResolveImageRequest => GetImageResponse;
-        MintUploadCredentials: MintUploadCredentialsRequest => MintUploadCredentialsResponse;
+        BeginRegistryPublication: BeginRegistryPublicationRequest => RegistryPublication;
+        GetRegistryPublication: GetRegistryPublicationRequest => RegistryPublication;
+        CommitRegistryPublication: CommitRegistryPublicationRequest => RegistryPublication;
         GitLog: GitLogRequest => GitLogResponse;
         GitDiff: GitDiffRequest => GitDiffResponse;
         ListChangeRequests: ListChangeRequestsRequest => ListChangeRequestsResponse;
