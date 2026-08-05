@@ -1,14 +1,28 @@
-# AOS Individual Contributor License Agreement
+# AOS External Contributor License Agreement
+
+**Version 1.0 — 2026-08-04**
 
 This agreement is adapted as a permissive license-grant agreement in the style
 of the Apache Software Foundation Individual Contributor License Agreement. It
 does not transfer copyright.
 
-The **Project Steward** is the legal person or entity identified by the AOS
-repository as authorized to accept contributions for this project. Before this
-agreement is used for signatures, the repository must publish that steward's
-full legal name, notice address, and contact address. “Project” means the AOS
-repository and the software and documentation it distributes.
+The **Project Steward** authorized to accept contributions for this project is:
+
+> Andyl, Inc., a Delaware corporation
+
+The Project Steward publishes its current contact and legal-notice instructions,
+agreement status, and designated acceptance mechanism through the canonical
+frontend at <https://cla.andyl.org/aos>. This agreement may be accepted only
+while that frontend identifies this version as active. The frontend need not
+expose a mailbox or mailing address in this repository.
+
+“Project” means the AOS repository and the software and documentation it
+distributes. This agreement is for external individual contributors. Current
+Andyl, Inc. employees contributing within the scope of their employment are
+covered by Andyl's standard Confidential Information and Invention Assignment
+Agreement (CIAA) and internal contribution authorization, and do not accept
+this agreement. Contractors, former employees, and contributions outside an
+employee's authorized scope are external contributions for this policy.
 
 By signing or otherwise accepting this agreement through a mechanism designated
 by the Project Steward, You agree to the following terms for Your Contributions.
@@ -61,7 +75,15 @@ by the Project Steward, You agree to the following terms for Your Contributions.
 8. **Notice.** You agree to notify the Project Steward if You later learn that
    a representation in this agreement was inaccurate when made.
 
-The Project Steward should retain the contributor's legal name, contact address,
-acceptance date, and agreement version with each acceptance. Legal counsel
-should review this agreement and the steward identity before the project begins
-collecting signatures.
+## Administration
+
+The Project Steward must retain each acceptance privately with the contributor's
+legal name, email and contact address; authenticated stable GitHub user ID and
+current login; UTC acceptance time; agreement version; exact agreement content
+digest and an archived copy of that text; evidence of unambiguous assent or
+signature; unique record identifier; and active, superseded, or disabled status
+for future contributions. A record-status change does not alter licenses already
+granted under this agreement.
+Acceptance records must not be committed to the public repository. Legal counsel
+must approve this agreement and the acceptance process before the Project
+Steward begins relying on acceptances.

@@ -50,7 +50,8 @@ Bug reports and feature proposals are welcome in
 changing packages, images, or build tooling, read the
 [contribution requirements](CONTRIBUTING.md) and
 [maintainer guide](docs/maintainers/). The contribution requirements document
-the CLA/DCO checks and license boundaries that apply before a change is merged.
+the employee authorization, external CLA, DCO, and license-boundary checks that
+apply before a change is merged.
 AOS is built hermetically from source;
 new dependencies must be added to the AOS package graph rather than imported
 from nixpkgs.
