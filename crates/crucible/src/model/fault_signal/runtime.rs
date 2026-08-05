@@ -661,10 +661,11 @@ impl FaultRuntimeCheckpoint {
         {
             return Err(FaultRuntimeError::IncompleteBindingState);
         }
-        let required_adapters = bindings
-            .iter()
-            .map(|binding| binding.effect().kind().descriptor().adapter)
-            .collect::<BTreeSet<_>>();
+        let required_adapters = BTreeSet::from([
+            FaultAdapter::Network,
+            FaultAdapter::Storage,
+            FaultAdapter::Node,
+        ]);
         if self.adapters.keys().copied().collect::<BTreeSet<_>>() != required_adapters {
             return Err(FaultRuntimeError::IncompleteAdapterState);
         }
