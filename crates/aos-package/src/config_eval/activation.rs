@@ -33,8 +33,11 @@ use crate::types::{ConfigGeneration, ImageGeneration, ProfileScope};
 const ACTIVATION_RECORD: &str = "activation.json";
 const DEFAULT_SWITCH_LOCK: &str = "/run/apm/switch.lock";
 
-/// Resolves the global switch lock beneath an optional AOS root filesystem.
-fn resolve_switch_lock(root: Option<&str>) -> PathBuf {
+/// Resolves the global switch lock from an explicit path or AOS root filesystem.
+fn resolve_switch_lock(root: Option<&str>, explicit: Option<&str>) -> PathBuf {
+    if let Some(explicit) = explicit.filter(|path| Path::new(path).is_absolute()) {
+        return PathBuf::from(explicit);
+    }
     let Some(root) = root.filter(|root| !root.is_empty()) else {
         return PathBuf::from(DEFAULT_SWITCH_LOCK);
     };
@@ -45,9 +48,12 @@ fn resolve_switch_lock(root: Option<&str>) -> PathBuf {
     root.join(DEFAULT_SWITCH_LOCK.trim_start_matches('/'))
 }
 
-/// Returns the global switch-lock path, honoring `$AOS_ROOT`.
+/// Returns the global switch-lock path, honoring `$AOS_SWITCH_LOCK_PATH` and `$AOS_ROOT`.
 pub(crate) fn default_switch_lock_path() -> PathBuf {
-    resolve_switch_lock(std::env::var("AOS_ROOT").ok().as_deref())
+    resolve_switch_lock(
+        std::env::var("AOS_ROOT").ok().as_deref(),
+        std::env::var("AOS_SWITCH_LOCK_PATH").ok().as_deref(),
+    )
 }
 
 /// Durable proof that a graph transaction reached the config pointer commit.
@@ -971,21 +977,32 @@ mod tests {
 
     #[test]
     fn switch_lock_is_rooted_only_by_an_absolute_aos_root() {
-        assert_eq!(resolve_switch_lock(None), Path::new(DEFAULT_SWITCH_LOCK));
         assert_eq!(
-            resolve_switch_lock(Some("")),
+            resolve_switch_lock(None, None),
             Path::new(DEFAULT_SWITCH_LOCK)
         );
         assert_eq!(
-            resolve_switch_lock(Some("/")),
+            resolve_switch_lock(Some(""), None),
             Path::new(DEFAULT_SWITCH_LOCK)
         );
         assert_eq!(
-            resolve_switch_lock(Some("relative")),
+            resolve_switch_lock(Some("/"), None),
             Path::new(DEFAULT_SWITCH_LOCK)
         );
         assert_eq!(
-            resolve_switch_lock(Some("/tmp/aos-root")),
+            resolve_switch_lock(Some("relative"), None),
+            Path::new(DEFAULT_SWITCH_LOCK)
+        );
+        assert_eq!(
+            resolve_switch_lock(Some("/tmp/aos-root"), None),
+            Path::new("/tmp/aos-root/run/apm/switch.lock")
+        );
+        assert_eq!(
+            resolve_switch_lock(Some("/tmp/aos-root"), Some("/tmp/switch.lock")),
+            Path::new("/tmp/switch.lock")
+        );
+        assert_eq!(
+            resolve_switch_lock(Some("/tmp/aos-root"), Some("relative.lock")),
             Path::new("/tmp/aos-root/run/apm/switch.lock")
         );
     }
