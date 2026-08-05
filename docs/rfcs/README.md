@@ -26,5 +26,7 @@ topic files.
 | [0006](0006-secure-boot/README.md) | 2026-06-13 | Full Secure Boot integration — sign, measure, attest | Implemented (all phases CI-green) |
 | [0009](0009-toolchain-ladder-stdenv.md) | 2026-06-15 | Coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap` | Proposed |
 | [0010](0010-crucible/README.md) | 2026-06-18 | Crucible — a hermetically deterministic multi-VM simulation harness | Proposed (design-only) |
+| [0011](0011-on-host-config-eval/README.md) | 2026-06-25 | On-host, eval-only configuration — generations from downloaded Nix modules | Accepted |
+| [0012](0012-signal-driven-fault-model/README.md) | 2026-08-04 | Signal-driven, cross-domain fault modeling for Crucible | Proposed (design-only) |
 
 Numbering is chronological by the date the design entered the tree.
