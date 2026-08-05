@@ -3,24 +3,31 @@
 //! This module owns the shipped RFC-0010 example artifacts that double as
 //! determinism fixtures. Each fixture is a regular content-addressed
 //! [`ScenarioDefForm`] plus a deterministic
-//! double-backed run script that proves the scenario can pass and reproduce
-//! without any guest-side Crucible component.
+//! double-backed run script that proves the scenario can pass and reproduce.
+//! Guest-controlled application verdicts use structured guest assertions;
+//! host-owned lifecycle, fault, timer, and quiescence facts remain host-side.
 
 use std::error::Error;
 use std::fmt;
+
+use crucible_protocol::{
+    WhiteboxAssertionMarkerBody, WhiteboxAssertionMarkerFlavor, WhiteboxDoorbellFrame,
+    WhiteboxMarkerDetail, WhiteboxMarkerPayload, decode_whitebox_marker_payload,
+    encode_whitebox_marker_frame,
+};
 
 use crate::model::{
     AssertionDef, AssertionId, AssertionPhase, Checkpoint, CheckpointKind, ChoiceTag, CodePoint,
     Configuration, ContentAddressedBlobRef, ContentHash, CoverageGuidedFuzzConfig,
     CoverageGuidedFuzzIteration, CoverageGuidedFuzzRun, Decision, EngineError, EventId,
     FamilySpace, FaultDensity, FaultDensityRange, FaultTag, FindingDiscoveryPath,
-    FindingReproductionArtifact, FramePredicate, GenesisCheckpoint, GuestWorkloadBinary,
-    GuestWorkloadParameterKey, GuestWorkloadScalarParameter, Icount, IoEventKind, LinkId,
-    LinkLossProbability, MarkerId, MembershipFault, MemoryDagStore, NodeCounter, NodeId,
-    NodeLifecycle, NodeTemplate, OverrideDecision, Plan, Predicate, Properties, Property,
-    ReadyPoint, RegexProgram, ReproductionArtifact, RestartPolicy, ScenarioDefForm, ScenarioFamily,
-    Schedule, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, Seed, Shift, SimDuration,
-    SimInstant, TemporalGraph, TemporalGraphFork, TemporalGraphRuntime, TemporalGraphSave,
+    FindingReproductionArtifact, GenesisCheckpoint, GuestWorkloadBinary, GuestWorkloadParameterKey,
+    GuestWorkloadScalarParameter, Icount, IoEventKind, LinkLossProbability, MarkerId,
+    MembershipFault, MemoryDagStore, NodeCounter, NodeId, NodeLifecycle, NodeTemplate,
+    OverrideDecision, Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
+    ReproductionArtifact, RestartPolicy, ScenarioDefForm, ScenarioFamily, Schedule,
+    SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, Seed, Shift, SimDuration, SimInstant,
+    TemporalGraph, TemporalGraphFork, TemporalGraphRuntime, TemporalGraphSave,
     TemporalGraphStoreError, TimerId, TopologyShape, TopologySizeRange,
     UnifiedGraphOperationEvidence, UnifiedGraphOperationReport, VirtualTime, VmArchitecture,
     WhiteBoxPolicy, World, WorldNode, bake, try_step,
@@ -35,14 +42,15 @@ use crate::scheduler::{
 use crate::trigger::{
     Action, AssertionViolationArtifactReplay, AssertionViolationReplayError,
     AssertionViolationReplayReport, BlackBoxHostOracle, ConditionEvaluationPass, ConditionLeaf,
-    ConditionLeafOracle, EventFirings, EventGraph, EventGraphState, HostAssertionEvaluator,
-    HostAssertionOutcome, HostAssertionOutcomeKind, HostAssertionReport, ObservableEvent,
-    ObservableEventPayload, OfflineAssertionCheckError, RecordedAssertionLog,
-    check_assertion_violation_reproduction,
+    ConditionLeafOracle, EventFirings, EventGraph, EventGraphState, GuestAssertionDetail,
+    GuestAssertionKind, GuestAssertionMarker, HostAssertionEvaluator, HostAssertionOutcome,
+    HostAssertionOutcomeKind, HostAssertionReport, ObservableEvent, ObservableEventPayload,
+    OfflineAssertionCheckError, RecordedAssertionLog, check_assertion_violation_reproduction,
+    guest_assertion_marker_from_whitebox_body,
 };
 
 /// Version label for the built-in worked-example corpus.
-pub const BUILT_IN_EXAMPLE_CORPUS_VERSION: &str = "crucible.example-corpus.v1";
+pub const BUILT_IN_EXAMPLE_CORPUS_VERSION: &str = "crucible.example-corpus.v2";
 
 /// Stable corpus name for the RFC-0010 A.1 happy-path example.
 pub const HAPPY_PATH_SCENARIO_NAME: &str = "happy-path.scn";
@@ -57,10 +65,10 @@ pub const CRASH_RESTART_SCENARIO_NAME: &str = "crash-restart.scn";
 pub const FAULT_CAMPAIGN_FAMILY_NAME: &str = "fault-campaign.fam";
 
 /// Whether the built-in example corpus requires a Crucible guest-side component.
-pub const EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS: bool = false;
+pub const EXAMPLE_CORPUS_REQUIRES_GUEST_COMPONENTS: bool = true;
 
 /// Whether the built-in example corpus requires the white-box guest-host channel.
-pub const EXAMPLE_CORPUS_WHITE_BOX_REQUIRED: bool = false;
+pub const EXAMPLE_CORPUS_WHITE_BOX_REQUIRED: bool = true;
 
 const HAPPY_PATH_RUNS: usize = 5;
 const HAPPY_PATH_DEADLINE_TICKS: u64 = 60_000_000_000;
@@ -71,8 +79,6 @@ const CRASH_RESTART_DELAY_TICKS: u64 = 5_000_000_000;
 const CRASH_RESTART_DEADLINE_TICKS: u64 = 40_000_000_000;
 const CRASH_RESTART_COMMIT_TICKS: u64 = 30;
 const FAULT_CAMPAIGN_DEFAULT_RUNS: u64 = 4;
-const HAPPY_PATH_REPLAY_OBSERVATION_POINT_PREFIX: &str = "example-corpus/happy-path/observation/";
-const HAPPY_PATH_REPLAY_BOUNDARY_POINT: &str = "example-corpus/happy-path/boundary";
 const EXAMPLE_REPLAY_STEP_POINT_PREFIX: &str = "example-corpus/replay-step/";
 const FAULT_CAMPAIGN_VIOLATION_POINT: &str = "example-corpus/fault-campaign/violation";
 
@@ -483,8 +489,8 @@ pub fn partition_recovery_scenario() -> Result<ExampleScenarioFixture, ExampleCo
         name: PARTITION_RECOVERY_SCENARIO_NAME.to_owned(),
         rfc_section: String::from("33.A.2"),
         scenario,
-        zero_guest_components: true,
-        requires_white_box: false,
+        zero_guest_components: false,
+        requires_white_box: true,
         observations: flatten_observations(&steps),
         steps,
     })
@@ -526,8 +532,8 @@ pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusE
         name: CRASH_RESTART_SCENARIO_NAME.to_owned(),
         rfc_section: String::from("33.A.3"),
         scenario,
-        zero_guest_components: true,
-        requires_white_box: false,
+        zero_guest_components: false,
+        requires_white_box: true,
         observations: flatten_observations(&steps),
         steps,
     })
@@ -550,17 +556,14 @@ pub fn fault_campaign_family() -> Result<ScenarioFamily, ExampleCorpusError> {
         vec![TopologyShape::Ring, TopologyShape::Mesh],
     )?;
     let template = NodeTemplate::fixed_icount(Icount { retired: 100 })
+        .white_box(WhiteBoxPolicy::Enabled)
         .cmdline("console=ttyS0 quiet store.role=replica cluster=crucible-a4");
-    Ok(ScenarioFamily::new(space, template).property(AssertionDef {
-        id: AssertionId::from_name("no-split-brain"),
-        message: String::from("the store must not publish split-brain evidence"),
-        property: Property::Always {
-            predicate: Predicate::not(Predicate::network_match(
-                None,
-                FramePredicate::contains(b"split_brain=true".to_vec()),
-            )),
-        },
-    }))
+    Ok(
+        ScenarioFamily::new(space, template).property(AssertionDef::guest_unreachable(
+            AssertionId::from_name("no-split-brain"),
+            "the store must not publish split-brain evidence",
+        )),
+    )
 }
 
 /// Runs the RFC-0010 A.4 fault-campaign proof with the default fuzz budget.
@@ -843,7 +846,7 @@ fn partition_node(
         ready_point: ReadyPoint::ConsoleMarker {
             marker: String::from("ready to accept connections"),
         },
-        white_box: WhiteBoxPolicy::Disabled,
+        white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
         icount_shift: 7,
         kernel: Some(kernel),
@@ -865,7 +868,7 @@ fn crash_restart_node(
         ready_point: ReadyPoint::ConsoleMarker {
             marker: String::from("ready to accept connections"),
         },
-        white_box: WhiteBoxPolicy::Disabled,
+        white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
         icount_shift: 7,
         kernel: Some(kernel),
@@ -890,24 +893,26 @@ fn crash_restart_properties(world: &World) -> Result<Properties, EngineError> {
     Properties::from_assertions_for_world(
         world,
         vec![
-            AssertionDef {
-                id: AssertionId::from_name("data-not-lost"),
-                message: String::from("the committed write must survive db-1 crash and restart"),
-                property: Property::Always {
-                    predicate: Predicate::not(Predicate::network_match(
-                        None,
-                        FramePredicate::contains(b"data_lost=true".to_vec()),
-                    )),
-                },
-            },
+            AssertionDef::guest_unreachable(
+                AssertionId::from_name("data-not-lost"),
+                "the committed write must survive db-1 crash and restart",
+            ),
+            AssertionDef::guest_sometimes(
+                AssertionId::from_name("committed-write-survived"),
+                "a replica confirms that the committed write survived",
+            ),
+            AssertionDef::guest_sometimes(
+                AssertionId::from_name("replicas-reconciled"),
+                "replicas report matching logs after db-1 restarts",
+            ),
             AssertionDef {
                 id: AssertionId::from_name("reconverges"),
                 message: String::from("replicas must reconcile after db-1 restarts"),
                 property: Property::Eventually {
                     trigger: crash_trigger,
-                    property: Predicate::network_match(
-                        Some(LinkId::from_name("db-0--db-1")),
-                        FramePredicate::contains(b"raft_log_match".to_vec()),
+                    property: Predicate::assertion_state(
+                        AssertionId::from_name("replicas-reconciled"),
+                        AssertionPhase::Satisfied,
                     ),
                     deadline: VirtualTime {
                         ticks: CRASH_RESTART_DEADLINE_TICKS,
@@ -947,13 +952,13 @@ fn crash_restart_plan(world: &World, properties: &Properties) -> Result<Plan, En
         .when(Predicate::all_of(vec![
             Predicate::once(Predicate::node_state(node("db-1"), NodeLifecycle::Started)),
             Predicate::not(Predicate::fault_active(crash_fault_tag())),
-            Predicate::once(Predicate::network_match(
-                Some(LinkId::from_name("db-0--db-1")),
-                FramePredicate::contains(b"committed_write_survived=true".to_vec()),
+            Predicate::once(Predicate::assertion_state(
+                AssertionId::from_name("committed-write-survived"),
+                AssertionPhase::Satisfied,
             )),
-            Predicate::once(Predicate::network_match(
-                Some(LinkId::from_name("db-0--db-1")),
-                FramePredicate::contains(b"raft_log_match".to_vec()),
+            Predicate::once(Predicate::assertion_state(
+                AssertionId::from_name("replicas-reconciled"),
+                AssertionPhase::Satisfied,
             )),
             Predicate::quiescent(),
         ]))
@@ -989,16 +994,14 @@ fn partition_recovery_properties(world: &World) -> Result<Properties, EngineErro
                     predicate: Predicate::fault_active(partition_fault_tag()),
                 },
             },
-            AssertionDef {
-                id: AssertionId::from_name("no-split-brain"),
-                message: String::from("the store must not publish split-brain evidence"),
-                property: Property::Always {
-                    predicate: Predicate::not(Predicate::network_match(
-                        None,
-                        FramePredicate::contains(b"split_brain=true".to_vec()),
-                    )),
-                },
-            },
+            AssertionDef::guest_unreachable(
+                AssertionId::from_name("no-split-brain"),
+                "the store must not publish split-brain evidence",
+            ),
+            AssertionDef::guest_sometimes(
+                AssertionId::from_name("replicas-reconciled"),
+                "replicas report matching logs after the partition heals",
+            ),
             AssertionDef {
                 id: AssertionId::from_name("converges-after-heal"),
                 message: String::from("replicas must reconcile after the healed partition"),
@@ -1007,9 +1010,9 @@ fn partition_recovery_properties(world: &World) -> Result<Properties, EngineErro
                         AssertionId::from_name("split-active"),
                         AssertionPhase::Satisfied,
                     ),
-                    property: Predicate::network_match(
-                        Some(LinkId::from_name("db-0--db-1")),
-                        FramePredicate::contains(b"raft_log_match".to_vec()),
+                    property: Predicate::assertion_state(
+                        AssertionId::from_name("replicas-reconciled"),
+                        AssertionPhase::Satisfied,
                     ),
                     deadline: VirtualTime {
                         ticks: PARTITION_CONVERGENCE_DEADLINE_TICKS,
@@ -1064,9 +1067,9 @@ fn partition_recovery_plan(world: &World, properties: &Properties) -> Result<Pla
                 AssertionPhase::Satisfied,
             )),
             Predicate::not(Predicate::fault_active(partition_fault_tag())),
-            Predicate::once(Predicate::network_match(
-                Some(LinkId::from_name("db-0--db-1")),
-                FramePredicate::contains(b"reconcile_ack".to_vec()),
+            Predicate::once(Predicate::assertion_state(
+                AssertionId::from_name("replicas-reconciled"),
+                AssertionPhase::Satisfied,
             )),
             Predicate::quiescent(),
         ]))
@@ -1223,12 +1226,14 @@ fn partition_recovery_replay_steps() -> Vec<ExampleReplayStep> {
             ObservableEvent::coverage_block(Icount { retired: 10 }, node("db-0"), 0x4000, 0x20),
         ]),
         ExampleReplayStep::QuantumBoundary(10 + PARTITION_HEAL_DELAY_TICKS),
-        ExampleReplayStep::Observations(vec![ObservableEvent::network_delivered(
-            VirtualTime {
-                ticks: 20 + PARTITION_HEAL_DELAY_TICKS,
-            },
-            Some(LinkId::from_name("db-0--db-1")),
-            b"reconcile_ack raft_log_match term=7 index=42".to_vec(),
+        ExampleReplayStep::Observations(vec![guest_assertion_observation(
+            20 + PARTITION_HEAL_DELAY_TICKS,
+            "db-0",
+            "replicas-reconciled",
+            "replicas report matching logs after the partition heals",
+            GuestAssertionKind::Sometimes,
+            true,
+            true,
         )]),
     ]
 }
@@ -1254,13 +1259,26 @@ fn crash_restart_replay_steps() -> Vec<ExampleReplayStep> {
             ),
         ]),
         ExampleReplayStep::QuantumBoundary(restart_ticks),
-        ExampleReplayStep::Observations(vec![ObservableEvent::network_delivered(
-            VirtualTime {
-                ticks: restart_ticks + 10,
-            },
-            Some(LinkId::from_name("db-0--db-1")),
-            b"committed_write_survived=true raft_log_match term=9 index=42".to_vec(),
-        )]),
+        ExampleReplayStep::Observations(vec![
+            guest_assertion_observation(
+                restart_ticks + 10,
+                "db-0",
+                "committed-write-survived",
+                "a replica confirms that the committed write survived",
+                GuestAssertionKind::Sometimes,
+                true,
+                true,
+            ),
+            guest_assertion_observation(
+                restart_ticks + 10,
+                "db-0",
+                "replicas-reconciled",
+                "replicas report matching logs after db-1 restarts",
+                GuestAssertionKind::Sometimes,
+                true,
+                true,
+            ),
+        ]),
     ]
 }
 
@@ -1300,10 +1318,14 @@ struct FaultCampaignViolationEvidence {
 fn fault_campaign_violation_evidence(
     scenario: &ScenarioDefForm,
 ) -> Result<FaultCampaignViolationEvidence, ExampleCorpusError> {
-    let observations = vec![ObservableEvent::network_delivered(
-        VirtualTime { ticks: 30 },
-        None,
-        b"cluster=crucible-a4 split_brain=true leader=node-0,node-2 term=7".to_vec(),
+    let observations = vec![guest_assertion_observation(
+        30,
+        "node-0",
+        "no-split-brain",
+        "the store must not publish split-brain evidence",
+        GuestAssertionKind::Unreachable,
+        true,
+        false,
     )];
     let mut event_log = EventLog::new();
     let append = event_log.append_observable_events(observations.clone())?;
@@ -1461,6 +1483,30 @@ fn flatten_observations(steps: &[ExampleReplayStep]) -> Vec<ObservableEvent> {
             ExampleReplayStep::QuantumBoundary(_) => Vec::new(),
         })
         .collect()
+}
+
+fn guest_assertion_observation(
+    retired: u64,
+    node_name: &str,
+    assertion: &str,
+    message: &str,
+    kind: GuestAssertionKind,
+    condition: bool,
+    must_hit: bool,
+) -> ObservableEvent {
+    ObservableEvent::guest_assertion_marker(
+        Icount { retired },
+        node(node_name),
+        GuestAssertionMarker::new(
+            AssertionId::from_name(assertion),
+            message,
+            kind,
+            condition,
+            must_hit,
+            vec![GuestAssertionDetail::new("scenario", assertion)],
+            format!("example-corpus/{assertion}"),
+        ),
+    )
 }
 
 fn partition_fault_tag() -> FaultTag {
@@ -1818,12 +1864,6 @@ fn example_script_from_schedule(
     scenario_name: &str,
     schedule: &Schedule,
 ) -> Result<Vec<ExampleReplayStep>, ExampleCorpusError> {
-    if schedule.decisions().iter().any(|decision| {
-        matches!(decision, Decision::Override(override_decision) if override_decision.point.key == HAPPY_PATH_REPLAY_BOUNDARY_POINT || override_decision.point.key.starts_with(HAPPY_PATH_REPLAY_OBSERVATION_POINT_PREFIX))
-    }) {
-        return legacy_happy_path_script_from_schedule(scenario_name, schedule);
-    }
-
     let mut steps = Vec::new();
     let expected_prefix = format!("{EXAMPLE_REPLAY_STEP_POINT_PREFIX}{scenario_name}/");
     for decision in schedule.decisions() {
@@ -1859,69 +1899,6 @@ fn example_script_from_schedule(
             scenario_name,
             "schedule is missing replay steps",
         ));
-    }
-    Ok(steps)
-}
-
-fn legacy_happy_path_script_from_schedule(
-    scenario_name: &str,
-    schedule: &Schedule,
-) -> Result<Vec<ExampleReplayStep>, ExampleCorpusError> {
-    let mut observations = Vec::new();
-    let mut boundary_ticks = None;
-    for decision in schedule.decisions() {
-        let Decision::Override(override_decision) = decision else {
-            return Err(invalid_replay_schedule(
-                scenario_name,
-                "schedule contains a non-override decision",
-            ));
-        };
-        if let Some(index) = override_decision
-            .point
-            .key
-            .strip_prefix(HAPPY_PATH_REPLAY_OBSERVATION_POINT_PREFIX)
-        {
-            let expected_index = observations.len().to_string();
-            if index != expected_index {
-                return Err(invalid_replay_schedule(
-                    scenario_name,
-                    format!("observation index `{index}` did not follow `{expected_index}`"),
-                ));
-            }
-            observations.push(decode_observation(
-                scenario_name,
-                &override_decision.choice.name,
-            )?);
-        } else if override_decision.point.key == HAPPY_PATH_REPLAY_BOUNDARY_POINT {
-            if boundary_ticks.is_some() {
-                return Err(invalid_replay_schedule(
-                    scenario_name,
-                    "schedule contains multiple replay boundaries",
-                ));
-            }
-            boundary_ticks = Some(decode_boundary_ticks(
-                scenario_name,
-                &override_decision.choice.name,
-            )?);
-        } else {
-            return Err(invalid_replay_schedule(
-                scenario_name,
-                format!(
-                    "unknown replay scheduling point `{}`",
-                    override_decision.point.key
-                ),
-            ));
-        }
-    }
-    let Some(boundary_ticks) = boundary_ticks else {
-        return Err(invalid_replay_schedule(
-            scenario_name,
-            "schedule is missing the replay boundary",
-        ));
-    };
-    let mut steps = happy_path_replay_steps(&observations);
-    if let Some(ExampleReplayStep::QuantumBoundary(ticks)) = steps.last_mut() {
-        *ticks = boundary_ticks;
     }
     Ok(steps)
 }
@@ -1978,12 +1955,6 @@ fn encode_observation(
             node.name,
             bytes_hex(bytes)
         )),
-        ObservableEventPayload::NetworkDelivered { link, payload } => Ok(format!(
-            "network-delivered|{}|{}|{}",
-            observation.at().ticks,
-            link.as_ref().map(|link| link.name.as_str()).unwrap_or("-"),
-            bytes_hex(payload)
-        )),
         ObservableEventPayload::CoverageBlock {
             execution_icount,
             node,
@@ -2010,18 +1981,23 @@ fn encode_observation(
             node.name,
             encode_node_lifecycle(*state)
         )),
-        ObservableEventPayload::AssertionStateChanged { name, state } => Ok(format!(
-            "assertion-state-changed|{}|{}|{}",
-            observation.at().ticks,
-            name.name,
-            encode_assertion_phase(*state)
+        ObservableEventPayload::GuestAssertionMarker {
+            retired_icount,
+            node,
+            marker,
+        } => Ok(format!(
+            "guest-assertion-marker|{}|{}|{}",
+            retired_icount.retired,
+            node.name,
+            encode_guest_assertion_marker(scenario_name, marker)?,
         )),
-        ObservableEventPayload::CoverageMarker { .. }
+        ObservableEventPayload::NetworkDelivered { .. }
+        | ObservableEventPayload::AssertionStateChanged { .. }
+        | ObservableEventPayload::CoverageMarker { .. }
         | ObservableEventPayload::MemorySample { .. }
         | ObservableEventPayload::AssertionProximity { .. }
         | ObservableEventPayload::AssertionEvaluated { .. }
-        | ObservableEventPayload::GuestMarker { .. }
-        | ObservableEventPayload::GuestAssertionMarker { .. } => Err(invalid_replay_schedule(
+        | ObservableEventPayload::GuestMarker { .. } => Err(invalid_replay_schedule(
             scenario_name,
             "unsupported observation kind in example replay script",
         )),
@@ -2039,18 +2015,6 @@ fn decode_observation(
             node(node_name),
             bytes_from_hex(scenario_name, bytes)?,
         )),
-        ["network-delivered", ticks, link_name, payload] => {
-            let link = if *link_name == "-" {
-                None
-            } else {
-                Some(LinkId::from_name(*link_name))
-            };
-            Ok(ObservableEvent::network_delivered(
-                decode_ticks(scenario_name, ticks)?,
-                link,
-                bytes_from_hex(scenario_name, payload)?,
-            ))
-        }
         ["node-state", ticks, node_name, state] => Ok(ObservableEvent::node_state(
             decode_ticks(scenario_name, ticks)?,
             node(node_name),
@@ -2072,11 +2036,13 @@ fn decode_observation(
             decode_io_event_kind(scenario_name, kind)?,
             bytes_from_hex(scenario_name, payload)?,
         )),
-        ["assertion-state-changed", ticks, assertion_name, state] => {
-            Ok(ObservableEvent::assertion_state_changed(
-                decode_ticks(scenario_name, ticks)?,
-                AssertionId::from_name(*assertion_name),
-                decode_assertion_phase(scenario_name, state)?,
+        ["guest-assertion-marker", retired, node_name, marker] => {
+            Ok(ObservableEvent::guest_assertion_marker(
+                Icount {
+                    retired: decode_u64(scenario_name, retired, "guest assertion icount")?,
+                },
+                node(node_name),
+                decode_guest_assertion_marker(scenario_name, marker)?,
             ))
         }
         _ => Err(invalid_replay_schedule(
@@ -2175,24 +2141,51 @@ fn decode_node_lifecycle(
     }
 }
 
-fn encode_assertion_phase(state: AssertionPhase) -> &'static str {
-    match state {
-        AssertionPhase::Satisfied => "satisfied",
-        AssertionPhase::Violated => "violated",
-    }
+fn encode_guest_assertion_marker(
+    scenario_name: &str,
+    marker: &GuestAssertionMarker,
+) -> Result<String, ExampleCorpusError> {
+    let payload = WhiteboxMarkerPayload::Assertion(WhiteboxAssertionMarkerBody {
+        flavor: guest_assertion_flavor(marker.kind),
+        condition: marker.condition,
+        must_hit: marker.must_hit,
+        id: marker.id.name.clone(),
+        message: marker.message.clone(),
+        location: marker.location.clone(),
+        details: marker
+            .details
+            .iter()
+            .map(|detail| WhiteboxMarkerDetail::new(&detail.key, &detail.value))
+            .collect(),
+    });
+    encode_whitebox_marker_frame(&payload)
+        .map(|frame| bytes_hex(&frame))
+        .map_err(|error| invalid_replay_schedule(scenario_name, error.to_string()))
 }
 
-fn decode_assertion_phase(
+fn decode_guest_assertion_marker(
     scenario_name: &str,
-    state: &str,
-) -> Result<AssertionPhase, ExampleCorpusError> {
-    match state {
-        "satisfied" => Ok(AssertionPhase::Satisfied),
-        "violated" => Ok(AssertionPhase::Violated),
-        _ => Err(invalid_replay_schedule(
+    marker: &str,
+) -> Result<GuestAssertionMarker, ExampleCorpusError> {
+    let frame = WhiteboxDoorbellFrame::decode(&bytes_from_hex(scenario_name, marker)?)
+        .map_err(|error| invalid_replay_schedule(scenario_name, error.to_string()))?;
+    let WhiteboxMarkerPayload::Assertion(body) = decode_whitebox_marker_payload(&frame)
+        .map_err(|error| invalid_replay_schedule(scenario_name, error.to_string()))?
+    else {
+        return Err(invalid_replay_schedule(
             scenario_name,
-            format!("unknown assertion phase `{state}`"),
-        )),
+            "guest assertion record carries a non-assertion doorbell frame",
+        ));
+    };
+    Ok(guest_assertion_marker_from_whitebox_body(&body))
+}
+
+fn guest_assertion_flavor(kind: GuestAssertionKind) -> WhiteboxAssertionMarkerFlavor {
+    match kind {
+        GuestAssertionKind::Always => WhiteboxAssertionMarkerFlavor::Always,
+        GuestAssertionKind::Sometimes => WhiteboxAssertionMarkerFlavor::Sometimes,
+        GuestAssertionKind::Reachable => WhiteboxAssertionMarkerFlavor::Reachable,
+        GuestAssertionKind::Unreachable => WhiteboxAssertionMarkerFlavor::Unreachable,
     }
 }
 

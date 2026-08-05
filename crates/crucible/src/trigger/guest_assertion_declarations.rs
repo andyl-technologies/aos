@@ -3,6 +3,7 @@
 use super::{
     AssertionDef, GuestAssertionKind, GuestAssertionMarker, GuestMarkerAssertionState,
     HostAssertionState, Icount, NodeId, Properties, Property, PropertyLifecycleState,
+    ReachabilityExpectation,
 };
 use crate::model::Predicate;
 
@@ -28,11 +29,26 @@ pub(super) fn partition_declared_assertions(
 
 impl GuestMarkerAssertionState {
     fn from_declared_assertion(assertion: &AssertionDef) -> Option<Self> {
-        let Property::Sometimes {
-            predicate: Predicate::GuestMarker { marker },
-        } = &assertion.property
-        else {
-            return None;
+        let (marker, kind, must_hit) = match &assertion.property {
+            Property::Always {
+                predicate: Predicate::GuestMarker { marker },
+            } => (marker, GuestAssertionKind::Always, true),
+            Property::Sometimes {
+                predicate: Predicate::GuestMarker { marker },
+            } => (marker, GuestAssertionKind::Sometimes, true),
+            Property::Reachable {
+                predicate: Predicate::GuestMarker { marker },
+                expectation: ReachabilityExpectation::Reachable { on_unreached: _ },
+            } => (marker, GuestAssertionKind::Reachable, true),
+            Property::Reachable {
+                predicate: Predicate::GuestMarker { marker },
+                expectation: ReachabilityExpectation::Unreachable,
+            } => (marker, GuestAssertionKind::Unreachable, false),
+            Property::Eventually { .. }
+            | Property::AfterQuiescence { .. }
+            | Property::Always { .. }
+            | Property::Sometimes { .. }
+            | Property::Reachable { .. } => return None,
         };
         if marker.name != assertion.id.name {
             return None;
@@ -41,8 +57,8 @@ impl GuestMarkerAssertionState {
             id: assertion.id.clone(),
             lifecycle: PropertyLifecycleState::Declared,
             message: assertion.message.clone(),
-            kind: GuestAssertionKind::Sometimes,
-            must_hit: true,
+            kind,
+            must_hit,
             details: Vec::new(),
             location: String::from("scenario.properties"),
             observed_true: false,

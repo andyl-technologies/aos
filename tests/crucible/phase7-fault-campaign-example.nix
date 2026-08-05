@@ -33,7 +33,7 @@
       }
       {
         label = "evaluated planted violation";
-        needle = "split_brain=true` observation into a violated `no-split-brain`";
+        needle = "structured guest assertion marker into a violated `no-split-brain`";
       }
       {
         label = "artifact-bound violation reproduction note";
@@ -116,8 +116,8 @@
         needle = "fn fault_campaign_violation_evidence";
       }
       {
-        label = "planted split-brain observation";
-        needle = "split_brain=true";
+        label = "planted split-brain guest assertion";
+        needle = "GuestAssertionKind::Unreachable";
       }
       {
         label = "host assertion violation proof";
@@ -170,12 +170,6 @@
       {
         label = "alternate neighborhood decision";
         needle = "deliver-delayed-vote-first";
-      }
-    ]
-    ++ forbiddenFor "crates/crucible/src/example_corpus.rs" exampleCorpus [
-      {
-        label = "white-box enabled dependency";
-        needle = "WhiteBoxPolicy::Enabled";
       }
     ]
     ++ failuresFor "crates/crucible/tests/example_corpus.rs" exampleTest [
