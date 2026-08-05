@@ -91,7 +91,9 @@ impl FaultSignalAuthoringRows {
                 if self.resource_limits != SignalResourceLimits::default() {
                     return Err(FaultSignalAuthoringError::NonCanonicalEmptyLimits);
                 }
-                return Ok(FaultSignalPlan::empty());
+                let plan = FaultSignalPlan::empty();
+                plan.validate_for_world(world)?;
+                return Ok(plan);
             }
             return Err(FaultSignalAuthoringError::BindingsWithoutSignals);
         }
@@ -118,7 +120,10 @@ impl FaultSignalAuthoringRows {
             .into_iter()
             .map(|row| binding_from_toml(row, &program, world))
             .collect::<Result<Vec<_>, _>>()?;
-        FaultSignalPlan::new(vec![program], bindings).map_err(FaultSignalAuthoringError::Plan)
+        let plan = FaultSignalPlan::new(vec![program], bindings)
+            .map_err(FaultSignalAuthoringError::Plan)?;
+        plan.validate_for_world(world)?;
+        Ok(plan)
     }
 }
 
@@ -2398,7 +2403,7 @@ fn resolve_authored_target(
                 .checked_add(bit_count)
                 .filter(|_| bit_count > 0)
                 .ok_or(FaultSignalAuthoringError::InvalidSelector)?;
-            if architecture.as_str() != capabilities.architecture.as_str()
+            if architecture.as_str() != capabilities.architecture.selector_id()
                 || vcpu >= u32::from(vm.smp_vcpus)
                 || end > row.width_bits
                 || (!row.per_vcpu && vcpu != 0)
@@ -2929,6 +2934,20 @@ pub(crate) enum FaultSignalAuthoringError {
         /// Authored target identity.
         id: String,
     },
+    /// A mobile endpoint names no exported trajectory signal.
+    MissingTrajectorySignal {
+        /// Mobile endpoint declaration.
+        endpoint: String,
+        /// Missing exported signal.
+        signal: String,
+    },
+    /// A mobile trajectory is not virtual-time `vector3:i64` millimetres.
+    InvalidTrajectorySignal {
+        /// Mobile endpoint declaration.
+        endpoint: String,
+        /// Invalid exported signal.
+        signal: String,
+    },
     /// A telemetry or coordinate adapter is outside the executable registry.
     UnsupportedAdapter(String),
     /// A telemetry field is absent from the selected adapter registry.
@@ -3008,6 +3027,14 @@ impl fmt::Display for FaultSignalAuthoringError {
                     "{kind} selector target `{id}` is absent from the world"
                 )
             }
+            Self::MissingTrajectorySignal { endpoint, signal } => write!(
+                formatter,
+                "mobile endpoint `{endpoint}` names absent exported trajectory `{signal}`"
+            ),
+            Self::InvalidTrajectorySignal { endpoint, signal } => write!(
+                formatter,
+                "mobile endpoint `{endpoint}` trajectory `{signal}` must be virtual-time vector3:i64 millimetres at scale zero"
+            ),
             Self::UnsupportedAdapter(adapter) => {
                 write!(
                     formatter,

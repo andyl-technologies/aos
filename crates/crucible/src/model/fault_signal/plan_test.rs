@@ -5,7 +5,8 @@ use crate::model::{
     World, WorldFaultDomain, WorldFaultTargetRef, WorldFaultTopology, WorldNetworkForwarder,
     WorldNetworkForwarderKind, WorldNetworkInterface, WorldNetworkPath, WorldNetworkPathHop,
     WorldNetworkQueue, WorldNetworkQueueDiscipline, WorldNetworkQueueOverflow, WorldNetworkSegment,
-    WorldNetworkSegmentKind, WorldNetworkTechnology, WorldNode,
+    WorldNetworkSegmentKind, WorldNetworkTechnology, WorldMobileEndpoint, WorldNode,
+    WorldNodeArchitecture,
 };
 
 fn test_link() -> LinkDef {
@@ -120,6 +121,22 @@ fn program(value: bool) -> SignalProgram {
         SignalResourceLimits::default(),
     )
     .unwrap_or_else(|error| panic!("invalid test program: {error}"))
+}
+
+fn trajectory_program(shape: SignalShape, value: SignalValue) -> SignalProgram {
+    let output = signal_id("vehicle-position-truth");
+    SignalProgram::new(
+        vec![SignalNode {
+            id: output.clone(),
+            domain: SignalDomain::VirtualTime,
+            output: shape,
+            inputs: Vec::new(),
+            kind: SignalNodeKind::Constant { value },
+        }],
+        vec![output],
+        SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("invalid trajectory test program: {error}"))
 }
 
 fn object_id(value: &str) -> FaultObjectId {
@@ -479,6 +496,82 @@ fn singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns() {
     ] {
         assert!(Plan::from_canonical_toml_for_world(&test_world(), &rejected,).is_err());
     }
+}
+
+#[test]
+fn mobile_truth_trajectory_requires_an_exact_exported_position_contract() {
+    let base = test_world();
+    let mut topology = base.fault_topology().clone();
+    topology.mobile_endpoints.push(WorldMobileEndpoint {
+        id: signal_id("delivery-vehicle"),
+        node: signal_id("left"),
+        truth_trajectory: signal_id("vehicle-position-truth"),
+    });
+    let world = base
+        .with_fault_topology(topology)
+        .unwrap_or_else(|error| panic!("mobile world: {error}"));
+
+    assert!(Plan::empty().validate_for_world(&world).is_err());
+
+    let shape = SignalShape::new(
+        SignalValueType::Vector3(Box::new(SignalValueType::I64)),
+        SignalUnit::Millimetres,
+        0,
+    )
+    .unwrap_or_else(|error| panic!("trajectory shape: {error}"));
+    let value = SignalValue::Vector3(vec![
+        SignalValue::I64(0),
+        SignalValue::I64(0),
+        SignalValue::I64(0),
+    ]);
+    let valid = Plan::empty().with_fault_signals(
+        FaultSignalPlan::new(vec![trajectory_program(shape, value)], Vec::new())
+            .unwrap_or_else(|error| panic!("trajectory fault layer: {error}")),
+    );
+    valid
+        .validate_for_world(&world)
+        .unwrap_or_else(|error| panic!("valid trajectory: {error}"));
+
+    let wrong_shape = SignalShape::new(
+        SignalValueType::Vector3(Box::new(SignalValueType::I64)),
+        SignalUnit::Millimetres,
+        -1,
+    )
+    .unwrap_or_else(|error| panic!("wrong trajectory shape: {error}"));
+    let wrong_value = SignalValue::Vector3(vec![
+        SignalValue::I64(0),
+        SignalValue::I64(0),
+        SignalValue::I64(0),
+    ]);
+    let invalid = Plan::empty().with_fault_signals(
+        FaultSignalPlan::new(
+            vec![trajectory_program(wrong_shape, wrong_value)],
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("invalid trajectory fault layer: {error}")),
+    );
+    assert!(invalid.validate_for_world(&world).is_err());
+}
+
+#[test]
+fn node_architecture_has_distinct_wire_and_selector_spellings() {
+    assert_eq!(WorldNodeArchitecture::X86_64.selector_id(), "x86-64");
+    assert_eq!(WorldNodeArchitecture::Aarch64.selector_id(), "aarch64");
+    assert_eq!(
+        serde_json::to_string(&WorldNodeArchitecture::X86_64)
+            .unwrap_or_else(|error| panic!("architecture JSON: {error}")),
+        "\"x86_64\""
+    );
+}
+
+#[test]
+fn fault_segments_must_cover_the_world_link_topology_exactly() {
+    let world = test_world();
+    let mut topology = world.fault_topology().clone();
+    topology.network_segments.clear();
+    topology.network_paths.clear();
+    topology.fault_domains.clear();
+    assert!(world.with_fault_topology(topology).is_err());
 }
 
 #[test]

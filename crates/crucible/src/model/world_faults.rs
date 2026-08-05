@@ -236,6 +236,38 @@ impl WorldFaultTopology {
                 "network segment forwarder",
             )?;
         }
+        if !self.network_interfaces.is_empty() || !self.network_segments.is_empty() {
+            let interface_endpoints = self
+                .network_interfaces
+                .iter()
+                .map(|interface| (&interface.id, &interface.endpoint))
+                .collect::<BTreeMap<_, _>>();
+            let declared_pairs = self
+                .network_segments
+                .iter()
+                .map(|segment| {
+                    let endpoint_a = interface_endpoints
+                        .get(&segment.interface_a)
+                        .ok_or_else(|| invalid("network segment interface_a"))?;
+                    let endpoint_b = interface_endpoints
+                        .get(&segment.interface_b)
+                        .ok_or_else(|| invalid("network segment interface_b"))?;
+                    Ok(canonical_name_pair(endpoint_a.as_str(), endpoint_b.as_str()))
+                })
+                .collect::<Result<BTreeSet<_>, WorldFaultTopologyError>>()?;
+            let world_pairs = world
+                .links()
+                .iter()
+                .map(|link| {
+                    let (endpoint_a, endpoint_b) = link.endpoints();
+                    canonical_name_pair(&endpoint_a.name, &endpoint_b.name)
+                })
+                .collect::<BTreeSet<_>>();
+            require(
+                declared_pairs == world_pairs,
+                "network segment and world link correspondence",
+            )?;
+        }
         for medium in &self.network_media {
             require_all(
                 &medium.fault_domains,
@@ -373,10 +405,15 @@ impl WorldFaultTopology {
                 previous_end = contact.end_nanos;
             }
         }
+        let mut mobile_nodes = BTreeSet::new();
         for endpoint in &self.mobile_endpoints {
             require(
                 vm_nodes.contains(endpoint.node.as_str()),
                 "mobile endpoint node",
+            )?;
+            require(
+                mobile_nodes.insert(&endpoint.node),
+                "duplicate mobile endpoint node",
             )?;
         }
         let mut declared_storage_devices = BTreeSet::new();
@@ -498,7 +535,7 @@ impl WorldFaultTopology {
                 .find(|node| node.id.name == capabilities.node.as_str())
                 .ok_or_else(|| invalid("node capability node"))?;
             require(
-                capabilities.architecture.as_str() == node.arch.material(),
+                capabilities.architecture.matches_vm(node.arch),
                 "node capability architecture",
             )?;
             capabilities.validate()?;
@@ -1713,6 +1750,37 @@ impl WorldNodeAccelerator {
     }
 }
 
+/// Closed architecture ABIs supported by live QEMU node faults.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WorldNodeArchitecture {
+    /// x86-64 architectural register, interrupt, and machine-check ABI.
+    X86_64,
+    /// AArch64 architectural register, interrupt, and hardware-error ABI.
+    Aarch64,
+}
+
+impl WorldNodeArchitecture {
+    /// Returns the canonical selector spelling used by resolved register targets.
+    #[must_use]
+    pub const fn selector_id(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86-64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+
+    const fn matches_vm(self, architecture: VmArchitecture) -> bool {
+        matches!(
+            (self, architecture),
+            (Self::X86_64, VmArchitecture::X86_64)
+                | (Self::Aarch64, VmArchitecture::Aarch64)
+        )
+    }
+}
+
 /// One closed VM-node fault capability declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1721,8 +1789,8 @@ pub struct WorldNodeFaultCapabilities {
     pub id: SignalId,
     /// Referenced VM-node ID.
     pub node: SignalId,
-    /// Registered architecture ABI ID.
-    pub architecture: SignalId,
+    /// Registered architecture ABI.
+    pub architecture: WorldNodeArchitecture,
     /// Content address of the exact register schema.
     pub register_schema: ContentHash,
     /// Exact architecture register manifest.
@@ -1929,6 +1997,14 @@ fn require_all(
 ) -> Result<(), WorldFaultTopologyError> {
     bounded(values, field)?;
     require(values.iter().all(|value| available.contains(value)), field)
+}
+
+fn canonical_name_pair(left: &str, right: &str) -> (String, String) {
+    if left <= right {
+        (left.to_owned(), right.to_owned())
+    } else {
+        (right.to_owned(), left.to_owned())
+    }
 }
 
 fn same_target_object(left: &WorldFaultTargetRef, right: &WorldFaultTargetRef) -> bool {
