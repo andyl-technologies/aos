@@ -15532,7 +15532,7 @@ impl Database {
         let rows = self
             .backend
             .query(
-                "SELECT id, owner_kind, owner_id, scope, permissions, created_at, expires_at,
+                "SELECT id, owner_kind, owner_id, scope_key, permissions, created_at, expires_at,
                     last_used_at
              FROM tokens
              WHERE owner_kind = 'service_account'

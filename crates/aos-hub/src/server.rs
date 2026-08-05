@@ -602,7 +602,9 @@ async fn device_authorization(
     ) {
         return too_many_requests(retry_after);
     }
-    let scope = form.scope.unwrap_or_default();
+    let scope = form
+        .scope
+        .unwrap_or_else(|| crate::domain::Scope::root().as_str().to_string());
     let perms: Vec<Permission> = if form.permission.is_empty() {
         vec![Permission::Read]
     } else {
