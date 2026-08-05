@@ -57,8 +57,8 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
 
     let whitebox_doorbell =
         fs::read_to_string(root.join("crates/crucible-qemu-plugin/src/whitebox_doorbell.rs"))?;
-    assert_contains(&whitebox_doorbell, "QEMU_PLUGIN_DOORBELL_MEM_CB_SYMBOL");
-    assert_contains(&whitebox_doorbell, "qemu_plugin_register_vcpu_mem_cb");
+    assert_contains(&whitebox_doorbell, "QEMU_PLUGIN_DOORBELL_EXEC_CB_SYMBOL");
+    assert_contains(&whitebox_doorbell, "qemu_plugin_register_vcpu_insn_exec_cb");
     assert_contains(&whitebox_doorbell, "qemu_plugin_read_memory_vaddr");
     assert_contains(
         &whitebox_doorbell,

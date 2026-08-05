@@ -101,7 +101,7 @@
       }
       {
         label = "x86 trap instruction";
-        needle = "\"out dx, eax\"";
+        needle = "\"out 0xe7, al\"";
       }
       {
         label = "x86 port permission request";

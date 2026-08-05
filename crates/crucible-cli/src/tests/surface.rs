@@ -131,10 +131,20 @@ impl DeterminismErgonomicsRecorder for RecordingDeterminismErgonomicsRecorder {
 }
 
 pub(super) fn write_valid_run_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
-    let fixture = crucible::happy_path_scenario()?;
+    let form = valid_run_scenario_form()?;
     let path = temp.path().join("scenario.toml");
-    fs::write(&path, fixture.scenario.to_canonical_toml()?)?;
+    fs::write(&path, form.to_canonical_toml()?)?;
     Ok(path)
+}
+
+pub(super) fn valid_run_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
+    let fixture = crucible::happy_path_scenario()?;
+    Ok(crucible::ScenarioDefForm::from_components(
+        fixture.scenario.world(),
+        &crucible::Plan::empty(),
+        &crucible::Properties::empty(),
+        fixture.scenario.seed(),
+    )?)
 }
 
 pub(super) fn write_search_frontier_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
@@ -546,7 +556,7 @@ pub(super) fn property_selector_scenario_form() -> Result<crucible::ScenarioDefF
     )?;
     Ok(crucible::ScenarioDefForm::from_components(
         fixture.scenario.world(),
-        fixture.scenario.plan(),
+        &crucible::Plan::empty(),
         &properties,
         fixture.scenario.seed(),
     )?)
