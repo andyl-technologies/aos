@@ -8,9 +8,9 @@
 //! with percent-escaped string fields.
 //!
 //! ```text
-//! schema  crucible.reproduction-artifact.v2
+//! schema  crucible.reproduction-artifact.v3
 //! seed    42
-//! identity  0.1.0  engine-abi:v1  crucible.reproduction-artifact.v2  crucible-hash:...  crucible-hash:...  1  1  4.0.0  crucible-rpc-abi-v4  plugin-abi:v1
+//! identity  0.1.0  engine-abi:v1  crucible.reproduction-artifact.v3  crucible-hash:...  crucible-hash:...  1  1  4.0.0  crucible-rpc-abi-v4  plugin-abi:v1
 //! scenario  scenario_def  cluster.scn  crucible-hash:...  cas:crucible-hash:...  application/vnd.crucible.scenario+text  128
 //! payload  crucible-hash:...  7363656e6172696f
 //! schedule  crucible-hash:...  12
@@ -30,7 +30,7 @@ use crate::e2e::{
 };
 
 /// Current reproduction artifact schema identifier.
-pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
+pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v3";
 
 /// Media type for the canonical artifact encoding.
 pub const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
@@ -338,7 +338,13 @@ impl ReproductionArtifact {
         for sample in &self.fingerprint_tail {
             line(
                 &mut text,
-                &["fingerprint", &sample.index.to_string(), &sample.digest],
+                &[
+                    "fingerprint",
+                    &sample.index.to_string(),
+                    &sample.instruction.to_string(),
+                    &sample.node,
+                    &sample.digest,
+                ],
             );
         }
         let mut sampling_fields = vec![
@@ -738,6 +744,10 @@ pub struct RecordedDecision {
 pub struct FingerprintTailSample {
     /// Fingerprint sample index.
     pub index: u64,
+    /// Guest instruction coordinate associated with the sample.
+    pub instruction: u64,
+    /// Canonical World node name sampled at the coordinate.
+    pub node: String,
     /// Content address of the sample payload.
     pub digest: String,
 }
@@ -1255,6 +1265,8 @@ pub fn reproduction_artifact_from_mock_e2e(
     ]);
     let fingerprint_tail = vec![FingerprintTailSample {
         index: source.schedule.len() as u64,
+        instruction: source.schedule.len() as u64,
+        node: String::from("mock-node-a"),
         digest: content_address_bytes(&source_run.final_fingerprint),
     }];
 
@@ -1349,10 +1361,12 @@ fn decode_artifact(text: &str) -> Result<ReproductionArtifact, ReproductionArtif
                 });
             }
             "fingerprint" => {
-                require_field_count(line_index, tag, &fields, 3)?;
+                require_field_count(line_index, tag, &fields, 5)?;
                 fingerprint_tail.push(FingerprintTailSample {
                     index: parse_u64(line_index, tag, &fields[1])?,
-                    digest: fields[2].clone(),
+                    instruction: parse_u64(line_index, tag, &fields[2])?,
+                    node: fields[3].clone(),
+                    digest: fields[4].clone(),
                 });
             }
             "sampling" => {

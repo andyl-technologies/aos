@@ -60,11 +60,17 @@ use test_double_imports::*;
 #[cfg(any(test, feature = "test-double"))]
 use tokio::sync::{mpsc, oneshot};
 
-const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
+const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v3";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
 const MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.model-reproduction+binary";
 const MODEL_REPLAY_STATE_MEDIA_TYPE: &str = "application/vnd.crucible.model-replay-state+text";
+const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-replay-contract.v1+text";
+const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
+const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =

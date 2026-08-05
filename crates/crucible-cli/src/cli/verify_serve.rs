@@ -505,8 +505,8 @@ pub(super) fn artifact_fingerprint_samples(
         .iter()
         .map(|fingerprint| VerifyFingerprintSample {
             index: fingerprint.index,
-            instruction: fingerprint.index,
-            node: String::from("artifact"),
+            instruction: fingerprint.instruction,
+            node: fingerprint.node.clone(),
             digest: fingerprint.digest.clone(),
         })
         .collect()
@@ -798,7 +798,13 @@ fn reproduction_artifact_bytes_with_scenario_payload(
     for sample in fingerprint_samples {
         artifact_line(
             &mut text,
-            &["fingerprint", &sample.index.to_string(), &sample.digest],
+            &[
+                "fingerprint",
+                &sample.index.to_string(),
+                &sample.instruction.to_string(),
+                &sample.node,
+                &sample.digest,
+            ],
         );
     }
     artifact_line(
