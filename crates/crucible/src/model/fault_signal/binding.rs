@@ -24,7 +24,11 @@ pub const HARD_SEARCH_CHOICES_PER_STATE: u64 = 262_144;
 pub const HARD_MAPPING_DECLARATIONS: usize = 4_096;
 
 /// When a binding samples its signal inputs.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum BindingSampling {
     /// Samples at scheduler boundaries.
     AtBoundary,
@@ -39,7 +43,11 @@ pub enum BindingSampling {
 }
 
 /// Explicit parent coordinate for one event-domain binding sample.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum BindingEventParent {
     /// Event is scheduled directly on global virtual time.
     VirtualTime,
@@ -65,6 +73,22 @@ impl BindingEventParent {
 pub struct ResolvedTargetSet {
     targets: Vec<ResolvedFaultTarget>,
     allow_empty: bool,
+}
+
+impl<'de> serde::Deserialize<'de> for ResolvedTargetSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            targets: Vec<ResolvedFaultTarget>,
+            allow_empty: bool,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.targets, wire.allow_empty).map_err(serde::de::Error::custom)
+    }
 }
 
 impl ResolvedTargetSet {
@@ -127,7 +151,9 @@ impl ResolvedTargetSet {
 }
 
 /// Closed selector provenance retained after world resolution.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum TargetSelector {
     /// One explicitly named target.
     Exact(ResolvedTargetSet),
@@ -191,7 +217,11 @@ impl TargetSelector {
 }
 
 /// Closed comparison vocabulary used by threshold activation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum ThresholdComparison {
     /// Activates below the threshold.
     LessThan,
@@ -204,7 +234,11 @@ pub enum ThresholdComparison {
 }
 
 /// Effect fields which a signal may drive dynamically.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum MappedEffectParameter {
     /// Probability in millionths.
     Probability,
@@ -379,7 +413,10 @@ impl MappedEffectParameter {
 }
 
 /// One exact piecewise mapping point.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct BindingMapPoint {
     /// Strictly increasing input value.
     pub input: SignalValue,
@@ -388,7 +425,9 @@ pub struct BindingMapPoint {
 }
 
 /// Closed signal-to-effect mapping vocabulary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum BindingMapping {
     /// A Boolean signal controls persistent activation.
     ActiveWhenTrue {
@@ -521,7 +560,8 @@ where
 }
 
 /// One versioned time-varying service-profile declaration.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceProfileDeclaration {
     /// Stable profile identity.
     pub id: FaultObjectId,
@@ -661,7 +701,8 @@ impl BindingMappingRegistry {
 }
 
 /// Typed predicate for matching adapter opportunities.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OpportunityFilter {
     /// Owning adapter.
     pub adapter: FaultAdapter,
@@ -705,7 +746,9 @@ impl OpportunityFilter {
 }
 
 /// Bounded search behavior for one binding.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum BindingSearchPolicy {
     /// Always uses the model result.
     Fixed,
@@ -844,7 +887,11 @@ fn validate_candidates<T: PartialEq>(values: &[T]) -> Result<(), BindingError> {
 }
 
 /// Sampling-event retention policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum SampleObservation {
     /// Records every sample.
     EverySample,
@@ -858,7 +905,10 @@ pub enum SampleObservation {
 }
 
 /// Stable observability choices for one binding.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
 pub struct BindingObservabilityPolicy {
     /// Signal-sample retention.
     pub samples: SampleObservation,
@@ -1598,7 +1648,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("binding encoding must succeed: {error}"));
         assert_eq!(
             golden.to_hex(),
-            "07e49ddb56171dd59ce240d1d6aaf42bdb762667c62239f67133c51a7eea00d8"
+            "c72f522b8fc2e39d01f57a1547765eb7a5062545a33482e5940b778bd73e2d09"
         );
 
         let mut mutations = Vec::new();

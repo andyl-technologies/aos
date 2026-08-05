@@ -11,7 +11,9 @@ use super::{
 };
 
 /// Availability visible in one or both network directions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkAvailabilityState {
     /// Both directions accept traffic.
     Up,
@@ -24,7 +26,9 @@ pub enum NetworkAvailabilityState {
 }
 
 /// Treatment of operations already admitted when network state changes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkInFlightPolicy {
     /// Complete under the profile captured at admission.
     Preserve,
@@ -37,7 +41,9 @@ pub enum NetworkInFlightPolicy {
 }
 
 /// Negotiated duplex mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkDuplex {
     /// Only one direction may transmit at a time.
     Half,
@@ -46,7 +52,9 @@ pub enum NetworkDuplex {
 }
 
 /// Negotiated forward-error-correction mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkFecMode {
     /// Forward error correction is disabled.
     None,
@@ -59,7 +67,9 @@ pub enum NetworkFecMode {
 }
 
 /// Integer-only distribution used for keyed jitter and selection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkDistribution {
     /// Every integer value in the range is equiprobable.
     Uniform,
@@ -70,7 +80,8 @@ pub enum NetworkDistribution {
 }
 
 /// One time-varying service-curve segment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkServiceSegment {
     /// Segment start relative to effect activation.
     pub at_nanos: u64,
@@ -111,8 +122,21 @@ impl NetworkServiceSegments {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for NetworkServiceSegments {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let segments =
+            <Vec<NetworkServiceSegment> as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(segments).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A queue service discipline.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkQueueDiscipline {
     /// First-in, first-out service.
     Fifo,
@@ -127,7 +151,9 @@ pub enum NetworkQueueDiscipline {
 }
 
 /// A queue overflow disposition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkQueueOverflow {
     /// Reject the newly arriving frame.
     TailDrop,
@@ -140,7 +166,9 @@ pub enum NetworkQueueOverflow {
 }
 
 /// A deterministic bounded selection rule.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkSelection {
     /// Select with a keyed uniform draw.
     KeyedUniform,
@@ -153,7 +181,9 @@ pub enum NetworkSelection {
 }
 
 /// An explicit frame-loss decision when no probability is sampled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkLossDecision {
     /// Preserve the frame.
     Preserve,
@@ -162,7 +192,9 @@ pub enum NetworkLossDecision {
 }
 
 /// A frame payload mutation with a fully typed selector.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum NetworkPayloadMutation {
     /// XORs the selected byte range with a repeated nonzero mask.
     BitFlip {
@@ -193,7 +225,9 @@ pub enum NetworkPayloadMutation {
 }
 
 /// A receiver-detected frame error class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum DetectedFrameErrorKind {
     /// Cyclic-redundancy-check failure.
     Crc,
@@ -206,7 +240,9 @@ pub enum DetectedFrameErrorKind {
 }
 
 /// Receiver action for a detected frame error.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum DetectedFrameErrorAction {
     /// Deliver corrected data and evidence.
     Corrected,
@@ -219,7 +255,9 @@ pub enum DetectedFrameErrorAction {
 }
 
 /// Disposition of a frame exceeding the effective MTU.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkOversizeDisposition {
     /// Drop the frame.
     Drop,
@@ -230,7 +268,9 @@ pub enum NetworkOversizeDisposition {
 }
 
 /// A forwarder lifecycle transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkForwarderTransition {
     /// Restart software while retaining declared hardware state.
     Restart,
@@ -241,7 +281,9 @@ pub enum NetworkForwarderTransition {
 }
 
 /// State retention at a lifecycle or association transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkStatePolicy {
     /// Retain the named state.
     Preserve,
@@ -252,7 +294,9 @@ pub enum NetworkStatePolicy {
 }
 
 /// A forwarding-state mutation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum NetworkForwardingMutationKind {
     /// Replaces the selected output port.
     WrongPort {
@@ -279,7 +323,9 @@ pub enum NetworkForwardingMutationKind {
 }
 
 /// Firewall disposition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkFirewallAction {
     /// Accept the operation.
     Accept,
@@ -290,7 +336,9 @@ pub enum NetworkFirewallAction {
 }
 
 /// Stateful logical network-function family.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkConnectionKind {
     /// Network address translation.
     Nat,
@@ -305,7 +353,9 @@ pub enum NetworkConnectionKind {
 }
 
 /// Mutation applied to a typed control-operation result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NetworkControlResultKind {
     /// Suppress the result.
     Drop,
@@ -320,7 +370,9 @@ pub enum NetworkControlResultKind {
 }
 
 /// Typed parameters for every executable network effect kind.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum NetworkEffectSpecification {
     /// Directional network availability.
     Availability {

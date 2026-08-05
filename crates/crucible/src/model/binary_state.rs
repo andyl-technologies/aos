@@ -163,8 +163,16 @@ impl<'a> ScenarioBinaryReader<'a> {
         &mut self,
         label: &'static str,
     ) -> Result<&'a [u8], EngineError> {
+        self.read_binary_blob_bounded(label, MAX_SCENARIO_BINARY_BLOB_BYTES)
+    }
+
+    pub(super) fn read_binary_blob_bounded(
+        &mut self,
+        label: &'static str,
+        maximum_bytes: usize,
+    ) -> Result<&'a [u8], EngineError> {
         let len = self.read_count()?;
-        if len > MAX_SCENARIO_BINARY_BLOB_BYTES {
+        if len > maximum_bytes {
             return Err(scenario_serialization_error(format!(
                 "{label} exceeds serialized blob limit"
             )));
@@ -216,8 +224,9 @@ pub(super) fn scenario_binary_reader_for_versions<'a>(
 pub(super) fn write_scenario_form_binary(
     form: &ScenarioDefForm,
     writer: &mut ScenarioBinaryWriter,
-    includes_devices: bool,
 ) {
+    let includes_devices = form.world.io_nodes().next().is_some();
+    writer.write_u8(u8::from(includes_devices));
     writer.write_hash(form.id());
     write_world_binary(&form.world, writer, includes_devices);
     write_plan_binary(&form.plan, writer);
@@ -228,8 +237,16 @@ pub(super) fn write_scenario_form_binary(
 
 pub(super) fn read_scenario_form_binary(
     reader: &mut ScenarioBinaryReader<'_>,
-    includes_devices: bool,
 ) -> Result<ScenarioDefForm, EngineError> {
+    let includes_devices = match reader.read_u8()? {
+        0 => false,
+        1 => true,
+        _ => {
+            return Err(scenario_serialization_error(
+                "invalid scenario world-kind tag",
+            ));
+        }
+    };
     let expected = reader.read_hash()?;
     let world = read_world_binary(reader, includes_devices)?;
     let plan = read_plan_binary_for_scenario(&world, reader)?;
@@ -1772,6 +1789,7 @@ pub(super) fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) 
             }
         }
     }
+    writer.write_binary_blob(plan.fault_signals().wire_bytes());
 }
 
 pub(super) fn read_plan_binary(
@@ -1824,6 +1842,10 @@ pub(super) fn read_plan_binary_inner(
         }
         Plan::from_entries_for_world(world, entries)?
     };
+    let fault_signals =
+        FaultSignalPlan::from_wire_bytes(reader.read_binary_blob("plan.fault_signals")?)
+            .map_err(|error| scenario_serialization_error(error.to_string()))?;
+    let plan = plan.with_fault_signals(fault_signals);
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
 }

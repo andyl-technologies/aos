@@ -133,7 +133,7 @@ impl ScenarioDefForm {
     /// Returns [`EngineError::ScenarioSerialization`] if the TOML renderer rejects
     /// the internal DTO shape.
     pub fn to_canonical_toml(&self) -> Result<String, EngineError> {
-        toml::to_string(&scenario_form_to_toml(self)).map_err(|source| {
+        toml::to_string(&scenario_form_to_toml(self)?).map_err(|source| {
             scenario_serialization_error(format!("serialize scenario TOML: {source}"))
         })
     }
@@ -160,14 +160,8 @@ impl ScenarioDefForm {
     /// Serializes this form as the compact canonical binary representation.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let includes_io_nodes = self.world.io_nodes().next().is_some();
-        let magic = if includes_io_nodes {
-            SCENARIO_FORM_BINARY_MAGIC_V2
-        } else {
-            SCENARIO_FORM_BINARY_MAGIC_V1
-        };
-        let mut writer = ScenarioBinaryWriter::new(magic);
-        write_scenario_form_binary(self, &mut writer, includes_io_nodes);
+        let mut writer = ScenarioBinaryWriter::new(SCENARIO_FORM_BINARY_MAGIC_V3);
+        write_scenario_form_binary(self, &mut writer);
         writer.finish()
     }
 
@@ -179,12 +173,8 @@ impl ScenarioDefForm {
     /// id mismatches, or the same validation errors as the component constructors
     /// when the parsed world, plan, or properties are invalid.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let (mut reader, includes_io_nodes) = scenario_binary_reader_for_versions(
-            bytes,
-            SCENARIO_FORM_BINARY_MAGIC_V1,
-            SCENARIO_FORM_BINARY_MAGIC_V2,
-        )?;
-        let form = read_scenario_form_binary(&mut reader, includes_io_nodes)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, SCENARIO_FORM_BINARY_MAGIC_V3)?;
+        let form = read_scenario_form_binary(&mut reader)?;
         reader.finish()?;
         Ok(form)
     }

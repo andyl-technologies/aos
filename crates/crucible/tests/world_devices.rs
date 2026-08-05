@@ -124,7 +124,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
     )
     .expect("heterogeneous scenario should build");
     let form_binary = form.to_compact_binary();
-    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v2\0"));
+    assert!(form_binary.starts_with(b"crucible.scenario-def-form.v3\0"));
     assert_eq!(
         ScenarioDefForm::from_compact_binary(&form_binary)
             .expect("heterogeneous scenario binary should parse"),
@@ -133,7 +133,7 @@ fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable() {
 
     let artifact = ReproductionArtifact::from_recorded_parts(form, Schedule::empty());
     let artifact_binary = artifact.to_compact_binary();
-    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v2\0"));
+    assert!(artifact_binary.starts_with(b"crucible.reproduction-artifact.v3\0"));
     assert_eq!(
         ReproductionArtifact::from_compact_binary(&artifact_binary)
             .expect("heterogeneous reproduction artifact should parse"),
@@ -573,7 +573,7 @@ fn fault_plan_and_event_graph_resolve_only_derived_device_targets() {
 }
 
 #[test]
-fn v1_v2_outer_envelopes_must_match_nested_world_node_kinds() {
+fn v3_outer_envelopes_reject_retired_versions() {
     let world = world_with_io_nodes(vec![block_node()]);
     let form = ScenarioDefForm::from_components(
         &world,
@@ -591,19 +591,19 @@ fn v1_v2_outer_envelopes_must_match_nested_world_node_kinds() {
     );
     assert!(World::from_compact_binary(&world_v1_envelope).is_err());
 
-    let scenario_v1_envelope = replace_magic(
+    let scenario_v2_envelope = replace_magic(
         form.to_compact_binary(),
+        b"crucible.scenario-def-form.v3\0",
         b"crucible.scenario-def-form.v2\0",
-        b"crucible.scenario-def-form.v1\0",
     );
-    assert!(ScenarioDefForm::from_compact_binary(&scenario_v1_envelope).is_err());
+    assert!(ScenarioDefForm::from_compact_binary(&scenario_v2_envelope).is_err());
 
-    let artifact_v1_envelope = replace_magic(
+    let artifact_v2_envelope = replace_magic(
         artifact.to_compact_binary(),
+        b"crucible.reproduction-artifact.v3\0",
         b"crucible.reproduction-artifact.v2\0",
-        b"crucible.reproduction-artifact.v1\0",
     );
-    assert!(ReproductionArtifact::from_compact_binary(&artifact_v1_envelope).is_err());
+    assert!(ReproductionArtifact::from_compact_binary(&artifact_v2_envelope).is_err());
 
     let legacy_world =
         World::from_nodes(vec![ready_node("node-a")]).expect("legacy VM-only world should build");
@@ -624,19 +624,19 @@ fn v1_v2_outer_envelopes_must_match_nested_world_node_kinds() {
     );
     assert!(World::from_compact_binary(&world_v2_envelope).is_err());
 
-    let scenario_v2_envelope = replace_magic(
+    let scenario_v1_envelope = replace_magic(
         legacy_form.to_compact_binary(),
+        b"crucible.scenario-def-form.v3\0",
         b"crucible.scenario-def-form.v1\0",
-        b"crucible.scenario-def-form.v2\0",
     );
-    assert!(ScenarioDefForm::from_compact_binary(&scenario_v2_envelope).is_err());
+    assert!(ScenarioDefForm::from_compact_binary(&scenario_v1_envelope).is_err());
 
-    let artifact_v2_envelope = replace_magic(
+    let artifact_v1_envelope = replace_magic(
         legacy_artifact.to_compact_binary(),
+        b"crucible.reproduction-artifact.v3\0",
         b"crucible.reproduction-artifact.v1\0",
-        b"crucible.reproduction-artifact.v2\0",
     );
-    assert!(ReproductionArtifact::from_compact_binary(&artifact_v2_envelope).is_err());
+    assert!(ReproductionArtifact::from_compact_binary(&artifact_v1_envelope).is_err());
 }
 
 fn replace_magic(mut bytes: Vec<u8>, from: &[u8], to: &[u8]) -> Vec<u8> {

@@ -10,7 +10,9 @@ use super::{
 };
 
 /// Guest-visible block-device availability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum StorageAvailabilityState {
     /// All declared operations remain available.
     Online,
@@ -23,7 +25,9 @@ pub enum StorageAvailabilityState {
 }
 
 /// Treatment of state during reconnect or capacity changes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum StorageTransitionPolicy {
     /// Preserve admitted operations or state.
     Preserve,
@@ -36,7 +40,9 @@ pub enum StorageTransitionPolicy {
 }
 
 /// Keyed selection rule for storage operations or bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum StorageSelection {
     /// Select using a keyed uniform decision.
     KeyedUniform,
@@ -49,7 +55,9 @@ pub enum StorageSelection {
 }
 
 /// Read-data mutation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum StorageReadMutation {
     /// XORs a selected returned byte range.
     BitFlip {
@@ -73,7 +81,9 @@ pub enum StorageReadMutation {
 }
 
 /// Persistence disposition of an acknowledged write.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum StorageWriteDispositionKind {
     /// Apply the complete write normally.
     Apply,
@@ -97,7 +107,9 @@ pub enum StorageWriteDispositionKind {
 }
 
 /// Flush disposition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum StorageFlushKind {
     /// Report the actual durable frontier.
     Honest,
@@ -110,7 +122,9 @@ pub enum StorageFlushKind {
 }
 
 /// Persistent media-range state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum StorageMediaState {
     /// The range always fails applicable operations.
     Bad,
@@ -123,7 +137,9 @@ pub enum StorageMediaState {
 }
 
 /// Storage-controller lifecycle transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum StorageControllerTransition {
     /// Reset controller and declared volatile state.
     Reset,
@@ -134,7 +150,9 @@ pub enum StorageControllerTransition {
 }
 
 /// 9p result mutation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NinePResultKind {
     /// Return a declared errno.
     Errno,
@@ -145,7 +163,9 @@ pub enum NinePResultKind {
 }
 
 /// Typed parameters for every executable storage and 9p effect kind.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum StorageEffectSpecification {
     /// Block-device availability and reconnect behavior.
     Availability {

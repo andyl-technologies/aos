@@ -11,7 +11,9 @@ use super::{
 };
 
 /// Node lifecycle transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeLifecycleTransition {
     /// Begin or retry boot.
     Boot,
@@ -28,7 +30,9 @@ pub enum NodeLifecycleTransition {
 }
 
 /// Retention policy for volatile node or device state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum NodeStatePolicy {
     /// Preserve the named state.
     Preserve,
@@ -39,7 +43,9 @@ pub enum NodeStatePolicy {
 }
 
 /// Scope of a progress hang.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum NodeHangScope {
     /// Stop progress on every vCPU and device scheduler for the node.
     Node,
@@ -50,7 +56,9 @@ pub enum NodeHangScope {
 }
 
 /// Requested vCPU run state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum VcpuState {
     /// The vCPU participates in scheduling.
     Online,
@@ -61,7 +69,9 @@ pub enum VcpuState {
 }
 
 /// Register-value mutation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum RegisterMutation {
     /// XOR selected bits once or at each selected opportunity.
     BitFlip {
@@ -83,7 +93,9 @@ pub enum RegisterMutation {
 }
 
 /// Instruction-level mutation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum InstructionMutation {
     /// Applies a typed transform to a decoded destination or result.
     ResultCorrupt {
@@ -102,7 +114,9 @@ pub enum InstructionMutation {
 }
 
 /// Interrupt-delivery mutation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum InterruptMutation {
     /// Suppresses the selected delivery.
     Drop,
@@ -126,7 +140,9 @@ pub enum InterruptMutation {
 }
 
 /// Atomic memory mutation at a safe boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum MemoryMutationKind {
     /// XORs the selected range with a repeated mask.
     BitFlip {
@@ -141,7 +157,9 @@ pub enum MemoryMutationKind {
 }
 
 /// Persistent or per-access memory transform.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum MemoryAccessMutation {
     /// Forces selected bits during reads and writes.
     Stuck {
@@ -170,7 +188,9 @@ pub enum MemoryAccessMutation {
 }
 
 /// Memory ECC result class.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryEccKind {
     /// The platform reports and corrects the error.
     Corrected,
@@ -179,7 +199,9 @@ pub enum MemoryEccKind {
 }
 
 /// Stateful memory-region failure process.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryRegionKind {
     /// Every selected access fails under the declared outcome.
     Failed,
@@ -190,7 +212,9 @@ pub enum MemoryRegionKind {
 }
 
 /// Clock transform family.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum ClockMutation {
     /// Adds a signed nanosecond offset.
     Offset {
@@ -227,7 +251,9 @@ pub enum ClockMutation {
 }
 
 /// Accelerator lifecycle transition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum AcceleratorTransition {
     /// Remove the device from enumeration.
     Disappear,
@@ -238,7 +264,9 @@ pub enum AcceleratorTransition {
 }
 
 /// Typed parameters for every executable node/QEMU effect kind.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
 pub enum NodeEffectSpecification {
     /// Node lifecycle transition.
     Lifecycle {

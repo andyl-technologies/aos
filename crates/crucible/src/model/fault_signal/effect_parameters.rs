@@ -37,6 +37,16 @@ impl ProbabilityMillionths {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for ProbabilityMillionths {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A positive count whose semantic hard ceiling is checked at construction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct BoundedCount {
@@ -44,8 +54,28 @@ pub struct BoundedCount {
     limit: CountLimit,
 }
 
+impl<'de> serde::Deserialize<'de> for BoundedCount {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            value: NonZeroU32,
+            limit: CountLimit,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.limit, wire.value.get()).map_err(serde::de::Error::custom)
+    }
+}
+
 /// An implementation-owned semantic ceiling for a positive count field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
 pub enum CountLimit {
     /// Network lanes or node vCPUs: 4,096.
     LanesOrVcpus,
@@ -141,11 +171,37 @@ impl PositiveU64 {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for PositiveU64 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <u64 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new("positive_u64", value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A validated half-open byte range `[start, start + length)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
 pub struct ByteRange {
     start: u64,
     length: NonZeroU64,
+}
+
+impl<'de> serde::Deserialize<'de> for ByteRange {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            start: u64,
+            length: NonZeroU64,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.start, wire.length.get()).map_err(serde::de::Error::custom)
+    }
 }
 
 impl ByteRange {
@@ -228,6 +284,16 @@ impl HexBytes {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for HexBytes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::parse(value, HARD_EFFECT_PAYLOAD_BYTES).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A non-empty canonical set of operations used by an effect filter.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct OperationSet(Vec<FaultOperation>);
@@ -278,6 +344,16 @@ impl OperationSet {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for OperationSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values = <Vec<FaultOperation> as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(values).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A non-empty canonical set of object identities.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub struct ObjectIdSet(Vec<FaultObjectId>);
@@ -301,6 +377,16 @@ impl ObjectIdSet {
     #[must_use]
     pub fn as_slice(&self) -> &[FaultObjectId] {
         &self.0
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ObjectIdSet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let values = <Vec<FaultObjectId> as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(values).map_err(serde::de::Error::custom)
     }
 }
 
