@@ -41,8 +41,7 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 
 use crate::types::{
-    PackageMeta, SysrootImageEntry, package_name_bucket, validate_package_name,
-    validate_supported_package_meta,
+    PackageMeta, SysrootImageEntry, package_name_bucket, validate_supported_package_meta,
 };
 
 // ---------------------------------------------------------------------------
@@ -61,8 +60,9 @@ use crate::types::{
 // attestation fields and their helper impls such as `PlatformEntry::attestation`
 // and the `ReferenceField` accessors).
 pub use aos_registry_surface::manifest::{
-    ImageEntry, PackageHeader, PackageToml, PlatformEntry, ReferenceField, ReferenceGate,
-    VersionEntry,
+    ImageCompression, ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+    ImageVerificationState, PackageHeader, PackageToml, PlatformEntry, ReferenceField,
+    ReferenceGate, VersionEntry, immutable_image_info_object_key, immutable_image_object_key,
 };
 
 // ---------------------------------------------------------------------------
@@ -200,9 +200,7 @@ pub fn validate_package_file_layout(path: &Path, content: &str) -> Result<String
 }
 
 fn parse_package_toml_document(content: &str) -> Result<PackageToml> {
-    let toml: PackageToml = toml::from_str(content).context("invalid package TOML")?;
-    validate_package_name(&toml.package.name)?;
-    Ok(toml)
+    aos_registry_surface::manifest::parse_package_file(content)
 }
 
 fn validate_package_layout(path: &Path, package_name: &str) -> Result<()> {
@@ -255,6 +253,7 @@ fn package_metas_for_platform(
                     store_path: img.store_path.clone(),
                     nar_hash: img.nar_hash.clone(),
                     nar_size: img.nar_size,
+                    delivery: img.delivery.clone(),
                     sb_signer_cert_sha256: img.sb_signer_cert_sha256.clone(),
                     sbat: img.sbat.clone(),
                     expected_pcr11: img.expected_pcr11.clone(),
@@ -631,6 +630,150 @@ references = []
 mod tests {
     use super::*;
     use crate::types::{ConfinementClass, HostPathMode, NetworkPermission, SyscallProfile};
+
+    const MISSING_DELIVERY_IMAGE_TOML: &str = r#"
+[package]
+name = "server"
+description = "AOS server"
+license = "MIT"
+maintainer = "aos-team"
+sysroot = true
+
+[[versions]]
+version = "2026.08"
+
+[versions.platforms.x86_64-linux]
+store_path = "/aos/store/serverhash-server-2026.08"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[[versions.platforms.x86_64-linux.images]]
+format = "raw"
+store_path = "/aos/store/imagehash-server-raw"
+nar_hash = "sha256:missing-delivery"
+nar_size = 10
+"#;
+
+    fn direct_image_toml(format: &str) -> String {
+        let image_sha256 = "a".repeat(64);
+        let info_sha256 = "b".repeat(64);
+        let (extension, media_type, targets) = match format {
+            "raw" => (
+                "img",
+                "application/vnd.aos.disk-image.raw",
+                "\"bare-metal\"",
+            ),
+            "qcow2" => (
+                "qcow2",
+                "application/vnd.aos.disk-image.qcow2",
+                "\"qemu-kvm\", \"openstack\"",
+            ),
+            "vmdk" => ("vmdk", "application/x-vmdk", "\"vmware\""),
+            "vhd" => ("vhd", "application/vnd.aos.disk-image.vhd", "\"hyper-v\""),
+            other => panic!("unsupported fixture format {other}"),
+        };
+        let filename = format!("aos-server.{extension}");
+        let object_key = immutable_image_object_key(&image_sha256, &filename);
+        let info_key = immutable_image_info_object_key(&image_sha256, &info_sha256);
+        format!(
+            r#"
+[package]
+name = "server"
+description = "AOS server"
+license = "MIT"
+maintainer = "aos-team"
+sysroot = true
+
+[[versions]]
+version = "2026.08"
+
+[versions.platforms.x86_64-linux]
+store_path = "/aos/store/serverhash-server-2026.08"
+closure_size = 1
+source_drv = ""
+source_nar_hash = ""
+
+[[versions.platforms.x86_64-linux.images]]
+format = "{format}"
+store_path = "/aos/store/imagehash-server-{format}"
+nar_hash = "sha256:nar"
+nar_size = 10
+
+[versions.platforms.x86_64-linux.images.delivery]
+schema_version = 1
+release = "2026.08"
+platform = "x86_64-linux"
+architecture = "x86_64"
+logical_image_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+logical_disk_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+rootfs_sha256 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+filename = "{filename}"
+object_key = "{object_key}"
+media_type = "{media_type}"
+compression = "none"
+byte_size = 10
+sha256 = "{image_sha256}"
+compatible_targets = [{targets}]
+
+[versions.platforms.x86_64-linux.images.delivery.uki]
+filename = "aos-server.efi"
+esp_path = "EFI/Linux/aos-server.efi"
+byte_size = 1024
+sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+verification = "unsigned"
+
+[versions.platforms.x86_64-linux.images.delivery.image_info]
+filename = "image-info.json"
+object_key = "{info_key}"
+media_type = "application/vnd.aos.image-info+json"
+byte_size = 20
+sha256 = "{info_sha256}"
+"#
+        )
+    }
+
+    #[test]
+    fn old_signed_image_catalog_remains_store_install_compatible() {
+        let meta = parse_package_toml(MISSING_DELIVERY_IMAGE_TOML, "x86_64-linux")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.images.len(), 1);
+        assert!(meta.images[0].delivery.is_legacy_store_only());
+        assert_eq!(meta.images[0].store_path, "/aos/store/aos-system-raw");
+    }
+
+    #[test]
+    fn complete_signed_image_entries_parse_for_every_supported_format() {
+        for format in ["raw", "qcow2", "vmdk", "vhd"] {
+            let meta = parse_package_toml(&direct_image_toml(format), "x86_64-linux")
+                .unwrap()
+                .unwrap();
+            let delivery = &meta.images[0].delivery;
+            assert_eq!(delivery.release, "2026.08");
+            assert_eq!(delivery.platform, "x86_64-linux");
+            assert_eq!(delivery.architecture, "x86_64");
+        }
+    }
+
+    #[test]
+    fn signed_image_entry_rejects_tamper_and_path_traversal() {
+        let base = direct_image_toml("raw");
+        for tampered in [
+            base.replace("release = \"2026.08\"", "release = \"2026.07\""),
+            base.replace("sha256 = \"aaaaaaaa", "sha256 = \"Aaaaaaaa"),
+            base.replace(
+                "filename = \"aos-server.img\"",
+                "filename = \"../server.img\"",
+            ),
+            base.replace(
+                "compatible_targets = [\"bare-metal\"]",
+                "compatible_targets = [\"vmware\"]",
+            ),
+        ] {
+            assert!(parse_package_file(&tampered).is_err());
+        }
+    }
 
     #[test]
     fn parse_curl_x86() {

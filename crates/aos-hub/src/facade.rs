@@ -1,7 +1,7 @@
 //! The machine-path *write* facade: authenticated surface uploads.
 //!
 //! This is the upload half of the byte-faithful facade
-//! ([`crate::compat`] serves reads). A managed registry's on-disk surface
+//! ([`crate::server`] serves reads). A managed registry's on-disk surface
 //! is published by writing each relative file path of the static origin
 //! under the registry's canonical URL, exactly as `apr origin upload` and
 //! `apr cache generate --upload-url` already write to any generic binary
@@ -16,11 +16,12 @@
 //! / [`head_machine_path`](aos_hub_core::service::RpcService::head_machine_path)),
 //! so the *same* handler runs on the native hub and the Cloudflare Worker (which
 //! mounts it on the shared `/{slug}/{*path}` facade route, letting the Worker
-//! store published artifacts). The native hub keeps its own richer
+//! store published artifacts). Both shells normalize a wildcard capture to the
+//! longest exact registry-or-cache slug, including nested canonical slugs. The
+//! native hub keeps its own richer
 //! `/{slug}/{*path}` route — filesystem autoindex, `http(s)` redirect,
-//! pull-through mirroring, inert producer-document serving, session-cookie
-//! authorization, and **nested-canonical (slash) slug resolution** the flat
-//! shared route cannot express — so its `PUT`/`HEAD` route methods stay in
+//! pull-through mirroring, inert producer-document serving, and session-cookie
+//! authorization — so its machine route methods stay in
 //! [`crate::server`] and *delegate* to the shared handler through the thin
 //! [`put_machine_path`]/[`head_machine_path`] shims here. Every check (publish
 //! authorization, the TOCTOU-safe quota reserve-before-write, the publish lease,
@@ -63,11 +64,11 @@ use crate::server::AppState;
 /// stage H2 and re-exported here under its historical hub name so the
 /// [`AppState`](crate::server::AppState) field and existing call sites keep their
 /// shape. It serializes a registry's mutable-pointer flips within one hub
-/// process; a cross-process deployment uses the Worker's D1-backed lease (the
-/// "later phase multi-process" lease).
+/// process; the Worker uses its Durable Object coordinator for cross-request
+/// serialization.
 pub use aos_hub_core::lease::InMemoryLease as LeaseMap;
 
-/// Maximum surface-file upload size accepted by a single `PUT` (256 MiB).
+/// Maximum body accepted by one facade write request (20 MiB).
 ///
 /// Re-exported from shared core so the router's per-route body-limit layer
 /// ([`crate::server`]) and the upload handler agree on one bound; a body past
@@ -87,26 +88,57 @@ pub use aos_hub_core::service::MAX_UPLOAD_BYTES;
 /// the hub holds, so the facade's pointer-flip serialization is process-wide,
 /// not per-request.
 pub(crate) fn write_service(state: &AppState) -> RpcService {
-    RpcService::new(
+    let mut service = RpcService::new(
         Arc::clone(&state.db),
         state.auth.jwt_keys.clone(),
         state.external_url.clone(),
         Arc::clone(&state.ratelimit) as Arc<dyn aos_hub_core::ratelimit::RateLimiter>,
         Arc::new(
-            crate::coreports::HubSurfaceProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
+            crate::coreports::HubSurfaceProvider::new(
+                Arc::clone(&state.db),
+                state.http.clone(),
+                state.image_snapshots.clone(),
+            )
+            .with_credentials(Arc::clone(&state.secret_versions)),
         ),
         Arc::new(
-            crate::coreports::HubSurfaceWriteProvider::new(Arc::clone(&state.db))
-                .with_sealer(Arc::clone(&state.sealer)),
+            crate::coreports::HubSurfaceWriteProvider::new(
+                Arc::clone(&state.db),
+                state.http.clone(),
+            )
+            .with_credentials(Arc::clone(&state.secret_versions)),
         ),
         Arc::clone(&state.leases) as Arc<dyn aos_hub_core::lease::PublishLease>,
-        Arc::new(crate::coreports::HubReindexer::new(Arc::clone(&state.db))),
+        Arc::new(
+            crate::coreports::HubReindexer::new(
+                Arc::clone(&state.db),
+                state.image_snapshots.clone(),
+            )
+            .with_surface_provider(Arc::new(
+                crate::coreports::HubSurfaceProvider::new(
+                    Arc::clone(&state.db),
+                    state.http.clone(),
+                    state.image_snapshots.clone(),
+                )
+                .with_credentials(Arc::clone(&state.secret_versions))
+                .for_image_indexing(),
+            )),
+        ),
+        Arc::new(
+            aos_hub_core::topology_probe::DatabaseTopologyProbeScheduler::new(Arc::clone(
+                &state.db,
+            )),
+        ),
         Some(Arc::clone(&state.sealer)),
     )
+    .with_secret_versions(Arc::clone(&state.secret_versions))
     .with_origin_fetch(Arc::new(crate::coreports::ReqwestOriginFetch::new(
         state.http.clone(),
-    )))
+    )));
+    if let Some(keyring) = &state.route_reservation_keyring {
+        service = service.with_route_reservation_keyring(Arc::clone(keyring));
+    }
+    service
 }
 
 /// Pull the raw `Authorization` header value, if present and ASCII.
@@ -117,7 +149,7 @@ fn auth_value(headers: &HeaderMap) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Handle a `PUT` of one surface path for a managed registry.
+/// Handles a `PUT` of one surface path for a managed registry or cache.
 ///
 /// A thin shim over the shared
 /// [`RpcService::put_machine_path`](aos_hub_core::service::RpcService::put_machine_path):
@@ -157,6 +189,28 @@ pub async fn head_machine_path(
         .head_machine_path(auth.as_deref(), slug, path)
         .await;
     render(outcome, path)
+}
+
+/// Handles one multipart facade operation through the shared wire dispatcher.
+pub async fn multipart_machine_path(
+    state: &AppState,
+    slug: &str,
+    path: &str,
+    method: axum::http::Method,
+    query: Option<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    aos_hub_core::connect::multipart_facade_request(
+        Arc::new(write_service(state)),
+        headers,
+        slug.to_string(),
+        path.to_string(),
+        method,
+        query,
+        body,
+    )
+    .await
 }
 
 // NOTE: the former native-only `cache_serve_file` (+ `parse_range`) was removed

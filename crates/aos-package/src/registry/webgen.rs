@@ -346,6 +346,8 @@ pub async fn upload_web_surface(
                 &source,
                 Some(web_content_type(relative_path)),
                 Some(WEB_CACHE_CONTROL),
+                None,
+                None,
             )
             .await
             .with_context(|| format!("uploading {relative_path}"))?;

@@ -1,7 +1,8 @@
 # Data model and API
 
 The records below are normative responsibilities, not a requirement to add a
-single polymorphic `surfaces` SQL table. SQLite, D1, PostgreSQL, and MySQL must
+single polymorphic `surfaces` SQL table. SQLite, Durable Object SQLite,
+PostgreSQL, and MySQL must
 all enforce equivalent ownership and one-of constraints.
 
 This file defines resource responsibilities and schema. The normative
@@ -486,8 +487,9 @@ generation one. Credential `rotate` requires the expected current generation
 and creates its successor; it never overwrites secret references. `write` or
 `presign` changes also create and validate the corresponding immutable
 binding-write revision before authority can move. Secret values never enter the
-database or API—only secret-store version references and redacted fingerprints
-do.
+database or API—only closed-grammar immutable provider references and required
+SHA-256 fingerprints do. The runtime resolves the exact provider version and
+must verify that digest before any use; an absent version or drift fails closed.
 
 Policy revisions and all group/member rows are immutable. Ordered failover has
 one `ordered` group. Local-then-remote has one group per configured access class
@@ -502,9 +504,10 @@ revision; publishing a new current revision never changes an existing target.
 Revision construction is permitted only in `building`. Every group or member
 mutation first locks the revision row on transactional databases, verifies
 `state = building` and the caller's expected `build_version`, performs exactly
-one mutation, and increments `build_version` in the same transaction. The D1
+one mutation, and increments `build_version` in the same transaction. The
 implementation performs the equivalent guarded mutation and increment in one
-atomic batch. A final native transaction or D1 atomic batch verifies exact
+Durable Object implementation uses an atomic batch. A final native transaction
+or Durable Object atomic batch verifies exact
 group/member counts, range coverage, content digest, all kind/range keys, and
 the unchanged policy and build versions; its publication update is a CAS on
 `state = building` and that exact `build_version`. It then marks the revision
@@ -589,7 +592,7 @@ Authority-to-placement and authority-to-capability actions are explicitly `ON
 DELETE RESTRICT ON UPDATE RESTRICT`; placement-owned observations and
 capability mappings cascade only when the already-unreferenced placement is
 deleted. Correctness never depends on deferred constraint checking or cascade
-order that differs between SQLite/D1, PostgreSQL, and MySQL.
+order that differs between SQLite, Durable Object SQLite, PostgreSQL, and MySQL.
 
 ### Authority constraints and derived fields
 
@@ -745,7 +748,7 @@ If drain wins, promotion's pinned version is stale; if promotion wins, the
 writer-critical version cannot advance until authority moves. Health and other
 observations remain independently writable.
 
-The CAS is one prepared statement in SQLite and D1 as well as native database
+The CAS is one prepared statement in SQLite and Durable Object SQLite as well as native database
 backends. It does not depend on interactive transactions, partial unique
 indexes, triggers, multi-table updates, `UPDATE ... RETURNING`, or
 backend-specific upsert behavior. It always increments versions, avoiding
@@ -1246,12 +1249,16 @@ canonical_routes(
 cache_inventory_generations(
   cache_id,
   generation,
+  owner_token,
+  lease_expires_at,
   state,                 -- building | published | failed
   content_digest NULL,
   published_at NULL,
   created_at,
   PRIMARY KEY(cache_id, generation),
   UNIQUE(generation, cache_id),
+  CHECK owner_token_is_nonempty,
+  CHECK lease_expires_at > created_at,
   CHECK valid_immutable_inventory_generation_state
 )
 
@@ -1496,7 +1503,7 @@ audit; those foreign keys are not live-consumer counts. The authoritative live
 set is `network_boundary_serving_pins`. Enabling or advertising a listener,
 attaching/enabling a route, activating a gateway mapping, or selecting a
 topology/canonical default inserts the exact typed pin in the same native
-transaction or D1 atomic batch as the serving transition. Pin acquisition
+transaction or Durable Object atomic batch as the serving transition. Pin acquisition
 requires `active` plus an exact verified observation. The target kind/id,
 generation, and configuration digest are derived from the guarded resource row,
 not accepted as arbitrary public input. Disabling/moving that serving resource
@@ -1508,7 +1515,7 @@ version, and fences new pins; deleting existing pins remains legal while
 retiring. `retired` is immutable and ineligible. Final retirement CASes the
 exact version and requires zero serving-pin rows, not deletion of immutable
 history. Pin mutation versus lifecycle transition therefore has one winner on
-native databases and D1 without a check-then-update race. UI counts and move
+native databases and Durable Object SQLite without a check-then-update race. UI counts and move
 plans derive only from this serving-pin relation.
 
 For a provider that cannot overlap enforcement, update returns a coordinated
@@ -1563,9 +1570,11 @@ exactly `{}`, `mtls` requires only `ca_secret_ref` and `client_sans`, and
 `verification_key_secret_ref`. Missing or unknown fields are rejected.
 
 Endpoint origin identity -- scheme, typed host, effective port, and network
-boundary -- is immutable. `UpdateDeliveryEndpoint` creates a new immutable
-generation and may change only ingress, listener/TLS, probe posture, and the
-pinned boundary revision. An origin or realm change creates a replacement
+boundary -- is immutable. `StageDeliveryEndpointGeneration` appends a new
+immutable, non-selected generation and may change only ingress, listener/TLS,
+probe posture, and the pinned boundary revision. `ActivateDeliveryEndpointGeneration`
+selects one exact staged generation only after its boundary is active and its
+source-generation consumers have moved. An origin or realm change creates a replacement
 endpoint followed by planned route and gateway-revision moves. Routes, grants,
 gateway revisions, and observations pin an exact endpoint generation. Hub
 proxy/redirect requires `hub` or `layer7` ingress; direct requires `external`
@@ -1687,7 +1696,7 @@ after ordinary credential rotation. Specifically, it recomputes the candidate
 under each retained old key and queries that version/digest pair before it
 inserts under the current key; existing rows need no alias backfill. Keyring
 activation and reservation creation share one serializable version/CAS fence on
-native databases and one D1 actor/batch. If any referenced key is unavailable,
+native databases and one Durable Object actor/batch. If any referenced key is unavailable,
 reservation creation and key rotation fail closed until restore; they never skip
 that version. Reservation keys are backed up and cannot be retired while rows of
 their version exist. Any equal digest is conservatively treated as already
@@ -1706,7 +1715,7 @@ route resource-version plan; old observations then cannot satisfy the composite
 FK. Initial creation portably inserts a disabled route with a null current
 configuration pointer, inserts its generation-one child snapshot, advances the
 route pointer, and asserts the complete invariant in one native transaction or
-D1 batch. No intermediate row may commit; no backend needs deferred FKs.
+Durable Object batch. No intermediate row may commit; no backend needs deferred FKs.
 The new configuration begins `unknown` and cannot be healthy or canonically
 advertised until reprobed. Canonical route selection may retain the route id,
 but setup snippets and runtime advertisement require a healthy observation for
@@ -1746,7 +1755,15 @@ and corresponding generation. The registry source is its committed publication
 head. The cache source is the exact published
 `cache_inventory_generations` row also selected by
 `cache_gc_state.inventory_generation`; an in-progress placement scan cannot
-advance either head. An unprobeable private endpoint is `declared`,
+advance either head. An inventory builder owns its unpublished generation with
+an unguessable `owner_token` and renews `lease_expires_at` while scanning. Every
+staging, manifest, lookup, cleanup, and publication mutation matches that
+owner. Starting the same successor generation while its lease is live fails.
+At or after expiry, a new builder may atomically delete the abandoned
+generation (cascading all private staging rows) and recreate it under a new
+owner. Delayed cleanup or writes from the former owner cannot erase or
+contaminate the replacement. Published generations are immutable and are never
+eligible for lease takeover. An unprobeable private endpoint is `declared`,
 not healthy. Hub route observations may omit the direct-only tuple and report
 aggregate probe state; request-time presence/publication checks remain the
 serving authority.
@@ -2511,7 +2528,7 @@ and advances `object_graph_generation`.
 
 Every competing root, graph, inventory, cache-topology, or fence
 mutation conditionally advances `cache_gc_state.epoch` in the same native
-transaction or D1 atomic batch as its own rows. Object publication and GC apply
+transaction or Durable Object atomic batch as its own rows. Object publication and GC apply
 also advance `object_graph_generation`; placement/policy/authority work
 advances `topology_generation`, except for an authority-only desired/observed
 CAS as described below. A policy update advances the epoch and its
@@ -2775,7 +2792,7 @@ A mark generation is published only after its root set, closure, input
 versions, and coverage status validate.
 
 Applying a GC plan uses the same guarded statement batch in a native transaction
-or Worker D1 atomic batch. The first `INSERT ... SELECT` creates a unique apply
+or Worker Durable Object atomic batch. The first `INSERT ... SELECT` creates a unique apply
 claim only if the epoch, unused plan, expiry, actor/scope/confirmation, every
 candidate/root/presence/fence predicate, and all expected manifest counts match
 in that one database snapshot. Every following epoch, tombstone, generation,
@@ -2791,9 +2808,9 @@ The last statement inserts one row into `cache_gc_apply_assertions`, whose
 final epoch/generation,
 tombstone count, deterministic operation, action/job counts, and dependency-
 ready count. It always attempts one insert. A missing claim or any partial
-effect inserts `ok = 0`, raises a portable constraint error, and makes D1 roll
+effect inserts `ok = 0`, raises a portable constraint error, and makes the batch roll
 back the entire atomic batch just as a native transaction does. The algorithm
-never relies on inspecting intermediate D1 affected-row counts. A competing
+never relies on inspecting intermediate affected-row counts. A competing
 apply loses the unique claim; after failure or on retry, the service rereads
 the deterministic applied-plan/operation relation and returns the existing
 operation only when every identity matches.
@@ -2902,13 +2919,14 @@ names are normative in `09-interface-contracts.md`.
 
 - `CreatePlacement`, `UpdatePlacement`, `PromotePlacement`, `DrainPlacement`,
   `CancelPlacementPromotion`, `CancelPlacementDrain`, `DeletePlacement`
-- `GetWriteAuthority`, `ReconcileWriteAuthority`
-- `ListPlacements`, `GetPlacement`, `ScanPlacement`
+- `GetWriteAuthority`; controller-only `ReportWriteAuthority`
+- `ListPlacements`, `GetPlacement`, `PlanScanPlacement` / `ScanPlacement`
 - `ListPlacementPolicies`, `GetPlacementPolicy`,
   `ListPlacementPolicyRevisions`, `GetPlacementPolicyRevision`,
   `CreatePlacementPolicy`, `RevisePlacementPolicy`,
   `TestPlacementPolicyRevision`
-- `ReplicatePlacement`, `RepairPlacement`, `ListObjectPresence`
+- `PlanReplicatePlacement` / `ReplicatePlacement`,
+  `PlanRepairPlacement` / `RepairPlacement`, `ListObjectPresence`
 - `ListPlacementEquivalences`, `ConfirmPlacementEquivalence`,
   `DeletePlacementEquivalence`
 
@@ -2926,21 +2944,22 @@ row without proving the candidate is fenced and the observed writer is ready.
 - `CreateDomain`, `VerifyDomain`, `ConfigureDomainDns`,
   `ConfigureDomainCertificate`,
   `DeleteDomain`
-- `CreateNetworkBoundary`, `ReviseNetworkBoundary`,
-  `ProbeNetworkBoundaryRevision`, `ReconcileNetworkBoundaryRevision`,
+- `CreateNetworkBoundary`, `ReviseNetworkBoundary`; controller-only
+  `CompleteNetworkBoundaryRevisionProbe`, `ReportNetworkBoundaryRevision`,
   `ActivateNetworkBoundaryRevision`, `RetireNetworkBoundaryRevision`,
   `GrantNetworkBoundaryScope`, `RevokeNetworkBoundaryScope`,
   `DeleteNetworkBoundary`
-- `CreateDeliveryEndpoint`, `UpdateDeliveryEndpoint`,
+- `CreateDeliveryEndpoint`, `StageDeliveryEndpointGeneration`,
+  `ActivateDeliveryEndpointGeneration`,
   `GrantDeliveryEndpointScope`, `RevokeDeliveryEndpointScope`,
-  `ProbeDeliveryEndpoint`, `ReconcileDeliveryEndpoint`,
+  controller-only `CompleteDeliveryEndpointProbe`, `ReportDeliveryEndpoint`,
   `DeleteDeliveryEndpoint`
 - `CreateRoute`, `UpdateRoute`, `ReplaceRoute`, `EnableRoute`, `DisableRoute`,
   `DeleteRoute`
-- `SetCanonicalRoute`, `ProbeRoute`, `ExplainRoute`
+- `SetCanonicalRoute`, `ExplainRoute`; controller-only `CompleteRouteProbe`
 - `CreateStorageGateway`, `UpdateStorageGateway`, `PreviewGatewayRoutes`,
   `GrantStorageGatewayScope`, `RevokeStorageGatewayScope`,
-  `ReconcileStorageGateway`, `EnableStorageGateway`, `DisableStorageGateway`,
+  controller-only `ReportStorageGateway`, `EnableStorageGateway`, `DisableStorageGateway`,
   `DeleteStorageGateway`
 
 `ExplainRoute` returns the normalized endpoint/realm and grant, selected access
@@ -2957,9 +2976,9 @@ verification material and return only redacted references.
 
 - `CreateStorageBinding`, `DeleteStorageBinding`
 - `SetStorageBindingCredential`, `RotateStorageBindingCredential`,
-  `ValidateStorageBindingCredential`
+  `PlanValidateStorageBindingCredential` / `ValidateStorageBindingCredential`
 - `ListStorageBindingWriteRevisions`, `GetStorageBindingWriteRevision`,
-  `ReconcileStorageBindingWriteRevision`
+  controller-only `ReportStorageBindingWriteRevision`
 - `GrantStorageBindingScope`, `RevokeStorageBindingScope`
 - `GetInstanceDefaultStorageBinding`
 - `GetInstanceTopologyDefaults`, `SetInstanceTopologyDefaults`
@@ -2979,7 +2998,7 @@ placement pins, and deleting the unreferenced predecessor through plan/apply.
 ### Cache integrations
 
 - `GetConsumerCacheStack`, `ValidateConsumerCacheStack`,
-  `PlanConsumerCacheChange`, and `CreateConsumerCacheChangeset`
+  `PlanCreateConsumerCacheChangeset`, and `CreateConsumerCacheChangeset`
 - `SetRetentionSubscription`, `RefreshRetentionSubscription`
 - `SetPopulationTarget`, `RunPopulation`, `RunCoverageValidation`,
   `RunCoverageRepair`
@@ -2995,12 +3014,12 @@ consumer-cache changes explicitly.
 ### GC
 
 - `ListRootReasons`, `ExplainRetention`, `RefreshAllRetention`
-- `PlanCacheGc`, `RunCacheGc`, `ListCacheGcRuns`
+- `PlanRunCacheGc`, `RunCacheGc`, `ListCacheGcRuns`
 - `GetCacheGcPlan`, `GetCacheGcRun`, `GetCacheGcDeletionJob`,
   `ListCacheGcDeletionJobs`
 - `RetryCacheGcDeletionJob`, `PlanAbandonCacheGcDeletionJob`,
   `AbandonCacheGcDeletionJob`
-- `PlanPlacementEviction`, `RunPlacementEviction`
+- `PlanRunPlacementEviction`, `RunPlacementEviction`
 
 Logical GC and placement eviction are different methods and audit event types.
 
@@ -3017,7 +3036,7 @@ Examples include surface visibility changes, endpoint/access-policy changes,
 placement drains, write-authority promotion, canonical route changes, and
 destructive GC. GC apply has the same portable requirement as promotion:
 logical tombstoning and operation creation are one version-guarded control-plane
-transition, not an interactive transaction that Worker D1 cannot reproduce.
+transition, not an interactive transaction unavailable to the Worker runtime.
 Promotion itself remains the sole authority-row compare-and-swap described
 above; GC never changes write authority.
 

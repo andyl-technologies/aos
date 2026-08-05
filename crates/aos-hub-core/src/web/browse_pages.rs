@@ -13,7 +13,7 @@
 //! without JavaScript — search, the channel-bucket calculator, and pagination
 //! are plain GET forms and links — and carries the footer state line. URL space
 //! (RFC-0004 "Sitemap"): the registry home lives at `/{slug}/`, all other human
-//! pages (packages, channels, releases, health) under `/{slug}/-/…` — the
+//! pages (packages, images, channels, releases, health) under `/{slug}/-/…` — the
 //! reserved namespace that can never collide with machine paths.
 //!
 //! These builders are **transport- and task-local-free**: the signed-in identity
@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::db::{
-    CacheProbeRow, ChannelSummary, FrontendProbeRow, FrontendRecord, IndexStatus, PackageDetail,
-    PackageRow, RegistryRecord, ReleaseRow, RepairJobRow, ValidationRunRow,
+    CacheProbeRow, ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow,
+    RegistryRecord, ReleaseRow, RepairJobRow, ValidationRunRow,
 };
 #[cfg(test)]
 use crate::db::{PlatformDetail, VersionDetail};
@@ -42,6 +42,7 @@ use crate::web::console_render::{
     SessionIndicator, StateLine,
 };
 use crate::web::render::{escape, human_size, key_fingerprint, table};
+use aos_registry_surface::manifest::{ImageTarget, ImageVerificationState};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
 /// in frontier-first order, so the encoding survives without color.
@@ -74,6 +75,32 @@ fn registry_crumbs(slug: &str, tail: &[(String, String)]) -> Vec<(String, String
     ];
     crumbs.extend_from_slice(tail);
     crumbs
+}
+
+fn registry_nav(slug: &str, active: &str) -> String {
+    let items = [
+        ("overview", format!("/{slug}/"), "Overview"),
+        ("packages", format!("/{slug}/-/packages"), "Packages"),
+        ("images", format!("/{slug}/-/images"), "Images"),
+        ("channels", format!("/{slug}/-/channels"), "Channels"),
+        ("releases", format!("/{slug}/-/releases"), "Releases"),
+        ("health", format!("/{slug}/-/health"), "Health"),
+    ];
+    let mut nav = String::from("<nav aria-label=\"registry\" class=\"local-nav\">");
+    for (key, href, label) in items {
+        let current = (key == active)
+            .then_some(" aria-current=\"page\"")
+            .unwrap_or("");
+        let _ = write!(
+            nav,
+            "<a href=\"{}\"{}>{}</a>",
+            escape(&href),
+            current,
+            label,
+        );
+    }
+    nav.push_str("</nav>\n");
+    nav
 }
 
 /// Split a `name:Ed25519:<base64>` trust anchor into `(name, base64)`.
@@ -205,7 +232,6 @@ pub fn instance_home(
                         .and_then(|s| s.name.as_deref())
                         .unwrap_or("—"),
                 ),
-                escape(&reg.source_url),
                 format!("<span class=\"{class}\">{}</span>", escape(state)),
             ]
         })
@@ -240,7 +266,7 @@ pub fn instance_home(
         body.push_str("<p class=\"dim\">No registries match.</p>");
     } else {
         body.push_str(&live_table(
-            &["slug", "name", "source", "index"],
+            &["slug", "name", "index"],
             &body_rows,
             "registries",
         ));
@@ -275,7 +301,7 @@ pub fn registry_home(
     session: &SessionIndicator,
 ) -> String {
     let slug = &registry.slug;
-    let mut body = String::new();
+    let mut body = registry_nav(slug, "overview");
 
     let display_name = status
         .and_then(|s| s.name.as_deref())
@@ -469,9 +495,9 @@ pub fn registry_home(
     // `substituters` are the registry's advertised *binary caches*, not the
     // registry URL: the registry serves the index/git surface, while nar/narinfo
     // — the heavy traffic — come from the caches, which front their own
-    // CDN/frontend domains (the advertised URLs already resolve to a cache's
-    // frontend where one is configured), keeping substitution off the registry's
-    // critical path. Highest priority (lowest number) first. A registry that
+    // exact delivery routes materialize those committed URLs, keeping
+    // substitution off the registry's critical path. Highest priority (lowest
+    // number) first. A registry that
     // advertises no cache falls back to serving as its own cache.
     let substituters = if caches.is_empty() {
         format!("{url}/")
@@ -773,7 +799,8 @@ pub fn package_index(
         })
         .collect();
 
-    let mut body = format!("<h1>Packages ({total_all})</h1>\n");
+    let mut body = registry_nav(slug, "packages");
+    let _ = writeln!(body, "<h1>Packages ({total_all})</h1>");
 
     // The filter box is a Wireshark-style display-filter expression: every
     // attribute is queryable with operators and boolean connectives. A bare
@@ -947,7 +974,8 @@ pub fn package_page(
 
     // Header: name, latest version, then the description prominently.
     let latest = detail.versions.first().map(|v| v.version.as_str());
-    let mut body = format!("<h1>{}", escape(&detail.name));
+    let mut body = registry_nav(slug, "packages");
+    let _ = write!(body, "<h1>{}", escape(&detail.name));
     if let Some(latest) = latest {
         let _ = write!(body, " <span class=\"dim\">{}</span>", escape(latest));
     }
@@ -1178,8 +1206,14 @@ pub fn package_page(
                     vec![
                         escape(&p.platform),
                         escape(&image.format),
-                        format!("<code>{}</code>", escape(&image.store_path)),
-                        human_size(image.nar_size),
+                        escape(&image.delivery.architecture),
+                        human_size(image.delivery.byte_size),
+                        format!(
+                            "<a href=\"/{}/{}\" download=\"{}\">Download</a>",
+                            escape(slug),
+                            escape(&image.delivery.object_key),
+                            escape(&image.delivery.filename),
+                        ),
                     ]
                 })
             })
@@ -1187,7 +1221,7 @@ pub fn package_page(
         if !image_rows.is_empty() {
             body.push_str("<p class=\"dim\">sysroot images:</p>\n");
             body.push_str(&table(
-                &["platform", "format", "store path", "size"],
+                &["platform", "format", "architecture", "size", "disk image"],
                 &image_rows,
             ));
         }
@@ -1265,10 +1299,10 @@ fn release_glyphs(channel: &ChannelSummary) -> (Vec<String>, BTreeMap<String, us
 /// and the substituter setup snippet. No-JS, index-data only.
 #[allow(clippy::too_many_arguments)]
 pub fn cache_home(
-    cache: &crate::db::Cache,
+    cache: &crate::db::BinaryCache,
     usage: &crate::db::CacheUsage,
-    policy: Option<&crate::db::CacheGcPolicy>,
-    link_count: usize,
+    policy: Option<&crate::db::CacheGcPolicyRecord>,
+    subscription_count: usize,
     root_count: usize,
     external_url: &str,
     pubkey: Option<&str>,
@@ -1296,12 +1330,7 @@ pub fn cache_home(
         ],
         vec![
             "Signed".to_string(),
-            if cache.hosted_key_id.is_some() {
-                "yes"
-            } else {
-                "no"
-            }
-            .to_string(),
+            if pubkey.is_some() { "yes" } else { "no" }.to_string(),
         ],
     ];
     body.push_str(&table(&["field", "value"], &info));
@@ -1315,8 +1344,8 @@ pub fn cache_home(
     );
     let _ = write!(
         body,
-        "<p class=\"dim\">{} linked registries · {} GC roots · GC policy {}</p>\n",
-        link_count,
+        "<p class=\"dim\">{} retention subscriptions · {} manual retention roots · GC policy {}</p>\n",
+        subscription_count,
         root_count,
         if policy.is_some() {
             "configured"
@@ -1357,8 +1386,8 @@ pub fn cache_home(
 
 /// A managed cache's object list, with a server-side search box (`?q=`).
 pub fn cache_objects(
-    cache: &crate::db::Cache,
-    objects: &[crate::db::CacheObject],
+    cache: &crate::db::BinaryCache,
+    objects: &[crate::db::CacheObjectRecord],
     query: Option<&str>,
     started: Instant,
     session: &SessionIndicator,
@@ -1408,8 +1437,8 @@ pub fn cache_objects(
 
 /// One cache object's narinfo metadata and its immediate references.
 pub fn cache_object(
-    cache: &crate::db::Cache,
-    object: &crate::db::CacheObject,
+    cache: &crate::db::BinaryCache,
+    object: &crate::db::CacheObjectRecord,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1446,7 +1475,7 @@ pub fn cache_object(
             format!("<code>{}</code>", escape(d)),
         ]);
     }
-    if let Some(s) = &object.sig {
+    if let Some(s) = &object.signature {
         fields.push(vec![
             "Sig".to_string(),
             format!("<code>{}</code>", escape(s)),
@@ -1455,11 +1484,11 @@ pub fn cache_object(
     body.push_str(&table(&["field", "value"], &fields));
 
     body.push_str("<h2>References</h2>\n");
-    if object.refs.is_empty() {
+    if object.references.is_empty() {
         body.push_str("<p class=\"dim\">none</p>\n");
     } else {
         let rows: Vec<Vec<String>> = object
-            .refs
+            .references
             .iter()
             .map(|r| {
                 vec![format!(
@@ -1504,7 +1533,7 @@ pub fn cache_object(
 /// A cache object's full transitive closure as a no-JS table (the dependency
 /// "graph" in flat form); each present node links to its own object page.
 pub fn cache_closure(
-    cache: &crate::db::Cache,
+    cache: &crate::db::BinaryCache,
     root_hash: &str,
     nodes: &[aos_proto_types::CacheClosureNode],
     total_size: i64,
@@ -1663,7 +1692,8 @@ pub fn channel_page(
         grid.push('\n');
     }
 
-    let mut body = format!("<h1>Channel {}</h1>\n", escape(&channel.name));
+    let mut body = registry_nav(slug, "channels");
+    let _ = writeln!(body, "<h1>Channel {}</h1>", escape(&channel.name));
     let _ = writeln!(
         body,
         "<p>frontier <strong>{}</strong> · floor {} · {} of 256 partitions assigned</p>",
@@ -1774,12 +1804,292 @@ pub fn channels_index(
             ]
         })
         .collect();
-    let mut body = String::from("<h1>Channels</h1>\n");
+    let mut body = registry_nav(slug, "channels");
+    body.push_str("<h1>Channels</h1>\n");
     body.push_str(&table(&["channel", "frontier", "assigned"], &rows));
     body.push_str(&pager.nav(&format!("/{slug}/-/channels"), ""));
     page_with_session(
         &format!("{slug} channels"),
         &registry_crumbs(slug, &[(String::new(), "channels".into())]),
+        &body,
+        &state_line(status, started),
+        session,
+    )
+}
+
+fn image_target_label(target: ImageTarget) -> &'static str {
+    match target {
+        ImageTarget::BareMetal => "bare metal",
+        ImageTarget::QemuKvm => "QEMU/KVM",
+        ImageTarget::Openstack => "OpenStack",
+        ImageTarget::Vmware => "VMware",
+        ImageTarget::HyperV => "Hyper-V",
+    }
+}
+
+fn image_target_token(target: ImageTarget) -> &'static str {
+    match target {
+        ImageTarget::BareMetal => "bare-metal",
+        ImageTarget::QemuKvm => "qemu-kvm",
+        ImageTarget::Openstack => "openstack",
+        ImageTarget::Vmware => "vmware",
+        ImageTarget::HyperV => "hyper-v",
+    }
+}
+
+fn image_verification_label(state: ImageVerificationState) -> (&'static str, &'static str) {
+    match state {
+        ImageVerificationState::Unsigned => ("unsigned", "bad"),
+        ImageVerificationState::SignedUnverified => ("signed, unverified", "warn"),
+        ImageVerificationState::PolicyVerified => ("verified", "ok"),
+    }
+}
+
+/// Simultaneous structured and free-text image-catalog filters.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ImageBrowse<'a> {
+    /// Search fallback across package, release, channel, architecture, format, and target.
+    pub query: Option<&'a str>,
+    /// Exact release identity.
+    pub release: Option<&'a str>,
+    /// Exact channel identity.
+    pub channel: Option<&'a str>,
+    /// Exact architecture identity.
+    pub architecture: Option<&'a str>,
+    /// Exact disk format.
+    pub format: Option<&'a str>,
+    /// Exact end-user target token.
+    pub target: Option<&'a str>,
+}
+
+fn selected(value: &str, current: Option<&str>) -> &'static str {
+    if current == Some(value) {
+        " selected"
+    } else {
+        ""
+    }
+}
+
+fn image_select(
+    name: &str,
+    all_label: &str,
+    values: &[(String, String)],
+    current: Option<&str>,
+) -> String {
+    let mut html = format!(
+        "<label>{}<select name=\"{}\"><option value=\"\">{}</option>",
+        escape(name),
+        escape(name),
+        escape(all_label),
+    );
+    for (value, label) in values {
+        let _ = write!(
+            html,
+            "<option value=\"{}\"{}>{}</option>",
+            escape(value),
+            selected(value, current),
+            escape(label),
+        );
+    }
+    html.push_str("</select></label>");
+    html
+}
+
+/// The signed system-image catalog with end-user disk download actions.
+pub fn images_page(
+    registry: &RegistryRecord,
+    status: Option<&IndexStatus>,
+    images: &[IndexedSystemImage],
+    channels: &[ChannelSummary],
+    browse: &ImageBrowse<'_>,
+    started: Instant,
+    session: &SessionIndicator,
+) -> String {
+    let slug = &registry.slug;
+    fn normalize(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+    let needle = normalize(browse.query).map(str::to_lowercase);
+    let release = normalize(browse.release);
+    let channel = normalize(browse.channel);
+    let architecture = normalize(browse.architecture);
+    let format = normalize(browse.format);
+    let target = normalize(browse.target);
+
+    let mut release_values = images
+        .iter()
+        .map(|image| image.release.clone())
+        .collect::<Vec<_>>();
+    release_values.sort();
+    release_values.dedup();
+    let mut architecture_values = images
+        .iter()
+        .map(|image| image.delivery.architecture.clone())
+        .collect::<Vec<_>>();
+    architecture_values.sort();
+    architecture_values.dedup();
+    let mut format_values = images
+        .iter()
+        .map(|image| image.format.clone())
+        .collect::<Vec<_>>();
+    format_values.sort();
+    format_values.dedup();
+    let mut sorted = images.iter().collect::<Vec<_>>();
+    sorted.sort_by(|left, right| {
+        right
+            .release
+            .cmp(&left.release)
+            .then_with(|| left.package.cmp(&right.package))
+            .then_with(|| left.delivery.architecture.cmp(&right.delivery.architecture))
+            .then_with(|| left.format.cmp(&right.format))
+    });
+    let mut rows = Vec::new();
+    for image in sorted {
+        let channel_names = channels
+            .iter()
+            .filter(|channel| {
+                channel.frontier.as_deref() == Some(image.release.as_str())
+                    || channel
+                        .partitions
+                        .iter()
+                        .flatten()
+                        .any(|release| release == &image.release)
+            })
+            .map(|channel| channel.name.as_str())
+            .collect::<Vec<_>>();
+        let targets = image
+            .delivery
+            .compatible_targets
+            .iter()
+            .copied()
+            .map(image_target_label)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let target_tokens = image
+            .delivery
+            .compatible_targets
+            .iter()
+            .copied()
+            .map(image_target_token)
+            .collect::<Vec<_>>();
+        if release.is_some_and(|value| value != image.release)
+            || channel.is_some_and(|value| !channel_names.contains(&value))
+            || architecture.is_some_and(|value| value != image.delivery.architecture)
+            || format.is_some_and(|value| value != image.format)
+            || target.is_some_and(|value| !target_tokens.contains(&value))
+        {
+            continue;
+        }
+        let searchable = format!(
+            "{} {} {} {} {} {} {} {}",
+            image.package,
+            image.release,
+            channel_names.join(" "),
+            image.delivery.architecture,
+            image.format,
+            targets,
+            image.delivery.sha256,
+            image.delivery.filename,
+        )
+        .to_lowercase();
+        if needle
+            .as_ref()
+            .is_some_and(|needle| !searchable.contains(needle))
+        {
+            continue;
+        }
+        let (verification, class) = image_verification_label(image.delivery.uki.verification);
+        rows.push(vec![
+            format!(
+                "{} <span class=\"dim\">{}</span>",
+                escape(&image.release),
+                escape(&image.package)
+            ),
+            if channel_names.is_empty() {
+                "—".to_string()
+            } else {
+                escape(&channel_names.join(", "))
+            },
+            escape(&image.delivery.architecture),
+            escape(&image.format),
+            escape(&targets),
+            human_size(image.delivery.byte_size),
+            format!("<span class=\"{class}\">{verification}</span>"),
+            format!("<code>{}</code>", escape(&image.delivery.sha256)),
+            format!(
+                "<a href=\"/{}/{}\" download=\"{}\">Download</a>",
+                escape(slug),
+                escape(&image.delivery.object_key),
+                escape(&image.delivery.filename),
+            ),
+        ]);
+    }
+
+    let mut body = registry_nav(slug, "images");
+    body.push_str("<h1>Images</h1>\n");
+    let release_options = release_values
+        .into_iter()
+        .map(|value| (value.clone(), value))
+        .collect::<Vec<_>>();
+    let channel_options = channels
+        .iter()
+        .map(|channel| (channel.name.clone(), channel.name.clone()))
+        .collect::<Vec<_>>();
+    let architecture_options = architecture_values
+        .into_iter()
+        .map(|value| (value.clone(), value))
+        .collect::<Vec<_>>();
+    let format_options = format_values
+        .into_iter()
+        .map(|value| (value.clone(), value))
+        .collect::<Vec<_>>();
+    let target_options = [
+        ("bare-metal".to_string(), "Bare metal".to_string()),
+        ("qemu-kvm".to_string(), "QEMU/KVM".to_string()),
+        ("openstack".to_string(), "OpenStack".to_string()),
+        ("vmware".to_string(), "VMware".to_string()),
+        ("hyper-v".to_string(), "Hyper-V".to_string()),
+    ];
+    let _ = write!(
+        body,
+        "<form method=\"get\" data-live class=\"image-filters\">{}{}{}{}{}\
+         <label>search<input type=\"search\" name=\"q\" value=\"{}\" \
+         placeholder=\"package, checksum, or filename\"></label> <button>filter</button>\
+         <a href=\"/{}/-/images\">clear</a></form>",
+        image_select("release", "all releases", &release_options, release),
+        image_select("channel", "all channels", &channel_options, channel),
+        image_select(
+            "architecture",
+            "all architectures",
+            &architecture_options,
+            architecture
+        ),
+        image_select("format", "all formats", &format_options, format),
+        image_select("target", "all targets", &target_options, target),
+        escape(browse.query.unwrap_or("")),
+        escape(slug),
+    );
+    if rows.is_empty() {
+        body.push_str("<p class=\"dim\">No matching signed disk images are published.</p>\n");
+    } else {
+        body.push_str(&table(
+            &[
+                "release",
+                "channel",
+                "architecture",
+                "format",
+                "target",
+                "size",
+                "verification",
+                "SHA-256",
+                "download",
+            ],
+            &rows,
+        ));
+    }
+    page_with_session(
+        &format!("{slug} images"),
+        &registry_crumbs(slug, &[(String::new(), "images".into())]),
         &body,
         &state_line(status, started),
         session,
@@ -1842,7 +2152,8 @@ pub fn releases_page(
             ]
         })
         .collect();
-    let mut body = String::from("<h1>Releases</h1>\n");
+    let mut body = registry_nav(slug, "releases");
+    body.push_str("<h1>Releases</h1>\n");
     body.push_str(&table(
         &["release", "commit", "signature", "pack", "tagged"],
         &rows,
@@ -1906,6 +2217,22 @@ fn render_cache_stack(stack: &StackNode, coverage_by_url: &BTreeMap<&str, String
 /// ASCII tree with per-endpoint coverage, and any `mirror` group whose
 /// members are not individually complete is flagged as a replication
 /// shortfall above the matrix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeliveryRouteHealthRow {
+    /// Stable route identity.
+    pub id: String,
+    /// Exact endpoint identity.
+    pub endpoint_id: String,
+    /// Canonical base path.
+    pub base_path: String,
+    /// Serving mode.
+    pub mode: String,
+    /// Enabled desired state.
+    pub enabled: bool,
+    /// Capabilities selected by the immutable current route snapshot.
+    pub capabilities: Vec<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn health_page(
     registry: &RegistryRecord,
@@ -1914,8 +2241,7 @@ pub fn health_page(
     stack: Option<&StackNode>,
     cache_probes: &[CacheProbeRow],
     repair_jobs: &[RepairJobRow],
-    frontends: &[FrontendRecord],
-    frontend_probes: &[FrontendProbeRow],
+    routes: &[DeliveryRouteHealthRow],
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1923,7 +2249,8 @@ pub fn health_page(
     const MISSING_DISPLAY_CAP: usize = 100;
 
     let slug = &registry.slug;
-    let mut body = String::from("<h1>Health</h1>\n");
+    let mut body = registry_nav(slug, "health");
+    body.push_str("<h1>Health</h1>\n");
 
     // Per-cache coverage labels, keyed by URL, drawn from the latest runs.
     let coverage_by_url: BTreeMap<&str, String> = runs
@@ -2088,81 +2415,29 @@ pub fn health_page(
         body.push_str(&table(&["cache", "status", "latency", "checked"], &rows));
     }
 
-    // Frontends + their freshness (RFC-0004 "Frontends: direct and proxied
-    // domains"). Advertised cache frontends map informationally to [caches]
-    // priority entries; the committed registry.toml cache stack is signed tree
-    // content the hub never silently edits.
-    if !frontends.is_empty() {
-        body.push_str("<h2>Frontends</h2>\n");
-        let probe_by_id: BTreeMap<i64, &FrontendProbeRow> =
-            frontend_probes.iter().map(|p| (p.frontend_id, p)).collect();
-        let rows: Vec<Vec<String>> = frontends
+    if !routes.is_empty() {
+        body.push_str("<h2>Delivery routes</h2>\n");
+        let rows: Vec<Vec<String>> = routes
             .iter()
-            .map(|frontend| {
-                let mut surfaces = Vec::new();
-                if frontend.serves_git {
-                    surfaces.push("git");
-                }
-                if frontend.serves_cache {
-                    surfaces.push("cache");
-                }
-                if frontend.serves_web {
-                    surfaces.push("web");
-                }
-                let probe = probe_by_id.get(&frontend.id);
-                let status = probe.map_or_else(
-                    || "<span class=\"dim\">unprobed</span>".to_string(),
-                    |p| {
-                        let label = p.status.as_deref().unwrap_or("unprobed");
-                        let class = match label {
-                            "ok" => "ok",
-                            "stale" => "warn",
-                            "unprobed" => "dim",
-                            _ => "bad",
-                        };
-                        format!("<span class=\"{class}\">{}</span>", escape(label))
-                    },
-                );
-                let frontier = probe
-                    .and_then(|p| p.observed_frontier.as_deref())
-                    .map(|f| format!("<code>{}</code>", escape(f)))
-                    .unwrap_or_else(|| "-".to_string());
-                let lag = probe
-                    .and_then(|p| p.lag_releases)
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "-".to_string());
-                let checked = probe
-                    .and_then(|p| p.checked_at)
-                    .map(ago)
-                    .unwrap_or_else(|| "-".to_string());
+            .map(|route| {
                 vec![
-                    format!(
-                        "<code>{}{}</code>",
-                        escape(&frontend.domain),
-                        escape(&frontend.base_path)
-                    ),
-                    escape(&frontend.mode),
-                    surfaces.join("+"),
-                    frontend.consumer_priority.to_string(),
-                    if frontend.advertised { "yes" } else { "no" }.to_string(),
-                    status,
-                    frontier,
-                    lag,
-                    checked,
+                    format!("<code>{}</code>", escape(&route.id)),
+                    format!("<code>{}</code>", escape(&route.endpoint_id)),
+                    format!("<code>{}</code>", escape(&route.base_path)),
+                    escape(&route.mode),
+                    route.capabilities.join("+"),
+                    if route.enabled { "enabled" } else { "disabled" }.to_string(),
                 ]
             })
             .collect();
         body.push_str(&table(
             &[
-                "domain",
+                "route",
+                "endpoint",
+                "base path",
                 "mode",
-                "surfaces",
-                "priority",
-                "advertised",
-                "status",
-                "frontier",
-                "lag",
-                "checked",
+                "audiences",
+                "desired",
             ],
             &rows,
         ));
@@ -2189,19 +2464,182 @@ mod tests {
     fn registry() -> RegistryRecord {
         RegistryRecord {
             id: 1,
+            stable_id: "registry:00000000000000000000000000000001".into(),
+            scope_key: "registry:00000000000000000000000000000001".into(),
+            owner_scope_key: "instance".into(),
             slug: "demo".into(),
-            source_url: "/srv/demo".into(),
             trust_keys: vec!["demo:Ed25519:AAAA".into()],
             require_signatures: true,
             org_id: None,
             project_path: String::new(),
             visibility: "public".into(),
-            storage_binding_id: None,
-            prefix: String::new(),
-            hosted_key_id: None,
             crawl_policy: "allow_all".into(),
             llms_txt_body: None,
+            resource_version: 1,
+            updated_at: 0,
         }
+    }
+
+    fn indexed_image(format: &str, release: &str) -> IndexedSystemImage {
+        use aos_registry_surface::manifest::{
+            immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
+            ImageDelivery, ImageInfoReference, ImageUkiIdentity,
+        };
+
+        let (sha256, extension, media_type, targets) = match format {
+            "raw" => (
+                "a".repeat(64),
+                "img",
+                "application/vnd.aos.disk-image.raw",
+                vec![ImageTarget::BareMetal],
+            ),
+            "qcow2" => (
+                "b".repeat(64),
+                "qcow2",
+                "application/vnd.aos.disk-image.qcow2",
+                vec![ImageTarget::QemuKvm, ImageTarget::Openstack],
+            ),
+            other => panic!("unsupported image fixture {other}"),
+        };
+        let filename = format!("aos-{release}.{extension}");
+        let info_sha256 = "c".repeat(64);
+        IndexedSystemImage {
+            package: "aos-system".into(),
+            release: release.into(),
+            platform: "x86_64-linux".into(),
+            format: format.into(),
+            delivery: ImageDelivery {
+                schema_version: 1,
+                release: release.into(),
+                platform: "x86_64-linux".into(),
+                architecture: "x86_64".into(),
+                logical_image_id: "d".repeat(64),
+                logical_disk_sha256: "a".repeat(64),
+                rootfs_sha256: "e".repeat(64),
+                filename: filename.clone(),
+                object_key: immutable_image_object_key(&sha256, &filename),
+                media_type: media_type.into(),
+                compression: ImageCompression::None,
+                byte_size: 4096,
+                sha256: sha256.clone(),
+                compatible_targets: targets,
+                uki: ImageUkiIdentity {
+                    filename: "aos.efi".into(),
+                    esp_path: "EFI/Linux/aos.efi".into(),
+                    byte_size: 1024,
+                    sha256: "f".repeat(64),
+                    verification: ImageVerificationState::PolicyVerified,
+                    signer_cert_sha256: Some("1".repeat(64)),
+                    sbat: vec![aos_registry_surface::manifest::SbatEntry {
+                        component: "aos".into(),
+                        generation: 1,
+                    }],
+                    measured: false,
+                    expected_pcr11: None,
+                },
+                image_info: ImageInfoReference {
+                    filename: "image-info.json".into(),
+                    object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                    media_type: "application/vnd.aos.image-info+json".into(),
+                    byte_size: 512,
+                    sha256: info_sha256,
+                },
+            },
+        }
+    }
+
+    fn image_channels() -> Vec<ChannelSummary> {
+        vec![
+            ChannelSummary {
+                name: "stable".into(),
+                frontier: Some("2026.08".into()),
+                partitions: vec![Some("2026.08".into()); 256],
+            },
+            ChannelSummary {
+                name: "edge".into(),
+                frontier: Some("2026.09".into()),
+                partitions: vec![Some("2026.09".into()); 256],
+            },
+        ]
+    }
+
+    #[test]
+    fn images_are_discoverable_and_structured_filters_compose() {
+        let images = vec![
+            indexed_image("raw", "2026.08"),
+            indexed_image("qcow2", "2026.09"),
+        ];
+        let channels = image_channels();
+        let default = images_page(
+            &registry(),
+            None,
+            &images,
+            &channels,
+            &ImageBrowse::default(),
+            Instant::now(),
+            &anon(),
+        );
+        assert!(default.contains("aria-current=\"page\">Images"));
+        assert!(default.contains("name=\"release\""));
+        assert!(default.contains("name=\"channel\""));
+        assert!(default.contains("name=\"architecture\""));
+        assert!(default.contains("name=\"format\""));
+        assert!(default.contains("name=\"target\""));
+        assert!(default.contains("aos-2026.08.img"));
+        assert!(default.contains("aos-2026.09.qcow2"));
+
+        let filtered = images_page(
+            &registry(),
+            None,
+            &images,
+            &channels,
+            &ImageBrowse {
+                release: Some("2026.08"),
+                channel: Some("stable"),
+                architecture: Some("x86_64"),
+                format: Some("raw"),
+                target: Some("bare-metal"),
+                query: Some("aos-system"),
+            },
+            Instant::now(),
+            &anon(),
+        );
+        assert!(filtered.contains("aos-2026.08.img"));
+        assert!(!filtered.contains("aos-2026.09.qcow2"));
+        assert!(filtered.contains("value=\"bare-metal\" selected"));
+    }
+
+    #[test]
+    fn images_page_has_clear_empty_state_and_private_relative_downloads() {
+        let image = indexed_image("raw", "2026.08");
+        let empty = images_page(
+            &registry(),
+            None,
+            std::slice::from_ref(&image),
+            &image_channels(),
+            &ImageBrowse {
+                target: Some("qemu-kvm"),
+                ..ImageBrowse::default()
+            },
+            Instant::now(),
+            &anon(),
+        );
+        assert!(empty.contains("No matching signed disk images are published."));
+
+        let mut private = registry();
+        private.visibility = "private".into();
+        let html = images_page(
+            &private,
+            None,
+            &[image],
+            &image_channels(),
+            &ImageBrowse::default(),
+            Instant::now(),
+            &anon(),
+        );
+        assert!(html.contains("href=\"/demo/images/sha256/"));
+        assert!(!html.contains("access_token="));
+        assert!(!html.contains("Authorization="));
     }
 
     #[tokio::test]
@@ -2303,7 +2741,7 @@ mod tests {
         assert!(html.contains("SHA256:"));
         assert!(html.contains("aos.apm.registries.demo"));
         assert!(html.contains("trustKeys"));
-        // substituters point at the advertised binary cache (its own frontend),
+        // substituters point at the cache's committed delivery URL,
         // not the registry URL — the registry serves the index, the cache serves
         // nar/narinfo.
         assert!(html.contains("substituters = https://cache.example"));
@@ -2516,6 +2954,8 @@ mod tests {
                 description: Some("Fixture registry".into()),
                 readme: None,
                 indexed_at: None,
+                generation: 0,
+                content_digest: None,
             }),
         )];
         let html = instance_home(&rows, None, 1, Instant::now(), &anon());
@@ -2681,7 +3121,6 @@ mod tests {
             &[],
             &[],
             &[],
-            &[],
             Instant::now(),
             &anon(),
         );
@@ -2754,7 +3193,6 @@ mod tests {
             &probes,
             &[],
             &[],
-            &[],
             Instant::now(),
             &anon(),
         );
@@ -2816,7 +3254,6 @@ mod tests {
             None,
             &[],
             &repair_jobs,
-            &[],
             &[],
             Instant::now(),
             &anon(),

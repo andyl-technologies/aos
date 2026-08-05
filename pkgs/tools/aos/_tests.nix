@@ -882,9 +882,8 @@ in {
         printf 'nar:sha256:0000000000000000000000000000000000000000000000000000:1234\n' > "$reg/store/$(printf %.2s "$pkg_hash")/$pkg_hash"
         printf '%s\n' \
           "" \
-          '[[caches]]' \
-          "url = \"http://127.0.0.1:$cache_port/cache\"" \
-          'priority = 42' \
+          '[caches]' \
+          "endpoint = \"http://127.0.0.1:$cache_port/cache\"" \
           >> "$reg/registry.toml"
 
         run_clean ${self}/bin/apr status --registry host-reg > "$work/apr-status-dirty.out" 2>&1
@@ -2033,9 +2032,34 @@ in {
           printf '%s\n' "host sysroot image qcow2 fixture"
           printf '%s\n' "boot-marker=hostsysroot"
         } > "$out/hostsysroot.qcow2"
+        image_sha256=$(@AOS_COREUTILS@/bin/sha256sum "$out/hostsysroot.qcow2" | @AOS_COREUTILS@/bin/cut -d ' ' -f1)
+        image_size=$(@AOS_COREUTILS@/bin/stat -c %s "$out/hostsysroot.qcow2")
+        uki_store='@AOS_UKI_STORE@'
+        uki_filename=systemd-bootx64.efi
+        uki_sha256=$(@AOS_COREUTILS@/bin/sha256sum "$uki_store/$uki_filename" | @AOS_COREUTILS@/bin/cut -d ' ' -f1)
+        uki_size=$(@AOS_COREUTILS@/bin/stat -c %s "$uki_store/$uki_filename")
+        @AOS_JQ@/bin/jq -S -n \
+          --arg sha256 "$image_sha256" \
+          --arg objectKey "images/sha256/$image_sha256/hostsysroot.qcow2" \
+          --arg ukiFilename "$uki_filename" \
+          --arg ukiSha256 "$uki_sha256" \
+          --argjson byteSize "$image_size" \
+          --argjson ukiSize "$uki_size" \
+          '{schemaVersion: 1, name: "hostsysroot", version: "1.0.0",
+            architecture: "x86_64", platform: "x86_64-linux", format: "qcow2",
+            filename: "hostsysroot.qcow2", objectKey: $objectKey,
+            mediaType: "application/vnd.aos.disk-image.qcow2", compression: "none",
+            byteSize: $byteSize, virtualSizeBytes: $byteSize, sha256: $sha256,
+            compatibleTargets: ["qemu-kvm", "openstack"],
+            partitionTable: "gpt", kernelParams: "",
+            partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 0, offsetBytes: 0, sizeBytes: $byteSize}],
+            esp: {uki: "EFI/Linux/aos-hostsysroot.efi", sdBoot: "EFI/systemd/systemd-bootx64.efi"},
+            uki: {filename: $ukiFilename, espPath: "EFI/Linux/aos-hostsysroot.efi",
+              byteSize: $ukiSize, sha256: $ukiSha256, signed: false}}' \
+          > "$out/image-info.json"
         SCRIPT
         substitute_fixture_paths() {
-          ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' '${pkgs.findutils}' '${pkgs.grep}' << 'PY'
+          ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' '${pkgs.findutils}' '${pkgs.grep}' '${pkgs.jq}' '${pkgs.systemd}/lib/systemd/boot/efi' << 'PY'
         from pathlib import Path
         import sys
 
@@ -2046,6 +2070,8 @@ in {
             .replace("@AOS_COREUTILS@", sys.argv[3])
             .replace("@AOS_FINDUTILS@", sys.argv[4])
             .replace("@AOS_GREP@", sys.argv[5])
+            .replace("@AOS_JQ@", sys.argv[6])
+            .replace("@AOS_UKI_STORE@", sys.argv[7])
         )
         PY
         }
@@ -3614,6 +3640,7 @@ in {
           --sysroot \
           --image "$sysroot_image_store" \
           --image-format qcow2 \
+          --image-uki '${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi' \
           --registry host-image-channel \
           --no-commit > "$work/apr-publish-host-sysroot-image.json"
         ${pkgs.jq}/bin/jq -e \

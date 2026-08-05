@@ -11,18 +11,73 @@
 //! This is the surface-global default plan. It deliberately admits only
 //! `complete` non-archive placements; shard partition rules and delivery-route
 //! policy membership are resolved by the subsequent route-policy planner, not
-//! inferred here. During the incremental cutover, an atomic snapshot with zero
-//! configured placements reports [`PlacementReadOutcome::NoPlacements`] so an
-//! existing resource can use its migration reader. The final topology cutover
-//! must backfill every surface and delete that fallback.
+//! inferred here. A surface without configured placements fails closed: the
+//! steady-state runtime has no binding/prefix fallback reader.
 
 use std::error::Error as StdError;
 use std::fmt;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 
 use crate::db::{Database, PlacementReadRequirement, SurfacePlacementRecord, SurfaceTarget};
 use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceProvider};
+
+/// Placement-planned reader for callers that need a reusable [`SurfaceFetch`].
+///
+/// Git walkers and configuration loaders perform many logical reads through a
+/// single reader. This adapter keeps that convenient interface while planning
+/// every object read from the current placement inventory; it never captures a
+/// legacy binding or resource-level prefix.
+pub struct TopologySurfaceFetch {
+    db: Arc<Database>,
+    provider: Arc<dyn SurfaceProvider>,
+    surface: SurfaceTarget,
+}
+
+impl TopologySurfaceFetch {
+    /// Creates a reusable reader for one logical registry or cache.
+    #[must_use]
+    pub fn new(
+        db: Arc<Database>,
+        provider: Arc<dyn SurfaceProvider>,
+        surface: SurfaceTarget,
+    ) -> Self {
+        Self {
+            db,
+            provider,
+            surface,
+        }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl SurfaceFetch for TopologySurfaceFetch {
+    async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        match fetch_from_placements(&self.db, self.provider.as_ref(), self.surface, path).await? {
+            PlacementReadOutcome::Found(read) => Ok(Some(read.value)),
+            PlacementReadOutcome::NotFound => Ok(None),
+        }
+    }
+
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<StreamedRead>> {
+        match stream_from_placements(&self.db, self.provider.as_ref(), self.surface, path, range)
+            .await?
+        {
+            PlacementReadOutcome::Found(read) => Ok(Some(read.value)),
+            PlacementReadOutcome::NotFound => Ok(None),
+        }
+    }
+
+    fn describe(&self) -> String {
+        "topology-planned surface placements".to_string()
+    }
+}
 
 /// Whether a backend failure permits trying the next placement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,14 +134,14 @@ pub fn terminal_read_error(message: impl Into<String>) -> anyhow::Error {
 
 /// Classifies an HTTP backend status identically on native and Worker runtimes.
 ///
-/// `429` and server failures are retryable availability conditions. Every other
-/// non-success status is terminal; notably, `401` and `403` can never fall
-/// through to another placement and become an authorization bypass. Callers
-/// handle a true `404` as a definite miss before invoking this helper.
+/// Only `429`, `502`, `503`, and `504` are retryable availability conditions.
+/// Every other non-success status is terminal; notably, authentication errors
+/// and unexpected origin failures can never fall through to another placement.
+/// Callers handle a true `404` as a definite miss before invoking this helper.
 #[must_use]
 pub fn http_status_read_error(operation: &str, status: u16) -> anyhow::Error {
     let message = format!("{operation}: status {status}");
-    if status == 429 || status >= 500 {
+    if matches!(status, 429 | 502 | 503 | 504) {
         retryable_read_error(message)
     } else {
         terminal_read_error(message)
@@ -137,8 +192,6 @@ pub struct PlacementRead<T> {
 /// Result of applying topology to one logical surface read.
 #[derive(Debug)]
 pub enum PlacementReadOutcome<T> {
-    /// The surface has no placement inventory and may use the migration fallback.
-    NoPlacements,
     /// Placements exist, but no eligible placement contains the object.
     NotFound,
     /// An eligible placement produced the object.
@@ -181,7 +234,14 @@ pub async fn fetch_from_placements(
         .readable_surface_placements(surface, requirement_for_path(surface, path))
         .await?;
     if !plan.has_configured_placements {
-        return Ok(PlacementReadOutcome::NoPlacements);
+        return Err(terminal_read_error(
+            "surface has no configured storage placements",
+        ));
+    }
+    if plan.candidates.is_empty() && plan.has_policy_only_shards {
+        return Err(terminal_read_error(
+            "sharded storage placements require an explicit delivery-route placement policy",
+        ));
     }
     execute_fetch_plan(provider, plan.candidates, path, plan.miss_is_inconsistent).await
 }
@@ -207,7 +267,14 @@ pub async fn stream_from_placements(
         .readable_surface_placements(surface, requirement_for_path(surface, path))
         .await?;
     if !plan.has_configured_placements {
-        return Ok(PlacementReadOutcome::NoPlacements);
+        return Err(terminal_read_error(
+            "surface has no configured storage placements",
+        ));
+    }
+    if plan.candidates.is_empty() && plan.has_policy_only_shards {
+        return Err(terminal_read_error(
+            "sharded storage placements require an explicit delivery-route placement policy",
+        ));
     }
     execute_stream_plan(
         provider,
@@ -217,6 +284,124 @@ pub async fn stream_from_placements(
         plan.miss_is_inconsistent,
     )
     .await
+}
+
+/// Opens a signed image only from the exact backend version verified at indexing.
+///
+/// The ordinary immutable planner proves that a placement previously contained
+/// the indexed object. Images add a request-time identity check so stale
+/// inventory cannot authorize same-size mutated bytes. A corrupt earlier
+/// placement is skipped and a later independently verified replica may serve.
+/// The selected stream carries the strong version of its already-open object
+/// handle, so HEAD, ranges, and full downloads need no pathname re-open or
+/// full-object pre-read.
+///
+/// # Errors
+///
+/// Returns an error when placement planning fails, no candidate currently
+/// matches the signed SHA-256 and size, or the selected object changes between
+/// identity verification and stream opening.
+pub async fn stream_verified_image_from_placements(
+    db: &Database,
+    provider: &dyn SurfaceProvider,
+    registry_id: i64,
+    path: &str,
+    expected_sha256: &str,
+    expected_size: u64,
+    range: Option<(u64, u64)>,
+) -> Result<PlacementReadOutcome<StreamedRead>> {
+    let plan = db
+        .readable_surface_placements(
+            SurfaceTarget::Registry(registry_id),
+            PlacementReadRequirement::ImmutableObject(path),
+        )
+        .await?;
+    if !plan.has_configured_placements {
+        return Err(terminal_read_error(
+            "image surface has no configured storage placements",
+        ));
+    }
+    let mut verified = Vec::new();
+    for placement in plan.candidates {
+        if let Some(etag) = db
+            .registry_image_placement_etag(registry_id, placement.id, path)
+            .await?
+        {
+            verified.push((placement, etag));
+        }
+    }
+    execute_verified_image_plan(
+        provider,
+        verified,
+        path,
+        expected_sha256,
+        expected_size,
+        range,
+        plan.miss_is_inconsistent,
+    )
+    .await
+}
+
+async fn execute_verified_image_plan(
+    provider: &dyn SurfaceProvider,
+    placements: Vec<(SurfacePlacementRecord, String)>,
+    path: &str,
+    expected_sha256: &str,
+    expected_size: u64,
+    range: Option<(u64, u64)>,
+    miss_is_inconsistent: bool,
+) -> Result<PlacementReadOutcome<StreamedRead>> {
+    let mut saw_corrupt = false;
+    let mut last_retryable = None;
+    for (placement, verified_etag) in placements {
+        let fetch = match provider.placement_fetcher(&placement).await {
+            Ok(fetch) => fetch,
+            Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                last_retryable = Some(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let read = match fetch.fetch_stream(path, range).await {
+            Ok(Some(read)) => read,
+            Ok(None) => continue,
+            Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                last_retryable = Some(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if read.total != expected_size
+            || read.strong_etag.as_deref() != Some(verified_etag.as_str())
+        {
+            saw_corrupt = true;
+            tracing::warn!(
+                placement_id = placement.id,
+                placement_name = %placement.name,
+                object_key = path,
+                expected_sha256,
+                "signed image placement no longer matches its indexed object version"
+            );
+            continue;
+        }
+        return Ok(PlacementReadOutcome::Found(PlacementRead {
+            value: read,
+            placement: SelectedPlacement::from(&placement),
+        }));
+    }
+    if saw_corrupt {
+        Err(terminal_read_error(format!(
+            "signed image object '{path}' has no currently verified readable placement"
+        )))
+    } else if let Some(error) = last_retryable {
+        Err(error).context("all verified image placements failed before streaming")
+    } else if miss_is_inconsistent {
+        Err(terminal_read_error(format!(
+            "signed image object '{path}' has no currently verified readable placement"
+        )))
+    } else {
+        Ok(PlacementReadOutcome::NotFound)
+    }
 }
 
 /// Executes a full-object read against a preselected list.
@@ -335,12 +520,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    use anyhow::bail;
-
     use super::*;
-    use crate::db::{
-        NewSurfacePlacementSpec, RegistryRecord, SetObjectPlacement, SetSurfaceObject,
-    };
+    use crate::db::{CacheObjectPresenceObservation, NewSurfacePlacementSpec, SetSurfaceObject};
 
     #[derive(Clone, Copy)]
     enum Behavior {
@@ -360,6 +541,25 @@ mod tests {
         async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
             match self.behavior {
                 Behavior::Hit => Ok(Some(b"selected".to_vec())),
+                Behavior::Miss => Ok(None),
+                Behavior::Retryable => Err(retryable_read_error("backend unavailable")),
+                Behavior::Terminal => Err(terminal_read_error("backend denied access")),
+            }
+        }
+
+        async fn fetch_stream(
+            &self,
+            _path: &str,
+            range: Option<(u64, u64)>,
+        ) -> Result<Option<StreamedRead>> {
+            match self.behavior {
+                Behavior::Hit => Ok(Some(StreamedRead {
+                    body: axum::body::Body::from("selected"),
+                    total: 8,
+                    range,
+                    strong_etag: Some("fixture-version".into()),
+                    snapshot_lease_id: None,
+                })),
                 Behavior::Miss => Ok(None),
                 Behavior::Retryable => Err(retryable_read_error("backend unavailable")),
                 Behavior::Terminal => Err(terminal_read_error("backend denied access")),
@@ -394,32 +594,33 @@ mod tests {
                 .ok_or_else(|| terminal_read_error("unknown fake placement"))?;
             Ok(Box::new(FakeFetch { behavior }))
         }
-
-        async fn fetcher(&self, _registry: &RegistryRecord) -> Result<Box<dyn SurfaceFetch>> {
-            bail!("legacy fetcher is not used by placement planner tests")
-        }
     }
 
     async fn cache_with_placements() -> (Database, i64) {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("planner", "Planner").await.unwrap();
+        let owner = db.org_by_id(org).await.unwrap().unwrap();
         let binding = db
-            .create_storage_binding(org, "planner", "local_fs", "/tmp/planner")
+            .create_topology_storage_binding(
+                Some(org),
+                "planner-binding",
+                &owner.stable_id,
+                "planner",
+                "local_fs",
+                Some("/tmp/planner"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
             .await
             .unwrap();
         let cache = db
-            .create_cache(
-                Some(org),
-                "planner",
-                "Planner",
-                Some(binding),
-                "legacy",
-                None,
-                "public",
-                40,
-                "zstd",
-                false,
-            )
+            .create_binary_cache(Some(org), "planner", "Planner", "public", 40, "zstd", false)
             .await
             .unwrap();
         for (name, order) in [("first", 0), ("second", 1), ("third", 2)] {
@@ -475,17 +676,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zero_placement_snapshot_is_the_only_migration_fallback_signal() {
+    async fn zero_placement_snapshot_fails_closed() {
         let db = Database::open_in_memory().await.unwrap();
         let org = db.create_org("unplaced", "Unplaced").await.unwrap();
         let cache = db
-            .create_cache(
+            .create_binary_cache(
                 Some(org),
                 "unplaced",
                 "Unplaced",
-                None,
-                "",
-                None,
                 "public",
                 40,
                 "zstd",
@@ -498,15 +696,18 @@ mod tests {
             behavior: HashMap::new(),
             opened: Arc::clone(&opened),
         };
-        let outcome = fetch_from_placements(
+        let error = fetch_from_placements(
             &db,
             &provider,
             SurfaceTarget::BinaryCache(cache),
             "nar/unindexed.nar",
         )
         .await
-        .unwrap();
-        assert!(matches!(outcome, PlacementReadOutcome::NoPlacements));
+        .unwrap_err();
+        assert_eq!(classify_read_error(&error), ReadFailureClass::Terminal);
+        assert!(error
+            .to_string()
+            .contains("no configured storage placements"));
         assert!(opened.lock().unwrap().is_empty());
     }
 
@@ -568,6 +769,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verified_image_retryable_candidate_falls_through_to_healthy_replica() {
+        let (db, cache) = cache_with_placements().await;
+        let placements = db
+            .list_surface_placements(SurfaceTarget::BinaryCache(cache))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|placement| (placement, "fixture-version".to_string()))
+            .collect();
+        let provider = FakeProvider {
+            behavior: HashMap::from([
+                ("first".to_string(), Behavior::Retryable),
+                ("second".to_string(), Behavior::Hit),
+                ("third".to_string(), Behavior::Hit),
+            ]),
+            opened: Arc::new(Mutex::new(Vec::new())),
+        };
+        let selected =
+            execute_verified_image_plan(&provider, placements, "images/test", "00", 8, None, true)
+                .await
+                .unwrap();
+        assert!(matches!(selected, PlacementReadOutcome::Found(_)));
+    }
+
+    #[tokio::test]
+    async fn verified_image_all_retryable_returns_retryable_error() {
+        let (db, cache) = cache_with_placements().await;
+        let placements = db
+            .list_surface_placements(SurfaceTarget::BinaryCache(cache))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|placement| (placement, "fixture-version".to_string()))
+            .collect();
+        let provider = FakeProvider {
+            behavior: HashMap::from([
+                ("first".to_string(), Behavior::Retryable),
+                ("second".to_string(), Behavior::Retryable),
+                ("third".to_string(), Behavior::Retryable),
+            ]),
+            opened: Arc::new(Mutex::new(Vec::new())),
+        };
+        let error = match execute_verified_image_plan(
+            &provider,
+            placements,
+            "images/test",
+            "00",
+            8,
+            None,
+            true,
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("all-retryable image plan unexpectedly succeeded"),
+        };
+        assert_eq!(classify_read_error(&error), ReadFailureClass::Retryable);
+    }
+
+    #[tokio::test]
     async fn authoritative_inventory_miss_is_a_consistency_error() {
         let (db, cache) = cache_with_placements().await;
         let first = db
@@ -588,15 +849,73 @@ mod tests {
             })
             .await
             .unwrap();
-        db.set_object_placement(&SetObjectPlacement {
-            surface_object_id: object.id,
-            placement_id: first.id,
-            state: "present".to_string(),
-            observed_hash: Some("sha256:expected".to_string()),
-            observed_size: Some(8),
-            etag: None,
-            observed_at: 1,
-        })
+        db.begin_cache_inventory_topology(cache, 2, 0, "placement-read-test", 1, 100)
+            .await
+            .unwrap();
+        db.stage_cache_surface_object_identity(
+            cache,
+            2,
+            first.id,
+            "placement-read-test",
+            &object.object_key,
+            object.content_hash.as_deref().unwrap(),
+            object.size.unwrap(),
+        )
+        .await
+        .unwrap();
+        db.stage_cache_object_presence(
+            "placement-read-test",
+            &CacheObjectPresenceObservation {
+                cache_id: cache,
+                object_key: object.object_key.clone(),
+                placement_id: first.id,
+                state: "present".into(),
+                observed_hash: object.content_hash.clone(),
+                observed_size: object.size,
+                etag: Some("placement-read-test".into()),
+                inventory_generation: 2,
+                observed_at: 2,
+            },
+        )
+        .await
+        .unwrap();
+        for placement in db
+            .list_surface_placements(SurfaceTarget::BinaryCache(cache))
+            .await
+            .unwrap()
+        {
+            if placement.id != first.id {
+                db.stage_missing_cache_inventory_observations(
+                    cache,
+                    2,
+                    placement.id,
+                    "placement-read-test",
+                    2,
+                )
+                .await
+                .unwrap();
+            }
+            db.stage_cache_inventory_manifest(
+                cache,
+                2,
+                placement.id,
+                "placement-read-test",
+                &format!("manifest-{}", placement.id),
+                i64::from(placement.id == first.id),
+                3,
+            )
+            .await
+            .unwrap();
+        }
+        db.publish_cache_inventory_topology(
+            cache,
+            2,
+            "placement-read-test",
+            "placement-read-aggregate",
+            0,
+            "placement-read-publish",
+            4,
+        )
         .await
         .unwrap();
         let provider = FakeProvider {
@@ -628,11 +947,11 @@ mod tests {
             classify_read_error(&anyhow::anyhow!("unclassified backend failure")),
             ReadFailureClass::Terminal
         );
-        for status in [400, 401, 403, 409] {
+        for status in [400, 401, 403, 409, 500, 501, 505] {
             let error = http_status_read_error("GET", status);
             assert_eq!(classify_read_error(&error), ReadFailureClass::Terminal);
         }
-        for status in [429, 500, 503] {
+        for status in [429, 502, 503, 504] {
             let error = http_status_read_error("GET", status);
             assert_eq!(classify_read_error(&error), ReadFailureClass::Retryable);
         }

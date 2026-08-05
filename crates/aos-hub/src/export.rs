@@ -10,8 +10,8 @@
 //!   its tokens' **metadata only** (never a hash or secret), its storage
 //!   bindings (paths, no credentials), an audit slice, and the
 //!   configuration-changeset history.
-//! - [`export_registry_surface`] copies a registry's on-disk surface
-//!   (`registry_surface_root`) into a destination directory — a portable,
+//! - [`export_registry_surface`] copies the registry's reconciled local
+//!   placement into a destination directory — a portable,
 //!   re-servable git + nix-cache surface.
 //!
 //! # Manifest shape
@@ -32,7 +32,7 @@
 //!                 "permissions": ["publish"], "created_at": …,
 //!                 "expires_at": null, "last_used_at": … } ],   // NO hash/secret
 //!   "storage_bindings": [ { "name": "primary", "kind": "local_fs",
-//!                           "root": "/srv/aos-hub" } ],         // NO credentials
+//!                           "local_root_path": "/srv/aos-hub" } ], // NO credentials
 //!   "audit": [ { "action": "registry.visibility", "scope": "…", … } ],
 //!   "changesets": [ { "change_id": "…", "status": "applied", … } ]
 //! }
@@ -69,8 +69,6 @@ pub struct ExportRegistry {
     pub visibility: String,
     /// Owning project's materialized path.
     pub project_path: String,
-    /// Sub-prefix under the storage binding root.
-    pub prefix: String,
     /// Pinned trust anchors (`name:Ed25519:<base64>`).
     pub trust_keys: Vec<String>,
     /// Whether indexing requires signatures.
@@ -87,8 +85,6 @@ pub struct ExportCache {
     pub name: String,
     /// Visibility: `public`, `internal`, or `private`.
     pub visibility: String,
-    /// Sub-prefix under the storage binding root.
-    pub prefix: String,
     /// `nix-cache-info` `Priority` (substituter ordering; lower = preferred).
     pub priority: i64,
     /// Default NAR compression (`zstd` | `xz` | `none`).
@@ -106,7 +102,7 @@ pub struct ExportMembership {
     pub principal_kind: String,
     /// The principal's row id.
     pub principal_id: i64,
-    /// The scope path the grant is bound to.
+    /// The immutable authorization scope the grant is bound to.
     pub scope: String,
     /// The role granted.
     pub role: String,
@@ -121,7 +117,7 @@ pub struct ExportToken {
     pub owner_kind: String,
     /// The owning principal's row id.
     pub owner_id: i64,
-    /// The scope path the token is bound to.
+    /// The immutable authorization scope the token is bound to.
     pub scope: String,
     /// The permission verbs the token grants.
     pub permissions: Vec<String>,
@@ -138,10 +134,26 @@ pub struct ExportToken {
 pub struct ExportBinding {
     /// Binding name, unique within the org.
     pub name: String,
-    /// Backend kind (`local_fs`).
+    /// Backend kind (`local_fs`, `s3`, or `r2`).
     pub kind: String,
-    /// Backend root path.
-    pub root: String,
+    /// Local-filesystem root, only for `local_fs`.
+    pub local_root_path: Option<String>,
+    /// Object-store bucket, only for `s3`/`r2`.
+    pub object_bucket: Option<String>,
+    /// Binding-owned object-store prefix.
+    pub object_prefix: Option<String>,
+    /// Canonical object-store endpoint scheme.
+    pub endpoint_scheme: Option<String>,
+    /// Canonical object-store endpoint host representation.
+    pub endpoint_host_kind: Option<String>,
+    /// Canonical object-store endpoint host bytes.
+    pub endpoint_host_bytes: Option<Vec<u8>>,
+    /// Canonical object-store endpoint port.
+    pub endpoint_port: Option<i64>,
+    /// Request-signing region.
+    pub signing_region: Option<String>,
+    /// Public or private object-store access mode.
+    pub access_mode: Option<String>,
 }
 
 /// One exported audit row.
@@ -245,21 +257,19 @@ pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest>
             slug: r.slug,
             visibility: r.visibility,
             project_path: r.project_path,
-            prefix: r.prefix,
             trust_keys: r.trust_keys,
             require_signatures: r.require_signatures,
         })
         .collect();
 
     let caches = db
-        .list_caches_for_org(org.id)
+        .list_binary_caches_for_org(org.id)
         .await?
         .into_iter()
         .map(|c| ExportCache {
             slug: c.slug,
             name: c.name,
             visibility: c.visibility,
-            prefix: c.prefix,
             priority: c.priority,
             compression: c.compression,
             want_mass_query: c.want_mass_query,
@@ -317,7 +327,15 @@ pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest>
         .map(|b| ExportBinding {
             name: b.name,
             kind: b.kind,
-            root: b.root,
+            local_root_path: b.local_root_path,
+            object_bucket: b.object_bucket,
+            object_prefix: b.object_prefix,
+            endpoint_scheme: b.endpoint_scheme,
+            endpoint_host_kind: b.endpoint_host_kind,
+            endpoint_host_bytes: b.endpoint_host_bytes,
+            endpoint_port: b.endpoint_port,
+            signing_region: b.signing_region,
+            access_mode: b.access_mode,
         })
         .collect();
 
@@ -368,12 +386,11 @@ pub async fn export_org(db: &Database, org_slug: &str) -> Result<ExportManifest>
 /// Copy a registry's on-disk surface into `dest_dir`, returning the number of
 /// files copied.
 ///
-/// The surface is resolved via
-/// [`Database::registry_surface_root`](crate::db::Database::registry_surface_root)
-/// — the git + nix-cache files that *are* the registry. The copy is a
+/// The surface is resolved through the first reconciled read placement. The
+/// git + nix-cache files are copied as a
 /// portable, re-servable surface: pointed at by a new binding it serves
 /// `apm`/Nix unchanged. Returns `0` when the registry has no local surface (an
-/// `http(s)://` source, or an unbound managed registry).
+/// non-local placement).
 ///
 /// # Errors
 ///
@@ -383,9 +400,22 @@ pub async fn export_registry_surface(
     registry_id: i64,
     dest_dir: &Path,
 ) -> Result<usize> {
-    let Some(root) = db.registry_surface_root(registry_id).await? else {
+    let placement = db
+        .reconciled_surface_reader(crate::db::SurfaceTarget::Registry(registry_id))
+        .await?;
+    let binding = db
+        .storage_binding(placement.storage_binding_id)
+        .await?
+        .context("export placement references a missing storage binding")?;
+    if binding.kind != "local_fs" {
         return Ok(0);
-    };
+    }
+    let root = std::path::PathBuf::from(
+        binding
+            .local_root_path
+            .context("local export binding has no localRootPath")?,
+    )
+    .join(placement.prefix);
     if !root.exists() {
         return Ok(0);
     }

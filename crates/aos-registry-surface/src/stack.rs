@@ -45,10 +45,8 @@
 //! (`[caches]` with `endpoint = "…"`). A registry that advertises a single
 //! cache writes `[caches]\nendpoint = "…"`.
 //!
-//! For backward compatibility a legacy `[[caches]]` array of
-//! `{ url, priority }` entries also parses (see
-//! [`CachesConfig`](crate::manifest::CachesConfig)); the unified `[caches]`
-//! stack is the form new tooling writes.
+//! The topology hard cutover accepts only the unified `[caches]` table; there
+//! is no array-shaped compatibility parser.
 //!
 //! # Flattening to a priority list
 //!

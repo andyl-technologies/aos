@@ -169,10 +169,18 @@ impl CacheBackend for SftpBackend {
         source: &std::path::Path,
         content_type: Option<&str>,
         cache_control: Option<&str>,
+        content_disposition: Option<&str>,
+        sha256: Option<&str>,
     ) -> Result<()> {
         let url = self.remote_url(relative_path);
         let mut req = TransferRequest::put_file(&url, source.to_path_buf());
-        add_static_metadata_headers(&mut req, content_type, cache_control);
+        add_static_metadata_headers(
+            &mut req,
+            content_type,
+            cache_control,
+            content_disposition,
+            sha256,
+        );
         self.engine
             .execute(req)
             .await

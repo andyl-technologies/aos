@@ -297,7 +297,8 @@ async fn jit_creates_user_and_identity_keyed_on_iss_sub() {
     let (idp_base, _idp) = spawn_idp().await;
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, "{}").await;
-    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    let org_id = org.id;
     let http = test_http();
 
     let login = run_flow(&db, &http, "http://hub.example.com", org_id)
@@ -316,7 +317,8 @@ async fn second_login_same_iss_sub_does_not_create_new_user() {
     let (idp_base, idp) = spawn_idp().await;
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, "{}").await;
-    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    let org_id = org.id;
     let http = test_http();
 
     let first = run_flow(&db, &http, "http://hub.example.com", org_id)
@@ -342,7 +344,8 @@ async fn group_claim_maps_to_role_at_org_scope() {
     let (idp_base, idp) = spawn_idp().await;
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, r#"{"acme-admins":"admin"}"#).await;
-    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    let org_id = org.id;
     *idp.groups.lock().unwrap() = vec!["acme-admins".into()];
     let http = test_http();
 
@@ -357,7 +360,7 @@ async fn group_claim_maps_to_role_at_org_scope() {
     assert!(
         grants
             .iter()
-            .any(|(scope, role)| *scope == Scope::parse("acme") && *role == Role::Admin),
+            .any(|(scope, role)| *scope == Scope::parse(&org.stable_id) && *role == Role::Admin),
         "the acme-admins group should grant admin at the org scope: {grants:?}"
     );
 }
@@ -367,7 +370,8 @@ async fn default_role_granted_when_no_group_maps() {
     let (idp_base, _idp) = spawn_idp().await;
     let db = Database::open_in_memory().await.unwrap();
     seed_org(&db, &idp_base, false, true, r#"{"acme-admins":"admin"}"#).await;
-    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    let org_id = org.id;
     let http = test_http();
 
     let login = run_flow(&db, &http, "http://hub.example.com", org_id)
@@ -379,7 +383,7 @@ async fn default_role_granted_when_no_group_maps() {
         .unwrap();
     assert!(grants
         .iter()
-        .any(|(scope, role)| *scope == Scope::parse("acme") && *role == Role::Viewer));
+        .any(|(scope, role)| *scope == Scope::parse(&org.stable_id) && *role == Role::Viewer));
 }
 
 #[tokio::test]

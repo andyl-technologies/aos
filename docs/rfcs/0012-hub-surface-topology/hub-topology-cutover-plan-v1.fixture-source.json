@@ -1113,16 +1113,16 @@
     "principal_coverage": {
       "expected_count": 1,
       "proved_count": 1,
-      "expected_set_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000010",
-      "proved_set_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000010",
+    "expected_set_digest": "9277dab2031be9ea32f4c1eed1cc3fce5e3af07d3fdc92b062fdb588dd2d0195",
+    "proved_set_digest": "9277dab2031be9ea32f4c1eed1cc3fce5e3af07d3fdc92b062fdb588dd2d0195",
       "missing_count": 0,
       "duplicate_count": 0
     },
     "route_coverage": {
       "expected_count": 3,
       "proved_count": 3,
-      "expected_set_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000011",
-      "proved_set_digest": "derive:sha256:6000000000000000000000000000000000000000000000000000000000000011",
+      "expected_set_digest": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0Iiwib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9yb3V0ZS93ZWIiXQ",
+      "proved_set_digest": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJvcmcvZXhhbXBsZS9jYWNoZS9tYWluL3JvdXRlL2Nhbm9uaWNhbCIsIm9yZy9leGFtcGxlL3JlZ2lzdHJ5L21haW4vcm91dGUvZ2l0Iiwib3JnL2V4YW1wbGUvcmVnaXN0cnkvbWFpbi9yb3V0ZS93ZWIiXQ",
       "missing_count": 0,
       "duplicate_count": 0
     },

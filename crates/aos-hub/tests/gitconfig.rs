@@ -42,9 +42,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: std::sync::Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -100,17 +105,13 @@ async fn managed_indexed(message: &str) -> (Arc<Database>, tempfile::TempDir, Re
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
-        .await
-        .unwrap();
+    let binding =
+        common::create_local_binding(&db, org, "primary", dir.path().to_str().unwrap()).await;
     db.create_managed_registry(
         org,
         "",
         "cdn",
         "public",
-        Some(binding),
-        "cdn",
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
@@ -136,12 +137,20 @@ async fn surface_ports(
 ) {
     use aos_hub_core::fetch::SurfaceProvider as _;
     use aos_hub_core::surface_write::SurfaceWriteProvider as _;
-    let fetch = aos_hub::coreports::HubSurfaceProvider::new(Arc::clone(db))
-        .fetcher(registry)
+    let http = aos_hub::fetch::hardened_client().await;
+    let placement = db
+        .list_surface_placements(aos_hub::db::SurfaceTarget::Registry(registry.id))
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    let fetch = aos_hub::coreports::HubSurfaceProvider::new(Arc::clone(db), http.clone(), None)
+        .placement_fetcher(&placement)
         .await
         .unwrap();
-    let writer = aos_hub::coreports::HubSurfaceWriteProvider::new(Arc::clone(db))
-        .writer(registry)
+    let writer = aos_hub::coreports::HubSurfaceWriteProvider::new(Arc::clone(db), http)
+        .placement_writer(&placement)
         .await
         .unwrap();
     (fetch, writer)
@@ -200,7 +209,10 @@ async fn propose_writes_signed_draft_commit_ref_and_records() {
         .contains("Fixture registry"));
 
     // An audit row ties the change request to the draft commit.
-    let audit = db.list_audit("acme").await.unwrap();
+    let audit = db
+        .list_audit(&common::org_scope(&db, "acme").await)
+        .await
+        .unwrap();
     let cr = audit
         .iter()
         .find(|r| r.action == "config.change_request")
@@ -268,28 +280,25 @@ async fn indexer_trailer_marks_known_change_request_applied() {
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
-        .await
-        .unwrap();
+    let binding =
+        common::create_local_binding(&db, org, "primary", dir.path().to_str().unwrap()).await;
     db.create_managed_registry(
         org,
         "",
         "cdn",
         "public",
-        Some(binding),
-        "cdn",
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
     .await
     .unwrap();
+    let org_scope = common::org_scope(&db, "acme").await;
     db.create_git_changeset(
         change_id,
         "user",
         Some(7),
         "alice@acme.com",
-        "acme/cdn",
+        &org_scope,
         Some("edit registry.toml"),
         &format!("refs/hub/changes/{change_id}"),
         "draftoid",
@@ -333,22 +342,20 @@ async fn indexer_ignores_change_id_scoped_to_another_registry() {
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", dir.path().to_str().unwrap())
-        .await
-        .unwrap();
+    let binding =
+        common::create_local_binding(&db, org, "primary", dir.path().to_str().unwrap()).await;
     db.create_managed_registry(
         org,
         "",
         "cdn",
         "public",
-        Some(binding),
-        "cdn",
         std::slice::from_ref(&fixture.trust_key),
         true,
     )
     .await
     .unwrap();
+    db.create_project(org, "other", "Other").await.unwrap();
+    let other_scope = common::project_scope(&db, "acme", "other").await;
     // The change-set targets registry A (acme/other), not the registry being
     // indexed. A commit on B must not mark A's change request applied.
     db.create_git_changeset(
@@ -356,7 +363,7 @@ async fn indexer_ignores_change_id_scoped_to_another_registry() {
         "user",
         Some(7),
         "alice@acme.com",
-        "acme/other",
+        &other_scope,
         Some("edit a different registry"),
         &format!("refs/hub/changes/{change_id}"),
         "draftoid",
@@ -405,7 +412,7 @@ async fn indexer_synthesizes_external_audit_once() {
 
     // The first index synthesized exactly one external-commit audit row.
     let externals = db
-        .list_audit("acme")
+        .list_audit(&common::org_scope(&db, "acme").await)
         .await
         .unwrap()
         .into_iter()
@@ -417,7 +424,7 @@ async fn indexer_synthesizes_external_audit_once() {
 
     // The actor resolves to the fixture's roster id (the commit signer).
     let row = db
-        .list_audit("acme")
+        .list_audit(&common::org_scope(&db, "acme").await)
         .await
         .unwrap()
         .into_iter()
@@ -437,7 +444,7 @@ async fn indexer_synthesizes_external_audit_once() {
         .unwrap();
 
     let externals = db
-        .list_audit("acme")
+        .list_audit(&common::org_scope(&db, "acme").await)
         .await
         .unwrap()
         .into_iter()
@@ -527,10 +534,19 @@ async fn git_service_log_diff_and_change_requests() {
 
     // With audit.read (intersected with a live Owner grant), it lists the draft.
     let user = db.create_user("alice@acme.com", None).await.unwrap();
-    db.grant_membership("user", user, "acme", aos_hub::domain::Role::Owner.as_str())
-        .await
-        .unwrap();
-    let token = bearer(Principal::user(user), "acme/cdn", &[Permission::AuditRead]);
+    db.grant_membership(
+        "user",
+        user,
+        &common::org_scope(&db, "acme").await,
+        aos_hub::domain::Role::Owner.as_str(),
+    )
+    .await
+    .unwrap();
+    let token = bearer(
+        Principal::user(user),
+        &common::registry_scope(&db, "acme/cdn").await,
+        &[Permission::AuditRead],
+    );
     let (status, value) = rpc(
         &app,
         "GitService/ListChangeRequests",

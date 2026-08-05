@@ -301,16 +301,16 @@ pub fn home_page(chrome: &PageChrome, registries: &[pb::Registry]) -> String {
     let rows: Vec<Vec<String>> = registries
         .iter()
         .map(|r| {
-            vec![
-                format!("<a href=\"/{slug}/-/\">{slug}</a>", slug = escape(&r.slug)),
-                escape(&r.source_url),
-            ]
+            vec![format!(
+                "<a href=\"/{slug}/-/\">{slug}</a>",
+                slug = escape(&r.slug)
+            )]
         })
         .collect();
     let body = if rows.is_empty() {
         "<p>No public registries.</p>".to_string()
     } else {
-        table(&["registry", "source"], &rows)
+        table(&["registry"], &rows)
     };
     page(
         chrome,
@@ -655,13 +655,11 @@ mod tests {
             slug: "demo".into(),
             name: "Demo".into(),
             description: "A demo registry".into(),
-            source_url: "https://cdn.example/demo".into(),
             index_state: "fresh".into(),
             index_error: String::new(),
             last_indexed_commit: "ab".repeat(32),
             indexed_at: 200,
             trust_keys: vec![],
-            caches: vec![],
             roster: vec![pb::RosterKey {
                 id: "k1".into(),
                 key: "AAAA".into(),
@@ -669,6 +667,7 @@ mod tests {
             }],
             crawl_policy: "allow_all".into(),
             llms_txt_body: String::new(),
+            ..Default::default()
         }
     }
 

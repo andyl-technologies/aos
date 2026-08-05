@@ -3,8 +3,8 @@
 //! These are the transport- and runtime-neutral `axum` handlers behind the
 //! cookie-authenticated producer console: the account profile, passkey
 //! management, the org/project dashboards, and the per-registry management
-//! pages (tokens, channel rollout, keys, publishes, serving, hosted keys,
-//! webhooks, SSO). The page *rendering* lives in
+//! pages (tokens, channels, keys, publish history, delivery routes, cache
+//! placements, signing keys, webhooks, and SSO). The page *rendering* lives in
 //! [`console_render`](crate::web::console_render); this module is the request
 //! edge — [`Session`] extraction, IAM gating, CSRF enforcement on every `POST`,
 //! and the plain form/redirect flows that keep the console no-JS.
@@ -23,8 +23,8 @@
 //! per-org OIDC flow ([`login_sso`], [`oidc_start`], [`oidc_callback`]) lives
 //! here too (stage F): its token exchange and JWKS fetch go through the
 //! [`HttpClient`](super::ports::HttpClient) port, so it needs no native client.
-//! The only remaining native-only handlers are the git-backed
-//! config/change-request flows, which stay in the native hub.
+//! Git-backed configuration and change-request flows use the shared surface
+//! read/write ports too; neither runtime carries a private console handler set.
 //!
 //! # CSRF
 //!
@@ -43,6 +43,8 @@
 
 use crate::clock::Instant;
 
+use std::sync::Arc;
+
 use axum::extract::{Form, Path, Query};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -50,11 +52,17 @@ use axum::Json;
 use base64::Engine as _;
 
 use crate::auth::session::{set_cookie_header, ABSOLUTE_LIFETIME_SECS, COOKIE_NAME};
-use crate::binding::{BindingKind, RuntimeKind};
-use crate::config::{self, MembershipChange};
+use crate::config;
 use crate::db::{Database, OrgRecord, RegistryRecord, SessionAuth as DbSession};
 use crate::domain::{iam, Permission, Principal, Role, Scope};
-use crate::web::console::ports::ConsoleDeps;
+use crate::web::console::ia::{
+    CachePage, NavigationPermissions, OrgPage, RegistryPage, BINDING_PAGES, CACHE_PAGES, ORG_PAGES,
+    REGISTRY_PAGES,
+};
+use crate::web::console::ports::{
+    ConsoleDeps, ConsumerGrantAction, PlacementCreateSpec, PlacementLifecycleAction,
+    PlacementPlanOperation, PlacementUpdateSpec, StorageCredentialAction, TopologySurface,
+};
 use crate::web::console_render as console;
 use crate::web::csrf::{connect_or_csrf_ok, mint_csrf_token};
 use crate::web::session::resolve_session_from_headers;
@@ -138,16 +146,100 @@ impl Session {
 
     /// Whether this session may `perm` at `scope` under its current grants.
     async fn allows(&self, db: &Database, perm: Permission, scope: &Scope) -> bool {
-        match self.grants(db).await {
-            Ok(grants) => iam::allow(&grants, perm, scope),
-            Err(_) => false,
-        }
+        let (Ok(grants), Ok(Some(context))) = (
+            self.grants(db).await,
+            db.authorization_context(scope.as_str()).await,
+        ) else {
+            return false;
+        };
+        iam::allow(&grants, perm, &context)
     }
 
     /// The CSRF synchronizer token bound to this session.
     fn csrf(&self) -> String {
         mint_csrf_token(&self.secret)
     }
+
+    /// Mints a short-lived internal bearer for the shared topology service.
+    ///
+    /// The token carries the broad owner verb set, but service authorization
+    /// still intersects it with this principal's live database memberships on
+    /// every call. The Web layer therefore cannot retain authority after a role
+    /// revocation while still using the exact API/CLI control-plane path.
+    fn topology_bearer(&self, deps: &ConsoleDeps, scope: Scope) -> anyhow::Result<String> {
+        let ttl = self
+            .auth
+            .expires_at
+            .saturating_sub(crate::clock::now_unix_secs())
+            .clamp(1, 300);
+        let token = deps.jwt_keys.mint(
+            &crate::db::TokenAuth {
+                token_id: format!("console-session-{}", self.auth.user_id),
+                owner: self.principal(),
+                scope,
+                permissions: iam::role_grants(Role::Owner).to_vec(),
+            },
+            ttl,
+        )?;
+        Ok(format!("Bearer {token}"))
+    }
+}
+
+/// Resolves the exact settings-page permissions available in `scope` with one
+/// grant and authorization-context read.
+async fn navigation_permissions(
+    db: &Database,
+    session: &Session,
+    scope: &Scope,
+) -> anyhow::Result<NavigationPermissions> {
+    let grants = session.grants(db).await?;
+    let Some(context) = db.authorization_context(scope.as_str()).await? else {
+        return Ok(NavigationPermissions::new());
+    };
+    Ok(ORG_PAGES
+        .iter()
+        .map(|page| page.permission)
+        .chain(REGISTRY_PAGES.iter().map(|page| page.permission))
+        .chain(CACHE_PAGES.iter().map(|page| page.permission))
+        .chain(BINDING_PAGES.iter().map(|page| page.permission))
+        .filter(|permission| iam::allow(&grants, *permission, &context))
+        .collect())
+}
+
+async fn grants_allow(
+    db: &Database,
+    grants: &[(Scope, Role)],
+    permission: Permission,
+    scope: &Scope,
+) -> bool {
+    match db.authorization_context(scope.as_str()).await {
+        Ok(Some(context)) => iam::allow(grants, permission, &context),
+        Ok(None) | Err(_) => false,
+    }
+}
+
+/// Resolves a human organization slug to its non-reusable authorization
+/// identity, returning a deliberately noncanonical scope on lookup failure.
+/// The latter makes every caller's ordinary permission check fail closed while
+/// preserving its existing 403/404 response policy.
+async fn organization_scope(db: &Database, slug: &str) -> Scope {
+    db.org_by_slug(slug)
+        .await
+        .ok()
+        .flatten()
+        .map(|org| Scope::parse(&org.stable_id))
+        .unwrap_or_else(Scope::denied)
+}
+
+/// Resolves a registry's display identity to its immutable owner scope and
+/// fails closed when the registry or live owner incarnation disappears.
+async fn registry_scope(db: &Database, registry: &RegistryRecord) -> Scope {
+    db.registry_authorization_scope(registry.id)
+        .await
+        .ok()
+        .filter(|scope| Scope::is_canonical(scope))
+        .map(|scope| Scope::parse(&scope))
+        .unwrap_or_else(Scope::denied)
 }
 
 /// Verify the CSRF token in a submitted form against the session secret.
@@ -351,9 +443,12 @@ async fn authorize_registry_read(
             }
         }
         _ => {
-            let scope = Scope::parse(&registry.slug);
+            let Ok(scope_key) = deps.db.registry_authorization_scope(registry.id).await else {
+                return Err(denied());
+            };
+            let scope = Scope::parse(&scope_key);
             if session_allows_read(deps, headers, &scope).await
-                || bearer_allows_read(deps, headers, &scope)
+                || bearer_allows_read(deps, headers, &scope).await
             {
                 Ok(())
             } else {
@@ -368,7 +463,7 @@ async fn session_is_org_member(deps: &ConsoleDeps, headers: &HeaderMap, org_id: 
     let Some(org) = deps.db.org_by_id(org_id).await.ok().flatten() else {
         return false;
     };
-    let scope = Scope::parse(&org.slug);
+    let scope = Scope::parse(&org.stable_id);
     session_allows_read(deps, headers, &scope).await
 }
 
@@ -388,11 +483,14 @@ async fn session_allows_read(deps: &ConsoleDeps, headers: &HeaderMap, scope: &Sc
     else {
         return false;
     };
-    iam::allow(&grants, Permission::Read, scope)
+    let Ok(Some(context)) = deps.db.authorization_context(scope.as_str()).await else {
+        return false;
+    };
+    iam::allow(&grants, Permission::Read, &context)
 }
 
 /// Whether a bearer JWT in `headers` grants `Read` at `scope`.
-fn bearer_allows_read(deps: &ConsoleDeps, headers: &HeaderMap, scope: &Scope) -> bool {
+async fn bearer_allows_read(deps: &ConsoleDeps, headers: &HeaderMap, scope: &Scope) -> bool {
     let Some(value) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -402,8 +500,22 @@ fn bearer_allows_read(deps: &ConsoleDeps, headers: &HeaderMap, scope: &Scope) ->
     let Some(token) = value.strip_prefix("Bearer ") else {
         return false;
     };
+    let Ok(Some(context)) = deps.db.authorization_context(scope.as_str()).await else {
+        return false;
+    };
     match deps.jwt_keys.verify(token) {
-        Ok(claims) => iam::token_allows(&claims, Permission::Read, scope),
+        Ok(claims) => {
+            if !iam::token_allows(&claims, Permission::Read, &context) {
+                return false;
+            }
+            let Some(principal) = iam::claims_principal(&claims) else {
+                return false;
+            };
+            match deps.db.effective_scopes(principal).await {
+                Ok(grants) => iam::allow(&grants, Permission::Read, &context),
+                Err(_) => false,
+            }
+        }
         Err(_) => false,
     }
 }
@@ -708,24 +820,20 @@ async fn sso_enforced_for(
             .list_memberships_for(principal.kind.as_str(), principal.id)
             .await?
         {
-            let Some(org_slug) = Scope::parse(&scope)
-                .as_str()
-                .split('/')
-                .next()
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
+            let Some(org_scope) = Scope::try_parse(&scope)
+                .and_then(|scope| scope.as_str().split('/').next().map(str::to_string))
             else {
                 continue;
             };
-            if !seen_slugs.insert(org_slug.clone()) {
+            if !seen_slugs.insert(org_scope.clone()) {
                 continue;
             }
-            let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
+            let Some(org) = deps.db.org_by_stable_id(&org_scope).await? else {
                 continue;
             };
             if let Some(config) = deps.db.idp_config(org.id).await? {
                 if config.enforce_sso {
-                    return Ok(Some(org_slug));
+                    return Ok(Some(org.slug));
                 }
             }
         }
@@ -938,12 +1046,45 @@ pub(crate) async fn magic_consume(
     ([(header::SET_COOKIE, cookie)], Redirect::to("/")).into_response()
 }
 
-/// `GET /logout` — revoke the caller's own session and clear the cookie.
-pub(crate) async fn logout(deps: ConsoleDeps, headers: HeaderMap) -> Response {
-    if let Some(secret) = crate::web::session::session_secret_from_headers(&headers) {
-        if let Err(err) = deps.db.revoke_session(&secret).await {
-            return internal(err);
-        }
+/// `GET /logout` — shows the non-mutating logout confirmation form.
+pub(crate) async fn logout_form(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    Html(console::logout_page(
+        &session.email,
+        &session.csrf(),
+        started,
+    ))
+    .into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct LogoutForm {
+    #[serde(default)]
+    csrf: String,
+}
+
+/// `POST /logout` — revokes the caller's session after CSRF validation.
+pub(crate) async fn logout(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Form(form): Form<LogoutForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    if let Err(error) = deps.db.revoke_session(&session.secret).await {
+        return internal(error);
     }
     let cleared = format!("{COOKIE_NAME}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
     ([(header::SET_COOKIE, cleared)], Redirect::to("/login")).into_response()
@@ -1537,12 +1678,23 @@ pub(crate) async fn orgs(
         let grants = session.grants(&deps.db).await?;
         let mut orgs = Vec::new();
         for org in deps.db.list_orgs().await? {
-            if iam::allow(&grants, Permission::Read, &Scope::parse(&org.slug)) {
+            if grants_allow(
+                &deps.db,
+                &grants,
+                Permission::Read,
+                &Scope::parse(&org.stable_id),
+            )
+            .await
+            {
                 orgs.push(org);
             }
         }
         let can_create = may_create_org(&deps.db, &session).await?;
-        let is_instance_admin = iam::allow(&grants, Permission::IamAdmin, &Scope::parse(""));
+        let is_instance_admin = iam::allow(
+            &grants,
+            Permission::IamAdmin,
+            &iam::AuthorizationContext::instance(),
+        );
         Ok::<_, anyhow::Error>((orgs, can_create, is_instance_admin))
     }
     .await;
@@ -1589,28 +1741,34 @@ pub(crate) async fn caches(
             Some(s) => s.grants(&deps.db).await?,
             None => Vec::new(),
         };
-        let org_slugs: std::collections::HashMap<i64, String> = deps
+        let organizations: std::collections::HashMap<i64, (String, String)> = deps
             .db
             .list_orgs()
             .await?
             .into_iter()
-            .map(|o| (o.id, o.slug))
+            .map(|o| (o.id, (o.slug, o.stable_id)))
             .collect();
         let mut rows = Vec::new();
-        for c in deps.db.list_caches().await? {
-            let org_slug = c
+        for c in deps.db.list_binary_caches().await? {
+            let (org_slug, _) = c
                 .org_id
-                .and_then(|id| org_slugs.get(&id).cloned())
+                .and_then(|id| organizations.get(&id).cloned())
                 .unwrap_or_default();
-            let readable = c.visibility == "public"
-                || (!org_slug.is_empty()
-                    && iam::allow(&grants, Permission::Read, &Scope::parse(&org_slug)));
+            let management_access = grants_allow(
+                &deps.db,
+                &grants,
+                Permission::Read,
+                &Scope::parse(&c.scope_key),
+            )
+            .await;
+            let readable = c.visibility == "public" || management_access;
             if readable {
                 rows.push(console::CacheListRow {
                     org_slug,
                     slug: c.slug,
                     name: c.name,
                     visibility: c.visibility,
+                    management_access,
                 });
             }
         }
@@ -1642,7 +1800,11 @@ async fn may_create_org(db: &Database, session: &Session) -> anyhow::Result<bool
         return Ok(true);
     }
     let grants = session.grants(db).await?;
-    if iam::allow(&grants, Permission::IamAdmin, &Scope::root()) {
+    if iam::allow(
+        &grants,
+        Permission::IamAdmin,
+        &iam::AuthorizationContext::instance(),
+    ) {
         return Ok(true);
     }
     if db.has_pending_invitation(&session.email).await? {
@@ -1706,15 +1868,98 @@ pub(crate) async fn org_members(
     org_view(deps, headers, started, path, pages, "members").await
 }
 
-/// `GET /-/org/{org}/storage` — the org's storage-bindings tab.
-pub(crate) async fn org_storage(
+/// `GET /-/org/{org}/storage-bindings` — the organization's bindings inventory.
+pub(crate) async fn org_storage_bindings(
     deps: ConsoleDeps,
     headers: HeaderMap,
     started: RequestStart,
     path: Path<String>,
     pages: Query<DashboardPages>,
 ) -> Response {
-    org_view(deps, headers, started, path, pages, "storage").await
+    org_view(deps, headers, started, path, pages, "storage-bindings").await
+}
+
+/// Renders an organization infrastructure or policy collection in the shared shell.
+pub(crate) async fn org_settings_collection(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    path: Path<String>,
+    pages: Query<DashboardPages>,
+    section: &'static str,
+) -> Response {
+    org_view(deps, headers, started, path, pages, section).await
+}
+
+/// Renders a dedicated organization resource-creation page.
+pub(crate) async fn org_new_resource(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path(org_slug): Path<String>,
+    resource: &'static str,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    let permission = match resource {
+        "storage-binding" => Permission::StorageBindingManage,
+        "member-invitation" => Permission::MembersManage,
+        "signing-key" => Permission::KeysManage,
+        _ => Permission::RegistryConfigure,
+    };
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, permission).await {
+        return *deny;
+    }
+    let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
+    let result = async {
+        let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
+            return Ok(None);
+        };
+        let html = match resource {
+            "storage-binding" => console::org_new_storage_binding_page(
+                &session.email,
+                &org,
+                &session.csrf(),
+                &navigation,
+                started,
+            ),
+            "member-invitation" => console::org_new_member_invitation_page(
+                &session.email,
+                &org,
+                &session.csrf(),
+                &navigation,
+                started,
+            ),
+            "signing-key" => console::org_new_signing_key_page(
+                &session.email,
+                &org,
+                &session.csrf(),
+                &navigation,
+                started,
+            ),
+            "webhook" => console::org_new_webhook_page(
+                &session.email,
+                &org,
+                &session.csrf(),
+                &navigation,
+                started,
+            ),
+            _ => anyhow::bail!("unknown organization resource workflow"),
+        };
+        Ok::<_, anyhow::Error>(Some(html))
+    }
+    .await;
+    match result {
+        Ok(Some(html)) => Html(html).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => internal(error),
+    }
 }
 
 /// `GET /-/org/{org}/danger` — the org's danger-zone tab (delete org).
@@ -1726,6 +1971,44 @@ pub(crate) async fn org_danger(
     pages: Query<DashboardPages>,
 ) -> Response {
     org_view(deps, headers, started, path, pages, "danger").await
+}
+
+/// Loads every stable network boundary in one owner scope.
+async fn all_network_boundaries(
+    db: &Database,
+    owner_scope_key: &str,
+) -> anyhow::Result<Vec<crate::db::NetworkBoundaryRecord>> {
+    let mut records = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = db
+            .list_network_boundaries_page(owner_scope_key, 100, cursor.as_deref())
+            .await?;
+        records.extend(page.records);
+        let Some(next_cursor) = page.next_cursor else {
+            return Ok(records);
+        };
+        cursor = Some(next_cursor);
+    }
+}
+
+/// Loads every stable delivery endpoint in one owner scope.
+async fn all_delivery_endpoints(
+    db: &Database,
+    owner_scope_key: &str,
+) -> anyhow::Result<Vec<crate::db::DeliveryEndpointRecord>> {
+    let mut records = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = db
+            .list_delivery_endpoints_page(owner_scope_key, 100, cursor.as_deref())
+            .await?;
+        records.extend(page.records);
+        let Some(next_cursor) = page.next_cursor else {
+            return Ok(records);
+        };
+        cursor = Some(next_cursor);
+    }
 }
 
 /// Renders one organization settings section from the shared data model.
@@ -1741,27 +2024,58 @@ async fn org_view(
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let scope = Scope::parse(&org_slug);
-    if !session.allows(&deps.db, Permission::Read, &scope).await {
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    let Some(page) = OrgPage::parse(active) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let required = ORG_PAGES
+        .iter()
+        .find(|spec| spec.key == page)
+        .map_or(Permission::Read, |spec| spec.permission);
+    if !session.allows(&deps.db, required, &scope).await {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let result = async {
         let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
+        let can_manage_storage = session
+            .allows(&deps.db, Permission::StorageBindingManage, &scope)
+            .await;
         let projects = deps.db.list_projects(org.id).await?;
-        let bindings = deps.db.list_storage_bindings(org.id).await?;
+        let (bindings, managed_bindings) = if can_manage_storage {
+            let managed = deps.db.list_storage_bindings(org.id).await?;
+            let summaries = managed
+                .iter()
+                .map(crate::db::StorageBindingReadSummary::from)
+                .collect();
+            (summaries, Some(managed))
+        } else {
+            (
+                deps.db.list_storage_binding_read_summaries(org.id).await?,
+                None,
+            )
+        };
         let mut caches = Vec::new();
-        for c in deps.db.list_caches_for_org(org.id).await? {
+        for c in deps.db.list_binary_caches_for_org(org.id).await? {
             if c.deleted_at.is_some() {
                 continue;
             }
             let usage = deps.db.cache_usage(c.id).await?;
+            let signed = deps
+                .db
+                .signing_key_usage(&c.stable_id, "narinfo")
+                .await?
+                .is_some_and(|usage| usage.state == "active");
             caches.push(console::CacheSummary {
                 slug: c.slug,
                 name: c.name,
                 visibility: c.visibility,
-                signed: c.hosted_key_id.is_some(),
+                signed,
                 priority: c.priority,
                 used_bytes: usage.used_bytes,
                 object_count: usage.object_count,
@@ -1774,7 +2088,55 @@ async fn org_view(
             .into_iter()
             .filter(|r| r.org_id == Some(org.id))
             .collect();
-        let members = load_members(&deps.db, &org_slug).await?;
+        let mut domains = if matches!(active, "domains" | "delivery-endpoints") {
+            deps.db.list_domains(Some(org.id)).await?
+        } else {
+            Vec::new()
+        };
+        let boundaries = if active == "network-boundaries" {
+            all_network_boundaries(&deps.db, &org.stable_id).await?
+        } else {
+            Vec::new()
+        };
+        let endpoints = if active == "delivery-endpoints" {
+            all_delivery_endpoints(&deps.db, &org.stable_id).await?
+        } else {
+            Vec::new()
+        };
+        for domain_id in endpoints
+            .iter()
+            .filter_map(|endpoint| endpoint.domain_id)
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            if domains.iter().any(|domain| domain.id == domain_id) {
+                continue;
+            }
+            if let Some(domain) = deps.db.domain(domain_id).await? {
+                domains.push(domain);
+            }
+        }
+        let gateways = if active == "storage-gateways" {
+            deps.db
+                .list_storage_gateways(None)
+                .await?
+                .into_iter()
+                .filter(|gateway| gateway.owner_scope_key == org.stable_id)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let topology_defaults = if active == "topology-defaults" && can_manage_storage {
+            let bearer = session.topology_bearer(&deps, Scope::parse(&org.stable_id))?;
+            Some(
+                deps.topology
+                    .organization_topology_defaults(&bearer, org.slug.clone())
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+        let members = load_members(&deps.db, &org.stable_id).await?;
         let owner_count = members.iter().filter(|m| m.role == "owner").count();
         let can_manage = session
             .allows(&deps.db, Permission::MembersManage, &scope)
@@ -1785,8 +2147,8 @@ async fn org_view(
         let can_configure = session
             .allows(&deps.db, Permission::RegistryConfigure, &scope)
             .await;
-        let can_manage_storage = session
-            .allows(&deps.db, Permission::StorageManage, &scope)
+        let can_manage_keys = session
+            .allows(&deps.db, Permission::KeysManage, &scope)
             .await;
         let can_delete = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
         Ok::<_, anyhow::Error>(Some(console::org_dashboard(
@@ -1797,16 +2159,24 @@ async fn org_view(
             &registries,
             &members,
             &bindings,
+            managed_bindings.as_deref(),
             &caches,
+            &domains,
+            &boundaries,
+            &endpoints,
+            &gateways,
+            topology_defaults.as_ref(),
             can_manage,
             can_audit,
             can_configure,
+            can_manage_keys,
             can_manage_storage,
             can_delete,
             owner_count,
             pages.registries(),
             pages.members(),
             active,
+            &navigation,
             started,
         )))
     }
@@ -1819,9 +2189,12 @@ async fn org_view(
 }
 
 /// Load an org's direct members as console rows (resolving user emails).
-async fn load_members(db: &Database, org_slug: &str) -> anyhow::Result<Vec<console::MemberRow>> {
+async fn load_members(
+    db: &Database,
+    org_scope_key: &str,
+) -> anyhow::Result<Vec<console::MemberRow>> {
     let mut rows = Vec::new();
-    for (kind, id, role) in db.list_members_of_scope(org_slug).await? {
+    for (kind, id, role) in db.list_members_of_scope(org_scope_key).await? {
         let label = if kind == "user" {
             db.user_email(id)
                 .await?
@@ -1839,8 +2212,8 @@ async fn load_members(db: &Database, org_slug: &str) -> anyhow::Result<Vec<conso
     Ok(rows)
 }
 
-/// `GET /-/org/{org}/audit` — the org audit feed.
-pub(crate) async fn org_audit(
+/// `GET /-/org/{org}/audit-log` — the organization audit feed.
+pub(crate) async fn org_audit_log(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
@@ -1851,7 +2224,7 @@ pub(crate) async fn org_audit(
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let scope = Scope::parse(&org_slug);
+    let scope = organization_scope(&deps.db, &org_slug).await;
     if !session
         .allows(&deps.db, Permission::AuditRead, &scope)
         .await
@@ -1861,16 +2234,21 @@ pub(crate) async fn org_audit(
         }
         return StatusCode::NOT_FOUND.into_response();
     }
+    let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let result = async {
         let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
-        let rows = deps.db.list_audit(&org_slug).await?;
+        let rows = deps.db.list_audit(&org.stable_id).await?;
         Ok::<_, anyhow::Error>(Some(console::audit_page(
             &session.email,
             &org,
             &rows,
             params.page(),
+            &navigation,
             started,
         )))
     }
@@ -1884,26 +2262,6 @@ pub(crate) async fn org_audit(
 
 // -- binary caches ----------------------------------------------------------
 
-/// `POST /-/org/{org}/caches` form: a new managed binary cache.
-#[derive(serde::Deserialize)]
-pub(crate) struct NewCacheForm {
-    #[serde(default)]
-    csrf: String,
-    slug: String,
-    #[serde(default)]
-    name: String,
-    /// Storage binding (by name) the cache's objects live in.
-    binding: String,
-    #[serde(default)]
-    visibility: String,
-    #[serde(default)]
-    priority: String,
-    #[serde(default)]
-    compression: String,
-    #[serde(default)]
-    want_mass_query: Option<String>,
-}
-
 /// `POST /-/org/{org}/caches/{slug}` form: mutable cache settings.
 #[derive(serde::Deserialize)]
 pub(crate) struct CacheUpdateForm {
@@ -1914,74 +2272,13 @@ pub(crate) struct CacheUpdateForm {
     #[serde(default)]
     visibility: String,
     #[serde(default)]
-    priority: String,
+    nix_priority: String,
     #[serde(default)]
     compression: String,
     #[serde(default)]
     want_mass_query: Option<String>,
-}
-
-/// `POST /-/org/{org}/caches/{slug}/link` form.
-#[derive(serde::Deserialize)]
-pub(crate) struct CacheLinkForm {
     #[serde(default)]
-    csrf: String,
-    registry: String,
-    #[serde(default)]
-    advertised: Option<String>,
-    #[serde(default)]
-    roots_packages: Option<String>,
-}
-
-/// `POST /-/org/{org}/caches/{slug}/unlink` form.
-#[derive(serde::Deserialize)]
-pub(crate) struct CacheUnlinkForm {
-    #[serde(default)]
-    csrf: String,
-    registry: String,
-}
-
-/// `POST /-/org/{org}/caches/{slug}/gc` form.
-#[derive(serde::Deserialize)]
-pub(crate) struct CacheGcForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    dry_run: Option<String>,
-}
-
-/// `POST /-/org/{org}/caches/{slug}/pin/add` form: pin (or renew) a manual GC
-/// root.
-#[derive(serde::Deserialize)]
-pub(crate) struct CachePinAddForm {
-    #[serde(default)]
-    csrf: String,
-    /// The store path to pin: a 32-char hash, a `<hash>-<name>` store name, or a
-    /// full `/nix/store/<hash>-<name>` path. Only the hash component is stored.
-    #[serde(default)]
-    store_hash: String,
-    /// Optional expiry, in whole days from now. Empty/zero pins indefinitely.
-    #[serde(default)]
-    expires_days: String,
-}
-
-/// `POST /-/org/{org}/caches/{slug}/pin/remove` form: unpin a manual GC root.
-#[derive(serde::Deserialize)]
-pub(crate) struct CachePinRemoveForm {
-    #[serde(default)]
-    csrf: String,
-    /// The store-path hash component of the pin to remove.
-    #[serde(default)]
-    store_hash: String,
-}
-
-/// `POST /-/org/{org}/caches/{slug}/delete` form.
-#[derive(serde::Deserialize)]
-pub(crate) struct CacheConfirmForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    confirm: String,
+    expected_resource_version: String,
 }
 
 /// Normalize a visibility form value, defaulting to `private`.
@@ -1994,184 +2291,98 @@ fn cache_visibility(raw: &str) -> Option<&'static str> {
     }
 }
 
-/// Cap on closure nodes walked per pin, mirroring the service's `cache_closure`
-/// bound so a pathological closure can't stall a console page render.
-const PIN_CLOSURE_NODE_CAP: usize = 10_000;
-
-/// The closure summary for a single pinned root, used to populate a
-/// [`console::CachePinRow`].
-struct ClosureSummary {
-    /// The root object's `<hash>-<name>` store name, or `""` when not indexed.
-    store_name: String,
-    /// Sum of `file_size` over the present closure nodes (compressed bytes).
-    total_size: u64,
-    /// Number of present (indexed) closure nodes, including the root.
-    count: u64,
-    /// Whether the root object itself is present in the cache index.
-    present: bool,
-}
-
-/// Compute a pinned store path's closure summary by BFS-walking
-/// [`crate::db::CacheObject::refs`] from `root_hash`.
+/// Renders a cache detail page from normalized topology inventories.
 ///
-/// Returns the root's store name plus the closure's total `file_size`, the count
-/// of present nodes, and whether the root itself is indexed. A `visited` set
-/// keeps each object visited once; the walk is bounded by
-/// [`PIN_CLOSURE_NODE_CAP`]. Objects referenced but not present in the index
-/// (e.g. not yet uploaded) are skipped from the size/count totals.
-///
-/// This mirrors the service's `cache_closure` RPC but runs against `deps.db`
-/// directly, since the console handlers do not hold a service handle.
-///
-/// # Errors
-///
-/// Returns an error on database failure while loading a closure object.
-async fn cache_closure_summary(
-    db: &crate::db::Database,
-    cache_id: i64,
-    root_hash: &str,
-) -> anyhow::Result<ClosureSummary> {
-    use std::collections::{HashSet, VecDeque};
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<String> = VecDeque::new();
-    queue.push_back(root_hash.to_string());
-    let mut store_name = String::new();
-    let mut total_size: u64 = 0;
-    let mut count: u64 = 0;
-    let mut present = false;
-    while let Some(hash) = queue.pop_front() {
-        if visited.len() >= PIN_CLOSURE_NODE_CAP {
-            break;
-        }
-        if !visited.insert(hash.clone()) {
-            continue;
-        }
-        let is_root = hash == root_hash;
-        if let Some(object) = db.cache_object(cache_id, &hash).await? {
-            if is_root {
-                store_name = object.store_name;
-                present = true;
-            }
-            total_size = total_size.saturating_add(object.file_size.max(0) as u64);
-            count += 1;
-            for r in object.refs {
-                if !visited.contains(&r) {
-                    queue.push_back(r);
-                }
-            }
-        }
-    }
-    Ok(ClosureSummary {
-        store_name,
-        total_size,
-        count,
-        present,
-    })
-}
-
-/// Render a cache's detail page (`cache_page`), gathering usage, links, and the
-/// org's linkable registries. `notice` surfaces the last action's outcome.
+/// `notice` surfaces the last action's outcome.
 ///
 /// Returns `404` when the cache is missing or not owned by `org`.
 async fn render_cache_detail(
     deps: &ConsoleDeps,
     session: &Session,
     org: &OrgRecord,
-    cache: &crate::db::Cache,
+    cache: &crate::db::BinaryCache,
     can_admin: bool,
     active: &str,
     notice: Option<&str>,
     started: Instant,
 ) -> Response {
+    let scope = Scope::parse(&cache.scope_key);
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let result = async {
         let usage = deps.db.cache_usage(cache.id).await?;
-        let binding = match cache.storage_binding_id {
-            Some(id) => deps
-                .db
-                .storage_binding(id)
-                .await?
-                .map(|b| b.name)
-                .unwrap_or_default(),
-            None => "default".to_string(),
-        };
         let placements =
             placement_overview_rows(deps, crate::db::SurfaceTarget::BinaryCache(cache.id)).await?;
-        // The org's storage bindings — targets for the "change storage" control.
-        let binding_names: Vec<String> = deps
+        let (policies, equivalences) =
+            placement_policy_overview_rows(deps, crate::db::SurfaceTarget::BinaryCache(cache.id))
+                .await?;
+        let routes =
+            delivery_route_overview_rows(deps, crate::db::SurfaceTarget::BinaryCache(cache.id))
+                .await?;
+        let mut retention = Vec::new();
+        for subscription in deps
             .db
-            .list_storage_bindings(org.id)
+            .list_cache_retention_subscriptions_topology(cache.id)
             .await?
-            .into_iter()
-            .map(|b| b.name)
-            .collect();
-        let org_registries: Vec<RegistryRecord> = deps
+        {
+            let registry = deps.db.registry_by_id(subscription.registry_id).await?;
+            retention.push(console::RetentionSubscriptionOverviewRow {
+                id: subscription.id,
+                registry: registry
+                    .map(|record| record.slug)
+                    .unwrap_or_else(|| format!("registry:{}", subscription.registry_id)),
+                state: subscription.refresh_state,
+                selector: subscription.selector_json,
+                revision: subscription.last_successful_revision,
+            });
+        }
+        let mut manual_roots = Vec::new();
+        for root in deps
             .db
-            .list_registries()
+            .list_manual_retention_roots_topology(cache.id)
             .await?
-            .into_iter()
-            .filter(|r| r.org_id == Some(org.id))
-            .collect();
-        let id_to_reg: std::collections::HashMap<i64, &crate::db::RegistryRecord> =
-            org_registries.iter().map(|r| (r.id, r)).collect();
-        let mut link_rows = Vec::new();
-        let mut linked: std::collections::HashSet<i64> = std::collections::HashSet::new();
-        for l in deps.db.list_cache_links(cache.id).await? {
-            linked.insert(l.registry_id);
-            if let Some(registry) = id_to_reg.get(&l.registry_id) {
-                // Surface the same closure-exposure warning the link chokepoint
-                // computes, so a risky config (e.g. a private registry rooted
-                // into this more-visible cache) is visible at rest, not only at
-                // link time.
-                let warning = crate::service::assess_cache_link(
-                    &cache.slug,
-                    &cache.visibility,
-                    &registry.slug,
-                    &registry.visibility,
-                    false,
-                    l.roots_packages,
-                )
-                .warning;
-                link_rows.push(console::CacheLinkRow {
-                    registry_slug: registry.slug.clone(),
-                    roots_packages: l.roots_packages,
-                    warning,
-                });
-            }
+        {
+            let lease = match root.current_lease_id.as_deref() {
+                Some(lease_id) => deps.db.retention_lease(lease_id).await?,
+                None => None,
+            };
+            manual_roots.push(console::ManualRetentionRootOverviewRow {
+                id: root.id,
+                store_hash: root.store_hash,
+                protection_kind: root.protection_kind,
+                reason: root.reason,
+                lease_id: lease.as_ref().map(|lease| lease.id.clone()),
+                lease_state: lease.as_ref().map(|lease| lease.state.clone()),
+                lease_expires_at: lease.as_ref().map(|lease| lease.expires_at),
+                deleted_at: root.deleted_at,
+                resource_version: root.resource_version,
+            });
         }
-        // Linkable registries with visibility, so the form can grey out advertise
-        // for one more visible than this cache.
-        let linkable: Vec<(String, String)> = org_registries
-            .iter()
-            .filter(|r| !linked.contains(&r.id))
-            .map(|r| (r.slug.clone(), r.visibility.clone()))
-            .collect();
-        let advertise_frontend = deps.db.cache_advertises_storage_frontend(cache.id).await?;
-        // Manual pins (the editor) with each pin's closure summary. Derived
-        // roots (release/channel/package_version) are managed elsewhere and are
-        // not editable here, so filter to `root_kind == "manual"`. Closure info
-        // is admin-only context, so only compute it when the section will render.
-        let mut pin_rows = Vec::new();
-        if can_admin {
-            for root in deps.db.list_cache_roots(cache.id).await? {
-                if root.root_kind != "manual" {
-                    continue;
-                }
-                let summary = cache_closure_summary(&deps.db, cache.id, &root.store_hash).await?;
-                pin_rows.push(console::CachePinRow {
-                    store_hash: root.store_hash,
-                    store_name: summary.store_name,
-                    closure_size: summary.total_size,
-                    closure_count: summary.count,
-                    present: summary.present,
-                    expires_at: root.expires_at,
-                    created_at: root.created_at,
-                });
-            }
+        let mut population = Vec::new();
+        for target in deps.db.list_cache_population_targets(cache.id).await? {
+            let registry = deps.db.registry_by_id(target.registry_id).await?;
+            population.push(console::PopulationTargetOverviewRow {
+                id: target.id,
+                registry: registry
+                    .map(|record| record.slug)
+                    .unwrap_or_else(|| format!("registry:{}", target.registry_id)),
+                trigger: target.trigger_kind,
+                required: target.required,
+                enabled: target.enabled,
+            });
         }
-        // Recent GC runs back the GC tab's history; only the GC & pins tab renders
-        // them, so only fetch there.
-        let gc_runs = if can_admin && active == "pins" {
-            deps.db.list_cache_gc_runs(cache.id, 10).await?
+        let signing_usage = deps
+            .db
+            .signing_key_usage(&cache.stable_id, "narinfo")
+            .await?;
+        let signing_keys = if active == "signing-key" && can_admin {
+            let bearer = session.topology_bearer(deps, Scope::parse(&org.stable_id))?;
+            deps.topology
+                .signing_keys(&bearer, org.stable_id.clone())
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?
         } else {
             Vec::new()
         };
@@ -2180,18 +2391,23 @@ async fn render_cache_detail(
             &org.slug,
             &session.csrf(),
             cache,
-            &binding,
             &placements,
-            &binding_names,
+            &policies,
+            &equivalences,
+            &routes,
+            &retention,
+            &manual_roots,
+            &population,
             &usage,
-            &link_rows,
-            &linkable,
-            &pin_rows,
-            &gc_runs,
+            signing_usage
+                .as_ref()
+                .is_some_and(|usage| usage.state == "active"),
+            signing_usage.as_ref(),
+            &signing_keys,
             can_admin,
-            advertise_frontend,
             active,
             notice,
+            &navigation,
             started,
         ))
     }
@@ -2221,11 +2437,159 @@ async fn placement_overview_rows(
             prefix: placement.prefix,
             role: placement.derived_role,
             state: placement.state,
+            desired_state: placement.desired_state,
+            completeness: placement.completeness,
             read_enabled: placement.effective_read_enabled,
+            desired_read_enabled: placement.desired_read_enabled,
+            read_order: placement.read_order,
             write_enabled: placement.effective_write_enabled,
+            desired_authority: placement.authority_desired_placement_id == Some(placement.id),
+            observed_authority: placement.authority_observed_placement_id == Some(placement.id),
+            desired_generation: placement.authority_desired_generation,
+            observed_generation: placement.authority_observed_generation,
+            authority_state: placement.authority_reconciliation_state,
+            resource_version: placement.resource_version,
         });
     }
     Ok(rows)
+}
+
+/// Resolves immutable policy revisions and confirmed equivalences for one surface.
+async fn placement_policy_overview_rows(
+    deps: &ConsoleDeps,
+    surface: crate::db::SurfaceTarget,
+) -> anyhow::Result<(
+    Vec<console::PlacementPolicyOverviewRow>,
+    Vec<console::PlacementEquivalenceOverviewRow>,
+)> {
+    let mut policies = Vec::new();
+    for policy in deps.db.list_placement_policy_identities(surface).await? {
+        let revisions = deps.db.list_placement_policy_revisions(&policy.id).await?;
+        let current = policy
+            .current_revision_id
+            .as_deref()
+            .and_then(|current_id| revisions.iter().find(|revision| revision.id == current_id));
+        let newest = revisions.last();
+        policies.push(console::PlacementPolicyOverviewRow {
+            id: policy.id,
+            name: policy.name,
+            kind: newest
+                .map(|revision| revision.spec.kind.clone())
+                .unwrap_or_else(|| "unconfigured".to_string()),
+            current_revision: current.map(|revision| revision.revision),
+            revision_count: revisions.len(),
+            latest_state: newest.map(|revision| revision.state.clone()),
+            current_digest: current.and_then(|revision| revision.content_digest.clone()),
+            resource_version: policy.resource_version,
+        });
+    }
+    let equivalences = deps
+        .db
+        .list_placement_equivalences(surface)
+        .await?
+        .into_iter()
+        .map(|equivalence| console::PlacementEquivalenceOverviewRow {
+            id: equivalence.id,
+            placement_a: equivalence.placement_a,
+            placement_b: equivalence.placement_b,
+            evidence_digest: equivalence.evidence_digest,
+            state: equivalence.state,
+            resource_version: equivalence.resource_version,
+        })
+        .collect();
+    Ok((policies, equivalences))
+}
+
+/// Resolves normalized delivery routes into the shared registry/cache read model.
+async fn delivery_route_overview_rows(
+    deps: &ConsoleDeps,
+    surface: crate::db::SurfaceTarget,
+) -> anyhow::Result<Vec<console::DeliveryRouteOverviewRow>> {
+    let mut rows = Vec::new();
+    for route in deps.db.list_delivery_routes(surface).await? {
+        let mut canonical_audiences = Vec::new();
+        for audience in ["git", "nix_cache", "web"] {
+            if deps
+                .db
+                .canonical_route(surface, audience)
+                .await?
+                .is_some_and(|canonical| canonical.delivery_route_id.as_str() == route.id.as_str())
+            {
+                canonical_audiences.push(audience.to_string());
+            }
+        }
+        let endpoint = deps
+            .db
+            .delivery_endpoint(&route.endpoint_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("delivery route references a missing endpoint"))?;
+        let hostname = if let Some(domain_id) = endpoint.domain_id {
+            deps.db
+                .domain(domain_id)
+                .await?
+                .map(|domain| domain.hostname)
+                .ok_or_else(|| anyhow::anyhow!("delivery endpoint references a missing domain"))?
+        } else if let Some(bytes) = endpoint.ipv4_bytes.as_deref() {
+            let octets = <[u8; 4]>::try_from(bytes)
+                .map_err(|_| anyhow::anyhow!("delivery endpoint has malformed IPv4 bytes"))?;
+            std::net::Ipv4Addr::from(octets).to_string()
+        } else if let Some(bytes) = endpoint.ipv6_bytes.as_deref() {
+            let octets = <[u8; 16]>::try_from(bytes)
+                .map_err(|_| anyhow::anyhow!("delivery endpoint has malformed IPv6 bytes"))?;
+            format!("[{}]", std::net::Ipv6Addr::from(octets))
+        } else {
+            return Err(anyhow::anyhow!("delivery endpoint has no host identity"));
+        };
+        let path = if route.base_path.is_empty() {
+            "/".to_string()
+        } else if route.base_path.starts_with('/') {
+            route.base_path.clone()
+        } else {
+            format!("/{}", route.base_path)
+        };
+        let snapshot = deps
+            .db
+            .delivery_route_snapshot(&route.id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("delivery route has no current snapshot"))?;
+        let mut capabilities = Vec::new();
+        if snapshot.spec.serves_git {
+            capabilities.push("git");
+        }
+        if snapshot.spec.serves_cache {
+            capabilities.push("cache");
+        }
+        if snapshot.spec.serves_web {
+            capabilities.push("web");
+        }
+        rows.push(console::DeliveryRouteOverviewRow {
+            id: route.id,
+            url: delivery_route_url(&endpoint.scheme, &hostname, endpoint.effective_port, &path),
+            mode: route.mode,
+            capabilities,
+            readiness: snapshot.observation_state,
+            enabled: route.enabled,
+            canonical_audiences,
+        });
+    }
+    rows.sort_by(|left, right| {
+        left.canonical_audiences
+            .is_empty()
+            .cmp(&right.canonical_audiences.is_empty())
+            .then_with(|| right.enabled.cmp(&left.enabled))
+            .then_with(|| left.url.cmp(&right.url))
+    });
+    Ok(rows)
+}
+
+/// Renders the client-visible URL from the endpoint's immutable identity.
+fn delivery_route_url(scheme: &str, hostname: &str, effective_port: i64, path: &str) -> String {
+    let default_port = matches!((scheme, effective_port), ("http", 80) | ("https", 443));
+    if default_port {
+        format!("{scheme}://{hostname}{path}")
+    } else {
+        format!("{scheme}://{hostname}:{effective_port}{path}")
+    }
 }
 
 /// Resolve `(org, cache)` for a cache console route, enforcing that the cache
@@ -2234,17 +2598,38 @@ async fn cache_in_org(
     deps: &ConsoleDeps,
     org_slug: &str,
     cache_slug: &str,
-) -> Result<(OrgRecord, crate::db::Cache), Response> {
+) -> Result<(OrgRecord, crate::db::BinaryCache), Response> {
     let Some(org) = deps.db.org_by_slug(org_slug).await.map_err(internal)? else {
         return Err(StatusCode::NOT_FOUND.into_response());
     };
-    let Some(cache) = deps.db.cache_by_slug(cache_slug).await.map_err(internal)? else {
+    let Some(cache) = deps
+        .db
+        .binary_cache_by_slug(cache_slug)
+        .await
+        .map_err(internal)?
+    else {
         return Err(StatusCode::NOT_FOUND.into_response());
     };
     if cache.org_id != Some(org.id) || cache.deleted_at.is_some() {
         return Err(StatusCode::NOT_FOUND.into_response());
     }
     Ok((org, cache))
+}
+
+/// Resolves an org-owned cache before authorizing against its exact scope.
+async fn cache_in_org_with_permission(
+    deps: &ConsoleDeps,
+    session: &Session,
+    org_slug: &str,
+    cache_slug: &str,
+    permission: Permission,
+) -> Result<(OrgRecord, crate::db::BinaryCache, Scope), Response> {
+    let (org, cache) = cache_in_org(deps, org_slug, cache_slug).await?;
+    let scope = Scope::parse(&cache.scope_key);
+    if let Some(response) = require_org_perm(deps, session, &scope, permission).await {
+        return Err(*response);
+    }
+    Ok((org, cache, scope))
 }
 
 /// `GET /-/org/{org}/caches/{slug}` — a cache's read-only overview.
@@ -2257,34 +2642,286 @@ pub(crate) async fn cache_detail(
     cache_tab(deps, headers, started, org_slug, cache_slug, "overview").await
 }
 
-/// `GET /-/org/{org}/caches/{slug}/general` — mutable cache policy.
-pub(crate) async fn cache_general(
+/// `GET /-/org/{org}/caches/{slug}/access` — cache identity and access policy.
+pub(crate) async fn cache_access(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
 ) -> Response {
-    cache_tab(deps, headers, started, org_slug, cache_slug, "general").await
+    cache_tab(deps, headers, started, org_slug, cache_slug, "access").await
 }
 
-/// `GET /-/org/{org}/caches/{slug}/links` — the **Linked registries** tab.
-pub(crate) async fn cache_links(
+/// Shows registry-owned retention relationships attached to a cache.
+pub(crate) async fn cache_retention_subscriptions(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
 ) -> Response {
-    cache_tab(deps, headers, started, org_slug, cache_slug, "links").await
+    cache_tab(
+        deps,
+        headers,
+        started,
+        org_slug,
+        cache_slug,
+        "retention-subscriptions",
+    )
+    .await
 }
 
-/// `GET /-/org/{org}/caches/{slug}/pins` — the **GC & pins** tab.
-pub(crate) async fn cache_pins(
+/// Shows population targets independently from retention and advertisement.
+pub(crate) async fn cache_population_targets(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
 ) -> Response {
-    cache_tab(deps, headers, started, org_slug, cache_slug, "pins").await
+    cache_tab(
+        deps,
+        headers,
+        started,
+        org_slug,
+        cache_slug,
+        "population-targets",
+    )
+    .await
+}
+
+/// Shows manually managed retention roots and their lease heads.
+pub(crate) async fn cache_manual_roots(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "manual-roots").await
+}
+
+/// Shows immutable placement-policy revisions for a cache.
+pub(crate) async fn cache_placement_policies(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(
+        deps,
+        headers,
+        started,
+        org_slug,
+        cache_slug,
+        "placement-policies",
+    )
+    .await
+}
+
+/// Shows confirmed placement equivalences for a cache.
+pub(crate) async fn cache_placement_equivalences(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(
+        deps,
+        headers,
+        started,
+        org_slug,
+        cache_slug,
+        "placement-equivalences",
+    )
+    .await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/objects` — indexed cache objects.
+pub(crate) async fn cache_objects(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "objects").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/signing-key` — signing identity.
+pub(crate) async fn cache_signing_key(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "signing-key").await
+}
+
+/// Reviewed typed signing usage submitted from a cache settings page.
+#[derive(serde::Deserialize)]
+pub(crate) struct CacheSigningKeyForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    key_generation: String,
+    #[serde(default)]
+    signing_key_stable_id: String,
+    #[serde(default)]
+    signing_key_generation: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    expected_resource_version: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
+}
+
+/// Plans or applies the cache's exact narinfo signing-key generation usage.
+pub(crate) async fn cache_signing_key_action(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<CacheSigningKeyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    if let Err(response) = require_sudo(&session, &headers) {
+        return *response;
+    }
+    let (org, cache, _) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::KeysManage,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, Scope::parse(&org.stable_id)) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !form.plan_id.is_empty() {
+        return match deps
+            .topology
+            .apply_signing_key_usage(
+                &bearer,
+                form.plan_id.clone(),
+                form.confirmation_hash,
+                console_apply_idempotency_key(&form.plan_id),
+            )
+            .await
+        {
+            Ok(_) => {
+                render_cache_detail(
+                    &deps,
+                    &session,
+                    &org,
+                    &cache,
+                    true,
+                    "signing-key",
+                    Some("Signing-key usage updated."),
+                    started,
+                )
+                .await
+            }
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
+    }
+    let (key_id, generation) = if form.state == "active" {
+        match form.key_generation.rsplit_once(':') {
+            Some((key_id, generation)) => (key_id.to_string(), generation.to_string()),
+            None => {
+                return (StatusCode::BAD_REQUEST, "select a signing-key generation").into_response()
+            }
+        }
+    } else if form.state == "detached" {
+        (form.signing_key_stable_id, form.signing_key_generation)
+    } else {
+        return (StatusCode::BAD_REQUEST, "invalid signing usage state").into_response();
+    };
+    let generation = match generation.parse::<u64>() {
+        Ok(generation) if generation > 0 => generation,
+        _ => return (StatusCode::BAD_REQUEST, "invalid signing-key generation").into_response(),
+    };
+    match deps
+        .topology
+        .plan_signing_key_usage(
+            &bearer,
+            aos_proto_types::PlanSigningKeyUsageRequest {
+                consumer_stable_id: cache.stable_id.clone(),
+                purpose: "narinfo".to_string(),
+                signing_key_stable_id: key_id,
+                signing_key_generation: generation,
+                state: form.state,
+                expected_resource_version: form.expected_resource_version,
+                idempotency_key: format!(
+                    "console-plan-cache-signing-usage-{}",
+                    uuid::Uuid::new_v4()
+                ),
+            },
+        )
+        .await
+    {
+        Ok(plan) => Html(console::signing_topology_plan_page(
+            &session.email,
+            "Change cache signing usage",
+            &format!("/-/org/{org_slug}/caches/{cache_slug}/signing-key"),
+            &session.csrf(),
+            &plan,
+            "usage",
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
+}
+
+/// `GET /-/org/{org}/caches/{slug}/operations` — cache operations.
+pub(crate) async fn cache_operations(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, "operations").await
+}
+
+/// `GET /-/org/{org}/caches/{slug}/garbage-collection` — collection policy and plans.
+pub(crate) async fn cache_garbage_collection(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(
+        deps,
+        headers,
+        started,
+        org_slug,
+        cache_slug,
+        "garbage-collection",
+    )
+    .await
+}
+
+/// Shows one local garbage-collection history/work-queue view.
+pub(crate) async fn cache_gc_section(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    active: &'static str,
+) -> Response {
+    cache_tab(deps, headers, started, org_slug, cache_slug, active).await
 }
 
 /// `GET /-/org/{org}/caches/{slug}/danger` — the **Danger** (delete) tab.
@@ -2297,26 +2934,816 @@ pub(crate) async fn cache_danger(
     cache_tab(deps, headers, started, org_slug, cache_slug, "danger").await
 }
 
-/// `GET /-/org/{org}/caches/{slug}/storage` — the **Storage** tab (binding +
-/// change storage). The same path's `POST` performs the storage move.
-pub(crate) async fn cache_storage_tab(
+/// `GET /-/org/{org}/caches/{slug}/placements` — storage and replica topology.
+pub(crate) async fn cache_placements(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
 ) -> Response {
-    cache_tab(deps, headers, started, org_slug, cache_slug, "storage").await
+    cache_tab(deps, headers, started, org_slug, cache_slug, "placements").await
 }
 
-/// `GET /-/org/{org}/caches/{slug}/serving` — the **Serving** tab (bucket-direct
-/// frontend advertisement).
-pub(crate) async fn cache_serving_tab(
+/// Renders a cache placement creation form backed by organization bindings.
+pub(crate) async fn cache_new_placement(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
 ) -> Response {
-    cache_tab(deps, headers, started, org_slug, cache_slug, "serving").await
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    let (org, _, _) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    match deps.db.list_storage_binding_read_summaries(org.id).await {
+        Ok(bindings) => Html(console::new_placement_page(
+            &session.email,
+            "Add cache placement",
+            &format!("/-/org/{org_slug}/caches/{cache_slug}/placements/plan-create"),
+            &session.csrf(),
+            &bindings,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// Plans creation of one cache placement.
+pub(crate) async fn cache_plan_create_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<PlacementCreateForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let spec = match form.spec() {
+        Ok(spec) => spec,
+        Err(response) => return response,
+    };
+    let (_, cache, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_create_placement(
+            &bearer,
+            TopologySurface::Cache(cache.slug),
+            spec,
+            format!("console-cache-plan-create-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Create cache placement",
+            &format!("/-/org/{org_slug}/caches/{cache_slug}/placements/create"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies a reviewed cache placement creation.
+pub(crate) async fn cache_create_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    cache_apply_basic_placement_plan(
+        deps,
+        headers,
+        org_slug,
+        cache_slug,
+        form,
+        PlacementPlanOperation::Create,
+    )
+    .await
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct PlacementPlanForm {
+    #[serde(default)]
+    csrf: String,
+    expected_resource_version: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct PlacementApplyForm {
+    #[serde(default)]
+    csrf: String,
+    plan_id: String,
+    confirmation_hash: String,
+}
+
+/// Derives the browser's stable retry key from the immutable reviewed plan.
+///
+/// The value is deterministic so a refresh, double-submit, or retry after a
+/// lost response replays the same apply instead of reserving the plan under a
+/// fresh key. The plan identifier is opaque, actor-bound, and capped at 64
+/// bytes by the retained-control store, keeping this key within its 128-byte
+/// limit.
+fn console_apply_idempotency_key(plan_id: &str) -> String {
+    format!("console-apply-{plan_id}")
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct TopologyPlanForm {
+    #[serde(default)]
+    csrf: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct PlacementCreateForm {
+    #[serde(default)]
+    csrf: String,
+    name: String,
+    storage_binding_id: String,
+    prefix: String,
+    kind: String,
+    desired_state: String,
+    #[serde(default)]
+    desired_read_enabled: Option<String>,
+    read_order: i64,
+    #[serde(default)]
+    hash_range_start: Option<u32>,
+    #[serde(default)]
+    hash_range_end: Option<u32>,
+    #[serde(default)]
+    requires_conditional_writes: Option<String>,
+}
+
+impl PlacementCreateForm {
+    fn spec(&self) -> Result<PlacementCreateSpec, Response> {
+        let hash_range = match (self.hash_range_start, self.hash_range_end) {
+            (Some(start), Some(end)) => Some((start, end)),
+            (None, None) => None,
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "shard range requires both start and end",
+                )
+                    .into_response())
+            }
+        };
+        Ok(PlacementCreateSpec {
+            name: self.name.trim().to_string(),
+            storage_binding_id: self.storage_binding_id.clone(),
+            prefix: self.prefix.trim().to_string(),
+            kind: self.kind.clone(),
+            desired_state: self.desired_state.clone(),
+            desired_read_enabled: self.desired_read_enabled.is_some(),
+            read_order: self.read_order,
+            hash_range,
+            requires_conditional_writes: self.requires_conditional_writes.is_some(),
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct PlacementUpdateForm {
+    #[serde(default)]
+    csrf: String,
+    expected_resource_version: String,
+    desired_state: String,
+    #[serde(default)]
+    desired_read_enabled: Option<String>,
+    read_order: i64,
+}
+
+/// Plans promotion of one cache placement without changing authority.
+pub(crate) async fn cache_plan_promote_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug, placement)): Path<(String, String, String)>,
+    Form(form): Form<PlacementPlanForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, cache, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_promote_placement(
+            &bearer,
+            TopologySurface::Cache(cache.slug.clone()),
+            placement.clone(),
+            form.expected_resource_version,
+            format!("console-cache-promote-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            &format!("Promote placement · {placement}"),
+            &format!("/-/org/{org_slug}/caches/{cache_slug}/placements/{placement}/promote"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies one previously reviewed cache-placement promotion plan.
+pub(crate) async fn cache_promote_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug, _placement)): Path<(String, String, String)>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, _, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .promote_placement(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/placements"))
+            .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Plans replacement of a cache placement's mutable desired fields.
+pub(crate) async fn cache_plan_update_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug, placement)): Path<(String, String, String)>,
+    Form(form): Form<PlacementUpdateForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, cache, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_update_placement(
+            &bearer,
+            TopologySurface::Cache(cache.slug),
+            placement.clone(),
+            form.expected_resource_version,
+            PlacementUpdateSpec {
+                desired_state: form.desired_state,
+                desired_read_enabled: form.desired_read_enabled.is_some(),
+                read_order: form.read_order,
+            },
+            format!("console-cache-plan-update-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            &format!("Update cache placement · {placement}"),
+            &format!(
+                "/-/org/{org_slug}/caches/{cache_slug}/placements/{}/update",
+                urlencode(&placement),
+            ),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies a reviewed cache placement update.
+pub(crate) async fn cache_update_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug, _placement)): Path<(String, String, String)>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    cache_apply_basic_placement_plan(
+        deps,
+        headers,
+        org_slug,
+        cache_slug,
+        form,
+        PlacementPlanOperation::Update,
+    )
+    .await
+}
+
+/// Plans cancellation of a cache's in-flight placement promotion.
+pub(crate) async fn cache_plan_cancel_placement_promotion(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<TopologyPlanForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, cache, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_cancel_placement_promotion(
+            &bearer,
+            TopologySurface::Cache(cache.slug),
+            format!("console-cache-plan-cancel-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Cancel cache placement promotion",
+            &format!("/-/org/{org_slug}/caches/{cache_slug}/placements/cancel-promotion"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies a reviewed cache promotion cancellation.
+pub(crate) async fn cache_cancel_placement_promotion(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    cache_apply_basic_placement_plan(
+        deps,
+        headers,
+        org_slug,
+        cache_slug,
+        form,
+        PlacementPlanOperation::CancelPromotion,
+    )
+    .await
+}
+
+async fn cache_apply_basic_placement_plan(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    org_slug: String,
+    cache_slug: String,
+    form: PlacementApplyForm,
+    operation: PlacementPlanOperation,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, _, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .apply_placement_plan(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            operation,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/placements"))
+            .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+async fn cache_plan_placement_lifecycle(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: Instant,
+    org_slug: String,
+    cache_slug: String,
+    placement: String,
+    form: PlacementPlanForm,
+    action: PlacementLifecycleAction,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, cache, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    let operation = match action {
+        PlacementLifecycleAction::Drain => "drain",
+        PlacementLifecycleAction::Delete => "delete",
+    };
+    match deps
+        .topology
+        .plan_placement_lifecycle(
+            &bearer,
+            TopologySurface::Cache(cache.slug),
+            placement.clone(),
+            form.expected_resource_version,
+            action,
+            format!("console-cache-plan-{operation}-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            &format!(
+                "{} cache placement · {placement}",
+                operation_title(operation)
+            ),
+            &format!(
+                "/-/org/{org_slug}/caches/{cache_slug}/placements/{}/{operation}",
+                urlencode(&placement),
+            ),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+async fn cache_apply_placement_lifecycle(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    org_slug: String,
+    cache_slug: String,
+    form: PlacementApplyForm,
+    action: PlacementLifecycleAction,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, _, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    let operation = match action {
+        PlacementLifecycleAction::Drain => "drain",
+        PlacementLifecycleAction::Delete => "delete",
+    };
+    match deps
+        .topology
+        .apply_placement_lifecycle(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            action,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/placements"))
+            .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+fn operation_title(operation: &str) -> &'static str {
+    match operation {
+        "drain" => "Drain",
+        "delete" => "Delete",
+        _ => "Change",
+    }
+}
+
+macro_rules! cache_placement_lifecycle_handlers {
+    ($plan:ident, $apply:ident, $action:expr) => {
+        pub(crate) async fn $plan(
+            deps: ConsoleDeps,
+            headers: HeaderMap,
+            RequestStart(started): RequestStart,
+            Path((org_slug, cache_slug, placement)): Path<(String, String, String)>,
+            Form(form): Form<PlacementPlanForm>,
+        ) -> Response {
+            cache_plan_placement_lifecycle(
+                deps, headers, started, org_slug, cache_slug, placement, form, $action,
+            )
+            .await
+        }
+
+        pub(crate) async fn $apply(
+            deps: ConsoleDeps,
+            headers: HeaderMap,
+            Path((org_slug, cache_slug, _placement)): Path<(String, String, String)>,
+            Form(form): Form<PlacementApplyForm>,
+        ) -> Response {
+            cache_apply_placement_lifecycle(deps, headers, org_slug, cache_slug, form, $action)
+                .await
+        }
+    };
+}
+
+cache_placement_lifecycle_handlers!(
+    cache_plan_drain_placement,
+    cache_drain_placement,
+    PlacementLifecycleAction::Drain
+);
+cache_placement_lifecycle_handlers!(
+    cache_plan_delete_placement,
+    cache_delete_placement,
+    PlacementLifecycleAction::Delete
+);
+
+/// Plans transition of a cache to an explicitly read-only topology.
+pub(crate) async fn cache_plan_remove_write_authority(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<TopologyPlanForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, cache, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_remove_write_authority(&bearer, TopologySurface::Cache(cache.slug))
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Remove cache write authority",
+            &format!("/-/org/{org_slug}/caches/{cache_slug}/placements/remove-write-authority"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies a reviewed transition of a cache to read-only topology.
+pub(crate) async fn cache_remove_write_authority(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let (_, cache, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::PlacementManage,
+    )
+    .await
+    {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .remove_write_authority(
+            &bearer,
+            TopologySurface::Cache(cache.slug),
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/placements"))
+            .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Shows all simultaneous delivery routes for a cache.
+pub(crate) async fn cache_delivery(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(
+        deps,
+        headers,
+        started,
+        org_slug,
+        cache_slug,
+        "delivery-routes",
+    )
+    .await
+}
+
+/// Shows exact canonical-audience selections separately from route inventory.
+pub(crate) async fn cache_canonical_audiences(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Path((org_slug, cache_slug)): Path<(String, String)>,
+) -> Response {
+    cache_tab(
+        deps,
+        headers,
+        started,
+        org_slug,
+        cache_slug,
+        "canonical-audiences",
+    )
+    .await
 }
 
 /// Shared body for the cache settings tabs: require a session + read on the org,
@@ -2334,14 +3761,35 @@ async fn cache_tab(
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let scope = Scope::parse(&org_slug);
-    if !session.allows(&deps.db, Permission::Read, &scope).await {
+    let (page, local_permission) = match active {
+        "canonical-audiences" => (Some(CachePage::DeliveryRoutes), Some(Permission::RouteRead)),
+        "gc-plans" => (
+            Some(CachePage::GarbageCollection),
+            Some(Permission::CacheGcPlan),
+        ),
+        "gc-runs" | "gc-jobs" => (
+            Some(CachePage::GarbageCollection),
+            Some(Permission::CacheGcExecute),
+        ),
+        _ => (CachePage::parse(active), None),
+    };
+    let Some(page) = page else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
+    let required = local_permission.unwrap_or_else(|| {
+        CACHE_PAGES
+            .iter()
+            .find(|spec| spec.key == page)
+            .map_or(Permission::Read, |spec| spec.permission)
+    });
     let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
         Ok(pair) => pair,
         Err(resp) => return resp,
     };
+    let scope = Scope::parse(&cache.scope_key);
+    if !session.allows(&deps.db, required, &scope).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let can_admin = session
         .allows(&deps.db, Permission::RegistryConfigure, &scope)
         .await;
@@ -2351,118 +3799,11 @@ async fn cache_tab(
     .await
 }
 
-/// `POST /-/org/{org}/caches` — create a managed binary cache.
-pub(crate) async fn org_create_cache(
+/// Plans a version-checked cache identity and protocol-policy update.
+pub(crate) async fn cache_plan_update(
     deps: ConsoleDeps,
     headers: HeaderMap,
-    Path(org_slug): Path<String>,
-    Form(form): Form<NewCacheForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let slug = form.slug.trim();
-    if slug.is_empty() {
-        return (StatusCode::BAD_REQUEST, "cache slug is required").into_response();
-    }
-    let Some(visibility) = cache_visibility(&form.visibility) else {
-        return (StatusCode::BAD_REQUEST, "invalid visibility").into_response();
-    };
-    let priority = form.priority.trim().parse::<i64>().unwrap_or(40);
-    let compression = match form.compression.trim() {
-        "" | "zstd" => "zstd",
-        "xz" => "xz",
-        "none" => "none",
-        other => {
-            return (
-                StatusCode::BAD_REQUEST,
-                format!("invalid compression '{other}'"),
-            )
-                .into_response()
-        }
-    };
-    let result = async {
-        let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
-            return Ok(None);
-        };
-        // An empty binding selects the deployment's default storage; otherwise
-        // resolve the named binding.
-        let binding_id = if form.binding.trim().is_empty() {
-            None
-        } else {
-            match deps
-                .db
-                .storage_binding_by_name(org.id, form.binding.trim())
-                .await?
-            {
-                Some(b) => Some(b.id),
-                None => return Ok(Some(Err("unknown storage binding".to_string()))),
-            }
-        };
-        let name = if form.name.trim().is_empty() {
-            slug
-        } else {
-            form.name.trim()
-        };
-        match deps
-            .db
-            .create_cache(
-                Some(org.id),
-                slug,
-                name,
-                binding_id,
-                "",
-                None,
-                visibility,
-                priority,
-                compression,
-                form.want_mass_query.is_some(),
-            )
-            .await
-        {
-            Ok(_) => {}
-            Err(e) => return Ok(Some(Err(format!("{e:#}")))),
-        }
-        deps.db
-            .record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "cache.create",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(slug),
-            )
-            .await?;
-        Ok::<_, anyhow::Error>(Some(Ok(())))
-    }
-    .await;
-    match result {
-        Ok(Some(Ok(()))) => {
-            Redirect::to(&format!("/-/org/{org_slug}/caches/{slug}")).into_response()
-        }
-        Ok(Some(Err(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /-/org/{org}/caches/{slug}/general` — update mutable cache policy.
-pub(crate) async fn cache_update(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
     Form(form): Form<CacheUpdateForm>,
 ) -> Response {
@@ -2473,14 +3814,16 @@ pub(crate) async fn cache_update(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    let (_, cache, _) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::RegistryConfigure,
+    )
+    .await
     {
-        return *deny;
-    }
-    let (_, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
+        Ok(cache) => cache,
         Err(resp) => return resp,
     };
     let Some(visibility) = cache_visibility(&form.visibility) else {
@@ -2491,11 +3834,10 @@ pub(crate) async fn cache_update(
     } else {
         form.name.trim().to_string()
     };
-    let priority = form
-        .priority
-        .trim()
-        .parse::<i64>()
-        .unwrap_or(cache.priority);
+    let priority = match form.nix_priority.trim().parse::<u32>() {
+        Ok(priority) => priority,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid Nix priority").into_response(),
+    };
     let compression = match form.compression.trim() {
         "" => cache.compression.clone(),
         c @ ("zstd" | "xz" | "none") => c.to_string(),
@@ -2507,251 +3849,104 @@ pub(crate) async fn cache_update(
                 .into_response()
         }
     };
-    let result = deps
-        .db
-        .update_cache(
-            cache.id,
-            &name,
-            visibility,
-            priority,
-            &compression,
-            form.want_mass_query.is_some(),
-            cache.hosted_key_id,
-        )
-        .await;
-    match result {
-        Ok(_) => {
-            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/general")).into_response()
-        }
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /-/org/{org}/caches/{slug}/link` — link a registry to the cache.
-pub(crate) async fn cache_link(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    Path((org_slug, cache_slug)): Path<(String, String)>,
-    Form(form): Form<CacheLinkForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
+    let scope = Scope::parse(&cache.scope_key);
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
     };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
+    let request = aos_proto_types::PlanBinaryCacheMutationRequest {
+        stable_id: cache.stable_id,
+        desired: Some(aos_proto_types::BinaryCacheSpec {
+            slug: String::new(),
+            name,
+            owner_scope_key: String::new(),
+            visibility: visibility.to_string(),
+            nix_priority: priority,
+            compression,
+            want_mass_query: form.want_mass_query.is_some(),
+        }),
+        update_mask: vec![
+            "name".to_string(),
+            "visibility".to_string(),
+            "nix_priority".to_string(),
+            "compression".to_string(),
+            "want_mass_query".to_string(),
+        ],
+        expected_resource_version: form.expected_resource_version,
+        idempotency_key: format!("console-cache-plan-update-{}", uuid::Uuid::new_v4()),
     };
-    let result = async {
-        let Some(registry) = deps.db.registry_by_slug(form.registry.trim()).await? else {
-            return Ok(Some("unknown registry".to_string()));
-        };
-        if registry.org_id != Some(org.id) {
-            return Ok(Some("registry is not in this organization".to_string()));
-        }
-        // Same cross-visibility policy the RPC enforces (single chokepoint): a
-        // cache advertised on a more-visible registry is refused here too,
-        // rather than being silently written and then handing consumers an
-        // unreadable substituter. The closure-exposure warning is non-blocking
-        // and is surfaced persistently on the cache page.
-        let advisory = crate::service::assess_cache_link(
-            &cache.slug,
-            &cache.visibility,
-            &registry.slug,
-            &registry.visibility,
-            form.advertised.is_some(),
-            form.roots_packages.is_some(),
-        );
-        if let Some(reject) = advisory.reject {
-            return Ok(Some(reject));
-        }
-        deps.db
-            .link_cache(
-                cache.id,
-                registry.id,
-                form.roots_packages.is_some(),
-                form.advertised.is_some(),
-            )
-            .await?;
-        // A link is an operational association only — advertising the cache to
-        // consumers is an explicit edit of the registry's committed `[[caches]]`
-        // (Settings -> Config), never a write-through from linking.
-        Ok::<_, anyhow::Error>(None)
-    }
-    .await;
-    match result {
-        Ok(None) => {
-            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/links")).into_response()
-        }
-        Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /-/org/{org}/caches/{slug}/storage` form: the target binding.
-#[derive(serde::Deserialize)]
-pub(crate) struct CacheStorageForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    binding: String,
-}
-
-/// `POST /-/org/{org}/caches/{slug}/storage` — migrate a cache's surface to a
-/// different storage backend (copy every object, re-point, reconcile the index).
-pub(crate) async fn cache_change_storage(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    Path((org_slug, cache_slug)): Path<(String, String)>,
-    Form(form): Form<CacheStorageForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
-    };
-    let result = async {
-        let new_binding_id =
-            match resolve_target_binding(&deps, Some(org.id), &form.binding).await? {
-                Ok(id) => id,
-                Err(msg) => return Ok(Some(msg)),
-            };
-        match crate::migrate::migrate_cache_storage(
-            &deps.db,
-            deps.surface.as_ref(),
-            deps.surface_write.as_ref(),
-            &cache,
-            new_binding_id,
-        )
-        .await
-        {
-            Ok(_) => Ok(None),
-            Err(err) => Ok(Some(format!("{err:#}"))),
-        }
-    }
-    .await;
-    match result {
-        Ok(None) => {
-            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/storage")).into_response()
-        }
-        Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /-/org/{org}/caches/{slug}/advertise-frontend` form: the checkbox.
-#[derive(serde::Deserialize)]
-pub(crate) struct CacheAdvertiseFrontendForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    advertise: Option<String>,
-}
-
-/// `POST /-/org/{org}/caches/{slug}/advertise-frontend` — toggle whether the
-/// cache advertises its inherited storage-binding frontend (RFC-0004 §12).
-pub(crate) async fn cache_set_advertise_frontend(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    Path((org_slug, cache_slug)): Path<(String, String)>,
-    Form(form): Form<CacheAdvertiseFrontendForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let (_org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
-    };
-    if let Err(err) = deps
-        .db
-        .set_cache_advertise_storage_frontend(cache.id, form.advertise.is_some())
+    match deps
+        .topology
+        .plan_update_binary_cache(&bearer, request)
         .await
     {
-        return internal(err);
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Update binary-cache policy",
+            &format!("/-/org/{org_slug}/caches/{cache_slug}/access/update"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
     }
-    Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/serving")).into_response()
 }
 
-/// `POST /-/org/{org}/caches/{slug}/unlink` — remove a cache⇄registry link.
-pub(crate) async fn cache_unlink(
+/// Applies a reviewed cache identity and protocol-policy update.
+pub(crate) async fn cache_update(
     deps: ConsoleDeps,
     headers: HeaderMap,
     Path((org_slug, cache_slug)): Path<(String, String)>,
-    Form(form): Form<CacheUnlinkForm>,
+    Form(form): Form<PlacementApplyForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
+        Ok(session) => session,
+        Err(response) => return *response,
     };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
     }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    let (_, _, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::RegistryConfigure,
+    )
+    .await
     {
-        return *deny;
-    }
-    let (_, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
+        Ok(cache) => cache,
+        Err(response) => return response,
     };
-    let result = async {
-        if let Some(registry) = deps.db.registry_by_slug(form.registry.trim()).await? {
-            deps.db.unlink_cache(cache.id, registry.id).await?;
-            // Unlinking only drops the operational association; the committed
-            // `[[caches]]` config is edited explicitly via Settings -> Config.
-        }
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    match result {
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .apply_update_binary_cache(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
         Ok(()) => {
-            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/links")).into_response()
+            Redirect::to(&format!("/-/org/{org_slug}/caches/{cache_slug}/access")).into_response()
         }
-        Err(err) => internal(err),
+        Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
     }
 }
 
-/// `POST /-/org/{org}/caches/{slug}/gc` — sweep the cache (dry run or delete).
-pub(crate) async fn cache_gc(
+/// Plans dependency-guarded deletion of one binary-cache identity.
+pub(crate) async fn cache_plan_delete(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     Path((org_slug, cache_slug)): Path<(String, String)>,
-    Form(form): Form<CacheGcForm>,
+    Form(form): Form<DeleteByIdForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
@@ -2760,250 +3955,83 @@ pub(crate) async fn cache_gc(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
-    };
-    let dry_run = form.dry_run.is_some();
-    let now = crate::clock::now_unix_secs();
-    let notice =
-        match crate::gc::sweep_cache(&deps.db, deps.surface_write.as_ref(), &cache, dry_run, now)
-            .await
-        {
-            Ok(stats) => {
-                let freed = crate::web::render::human_size(stats.freed_bytes.max(0) as u64);
-                if dry_run {
-                    format!(
-                        "Dry run: {} of {} objects collectable, {} reclaimable.",
-                        stats.deleted_objects, stats.scanned, freed
-                    )
-                } else {
-                    format!(
-                        "Collected {} objects, reclaimed {} ({} retained).",
-                        stats.deleted_objects, freed, stats.retained
-                    )
-                }
-            }
-            Err(err) => format!("GC failed: {err:#}"),
-        };
-    render_cache_detail(
+    let (_, cache, scope) = match cache_in_org_with_permission(
         &deps,
         &session,
-        &org,
-        &cache,
-        true,
-        "pins",
-        Some(&notice),
-        started,
+        &org_slug,
+        &cache_slug,
+        Permission::IamAdmin,
     )
     .await
-}
-
-/// Extract the store-path hash component from operator-entered text.
-///
-/// Accepts a bare 32-char hash, a `<hash>-<name>` store name, or a full
-/// `/nix/store/<hash>-<name>` path, returning just the hash. A trailing
-/// `.narinfo`/`.nar` suffix is tolerated. Returns `None` when no plausible hash
-/// remains after trimming.
-fn normalize_store_hash(raw: &str) -> Option<String> {
-    let mut s = raw.trim();
-    // Drop a leading store path, keeping the basename.
-    if let Some(idx) = s.rfind('/') {
-        s = &s[idx + 1..];
-    }
-    // Drop common narinfo/nar suffixes.
-    if let Some(stripped) = s.strip_suffix(".narinfo") {
-        s = stripped;
-    } else if let Some(stripped) = s.strip_suffix(".nar") {
-        s = stripped;
-    }
-    // The hash is the component before the first `-` of `<hash>-<name>`.
-    let hash = s.split('-').next().unwrap_or(s).trim();
-    if hash.is_empty() {
-        None
-    } else {
-        Some(hash.to_string())
-    }
-}
-
-/// `POST /-/org/{org}/caches/{slug}/pin/add` — pin (or renew) a manual GC root.
-///
-/// Parses the store hash (a bare hash, `<hash>-<name>`, or full store path) and
-/// an optional `expires_days`, computing `expires_at = now + days*86400`
-/// (empty/zero pins indefinitely). Re-pinning an existing hash renews it in
-/// place, since `pin_cache_path` upserts.
-pub(crate) async fn cache_pin_add(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    Path((org_slug, cache_slug)): Path<(String, String)>,
-    Form(form): Form<CachePinAddForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
-        return *deny;
-    }
-    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
+        Ok(cache) => cache,
         Err(resp) => return resp,
     };
-    let Some(store_hash) = normalize_store_hash(&form.store_hash) else {
-        return (StatusCode::BAD_REQUEST, "a store hash is required").into_response();
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
     };
-    // Empty `expires_days` = unlimited; a positive integer sets a deadline.
-    let expires_at = match form.expires_days.trim() {
-        "" => None,
-        other => match other.parse::<i64>() {
-            Ok(days) if days > 0 => Some(crate::clock::now_unix_secs() + days * 86_400),
-            Ok(_) => None,
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    "expires must be a whole number of days",
-                )
-                    .into_response()
-            }
-        },
-    };
-    let notice = match deps
-        .db
-        .pin_cache_path(cache.id, &store_hash, expires_at)
+    match deps
+        .topology
+        .plan_delete_binary_cache(&bearer, cache.stable_id, cache.resource_version.to_string())
         .await
     {
-        Ok(()) => match expires_at {
-            Some(_) => format!("Pinned {store_hash} (expires set)."),
-            None => format!("Pinned {store_hash} (unlimited)."),
-        },
-        Err(err) => format!("Pin failed: {err:#}"),
-    };
-    render_cache_detail(
-        &deps,
-        &session,
-        &org,
-        &cache,
-        true,
-        "pins",
-        Some(&notice),
-        started,
-    )
-    .await
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Delete binary cache",
+            &format!("/-/org/{org_slug}/caches/{cache_slug}/danger/delete"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+    }
 }
 
-/// `POST /-/org/{org}/caches/{slug}/pin/remove` — remove a manual GC pin.
-///
-/// Unpins the given store hash; if no manual pin existed the notice says so.
-pub(crate) async fn cache_pin_remove(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    Path((org_slug, cache_slug)): Path<(String, String)>,
-    Form(form): Form<CachePinRemoveForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let (org, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
-    };
-    let Some(store_hash) = normalize_store_hash(&form.store_hash) else {
-        return (StatusCode::BAD_REQUEST, "a store hash is required").into_response();
-    };
-    let notice = match deps.db.unpin_cache_path(cache.id, &store_hash).await {
-        Ok(true) => format!("Unpinned {store_hash}."),
-        Ok(false) => format!("No manual pin for {store_hash}."),
-        Err(err) => format!("Unpin failed: {err:#}"),
-    };
-    render_cache_detail(
-        &deps,
-        &session,
-        &org,
-        &cache,
-        true,
-        "pins",
-        Some(&notice),
-        started,
-    )
-    .await
-}
-
-/// `POST /-/org/{org}/caches/{slug}/delete` — soft-delete a cache (typed slug
-/// confirmation).
+/// Applies a reviewed dependency-guarded binary-cache deletion.
 pub(crate) async fn cache_delete(
     deps: ConsoleDeps,
     headers: HeaderMap,
     Path((org_slug, cache_slug)): Path<(String, String)>,
-    Form(form): Form<CacheConfirmForm>,
+    Form(form): Form<PlacementApplyForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
+        Ok(session) => session,
+        Err(response) => return *response,
     };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
     }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+    let (_, _, scope) = match cache_in_org_with_permission(
+        &deps,
+        &session,
+        &org_slug,
+        &cache_slug,
+        Permission::IamAdmin,
+    )
+    .await
     {
-        return *deny;
-    }
-    let (_, cache) = match cache_in_org(&deps, &org_slug, &cache_slug).await {
-        Ok(pair) => pair,
-        Err(resp) => return resp,
+        Ok(cache) => cache,
+        Err(response) => return response,
     };
-    if form.confirm.trim() != cache_slug {
-        return (StatusCode::BAD_REQUEST, "type the cache slug to confirm").into_response();
-    }
-    // A 30-day grace window before the cache's objects are eligible for purge,
-    // mirroring the org soft-delete.
-    let purge_after = crate::clock::now_unix_secs() + 30 * 86_400;
-    let result = async {
-        deps.db.soft_delete_cache(cache.id, purge_after).await?;
-        deps.db
-            .record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "cache.delete",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&cache_slug),
-            )
-            .await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    match result {
-        Ok(()) => Redirect::to(&format!("/-/org/{org_slug}/caches")).into_response(),
-        Err(err) => internal(err),
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .apply_delete_binary_cache(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(true) => Redirect::to(&format!("/-/org/{org_slug}/caches")).into_response(),
+        Ok(false) => (StatusCode::CONFLICT, "binary cache was not deleted").into_response(),
+        Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
     }
 }
 
@@ -3028,7 +4056,7 @@ impl IntoResponse for MembershipReject {
     }
 }
 
-/// Checks the [`config::change_membership`] privilege ceiling for a grant.
+/// Checks the membership-control privilege ceiling for a proposed grant.
 ///
 /// # Errors
 ///
@@ -3040,11 +4068,16 @@ async fn membership_grant_allowed(
     scope: &Scope,
     role: Role,
 ) -> anyhow::Result<Result<(), MembershipReject>> {
+    let Some(context) = db.authorization_context(scope.as_str()).await? else {
+        return Ok(Err(MembershipReject::Forbidden(
+            "authorization scope does not exist".to_string(),
+        )));
+    };
     let actor_rank = db
         .effective_scopes(*actor)
         .await?
         .into_iter()
-        .filter(|(grant_scope, _)| grant_scope.contains(scope))
+        .filter(|(grant_scope, _)| context.is_covered_by(grant_scope))
         .map(|(_, r)| r.rank())
         .max()
         .unwrap_or(0);
@@ -3072,14 +4105,21 @@ async fn membership_grant_allowed(
 pub(crate) struct InviteForm {
     #[serde(default)]
     csrf: String,
+    #[serde(default)]
     email: String,
+    #[serde(default)]
     role: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
-/// `POST /-/org/{org}/members` — invite a member through a change-set.
+/// `POST /-/org/{org}/members` — plan or apply an invitation membership.
 pub(crate) async fn org_invite_member(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     Form(form): Form<InviteForm>,
 ) -> Response {
@@ -3093,12 +4133,36 @@ pub(crate) async fn org_invite_member(
     if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
+    let scope = organization_scope(&deps.db, &org_slug).await;
     if !session
         .allows(&deps.db, Permission::MembersManage, &scope)
         .await
     {
         return (StatusCode::FORBIDDEN, "members.manage required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope.clone()) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !form.plan_id.is_empty() {
+        return match deps
+            .topology
+            .apply_membership(
+                &bearer,
+                form.plan_id.clone(),
+                form.confirmation_hash,
+                console_apply_idempotency_key(&form.plan_id),
+            )
+            .await
+        {
+            Ok(membership) => {
+                if membership.principal_kind == "user" && !membership.role.is_empty() {
+                    notify_membership_invitee(&deps, &org_slug, &membership).await;
+                }
+                Redirect::to(&format!("/-/org/{org_slug}/members")).into_response()
+            }
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
     }
     let Some(role) = Role::parse(&form.role) else {
         return (StatusCode::BAD_REQUEST, "unknown role").into_response();
@@ -3118,62 +4182,117 @@ pub(crate) async fn org_invite_member(
         {
             return Ok(Err(reject));
         }
-        config::change_membership(
-            &deps.db,
-            &session.principal(),
-            &session.email,
-            MembershipChange::Grant,
-            &target,
-            &scope,
-            role,
-        )
-        .await?;
-        // The grant is committed; now notify the invitee. Mint a single-use
-        // magic link (same construction as the login handler) so the email
-        // carries a working sign-in URL to the console, and render the shared
-        // invite copy. Delivery failure must NOT fail the invite — the role
-        // grant already stands and the person can still sign in normally — so a
-        // send error is logged and swallowed rather than propagated.
-        match deps.db.create_magic_link(&email).await {
-            Ok(secret) => {
-                let link = format!(
-                    "{}/auth/magic?token={secret}",
-                    deps.external_url.trim_end_matches('/'),
-                );
-                let content =
-                    crate::email::invite_email(console::brand(), &org.slug, role.as_str(), &link);
-                if let Err(err) = deps.mailer.send_email(&email, &content).await {
-                    tracing::warn!(error = %format!("{err:#}"), "invite email delivery failed");
-                }
-            }
-            Err(err) => {
-                tracing::warn!(error = %format!("{err:#}"), "invite magic-link creation failed");
-            }
-        }
-        Ok::<Result<(), MembershipReject>, anyhow::Error>(Ok(()))
+        let current = deps
+            .topology
+            .membership(
+                &bearer,
+                aos_proto_types::GetMembershipRequest {
+                    principal_kind: "user".to_string(),
+                    principal_ref: email.clone(),
+                    scope: scope.as_str().to_string(),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let plan = deps
+            .topology
+            .plan_membership(
+                &bearer,
+                aos_proto_types::PlanSetMembershipRequest {
+                    principal_kind: "user".to_string(),
+                    principal_ref: email,
+                    scope: scope.as_str().to_string(),
+                    role: role.as_str().to_string(),
+                    expected_resource_version: current.resource_version,
+                    idempotency_key: format!("console-plan-invite-member-{}", uuid::Uuid::new_v4()),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok::<Result<crate::web::console::ports::ReviewedPlan, MembershipReject>, anyhow::Error>(Ok(
+            plan,
+        ))
     }
     .await;
     match result {
-        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
+        Ok(Ok(plan)) => Html(console::topology_plan_page(
+            &session.email,
+            "Invite organization member",
+            &format!("/-/org/{org_slug}/members/invitations"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
         Ok(Err(reject)) => reject.into_response(),
         Err(err) => internal(err),
     }
 }
 
-/// `POST /-/org/{org}/members/remove` form.
+/// Sends the post-commit invitation message for an applied user membership.
+///
+/// Delivery is deliberately best-effort: the retained-control apply is the
+/// system of record, and a mail outage must not roll it back or invite a second
+/// apply under a different idempotency key.
+async fn notify_membership_invitee(
+    deps: &ConsoleDeps,
+    org_slug: &str,
+    membership: &aos_proto_types::MembershipResponse,
+) {
+    let email = &membership.principal_ref;
+    match deps.db.create_magic_link(email).await {
+        Ok(secret) => {
+            let link = format!(
+                "{}/auth/magic?token={secret}",
+                deps.external_url.trim_end_matches('/'),
+            );
+            let content =
+                crate::email::invite_email(console::brand(), org_slug, &membership.role, &link);
+            if let Err(error) = deps.mailer.send_email(email, &content).await {
+                tracing::warn!(error = %format!("{error:#}"), "invite email delivery failed");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %format!("{error:#}"), "invite magic-link creation failed");
+        }
+    }
+}
+
+/// Resolves the public API reference for an already-materialized principal.
+async fn membership_subject_ref(
+    db: &Database,
+    kind: crate::domain::PrincipalKind,
+    id: i64,
+) -> anyhow::Result<String> {
+    match kind {
+        crate::domain::PrincipalKind::User => db
+            .user_email(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("membership user {id} no longer exists")),
+        crate::domain::PrincipalKind::ServiceAccount => db
+            .service_account_reference(id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("membership service account {id} no longer exists")),
+    }
+}
+
+/// Member-removal form for a resource-scoped principal action.
 #[derive(serde::Deserialize)]
 pub(crate) struct RemoveForm {
     #[serde(default)]
     csrf: String,
-    principal_kind: String,
-    principal_id: i64,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
-/// `POST /-/org/{org}/members/remove` — revoke a member through a change-set.
+/// Plans or applies removal of one direct organization membership.
 pub(crate) async fn org_remove_member(
     deps: ConsoleDeps,
     headers: HeaderMap,
-    Path(org_slug): Path<String>,
+    RequestStart(started): RequestStart,
+    Path((org_slug, principal_ref)): Path<(String, String)>,
     Form(form): Form<RemoveForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -3183,7 +4302,7 @@ pub(crate) async fn org_remove_member(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
+    let scope = organization_scope(&deps.db, &org_slug).await;
     if !session
         .allows(&deps.db, Permission::MembersManage, &scope)
         .await
@@ -3193,36 +4312,84 @@ pub(crate) async fn org_remove_member(
     if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
-    let Some(kind) = crate::domain::PrincipalKind::parse(&form.principal_kind) else {
+    let bearer = match session.topology_bearer(&deps, scope.clone()) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !form.plan_id.is_empty() {
+        return match deps
+            .topology
+            .apply_membership(
+                &bearer,
+                form.plan_id.clone(),
+                form.confirmation_hash,
+                console_apply_idempotency_key(&form.plan_id),
+            )
+            .await
+        {
+            Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
+    }
+    let Some((kind_raw, id_raw)) = principal_ref.split_once(':') else {
+        return (StatusCode::BAD_REQUEST, "invalid principal reference").into_response();
+    };
+    let Some(kind) = crate::domain::PrincipalKind::parse(kind_raw) else {
         return (StatusCode::BAD_REQUEST, "unknown principal kind").into_response();
     };
+    let Ok(principal_id) = id_raw.parse::<i64>() else {
+        return (StatusCode::BAD_REQUEST, "invalid principal reference").into_response();
+    };
     let result = async {
-        let members = deps.db.list_members_of_scope(&org_slug).await?;
+        let members = deps.db.list_members_of_scope(scope.as_str()).await?;
         let owners: Vec<_> = members.iter().filter(|(_, _, r)| r == "owner").collect();
-        let target_is_owner = members.iter().any(|(k, id, r)| {
-            k == &form.principal_kind && *id == form.principal_id && r == "owner"
-        });
+        let target_is_owner = members
+            .iter()
+            .any(|(k, id, r)| k == kind_raw && *id == principal_id && r == "owner");
         if target_is_owner && owners.len() <= 1 {
             return Ok(Err(()));
         }
-        config::change_membership(
-            &deps.db,
-            &session.principal(),
-            &session.email,
-            MembershipChange::Revoke,
-            &Principal {
-                kind,
-                id: form.principal_id,
-            },
-            &scope,
-            Role::Viewer,
-        )
-        .await?;
-        Ok::<Result<(), ()>, anyhow::Error>(Ok(()))
+        let subject_ref = membership_subject_ref(&deps.db, kind, principal_id).await?;
+        let current = deps
+            .topology
+            .membership(
+                &bearer,
+                aos_proto_types::GetMembershipRequest {
+                    principal_kind: kind.as_str().to_string(),
+                    principal_ref: subject_ref.clone(),
+                    scope: scope.as_str().to_string(),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let plan = deps
+            .topology
+            .plan_membership(
+                &bearer,
+                aos_proto_types::PlanSetMembershipRequest {
+                    principal_kind: kind.as_str().to_string(),
+                    principal_ref: subject_ref,
+                    scope: scope.as_str().to_string(),
+                    role: String::new(),
+                    expected_resource_version: current.resource_version,
+                    idempotency_key: format!("console-plan-remove-member-{}", uuid::Uuid::new_v4()),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok::<Result<crate::web::console::ports::ReviewedPlan, ()>, anyhow::Error>(Ok(plan))
     }
     .await;
     match result {
-        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
+        Ok(Ok(plan)) => Html(console::topology_plan_page(
+            &session.email,
+            "Remove organization member",
+            &format!("/-/org/{org_slug}/members/{principal_ref}/remove"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
         Ok(Err(())) => (
             StatusCode::CONFLICT,
             "cannot remove the last owner of an organization",
@@ -3237,21 +4404,25 @@ pub(crate) async fn org_remove_member(
     }
 }
 
-/// `POST /-/org/{org}/members/role` form: a principal and its new role.
+/// Member-role form for a resource-scoped principal action.
 #[derive(serde::Deserialize)]
 pub(crate) struct RoleForm {
     #[serde(default)]
     csrf: String,
-    principal_kind: String,
-    principal_id: i64,
+    #[serde(default)]
     role: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
-/// `POST /-/org/{org}/members/role` — change a member's role.
+/// Plans or applies replacement of one direct organization membership.
 pub(crate) async fn org_member_role(
     deps: ConsoleDeps,
     headers: HeaderMap,
-    Path(org_slug): Path<String>,
+    RequestStart(started): RequestStart,
+    Path((org_slug, principal_ref)): Path<(String, String)>,
     Form(form): Form<RoleForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -3261,7 +4432,7 @@ pub(crate) async fn org_member_role(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
+    let scope = organization_scope(&deps.db, &org_slug).await;
     if !session
         .allows(&deps.db, Permission::MembersManage, &scope)
         .await
@@ -3271,15 +4442,40 @@ pub(crate) async fn org_member_role(
     if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
-    let Some(kind) = crate::domain::PrincipalKind::parse(&form.principal_kind) else {
+    let bearer = match session.topology_bearer(&deps, scope.clone()) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !form.plan_id.is_empty() {
+        return match deps
+            .topology
+            .apply_membership(
+                &bearer,
+                form.plan_id.clone(),
+                form.confirmation_hash,
+                console_apply_idempotency_key(&form.plan_id),
+            )
+            .await
+        {
+            Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
+    }
+    let Some((kind_raw, id_raw)) = principal_ref.split_once(':') else {
+        return (StatusCode::BAD_REQUEST, "invalid principal reference").into_response();
+    };
+    let Some(kind) = crate::domain::PrincipalKind::parse(kind_raw) else {
         return (StatusCode::BAD_REQUEST, "unknown principal kind").into_response();
+    };
+    let Ok(principal_id) = id_raw.parse::<i64>() else {
+        return (StatusCode::BAD_REQUEST, "invalid principal reference").into_response();
     };
     let Some(role) = Role::parse(&form.role) else {
         return (StatusCode::BAD_REQUEST, "unknown role").into_response();
     };
     let target = Principal {
         kind,
-        id: form.principal_id,
+        id: principal_id,
     };
     let result = async {
         if let Err(reject) =
@@ -3287,31 +4483,62 @@ pub(crate) async fn org_member_role(
         {
             return Ok(Err(reject));
         }
-        let members = deps.db.list_members_of_scope(&org_slug).await?;
+        let members = deps.db.list_members_of_scope(scope.as_str()).await?;
         let owners = members.iter().filter(|(_, _, r)| r == "owner").count();
         let target_is_last_owner = role != Role::Owner
             && owners <= 1
-            && members.iter().any(|(k, id, r)| {
-                k == &form.principal_kind && *id == form.principal_id && r == "owner"
-            });
+            && members
+                .iter()
+                .any(|(k, id, r)| k == kind_raw && *id == principal_id && r == "owner");
         if target_is_last_owner {
             return Ok(Err(MembershipReject::LastOwner));
         }
-        config::change_membership(
-            &deps.db,
-            &session.principal(),
-            &session.email,
-            MembershipChange::Grant,
-            &target,
-            &scope,
-            role,
-        )
-        .await?;
-        Ok::<Result<(), MembershipReject>, anyhow::Error>(Ok(()))
+        let subject_ref = membership_subject_ref(&deps.db, kind, principal_id).await?;
+        let current = deps
+            .topology
+            .membership(
+                &bearer,
+                aos_proto_types::GetMembershipRequest {
+                    principal_kind: kind.as_str().to_string(),
+                    principal_ref: subject_ref.clone(),
+                    scope: scope.as_str().to_string(),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let plan = deps
+            .topology
+            .plan_membership(
+                &bearer,
+                aos_proto_types::PlanSetMembershipRequest {
+                    principal_kind: kind.as_str().to_string(),
+                    principal_ref: subject_ref,
+                    scope: scope.as_str().to_string(),
+                    role: role.as_str().to_string(),
+                    expected_resource_version: current.resource_version,
+                    idempotency_key: format!(
+                        "console-plan-set-member-role-{}",
+                        uuid::Uuid::new_v4()
+                    ),
+                },
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok::<Result<crate::web::console::ports::ReviewedPlan, MembershipReject>, anyhow::Error>(Ok(
+            plan,
+        ))
     }
     .await;
     match result {
-        Ok(Ok(())) => Redirect::to(&format!("/-/org/{org_slug}/members")).into_response(),
+        Ok(Ok(plan)) => Html(console::topology_plan_page(
+            &session.email,
+            "Change organization member role",
+            &format!("/-/org/{org_slug}/members/{principal_ref}/role"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
         Ok(Err(reject)) => reject.into_response(),
         Err(err) if crate::db::is_last_owner_error(&err) => {
             MembershipReject::LastOwner.into_response()
@@ -3354,11 +4581,17 @@ pub(crate) async fn new_org_form(
 pub(crate) struct NewOrgForm {
     #[serde(default)]
     csrf: String,
+    #[serde(default)]
     slug: String,
+    #[serde(default)]
     name: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
-/// `POST /new` — create an org and auto-grant the caller `Owner`.
+/// `POST /new` — plan or apply organization creation and its initial owner grant.
 pub(crate) async fn new_org_submit(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -3371,6 +4604,30 @@ pub(crate) async fn new_org_submit(
     };
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
+    }
+    if !form.plan_id.is_empty() {
+        let bearer = match session.topology_bearer(&deps, Scope::parse("")) {
+            Ok(bearer) => bearer,
+            Err(error) => return internal(error),
+        };
+        return match deps
+            .topology
+            .apply_create_organization(
+                &bearer,
+                form.plan_id.clone(),
+                form.confirmation_hash,
+                console_apply_idempotency_key(&form.plan_id),
+            )
+            .await
+        {
+            Ok(response) => match response.organization {
+                Some(org) => Redirect::to(&format!("/-/org/{}", org.slug)).into_response(),
+                None => internal(anyhow::anyhow!(
+                    "organization apply response omitted organization"
+                )),
+            },
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
     }
     match may_create_org(&deps.db, &session).await {
         Ok(true) => {}
@@ -3429,34 +4686,33 @@ pub(crate) async fn new_org_submit(
         Ok(_) => {}
         Err(err) => return internal(err),
     }
-    let result = async {
-        if deps.db.org_by_slug_including_deleted(slug).await?.is_some() {
-            return Ok(Err("That slug is already taken."));
-        }
-        deps.db.create_org(slug, name).await?;
-        deps.db
-            .grant_membership("user", session.auth.user_id, slug, Role::Owner.as_str())
-            .await?;
-        deps.db
-            .record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "org.create",
-                slug,
-                None,
-                None,
-                None,
-                Some(name),
-            )
-            .await?;
-        Ok::<Result<(), &str>, anyhow::Error>(Ok(()))
-    }
-    .await;
-    match result {
-        Ok(Ok(())) => Redirect::to(&format!("/-/org/{slug}")).into_response(),
-        Ok(Err(message)) => reject(message),
-        Err(err) => internal(err),
+    let bearer = match session.topology_bearer(&deps, Scope::parse("")) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_create_organization(
+            &bearer,
+            aos_proto_types::PlanCreateOrganizationRequest {
+                slug: slug.to_string(),
+                display_name: name.to_string(),
+                idempotency_key: format!("console-plan-create-org-{}", uuid::Uuid::new_v4()),
+                expected_resource_version: String::new(),
+            },
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Create organization",
+            "/-/orgs/new",
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => reject(&error.to_string()),
     }
 }
 
@@ -3472,82 +4728,19 @@ fn too_many_requests(retry_after: i64) -> Response {
 
 // -- create project / binding / registry under an org -----------------------
 
-/// `POST /-/org/{org}/projects` form: a materialized path and a display name.
-#[derive(serde::Deserialize)]
-pub(crate) struct NewProjectForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    path: String,
-    name: String,
-}
-
-/// `POST /-/org/{org}/projects` — create a project under an org.
-pub(crate) async fn org_create_project(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    Path(org_slug): Path<String>,
-    Form(form): Form<NewProjectForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let name = form.name.trim();
-    if name.is_empty() {
-        return (StatusCode::BAD_REQUEST, "project name is required").into_response();
-    }
-    let path = form.path.trim().trim_matches('/');
-    let result = async {
-        let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
-            return Ok(false);
-        };
-        deps.db.create_project(org.id, path, name).await?;
-        deps.db
-            .record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "project.create",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(name),
-            )
-            .await?;
-        Ok::<_, anyhow::Error>(true)
-    }
-    .await;
-    match result {
-        Ok(true) => Redirect::to(&format!("/-/org/{org_slug}/projects")).into_response(),
-        Ok(false) => StatusCode::NOT_FOUND.into_response(),
-        Err(err) => (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
-    }
-}
-
-/// `POST /-/org/{org}/projects/delete` / `bindings/delete` form: a row id.
+/// CSRF form for a resource-scoped delete action.
 #[derive(serde::Deserialize)]
 pub(crate) struct DeleteByIdForm {
     #[serde(default)]
     csrf: String,
-    id: i64,
 }
 
-/// `POST /-/org/{org}/projects/delete` — delete an empty project.
-pub(crate) async fn org_delete_project(
+/// Plans deletion of an unused storage binding addressed by its resource URL.
+pub(crate) async fn org_plan_delete_binding(
     deps: ConsoleDeps,
     headers: HeaderMap,
-    Path(org_slug): Path<String>,
+    RequestStart(started): RequestStart,
+    Path((org_slug, binding_id)): Path<(String, String)>,
     Form(form): Form<DeleteByIdForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -3557,75 +4750,10 @@ pub(crate) async fn org_delete_project(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
+    let scope = organization_scope(&deps.db, &org_slug).await;
     if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingManage).await
     {
-        return *deny;
-    }
-    let result = async {
-        let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
-            return Ok(None);
-        };
-        let Some(project) = deps
-            .db
-            .list_projects(org.id)
-            .await?
-            .into_iter()
-            .find(|p| p.id == form.id)
-        else {
-            return Ok(Some(Err("no such project")));
-        };
-        let in_use = deps
-            .db
-            .list_registries()
-            .await?
-            .into_iter()
-            .any(|r| r.org_id == Some(org.id) && r.project_path == project.path);
-        if in_use {
-            return Ok(Some(Err("project still has registries")));
-        }
-        deps.db.delete_project(org.id, project.id).await?;
-        deps.db
-            .record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "project.delete",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&project.path),
-            )
-            .await?;
-        Ok::<_, anyhow::Error>(Some(Ok(())))
-    }
-    .await;
-    match result {
-        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}/projects")).into_response(),
-        Ok(Some(Err(msg))) => (StatusCode::CONFLICT, msg).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /-/org/{org}/bindings/delete` — delete an unused storage binding.
-pub(crate) async fn org_delete_binding(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    Path(org_slug): Path<String>,
-    Form(form): Form<DeleteByIdForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::StorageManage).await {
         return *deny;
     }
     let result = async {
@@ -3634,59 +4762,94 @@ pub(crate) async fn org_delete_binding(
         };
         let Some(binding) = deps
             .db
-            .list_storage_bindings(org.id)
+            .storage_binding_by_stable_id(&binding_id)
             .await?
-            .into_iter()
-            .find(|b| b.id == form.id)
+            .filter(|binding| binding.org_id == Some(org.id))
         else {
             return Ok(Some(Err("no such binding")));
         };
-        let used_by_registry = deps
-            .db
-            .list_registries()
-            .await?
-            .into_iter()
-            .any(|r| r.storage_binding_id == Some(binding.id));
-        if used_by_registry {
-            return Ok(Some(Err("binding still in use by a registry")));
-        }
-        // Caches reference bindings too — deleting one a cache depends on would
-        // orphan that cache's storage, so guard it the same way.
-        let used_by_cache = deps
-            .db
-            .list_caches()
-            .await?
-            .into_iter()
-            .any(|c| c.deleted_at.is_none() && c.storage_binding_id == Some(binding.id));
-        if used_by_cache {
-            return Ok(Some(Err("binding still in use by a cache")));
-        }
-        deps.db.delete_storage_binding(org.id, binding.id).await?;
-        deps.db
-            .record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "binding.delete",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(&binding.name),
+        let bearer = session.topology_bearer(&deps, Scope::parse(&org.stable_id))?;
+        let plan = deps
+            .topology
+            .plan_delete_storage_binding(
+                &bearer,
+                binding.stable_id.clone(),
+                binding.resource_version.to_string(),
             )
-            .await?;
-        Ok::<_, anyhow::Error>(Some(Ok(())))
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok::<_, anyhow::Error>(Some(Ok(plan)))
     }
     .await;
     match result {
-        Ok(Some(Ok(()))) => Redirect::to(&format!("/-/org/{org_slug}/storage")).into_response(),
+        Ok(Some(Ok(plan))) => Html(console::topology_plan_page(
+            &session.email,
+            "Delete storage binding",
+            &format!("/-/org/{org_slug}/storage-bindings/{binding_id}/delete"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
         Ok(Some(Err(msg))) => (StatusCode::CONFLICT, msg).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
     }
 }
 
-/// `POST /-/org/{org}/bindings` form: a name, a backend `kind`, and a root.
+/// Applies a reviewed storage-binding deletion.
+pub(crate) async fn org_delete_binding(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path((org_slug, binding_id)): Path<(String, String)>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if let Some(response) =
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingManage).await
+    {
+        return *response;
+    }
+    let Some(org) = deps.db.org_by_slug(&org_slug).await.ok().flatten() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let binding_exists = deps
+        .db
+        .storage_binding_by_stable_id(&binding_id)
+        .await
+        .map(|binding| binding.is_some_and(|binding| binding.org_id == Some(org.id)));
+    match binding_exists {
+        Ok(true) => {}
+        Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) => return internal(error),
+    }
+    let bearer = match session.topology_bearer(&deps, Scope::parse(&org.stable_id)) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .apply_delete_storage_binding(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/storage-bindings")).into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// `POST /-/org/{org}/storage-bindings/plan-create` form.
 #[derive(serde::Deserialize)]
 pub(crate) struct NewBindingForm {
     #[serde(default)]
@@ -3707,18 +4870,46 @@ pub(crate) struct NewBindingForm {
     /// Access mode for an `s3`/`r2` binding: `private` (default) or `public`.
     #[serde(default)]
     access: String,
-    /// Access key id for a private `s3`/`r2` binding.
-    #[serde(default)]
-    access_key_id: String,
-    /// Secret access key for a private `s3`/`r2` binding.
-    #[serde(default)]
-    secret_access_key: String,
 }
 
-/// `POST /-/org/{org}/bindings` — create a storage binding.
-pub(crate) async fn org_create_binding(
+fn storage_endpoint_from_origin(raw: &str) -> Result<aos_proto_types::StorageEndpoint, String> {
+    let parsed =
+        url::Url::parse(raw.trim()).map_err(|error| format!("invalid endpoint: {error}"))?;
+    if parsed.scheme() != "https"
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(
+            "endpoint must be an HTTPS origin without credentials, path, query, or fragment".into(),
+        );
+    }
+    let host = match parsed.host() {
+        Some(url::Host::Domain(name)) => {
+            aos_proto_types::storage_endpoint::Host::DnsName(name.to_string())
+        }
+        Some(url::Host::Ipv4(address)) => {
+            aos_proto_types::storage_endpoint::Host::Ipv4(address.octets().to_vec())
+        }
+        Some(url::Host::Ipv6(address)) => {
+            aos_proto_types::storage_endpoint::Host::Ipv6(address.octets().to_vec())
+        }
+        None => return Err("endpoint host is required".into()),
+    };
+    Ok(aos_proto_types::StorageEndpoint {
+        scheme: "https".into(),
+        host: Some(host),
+        port: u32::from(parsed.port_or_known_default().unwrap_or(443)),
+    })
+}
+
+/// Plans a storage-binding creation for explicit operator review.
+pub(crate) async fn org_plan_create_binding(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     Form(form): Form<NewBindingForm>,
 ) -> Response {
@@ -3729,8 +4920,10 @@ pub(crate) async fn org_create_binding(
     if let Err(resp) = check_csrf(&session, &form.csrf) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::StorageManage).await {
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingManage).await
+    {
         return *deny;
     }
     let name = form.name.trim();
@@ -3742,497 +4935,718 @@ pub(crate) async fn org_create_binding(
         )
             .into_response();
     }
-    let kind_str = form.kind.trim();
-    let kind_str = if kind_str.is_empty() {
-        "local_fs"
-    } else {
-        kind_str
-    };
-    let Some(kind) = BindingKind::parse(kind_str) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("unknown storage binding kind '{kind_str}' (expected local_fs, s3, or r2)"),
-        )
-            .into_response();
-    };
-    // The serving runtime gates which kinds are usable; `current()` reflects
-    // this process (native hub vs. Worker). The Worker has no filesystem, so it
-    // rejects local_fs; both runtimes accept s3/r2 (served via presigned URLs).
-    let runtime = RuntimeKind::current();
-    if !runtime.supports(kind) {
-        let supported = runtime
-            .supported_binding_kinds()
-            .iter()
-            .map(|k| k.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "storage binding kind '{kind_str}' is not supported on the {} runtime; \
-                 supported kinds: [{supported}]",
-                runtime.name(),
-            ),
-        )
-            .into_response();
-    }
-    let origin = if kind.requires_origin_config() {
-        Some(crate::binding_provision::OriginInput {
-            endpoint: form.endpoint.trim(),
-            region: form.region.trim(),
-            access_key_id: form.access_key_id.trim(),
-            secret_access_key: form.secret_access_key.trim(),
-            private: form.access.trim() != "public",
-        })
-    } else {
-        None
+    let kind = form.kind.trim();
+    let kind = if kind.is_empty() { "local_fs" } else { kind };
+    let provider = match kind {
+        "local_fs" => aos_proto_types::storage_binding_spec::Provider::LocalFilesystem(
+            aos_proto_types::LocalFilesystemStorageProvider {
+                root_path: root.to_string(),
+            },
+        ),
+        "s3" | "r2" => {
+            let endpoint = match storage_endpoint_from_origin(&form.endpoint) {
+                Ok(endpoint) => endpoint,
+                Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
+            };
+            let (bucket, prefix) = root.split_once('/').unwrap_or((root, ""));
+            let signing_region = match form.region.trim() {
+                "" => "auto".to_string(),
+                region => region.to_string(),
+            };
+            let access_mode = match form.access.trim() {
+                "" => "private".to_string(),
+                access => access.to_string(),
+            };
+            if kind == "s3" {
+                aos_proto_types::storage_binding_spec::Provider::S3(
+                    aos_proto_types::S3StorageProvider {
+                        bucket: bucket.to_string(),
+                        prefix: prefix.to_string(),
+                        endpoint: Some(endpoint),
+                        signing_region,
+                        access_mode,
+                    },
+                )
+            } else {
+                aos_proto_types::storage_binding_spec::Provider::R2(
+                    aos_proto_types::R2StorageProvider {
+                        bucket: bucket.to_string(),
+                        prefix: prefix.to_string(),
+                        endpoint: Some(endpoint),
+                        signing_region,
+                        access_mode,
+                    },
+                )
+            }
+        }
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("unknown storage binding provider '{other}'"),
+            )
+                .into_response()
+        }
     };
     let result = async {
         let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
             return Ok(None);
         };
-        let id = crate::binding_provision::provision_binding(
-            &deps.db,
-            deps.sealer.as_ref(),
-            crate::binding_provision::NewBinding {
-                org_id: org.id,
-                name,
-                kind,
-                root,
-                origin,
-            },
-        )
-        .await?;
-        deps.db
-            .record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                "binding.create",
-                &org_slug,
-                None,
-                None,
-                None,
-                Some(name),
+        let bearer = session.topology_bearer(&deps, Scope::parse(&org.stable_id))?;
+        let stable_id = uuid::Uuid::new_v4().simple().to_string();
+        let plan = deps
+            .topology
+            .plan_create_storage_binding(
+                &bearer,
+                aos_proto_types::PlanStorageBindingMutationRequest {
+                    stable_id,
+                    owner_scope_key: org.stable_id,
+                    spec: Some(aos_proto_types::StorageBindingSpec {
+                        name: name.to_string(),
+                        provider: Some(provider),
+                    }),
+                    expected_resource_version: String::new(),
+                    idempotency_key: format!(
+                        "console-plan-create-binding-{}",
+                        uuid::Uuid::new_v4()
+                    ),
+                    update_mask: Vec::new(),
+                },
             )
-            .await?;
-        Ok::<_, crate::binding_provision::ProvisionError>(Some(id))
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok::<_, anyhow::Error>(Some(plan))
     }
     .await;
     match result {
-        Ok(Some(_)) => Redirect::to(&format!("/-/org/{org_slug}/storage")).into_response(),
+        Ok(Some(plan)) => Html(console::topology_plan_page(
+            &session.email,
+            "Create storage binding",
+            &format!("/-/org/{org_slug}/storage-bindings/create"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(crate::binding_provision::ProvisionError::AlreadyExists(_)) => (
-            StatusCode::CONFLICT,
-            format!("a storage binding named '{name}' already exists"),
-        )
-            .into_response(),
-        Err(crate::binding_provision::ProvisionError::Invalid(m)) => {
-            (StatusCode::BAD_REQUEST, m).into_response()
-        }
-        Err(crate::binding_provision::ProvisionError::Backend(err)) => {
-            (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response()
-        }
+        Err(error) => (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
     }
 }
 
-/// `GET /-/org/{org}/bindings/{id}` — a custom storage binding's serving page
-/// (public access + frontends), RFC-0004 §12.
+/// Applies a reviewed storage-binding creation.
+pub(crate) async fn org_apply_create_binding(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    Path(org_slug): Path<String>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if let Some(response) =
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingManage).await
+    {
+        return *response;
+    }
+    if deps
+        .db
+        .org_by_slug(&org_slug)
+        .await
+        .ok()
+        .flatten()
+        .is_none()
+    {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .apply_create_storage_binding(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/-/org/{org_slug}/storage-bindings")).into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Shows one storage binding addressed only by stable API identity.
 pub(crate) async fn org_binding(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
-    Path((org_slug, binding_id)): Path<(String, i64)>,
+    Path((org_slug, binding_id)): Path<(String, String)>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::StorageManage).await {
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingRead).await
+    {
         return *deny;
     }
-    org_binding_view(&deps, &session, &org_slug, binding_id, None, started).await
-}
-
-/// Render an org binding's serving page (or `404` when the binding is not the
-/// org's). Shared by the GET page and the POST action's re-render.
-async fn org_binding_view(
-    deps: &ConsoleDeps,
-    session: &Session,
-    org_slug: &str,
-    binding_id: i64,
-    notice: Option<&str>,
-    started: Instant,
-) -> Response {
-    let org = match deps.db.org_by_slug(org_slug).await {
-        Ok(Some(o)) => o,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(err) => return internal(err),
-    };
-    let binding = match deps.db.storage_binding(binding_id).await {
-        Ok(Some(b)) if b.org_id == Some(org.id) => b,
-        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
-        Err(err) => return internal(err),
-    };
-    let frontends = match deps.db.list_storage_frontends(binding_id).await {
-        Ok(f) => f,
-        Err(err) => return internal(err),
-    };
-    Html(console::org_binding_page(
-        &session.email,
-        org_slug,
-        &binding,
-        &frontends,
-        &session.csrf(),
-        notice,
-        started,
-    ))
-    .into_response()
-}
-
-/// `POST /-/org/{org}/bindings/{id}` — manage a custom binding's public access
-/// and frontends (`op`: `set-public` / `add-frontend` / `delete-frontend`).
-pub(crate) async fn org_binding_action(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    Path((org_slug, binding_id)): Path<(String, i64)>,
-    Form(form): Form<std::collections::HashMap<String, String>>,
-) -> Response {
-    let field = |k: &str| form.get(k).map(String::as_str).unwrap_or("");
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    if let Err(resp) = check_csrf(&session, field("csrf")) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::StorageManage).await {
-        return *deny;
-    }
-    // The binding must belong to this org.
-    let org = match deps.db.org_by_slug(&org_slug).await {
-        Ok(Some(o)) => o,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(err) => return internal(err),
-    };
-    match deps.db.storage_binding(binding_id).await {
-        Ok(Some(b)) if b.org_id == Some(org.id) => {}
-        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
-        Err(err) => return internal(err),
-    }
-    let outcome: Result<&str, String> = match field("op") {
-        "set-public" => {
-            let url = field("endpoint").trim();
-            let url = (!url.is_empty()).then_some(url);
-            deps.db
-                .set_binding_public(binding_id, field("access"), url)
-                .await
-                .map(|_| "Public access saved.")
-                .map_err(|e| format!("{e:#}"))
-        }
-        "add-frontend" => {
-            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
-            deps.db
-                .create_storage_frontend(
-                    binding_id,
-                    field("domain").trim(),
-                    field("base_path").trim(),
-                    if field("mode") == "proxied" {
-                        "proxied"
-                    } else {
-                        "direct"
-                    },
-                    field("serves_git") == "1",
-                    field("serves_cache") == "1",
-                    field("serves_web") == "1",
-                    priority,
-                    field("advertised") == "1",
-                )
-                .await
-                .map(|_| "Frontend added.")
-                .map_err(|e| format!("{e:#}"))
-        }
-        "edit-frontend" => {
-            let Ok(id) = field("id").parse::<i64>() else {
-                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
-            };
-            match deps.db.list_storage_frontends(binding_id).await {
-                Ok(list) if list.iter().any(|f| f.id == id) => {}
-                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
-                Err(err) => return internal(err),
-            }
-            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
-            deps.db
-                .update_frontend(
-                    id,
-                    field("domain").trim(),
-                    field("base_path").trim(),
-                    if field("mode") == "proxied" {
-                        "proxied"
-                    } else {
-                        "direct"
-                    },
-                    field("serves_git") == "1",
-                    field("serves_cache") == "1",
-                    field("serves_web") == "1",
-                    priority,
-                    field("advertised") == "1",
-                )
-                .await
-                .map(|_| "Frontend updated.")
-                .map_err(|e| format!("{e:#}"))
-        }
-        "delete-frontend" => {
-            let Ok(id) = field("id").parse::<i64>() else {
-                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
-            };
-            match deps.db.list_storage_frontends(binding_id).await {
-                Ok(list) if list.iter().any(|f| f.id == id) => {}
-                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
-                Err(err) => return internal(err),
-            }
-            deps.db
-                .delete_frontend(id)
-                .await
-                .map(|_| "Frontend deleted.")
-                .map_err(|e| format!("{e:#}"))
-        }
-        _ => return (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
-    };
-    let notice = match outcome {
-        Ok(n) => n,
-        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
-    };
     org_binding_view(
         &deps,
         &session,
         &org_slug,
-        binding_id,
-        Some(notice),
+        &binding_id,
+        None,
+        "overview",
         started,
     )
     .await
 }
 
-/// `GET /-/org/{org}/registries/new` — the create-registry form.
-pub(crate) async fn org_new_registry_form(
+/// Shows one declared storage-binding subsection.
+pub(crate) async fn org_binding_section(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
-    Path(org_slug): Path<String>,
+    Path((org_slug, binding_id)): Path<(String, String)>,
+    active: &'static str,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
+        Ok(session) => session,
+        Err(response) => return *response,
     };
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    let required = match active {
+        "credentials" | "write-revisions" | "danger" => Permission::StorageBindingManage,
+        "consumer-grants" => Permission::StorageBindingGrant,
+        "placements" => Permission::PlacementRead,
+        "storage-gateways" => Permission::StorageGatewayRead,
+        "overview" => Permission::StorageBindingRead,
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, required).await {
         return *deny;
     }
-    let result = async {
-        let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
-            return Ok(None);
-        };
-        let projects = deps.db.list_projects(org.id).await?;
-        let bindings = deps.db.list_storage_bindings(org.id).await?;
-        Ok::<_, anyhow::Error>(Some(console::new_registry_page(
-            &session.email,
-            &org,
-            &session.csrf(),
-            &projects,
-            &bindings,
-            None,
-            started,
-        )))
-    }
-    .await;
-    match result {
-        Ok(Some(html)) => Html(html).into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(err) => internal(err),
-    }
+    org_binding_view(
+        &deps,
+        &session,
+        &org_slug,
+        &binding_id,
+        None,
+        active,
+        started,
+    )
+    .await
 }
 
-/// `POST /-/org/{org}/registries` form: the new managed registry's fields.
-#[derive(serde::Deserialize)]
-pub(crate) struct NewRegistryForm {
-    #[serde(default)]
-    csrf: String,
-    name: String,
-    #[serde(default)]
-    project_path: String,
-    binding: String,
-    #[serde(default)]
-    visibility: String,
-    #[serde(default)]
-    prefix: String,
-    #[serde(default)]
-    trust_keys: String,
-    #[serde(default)]
-    require_signatures: Option<String>,
-}
-
-/// `POST /-/org/{org}/registries` — create a managed registry.
-pub(crate) async fn org_create_registry(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    Path(org_slug): Path<String>,
-    Form(form): Form<NewRegistryForm>,
+/// Renders one org storage-binding section, or `404` for a foreign binding.
+///
+/// The GET pages and POST actions share this renderer so authorization,
+/// navigation, and topology context remain consistent.
+async fn org_binding_view(
+    deps: &ConsoleDeps,
+    session: &Session,
+    org_slug: &str,
+    binding_id: &str,
+    notice: Option<&str>,
+    active: &str,
+    started: Instant,
 ) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
+    let scope = organization_scope(&deps.db, org_slug).await;
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
     };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let Some(org) = (match deps.db.org_by_slug(&org_slug).await {
-        Ok(org) => org,
+    let org = match deps.db.org_by_slug(org_slug).await {
+        Ok(Some(o)) => o,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
     };
-
-    async fn reject(
-        deps: &ConsoleDeps,
-        org: &OrgRecord,
-        session: &Session,
-        message: &str,
-        started: Instant,
-    ) -> Response {
-        let projects = deps.db.list_projects(org.id).await.unwrap_or_default();
-        let bindings = deps
-            .db
-            .list_storage_bindings(org.id)
-            .await
-            .unwrap_or_default();
-        Html(console::new_registry_page(
-            &session.email,
-            org,
-            &session.csrf(),
-            &projects,
-            &bindings,
-            Some(message),
-            started,
-        ))
-        .into_response()
-    }
-
-    let name = form.name.trim();
-    if name.is_empty() {
-        return reject(&deps, &org, &session, "Registry name is required.", started).await;
-    }
-    let visibility = match form.visibility.trim() {
-        "" => "private",
-        v @ ("public" | "internal" | "private") => v,
-        _ => return reject(&deps, &org, &session, "Invalid visibility.", started).await,
+    let binding = match deps
+        .db
+        .storage_binding_read_detail_by_stable_id(binding_id)
+        .await
+    {
+        Ok(Some(b)) if b.org_id == Some(org.id) => b,
+        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(err) => return internal(err),
     };
-    // An empty binding selection means "default storage" (binding_id None):
-    // the registry roots on the deployment's own storage, addressed by its
-    // prefix. A non-empty name must resolve to one of the org's bindings.
-    let binding_name = form.binding.trim();
-    let binding_id = if binding_name.is_empty() {
-        None
+    let can_manage_binding = session
+        .allows(&deps.db, Permission::StorageBindingManage, &scope)
+        .await;
+    let managed_binding = if can_manage_binding {
+        match deps.db.storage_binding_by_stable_id(binding_id).await {
+            Ok(Some(record)) if record.org_id == Some(org.id) => Some(record),
+            Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+            Err(error) => return internal(error),
+        }
     } else {
-        match deps.db.storage_binding_by_name(org.id, binding_name).await {
-            Ok(Some(b)) => Some(b.id),
-            Ok(None) => {
-                return reject(
-                    &deps,
-                    &org,
-                    &session,
-                    &format!("No storage binding '{binding_name}' in this org."),
-                    started,
-                )
-                .await
-            }
+        None
+    };
+    let credentials = if active == "credentials" && can_manage_binding {
+        match deps
+            .db
+            .list_current_storage_binding_credentials(binding.id)
+            .await
+        {
+            Ok(credentials) => credentials,
             Err(err) => return internal(err),
         }
+    } else {
+        Vec::new()
     };
-    let project_path = form.project_path.trim().trim_matches('/');
-    let prefix = form.prefix.trim();
-    let trust_keys: Vec<String> = form
-        .trust_keys
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect();
-    let require_signatures = form.require_signatures.is_some();
-
-    let created = deps
-        .db
-        .create_managed_registry(
-            org.id,
-            project_path,
-            name,
-            visibility,
-            binding_id,
-            prefix,
-            &trust_keys,
-            require_signatures,
-        )
-        .await;
-    match created {
-        Ok(_) => {}
-        Err(err) => return reject(&deps, &org, &session, &format!("{err:#}"), started).await,
-    }
-    let canonical = match deps
-        .db
-        .registry_by_scope(&org.slug, project_path, name)
-        .await
-    {
-        Ok(Some(reg)) => reg.slug,
-        Ok(None) => return internal(anyhow::anyhow!("registry vanished after creation")),
-        Err(err) => return internal(err),
+    let revision_records = if active == "write-revisions" && can_manage_binding {
+        match deps
+            .db
+            .list_storage_binding_write_revisions(binding.id)
+            .await
+        {
+            Ok(revisions) => revisions,
+            Err(err) => return internal(err),
+        }
+    } else {
+        Vec::new()
     };
-    if let Err(err) = deps
-        .db
-        .record_audit(
-            "user",
-            Some(session.auth.user_id),
-            &session.email,
-            "registry.create",
-            &canonical,
-            None,
-            None,
-            None,
-            Some(visibility),
-        )
-        .await
-    {
-        return internal(err);
+    let mut write_revisions = Vec::with_capacity(revision_records.len());
+    for revision in revision_records {
+        let observation = match deps
+            .db
+            .storage_binding_write_observation(binding.id, revision.revision)
+            .await
+        {
+            Ok(observation) => observation,
+            Err(err) => return internal(err),
+        };
+        write_revisions.push((revision, observation));
     }
-    Redirect::to(&format!("/{canonical}/")).into_response()
+    let grant_records = if active == "consumer-grants" {
+        match deps
+            .db
+            .list_consumer_scope_grants(crate::db::GrantResource::StorageBinding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            })
+            .await
+        {
+            Ok(grants) => grants,
+            Err(err) => return internal(err),
+        }
+    } else {
+        Vec::new()
+    };
+    let mut grants = Vec::with_capacity(grant_records.len());
+    for grant in grant_records {
+        let pins = match deps
+            .db
+            .consumer_scope_grant_pin_impacts(
+                crate::db::GrantResource::StorageBinding {
+                    id: binding.id,
+                    stable_id: &binding.stable_id,
+                },
+                &grant.consumer_scope_key,
+            )
+            .await
+        {
+            Ok(pins) => pins,
+            Err(err) => return internal(err),
+        };
+        grants.push((grant, pins));
+    }
+    Html(console::org_binding_page(
+        &session.email,
+        org_slug,
+        &session.csrf(),
+        &binding,
+        managed_binding.as_ref(),
+        &credentials,
+        &write_revisions,
+        &grants,
+        can_manage_binding,
+        notice,
+        active,
+        &navigation,
+        started,
+    ))
+    .into_response()
 }
+
+#[derive(serde::Deserialize)]
+pub(crate) struct BindingCredentialPlanForm {
+    #[serde(default)]
+    csrf: String,
+    purpose: String,
+    secret_version_ref: String,
+    credential_fingerprint: String,
+    #[serde(default)]
+    expected_resource_version: String,
+    #[serde(default)]
+    expected_current_generation: i64,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct BindingGrantPlanForm {
+    #[serde(default)]
+    csrf: String,
+    consumer_scope_key: String,
+    resource_generation: i64,
+    #[serde(default)]
+    expected_resource_version: String,
+}
+
+async fn binding_for_mutation(
+    deps: &ConsoleDeps,
+    org_slug: &str,
+    binding_id: &str,
+) -> Result<(OrgRecord, crate::db::StorageBindingRecord), Response> {
+    let Some(org) = deps.db.org_by_slug(org_slug).await.map_err(internal)? else {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    };
+    let Some(binding) = deps
+        .db
+        .storage_binding_by_stable_id(binding_id)
+        .await
+        .map_err(internal)?
+    else {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    };
+    if binding.org_id != Some(org.id) {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    }
+    Ok((org, binding))
+}
+
+async fn plan_binding_credential(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: Instant,
+    org_slug: String,
+    binding_id: String,
+    form: BindingCredentialPlanForm,
+    action: StorageCredentialAction,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if let Some(response) =
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingManage).await
+    {
+        return *response;
+    }
+    let (org, binding) = match binding_for_mutation(&deps, &org_slug, &binding_id).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, Scope::parse(&org.stable_id)) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    let operation = match action {
+        StorageCredentialAction::Set => "set",
+        StorageCredentialAction::Rotate => "rotate",
+    };
+    let title = match action {
+        StorageCredentialAction::Set => "Set storage credential",
+        StorageCredentialAction::Rotate => "Rotate storage credential",
+    };
+    match deps
+        .topology
+        .plan_storage_binding_credential(
+            &bearer,
+            aos_proto_types::PlanStorageBindingCredentialRequest {
+                storage_binding_id: binding.stable_id.clone(),
+                purpose: form.purpose,
+                secret_version_ref: form.secret_version_ref,
+                credential_fingerprint: form.credential_fingerprint,
+                expected_resource_version: form.expected_resource_version,
+                idempotency_key: format!(
+                    "console-binding-plan-{operation}-credential-{}",
+                    uuid::Uuid::new_v4()
+                ),
+                expected_current_generation: form.expected_current_generation,
+            },
+            action,
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            title,
+            &format!("/-/org/{org_slug}/storage-bindings/{binding_id}/credentials/{operation}"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+async fn apply_binding_credential(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    org_slug: String,
+    binding_id: String,
+    form: PlacementApplyForm,
+    action: StorageCredentialAction,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if let Some(response) =
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingManage).await
+    {
+        return *response;
+    }
+    let (org, _) = match binding_for_mutation(&deps, &org_slug, &binding_id).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, Scope::parse(&org.stable_id)) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .apply_storage_binding_credential(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            action,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(()) => Redirect::to(&format!(
+            "/-/org/{org_slug}/storage-bindings/{binding_id}/credentials"
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+macro_rules! binding_credential_handlers {
+    ($plan:ident, $apply:ident, $action:expr) => {
+        pub(crate) async fn $plan(
+            deps: ConsoleDeps,
+            headers: HeaderMap,
+            RequestStart(started): RequestStart,
+            Path((org_slug, binding_id)): Path<(String, String)>,
+            Form(form): Form<BindingCredentialPlanForm>,
+        ) -> Response {
+            plan_binding_credential(deps, headers, started, org_slug, binding_id, form, $action)
+                .await
+        }
+
+        pub(crate) async fn $apply(
+            deps: ConsoleDeps,
+            headers: HeaderMap,
+            Path((org_slug, binding_id)): Path<(String, String)>,
+            Form(form): Form<PlacementApplyForm>,
+        ) -> Response {
+            apply_binding_credential(deps, headers, org_slug, binding_id, form, $action).await
+        }
+    };
+}
+
+binding_credential_handlers!(
+    org_plan_set_binding_credential,
+    org_set_binding_credential,
+    StorageCredentialAction::Set
+);
+binding_credential_handlers!(
+    org_plan_rotate_binding_credential,
+    org_rotate_binding_credential,
+    StorageCredentialAction::Rotate
+);
+
+async fn plan_binding_grant(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: Instant,
+    org_slug: String,
+    binding_id: String,
+    form: BindingGrantPlanForm,
+    action: ConsumerGrantAction,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if let Some(response) =
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingGrant).await
+    {
+        return *response;
+    }
+    let (org, binding) = match binding_for_mutation(&deps, &org_slug, &binding_id).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, Scope::parse(&org.stable_id)) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    let operation = match action {
+        ConsumerGrantAction::Grant => "grant",
+        ConsumerGrantAction::Revoke => "revoke",
+    };
+    match deps
+        .topology
+        .plan_storage_binding_grant(
+            &bearer,
+            aos_proto_types::PlanConsumerScopeGrantRequest {
+                resource_kind: "storage_binding".to_string(),
+                resource_stable_id: binding.stable_id.clone(),
+                resource_generation: form.resource_generation,
+                consumer_scope_key: form.consumer_scope_key,
+                expected_resource_version: form.expected_resource_version,
+                idempotency_key: format!(
+                    "console-binding-plan-{operation}-{}",
+                    uuid::Uuid::new_v4()
+                ),
+                pin_resolutions: Vec::new(),
+            },
+            action,
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            if action == ConsumerGrantAction::Grant {
+                "Grant storage-binding access"
+            } else {
+                "Revoke storage-binding access"
+            },
+            &format!("/-/org/{org_slug}/storage-bindings/{binding_id}/consumer-grants/{operation}"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+async fn apply_binding_grant(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    org_slug: String,
+    binding_id: String,
+    form: PlacementApplyForm,
+    action: ConsumerGrantAction,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let scope = organization_scope(&deps.db, &org_slug).await;
+    if let Some(response) =
+        require_org_perm(&deps, &session, &scope, Permission::StorageBindingGrant).await
+    {
+        return *response;
+    }
+    let (org, _) = match binding_for_mutation(&deps, &org_slug, &binding_id).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+    let bearer = match session.topology_bearer(&deps, Scope::parse(&org.stable_id)) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .apply_storage_binding_grant(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            action,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(()) => Redirect::to(&format!(
+            "/-/org/{org_slug}/storage-bindings/{binding_id}/consumer-grants"
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+macro_rules! binding_grant_handlers {
+    ($plan:ident, $apply:ident, $action:expr) => {
+        pub(crate) async fn $plan(
+            deps: ConsoleDeps,
+            headers: HeaderMap,
+            RequestStart(started): RequestStart,
+            Path((org_slug, binding_id)): Path<(String, String)>,
+            Form(form): Form<BindingGrantPlanForm>,
+        ) -> Response {
+            plan_binding_grant(deps, headers, started, org_slug, binding_id, form, $action).await
+        }
+
+        pub(crate) async fn $apply(
+            deps: ConsoleDeps,
+            headers: HeaderMap,
+            Path((org_slug, binding_id)): Path<(String, String)>,
+            Form(form): Form<PlacementApplyForm>,
+        ) -> Response {
+            apply_binding_grant(deps, headers, org_slug, binding_id, form, $action).await
+        }
+    };
+}
+
+binding_grant_handlers!(
+    org_plan_grant_binding_scope,
+    org_grant_binding_scope,
+    ConsumerGrantAction::Grant
+);
+binding_grant_handlers!(
+    org_plan_revoke_binding_scope,
+    org_revoke_binding_scope,
+    ConsumerGrantAction::Revoke
+);
 
 /// `POST /-/org/{org}/delete` form: the typed-confirmation slug.
 #[derive(serde::Deserialize)]
 pub(crate) struct OrgDeleteForm {
     #[serde(default)]
     csrf: String,
+    #[serde(default)]
     confirm: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
-/// Soft-delete grace window: 30 days (matches the offboarding default).
-const ORG_DELETE_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
-
-/// `POST /-/org/{org}/delete` — soft-delete an org behind a typed confirmation.
+/// `POST /-/org/{org}/delete` — plan or apply organization offboarding.
 pub(crate) async fn org_delete(
     deps: ConsoleDeps,
     headers: HeaderMap,
+    RequestStart(started): RequestStart,
     Path(org_slug): Path<String>,
     Form(form): Form<OrgDeleteForm>,
 ) -> Response {
@@ -4246,9 +5660,29 @@ pub(crate) async fn org_delete(
     if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
+    let scope = organization_scope(&deps.db, &org_slug).await;
     if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::IamAdmin).await {
         return *deny;
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !form.plan_id.is_empty() {
+        return match deps
+            .topology
+            .apply_delete_organization(
+                &bearer,
+                form.plan_id.clone(),
+                form.confirmation_hash,
+                console_apply_idempotency_key(&form.plan_id),
+            )
+            .await
+        {
+            Ok(true) => Redirect::to("/-/orgs").into_response(),
+            Ok(false) => StatusCode::NOT_FOUND.into_response(),
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
     }
     if form.confirm.trim() != org_slug {
         return (
@@ -4257,35 +5691,31 @@ pub(crate) async fn org_delete(
         )
             .into_response();
     }
-    let result = async {
-        let Some(org) = deps.db.org_by_slug(&org_slug).await? else {
-            return Ok(false);
-        };
-        let deleted = deps
-            .db
-            .soft_delete_org(org.id, ORG_DELETE_GRACE_SECS)
-            .await?;
-        if deleted {
-            deps.db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "org.delete",
-                    &org_slug,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await?;
-        }
-        Ok::<_, anyhow::Error>(deleted)
-    }
-    .await;
-    match result {
-        Ok(_) => Redirect::to("/-/orgs").into_response(),
-        Err(err) => internal(err),
+    let Some(org) = deps.db.org_by_slug(&org_slug).await.ok().flatten() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match deps
+        .topology
+        .plan_delete_organization(
+            &bearer,
+            aos_proto_types::PlanDeleteOrganizationRequest {
+                slug: org_slug.clone(),
+                expected_resource_version: org.resource_version.to_string(),
+                idempotency_key: format!("console-plan-delete-org-{}", uuid::Uuid::new_v4()),
+            },
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Delete organization",
+            &format!("/-/org/{org_slug}/danger/delete"),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
 }
 
@@ -4331,12 +5761,14 @@ async fn render_instance_settings(
     notice: Option<&str>,
     started: Instant,
 ) -> Response {
-    render_instance(deps, session, "general", notice, started).await
+    render_instance(deps, session, "overview", notice, started).await
 }
 
-/// Renders one instance-settings tab (`general` / `branding` / `serving` /
-/// `storage`), instance-admin gated. All but storage load and render the
-/// editable [`InstanceSettings`](crate::db::InstanceSettings) bundle.
+/// Renders an instance-settings section for an instance administrator.
+///
+/// The `storage` section loads the storage inventory; `overview`, `branding`,
+/// `identity`, and `resource-defaults` load the editable
+/// [`InstanceSettings`](crate::db::InstanceSettings) bundle.
 async fn render_instance(
     deps: &ConsoleDeps,
     session: &Session,
@@ -4345,7 +5777,7 @@ async fn render_instance(
     started: Instant,
 ) -> Response {
     if !session
-        .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
+        .allows(&deps.db, Permission::IamAdmin, &Scope::root())
         .await
     {
         return (StatusCode::FORBIDDEN, "instance admin required").into_response();
@@ -4355,19 +5787,10 @@ async fn render_instance(
             Ok(b) => b,
             Err(err) => return internal(err),
         };
-        let frontends = match &binding {
-            Some(b) => match deps.db.list_storage_frontends(b.id).await {
-                Ok(f) => f,
-                Err(err) => return internal(err),
-            },
-            None => Vec::new(),
-        };
         return Html(console::instance_storage_page(
             &session.email,
             deps.default_storage_location.as_deref(),
             binding.as_ref(),
-            &frontends,
-            &session.csrf(),
             notice,
             started,
         ))
@@ -4382,10 +5805,17 @@ async fn render_instance(
         "branding" => {
             console::instance_branding_page(&session.email, &csrf, &settings, notice, started)
         }
-        "serving" => {
-            console::instance_serving_page(&session.email, &csrf, &settings, notice, started)
+        "resource-defaults" => console::instance_resource_defaults_page(
+            &session.email,
+            &csrf,
+            &settings,
+            notice,
+            started,
+        ),
+        "identity" => {
+            console::instance_settings_page(&session.email, &csrf, &settings, notice, started)
         }
-        _ => console::instance_settings_page(&session.email, &csrf, &settings, notice, started),
+        _ => console::instance_overview_page(&session.email, notice, started),
     };
     Html(html).into_response()
 }
@@ -4405,7 +5835,7 @@ async fn require_instance_admin(
         return Err(*resp);
     }
     if !session
-        .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
+        .allows(&deps.db, Permission::IamAdmin, &Scope::root())
         .await
     {
         return Err((StatusCode::FORBIDDEN, "instance admin required").into_response());
@@ -4413,7 +5843,7 @@ async fn require_instance_admin(
     Ok(session)
 }
 
-/// `GET /-/instance/storage` — the instance default-storage page (read-only).
+/// `GET /-/instance/storage-bindings` — the instance storage inventory.
 pub(crate) async fn instance_storage(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -4439,8 +5869,21 @@ pub(crate) async fn instance_branding(
     render_instance(&deps, &session, "branding", None, started).await
 }
 
-/// `GET /-/instance/serving` — the serving-defaults tab (instance admins only).
-pub(crate) async fn instance_serving(
+/// `GET /-/instance/identity-and-signup` — authentication and signup policy.
+pub(crate) async fn instance_identity(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    render_instance(&deps, &session, "identity", None, started).await
+}
+
+/// `GET /-/instance/resource-defaults` — defaults for newly created resources.
+pub(crate) async fn instance_resource_defaults(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
@@ -4449,10 +5892,10 @@ pub(crate) async fn instance_serving(
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_instance(&deps, &session, "serving", None, started).await
+    render_instance(&deps, &session, "resource-defaults", None, started).await
 }
 
-/// `POST /-/instance` form: signup + identity policy.
+/// `POST /-/instance/identity-and-signup` form.
 #[derive(serde::Deserialize)]
 pub(crate) struct InstanceSettingsForm {
     #[serde(default)]
@@ -4464,12 +5907,93 @@ pub(crate) struct InstanceSettingsForm {
     #[serde(default)]
     password_login: Option<String>,
     #[serde(default)]
-    caches_public: Option<String>,
-    #[serde(default)]
     session_lifetime_secs: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
-/// `POST /-/instance` — update signup + identity policy (instance admins).
+/// Plans a browser-originated instance-settings mutation through the same
+/// retained-control service used by Connect clients.
+async fn plan_instance_settings_web(
+    deps: &ConsoleDeps,
+    session: &Session,
+    title: &str,
+    apply_action: &str,
+    values: std::collections::HashMap<String, String>,
+    started: Instant,
+) -> Response {
+    let bearer = match session.topology_bearer(deps, Scope::root()) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    let current = match deps.topology.instance_settings(&bearer).await {
+        Ok(current) => current,
+        Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
+    };
+    let request_idempotency_key = format!("console-plan-instance-{}", uuid::Uuid::new_v4());
+    match deps
+        .topology
+        .plan_instance_settings(
+            &bearer,
+            aos_proto_types::PlanSetInstanceSettingsRequest {
+                values,
+                clear: Vec::new(),
+                expected_resource_version: current.resource_version,
+                idempotency_key: request_idempotency_key,
+            },
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            title,
+            apply_action,
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+    }
+}
+
+/// Applies an instance-settings plan and refreshes process-local presentation
+/// state only after the authoritative apply has committed.
+async fn apply_instance_settings_web(
+    deps: &ConsoleDeps,
+    session: &Session,
+    plan_id: String,
+    confirmation_hash: String,
+) -> Result<(), Response> {
+    let bearer = session
+        .topology_bearer(deps, Scope::root())
+        .map_err(internal)?;
+    let idempotency_key = console_apply_idempotency_key(&plan_id);
+    let response = deps
+        .topology
+        .apply_instance_settings(&bearer, plan_id, confirmation_hash, idempotency_key)
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, error.to_string()).into_response())?;
+    let settings = response.settings.ok_or_else(|| {
+        internal(anyhow::anyhow!(
+            "instance-settings apply response omitted settings"
+        ))
+    })?;
+    crate::web::console_render::set_caches_public(settings.caches_public);
+    crate::web::console_render::set_site_chrome(
+        (!settings.site_title.is_empty()).then_some(settings.site_title.as_str()),
+        (!settings.tagline.is_empty()).then_some(settings.tagline.as_str()),
+        (!settings.announcement.is_empty()).then_some(settings.announcement.as_str()),
+        (!settings.tos_url.is_empty()).then_some(settings.tos_url.as_str()),
+        (!settings.privacy_url.is_empty()).then_some(settings.privacy_url.as_str()),
+        (!settings.support_url.is_empty()).then_some(settings.support_url.as_str()),
+    );
+    Ok(())
+}
+
+/// Updates signup and identity policy for instance administrators.
 pub(crate) async fn instance_settings_action(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -4480,54 +6004,104 @@ pub(crate) async fn instance_settings_action(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    let policy = crate::db::SignupPolicy::parse(&form.signup_policy);
-    let result = async {
-        deps.db.set_signup_policy(policy).await?;
-        // Normalize the allowlist to lowercased, comma-joined domains.
-        let domains: Vec<String> = form
-            .signup_domains
-            .split(|c: char| c == ',' || c.is_whitespace())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_lowercase())
-            .collect();
-        deps.db
-            .set_instance_config("signup_domains", Some(&domains.join(",")))
-            .await?;
-        deps.db
-            .set_instance_config(
-                "password_login",
-                Some(if form.password_login.is_some() {
-                    "on"
-                } else {
-                    "off"
-                }),
-            )
-            .await?;
-        let caches_public = form.caches_public.is_some();
-        deps.db
-            .set_instance_config(
-                "caches_public",
-                Some(if caches_public { "on" } else { "off" }),
-            )
-            .await?;
-        // Refresh the live masthead/gating flag so the change takes effect for
-        // this serving process without a restart.
-        crate::web::console_render::set_caches_public(caches_public);
-        deps.db
-            .set_instance_config("session_lifetime_secs", Some(&form.session_lifetime_secs))
-            .await?;
-        Ok::<_, anyhow::Error>(())
+    if !form.plan_id.is_empty() {
+        if let Err(response) =
+            apply_instance_settings_web(&deps, &session, form.plan_id, form.confirmation_hash).await
+        {
+            return response;
+        }
+        return render_instance(
+            &deps,
+            &session,
+            "identity",
+            Some("Signup &amp; identity saved."),
+            started,
+        )
+        .await;
     }
-    .await;
-    if let Err(err) = result {
-        return internal(err);
-    }
-    audit_instance(&deps, &session, "instance.signup_policy", policy.as_str()).await;
-    render_instance(
+    let domains = form
+        .signup_domains
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .filter(|domain| !domain.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(",");
+    let values = std::collections::HashMap::from([
+        ("signup_policy".to_string(), form.signup_policy),
+        ("signup_domains".to_string(), domains),
+        (
+            "password_login".to_string(),
+            if form.password_login.is_some() {
+                "on".to_string()
+            } else {
+                "off".to_string()
+            },
+        ),
+        (
+            "session_lifetime_secs".to_string(),
+            form.session_lifetime_secs,
+        ),
+    ]);
+    plan_instance_settings_web(
         &deps,
         &session,
-        "general",
-        Some("Signup &amp; identity saved."),
+        "Review signup & identity settings",
+        "/-/instance/identity-and-signup",
+        values,
+        started,
+    )
+    .await
+}
+
+/// `POST /-/instance/resource-defaults` form.
+#[derive(serde::Deserialize)]
+pub(crate) struct InstanceResourceDefaultsForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    caches_public: Option<String>,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
+}
+
+/// Updates defaults applied to newly created instance resources.
+pub(crate) async fn instance_resource_defaults_action(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    Form(form): Form<InstanceResourceDefaultsForm>,
+) -> Response {
+    let session = match require_instance_admin(&deps, &headers, &form.csrf).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !form.plan_id.is_empty() {
+        if let Err(response) =
+            apply_instance_settings_web(&deps, &session, form.plan_id, form.confirmation_hash).await
+        {
+            return response;
+        }
+        return render_instance(
+            &deps,
+            &session,
+            "resource-defaults",
+            Some("Resource defaults saved."),
+            started,
+        )
+        .await;
+    }
+    let caches_public = form.caches_public.is_some();
+    plan_instance_settings_web(
+        &deps,
+        &session,
+        "Review instance resource defaults",
+        "/-/instance/resource-defaults",
+        std::collections::HashMap::from([(
+            "caches_public".to_string(),
+            if caches_public { "on" } else { "off" }.to_string(),
+        )]),
         started,
     )
     .await
@@ -4550,6 +6124,10 @@ pub(crate) struct InstanceBrandingForm {
     privacy_url: String,
     #[serde(default)]
     support_url: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
 /// `POST /-/instance/branding` — update branding + footer (instance admins).
@@ -4563,6 +6141,21 @@ pub(crate) async fn instance_branding_action(
         Ok(s) => s,
         Err(resp) => return resp,
     };
+    if !form.plan_id.is_empty() {
+        if let Err(response) =
+            apply_instance_settings_web(&deps, &session, form.plan_id, form.confirmation_hash).await
+        {
+            return response;
+        }
+        return render_instance(
+            &deps,
+            &session,
+            "branding",
+            Some("Branding saved."),
+            started,
+        )
+        .await;
+    }
     // Footer links render as `href`s; require an http(s) scheme so a blank or
     // `javascript:`/`data:` value can never become a stored XSS vector.
     for (label, value) in [
@@ -4579,233 +6172,23 @@ pub(crate) async fn instance_branding_action(
                 .into_response();
         }
     }
-    let result = async {
-        for (key, value) in [
-            ("site_title", &form.site_title),
-            ("tagline", &form.tagline),
-            ("announcement", &form.announcement),
-            ("tos_url", &form.tos_url),
-            ("privacy_url", &form.privacy_url),
-            ("support_url", &form.support_url),
-        ] {
-            deps.db.set_instance_config(key, Some(value)).await?;
-        }
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    if let Err(err) = result {
-        return internal(err);
-    }
-    // Refresh the process chrome so the new title/banner/footer take effect for
-    // this shell immediately (other Worker isolates pick it up as they recycle).
-    crate::web::console_render::set_site_chrome(
-        opt(&form.site_title),
-        opt(&form.tagline),
-        opt(&form.announcement),
-        opt(&form.tos_url),
-        opt(&form.privacy_url),
-        opt(&form.support_url),
-    );
-    audit_instance(&deps, &session, "instance.branding", &form.site_title).await;
-    render_instance(
+    let values = std::collections::HashMap::from([
+        ("site_title".to_string(), form.site_title),
+        ("tagline".to_string(), form.tagline),
+        ("announcement".to_string(), form.announcement),
+        ("tos_url".to_string(), form.tos_url),
+        ("privacy_url".to_string(), form.privacy_url),
+        ("support_url".to_string(), form.support_url),
+    ]);
+    plan_instance_settings_web(
         &deps,
         &session,
-        "branding",
-        Some("Branding saved."),
+        "Review instance branding",
+        "/-/instance/branding",
+        values,
         started,
     )
     .await
-}
-
-/// `POST /-/instance/serving` form: default crawl policy and max upload size.
-#[derive(serde::Deserialize)]
-pub(crate) struct InstanceServingForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    default_crawl_policy: String,
-    #[serde(default)]
-    max_upload_bytes: String,
-}
-
-/// `POST /-/instance/serving` — update serving defaults (instance admins).
-pub(crate) async fn instance_serving_action(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    Form(form): Form<InstanceServingForm>,
-) -> Response {
-    let session = match require_instance_admin(&deps, &headers, &form.csrf).await {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    // Validate the crawl policy through the same parser the registry uses.
-    let policy = crate::crawl::CrawlPolicy::parse_or_default(&form.default_crawl_policy);
-    let result = async {
-        deps.db
-            .set_instance_config("default_crawl_policy", Some(policy.as_str()))
-            .await?;
-        deps.db
-            .set_instance_config("max_upload_bytes", Some(&form.max_upload_bytes))
-            .await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    if let Err(err) = result {
-        return internal(err);
-    }
-    audit_instance(&deps, &session, "instance.serving", policy.as_str()).await;
-    render_instance(
-        &deps,
-        &session,
-        "serving",
-        Some("Serving defaults saved."),
-        started,
-    )
-    .await
-}
-
-/// `POST /-/instance/storage` — manage the instance default storage binding's
-/// public access and frontends (instance admins; RFC-0004 §12). Dispatches the
-/// `op` field: `set-public` (access + `endpoint`), `add-frontend`,
-/// `delete-frontend`.
-pub(crate) async fn instance_storage_action(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    Form(form): Form<std::collections::HashMap<String, String>>,
-) -> Response {
-    let field = |k: &str| form.get(k).map(String::as_str).unwrap_or("");
-    let session = match require_instance_admin(&deps, &headers, field("csrf")).await {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-    let binding = match deps.db.instance_default_binding().await {
-        Ok(Some(b)) => b,
-        Ok(None) => {
-            return (StatusCode::CONFLICT, "instance default binding not seeded").into_response()
-        }
-        Err(err) => return internal(err),
-    };
-    let op = field("op").to_string();
-    let outcome: Result<&str, String> = match op.as_str() {
-        "set-public" => {
-            let url = field("endpoint").trim();
-            let url = (!url.is_empty()).then_some(url);
-            deps.db
-                .set_binding_public(binding.id, field("access"), url)
-                .await
-                .map(|_| "Public access saved.")
-                .map_err(|e| format!("{e:#}"))
-        }
-        "add-frontend" => {
-            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
-            deps.db
-                .create_storage_frontend(
-                    binding.id,
-                    field("domain").trim(),
-                    field("base_path").trim(),
-                    if field("mode") == "proxied" {
-                        "proxied"
-                    } else {
-                        "direct"
-                    },
-                    field("serves_git") == "1",
-                    field("serves_cache") == "1",
-                    field("serves_web") == "1",
-                    priority,
-                    field("advertised") == "1",
-                )
-                .await
-                .map(|_| "Frontend added.")
-                .map_err(|e| format!("{e:#}"))
-        }
-        "edit-frontend" => {
-            let Ok(id) = field("id").parse::<i64>() else {
-                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
-            };
-            // Only a frontend belonging to this binding may be edited here.
-            match deps.db.list_storage_frontends(binding.id).await {
-                Ok(list) if list.iter().any(|f| f.id == id) => {}
-                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
-                Err(err) => return internal(err),
-            }
-            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
-            deps.db
-                .update_frontend(
-                    id,
-                    field("domain").trim(),
-                    field("base_path").trim(),
-                    if field("mode") == "proxied" {
-                        "proxied"
-                    } else {
-                        "direct"
-                    },
-                    field("serves_git") == "1",
-                    field("serves_cache") == "1",
-                    field("serves_web") == "1",
-                    priority,
-                    field("advertised") == "1",
-                )
-                .await
-                .map(|_| "Frontend updated.")
-                .map_err(|e| format!("{e:#}"))
-        }
-        "delete-frontend" => {
-            let Ok(id) = field("id").parse::<i64>() else {
-                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
-            };
-            // Only a frontend belonging to this binding may be deleted here.
-            match deps.db.list_storage_frontends(binding.id).await {
-                Ok(list) if list.iter().any(|f| f.id == id) => {}
-                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
-                Err(err) => return internal(err),
-            }
-            deps.db
-                .delete_frontend(id)
-                .await
-                .map(|_| "Frontend deleted.")
-                .map_err(|e| format!("{e:#}"))
-        }
-        _ => return (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
-    };
-    let notice = match outcome {
-        Ok(notice) => notice,
-        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
-    };
-    audit_instance(&deps, &session, "instance.storage", &op).await;
-    render_instance(&deps, &session, "storage", Some(notice), started).await
-}
-
-/// Trim a form field to `Option`, mapping blank to `None`.
-fn opt(s: &str) -> Option<&str> {
-    let t = s.trim();
-    if t.is_empty() {
-        None
-    } else {
-        Some(t)
-    }
-}
-
-/// Best-effort audit row for an instance-settings mutation (non-fatal).
-async fn audit_instance(deps: &ConsoleDeps, session: &Session, action: &str, detail: &str) {
-    if let Err(err) = deps
-        .db
-        .record_audit(
-            "user",
-            Some(session.auth.user_id),
-            &session.email,
-            action,
-            "",
-            None,
-            None,
-            None,
-            Some(detail),
-        )
-        .await
-    {
-        tracing::warn!(error = %format!("{err:#}"), "recording {action} audit");
-    }
 }
 
 /// The effective absolute session lifetime in seconds for newly created sessions.
@@ -4912,7 +6295,7 @@ pub(crate) async fn registry_settings(
 }
 
 /// Returns the committed `[caches]` priority for `url`, matching by URL with
-/// trailing slashes normalized so a frontend `https://c/` matches a committed
+/// trailing slashes normalized so a route URL `https://c/` matches a committed
 /// `https://c`.
 fn committed_priority(
     committed: &std::collections::BTreeMap<String, u32>,
@@ -4938,9 +6321,7 @@ fn remove_matching_url(committed: &mut std::collections::BTreeMap<String, u32>, 
     }
 }
 
-/// Render one registry settings section (`general` / `storage` / `caches` /
-/// `danger`) — the split of the former single dense settings page. All load the
-/// same data and differ only in which section `registry_settings_page` renders.
+/// Renders one exact registry management section.
 async fn registry_settings_view(
     deps: &ConsoleDeps,
     session: &Session,
@@ -4949,112 +6330,36 @@ async fn registry_settings_view(
     active: &str,
     started: Instant,
 ) -> Response {
-    let scope = Scope::parse(&registry.slug);
-    if let Some(deny) = require_org_perm(deps, session, &scope, Permission::RegistryConfigure).await
-    {
+    let scope = registry_scope(&deps.db, &registry).await;
+    let Some(page) = RegistryPage::parse(active) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let required = REGISTRY_PAGES
+        .iter()
+        .find(|spec| spec.key == page)
+        .map_or(Permission::Read, |spec| spec.permission);
+    if let Some(deny) = require_org_perm(deps, session, &scope, required).await {
         return *deny;
     }
     let result_outcome = async {
-        let binding = match registry.storage_binding_id {
-            Some(id) => deps
-                .db
-                .storage_binding(id)
-                .await?
-                .map(|b| (b.name, b.root, registry.prefix.clone())),
-            None => None,
-        };
-        // Resolve the owning org slug (for cache links) and the binary caches
-        // that serve this registry — the reverse of a cache's linked registries.
-        let org_slug = match registry.org_id {
-            Some(id) => deps
-                .db
-                .org_by_id(id)
-                .await?
-                .map(|o| o.slug)
-                .unwrap_or_default(),
-            None => String::new(),
-        };
-        // The committed `[caches]` the indexer flattened — the single source of
-        // truth a consumer resolves. The reconciliation view below classifies
-        // each managed cache against this list by its consumer URL.
-        let committed = deps.db.list_advertised_caches(registry.id).await?;
-        let mut committed_unmatched: std::collections::BTreeMap<String, u32> =
-            committed.iter().map(|(u, p)| (u.clone(), *p)).collect();
-
-        let mut caches = Vec::new();
-        let mut linked_ids = std::collections::HashSet::new();
-        for link in deps.db.cache_links_for_registry(registry.id).await? {
-            linked_ids.insert(link.cache_id);
-            if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
-                if cache.deleted_at.is_none() {
-                    let url =
-                        crate::service::cache_consumer_url(&deps.db, &deps.external_url, &cache)
-                            .await?;
-                    // Served-from-config when the cache's consumer URL appears
-                    // in the committed `[caches]` (compared trim-trailing-slash).
-                    let served = committed_priority(&committed_unmatched, &url);
-                    if served.is_some() {
-                        remove_matching_url(&mut committed_unmatched, &url);
-                    }
-                    caches.push(console::RegistryCacheRow {
-                        cache_slug: cache.slug,
-                        consumer_url: url,
-                        roots_packages: link.roots_packages,
-                        config_priority: served,
-                    });
-                }
-            }
-        }
-        // What is left in the committed list matches no linked managed cache:
-        // third-party or non-hosted URLs the registry advertises directly.
-        let mut external_caches: Vec<(String, u32)> = committed_unmatched.into_iter().collect();
-        external_caches.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
-        // Caches in this registry's org that aren't linked yet — the options for
-        // the "link a cache" control on the settings page.
-        let mut linkable_caches = Vec::new();
-        for c in deps.db.list_caches().await? {
-            if c.org_id == registry.org_id && c.deleted_at.is_none() && !linked_ids.contains(&c.id)
-            {
-                linkable_caches.push((c.slug, c.visibility));
-            }
-        }
-        // The org's storage bindings — targets for the "change storage" control.
-        let binding_names: Vec<String> = match registry.org_id {
-            Some(org_id) => deps
-                .db
-                .list_storage_bindings(org_id)
-                .await?
-                .into_iter()
-                .map(|b| b.name)
-                .collect(),
-            None => Vec::new(),
-        };
+        let navigation = navigation_permissions(&deps.db, session, &scope).await?;
         let can_delete = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
-        let advertise_frontend = deps
-            .db
-            .registry_advertises_storage_frontend(registry.id)
-            .await?;
-        let binding_ref = binding
-            .as_ref()
-            .map(|(n, r, p)| (n.as_str(), r.as_str(), p.as_str()));
         let placements =
             placement_overview_rows(deps, crate::db::SurfaceTarget::Registry(registry.id)).await?;
+        let (policies, equivalences) =
+            placement_policy_overview_rows(deps, crate::db::SurfaceTarget::Registry(registry.id))
+                .await?;
         Ok::<_, anyhow::Error>(console::registry_settings_page(
             &session.email,
             registry,
-            &org_slug,
             &session.csrf(),
-            binding_ref,
             &placements,
-            &binding_names,
-            &caches,
-            &external_caches,
-            &linkable_caches,
+            &policies,
+            &equivalences,
             can_delete,
-            advertise_frontend,
             result,
             active,
+            &navigation,
             started,
         ))
     }
@@ -5065,37 +6370,837 @@ async fn registry_settings_view(
     }
 }
 
-/// `GET /{slug}/-/settings/general` — registry visibility and crawl policy.
-pub(crate) async fn registry_general(
+/// `GET /{slug}/-/settings/access` — registry identity and access policy.
+pub(crate) async fn registry_access(
     deps: ConsoleDeps,
     headers: HeaderMap,
     started: RequestStart,
     uri: axum::http::Uri,
     path: Path<String>,
 ) -> Response {
-    registry_settings_section(deps, headers, started, uri, path, "general").await
+    registry_settings_section(deps, headers, started, uri, path, "access").await
 }
 
-/// `GET /{slug}/-/settings/storage` — the registry's storage tab.
-pub(crate) async fn registry_storage(
+/// `GET /{slug}/-/settings/placements` — registry storage and replicas.
+pub(crate) async fn registry_placements(
     deps: ConsoleDeps,
     headers: HeaderMap,
     started: RequestStart,
     uri: axum::http::Uri,
     path: Path<String>,
 ) -> Response {
-    registry_settings_section(deps, headers, started, uri, path, "storage").await
+    registry_settings_section(deps, headers, started, uri, path, "placements").await
 }
 
-/// `GET /{slug}/-/settings/caches` — the registry's binary-caches tab.
-pub(crate) async fn registry_caches(
+/// Shows immutable placement-policy revisions for a registry.
+pub(crate) async fn registry_placement_policies(
     deps: ConsoleDeps,
     headers: HeaderMap,
     started: RequestStart,
     uri: axum::http::Uri,
     path: Path<String>,
 ) -> Response {
-    registry_settings_section(deps, headers, started, uri, path, "caches").await
+    registry_settings_section(deps, headers, started, uri, path, "placement-policies").await
+}
+
+/// Shows confirmed placement equivalences for a registry.
+pub(crate) async fn registry_placement_equivalences(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "placement-equivalences").await
+}
+
+/// Renders a registry placement creation form backed by owner bindings.
+pub(crate) async fn registry_new_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let Some(org_id) = registry.org_id else {
+        return (
+            StatusCode::CONFLICT,
+            "registry has no organization bindings",
+        )
+            .into_response();
+    };
+    match deps.db.list_storage_binding_read_summaries(org_id).await {
+        Ok(bindings) => Html(console::new_placement_page(
+            &session.email,
+            "Add registry placement",
+            &format!("/{}/-/settings/placements/plan-create", registry.slug),
+            &session.csrf(),
+            &bindings,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// Plans creation of one registry placement.
+pub(crate) async fn registry_plan_create_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<PlacementCreateForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let spec = match form.spec() {
+        Ok(spec) => spec,
+        Err(response) => return response,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_create_placement(
+            &bearer,
+            TopologySurface::Registry(registry.slug.clone()),
+            spec,
+            format!("console-registry-plan-create-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Create registry placement",
+            &format!("/{}/-/settings/placements/create", registry.slug),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies a reviewed registry placement creation.
+pub(crate) async fn registry_create_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    registry_apply_basic_placement_plan(
+        deps,
+        headers,
+        uri,
+        slug,
+        form,
+        PlacementPlanOperation::Create,
+    )
+    .await
+}
+
+/// Plans promotion of one registry placement without changing authority.
+pub(crate) async fn registry_plan_promote_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path((slug, placement)): Path<(String, String)>,
+    Form(form): Form<PlacementPlanForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_promote_placement(
+            &bearer,
+            TopologySurface::Registry(registry.slug.clone()),
+            placement.clone(),
+            form.expected_resource_version,
+            format!("console-registry-promote-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            &format!("Promote placement · {placement}"),
+            &format!(
+                "/{}/-/settings/placements/{placement}/promote",
+                registry.slug
+            ),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies one previously reviewed registry-placement promotion plan.
+pub(crate) async fn registry_promote_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path((slug, _placement)): Path<(String, String)>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .promote_placement(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/{}/-/settings/placements", registry.slug)).into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Plans replacement of a registry placement's mutable desired fields.
+pub(crate) async fn registry_plan_update_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path((slug, placement)): Path<(String, String)>,
+    Form(form): Form<PlacementUpdateForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_update_placement(
+            &bearer,
+            TopologySurface::Registry(registry.slug.clone()),
+            placement.clone(),
+            form.expected_resource_version,
+            PlacementUpdateSpec {
+                desired_state: form.desired_state,
+                desired_read_enabled: form.desired_read_enabled.is_some(),
+                read_order: form.read_order,
+            },
+            format!("console-registry-plan-update-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            &format!("Update registry placement · {placement}"),
+            &format!(
+                "/{}/-/settings/placements/{}/update",
+                registry.slug,
+                urlencode(&placement),
+            ),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies a reviewed registry placement update.
+pub(crate) async fn registry_update_placement(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path((slug, _placement)): Path<(String, String)>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    registry_apply_basic_placement_plan(
+        deps,
+        headers,
+        uri,
+        slug,
+        form,
+        PlacementPlanOperation::Update,
+    )
+    .await
+}
+
+/// Plans cancellation of a registry's in-flight placement promotion.
+pub(crate) async fn registry_plan_cancel_placement_promotion(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<TopologyPlanForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_cancel_placement_promotion(
+            &bearer,
+            TopologySurface::Registry(registry.slug.clone()),
+            format!("console-registry-plan-cancel-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Cancel registry placement promotion",
+            &format!("/{}/-/settings/placements/cancel-promotion", registry.slug),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies a reviewed registry promotion cancellation.
+pub(crate) async fn registry_cancel_placement_promotion(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    registry_apply_basic_placement_plan(
+        deps,
+        headers,
+        uri,
+        slug,
+        form,
+        PlacementPlanOperation::CancelPromotion,
+    )
+    .await
+}
+
+async fn registry_apply_basic_placement_plan(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    slug: String,
+    form: PlacementApplyForm,
+    operation: PlacementPlanOperation,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .apply_placement_plan(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            operation,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(()) => {
+            Redirect::to(&format!("/{}/-/settings/placements", registry.slug)).into_response()
+        }
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+async fn registry_plan_placement_lifecycle(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: Instant,
+    uri: axum::http::Uri,
+    slug: String,
+    placement: String,
+    form: PlacementPlanForm,
+    action: PlacementLifecycleAction,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    let operation = match action {
+        PlacementLifecycleAction::Drain => "drain",
+        PlacementLifecycleAction::Delete => "delete",
+    };
+    match deps
+        .topology
+        .plan_placement_lifecycle(
+            &bearer,
+            TopologySurface::Registry(registry.slug.clone()),
+            placement.clone(),
+            form.expected_resource_version,
+            action,
+            format!("console-registry-plan-{operation}-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            &format!(
+                "{} registry placement · {placement}",
+                operation_title(operation)
+            ),
+            &format!(
+                "/{}/-/settings/placements/{}/{operation}",
+                registry.slug,
+                urlencode(&placement),
+            ),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+async fn registry_apply_placement_lifecycle(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    slug: String,
+    form: PlacementApplyForm,
+    action: PlacementLifecycleAction,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    let operation = match action {
+        PlacementLifecycleAction::Drain => "drain",
+        PlacementLifecycleAction::Delete => "delete",
+    };
+    match deps
+        .topology
+        .apply_placement_lifecycle(
+            &bearer,
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            action,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(()) => {
+            Redirect::to(&format!("/{}/-/settings/placements", registry.slug)).into_response()
+        }
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+macro_rules! registry_placement_lifecycle_handlers {
+    ($plan:ident, $apply:ident, $action:expr) => {
+        pub(crate) async fn $plan(
+            deps: ConsoleDeps,
+            headers: HeaderMap,
+            RequestStart(started): RequestStart,
+            uri: axum::http::Uri,
+            Path((slug, placement)): Path<(String, String)>,
+            Form(form): Form<PlacementPlanForm>,
+        ) -> Response {
+            registry_plan_placement_lifecycle(
+                deps, headers, started, uri, slug, placement, form, $action,
+            )
+            .await
+        }
+
+        pub(crate) async fn $apply(
+            deps: ConsoleDeps,
+            headers: HeaderMap,
+            uri: axum::http::Uri,
+            Path((slug, _placement)): Path<(String, String)>,
+            Form(form): Form<PlacementApplyForm>,
+        ) -> Response {
+            registry_apply_placement_lifecycle(deps, headers, uri, slug, form, $action).await
+        }
+    };
+}
+
+registry_placement_lifecycle_handlers!(
+    registry_plan_drain_placement,
+    registry_drain_placement,
+    PlacementLifecycleAction::Drain
+);
+registry_placement_lifecycle_handlers!(
+    registry_plan_delete_placement,
+    registry_delete_placement,
+    PlacementLifecycleAction::Delete
+);
+
+/// Plans transition of a registry to an explicitly read-only topology.
+pub(crate) async fn registry_plan_remove_write_authority(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<TopologyPlanForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .plan_remove_write_authority(&bearer, TopologySurface::Registry(registry.slug.clone()))
+        .await
+    {
+        Ok(plan) => Html(console::topology_plan_page(
+            &session.email,
+            "Remove registry write authority",
+            &format!(
+                "/{}/-/settings/placements/remove-write-authority",
+                registry.slug
+            ),
+            &session.csrf(),
+            &plan,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Applies a reviewed transition of a registry to read-only topology.
+pub(crate) async fn registry_remove_write_authority(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<PlacementApplyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
+        .await
+    {
+        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    }
+    let bearer = match session.topology_bearer(&deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    match deps
+        .topology
+        .remove_write_authority(
+            &bearer,
+            TopologySurface::Registry(registry.slug.clone()),
+            form.plan_id.clone(),
+            form.confirmation_hash,
+            console_apply_idempotency_key(&form.plan_id),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/{}/-/settings/placements", registry.slug)).into_response(),
+        Err(error) => internal(anyhow::anyhow!(error.to_string())),
+    }
+}
+
+/// Shows the registry's ordered signed consumer cache stack.
+pub(crate) async fn registry_cache_stack(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "cache-stack").await
+}
+
+/// Shows cache-owned retention subscriptions pointing at the registry.
+pub(crate) async fn registry_retention_consumers(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "retention-consumers").await
+}
+
+/// Shows cache-owned population targets pointing at the registry.
+pub(crate) async fn registry_population_targets(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "population-targets").await
+}
+
+/// `GET /{slug}/-/settings/channels` — the registry's signed rollout channels.
+pub(crate) async fn registry_channels(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session.allows(&deps.db, Permission::Read, &scope).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
+    match deps.db.list_channels(registry.id).await {
+        Ok(channels) => Html(console::registry_channels_page(
+            &session.email,
+            &registry,
+            &channels,
+            &navigation,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// `GET /{slug}/-/settings/operations` — registry operation history.
+pub(crate) async fn registry_operations(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    started: RequestStart,
+    uri: axum::http::Uri,
+    path: Path<String>,
+) -> Response {
+    registry_settings_section(deps, headers, started, uri, path, "operations").await
 }
 
 /// `GET /{slug}/-/settings/danger` — the registry's danger-zone tab.
@@ -5132,583 +7237,6 @@ async fn registry_settings_section(
     registry_settings_view(&deps, &session, &registry, None, active, started).await
 }
 
-/// `POST /{slug}/-/settings/cache-link` form: the cache and the link flags.
-#[derive(serde::Deserialize)]
-pub(crate) struct RegistryCacheLinkForm {
-    #[serde(default)]
-    csrf: String,
-    cache: String,
-    #[serde(default)]
-    advertised: Option<String>,
-    #[serde(default)]
-    roots_packages: Option<String>,
-}
-
-/// `POST /{slug}/-/settings/cache-link` — link a cache to this registry, or
-/// update an existing link's flags, from the registry side.
-///
-/// `link_cache` is an upsert, so this both creates a new link and edits an
-/// existing one's `advertised`/`roots_packages` flags. The cross-visibility
-/// policy is enforced through the shared [`assess_cache_link`] chokepoint, the
-/// same as the cache-side route and the RPC. A link is an operational
-/// association only; advertising the cache to consumers is an explicit edit of
-/// the registry's committed `[[caches]]` config (Settings -> Config), never a
-/// write-through from linking.
-pub(crate) async fn registry_cache_link(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<RegistryCacheLinkForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let advertised = form.advertised.is_some();
-    let roots_packages = form.roots_packages.is_some();
-    let outcome = async {
-        let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? else {
-            return Ok(Err("unknown cache".to_string()));
-        };
-        if cache.org_id != registry.org_id {
-            return Ok(Err("cache is not in this organization".to_string()));
-        }
-        let advisory = crate::service::assess_cache_link(
-            &cache.slug,
-            &cache.visibility,
-            &registry.slug,
-            &registry.visibility,
-            advertised,
-            roots_packages,
-        );
-        if let Some(reject) = advisory.reject {
-            return Ok(Err(reject));
-        }
-        deps.db
-            .link_cache(cache.id, registry.id, roots_packages, advertised)
-            .await?;
-        // A link is an operational association only (GC-root pinning + the
-        // config-editor autofill source); it never writes the registry's
-        // committed `registry.toml`. Advertising a cache to consumers is an
-        // explicit edit of the `[caches]` config — see Settings -> Config.
-        Ok::<Result<String, String>, anyhow::Error>(Ok("Cache link saved.".to_string()))
-    }
-    .await;
-    match outcome {
-        Ok(Ok(notice)) => {
-            registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started)
-                .await
-        }
-        Ok(Err(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /{slug}/-/settings/cache-unlink` form: the cache to unlink.
-#[derive(serde::Deserialize)]
-pub(crate) struct RegistryCacheUnlinkForm {
-    #[serde(default)]
-    csrf: String,
-    cache: String,
-}
-
-/// `POST /{slug}/-/settings/cache-unlink` — remove a cache⇄registry link from
-/// the registry side.
-pub(crate) async fn registry_cache_unlink(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<RegistryCacheUnlinkForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let outcome = async {
-        let notice = "Cache unlinked.".to_string();
-        if let Some(cache) = deps.db.cache_by_slug(form.cache.trim()).await? {
-            deps.db.unlink_cache(cache.id, registry.id).await?;
-            // Unlinking only drops the operational association; the committed
-            // `[[caches]]` config is edited explicitly via Settings -> Config.
-        }
-        Ok::<String, anyhow::Error>(notice)
-    }
-    .await;
-    match outcome {
-        Ok(notice) => {
-            registry_settings_view(&deps, &session, &registry, Some(&notice), "caches", started)
-                .await
-        }
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /{slug}/-/settings/storage` form: the target binding (empty = default).
-#[derive(serde::Deserialize)]
-pub(crate) struct ChangeStorageForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    binding: String,
-}
-
-/// `POST /{slug}/-/settings/storage` — migrate a registry's surface to a
-/// different storage backend.
-///
-/// Resolves the target binding (an empty value = the deployment default), then
-/// copies every object to it and re-points the registry via
-/// [`migrate_registry_storage`](crate::migrate::migrate_registry_storage). A
-/// no-op move or a backend that can't enumerate surfaces back as a `400` with
-/// the reason.
-pub(crate) async fn registry_change_storage(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<ChangeStorageForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let result = async {
-        let new_binding_id =
-            match resolve_target_binding(&deps, registry.org_id, &form.binding).await? {
-                Ok(id) => id,
-                Err(msg) => return Ok(Some(msg)),
-            };
-        match crate::migrate::migrate_registry_storage(
-            &deps.db,
-            deps.surface.as_ref(),
-            deps.surface_write.as_ref(),
-            deps.reindexer.as_ref(),
-            &registry,
-            new_binding_id,
-        )
-        .await
-        {
-            Ok(_) => Ok(None),
-            Err(err) => Ok(Some(format!("{err:#}"))),
-        }
-    }
-    .await;
-    match result {
-        Ok(None) => {
-            registry_settings_view(&deps, &session, &registry, None, "storage", started).await
-        }
-        Ok(Some(msg)) => (StatusCode::BAD_REQUEST, msg).into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// `POST /{slug}/-/settings/advertise-frontend` form: the advertise checkbox.
-#[derive(serde::Deserialize)]
-pub(crate) struct AdvertiseFrontendForm {
-    #[serde(default)]
-    csrf: String,
-    #[serde(default)]
-    advertise: Option<String>,
-}
-
-/// `POST /{slug}/-/settings/advertise-frontend` — toggle whether the registry
-/// advertises its inherited storage-binding frontend (RFC-0004 §12).
-pub(crate) async fn registry_set_advertise_frontend(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<AdvertiseFrontendForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if let Err(resp) = check_csrf(&session, &form.csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if let Some(deny) =
-        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    if let Err(err) = deps
-        .db
-        .set_registry_advertise_storage_frontend(registry.id, form.advertise.is_some())
-        .await
-    {
-        return internal(err);
-    }
-    serving_view(
-        &deps,
-        &session,
-        &registry,
-        Some("Serving route updated."),
-        started,
-    )
-    .await
-}
-
-/// Resolve a storage-change form's `binding` value to a target binding id.
-///
-/// An empty value means the deployment default (`Ok(Ok(None))`). A named
-/// binding is looked up in the org; an unknown name or an org-less registry
-/// returns a user-facing message (`Ok(Err(msg))`).
-async fn resolve_target_binding(
-    deps: &ConsoleDeps,
-    org_id: Option<i64>,
-    binding: &str,
-) -> anyhow::Result<Result<Option<i64>, String>> {
-    let name = binding.trim();
-    if name.is_empty() {
-        return Ok(Ok(None));
-    }
-    let Some(org_id) = org_id else {
-        return Ok(Err("registry has no organization".to_string()));
-    };
-    let found = deps
-        .db
-        .list_storage_bindings(org_id)
-        .await?
-        .into_iter()
-        .find(|b| b.name == name);
-    match found {
-        Some(b) => Ok(Ok(Some(b.id))),
-        None => Ok(Err("unknown storage binding".to_string())),
-    }
-}
-
-/// `POST /{slug}/-/settings/visibility` form: the new visibility.
-#[derive(serde::Deserialize)]
-pub(crate) struct VisibilityForm {
-    #[serde(default)]
-    csrf: String,
-    visibility: String,
-}
-
-/// `POST /{slug}/-/settings/visibility` — change a registry's visibility.
-pub(crate) async fn registry_visibility(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<VisibilityForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    registry_visibility_action(
-        &deps,
-        &session,
-        &registry,
-        &form.csrf,
-        &form.visibility,
-        started,
-    )
-    .await
-}
-
-/// The visibility-change action.
-async fn registry_visibility_action(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    csrf: &str,
-    visibility: &str,
-    started: Instant,
-) -> Response {
-    if let Err(resp) = check_csrf(session, csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if let Some(deny) = require_org_perm(deps, session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let visibility = match visibility.trim() {
-        v @ ("public" | "internal" | "private") => v,
-        _ => return (StatusCode::BAD_REQUEST, "invalid visibility").into_response(),
-    };
-    let change_id = match config::change_registry_visibility(
-        &deps.db,
-        &session.principal(),
-        &session.email,
-        registry.id,
-        visibility,
-    )
-    .await
-    {
-        Ok(id) => id,
-        Err(err) => return internal(err),
-    };
-    let updated = match deps.db.registry_by_slug(&registry.slug).await {
-        Ok(Some(reg)) => reg,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(err) => return internal(err),
-    };
-    registry_settings_view(
-        deps,
-        session,
-        &updated,
-        Some(change_id.0.as_str()),
-        "general",
-        started,
-    )
-    .await
-}
-
-/// `POST /{slug}/-/settings/crawl` form: the new crawl policy.
-#[derive(serde::Deserialize)]
-pub(crate) struct CrawlPolicyForm {
-    #[serde(default)]
-    csrf: String,
-    policy: String,
-}
-
-/// `POST /{slug}/-/settings/crawl` — change a registry's crawl policy.
-pub(crate) async fn registry_crawl_policy(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<CrawlPolicyForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    registry_crawl_policy_action(
-        &deps,
-        &session,
-        &registry,
-        &form.csrf,
-        &form.policy,
-        started,
-    )
-    .await
-}
-
-/// The crawl-policy-change action (mirrors [`registry_visibility_action`]).
-async fn registry_crawl_policy_action(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    csrf: &str,
-    policy: &str,
-    started: Instant,
-) -> Response {
-    if let Err(resp) = check_csrf(session, csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if let Some(deny) = require_org_perm(deps, session, &scope, Permission::RegistryConfigure).await
-    {
-        return *deny;
-    }
-    let policy = match crate::crawl::CrawlPolicy::parse(policy.trim()) {
-        Ok(p) => p,
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid crawl policy").into_response(),
-    };
-    let change_id = match config::change_registry_crawl_policy(
-        &deps.db,
-        &session.principal(),
-        &session.email,
-        registry.id,
-        policy.as_str(),
-    )
-    .await
-    {
-        Ok(id) => id,
-        Err(err) => return internal(err),
-    };
-    let updated = match deps.db.registry_by_slug(&registry.slug).await {
-        Ok(Some(reg)) => reg,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(err) => return internal(err),
-    };
-    registry_settings_view(
-        deps,
-        session,
-        &updated,
-        Some(change_id.0.as_str()),
-        "general",
-        started,
-    )
-    .await
-}
-
-/// `POST /{slug}/-/settings/delete` form: the typed-confirmation name.
-#[derive(serde::Deserialize)]
-pub(crate) struct RegistryDeleteForm {
-    #[serde(default)]
-    csrf: String,
-    confirm: String,
-}
-
-/// `POST /{slug}/-/settings/delete` — unregister a registry.
-pub(crate) async fn registry_delete(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<RegistryDeleteForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    registry_delete_action(
-        &deps,
-        &session,
-        &registry,
-        &form.csrf,
-        &form.confirm,
-        &headers,
-    )
-    .await
-}
-
-/// The registry-delete action.
-async fn registry_delete_action(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    csrf: &str,
-    confirm: &str,
-    headers: &HeaderMap,
-) -> Response {
-    if let Err(resp) = check_csrf(session, csrf) {
-        return *resp;
-    }
-    if let Err(resp) = require_sudo(session, headers) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if let Some(deny) = require_org_perm(deps, session, &scope, Permission::IamAdmin).await {
-        return *deny;
-    }
-    if confirm.trim() != registry.slug {
-        return (StatusCode::BAD_REQUEST, "type the registry name to confirm").into_response();
-    }
-    let result = async {
-        let removed = deps.db.delete_registry(registry.id).await?;
-        if removed {
-            deps.db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "registry.delete",
-                    &registry.slug,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await?;
-        }
-        let target = match registry.org_id {
-            Some(org_id) => match deps.db.org_by_id(org_id).await? {
-                Some(org) => registry_delete_target(Some(&org.slug)),
-                None => registry_delete_target(None),
-            },
-            None => registry_delete_target(None),
-        };
-        Ok::<_, anyhow::Error>(target)
-    }
-    .await;
-    match result {
-        Ok(target) => Redirect::to(&target).into_response(),
-        Err(err) => internal(err),
-    }
-}
-
-/// Returns the post-delete inventory destination for a registry.
-fn registry_delete_target(org_slug: Option<&str>) -> String {
-    org_slug.map_or_else(
-        || "/".to_string(),
-        |slug| format!("/-/org/{slug}/registries"),
-    )
-}
-
 // -- registry tokens --------------------------------------------------------
 
 /// `GET /{slug}/-/settings/tokens` — the caller's tokens at the registry.
@@ -5738,12 +7266,16 @@ async fn tokens_view(
     deps: &ConsoleDeps,
     session: &Session,
     registry: &RegistryRecord,
-    headers: &HeaderMap,
+    _headers: &HeaderMap,
     page_number: usize,
     started: Instant,
 ) -> Response {
-    if let Err(deny) = authorize_registry_read(deps, registry, headers).await {
-        return *deny;
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session
+        .allows(&deps.db, Permission::TokensSelf, &scope)
+        .await
+    {
+        return StatusCode::NOT_FOUND.into_response();
     }
     render_tokens(deps, session, registry, None, page_number, started).await
 }
@@ -5756,6 +7288,8 @@ async fn tokens_create_action(
     csrf: &str,
     want_read: bool,
     want_publish: bool,
+    plan_id: String,
+    confirmation_hash: String,
     started: Instant,
     headers: &HeaderMap,
 ) -> Response {
@@ -5765,58 +7299,80 @@ async fn tokens_create_action(
     if let Err(resp) = require_sudo(session, headers) {
         return *resp;
     }
-    let scope = Scope::parse(&registry.slug);
-    if !session
-        .allows(&deps.db, Permission::TokensSelf, &scope)
-        .await
-    {
-        return (StatusCode::FORBIDDEN, "tokens.self required").into_response();
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session.allows(&deps.db, Permission::IamAdmin, &scope).await {
+        return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
     }
-    let mut perms = Vec::new();
+    let bearer = match session.topology_bearer(deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !plan_id.is_empty() {
+        let idempotency_key = console_apply_idempotency_key(&plan_id);
+        return match deps
+            .topology
+            .apply_registry_token_issue(&bearer, plan_id, confirmation_hash, idempotency_key)
+            .await
+        {
+            Ok(response) => {
+                render_tokens(
+                    deps,
+                    session,
+                    registry,
+                    Some(("New token created", &response.secret)),
+                    1,
+                    started,
+                )
+                .await
+            }
+            Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+        };
+    }
+    let mut permissions = Vec::new();
     if want_read {
-        perms.push(Permission::Read);
+        permissions.push("registry.read".to_string());
     }
     if want_publish {
-        perms.push(Permission::Publish);
+        permissions.push("registry.publish".to_string());
     }
-    let grants = match session.grants(&deps.db).await {
-        Ok(grants) => grants,
-        Err(err) => return internal(err),
-    };
-    perms.retain(|p| iam::allow(&grants, *p, &scope));
-    let (_, secret) = match deps
-        .db
-        .create_token(
-            session.principal(),
-            scope.as_str(),
-            &perms,
-            Some("created via console"),
-            None,
+    let plan = match deps
+        .topology
+        .plan_registry_token_issue(
+            &bearer,
+            aos_proto_types::PlanIssueRegistryTokenRequest {
+                owner: format!("user:{}", session.email),
+                scope: registry.slug.clone(),
+                permissions,
+                ttl_secs: 0,
+                expected_resource_version: String::new(),
+                idempotency_key: format!("console-plan-registry-token-{}", uuid::Uuid::new_v4()),
+            },
         )
         .await
     {
-        Ok(pair) => pair,
-        Err(err) => return internal(err),
+        Ok(plan) => plan,
+        Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
     };
-    render_tokens(
-        deps,
-        session,
-        registry,
-        Some(("New token created", &secret)),
-        1,
+    Html(console::topology_plan_page(
+        &session.email,
+        "Review registry token issuance",
+        &format!("/{}/-/settings/tokens", registry.slug),
+        &session.csrf(),
+        &plan,
         started,
-    )
-    .await
+    ))
+    .into_response()
 }
 
-/// The token revoke/rotate action: CSRF + ownership gate, then mutate.
+/// Plans or applies retirement of one exact token generation.
 async fn tokens_modify_action(
     deps: &ConsoleDeps,
     session: &Session,
     registry: &RegistryRecord,
     csrf: &str,
     token_id: &str,
-    rotate: bool,
+    plan_id: String,
+    confirmation_hash: String,
     started: Instant,
     headers: &HeaderMap,
 ) -> Response {
@@ -5826,40 +7382,53 @@ async fn tokens_modify_action(
     if let Err(resp) = ensure_owns_token(deps, session, token_id).await {
         return *resp;
     }
-    if rotate {
-        if let Err(resp) = require_sudo(session, headers) {
-            return *resp;
-        }
-        match deps.db.rotate_token(token_id).await {
-            Ok(Some((_, secret))) => {
-                // RFC-0004 ch.14 Phase C: tombstone the old token id so any
-                // KV-cached resolution for it is rejected immediately.
-                deps.invalidate_token_cache(token_id).await;
-                render_tokens(
-                    deps,
-                    session,
-                    registry,
-                    Some(("Token rotated", &secret)),
-                    1,
-                    started,
-                )
-                .await
-            }
-            Ok(None) => {
-                Redirect::to(&format!("/{}/-/settings/tokens", registry.slug)).into_response()
-            }
-            Err(err) => internal(err),
-        }
-    } else {
-        match deps.db.revoke_token(token_id).await {
-            Ok(()) => {
-                // RFC-0004 ch.14 Phase C: tombstone the revoked token id.
-                deps.invalidate_token_cache(token_id).await;
-                Redirect::to(&format!("/{}/-/settings/tokens", registry.slug)).into_response()
-            }
-            Err(err) => internal(err),
-        }
+    if let Err(response) = require_sudo(session, headers) {
+        return *response;
     }
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session.allows(&deps.db, Permission::IamAdmin, &scope).await {
+        return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
+    }
+    let bearer = match session.topology_bearer(deps, scope) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !plan_id.is_empty() {
+        let idempotency_key = console_apply_idempotency_key(&plan_id);
+        return match deps
+            .topology
+            .apply_registry_token_retirement(&bearer, plan_id, confirmation_hash, idempotency_key)
+            .await
+        {
+            Ok(()) => {
+                deps.invalidate_token_cache(token_id).await;
+                Redirect::to(&format!("/{}/-/settings/tokens", registry.slug)).into_response()
+            }
+            Err(error) => (StatusCode::CONFLICT, error.to_string()).into_response(),
+        };
+    }
+    let plan = match deps
+        .topology
+        .plan_registry_token_retirement(
+            &bearer,
+            token_id.to_string(),
+            "active".to_string(),
+            format!("console-plan-retire-token-{}", uuid::Uuid::new_v4()),
+        )
+        .await
+    {
+        Ok(plan) => plan,
+        Err(error) => return (StatusCode::CONFLICT, error.to_string()).into_response(),
+    };
+    Html(console::topology_plan_page(
+        &session.email,
+        "Review registry token retirement",
+        &format!("/{}/-/settings/tokens/{token_id}/revoke", registry.slug),
+        &session.csrf(),
+        &plan,
+        started,
+    ))
+    .into_response()
 }
 
 /// Render the tokens page, optionally with a one-time secret result.
@@ -5871,10 +7440,12 @@ async fn render_tokens(
     page_number: usize,
     started: Instant,
 ) -> Response {
-    let scope = Scope::parse(&registry.slug);
-    let can_create = session
-        .allows(&deps.db, Permission::TokensSelf, &scope)
-        .await;
+    let scope = registry_scope(&deps.db, registry).await;
+    let can_create = session.allows(&deps.db, Permission::IamAdmin, &scope).await;
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let all = match deps.db.list_tokens_for(session.principal()).await {
         Ok(tokens) => tokens,
         Err(err) => return internal(err),
@@ -5891,6 +7462,7 @@ async fn render_tokens(
         can_create,
         result,
         page_number,
+        &navigation,
         started,
     ))
     .into_response()
@@ -5905,6 +7477,10 @@ pub(crate) struct TokenCreateForm {
     perm_read: Option<String>,
     #[serde(default)]
     perm_publish: Option<String>,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
 /// `POST /{slug}/-/settings/tokens` — mint a token at the registry scope.
@@ -5933,27 +7509,32 @@ pub(crate) async fn tokens_create(
         &form.csrf,
         form.perm_read.is_some(),
         form.perm_publish.is_some(),
+        form.plan_id,
+        form.confirmation_hash,
         started,
         &headers,
     )
     .await
 }
 
-/// `POST` token revoke/rotate form: the target token id.
+/// `POST` token-retirement form: the target token id and optional reviewed plan.
 #[derive(serde::Deserialize)]
 pub(crate) struct TokenIdForm {
     #[serde(default)]
     csrf: String,
-    token_id: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
-/// `POST /{slug}/-/settings/tokens/revoke` — revoke one of the caller's tokens.
+/// Revokes one of the caller's tokens through its resource URL.
 pub(crate) async fn tokens_revoke(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     uri: axum::http::Uri,
-    Path(slug): Path<String>,
+    Path((slug, token_id)): Path<(String, String)>,
     Form(form): Form<TokenIdForm>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
@@ -5971,47 +7552,16 @@ pub(crate) async fn tokens_revoke(
         &session,
         &registry,
         &form.csrf,
-        &form.token_id,
-        false,
+        &token_id,
+        form.plan_id,
+        form.confirmation_hash,
         started,
         &headers,
     )
     .await
 }
 
-/// `POST /{slug}/-/settings/tokens/rotate` — rotate one of the caller's tokens.
-pub(crate) async fn tokens_rotate(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path(slug): Path<String>,
-    Form(form): Form<TokenIdForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    tokens_modify_action(
-        &deps,
-        &session,
-        &registry,
-        &form.csrf,
-        &form.token_id,
-        true,
-        started,
-        &headers,
-    )
-    .await
-}
-
-/// Verify the session user owns the token being revoked/rotated, else 403.
+/// Verify the session user owns the token being retired, else 403.
 async fn ensure_owns_token(
     deps: &ConsoleDeps,
     session: &Session,
@@ -6034,7 +7584,7 @@ async fn ensure_owns_token(
 
 // -- channel rollout console ------------------------------------------------
 
-/// `GET /{slug}/-/channels/{name}/console` — the rollout console.
+/// Renders the canonical registry-settings channel rollout page.
 pub(crate) async fn channel_console(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -6052,10 +7602,15 @@ pub(crate) async fn channel_console(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    if let Err(deny) = authorize_registry_read(&deps, &registry, &headers).await {
-        return *deny;
+    let scope = registry_scope(&deps.db, &registry).await;
+    if !session.allows(&deps.db, Permission::Read, &scope).await {
+        return StatusCode::NOT_FOUND.into_response();
     }
-    render_channel_console(&deps, &session, &registry, &name, None, None, started).await
+    let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
+    render_channel_console(&deps, &session, &registry, &name, &navigation, started).await
 }
 
 /// Render the channel console.
@@ -6064,34 +7619,19 @@ async fn render_channel_console(
     session: &Session,
     registry: &RegistryRecord,
     name: &str,
-    prepared: Option<(&str, &str)>,
-    advanced: Option<&str>,
+    navigation_permissions: &NavigationPermissions,
     started: Instant,
 ) -> Response {
     let result = async {
-        let status = deps.db.index_status(registry.id).await?;
         let channels = deps.db.list_channels(registry.id).await?;
         let Some(channel) = channels.into_iter().find(|c| c.name == name) else {
             return Ok(None);
         };
-        let scope = Scope::parse(&registry.slug);
-        let can_advance = session
-            .allows(&deps.db, Permission::ChannelAdvance, &scope)
-            .await;
-        let hosted_key = match registry.hosted_key_id {
-            Some(id) => deps.db.hosted_key(id).await?.map(|k| k.key_id),
-            None => None,
-        };
         Ok::<_, anyhow::Error>(Some(console::channel_console(
             &session.email,
             registry,
-            status.as_ref(),
             &channel,
-            &session.csrf(),
-            can_advance,
-            hosted_key.as_deref(),
-            prepared,
-            advanced,
+            navigation_permissions,
             started,
         )))
     }
@@ -6103,209 +7643,9 @@ async fn render_channel_console(
     }
 }
 
-/// `POST /{slug}/-/channels/{name}/console` form: the advance request.
-#[derive(serde::Deserialize)]
-pub(crate) struct AdvanceForm {
-    #[serde(default)]
-    csrf: String,
-    release: String,
-    partitions: Option<String>,
-}
+// -- retained signing keys --------------------------------------------------
 
-/// `POST /{slug}/-/channels/{name}/console` — prepare a channel advance.
-pub(crate) async fn channel_advance(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path((slug, name)): Path<(String, String)>,
-    Form(form): Form<AdvanceForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    channel_advance_action(
-        &deps,
-        &session,
-        &registry,
-        &name,
-        &form.csrf,
-        &form.release,
-        form.partitions.as_deref(),
-        started,
-    )
-    .await
-}
-
-/// The channel-advance action: record a prepared operation and render its `apr`
-/// command.
-async fn channel_advance_action(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    name: &str,
-    csrf: &str,
-    release: &str,
-    partitions: Option<&str>,
-    started: Instant,
-) -> Response {
-    if let Err(resp) = check_csrf(session, csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if !session
-        .allows(&deps.db, Permission::ChannelAdvance, &scope)
-        .await
-    {
-        return (StatusCode::FORBIDDEN, "channel.advance required").into_response();
-    }
-    let release = release.trim();
-    if release.is_empty() {
-        return (StatusCode::BAD_REQUEST, "release is required").into_response();
-    }
-    let partitions: u16 = partitions
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(256)
-        .clamp(1, 256);
-    let change_id = match config::prepare_channel_advance(
-        &deps.db,
-        &session.principal(),
-        &session.email,
-        &registry.slug,
-        name,
-        release,
-        partitions,
-    )
-    .await
-    {
-        Ok(id) => id,
-        Err(err) => return internal(err),
-    };
-    let registry_url = format!(
-        "{}/{}",
-        deps.external_url.trim_end_matches('/'),
-        registry.slug
-    );
-    let command = config::advance_command(&registry_url, &change_id);
-    render_channel_console(
-        deps,
-        session,
-        registry,
-        name,
-        Some((change_id.as_str(), &command)),
-        None,
-        started,
-    )
-    .await
-}
-
-/// `POST /{slug}/-/channels/{name}/advance` — directly advance a hosted-key
-/// channel.
-pub(crate) async fn channel_advance_direct(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    uri: axum::http::Uri,
-    Path((slug, name)): Path<(String, String)>,
-    Form(form): Form<AdvanceForm>,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    advance_direct_action(
-        &deps,
-        &session,
-        &registry,
-        &name,
-        &form.csrf,
-        &form.release,
-        form.partitions.as_deref(),
-        started,
-    )
-    .await
-}
-
-/// The direct hosted-key advance action: sign and apply the advance through the
-/// shared [`advance_channel`](crate::signing::advance_channel) over the
-/// console's surface-write and reindex ports (or fall back to a prepared
-/// operation when no hosted key is bound).
-async fn advance_direct_action(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    name: &str,
-    csrf: &str,
-    release: &str,
-    partitions: Option<&str>,
-    started: Instant,
-) -> Response {
-    if let Err(resp) = check_csrf(session, csrf) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if !session
-        .allows(&deps.db, Permission::ChannelAdvance, &scope)
-        .await
-    {
-        return (StatusCode::FORBIDDEN, "channel.advance required").into_response();
-    }
-    if registry.hosted_key_id.is_none() {
-        return channel_advance_action(
-            deps, session, registry, name, csrf, release, partitions, started,
-        )
-        .await;
-    }
-    let release = release.trim();
-    if release.is_empty() {
-        return (StatusCode::BAD_REQUEST, "release is required").into_response();
-    }
-    let count: usize = partitions
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(256usize)
-        .clamp(1, 256);
-    let when = crate::clock::now_unix_secs();
-    let result = crate::signing::advance_channel(
-        &deps.db,
-        deps.sealer.as_ref(),
-        deps.surface_write.as_ref(),
-        deps.reindexer.as_ref(),
-        registry,
-        name,
-        release,
-        count,
-        when,
-    )
-    .await;
-    match result {
-        Ok(outcome) => {
-            let message = format!(
-                "Advanced {} to {} · {} partition(s) moved · {}% rolled out",
-                outcome.channel, outcome.release, outcome.moved, outcome.rollout_percent,
-            );
-            render_channel_console(deps, session, registry, name, None, Some(&message), started)
-                .await
-        }
-        Err(err) => (StatusCode::BAD_REQUEST, format!("advance failed: {err:#}")).into_response(),
-    }
-}
-
-// -- hosted signing keys ----------------------------------------------------
-
-/// `GET /-/org/{org}/keys` — the org hosted-key enrollment page.
+/// Renders the canonical organization signing-key inventory.
 pub(crate) async fn org_keys(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -6319,15 +7659,15 @@ pub(crate) async fn org_keys(
     render_org_keys(&deps, &session, &org_slug, None, started).await
 }
 
-/// Render the org hosted-keys page.
+/// Renders the org signing-key page through the shared public service.
 async fn render_org_keys(
     deps: &ConsoleDeps,
     session: &Session,
     org_slug: &str,
-    created: Option<&str>,
+    notice: Option<&str>,
     started: Instant,
 ) -> Response {
-    let scope = Scope::parse(org_slug);
+    let scope = organization_scope(&deps.db, org_slug).await;
     if !session
         .allows(&deps.db, Permission::KeysManage, &scope)
         .await
@@ -6337,25 +7677,27 @@ async fn render_org_keys(
         }
         return StatusCode::NOT_FOUND.into_response();
     }
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let result = async {
         let Some(org) = deps.db.org_by_slug(org_slug).await? else {
             return Ok(None);
         };
-        let keys = deps.db.list_hosted_keys(org.id).await?;
-        let registries: Vec<RegistryRecord> = deps
-            .db
-            .list_registries()
-            .await?
-            .into_iter()
-            .filter(|r| r.org_id == Some(org.id))
-            .collect();
-        Ok::<_, anyhow::Error>(Some(console::org_hosted_keys_page(
+        let bearer = session.topology_bearer(deps, Scope::parse(&org.stable_id))?;
+        let keys = deps
+            .topology
+            .signing_keys(&bearer, org.stable_id.clone())
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        Ok::<_, anyhow::Error>(Some(console::org_signing_keys_page(
             &session.email,
             &org,
             &session.csrf(),
             &keys,
-            &registries,
-            created,
+            notice,
+            &navigation,
             started,
         )))
     }
@@ -6367,21 +7709,28 @@ async fn render_org_keys(
     }
 }
 
-/// `POST /-/org/{org}/keys` form: enroll a key or attach one to a registry.
+/// Form for planning or applying external signing-key enrollment.
 #[derive(serde::Deserialize)]
 pub(crate) struct OrgKeysForm {
     #[serde(default)]
     csrf: String,
-    op: String,
+    #[serde(default)]
+    operation: String,
     #[serde(default)]
     key_id: String,
     #[serde(default)]
-    registry: String,
+    public_key: String,
     #[serde(default)]
-    hosted_key_id: String,
+    public_key_fingerprint: String,
+    #[serde(default)]
+    expected_resource_version: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
 }
 
-/// `POST /-/org/{org}/keys` — enroll or attach a hosted signing key.
+/// Plans or applies external signing-key enrollment.
 pub(crate) async fn org_keys_action(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -6399,7 +7748,7 @@ pub(crate) async fn org_keys_action(
     if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
+    let scope = organization_scope(&deps.db, &org_slug).await;
     if !session
         .allows(&deps.db, Permission::KeysManage, &scope)
         .await
@@ -6409,106 +7758,124 @@ pub(crate) async fn org_keys_action(
         }
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(org) = (match deps.db.org_by_slug(&org_slug).await {
-        Ok(org) => org,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
+    let bearer = match session.topology_bearer(&deps, scope.clone()) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
     };
-
-    match form.op.as_str() {
-        "create" => {
-            let key_id = form.key_id.trim();
-            if key_id.is_empty() {
-                return (StatusCode::BAD_REQUEST, "key id is required").into_response();
+    let operation = if form.operation.is_empty() {
+        "enroll"
+    } else {
+        form.operation.as_str()
+    };
+    if !form.plan_id.is_empty() {
+        let result = match operation {
+            "enroll" => {
+                deps.topology
+                    .apply_signing_key_enrollment(
+                        &bearer,
+                        form.plan_id.clone(),
+                        form.confirmation_hash,
+                        console_apply_idempotency_key(&form.plan_id),
+                    )
+                    .await
             }
-            let public = match deps
-                .db
-                .create_hosted_key(deps.sealer.as_ref(), org.id, key_id)
-                .await
-            {
-                Ok(line) => line,
-                Err(err) => {
-                    return (StatusCode::BAD_REQUEST, format!("enroll failed: {err:#}"))
-                        .into_response()
-                }
+            "rotate" => {
+                deps.topology
+                    .apply_signing_key_rotation(
+                        &bearer,
+                        form.plan_id.clone(),
+                        form.confirmation_hash,
+                        console_apply_idempotency_key(&form.plan_id),
+                    )
+                    .await
+            }
+            "retire" => {
+                deps.topology
+                    .apply_signing_key_retirement(
+                        &bearer,
+                        form.plan_id.clone(),
+                        form.confirmation_hash,
+                        console_apply_idempotency_key(&form.plan_id),
+                    )
+                    .await
+            }
+            _ => return (StatusCode::BAD_REQUEST, "unknown signing-key operation").into_response(),
+        };
+        return match result {
+            Ok(_) => {
+                let notice = match operation {
+                    "rotate" => "Signing key rotated.",
+                    "retire" => "Signing key retired.",
+                    _ => "Signing key enrolled.",
+                };
+                render_org_keys(&deps, &session, &org_slug, Some(notice), started).await
+            }
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
+    }
+    let (title, plan) = match operation {
+        "enroll" | "rotate" => {
+            let request = aos_proto_types::PlanSigningKeyMutationRequest {
+                scope_key: scope.as_str().to_string(),
+                name: form.key_id,
+                public_key: form.public_key,
+                public_key_fingerprint: form.public_key_fingerprint,
+                custody: "external".to_string(),
+                expected_resource_version: form.expected_resource_version,
+                idempotency_key: format!(
+                    "console-plan-{operation}-signing-key-{}",
+                    uuid::Uuid::new_v4()
+                ),
             };
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "hosted_key.create",
-                    &org_slug,
-                    None,
-                    None,
-                    None,
-                    Some(key_id),
-                )
-                .await
-            {
-                return internal(err);
-            }
-            render_org_keys(&deps, &session, &org_slug, Some(&public), started).await
-        }
-        "attach" => {
-            let Some(registry) = (match deps.db.registry_by_slug(form.registry.trim()).await {
-                Ok(reg) => reg,
-                Err(err) => return internal(err),
-            }) else {
-                return (StatusCode::BAD_REQUEST, "no such registry").into_response();
+            let plan = if operation == "rotate" {
+                deps.topology
+                    .plan_signing_key_rotation(&bearer, request)
+                    .await
+            } else {
+                deps.topology
+                    .plan_signing_key_enrollment(&bearer, request)
+                    .await
             };
-            if registry.org_id != Some(org.id) {
-                return (StatusCode::FORBIDDEN, "registry not in this org").into_response();
-            }
-            let hosted_key_id: Option<i64> = match form.hosted_key_id.trim() {
-                "" => None,
-                raw => match raw.parse() {
-                    Ok(id) => Some(id),
-                    Err(_) => {
-                        return (StatusCode::BAD_REQUEST, "bad hosted key id").into_response()
-                    }
+            (
+                if operation == "rotate" {
+                    "Rotate signing key"
+                } else {
+                    "Enroll signing key"
                 },
-            };
-            if let Some(id) = hosted_key_id {
-                match deps.db.hosted_key(id).await {
-                    Ok(Some(k)) if k.org_id == org.id => {}
-                    Ok(_) => {
-                        return (StatusCode::BAD_REQUEST, "no such hosted key in this org")
-                            .into_response()
-                    }
-                    Err(err) => return internal(err),
-                }
-            }
-            if let Err(err) = deps
-                .db
-                .set_registry_hosted_key(registry.id, hosted_key_id)
-                .await
-            {
-                return internal(err);
-            }
-            let detail = serde_json::json!({ "hosted_key_id": hosted_key_id }).to_string();
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "hosted_key.attach",
-                    &registry.slug,
-                    None,
-                    None,
-                    None,
-                    Some(&detail),
-                )
-                .await
-            {
-                return internal(err);
-            }
-            render_org_keys(&deps, &session, &org_slug, None, started).await
+                plan,
+            )
         }
-        _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+        "retire" => (
+            "Retire signing key",
+            deps.topology
+                .plan_signing_key_retirement(
+                    &bearer,
+                    aos_proto_types::PlanRetireSigningKeyRequest {
+                        scope_key: scope.as_str().to_string(),
+                        name: form.key_id,
+                        expected_resource_version: form.expected_resource_version,
+                        idempotency_key: format!(
+                            "console-plan-retire-signing-key-{}",
+                            uuid::Uuid::new_v4()
+                        ),
+                    },
+                )
+                .await,
+        ),
+        _ => return (StatusCode::BAD_REQUEST, "unknown signing-key operation").into_response(),
+    };
+    match plan {
+        Ok(plan) => Html(console::signing_topology_plan_page(
+            &session.email,
+            title,
+            &format!("/-/org/{org_slug}/signing-keys"),
+            &session.csrf(),
+            &plan,
+            operation,
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
     }
 }
 
@@ -6525,7 +7892,7 @@ pub(crate) async fn org_webhooks(
         Ok(s) => s,
         Err(resp) => return *resp,
     };
-    render_org_webhooks(&deps, &session, &org_slug, None, started).await
+    render_org_webhooks(&deps, &session, &org_slug, started).await
 }
 
 /// Render the org webhooks page.
@@ -6533,19 +7900,22 @@ async fn render_org_webhooks(
     deps: &ConsoleDeps,
     session: &Session,
     org_slug: &str,
-    created_secret: Option<&str>,
     started: Instant,
 ) -> Response {
-    let scope = Scope::parse(org_slug);
+    let scope = organization_scope(&deps.db, org_slug).await;
     if !session
-        .allows(&deps.db, Permission::MembersManage, &scope)
+        .allows(&deps.db, Permission::RegistryConfigure, &scope)
         .await
     {
         if session.allows(&deps.db, Permission::Read, &scope).await {
-            return (StatusCode::FORBIDDEN, "members.manage required").into_response();
+            return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let result = async {
         let Some(org) = deps.db.org_by_slug(org_slug).await? else {
             return Ok(None);
@@ -6556,7 +7926,7 @@ async fn render_org_webhooks(
             &org,
             &session.csrf(),
             &webhooks,
-            created_secret,
+            &navigation,
             started,
         )))
     }
@@ -6565,147 +7935,6 @@ async fn render_org_webhooks(
         Ok(Some(html)) => Html(html).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(err) => internal(err),
-    }
-}
-
-/// `POST /-/org/{org}/webhooks` — create or delete a webhook subscription.
-pub(crate) async fn org_webhooks_action(
-    deps: ConsoleDeps,
-    headers: HeaderMap,
-    RequestStart(started): RequestStart,
-    Path(org_slug): Path<String>,
-    body: axum::body::Bytes,
-) -> Response {
-    let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
-    };
-
-    let mut single: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut events: Vec<String> = Vec::new();
-    for (key, value) in url::form_urlencoded::parse(&body) {
-        if key == "events" {
-            let value = value.trim().to_string();
-            if !value.is_empty() {
-                events.push(value);
-            }
-        } else {
-            single.insert(key.into_owned(), value.into_owned());
-        }
-    }
-    let field = |k: &str| single.get(k).map(String::as_str).unwrap_or("");
-
-    if let Err(resp) = check_csrf(&session, field("csrf")) {
-        return *resp;
-    }
-    let scope = Scope::parse(&org_slug);
-    if !session
-        .allows(&deps.db, Permission::MembersManage, &scope)
-        .await
-    {
-        if session.allows(&deps.db, Permission::Read, &scope).await {
-            return (StatusCode::FORBIDDEN, "members.manage required").into_response();
-        }
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let Some(org) = (match deps.db.org_by_slug(&org_slug).await {
-        Ok(org) => org,
-        Err(err) => return internal(err),
-    }) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-
-    match field("op") {
-        "create" => {
-            let url = field("url").trim();
-            if url.is_empty() {
-                return (StatusCode::BAD_REQUEST, "url is required").into_response();
-            }
-            if let Err(err) = crate::url_guard::is_safe_remote_url(url) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    format!("rejecting webhook url: {err:#}"),
-                )
-                    .into_response();
-            }
-            let known: Vec<&str> = console::WEBHOOK_EVENT_TYPES
-                .iter()
-                .map(|(e, _)| *e)
-                .collect();
-            if let Some(bad) = events.iter().find(|e| !known.contains(&e.as_str())) {
-                return (StatusCode::BAD_REQUEST, format!("unknown event: {bad}")).into_response();
-            }
-            let provided = field("secret").trim().to_string();
-            let generated = provided.is_empty();
-            let secret = if generated {
-                crate::auth::token::generate_token().0
-            } else {
-                provided
-            };
-            let id = match deps.db.create_webhook(org.id, url, &secret, &events).await {
-                Ok(id) => id,
-                Err(err) => return internal(err),
-            };
-            let detail = serde_json::json!({ "id": id, "url": url, "events": events }).to_string();
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "webhook.create",
-                    &org_slug,
-                    None,
-                    None,
-                    None,
-                    Some(&detail),
-                )
-                .await
-            {
-                return internal(err);
-            }
-            render_org_webhooks(
-                &deps,
-                &session,
-                &org_slug,
-                generated.then_some(secret.as_str()),
-                started,
-            )
-            .await
-        }
-        "delete" => {
-            let Ok(webhook_id) = field("webhook_id").parse::<i64>() else {
-                return (StatusCode::BAD_REQUEST, "bad webhook id").into_response();
-            };
-            match deps.db.webhook(webhook_id).await {
-                Ok(Some(w)) if w.org_id == org.id => {}
-                Ok(_) => return (StatusCode::NOT_FOUND, "no such webhook").into_response(),
-                Err(err) => return internal(err),
-            }
-            if let Err(err) = deps.db.delete_webhook(webhook_id).await {
-                return internal(err);
-            }
-            let detail = serde_json::json!({ "id": webhook_id }).to_string();
-            if let Err(err) = deps
-                .db
-                .record_audit(
-                    "user",
-                    Some(session.auth.user_id),
-                    &session.email,
-                    "webhook.delete",
-                    &org_slug,
-                    None,
-                    None,
-                    None,
-                    Some(&detail),
-                )
-                .await
-            {
-                return internal(err);
-            }
-            render_org_webhooks(&deps, &session, &org_slug, None, started).await
-        }
-        _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
     }
 }
 
@@ -6728,7 +7957,7 @@ pub(crate) async fn org_sso(
 /// Whether `session` may verify captured domains: an *instance* admin only.
 async fn can_verify_domains(deps: &ConsoleDeps, session: &Session) -> bool {
     session
-        .allows(&deps.db, Permission::IamAdmin, &Scope::parse(""))
+        .allows(&deps.db, Permission::IamAdmin, &Scope::root())
         .await
 }
 
@@ -6740,13 +7969,17 @@ async fn render_org_sso(
     notice: Option<&str>,
     started: Instant,
 ) -> Response {
-    let scope = Scope::parse(org_slug);
+    let scope = organization_scope(&deps.db, org_slug).await;
     if !session.allows(&deps.db, Permission::IamAdmin, &scope).await {
         if session.allows(&deps.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
         }
         return StatusCode::NOT_FOUND.into_response();
     }
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let result = async {
         let Some(org) = deps.db.org_by_slug(org_slug).await? else {
             return Ok(None);
@@ -6761,6 +7994,7 @@ async fn render_org_sso(
             &domains,
             can_verify_domains(deps, session).await,
             notice,
+            &navigation,
             started,
         )))
     }
@@ -6793,7 +8027,7 @@ pub(crate) async fn org_sso_action(
     if let Err(resp) = require_sudo(&session, &headers) {
         return *resp;
     }
-    let scope = Scope::parse(&org_slug);
+    let scope = organization_scope(&deps.db, &org_slug).await;
     if !session.allows(&deps.db, Permission::IamAdmin, &scope).await {
         if session.allows(&deps.db, Permission::Read, &scope).await {
             return (StatusCode::FORBIDDEN, "iam.admin required").into_response();
@@ -6869,7 +8103,7 @@ pub(crate) async fn org_sso_action(
                     Some(session.auth.user_id),
                     &session.email,
                     "idp.set",
-                    &org_slug,
+                    &org.stable_id,
                     None,
                     None,
                     None,
@@ -6899,7 +8133,7 @@ pub(crate) async fn org_sso_action(
                     Some(session.auth.user_id),
                     &session.email,
                     "idp.remove",
-                    &org_slug,
+                    &org.stable_id,
                     None,
                     None,
                     None,
@@ -6945,7 +8179,7 @@ pub(crate) async fn org_sso_action(
                     Some(session.auth.user_id),
                     &session.email,
                     "domain.capture",
-                    &org_slug,
+                    &org.stable_id,
                     None,
                     None,
                     None,
@@ -6993,7 +8227,7 @@ pub(crate) async fn org_sso_action(
                     Some(session.auth.user_id),
                     &session.email,
                     "domain.verify",
-                    &org_slug,
+                    &org.stable_id,
                     None,
                     None,
                     None,
@@ -7024,7 +8258,7 @@ pub(crate) async fn org_sso_action(
                     Some(session.auth.user_id),
                     &session.email,
                     "domain.remove",
-                    &org_slug,
+                    &org.stable_id,
                     None,
                     None,
                     None,
@@ -7047,10 +8281,10 @@ pub(crate) async fn org_sso_action(
     }
 }
 
-// -- serving frontends + mirror ---------------------------------------------
+// -- registry delivery and upstream mirroring -------------------------------
 
-/// `GET /{slug}/-/settings/serving` — the serving & mirror management page.
-pub(crate) async fn serving(
+/// Shows simultaneous client delivery routes.
+pub(crate) async fn registry_delivery(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
@@ -7058,299 +8292,115 @@ pub(crate) async fn serving(
     Path(slug): Path<String>,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
+        Ok(session) => session,
+        Err(response) => return *response,
     };
     let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    serving_view(&deps, &session, &registry, None, started).await
-}
-
-/// Render the serving & mirror page.
-async fn serving_view(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    notice: Option<&str>,
-    started: Instant,
-) -> Response {
-    let scope = Scope::parse(&registry.slug);
-    if !session
-        .allows(&deps.db, Permission::RegistryConfigure, &scope)
-        .await
-    {
-        if let Err(deny) = authorize_registry_read(deps, registry, &HeaderMap::new()).await {
-            return *deny;
-        }
-        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+    let scope = registry_scope(&deps.db, &registry).await;
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RouteRead).await {
+        return *deny;
     }
-    let result = async {
-        let frontends = deps.db.list_frontends(registry.id).await?;
-        let mirror = deps.db.mirror_source(registry.id).await?;
-        let advertise_storage_frontend = deps
-            .db
-            .registry_advertises_storage_frontend(registry.id)
-            .await?;
-        // Frontends inherited from the storage binding this registry lives on
-        // (the instance-default binding when the registry is unbound): they also
-        // serve this registry, under its prefix. Shown read-only, with a link to
-        // edit them at the binding.
-        let binding = match registry.storage_binding_id {
-            Some(id) => deps.db.storage_binding(id).await?,
-            None => deps.db.instance_default_binding().await?,
-        };
-        let (inherited, inh_label, inh_href) = match &binding {
-            Some(b) => {
-                let list = deps.db.list_storage_frontends(b.id).await?;
-                let (label, href) = if b.is_instance_default {
-                    (
-                        "default storage".to_string(),
-                        "/-/instance/storage".to_string(),
-                    )
-                } else {
-                    let org = match registry.org_id {
-                        Some(oid) => deps
-                            .db
-                            .org_by_id(oid)
-                            .await?
-                            .map(|o| o.slug)
-                            .unwrap_or_default(),
-                        None => String::new(),
-                    };
-                    (b.name.clone(), format!("/-/org/{org}/bindings/{}", b.id))
-                };
-                (list, label, href)
-            }
-            None => (Vec::new(), String::new(), String::new()),
-        };
-        Ok::<_, anyhow::Error>(console::serving_page(
+    let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
+    match delivery_route_overview_rows(&deps, crate::db::SurfaceTarget::Registry(registry.id)).await
+    {
+        Ok(routes) => Html(console::registry_delivery_page(
             &session.email,
-            registry,
-            &session.csrf(),
-            &frontends,
-            &inherited,
-            &inh_label,
-            &inh_href,
-            advertise_storage_frontend,
-            mirror.as_ref(),
-            notice,
+            &registry,
+            &routes,
+            &navigation,
             started,
         ))
-    }
-    .await;
-    match result {
-        Ok(html) => Html(html).into_response(),
-        Err(err) => internal(err),
+        .into_response(),
+        Err(error) => internal(error),
     }
 }
 
-/// `POST /{slug}/-/settings/serving` — add/delete a frontend or set/clear the
-/// mirror config.
-pub(crate) async fn serving_post(
+/// Shows exact canonical audience selections separately from route inventory.
+pub(crate) async fn registry_canonical_audiences(
     deps: ConsoleDeps,
     headers: HeaderMap,
     RequestStart(started): RequestStart,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
-    body: axum::body::Bytes,
 ) -> Response {
     let session = match require_session(&deps, &headers).await {
-        Ok(s) => s,
-        Err(resp) => return *resp,
+        Ok(session) => session,
+        Err(response) => return *response,
     };
     let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
-        Ok(reg) => reg,
-        Err(err) => return internal(err),
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let fields = parse_form(&String::from_utf8_lossy(&body));
-    serving_action(&deps, &session, &registry, &fields, started).await
+    let scope = registry_scope(&deps.db, &registry).await;
+    if let Some(deny) = require_org_perm(&deps, &session, &scope, Permission::RouteRead).await {
+        return *deny;
+    }
+    let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
+    match delivery_route_overview_rows(&deps, crate::db::SurfaceTarget::Registry(registry.id)).await
+    {
+        Ok(routes) => Html(console::registry_canonical_audiences_page(
+            &session.email,
+            &registry,
+            &routes,
+            &navigation,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(error),
+    }
 }
 
-/// Apply a serving/mirror mutation.
-async fn serving_action(
-    deps: &ConsoleDeps,
-    session: &Session,
-    registry: &RegistryRecord,
-    fields: &std::collections::HashMap<String, String>,
-    started: Instant,
+/// `GET /{slug}/-/settings/upstream-mirror` — upstream synchronization state.
+pub(crate) async fn registry_upstream_mirror(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
 ) -> Response {
-    let field = |k: &str| fields.get(k).map(String::as_str).unwrap_or("");
-    if let Err(resp) = check_csrf(session, field("csrf")) {
-        return *resp;
-    }
-    let scope = Scope::parse(&registry.slug);
-    if !session
-        .allows(&deps.db, Permission::RegistryConfigure, &scope)
-        .await
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if let Some(deny) =
+        require_org_perm(&deps, &session, &scope, Permission::RegistryConfigure).await
     {
-        return (StatusCode::FORBIDDEN, "registry.configure required").into_response();
+        return *deny;
     }
-    async fn audit(
-        deps: &ConsoleDeps,
-        session: &Session,
-        registry: &RegistryRecord,
-        action: &str,
-        detail: &str,
-    ) -> anyhow::Result<i64> {
-        deps.db
-            .record_audit(
-                "user",
-                Some(session.auth.user_id),
-                &session.email,
-                action,
-                &registry.slug,
-                None,
-                None,
-                None,
-                Some(detail),
-            )
-            .await
-    }
-
-    match field("op") {
-        "add-frontend" => {
-            let domain = field("domain").trim();
-            if domain.is_empty() {
-                return (StatusCode::BAD_REQUEST, "domain is required").into_response();
-            }
-            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
-            let created = deps
-                .db
-                .create_frontend(
-                    registry.id,
-                    domain,
-                    field("base_path").trim(),
-                    match field("mode") {
-                        "proxied" => "proxied",
-                        _ => "direct",
-                    },
-                    field("serves_git") == "1",
-                    field("serves_cache") == "1",
-                    field("serves_web") == "1",
-                    priority,
-                    field("advertised") == "1",
-                )
-                .await;
-            match created {
-                Ok(_) => {}
-                Err(err) => return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
-            }
-            if let Err(err) = audit(deps, session, registry, "frontend.add", domain).await {
-                return internal(err);
-            }
-            serving_view(deps, session, registry, Some("Frontend added."), started).await
-        }
-        "edit-frontend" => {
-            let Ok(id) = field("id").parse::<i64>() else {
-                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
-            };
-            match deps.db.list_frontends(registry.id).await {
-                Ok(list) if list.iter().any(|f| f.id == id) => {}
-                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
-                Err(err) => return internal(err),
-            }
-            let priority: i64 = field("consumer_priority").trim().parse().unwrap_or(100);
-            let updated = deps
-                .db
-                .update_frontend(
-                    id,
-                    field("domain").trim(),
-                    field("base_path").trim(),
-                    match field("mode") {
-                        "proxied" => "proxied",
-                        _ => "direct",
-                    },
-                    field("serves_git") == "1",
-                    field("serves_cache") == "1",
-                    field("serves_web") == "1",
-                    priority,
-                    field("advertised") == "1",
-                )
-                .await;
-            if let Err(err) = updated {
-                return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response();
-            }
-            if let Err(err) = audit(deps, session, registry, "frontend.edit", &id.to_string()).await
-            {
-                return internal(err);
-            }
-            serving_view(deps, session, registry, Some("Frontend updated."), started).await
-        }
-        "delete-frontend" => {
-            let Ok(id) = field("id").parse::<i64>() else {
-                return (StatusCode::BAD_REQUEST, "bad frontend id").into_response();
-            };
-            match deps.db.list_frontends(registry.id).await {
-                Ok(list) if list.iter().any(|f| f.id == id) => {}
-                Ok(_) => return (StatusCode::NOT_FOUND, "no such frontend").into_response(),
-                Err(err) => return internal(err),
-            }
-            if let Err(err) = deps.db.delete_frontend(id).await {
-                return internal(err);
-            }
-            if let Err(err) =
-                audit(deps, session, registry, "frontend.delete", &id.to_string()).await
-            {
-                return internal(err);
-            }
-            serving_view(deps, session, registry, Some("Frontend deleted."), started).await
-        }
-        "set-mirror" => {
-            let upstream = field("upstream_url").trim();
-            if upstream.is_empty() {
-                return (StatusCode::BAD_REQUEST, "upstream URL is required").into_response();
-            }
-            // The hub fetches the upstream on the mirror schedule, so reject a
-            // non-http(s) or local/internal origin (SSRF) at the write.
-            if let Err(err) = crate::url_guard::is_safe_remote_url(upstream) {
-                return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response();
-            }
-            let secs: i64 = field("schedule_secs").trim().parse().unwrap_or(3600);
-            let r = deps
-                .db
-                .create_mirror_source(
-                    registry.id,
-                    upstream,
-                    match field("mode") {
-                        "pullthrough" => "pullthrough",
-                        _ => "full",
-                    },
-                    field("verify") == "1",
-                    secs,
-                )
-                .await;
-            if let Err(err) = r {
-                return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response();
-            }
-            if let Err(err) = audit(deps, session, registry, "mirror.set", upstream).await {
-                return internal(err);
-            }
-            serving_view(
-                deps,
-                session,
-                registry,
-                Some("Mirror configuration saved."),
-                started,
-            )
-            .await
-        }
-        "remove-mirror" => {
-            if let Err(err) = deps.db.delete_mirror_source(registry.id).await {
-                return internal(err);
-            }
-            if let Err(err) = audit(deps, session, registry, "mirror.remove", &registry.slug).await
-            {
-                return internal(err);
-            }
-            serving_view(deps, session, registry, Some("Stopped mirroring."), started).await
-        }
-        _ => (StatusCode::BAD_REQUEST, "unknown operation").into_response(),
+    let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
+    match deps.db.mirror_source(registry.id).await {
+        Ok(mirror) => Html(console::registry_upstream_mirror_page(
+            &session.email,
+            &registry,
+            mirror.as_ref(),
+            &navigation,
+            started,
+        ))
+        .into_response(),
+        Err(error) => internal(error),
     }
 }
 
@@ -7383,36 +8433,234 @@ async fn keys_view(
     deps: &ConsoleDeps,
     session: &Session,
     registry: &RegistryRecord,
-    headers: &HeaderMap,
+    _headers: &HeaderMap,
     page_number: usize,
     started: Instant,
 ) -> Response {
-    if let Err(deny) = authorize_registry_read(deps, registry, headers).await {
-        return *deny;
+    let scope = registry_scope(&deps.db, registry).await;
+    if !session
+        .allows(&deps.db, Permission::KeysManage, &scope)
+        .await
+    {
+        return StatusCode::NOT_FOUND.into_response();
     }
     let roster = match deps.db.list_roster(registry.id).await {
         Ok(roster) => roster,
         Err(err) => return internal(err),
     };
     let can_manage = session
-        .allows(
-            &deps.db,
-            Permission::KeysManage,
-            &Scope::parse(&registry.slug),
-        )
+        .allows(&deps.db, Permission::KeysManage, &scope)
         .await;
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
+    let bearer = match session.topology_bearer(deps, Scope::parse(&registry.owner_scope_key)) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    let signing_keys = match deps
+        .topology
+        .signing_keys(&bearer, registry.owner_scope_key.clone())
+        .await
+    {
+        Ok(keys) => keys,
+        Err(error) => return (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    };
+    let signing_usage = match deps
+        .db
+        .signing_key_usage(&registry.stable_id, "registry_publication")
+        .await
+    {
+        Ok(usage) => usage,
+        Err(error) => return internal(error),
+    };
+    let mut channel_usages = Vec::new();
+    let channels = match deps.db.list_channels(registry.id).await {
+        Ok(channels) => channels,
+        Err(error) => return internal(error),
+    };
+    for channel in channels {
+        let consumer_stable_id = format!("channel:{}:{}", registry.stable_id, channel.name);
+        let usage = match deps
+            .db
+            .signing_key_usage(&consumer_stable_id, "channel_frontier")
+            .await
+        {
+            Ok(usage) => usage,
+            Err(error) => return internal(error),
+        };
+        channel_usages.push(console::ChannelSigningUsageRow {
+            name: channel.name,
+            usage,
+        });
+    }
     Html(console::keys_page(
         &session.email,
         registry,
+        &session.csrf(),
         &roster,
+        signing_usage.as_ref(),
+        &signing_keys,
+        &channel_usages,
         can_manage,
         page_number,
+        &navigation,
         started,
     ))
     .into_response()
 }
 
-/// `GET /{slug}/-/keys/rotate` — the rotation wizard.
+/// Reviewed retained publication-key usage from registry settings.
+#[derive(serde::Deserialize)]
+pub(crate) struct RegistrySigningKeyForm {
+    #[serde(default)]
+    csrf: String,
+    #[serde(default)]
+    purpose: String,
+    #[serde(default)]
+    channel_name: String,
+    #[serde(default)]
+    key_generation: String,
+    #[serde(default)]
+    signing_key_stable_id: String,
+    #[serde(default)]
+    signing_key_generation: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    expected_resource_version: String,
+    #[serde(default)]
+    plan_id: String,
+    #[serde(default)]
+    confirmation_hash: String,
+}
+
+/// Plans or applies the registry's exact publication signing-key usage.
+pub(crate) async fn keys_action(
+    deps: ConsoleDeps,
+    headers: HeaderMap,
+    RequestStart(started): RequestStart,
+    uri: axum::http::Uri,
+    Path(slug): Path<String>,
+    Form(form): Form<RegistrySigningKeyForm>,
+) -> Response {
+    let session = match require_session(&deps, &headers).await {
+        Ok(session) => session,
+        Err(response) => return *response,
+    };
+    if let Err(response) = check_csrf(&session, &form.csrf) {
+        return *response;
+    }
+    if let Err(response) = require_sudo(&session, &headers) {
+        return *response;
+    }
+    let Some(registry) = (match resolve_registry(&deps, &slug, &uri).await {
+        Ok(registry) => registry,
+        Err(error) => return internal(error),
+    }) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let scope = registry_scope(&deps.db, &registry).await;
+    if let Some(response) = require_org_perm(&deps, &session, &scope, Permission::KeysManage).await
+    {
+        return *response;
+    }
+    let bearer = match session.topology_bearer(&deps, Scope::parse(&registry.owner_scope_key)) {
+        Ok(bearer) => bearer,
+        Err(error) => return internal(error),
+    };
+    if !form.plan_id.is_empty() {
+        return match deps
+            .topology
+            .apply_signing_key_usage(
+                &bearer,
+                form.plan_id.clone(),
+                form.confirmation_hash,
+                console_apply_idempotency_key(&form.plan_id),
+            )
+            .await
+        {
+            Ok(_) => keys_view(&deps, &session, &registry, &headers, 1, started).await,
+            Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+        };
+    }
+    let (key_id, generation) = if form.state == "active" {
+        match form.key_generation.rsplit_once(':') {
+            Some((key_id, generation)) => (key_id.to_string(), generation.to_string()),
+            None => {
+                return (StatusCode::BAD_REQUEST, "select a signing-key generation").into_response()
+            }
+        }
+    } else if form.state == "detached" {
+        (form.signing_key_stable_id, form.signing_key_generation)
+    } else {
+        return (StatusCode::BAD_REQUEST, "invalid signing usage state").into_response();
+    };
+    let generation = match generation.parse::<u64>() {
+        Ok(generation) if generation > 0 => generation,
+        _ => return (StatusCode::BAD_REQUEST, "invalid signing-key generation").into_response(),
+    };
+    let (consumer_stable_id, purpose, title) = match form.purpose.as_str() {
+        "" | "registry_publication" => (
+            registry.stable_id.clone(),
+            "registry_publication".to_string(),
+            "Change registry publication key",
+        ),
+        "channel_frontier" => {
+            let channels = match deps.db.list_channels(registry.id).await {
+                Ok(channels) => channels,
+                Err(error) => return internal(error),
+            };
+            if form.channel_name.is_empty()
+                || !channels
+                    .iter()
+                    .any(|channel| channel.name == form.channel_name)
+            {
+                return (StatusCode::BAD_REQUEST, "unknown registry channel").into_response();
+            }
+            (
+                format!("channel:{}:{}", registry.stable_id, form.channel_name),
+                "channel_frontier".to_string(),
+                "Change channel frontier key",
+            )
+        }
+        _ => return (StatusCode::BAD_REQUEST, "invalid signing usage purpose").into_response(),
+    };
+    match deps
+        .topology
+        .plan_signing_key_usage(
+            &bearer,
+            aos_proto_types::PlanSigningKeyUsageRequest {
+                consumer_stable_id,
+                purpose,
+                signing_key_stable_id: key_id,
+                signing_key_generation: generation,
+                state: form.state,
+                expected_resource_version: form.expected_resource_version,
+                idempotency_key: format!(
+                    "console-plan-registry-signing-usage-{}",
+                    uuid::Uuid::new_v4()
+                ),
+            },
+        )
+        .await
+    {
+        Ok(plan) => Html(console::signing_topology_plan_page(
+            &session.email,
+            title,
+            &format!("/{}/-/settings/signing-keys", registry.slug),
+            &session.csrf(),
+            &plan,
+            "usage",
+            started,
+        ))
+        .into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
+    }
+}
+
+/// Renders the signing-key rotation wizard.
 pub(crate) async fn keys_rotate(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -7438,13 +8686,27 @@ async fn keys_rotate_view(
     deps: &ConsoleDeps,
     session: &Session,
     registry: &RegistryRecord,
-    headers: &HeaderMap,
+    _headers: &HeaderMap,
     started: Instant,
 ) -> Response {
-    if let Err(deny) = authorize_registry_read(deps, registry, headers).await {
-        return *deny;
+    let scope = registry_scope(&deps.db, registry).await;
+    if !session
+        .allows(&deps.db, Permission::KeysManage, &scope)
+        .await
+    {
+        return StatusCode::NOT_FOUND.into_response();
     }
-    Html(console::keys_rotate_page(&session.email, registry, started)).into_response()
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
+    Html(console::keys_rotate_page(
+        &session.email,
+        registry,
+        &navigation,
+        started,
+    ))
+    .into_response()
 }
 
 // -- publishes --------------------------------------------------------------
@@ -7467,7 +8729,7 @@ pub(crate) async fn publishes(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    publishes_view(&deps, &session, &registry, &headers, started).await
+    publishes_view(&deps, &session, &registry, started).await
 }
 
 /// Render the publish-pipeline view: visibility-gated.
@@ -7475,18 +8737,22 @@ async fn publishes_view(
     deps: &ConsoleDeps,
     session: &Session,
     registry: &RegistryRecord,
-    headers: &HeaderMap,
     started: Instant,
 ) -> Response {
-    if let Err(deny) = authorize_registry_read(deps, registry, headers).await {
-        return *deny;
+    let scope = registry_scope(&deps.db, registry).await;
+    if !session.allows(&deps.db, Permission::Read, &scope).await {
+        return StatusCode::NOT_FOUND.into_response();
     }
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let result = async {
         let status = deps.db.index_status(registry.id).await?;
         let releases = deps.db.list_releases(registry.id).await?;
         let audit: Vec<_> = deps
             .db
-            .list_audit(&registry.slug)
+            .list_audit(&registry.scope_key)
             .await?
             .into_iter()
             .filter(|a| {
@@ -7502,6 +8768,7 @@ async fn publishes_view(
             status.as_ref(),
             &releases,
             &audit,
+            &navigation,
             started,
         ))
     }
@@ -7514,7 +8781,7 @@ async fn publishes_view(
 
 // -- git-backed config change requests --------------------------------------
 
-/// `GET /{slug}/-/settings/config` — the git-backed config-edit page.
+/// `GET /{slug}/-/settings/configuration` — the git-backed configuration page.
 ///
 /// Renders the current committed `registry.toml` in a textarea for a
 /// `registry.configure`-bearing admin to edit and submit as a change request.
@@ -7538,42 +8805,6 @@ pub(crate) async fn config_edit(
     config_edit_view(&deps, &session, &registry, None, started).await
 }
 
-/// Builds the config-editor autofill suggestions: the registry's DB-linked
-/// caches with each cache's consumer URL and whether it is already present in
-/// the form's current `[caches]` (matched trailing-slash-normalized).
-///
-/// # Errors
-///
-/// Returns an error on database failure or when resolving a cache's consumer
-/// URL fails.
-async fn linked_cache_suggestions(
-    deps: &ConsoleDeps,
-    registry: &RegistryRecord,
-    model: &crate::web::config_form::ConfigFormModel,
-) -> anyhow::Result<Vec<console::LinkedCacheSuggestion>> {
-    let present: std::collections::HashSet<String> = model
-        .caches
-        .iter()
-        .map(|row| row.url.trim_end_matches('/').to_string())
-        .collect();
-    let mut suggestions = Vec::new();
-    for link in deps.db.cache_links_for_registry(registry.id).await? {
-        if let Some(cache) = deps.db.cache_by_id(link.cache_id).await? {
-            if cache.deleted_at.is_none() {
-                let url = crate::service::cache_consumer_url(&deps.db, &deps.external_url, &cache)
-                    .await?;
-                let present = present.contains(url.trim_end_matches('/'));
-                suggestions.push(console::LinkedCacheSuggestion {
-                    cache_slug: cache.slug,
-                    consumer_url: url,
-                    present,
-                });
-            }
-        }
-    }
-    Ok(suggestions)
-}
-
 /// Render the config-edit page, optionally with a just-created change-request
 /// `result` (its change id and merge command).
 async fn config_edit_view(
@@ -7583,10 +8814,17 @@ async fn config_edit_view(
     result: Option<(&str, &str)>,
     started: Instant,
 ) -> Response {
-    let scope = Scope::parse(&registry.slug);
+    let scope = registry_scope(&deps.db, registry).await;
     let can_edit = session
         .allows(&deps.db, Permission::RegistryConfigure, &scope)
         .await;
+    if !can_edit {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
     let current = match current_registry_toml(deps, registry).await {
         Ok(toml) => toml,
         Err(err) => return internal(err),
@@ -7596,26 +8834,17 @@ async fn config_edit_view(
     // the schema) and the read-only view both fall back to the raw-TOML page,
     // which shows the committed file verbatim so nothing is hidden or dropped.
     match crate::web::config_form::parse_model(&current) {
-        Some(model) if can_edit => {
-            // Autofill suggestions: the registry's DB-linked caches, each with
-            // its consumer URL and whether that URL is already in the config the
-            // form currently shows.
-            let linked = match linked_cache_suggestions(deps, registry, &model).await {
-                Ok(linked) => linked,
-                Err(err) => return internal(err),
-            };
-            Html(console::registry_config_form_page(
-                &session.email,
-                registry,
-                &session.csrf(),
-                &model,
-                can_edit,
-                &linked,
-                result,
-                started,
-            ))
-            .into_response()
-        }
+        Some(model) if can_edit => Html(console::registry_config_form_page(
+            &session.email,
+            registry,
+            &session.csrf(),
+            &model,
+            can_edit,
+            result,
+            &navigation,
+            started,
+        ))
+        .into_response(),
         _ => Html(console::config_edit_page(
             &session.email,
             registry,
@@ -7623,6 +8852,7 @@ async fn config_edit_view(
             &current,
             can_edit,
             result,
+            &navigation,
             started,
         ))
         .into_response(),
@@ -7653,15 +8883,19 @@ async fn current_registry_toml(
         return Ok(String::new());
     };
     let head = aos_registry_surface::object::Oid::from_hex(&head_hex)?;
-    let fetch = deps.surface.fetcher(registry).await?;
+    let fetch = crate::placement_read::TopologySurfaceFetch::new(
+        Arc::clone(&deps.db),
+        Arc::clone(&deps.surface),
+        crate::db::SurfaceTarget::Registry(registry.id),
+    );
     Ok(
-        crate::git::load_committed_file(fetch.as_ref(), head, "registry.toml")
+        crate::git::load_committed_file(&fetch, head, "registry.toml")
             .await?
             .unwrap_or_default(),
     )
 }
 
-/// `POST /{slug}/-/settings/config` — submit a structured config change request.
+/// `POST /{slug}/-/settings/configuration` — submits a configuration change request.
 ///
 /// The body is the auto-generated config form (not raw TOML): it is decoded
 /// ([`crate::web::config_form::parse_submission`]), CSRF-checked, and
@@ -7694,7 +8928,7 @@ pub(crate) async fn config_submit(
     if let Err(resp) = check_csrf(&session, &sub.csrf) {
         return *resp;
     }
-    let scope = Scope::parse(&registry.slug);
+    let scope = registry_scope(&deps.db, &registry).await;
     if !session
         .allows(&deps.db, Permission::RegistryConfigure, &scope)
         .await
@@ -7726,9 +8960,10 @@ pub(crate) async fn config_submit(
             model.has_cache_stack = crate::web::config_form::parse_model(&existing)
                 .map(|m| m.has_cache_stack)
                 .unwrap_or(false);
-            let linked = match linked_cache_suggestions(&deps, &registry, &model).await {
-                Ok(linked) => linked,
-                Err(err) => return internal(err),
+            let scope = registry_scope(&deps.db, &registry).await;
+            let navigation = match navigation_permissions(&deps.db, &session, &scope).await {
+                Ok(permissions) => permissions,
+                Err(error) => return internal(error),
             };
             Html(console::registry_config_form_page(
                 &session.email,
@@ -7736,8 +8971,8 @@ pub(crate) async fn config_submit(
                 &session.csrf(),
                 &model,
                 true,
-                &linked,
                 None,
+                &navigation,
                 started,
             ))
             .into_response()
@@ -7762,18 +8997,27 @@ async fn propose_registry_config(
     meta: crate::gitwrite::ProposeMeta,
     started: Instant,
 ) -> Response {
-    let fetch = match deps.surface.fetcher(registry).await {
-        Ok(fetch) => fetch,
-        Err(err) => return internal(err),
+    let fetch = crate::placement_read::TopologySurfaceFetch::new(
+        Arc::clone(&deps.db),
+        Arc::clone(&deps.surface),
+        crate::db::SurfaceTarget::Registry(registry.id),
+    );
+    let placement = match deps
+        .db
+        .reconciled_surface_writer(crate::db::SurfaceTarget::Registry(registry.id))
+        .await
+    {
+        Ok(placement) => placement,
+        Err(err) => return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     };
-    let writer = match deps.surface_write.writer(registry).await {
+    let writer = match deps.surface_write.placement_writer(&placement).await {
         Ok(writer) => writer,
         Err(err) => return (StatusCode::BAD_REQUEST, format!("{err:#}")).into_response(),
     };
     let proposed = crate::gitwrite::propose_config_change(
         &deps.db,
         deps.sealer.as_ref(),
-        fetch.as_ref(),
+        &fetch,
         writer.as_ref(),
         registry,
         "registry.toml",
@@ -7806,11 +9050,11 @@ async fn propose_registry_config(
     }
 }
 
-/// `GET /{slug}/-/changes` — the git-backed change-request list page.
+/// `GET /{slug}/-/settings/change-requests` — the git-backed change list.
 ///
-/// Lists the registry's git-backed change requests with their file diffs and
-/// promotion commands. Gated to `audit.read` (admin+), matching the access
-/// matrix for the configuration/change surface.
+/// The shared registry read gate runs first, preserving a private registry's
+/// `404` nondisclosure contract. A principal who may read the registry but
+/// lacks `audit.read` receives `403`.
 pub(crate) async fn changes(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -7828,14 +9072,18 @@ pub(crate) async fn changes(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if let Err(response) = authorize_registry_read(&deps, &registry, &headers).await {
+        return *response;
+    }
     let filter = console::ChangesFilter::parse(query_value(&uri, "state").as_deref());
     changes_view(&deps, &session, &registry, filter, started).await
 }
 
 /// Render the change-request list page for a resolved registry.
 ///
-/// Gated to `audit.read` (admin+). Renders the Open/Closed/All tabbed list; each
-/// row links to the change's detail page.
+/// Gated to `audit.read` after the caller has enforced registry readability.
+/// Renders the Open/Closed/All tabbed list; each row links to the change's
+/// detail page.
 async fn changes_view(
     deps: &ConsoleDeps,
     session: &Session,
@@ -7843,16 +9091,20 @@ async fn changes_view(
     filter: console::ChangesFilter,
     started: Instant,
 ) -> Response {
-    let scope = Scope::parse(&registry.slug);
+    let scope = registry_scope(&deps.db, registry).await;
     if !session
         .allows(&deps.db, Permission::AuditRead, &scope)
         .await
     {
         return (StatusCode::FORBIDDEN, "audit.read required").into_response();
     }
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
 
     let result = async {
-        let changesets = deps.db.list_changesets(&registry.slug).await?;
+        let changesets = deps.db.list_changesets(&registry.scope_key).await?;
         let mut rows: Vec<console::ChangeListRow> = Vec::new();
         for cs in changesets.into_iter().filter(|cs| cs.git_ref.is_some()) {
             let comment_count = deps
@@ -7881,6 +9133,7 @@ async fn changes_view(
             registry,
             &rows,
             filter,
+            &navigation,
             started,
         ))
     }
@@ -7900,12 +9153,13 @@ fn query_value(uri: &axum::http::Uri, key: &str) -> Option<String> {
     })
 }
 
-/// `GET /{slug}/-/changes/{id}` — the change-request detail (review) page.
+/// Renders one canonical settings change-request detail page.
 ///
 /// Renders the PR-style Conversation / Diff / Checks views for one git-backed
-/// change request. Gated to `audit.read`; a change whose scope is not contained
-/// by the resolved registry (or that is not a git-backed change request) 404s,
-/// so a registry's URL can only reach its own changes.
+/// change request. Registry readability is checked before `audit.read`, so a
+/// hidden private registry returns `404` while a readable principal without
+/// audit permission receives `403`. A change outside the resolved registry (or
+/// one that is not git-backed) also returns `404`.
 pub(crate) async fn change_detail(
     deps: ConsoleDeps,
     headers: HeaderMap,
@@ -7923,6 +9177,9 @@ pub(crate) async fn change_detail(
     }) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    if let Err(response) = authorize_registry_read(&deps, &registry, &headers).await {
+        return *response;
+    }
     change_detail_view(&deps, &session, &registry, &id, &uri, started).await
 }
 
@@ -7935,7 +9192,7 @@ async fn change_detail_view(
     uri: &axum::http::Uri,
     started: Instant,
 ) -> Response {
-    let scope = Scope::parse(&registry.slug);
+    let scope = registry_scope(&deps.db, registry).await;
     if !session
         .allows(&deps.db, Permission::AuditRead, &scope)
         .await
@@ -7945,13 +9202,17 @@ async fn change_detail_view(
     let can_close = session
         .allows(&deps.db, Permission::RegistryConfigure, &scope)
         .await;
+    let navigation = match navigation_permissions(&deps.db, session, &scope).await {
+        Ok(permissions) => permissions,
+        Err(error) => return internal(error),
+    };
 
     let result = async {
         let Some(cs) = deps.db.changeset(change_id).await? else {
             return Ok(None);
         };
         // Scope guard: only this registry's own git-backed change requests.
-        if cs.git_ref.is_none() || !scope.contains(&Scope::parse(&cs.scope)) {
+        if cs.git_ref.is_none() || Scope::try_parse(&cs.scope).as_ref() != Some(&scope) {
             return Ok(None);
         }
 
@@ -8027,6 +9288,7 @@ async fn change_detail_view(
             &session.email,
             registry,
             &detail,
+            &navigation,
             started,
         )))
     }
@@ -8204,10 +9466,12 @@ pub(crate) struct ChangeReviewForm {
     pub body: String,
 }
 
-/// Loads a change request for a mutating action: resolves the registry, checks
-/// `perm`, validates CSRF, and confirms the change is one of this registry's own
-/// git-backed change requests. Returns the loaded changeset on success, or the
-/// error response to return.
+/// Loads a change request for a mutating action.
+///
+/// The helper resolves the registry, enforces its read/nondisclosure contract,
+/// validates CSRF, checks `perm`, and confirms the change is one of that
+/// registry's git-backed requests. It returns the loaded change on success or
+/// the response to return on denial.
 async fn authorize_change_action(
     deps: &ConsoleDeps,
     headers: &HeaderMap,
@@ -8221,17 +9485,20 @@ async fn authorize_change_action(
     let Some(registry) = resolve_registry(deps, slug, uri).await.map_err(internal)? else {
         return Err(StatusCode::NOT_FOUND.into_response());
     };
+    authorize_registry_read(deps, &registry, headers)
+        .await
+        .map_err(|response| *response)?;
     if let Err(resp) = check_csrf(&session, csrf) {
         return Err(*resp);
     }
-    let scope = Scope::parse(&registry.slug);
+    let scope = registry_scope(&deps.db, &registry).await;
     if !session.allows(&deps.db, perm, &scope).await {
         return Err((StatusCode::FORBIDDEN, "insufficient permission").into_response());
     }
     let Some(cs) = deps.db.changeset(change_id).await.map_err(internal)? else {
         return Err(StatusCode::NOT_FOUND.into_response());
     };
-    if cs.git_ref.is_none() || !scope.contains(&Scope::parse(&cs.scope)) {
+    if cs.git_ref.is_none() || Scope::try_parse(&cs.scope).as_ref() != Some(&scope) {
         return Err(StatusCode::NOT_FOUND.into_response());
     }
     Ok((session, registry, cs))
@@ -8239,10 +9506,10 @@ async fn authorize_change_action(
 
 /// A 303 redirect back to a change's detail page (post/redirect/get).
 fn redirect_to_change(slug: &str, change_id: &str) -> Response {
-    Redirect::to(&format!("/{slug}/-/changes/{change_id}")).into_response()
+    Redirect::to(&format!("/{slug}/-/settings/change-requests/{change_id}")).into_response()
 }
 
-/// `POST /{slug}/-/changes/{id}/comment` — post a discussion comment.
+/// Posts a discussion comment to one change request.
 ///
 /// Gated to `audit.read` (anyone who can see the change may discuss it).
 pub(crate) async fn change_comment(
@@ -8286,7 +9553,7 @@ pub(crate) async fn change_comment(
     redirect_to_change(&slug, &cs.change_id)
 }
 
-/// `POST /{slug}/-/changes/{id}/review` — submit an advisory review.
+/// Submits an advisory review to one change request.
 ///
 /// Gated to `audit.read`. Reviews are advisory: there is no server-side merge,
 /// so an approval gates nothing — it is recorded for the timeline.
@@ -8334,7 +9601,7 @@ pub(crate) async fn change_review(
     redirect_to_change(&slug, &cs.change_id)
 }
 
-/// `POST /{slug}/-/changes/{id}/close` — withdraw an open draft change request.
+/// Withdraws an open draft change request.
 ///
 /// Gated to `registry.configure`. Sets `closed_at`; never touches git, so the
 /// draft ref remains promotable.
@@ -8365,7 +9632,7 @@ pub(crate) async fn change_close(
     redirect_to_change(&slug, &cs.change_id)
 }
 
-/// `POST /{slug}/-/changes/{id}/reopen` — reopen a closed change request.
+/// Reopens a closed change request.
 ///
 /// Gated to `registry.configure`. Clears `closed_at`, re-arming the indexer's
 /// auto-merge detection.
@@ -8398,14 +9665,25 @@ pub(crate) async fn change_reopen(
 
 #[cfg(test)]
 mod tests {
-    use super::registry_delete_target;
+    use super::delivery_route_url;
 
     #[test]
-    fn registry_delete_returns_to_owning_org_inventory() {
+    fn delivery_route_url_preserves_endpoint_scheme_and_effective_port() {
         assert_eq!(
-            registry_delete_target(Some("acme")),
-            "/-/org/acme/registries"
+            delivery_route_url("http", "cache.example", 80, "/nix"),
+            "http://cache.example/nix",
         );
-        assert_eq!(registry_delete_target(None), "/");
+        assert_eq!(
+            delivery_route_url("https", "cache.example", 8443, "/nix"),
+            "https://cache.example:8443/nix",
+        );
+        assert_eq!(
+            delivery_route_url("https", "192.0.2.44", 443, "/"),
+            "https://192.0.2.44/",
+        );
+        assert_eq!(
+            delivery_route_url("http", "[2001:db8::1]", 8080, "/"),
+            "http://[2001:db8::1]:8080/",
+        );
     }
 }

@@ -8,7 +8,9 @@
 
 use aos_hub::auth::password::verify_password;
 use aos_hub::db::Database;
-use aos_hub::seed::{seed_dev, SeedOutcome, DEMO_EMAIL, DEMO_ORG, DEMO_PASSWORD};
+use aos_hub::seed::{
+    seed_dev, SeedOutcome, DEMO_EMAIL, DEMO_ORG, DEMO_PASSWORD, DEMO_PRIVATE_REGISTRY,
+};
 
 #[tokio::test]
 async fn seed_creates_browsable_registry_and_login() {
@@ -55,6 +57,18 @@ async fn seed_creates_browsable_registry_and_login() {
     assert!(names.contains(&"curl".to_string()), "{names:?}");
     assert!(names.contains(&"openssl".to_string()), "{names:?}");
     assert!(names.contains(&"jq".to_string()), "{names:?}");
+    assert!(names.contains(&"aos-system".to_string()), "{names:?}");
+    let images = db.list_system_images(registry.id).await.unwrap();
+    assert_eq!(images.len(), 2);
+    assert!(images.iter().any(|image| image.format == "raw"));
+    assert!(images.iter().any(|image| image.format == "qcow2"));
+    let private = db
+        .registry_by_slug(&format!("{DEMO_ORG}/{DEMO_PRIVATE_REGISTRY}"))
+        .await
+        .unwrap()
+        .expect("private image registry exists");
+    assert_eq!(private.visibility, "private");
+    assert_eq!(db.list_system_images(private.id).await.unwrap().len(), 2);
 
     // A release + channel were indexed (require_signatures was on, so this only
     // happens if every signature verified).
@@ -84,7 +98,7 @@ async fn re_seeding_is_a_safe_no_op() {
         SeedOutcome::AlreadySeeded
     ));
 
-    // Still exactly one org / one registry — no duplication.
+    // Still exactly one org / the same public+private registries — no duplication.
     let org = db.org_by_slug(DEMO_ORG).await.unwrap().unwrap();
-    assert_eq!(db.org_registry_count(org.id).await.unwrap(), 1);
+    assert_eq!(db.org_registry_count(org.id).await.unwrap(), 2);
 }

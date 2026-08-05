@@ -10,49 +10,57 @@
 //!
 //! There is deliberately no `axum-cloudflare-adapter` dependency: no published
 //! release of that adapter tracks the `worker` version this crate pins, and
-//! the conversion is small enough to own. The bridge buffers both bodies fully
-//! (the registry RPC payloads are small JSON messages), so it never needs a
-//! streaming body type across the boundary.
+//! the conversion is small enough to own. Incoming bodies cross into Axum as
+//! streams so route-specific limits apply before buffering. Responses stream
+//! back to the runtime as well.
 //!
 //! # Flow
 //!
 //! ```text
-//! worker::Request --to_axum--> http::Request<Body> --router.oneshot--> http::Response<Body>
-//!                                                                              |
-//! worker::Response <--to_worker---------------------------------------------- +
+//! worker::Request --to_axum--> delivery rewrite --> nested console --> API/facade router
+//!                                                                           |
+//! worker::Response <--to_worker---------------------------------------------+
 //! ```
 
 use axum::body::Body;
-use tower::ServiceExt;
 use worker::{Headers, Request, Response, Result};
 
 /// Convert an incoming [`worker::Request`] into an [`http::Request`].
 ///
 /// Copies the method, the path-and-query (from the parsed request URL), every
-/// request header, and the fully-buffered request body. The resulting request
+/// request header, and the streaming request body. The resulting request
 /// carries an [`axum::body::Body`] so it can be fed straight to the shared
 /// router.
 ///
 /// # Errors
 ///
 /// Returns an error if the request URL cannot be parsed, the request body
-/// cannot be read, or the assembled [`http::Request`] is malformed (an invalid
+/// cannot be streamed, or the assembled [`http::Request`] is malformed (an invalid
 /// method or header value).
 pub async fn to_axum(mut req: Request) -> Result<http::Request<Body>> {
     let method = req.method().as_ref().to_string();
 
     let url = req.url()?;
-    // Reconstruct the origin-form target (path + optional query) the router
-    // matches on; the authority/scheme are irrelevant to route dispatch.
-    let target = match url.query() {
-        Some(query) => format!("{}?{query}", url.path()),
-        None => url.path().to_string(),
-    };
+    // Preserve the absolute URL until the shared delivery parser has bound the
+    // request to its exact scheme/authority/port. Axum still routes by its path.
+    let target = url.as_str().to_owned();
+    let transport =
+        aos_hub_core::connect::DeliveryTransportEvidence::from_verified_url(&url, "hub")
+            .ok_or_else(|| {
+                worker::Error::RustError("request URL is not an HTTP(S) origin".into())
+            })?;
 
     // Snapshot the headers before the body read consumes `req` mutably.
     let header_pairs: Vec<(String, String)> = req.headers().into_iter().collect();
 
-    let body_bytes = req.bytes().await?;
+    let body = match req.stream() {
+        Ok(stream) => Body::from_stream(send_wrapper::SendWrapper::new(stream)),
+        // worker-rs reports an absent Fetch body as a RustError. That is the
+        // ordinary representation of a bodyless GET/HEAD or empty POST, not a
+        // consumed-body condition; BodyUsed and all other failures stay fatal.
+        Err(worker::Error::RustError(_)) => Body::empty(),
+        Err(error) => return Err(error),
+    };
 
     // Resolve the trusted client IP from Cloudflare's `cf-connecting-ip` header,
     // which the edge sets to the real client address and a client cannot forge.
@@ -65,7 +73,10 @@ pub async fn to_axum(mut req: Request) -> Result<http::Request<Body>> {
         .map(|(_, value)| value.clone())
         .unwrap_or_default();
 
-    let mut builder = http::Request::builder().method(method.as_str()).uri(target);
+    let mut builder = http::Request::builder()
+        .method(method.as_str())
+        .uri(target)
+        .extension(transport);
     for (name, value) in &header_pairs {
         // Drop any inbound `x-aos-client-ip`: only the edge-resolved value below
         // is trusted (see the invariant on
@@ -80,19 +91,20 @@ pub async fn to_axum(mut req: Request) -> Result<http::Request<Body>> {
     // a client must not be able to forge its own rate-limit bucket.
     builder = builder.header(aos_hub_core::web::console::CLIENT_IP_HEADER, &client_ip);
     builder
-        .body(Body::from(body_bytes))
+        .body(body)
         .map_err(|err| worker::Error::RustError(format!("building axum request: {err}")))
 }
 
 /// Convert an [`http::Response`] from the router back into a [`worker::Response`].
 ///
-/// Reads the status, buffers the response body in full, and copies every
-/// response header onto the Workers response.
+/// Reads the status, preserves the response body as a backpressured stream, and
+/// copies every response header onto the Workers response.
 ///
 /// # Errors
 ///
-/// Returns an error if the response body cannot be collected, a header name or
-/// value is not valid UTF-8, or the [`worker::Response`] cannot be built.
+/// Returns an error if a header value is not valid UTF-8 or the streaming
+/// [`worker::Response`] cannot be built. Stream failures are forwarded as body
+/// errors after the response begins.
 pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
     use futures_util::TryStreamExt as _;
 
@@ -103,7 +115,7 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
         let value = value
             .to_str()
             .map_err(|err| worker::Error::RustError(format!("non-ASCII response header: {err}")))?;
-        headers.set(name.as_str(), value)?;
+        headers.append(name.as_str(), value)?;
     }
 
     // Stream the router's response body straight through to the Workers runtime
@@ -124,60 +136,81 @@ pub async fn to_worker(resp: http::Response<Body>) -> Result<Response> {
 /// Drive one request through the shared Connect-JSON router and bridge the
 /// result back to the Workers runtime.
 ///
-/// Converts the [`worker::Request`] to an [`http::Request`], runs it through the
-/// router with [`tower::ServiceExt::oneshot`], and converts the
-/// [`http::Response`] back to a [`worker::Response`].
+/// Converts the [`worker::Request`] to an [`http::Request`], verifies delivery
+/// ownership, runs it through the console/API/facade dispatch pipeline, and
+/// converts the [`http::Response`] back to a [`worker::Response`].
 ///
-/// Before the normal router dispatch, every request is offered to the shared
-/// nested-canonical console dispatcher
+/// After delivery ownership has failed closed, every non-streaming request is
+/// offered to the shared nested-canonical console dispatcher
 /// ([`aos_hub_core::web::console::dispatch_nested`]): the shared console routes
 /// capture only a single-segment `{slug}`, so a registry whose canonical path
 /// has slashes (`andyl/demo`) never matches them and would otherwise 404 at the
 /// facade wildcard. When the dispatcher recognizes a nested console page it
 /// returns the rendered response; otherwise the request flows on to the router
-/// unchanged. The request body is buffered once (in [`to_axum`]) and reused for
-/// both the nested check and the fall-through dispatch, so the request is never
-/// read twice.
+/// unchanged. Nested dispatch buffers the stream once, within the same
+/// route-class limit enforced by the native shell, then reuses those bytes for
+/// fall-through so the request is never read twice.
 ///
 /// # Errors
 ///
-/// Returns an error if either conversion fails or the router itself errors (the
-/// shared router is infallible at the `tower::Service` level, so an error here
-/// is a bridge failure, surfaced as a `500` by the caller).
+/// Returns an error if either request or response conversion fails.
 pub async fn dispatch(
     router: axum::Router,
     svc: &aos_hub_core::service::RpcService,
     console_deps: aos_hub_core::web::console::ConsoleDeps,
+    delivery_attestation_verifier: Option<
+        &aos_hub_core::delivery_attestation::DeliveryAttestationVerifier,
+    >,
     req: Request,
 ) -> Result<Response> {
     let axum_req = to_axum(req).await?;
-
-    // Buffer once and offer *every* method to the shared nested-console
-    // classifier before frontend/facade routing. This ordering is load-bearing:
-    // recognized console PUT/HEAD/DELETE/PATCH requests must become 405s rather
-    // than storage operations. GET/POST form bodies and the fall-through router
-    // receive the same bytes, so no request body is consumed twice.
-    let axum_req = match crate::bridge_dispatch::dispatch_nested_first(
+    let axum_req = match aos_hub_core::connect::apply_delivery_attestation(
         axum_req,
-        |method, uri, headers, body| {
-            aos_hub_core::web::console::dispatch_nested(console_deps, method, uri, headers, body)
-        },
-    )
-    .await
-    .map_err(|err| worker::Error::RustError(format!("buffering request body: {err}")))?
-    {
-        crate::bridge_dispatch::NestedDispatch::Handled(resp) => return to_worker(resp).await,
-        crate::bridge_dispatch::NestedDispatch::Forward(req) => req,
+        delivery_attestation_verifier,
+        aos_hub_core::delivery_attestation::delivery_attestation_now(),
+    ) {
+        Ok(request) => request,
+        Err(response) => return to_worker(response).await,
     };
 
-    // Shared frontend domain-routing: rewrite the request to its bound
-    // `/{slug}/…` identity by `Host` (or short-circuit a `404`) before dispatch.
-    let axum_resp = match aos_hub_core::connect::rewrite_for_frontend(svc, axum_req).await {
-        Ok(axum_req) => router
-            .oneshot(axum_req)
-            .await
-            .map_err(|err| worker::Error::RustError(format!("router dispatch: {err}")))?,
-        Err(response) => response,
+    match crate::bridge_dispatch::dispatch_converted_request(router, svc, console_deps, axum_req)
+        .await
+    {
+        crate::bridge_dispatch::ConvertedDispatch::Response(response) => to_worker(response).await,
+        crate::bridge_dispatch::ConvertedDispatch::PayloadTooLarge(error) => {
+            worker::console_log!("request body rejected while buffering: {error}");
+            Response::error("payload too large", 413)
+        }
+    }
+}
+
+/// Dispatches one live-workerd test request through the production bridge
+/// conversion, delivery rewrite, and shared router.
+///
+/// Open-source workerd cannot provide the console's production bindings. This
+/// non-default e2e seam therefore omits only console dispatch and attestation;
+/// machine and Connect API requests still use their ordinary shared routes.
+///
+/// # Errors
+///
+/// Returns an error when conversion, delivery rewriting, or router dispatch
+/// fails.
+#[cfg(feature = "do-e2e")]
+pub(crate) async fn dispatch_do_e2e(
+    router: axum::Router,
+    svc: &aos_hub_core::service::RpcService,
+    req: Request,
+) -> Result<Response> {
+    use tower::ServiceExt as _;
+
+    let axum_req = to_axum(req).await?;
+    let axum_req = match aos_hub_core::connect::rewrite_for_delivery_route(svc, axum_req).await {
+        Ok(request) => request,
+        Err(response) => return to_worker(response).await,
     };
+    let axum_resp = router
+        .oneshot(axum_req)
+        .await
+        .map_err(|error| worker::Error::RustError(format!("router dispatch: {error}")))?;
     to_worker(axum_resp).await
 }

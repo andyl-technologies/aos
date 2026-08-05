@@ -21,14 +21,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use async_trait::async_trait;
 
 // The pure SSRF/path guards moved to the runtime-agnostic core crate (RFC-0004
 // Phase 5) so the Worker shares them; the native DNS pre-check, validating
 // resolver, and symlink-escape canonicalization stay here. Re-export the pure
 // items so existing `crate::fetch::…` paths (used across the hub) are unchanged.
-use aos_hub_core::url_guard::{self, fetch_err, is_global_ip};
+use aos_hub_core::url_guard::{self, fetch_err};
 pub use aos_hub_core::url_guard::{
     is_fetch_error, safe_join, validate_http_surface_path, FetchError,
 };
@@ -198,15 +198,19 @@ pub async fn hardened_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(10))
+        // Environment-configured proxies would move the actual origin
+        // connection outside this process and defeat connect-time DNS pinning.
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(Arc::new(ValidatingResolver))
         .build()
-        // Building only fails when the TLS backend cannot initialize, in
-        // which case `Client::new()` would panic identically; fall back
-        // to the default client rather than aborting. The fallback loses the
-        // resolver and redirect hardening, but `is_safe_remote_url` is still
-        // enforced at the call sites, so this is a defense-in-depth gap only.
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "hardened outbound HTTP client initialization failed");
+            // Continuing with reqwest's defaults would silently re-enable
+            // redirects and remove connect-time DNS-rebinding protection.
+            // This process cannot safely serve requests without that boundary.
+            std::process::abort()
+        })
 }
 
 /// A reqwest DNS resolver that refuses to resolve a name to any
@@ -249,13 +253,12 @@ impl reqwest::dns::Resolve for ValidatingResolver {
                 lookup.map_err(|err| -> Box<dyn std::error::Error + Send + Sync> { err.into() })?;
 
             if !url_guard::allow_local_remotes() {
-                if let Some(bad) = addrs.iter().find(|addr| !is_global_ip(addr.ip())) {
-                    return Err(format!(
-                        "refusing to connect: host resolved to a local/internal address {}",
-                        bad.ip()
-                    )
-                    .into());
-                }
+                let addresses = addrs.iter().map(|address| address.ip()).collect::<Vec<_>>();
+                url_guard::validate_resolved_addresses(&addresses).map_err(
+                    |error| -> Box<dyn std::error::Error + Send + Sync> {
+                        format!("refusing to connect: {error:#}").into()
+                    },
+                )?;
             }
 
             Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
@@ -277,6 +280,40 @@ pub trait SurfaceFetch: Send + Sync {
     /// Returns an error for IO or transport failures other than absence;
     /// transport-level failures carry a [`FetchError`] in their chain.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Opens one object stream and reports the version of that exact handle.
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
+        let Some(bytes) = self.fetch(path).await? else {
+            return Ok(None);
+        };
+        let total = bytes.len() as u64;
+        let (bytes, served) = match range {
+            Some((start, end)) if start < total => {
+                let end = end.min(total.saturating_sub(1));
+                (
+                    bytes[start as usize..=end as usize].to_vec(),
+                    Some((start, end)),
+                )
+            }
+            _ => (bytes, None),
+        };
+        Ok(Some(aos_hub_core::fetch::StreamedRead {
+            body: axum::body::Body::from(bytes),
+            total,
+            range: served,
+            strong_etag: None,
+            snapshot_lease_id: None,
+        }))
+    }
+
+    /// Returns a strong backend version for one object, when available.
+    async fn inventory_strong_etag(&self, _path: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 
     /// The byte length of the object at `path`, or `None` when it does not exist.
     ///
@@ -300,17 +337,112 @@ pub trait SurfaceFetch: Send + Sync {
 /// Filesystem-backed surface access for `file://` bindings.
 pub struct LocalFsFetch {
     root: PathBuf,
+    image_snapshots: Option<std::sync::Arc<crate::image_snapshot::ImageSnapshotStore>>,
+    image_snapshot_db: Option<std::sync::Arc<aos_hub_core::db::Database>>,
+    lease_image_snapshots: bool,
 }
 
 impl LocalFsFetch {
+    pub(crate) fn image_digest(path: &str) -> Option<&str> {
+        aos_hub_core::keymap::image_object_sha256(path)
+    }
+
     /// Create a fetcher rooted at a surface directory.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            image_snapshots: None,
+            image_snapshot_db: None,
+            lease_image_snapshots: false,
+        }
+    }
+
+    /// Attaches the Hub-private immutable image store.
+    #[must_use]
+    pub fn with_image_snapshots(
+        mut self,
+        snapshots: std::sync::Arc<crate::image_snapshot::ImageSnapshotStore>,
+    ) -> Self {
+        self.image_snapshots = Some(snapshots);
+        self
+    }
+
+    /// Attaches durable in-flight lease storage for snapshot delivery.
+    #[must_use]
+    pub fn with_image_snapshot_db(
+        mut self,
+        db: std::sync::Arc<aos_hub_core::db::Database>,
+    ) -> Self {
+        self.image_snapshot_db = Some(db);
+        self
+    }
+
+    /// Requires independent durable leases for pre-commit image verification.
+    #[must_use]
+    pub fn with_image_snapshot_indexing(mut self) -> Self {
+        self.lease_image_snapshots = true;
+        self
     }
 
     /// The surface root directory.
     pub fn root(&self) -> &std::path::Path {
         &self.root
+    }
+
+    fn metadata_version(metadata: &std::fs::Metadata) -> String {
+        use std::os::unix::fs::MetadataExt as _;
+
+        format!(
+            "\"fs-{}-{}-{}-{}-{}\"",
+            metadata.dev(),
+            metadata.ino(),
+            metadata.len(),
+            metadata.mtime(),
+            metadata.mtime_nsec()
+        )
+    }
+
+    /// Returns a strong version derived from filesystem identity and change metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe path or filesystem read failure.
+    pub async fn strong_version(&self, path: &str) -> Result<Option<String>> {
+        let full = safe_join(&self.root, path)?;
+        if let Some(digest) = Self::image_digest(path) {
+            let snapshots = self.image_snapshots.as_ref().context(
+                "local filesystem image delivery requires a configured Hub-private snapshot store",
+            )?;
+            if self.lease_image_snapshots {
+                let root = self.root.clone();
+                let path = path.to_string();
+                let digest = digest.to_string();
+                let digest_for_validation = digest.clone();
+                let snapshots = std::sync::Arc::clone(snapshots);
+                let valid = tokio::task::spawn_blocking(move || {
+                    let Some(source) = crate::image_snapshot::open_surface_file(&root, &path)?
+                    else {
+                        return Ok::<_, anyhow::Error>(false);
+                    };
+                    snapshots.validate_source(source, &digest_for_validation)?;
+                    Ok(true)
+                })
+                .await
+                .context("joining image source validation")??;
+                if !valid {
+                    return Ok(None);
+                }
+                return Ok(Some(format!("\"snapshot-sha256-{digest}\"")));
+            }
+            return Ok((snapshots.open_retained(digest)?.is_some()
+                || crate::image_snapshot::open_surface_file(&self.root, path)?.is_some())
+            .then(|| format!("\"snapshot-sha256-{digest}\"")));
+        }
+        match tokio::fs::metadata(full).await {
+            Ok(metadata) => Ok(Some(Self::metadata_version(&metadata))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(local_fs_io_error("stat surface object version", error)),
+        }
     }
 
     /// Stream a file from the surface (optionally an inclusive byte `range`),
@@ -334,6 +466,69 @@ impl LocalFsFetch {
         use tokio_util::io::ReaderStream;
 
         let full = safe_join(&self.root, path)?;
+        if let Some(digest) = Self::image_digest(path) {
+            let snapshots = self.image_snapshots.clone().context(
+                "local filesystem image delivery requires a configured Hub-private snapshot store",
+            )?;
+            let root = self.root.clone();
+            let path = path.to_string();
+            let digest_owned = digest.to_string();
+            let source = tokio::task::spawn_blocking(move || {
+                crate::image_snapshot::open_surface_file(&root, &path)
+            })
+            .await
+            .context("joining image source open")??;
+            let opened = if let Some(db) = &self.image_snapshot_db {
+                Some(
+                    snapshots
+                        .open_or_publish_leased(
+                            source,
+                            digest_owned,
+                            db,
+                            self.lease_image_snapshots,
+                        )
+                        .await?,
+                )
+            } else if let Some(file) = snapshots.open_retained(digest)? {
+                let size = file.metadata()?.len();
+                Some((file, size, None))
+            } else {
+                match source {
+                    Some(source) => {
+                        let (file, size) = snapshots.publish_async(source, digest_owned).await?;
+                        Some((file, size, None))
+                    }
+                    None => None,
+                }
+            };
+            let Some((file, total, snapshot_lease_id)) = opened else {
+                return Ok(None);
+            };
+            let mut file = tokio::fs::File::from_std(file);
+            let strong_etag = Some(format!("\"snapshot-sha256-{digest}\""));
+            return match range {
+                Some((start, end)) if start < total => {
+                    let end = end.min(total.saturating_sub(1));
+                    file.seek(std::io::SeekFrom::Start(start)).await?;
+                    Ok(Some(aos_hub_core::fetch::StreamedRead {
+                        body: axum::body::Body::from_stream(ReaderStream::new(
+                            file.take(end - start + 1),
+                        )),
+                        total,
+                        range: Some((start, end)),
+                        strong_etag,
+                        snapshot_lease_id,
+                    }))
+                }
+                _ => Ok(Some(aos_hub_core::fetch::StreamedRead {
+                    body: axum::body::Body::from_stream(ReaderStream::new(file)),
+                    total,
+                    range: None,
+                    strong_etag,
+                    snapshot_lease_id,
+                })),
+            };
+        }
         let root = match tokio::fs::canonicalize(&self.root).await {
             Ok(root) => root,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -364,11 +559,12 @@ impl LocalFsFetch {
                 ));
             }
         };
-        let total = file
+        let metadata = file
             .metadata()
             .await
-            .map_err(|err| local_fs_io_error(&format!("stat {}", canonical.display()), err))?
-            .len();
+            .map_err(|err| local_fs_io_error(&format!("stat {}", canonical.display()), err))?;
+        let total = metadata.len();
+        let strong_etag = Some(Self::metadata_version(&metadata));
         match range {
             Some((start, end)) if start < total => {
                 let end = end.min(total.saturating_sub(1));
@@ -382,12 +578,16 @@ impl LocalFsFetch {
                     body: axum::body::Body::from_stream(stream),
                     total,
                     range: Some((start, end)),
+                    strong_etag,
+                    snapshot_lease_id: None,
                 }))
             }
             _ => Ok(Some(aos_hub_core::fetch::StreamedRead {
                 body: axum::body::Body::from_stream(ReaderStream::new(file)),
                 total,
                 range: None,
+                strong_etag,
+                snapshot_lease_id: None,
             })),
         }
     }
@@ -448,6 +648,18 @@ impl SurfaceFetch for LocalFsFetch {
         }
     }
 
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
+        self.stream_read(path, range).await
+    }
+
+    async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
+        self.strong_version(path).await
+    }
+
     fn describe(&self) -> String {
         format!("file://{}", self.root.display())
     }
@@ -466,6 +678,109 @@ impl HttpFetch {
             base: base.into().trim_end_matches('/').to_string(),
             client: hardened_client().await,
         }
+    }
+
+    /// Reads a surface object as a version-bound HTTP stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe path, transport failure, or malformed response.
+    pub async fn stream_read(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
+        use reqwest::header;
+
+        validate_http_surface_path(path)?;
+        let url = format!("{}/{path}", self.base);
+        let mut request = self.client.get(&url);
+        if let Some((start, end)) = range {
+            let value = if end == u64::MAX {
+                format!("bytes={start}-")
+            } else {
+                format!("bytes={start}-{end}")
+            };
+            request = request.header(header::RANGE, value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| fetch_err(format!("fetching {url}: {error}")))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(fetch_err(format!(
+                "fetching {url}: HTTP {}",
+                response.status()
+            )));
+        }
+        let served = if response.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+            Some(
+                response
+                    .headers()
+                    .get(header::CONTENT_RANGE)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(super::coreports::parse_content_range)
+                    .context("HTTP surface 206 has malformed Content-Range")?,
+            )
+        } else {
+            None
+        };
+        let total = served
+            .map(|(_, _, total)| total)
+            .or_else(|| response.content_length())
+            .context("HTTP surface response has no object length")?;
+        let range = served.map(|(start, end, _)| (start, end));
+        let strong_etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .map(str::to_string)
+            .filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok());
+        Ok(Some(aos_hub_core::fetch::StreamedRead {
+            body: axum::body::Body::from_stream(response.bytes_stream()),
+            total,
+            range,
+            strong_etag,
+            snapshot_lease_id: None,
+        }))
+    }
+
+    /// Returns the origin's strong HTTP entity tag for one object.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe path or failed HTTP request.
+    pub async fn strong_version(&self, path: &str) -> Result<Option<String>> {
+        use reqwest::header;
+
+        validate_http_surface_path(path)?;
+        let url = format!("{}/{path}", self.base);
+        let response = self
+            .client
+            .head(&url)
+            .send()
+            .await
+            .map_err(|error| fetch_err(format!("fetching {url}: {error}")))?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(fetch_err(format!(
+                "fetching {url}: HTTP {}",
+                response.status()
+            )));
+        }
+        Ok(response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .map(str::to_string)
+            .filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok()))
     }
 }
 
@@ -501,12 +816,24 @@ impl SurfaceFetch for HttpFetch {
         Ok(Some(body))
     }
 
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
+        self.stream_read(path, range).await
+    }
+
+    async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
+        self.strong_version(path).await
+    }
+
     fn describe(&self) -> String {
         self.base.clone()
     }
 }
 
-/// Construct a fetcher from a registry source URL.
+/// Constructs a fetcher for an explicitly configured mirror upstream.
 ///
 /// `file://` and bare absolute paths map to [`LocalFsFetch`]; `http://`
 /// and `https://` map to [`HttpFetch`].
@@ -514,25 +841,25 @@ impl SurfaceFetch for HttpFetch {
 /// # Errors
 ///
 /// Returns an error for unsupported URL schemes.
-pub async fn fetch_for_url(source_url: &str) -> Result<Box<dyn SurfaceFetch>> {
-    if let Some(path) = source_url.strip_prefix("file://") {
+pub async fn fetch_mirror_upstream(upstream_url: &str) -> Result<Box<dyn SurfaceFetch>> {
+    if let Some(path) = upstream_url.strip_prefix("file://") {
         return Ok(Box::new(LocalFsFetch::new(path)));
     }
-    if source_url.starts_with('/') {
-        return Ok(Box::new(LocalFsFetch::new(source_url)));
+    if upstream_url.starts_with('/') {
+        return Ok(Box::new(LocalFsFetch::new(upstream_url)));
     }
-    if source_url.starts_with("http://") || source_url.starts_with("https://") {
-        return Ok(Box::new(HttpFetch::new(source_url).await));
+    if upstream_url.starts_with("http://") || upstream_url.starts_with("https://") {
+        return Ok(Box::new(HttpFetch::new(upstream_url).await));
     }
     bail!(
-        "unsupported registry source URL '{source_url}' (expected file://, /path, or http(s)://)"
+        "unsupported mirror upstream URL '{upstream_url}' (expected file://, /path, or http(s)://)"
     );
 }
 
 /// Reject a network-origin URL that is local, internal, or non-HTTP — an SSRF
-/// guard for operator-configured mirror upstreams and frontend domains.
+/// guard for operator-configured remote origins.
 ///
-/// A mirror upstream or frontend the hub will *fetch over the network* must be
+/// A remote origin the hub fetches over the network must be
 /// an `http(s)://` URL whose host does not resolve to an address the hub could
 /// otherwise be tricked into reaching internally. This rejects:
 ///
@@ -544,7 +871,7 @@ pub async fn fetch_for_url(source_url: &str) -> Result<Box<dyn SurfaceFetch>> {
 ///   **unique-local** IPv6 (`fc00::/7`), unspecified (`0.0.0.0`, `::`), and
 ///   IPv4-mapped IPv6 forms of the above.
 ///
-/// Mirror/frontend creation is org-admin/operator-only, which bounds the blast
+/// Remote-origin configuration is admin-only, which bounds the blast
 /// radius, but this check is applied at both creation *and* each fetch/probe as
 /// defense in depth.
 ///
@@ -583,11 +910,8 @@ pub fn is_safe_remote_url(raw: &str) -> Result<()> {
     // valid and http(s)). Only a *domain* host needs DNS here — a literal IP
     // host was fully validated against `is_global_ip` by the core guard above
     // (using `url::Host`, which classifies bracketed IPv6 literals correctly).
-    let url = url::Url::parse(raw).map_err(|err| {
-        fetch_err(format!(
-            "mirror/frontend URL '{raw}' is not a valid URL: {err}"
-        ))
-    })?;
+    let url = url::Url::parse(raw)
+        .map_err(|err| fetch_err(format!("remote URL '{raw}' is not valid: {err}")))?;
     let host = match url.host() {
         Some(url::Host::Domain(host)) => host.to_string(),
         // A literal IP (already validated) or a hostless URL: nothing to resolve.
@@ -596,18 +920,18 @@ pub fn is_safe_remote_url(raw: &str) -> Result<()> {
     let port = url.port_or_known_default().unwrap_or(80);
     let resolved: Vec<IpAddr> = (host.as_str(), port)
         .to_socket_addrs()
-        .map_err(|err| fetch_err(format!("resolving mirror/frontend host '{host}': {err}")))?
+        .map_err(|err| fetch_err(format!("resolving remote host '{host}': {err}")))?
         .map(|addr| addr.ip())
         .collect();
     if resolved.is_empty() {
         return Err(fetch_err(format!(
-            "mirror/frontend host '{host}' did not resolve to any address"
+            "remote host '{host}' did not resolve to any address"
         )));
     }
     for ip in resolved {
-        if !is_global_ip(ip) {
+        if !url_guard::is_global_ip(ip) {
             return Err(fetch_err(format!(
-                "mirror/frontend URL '{raw}' resolves to a local/internal address {ip}"
+                "remote URL '{raw}' resolves to a local/internal address {ip}"
             )));
         }
     }
@@ -700,6 +1024,36 @@ async fn nearest_existing_canonical(path: &std::path::Path) -> Result<Option<Pat
 mod tests {
     use super::*;
 
+    #[test]
+    fn image_snapshot_paths_accept_only_canonical_disk_and_metadata_grammars() {
+        let disk = "a".repeat(64);
+        let metadata = "b".repeat(64);
+        assert_eq!(
+            LocalFsFetch::image_digest(&format!("images/sha256/{disk}/aos.img")),
+            Some(disk.as_str())
+        );
+        assert_eq!(
+            LocalFsFetch::image_digest(&format!(
+                "images/sha256/{disk}/metadata/{metadata}/image-info.json"
+            )),
+            Some(metadata.as_str())
+        );
+        for rejected in [
+            format!("images/sha256/{disk}/aliases/{metadata}"),
+            format!("images/sha256/{disk}/metadata/{metadata}/other.json"),
+            format!("images/sha256/{}/disk.img", "A".repeat(64)),
+            format!("images/sha256/{disk}/nested/disk.img"),
+            format!("images/sha256/{disk}/unsafe..img"),
+            format!("images/sha256/{disk}/.hidden"),
+            format!("images/sha256/{disk}/non_ascii_é.img"),
+        ] {
+            assert!(
+                LocalFsFetch::image_digest(&rejected).is_none(),
+                "{rejected}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn local_fetch_distinguishes_missing_from_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -750,25 +1104,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_for_url_dispatches_schemes() {
-        assert!(fetch_for_url("file:///srv/reg").await.is_ok());
-        assert!(fetch_for_url("/srv/reg").await.is_ok());
-        assert!(fetch_for_url("https://cdn.example.com/reg").await.is_ok());
-        assert!(fetch_for_url("s3://bucket/prefix").await.is_err());
+    async fn fetch_mirror_upstream_dispatches_schemes() {
+        assert!(fetch_mirror_upstream("file:///srv/reg").await.is_ok());
+        assert!(fetch_mirror_upstream("/srv/reg").await.is_ok());
+        assert!(fetch_mirror_upstream("https://cdn.example.com/reg")
+            .await
+            .is_ok());
+        assert!(fetch_mirror_upstream("s3://bucket/prefix").await.is_err());
     }
 
     #[tokio::test]
     async fn read_body_capped_rejects_over_cap_body() {
         use axum::routing::get;
 
-        // A tiny upstream that streams more bytes than a deliberately small
-        // cap, with no Content-Length so the cap is enforced mid-stream.
+        // A tiny upstream that uses chunked transfer and streams more bytes
+        // than a deliberately small cap. There is no trustworthy declared
+        // length, so the cap must be enforced mid-stream.
         async fn big() -> axum::response::Response {
-            use axum::response::IntoResponse as _;
-            // 4 KiB body, well over the 1 KiB cap below.
-            vec![0u8; 4096].into_response()
+            let chunks = futures_util::stream::iter([
+                Ok::<_, std::io::Error>(axum::body::Bytes::from(vec![0_u8; 700])),
+                Ok(axum::body::Bytes::from(vec![0_u8; 700])),
+            ]);
+            axum::response::Response::new(axum::body::Body::from_stream(chunks))
         }
-        let app = axum::Router::new().route("/big", get(big));
+        // A lying/malformed peer advertises a body already beyond the cap. The
+        // reader must refuse it before it allocates or polls the body stream.
+        async fn lying_length() -> axum::response::Response {
+            axum::response::Response::builder()
+                .header(axum::http::header::CONTENT_LENGTH, "4096")
+                .body(axum::body::Body::empty())
+                .unwrap()
+        }
+        let app = axum::Router::new()
+            .route("/big", get(big))
+            .route("/lying", get(lying_length));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/big", listener.local_addr().unwrap());
         tokio::spawn(async move {
@@ -789,7 +1158,14 @@ mod tests {
         let body = read_body_capped(response, MAX_NAR_BYTES, "test fetch")
             .await
             .unwrap();
-        assert_eq!(body.len(), 4096);
+        assert_eq!(body.len(), 1400);
+
+        let lying_url = url.replace("/big", "/lying");
+        let response = client.get(&lying_url).send().await.unwrap();
+        let error = read_body_capped(response, cap, "lying S3 list page")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("4096"), "got: {error:#}");
     }
 
     #[tokio::test]
@@ -853,6 +1229,147 @@ mod tests {
         // The failure originates in the DNS layer; reqwest surfaces it as a
         // request/connect error.
         assert!(err.is_request() || err.is_connect(), "got: {err:?}");
+    }
+
+    #[test]
+    fn hardened_client_ignores_proxy_environment() {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let target = format!("http://{}/", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for _ in 0..500 {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 1024];
+                        let _ = stream.read(&mut request);
+                        stream
+                            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                            .unwrap();
+                        return;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("proxy-policy test server failed: {error}"),
+                }
+            }
+            panic!("hardened client did not connect directly to the target");
+        });
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "fetch::tests::hardened_client_ignores_proxy_environment_child",
+                "--nocapture",
+            ])
+            .env("AOS_HUB_PROXY_TEST_TARGET", target)
+            .env("HTTP_PROXY", "http://127.0.0.1:9")
+            .env("HTTPS_PROXY", "http://127.0.0.1:9")
+            .env("ALL_PROXY", "http://127.0.0.1:9")
+            .env("http_proxy", "http://127.0.0.1:9")
+            .env("https_proxy", "http://127.0.0.1:9")
+            .env("all_proxy", "http://127.0.0.1:9")
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .output()
+            .unwrap();
+        server.join().unwrap();
+        assert!(
+            output.status.success(),
+            "child proxy-policy test failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn hardened_client_ignores_proxy_environment_child() {
+        let Some(target) = std::env::var_os("AOS_HUB_PROXY_TEST_TARGET") else {
+            return;
+        };
+        let response = hardened_client()
+            .await
+            .get(target.to_string_lossy().as_ref())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn local_image_stream_is_an_identity_bound_snapshot() {
+        use http_body_util::BodyExt as _;
+        use sha2::Digest as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let hub = tempfile::tempdir().unwrap();
+        let snapshots = crate::image_snapshot::ImageSnapshotStore::open(hub.path()).unwrap();
+        let digest = hex::encode(sha2::Sha256::digest(b"signed-bytes"));
+        let path = format!("images/sha256/{digest}/disk.img");
+        let full = root.path().join(&path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, b"signed-bytes").unwrap();
+        let fetch = LocalFsFetch::new(root.path()).with_image_snapshots(Arc::clone(&snapshots));
+        let version = fetch.strong_version(&path).await.unwrap().unwrap();
+        let read = fetch.stream_read(&path, None).await.unwrap().unwrap();
+        assert_eq!(read.strong_etag.as_deref(), Some(version.as_str()));
+
+        // A same-length in-place mutation after publication cannot alter the
+        // response snapshot or the token used by subsequent range requests.
+        std::fs::write(&full, b"evil--bytes!").unwrap();
+        let bytes = read.body.collect().await.unwrap().to_bytes();
+        assert_eq!(bytes.as_ref(), b"signed-bytes");
+        assert_eq!(fetch.strong_version(&path).await.unwrap().unwrap(), version);
+        let second = fetch
+            .stream_read(&path, Some((2, 5)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.total, 12);
+        assert_eq!(
+            second.body.collect().await.unwrap().to_bytes().as_ref(),
+            b"gned"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_image_head_and_range_open_snapshot_without_full_response() {
+        use http_body_util::BodyExt as _;
+        use sha2::Digest as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let hub = tempfile::tempdir().unwrap();
+        let snapshots = crate::image_snapshot::ImageSnapshotStore::open(hub.path()).unwrap();
+        let bytes = vec![0x5a; 8 * 1024 * 1024];
+        let digest = hex::encode(sha2::Sha256::digest(&bytes));
+        let path = format!("images/sha256/{digest}/large.img");
+        let full = root.path().join(&path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(&full, &bytes).unwrap();
+        let fetch = LocalFsFetch::new(root.path()).with_image_snapshots(Arc::clone(&snapshots));
+        let indexed = fetch.stream_read(&path, None).await.unwrap().unwrap();
+        assert_eq!(
+            indexed.body.collect().await.unwrap().to_bytes().len(),
+            bytes.len()
+        );
+
+        // The unopened body models HEAD: metadata is available without polling
+        // or allocating an image-sized response body.
+        let head = fetch
+            .stream_read(&path, Some((0, 0)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(head.total, bytes.len() as u64);
+        drop(head.body);
+        let range = fetch
+            .stream_read(&path, Some((bytes.len() as u64 - 4, u64::MAX)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(range.body.collect().await.unwrap().to_bytes().len(), 4);
+        assert!(snapshots.open_readonly(&digest).is_ok());
     }
 
     #[test]

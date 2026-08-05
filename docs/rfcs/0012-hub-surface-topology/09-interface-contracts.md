@@ -56,7 +56,7 @@ reference.
 | Manual roots and leases | `cache root`, `cache lease` | `BinaryCacheService` retention-root methods |
 | Population and coverage | `cache population`, `cache coverage` | `CacheIntegrationService` population/coverage methods |
 | Logical GC and placement eviction | `cache gc`, `placement eviction` | `BinaryCacheService` |
-| Long-running work | `operation` | `OperationsService` |
+| Long-running work | `operation` | `OperationService` |
 
 An interface may link to another owner's editor, but it does not reimplement
 or proxy that mutation under a second resource path.
@@ -72,7 +72,7 @@ left as undocumented Web-only operations:
 | Webhooks | `org webhook` | `WebhookService` list plus plan/apply create/delete methods |
 | Audit | `audit` | `AuditService` |
 | Registry CRUD and identity/access | `registry`, `registry identity` | `RegistryService` get/list plus plan/apply create/update/delete methods |
-| Registry tokens | `registry token` | `IdentityService` list plus plan/apply mint/rotate/revoke methods |
+| Registry tokens | `registry token` | `IdentityService` list plus plan/apply issue/retire methods; rotation is explicit issue-then-retire |
 | Upstream registry mirror | `registry mirror` | `RegistryMirrorService` |
 | Signed configuration | `registry configuration` | `RegistryConfigurationService` |
 | Change requests | `registry change-request` | `ChangeRequestService` comment/review/close/reopen/apply methods |
@@ -124,8 +124,8 @@ The exact grouped labels and ordering are specified in
 /-/org/{org}/members
 /-/org/{org}/members/invitations/new
 /-/org/{org}/sso
-/-/org/{org}/hosted-keys
-/-/org/{org}/hosted-keys/new
+/-/org/{org}/signing-keys
+/-/org/{org}/signing-keys/new
 /-/org/{org}/webhooks
 /-/org/{org}/webhooks/new
 /-/org/{org}/operations
@@ -194,7 +194,7 @@ The hard-cutover route mapping is:
 | --- | --- |
 | organization root rendering Registries | organization Overview; registry inventory at `/registries` |
 | organization `/storage` | `/storage-bindings` |
-| organization `/keys` | `/hosted-keys` |
+| organization `/keys` | `/signing-keys` |
 | organization `/audit` | `/audit-log` |
 | organization `/settings` redirect | deleted; use the organization root Overview |
 | organization `/bindings/{id}` | `/storage-bindings/{id}` |
@@ -359,14 +359,16 @@ existing Hub URL/token configuration and:
 --json                 stable versioned JSON output
 --plan                 print effects without applying
 --plan-id <id>         apply a previously reviewed plan
+--idempotency-key <k>  stable key reused for every retry of plan or apply
 --if-version <value>   optimistic-concurrency precondition
 --yes                  non-interactive confirmation for a supplied plan id
 ```
 
 List commands support pagination and `--json`. Long-running commands print the
 operation id and support `--wait`, `--timeout`, and `operation watch`.
-Read-only probes and idempotent reconcile/refresh/scan triggers do not invent a
-no-op semantic plan; they return observed state or an operation id.
+External probes and reconcile/refresh/scan triggers are effects: callers first
+create an immutable plan, then apply it to receive an operation id. Controller
+observations use separate authenticated and generation-fenced controller RPCs.
 
 Every successful `--json` response is wrapped as
 `{"schema_version":"aos.hub.cli/v1","kind":"...","data":...}`. The
@@ -481,6 +483,11 @@ replica group, fallback decisions, and typed failure contract.
 
 ```text
 aos hub org update <org> --display-name <name>
+aos hub org webhook list <org>
+aos hub org webhook create <org> --url <https-url>
+  [--event <event> ...] --secret-version-ref <provider-ref>
+  --credential-fingerprint <sha256-hex>
+aos hub org webhook delete <id> --if-version <resource-version>
 
 aos hub storage-binding list [--org <org>]
 aos hub storage-binding show <binding-ref>
@@ -491,10 +498,12 @@ aos hub storage-binding create --org <org> --name <name>
   --endpoint <https-origin> --region <signing-region>
   --access public|private
 aos hub storage-binding credential set <binding-ref>
-  --purpose read|write|delete|list|presign --credential-ref <secret-ref>
+  --purpose read|write|delete|list|presign --secret-version-ref <provider-ref>
+  --credential-fingerprint <sha256-hex>
 aos hub storage-binding credential rotate <binding-ref>
   --purpose read|write|delete|list|presign
-  --from-generation <generation> --credential-ref <secret-ref>
+  --from-generation <generation> --secret-version-ref <provider-ref>
+  --credential-fingerprint <sha256-hex>
 aos hub storage-binding credential validate <binding-ref>
   [--purpose read|write|delete|list|presign]
 aos hub storage-binding write-revision list <binding-ref>
@@ -553,6 +562,7 @@ aos hub network-boundary revise <boundary>
   [--probe-location <location-ref> | --clear-probe-location]
 aos hub network-boundary grant <boundary> --consumer-scope <scope>
 aos hub network-boundary revoke <boundary> --consumer-scope <scope>
+  [--pin-resolution-file <json-file>]
 aos hub network-boundary revision list <boundary>
   [--page-size <count>] [--page-token <token>]
 aos hub network-boundary revision show <boundary>@<revision>
@@ -560,6 +570,7 @@ aos hub network-boundary revision probe <boundary>@<revision>
 aos hub network-boundary revision reconcile <boundary>@<revision>
 aos hub network-boundary revision activate <boundary>@<revision>
   --mode overlap|coordinated --default-for-new-plans yes|no
+  [--pin-resolution-file <json-file>]
 aos hub network-boundary revision retire <boundary>@<revision>
 aos hub network-boundary status <boundary>
 aos hub network-boundary remove <boundary>
@@ -977,6 +988,50 @@ on stable-grant resources or its omission on revision-grant resources. JSON
 goldens cover initial active, blocked revoke with pins, revoked tombstone, and
 later active regrant with an incremented grant generation.
 
+Every coordinated boundary activation and every revocation of a consumable
+grant carries `repeated PinResolution pin_resolutions`. A plan accepts exactly
+one resolution for every live pin id and rejects missing, duplicate, or extra
+entries. The source pin tuple and source target resource version are sealed by
+the plan. `move_endpoint` names another immutable generation of the same
+endpoint on the target boundary revision; `replace_route` names an enabled
+replacement route plus its exact current generation, configuration digest, and
+resource version; `release` names the exact source resource version to disable
+or delete. A route replacement uses a different stable route id: one route has
+only one current configuration head, so the old pinned generation and a newer
+replacement generation cannot both be current under the same stable id.
+
+Apply creates a parent operation and one durable child job per pin atomically.
+The target boundary remains `activating` and therefore non-servable while jobs
+run. Each child executes its source/target CAS and records success only after
+the exact source pin is absent and the target postcondition still matches.
+Only the final checked transaction may activate the target revision, move the
+default, fence old revisions, complete the operation, and emit the activation
+event. Grant revocation follows the same acknowledgement rule: it cannot
+transition the grant tombstone to `revoked` before every sealed pin-resolution
+job succeeds. A late unplanned pin fails finalization and requires a new plan.
+
+The CLI consumes a strict, versioned document rather than a raw protobuf
+array. Unknown top-level fields, unsupported versions, empty pin ids, duplicate
+pin ids, missing actions, and malformed nested protobuf JSON fail locally;
+source/target staleness still fails authoritatively during server planning.
+
+```json
+{
+  "schemaVersion": "aos.hub.pin-resolutions.v1",
+  "resolutions": [
+    {
+      "pinId": "boundary-pin:example",
+      "release": { "expectedSourceResourceVersion": "12" }
+    }
+  ]
+}
+```
+
+Plan responses that discover live pins include the same schema version and a
+resolution-document scaffold containing every exact source pin with an empty
+action. Web and CLI edit or export that scaffold; neither reconstructs pin ids
+from human-readable effect strings.
+
 GC operational state is not implied by public cache visibility. Authorized
 cache readers may inspect summaries and retention explanations; actor identity
 in root provenance requires `audit.read`. Retention configuration uses
@@ -1017,7 +1072,6 @@ then completes. Recreating the same slug therefore creates unrelated authority.
 GetSurfaceTopology
 ExplainSurfaceRequest
 GetWriteAuthority
-ReconcileWriteAuthority
 
 ListPlacements
 GetPlacement
@@ -1028,9 +1082,9 @@ PlanCancelPlacementPromotion / CancelPlacementPromotion
 PlanDrainPlacement / DrainPlacement
 PlanCancelPlacementDrain / CancelPlacementDrain
 PlanDeletePlacement / DeletePlacement
-ScanPlacement
-ReplicatePlacement
-RepairPlacement
+PlanScanPlacement / ScanPlacement
+PlanReplicatePlacement / ReplicatePlacement
+PlanRepairPlacement / RepairPlacement
 ListObjectPresence
 
 ListPlacementPolicies
@@ -1086,11 +1140,23 @@ current observed placement, candidate write-spec and binding-write revisions,
 candidate eligibility, and semantic effects. `PromotePlacement` requires the
 plan id and those exact preconditions. Its core apply is one authority-row CAS
 on every backend. If external reconciliation is required, it returns `OperationRef` and
-`ReconcileWriteAuthority` may advance only the matching desired generation;
+controller-only `TopologyControllerService.ReportWriteAuthority` may advance
+only the matching desired generation;
 the method is idempotent and never rewrites a newer promotion.
 `CancelPlacementPromotion` follows the same authority-row CAS and generation
 rules after its fencing preconditions have reconciled; an operator can also
 retry the associated operation without creating a new desired generation.
+
+Controller observations are not public operator mutations. They live only on
+`StorageBindingControllerService`, `NetworkBoundaryControllerService`,
+`DeliveryControllerService`, `RouteControllerService`,
+`TopologyControllerService`, and `BinaryCacheUploadControllerService`. Every
+`Report*` or `Complete*` request carries `controller_lease_id`,
+`controller_generation`, and `expected_observation_version`; the Hub requires
+a service-account token and rejects a missing, expired, wrong-generation, or
+stale observation fence. Upload completion uses `ReportCacheUpload` and
+`ReportCacheNarinfos` on that same internal surface, never a public durable
+mutation exception.
 
 ### StorageBindingService
 
@@ -1100,12 +1166,11 @@ GetStorageBinding
 PlanCreateStorageBinding / CreateStorageBinding
 PlanSetStorageBindingCredential / SetStorageBindingCredential
 PlanRotateStorageBindingCredential / RotateStorageBindingCredential
-ValidateStorageBindingCredential
+PlanValidateStorageBindingCredential / ValidateStorageBindingCredential -> OperationRef
 PlanGrantStorageBindingScope / GrantStorageBindingScope
 PlanRevokeStorageBindingScope / RevokeStorageBindingScope
 ListStorageBindingWriteRevisions
 GetStorageBindingWriteRevision
-ReconcileStorageBindingWriteRevision
 PlanDeleteStorageBinding / DeleteStorageBinding
 
 GetInstanceDefaultStorageBinding
@@ -1132,6 +1197,28 @@ revision/capability fingerprints, never secret material. Equal capability
 fingerprints do not suppress a revision whose credential-version reference
 changed. Provider invalidation is observed separately and makes affected
 authorities write-blocked.
+
+`ValidateStorageBindingCredential` accepts only the binding, closed purpose,
+exact credential generation, expected credential-head version, and idempotency
+key. It never accepts a validation state or error supplied by a client. The
+returned operation is executed by a controller-owned adapter that resolves the
+immutable secret reference and exercises the declared `read`, `write`,
+`delete`, `list`, or `presign` capability against the configured origin. Write
+validation separately records whether create-if-absent semantics were observed.
+Sanitized status evidence is retained on the operation; secret material and
+signed probe URLs are never persisted. The credential-head observation and its
+named audit/outbox event are committed under the exact head-version CAS.
+
+The `write` probe uses an operation-derived deterministic key and the minimal
+multipart capability set: list incomplete multipart uploads for that exact key,
+abort every exact-key remainder, create one fresh upload, and abort it. Listing
+is capped at 1000 results; truncation, a foreign key, malformed identity, or an
+unabortable upload fails closed. The probe token is durable before external I/O,
+so retries recover crashes before the create response, after the upload id, and
+after abort without requiring object-delete or bucket-wide list authority.
+`conditionalWritesSupported` remains false unless a separate adapter can
+produce equally recoverable provider evidence; a successful ordinary write
+probe never infers conditional semantics.
 
 ### DomainService
 
@@ -1202,8 +1289,6 @@ PlanCreateNetworkBoundary / CreateNetworkBoundary
 ListNetworkBoundaryRevisions
 GetNetworkBoundaryRevision
 PlanReviseNetworkBoundary / ReviseNetworkBoundary
-ProbeNetworkBoundaryRevision
-ReconcileNetworkBoundaryRevision
 PlanActivateNetworkBoundaryRevision / ActivateNetworkBoundaryRevision
 PlanRetireNetworkBoundaryRevision / RetireNetworkBoundaryRevision
 PlanGrantNetworkBoundaryScope / GrantNetworkBoundaryScope
@@ -1255,11 +1340,12 @@ the remaining consumers and offer their move plans.
 ListDeliveryEndpoints
 GetDeliveryEndpoint
 PlanCreateDeliveryEndpoint / CreateDeliveryEndpoint
-PlanUpdateDeliveryEndpoint / UpdateDeliveryEndpoint
+ListDeliveryEndpointGenerations
+GetDeliveryEndpointGeneration
+PlanStageDeliveryEndpointGeneration / StageDeliveryEndpointGeneration
+PlanActivateDeliveryEndpointGeneration / ActivateDeliveryEndpointGeneration
 PlanGrantDeliveryEndpointScope / GrantDeliveryEndpointScope
 PlanRevokeDeliveryEndpointScope / RevokeDeliveryEndpointScope
-ProbeDeliveryEndpoint
-ReconcileDeliveryEndpoint
 PlanDeleteDeliveryEndpoint / DeleteDeliveryEndpoint
 
 ListStorageGateways
@@ -1269,7 +1355,6 @@ PlanUpdateStorageGateway / UpdateStorageGateway
 PlanGrantStorageGatewayScope / GrantStorageGatewayScope
 PlanRevokeStorageGatewayScope / RevokeStorageGatewayScope
 PreviewGatewayRoutes
-ReconcileStorageGateway
 PlanEnableStorageGateway / EnableStorageGateway
 PlanDisableStorageGateway / DisableStorageGateway
 PlanDeleteStorageGateway / DeleteStorageGateway
@@ -1313,7 +1398,6 @@ PlanEnableRoute / EnableRoute
 PlanDisableRoute / DisableRoute
 PlanDeleteRoute / DeleteRoute
 PlanSetCanonicalRoute / SetCanonicalRoute
-ProbeRoute
 ExplainRoute
 ```
 
@@ -1364,7 +1448,7 @@ PreviewCacheIntegration
 
 GetConsumerCacheStack
 ValidateConsumerCacheStack
-PlanConsumerCacheChange
+PlanCreateConsumerCacheChangeset
 CreateConsumerCacheChangeset
 
 GetRetentionSubscription
@@ -1395,7 +1479,7 @@ up to three independent `PlanRef` values and has no combined apply method.
 ```text
 GetCacheGcPolicy
 PlanSetCacheGcPolicy / SetCacheGcPolicy
-PlanCacheGc
+PlanRunCacheGc
 RunCacheGc(plan_id)
 PlanAcknowledgeCacheGcFirstSweep / AcknowledgeCacheGcFirstSweep
 GetCacheGcPlan
@@ -1414,7 +1498,7 @@ PlanRevokeRetentionLease / RevokeRetentionLease
 PlanDeleteManualRetentionRoot / DeleteManualRetentionRoot
 RefreshAllRetention
 
-PlanPlacementEviction
+PlanRunPlacementEviction
 RunPlacementEviction(plan_id)
 ```
 
@@ -1430,7 +1514,7 @@ candidate and placement-action manifests. Apply returns `OperationRef` after
 one guarded logical-tombstone transition; physical workers consume only the
 recorded actions.
 
-### OperationsService
+### OperationService
 
 ```text
 GetOperation

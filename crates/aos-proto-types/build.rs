@@ -1,49 +1,523 @@
-//! Generates the `aos.hub.v1` message structs with `prost-build`.
+//! Generates the `aos.hub.v1` message structs and canonical ProtoJSON codecs.
 //!
-//! Unlike the sibling `aos-proto` crate (which runs `connectrpc-build` to emit
-//! `buffa`-based types plus the ConnectRPC client/server), this crate generates
-//! **only the message structs** — plain `prost` structs with `serde` derives —
-//! so they compile to `wasm32-unknown-unknown` with no `connectrpc`/`buffa`/
-//! `hyper`/`tokio` runtime. They are the Connect-JSON wire types shared by the
-//! native hub, the Cloudflare Worker, and `aos-remote` (RFC-0004 Phase 5).
-//!
-//! The `.proto` source lives in `aos-proto`; this build reads it in place via a
-//! workspace-relative path and re-runs whenever it changes.
+//! The generated prost messages and descriptor-driven pbjson codecs are shared
+//! by the native Hub, Cloudflare Worker, and remote clients without linking a
+//! Connect runtime into this wasm-clean type crate.
 
-fn main() {
-    // Workspace-relative: the `.proto` schema is owned by the `aos-proto` crate.
+use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error;
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+use prost::Message;
+use prost_types::{field_descriptor_proto, DescriptorProto, FileDescriptorSet};
+
+type BuildResult<T> = Result<T, Box<dyn Error>>;
+
+#[derive(Debug)]
+struct BuildFailure(String);
+
+impl fmt::Display for BuildFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl Error for BuildFailure {}
+
+fn failure(message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(BuildFailure(message.into()))
+}
+
+fn out_dir() -> BuildResult<PathBuf> {
+    std::env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| failure("prost-build: OUT_DIR is not set"))
+}
+
+fn main() -> BuildResult<()> {
     let proto_root = "../aos-proto/src/proto";
     let proto = format!("{proto_root}/aos/hub/v1/hub.proto");
+    let descriptor_path = out_dir()?.join("aos.hub.v1.descriptor.bin");
 
-    let mut config = prost_build::Config::new();
-    // The structs are serialized as Connect-JSON request/response bodies; the
-    // `prost` binary codec is incidental (unused on the wire).
-    config.type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]");
-    // Canonical proto3-JSON field naming: a proto `org_slug` is `orgSlug` on the
-    // wire. This is the Connect-JSON contract (what the old connectrpc server
-    // emitted and what `aos hub`/`apm` + stock Connect clients expect), and since
-    // the hub handlers, the Worker, and the `aos-remote` client all share these
-    // structs, both ends stay consistent. RFC-0004 Phase 5.
-    config.type_attribute(".", "#[serde(rename_all = \"camelCase\")]");
-    // Tolerate absent fields on decode — a Connect-JSON request need not carry
-    // every optional field, and responses evolve additively.
-    // `default` is a message-container attribute. Applying it to every type
-    // also reaches generated oneof enums, where serde rejects it.
-    config.message_attribute(".", "#[serde(default)]");
-    // `prost-build` applies a oneof field attribute to both the generated
-    // message field and the oneof variants. `serde(flatten)` is valid only on
-    // the former, so attaching it with `field_attribute` makes the generated
-    // enum fail to compile. Delegate just this message to the crate's custom
-    // adapter instead. It preserves the proto oneof in Rust while emitting and
-    // accepting canonical flat JSON such as `{ "registrySlug": "acme/main" }`.
-    config.message_attribute(
-        ".aos.hub.v1.SurfaceRef",
-        "#[serde(from = \"crate::SurfaceRefJson\", into = \"crate::SurfaceRefJson\")]",
-    );
+    prost_build::Config::new()
+        .file_descriptor_set_path(&descriptor_path)
+        .compile_protos(&[&proto], &[proto_root])?;
 
-    config
-        .compile_protos(&[&proto], &[proto_root])
-        .expect("prost-build: failed to compile aos/hub/v1/hub.proto");
+    let descriptor_bytes = std::fs::read(&descriptor_path)?;
+    let descriptor = FileDescriptorSet::decode(descriptor_bytes.as_slice())?;
+    pbjson_build::Builder::new()
+        .register_descriptors(&descriptor_bytes)?
+        .build(&[".aos.hub.v1"])?;
+
+    preserve_protojson_integer_syntax()?;
+    preserve_open_enum_numbers(&descriptor)?;
+    preserve_protojson_null_as_unset()?;
+    generate_connect_descriptors(&descriptor)?;
 
     println!("cargo:rerun-if-changed={proto}");
+    Ok(())
+}
+
+fn generated_serde_path() -> BuildResult<PathBuf> {
+    Ok(out_dir()?.join("aos.hub.v1.serde.rs"))
+}
+
+/// Routes every generated integer field through the exact ProtoJSON parser.
+fn preserve_protojson_integer_syntax() -> BuildResult<()> {
+    let path = generated_serde_path()?;
+    let mut source = std::fs::read_to_string(&path)?;
+    replace_at_least_once(
+        &mut source,
+        "::pbjson::private::NumberDeserialize<",
+        "crate::ProtoJsonNumber<",
+        "ProtoJSON integer decoder",
+    )?;
+    std::fs::write(path, source)?;
+    Ok(())
+}
+
+/// Preserves unknown numeric proto3 enum values in every message field.
+fn preserve_open_enum_numbers(descriptor: &FileDescriptorSet) -> BuildResult<()> {
+    assert_open_enum_field_inventory(descriptor)?;
+    let path = generated_serde_path()?;
+    let mut source = std::fs::read_to_string(&path)?;
+
+    for (enum_name, field_name, json_name) in [
+        ("AccessClass", "access_class", "accessClass"),
+        ("RegistryMirrorMode", "mode", "mode"),
+        ("EndpointIngressKind", "ingress_kind", "ingressKind"),
+        ("HubDeliveryKind", "delivery_kind", "deliveryKind"),
+    ] {
+        let serialize = format!(
+            "            let v = {enum_name}::try_from(self.{field_name})\n\
+             \x20               .map_err(|_| serde::ser::Error::custom(format!(\"Invalid variant {{}}\", self.{field_name})))?;\n\
+             \x20           struct_ser.serialize_field(\"{json_name}\", &v)?;"
+        );
+        let serialize_replacement = format!(
+            "            let v = crate::OpenEnum::<{enum_name}>::new(self.{field_name});\n\
+             \x20           struct_ser.serialize_field(\"{json_name}\", &v)?;"
+        );
+        replace_at_least_once(
+            &mut source,
+            &serialize,
+            &serialize_replacement,
+            &format!("serialize {enum_name}.{field_name}"),
+        )?;
+
+        let deserialize =
+            format!("{field_name}__ = Some(map_.next_value::<{enum_name}>()? as i32);");
+        let deserialize_replacement = format!(
+            "{field_name}__ = map_.next_value::<::std::option::Option<crate::OpenEnum<{enum_name}>>>()?.map(crate::OpenEnum::number);"
+        );
+        replace_at_least_once(
+            &mut source,
+            &deserialize,
+            &deserialize_replacement,
+            &format!("deserialize {enum_name}.{field_name}"),
+        )?;
+    }
+
+    correct_repeated_open_enum(
+        &mut source,
+        "PolicyRetryCondition",
+        "retry_on",
+        "repeated PolicyRetryCondition",
+    )?;
+    correct_repeated_open_enum(
+        &mut source,
+        "PinResolutionAction",
+        "allowed_actions",
+        "repeated PinResolutionAction",
+    )?;
+
+    std::fs::write(path, source)?;
+    Ok(())
+}
+
+fn correct_repeated_open_enum(
+    source: &mut String,
+    enum_name: &str,
+    field_name: &str,
+    context: &str,
+) -> BuildResult<()> {
+    let serialize = format!(
+        "            let v = self.{field_name}.iter().cloned().map(|v| {{\n\
+         \x20               {enum_name}::try_from(v)\n\
+         \x20                   .map_err(|_| serde::ser::Error::custom(format!(\"Invalid variant {{}}\", v)))\n\
+         \x20               }}).collect::<std::result::Result<Vec<_>, _>>()?;"
+    );
+    let serialize_replacement = format!(
+        "            let v = self.{field_name}.iter().copied()\n\
+         \x20               .map(crate::OpenEnum::<{enum_name}>::new)\n\
+         \x20               .collect::<Vec<_>>();"
+    );
+    replace_exactly_once(
+        source,
+        &serialize,
+        &serialize_replacement,
+        &format!("serialize {context}"),
+    )?;
+    let deserialize = format!(
+        "{field_name}__ = Some(map_.next_value::<Vec<{enum_name}>>()?.into_iter().map(|x| x as i32).collect());"
+    );
+    let deserialize_replacement = format!(
+        "{field_name}__ = map_.next_value::<::std::option::Option<Vec<crate::OpenEnum<{enum_name}>>>>()?.map(|values| values.into_iter().map(crate::OpenEnum::number).collect());"
+    );
+    replace_exactly_once(
+        source,
+        &deserialize,
+        &deserialize_replacement,
+        &format!("deserialize {context}"),
+    )
+}
+
+/// Fails closed when an enum field is added without an explicit correction.
+fn assert_open_enum_field_inventory(descriptor: &FileDescriptorSet) -> BuildResult<()> {
+    let mut actual = BTreeSet::new();
+    for file in &descriptor.file {
+        if file.package.as_deref() != Some("aos.hub.v1") {
+            continue;
+        }
+        for message in &file.message_type {
+            collect_enum_fields(message, "", &mut actual)?;
+        }
+    }
+    let expected = [
+        "DeliveryEndpointRevisionSpec.ingress_kind:.aos.hub.v1.EndpointIngressKind:single",
+        "HubPlacementTarget.delivery_kind:.aos.hub.v1.HubDeliveryKind:single",
+        "HubPolicyRevisionTarget.delivery_kind:.aos.hub.v1.HubDeliveryKind:single",
+        "PlacementPolicyReplicaGroup.access_class:.aos.hub.v1.AccessClass:single",
+        "PolicyFailureContract.retry_on:.aos.hub.v1.PolicyRetryCondition:repeated",
+        "RegistryMirror.mode:.aos.hub.v1.RegistryMirrorMode:single",
+        "RegistryMirrorSpec.mode:.aos.hub.v1.RegistryMirrorMode:single",
+        "TestPlacementPolicyRevisionRequest.access_class:.aos.hub.v1.AccessClass:single",
+        "TopologyPinImpact.allowed_actions:.aos.hub.v1.PinResolutionAction:repeated",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    if actual != expected {
+        return Err(failure(format!(
+            "pbjson-build: open-enum field inventory changed; expected {expected:?}, found {actual:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn collect_enum_fields(
+    message: &DescriptorProto,
+    prefix: &str,
+    fields: &mut BTreeSet<String>,
+) -> BuildResult<()> {
+    let name = required_proto_identifier(message.name.as_deref(), "message")?;
+    let qualified = if prefix.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{prefix}.{name}")
+    };
+    for field in &message.field {
+        if field.r#type == Some(field_descriptor_proto::Type::Enum as i32) {
+            let field_name = required_proto_identifier(field.name.as_deref(), "field")?;
+            let type_name = field.type_name.as_deref().ok_or_else(|| {
+                failure(format!("enum field {qualified}.{field_name} has no type"))
+            })?;
+            let cardinality = if field.label == Some(field_descriptor_proto::Label::Repeated as i32)
+            {
+                "repeated"
+            } else {
+                "single"
+            };
+            fields.insert(format!(
+                "{qualified}.{field_name}:{type_name}:{cardinality}"
+            ));
+        }
+    }
+    for nested in &message.nested_type {
+        collect_enum_fields(nested, &qualified, fields)?;
+    }
+    Ok(())
+}
+
+/// Corrects null handling in generated ordinary field visitors.
+fn preserve_protojson_null_as_unset() -> BuildResult<()> {
+    let path = generated_serde_path()?;
+    let mut source = std::fs::read_to_string(&path)?;
+    replace_at_least_once(
+        &mut source,
+        "Some(map_.next_value()?)",
+        "map_.next_value::<::std::option::Option<_>>()?",
+        "nullable ordinary scalar or repeated field",
+    )?;
+    replace_at_least_once(
+        &mut source,
+        "Some(map_.next_value::<crate::ProtoJsonNumber<_>>()?.0)",
+        "map_.next_value::<::std::option::Option<crate::ProtoJsonNumber<_>>>()?.map(|value| value.0)",
+        "nullable ordinary numeric field",
+    )?;
+    replace_exactly_once(
+        &mut source,
+        "Some(\n                                map_.next_value::<std::collections::HashMap<_, _>>()?\n                            )",
+        "map_.next_value::<::std::option::Option<std::collections::HashMap<_, _>>>()?",
+        "nullable instance-settings map field",
+    )?;
+    std::fs::write(path, source)?;
+    Ok(())
+}
+
+fn replace_at_least_once(
+    source: &mut String,
+    old: &str,
+    new: &str,
+    context: &str,
+) -> BuildResult<()> {
+    let count = source.matches(old).count();
+    if count == 0 {
+        return Err(failure(format!(
+            "pbjson-build: missing expected {context} fragment"
+        )));
+    }
+    *source = source.replace(old, new);
+    Ok(())
+}
+
+fn replace_exactly_once(
+    source: &mut String,
+    old: &str,
+    new: &str,
+    context: &str,
+) -> BuildResult<()> {
+    let count = source.matches(old).count();
+    if count != 1 {
+        return Err(failure(format!(
+            "pbjson-build: expected one {context} fragment, found {count}"
+        )));
+    }
+    *source = source.replacen(old, new, 1);
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct ConnectMethod {
+    path: String,
+    service: String,
+    method: String,
+    input_type: String,
+    output_type: String,
+    input_fields: Vec<String>,
+}
+
+fn generate_connect_descriptors(descriptor: &FileDescriptorSet) -> BuildResult<()> {
+    let methods = descriptor_connect_methods(descriptor)?;
+    verify_checked_api_manifest(&methods)?;
+    let mut generated = String::from(
+        "/// One Connect RPC projected directly from the canonical descriptor.\n\
+         #[derive(Clone, Copy, Debug, PartialEq, Eq)]\n\
+         pub struct ConnectMethodDescriptor {\n\
+         \x20   /// Canonical package-qualified Connect request path.\n\
+         \x20   pub path: &'static str,\n\
+         \x20   /// Protobuf service name without its package.\n\
+         \x20   pub service: &'static str,\n\
+         \x20   /// Protobuf RPC method name.\n\
+         \x20   pub method: &'static str,\n\
+         \x20   /// Fully qualified protobuf input message name.\n\
+         \x20   pub input_type: &'static str,\n\
+         \x20   /// Fully qualified protobuf output message name.\n\
+         \x20   pub output_type: &'static str,\n\
+         \x20   /// Canonical declaration-ordered protobuf input field names.\n\
+         \x20   pub input_fields: &'static [&'static str],\n\
+         }\n\
+         /// Every Connect RPC declared by the canonical Hub descriptor.\n\
+         pub const EXPECTED_CONNECT_METHODS: &[ConnectMethodDescriptor] = &[\n",
+    );
+    for method in &methods {
+        generated.push_str("    ConnectMethodDescriptor { path: \"");
+        generated.push_str(&method.path);
+        generated.push_str("\", service: \"");
+        generated.push_str(&method.service);
+        generated.push_str("\", method: \"");
+        generated.push_str(&method.method);
+        generated.push_str("\", input_type: \"");
+        generated.push_str(&method.input_type);
+        generated.push_str("\", output_type: \"");
+        generated.push_str(&method.output_type);
+        generated.push_str("\", input_fields: &[");
+        for field in &method.input_fields {
+            generated.push('"');
+            generated.push_str(field);
+            generated.push_str("\",");
+        }
+        generated.push_str("] },\n");
+    }
+    generated.push_str(
+        "];\n/// Every canonical Connect path, retained for router coverage.\n\
+         pub const EXPECTED_CONNECT_PATHS: &[&str] = &[\n",
+    );
+    for method in &methods {
+        generated.push_str("    \"");
+        generated.push_str(&method.path);
+        generated.push_str("\",\n");
+    }
+    generated.push_str("];\n");
+    std::fs::write(out_dir()?.join("connect_paths.rs"), generated)?;
+    Ok(())
+}
+
+fn descriptor_connect_methods(descriptor: &FileDescriptorSet) -> BuildResult<Vec<ConnectMethod>> {
+    let mut methods = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut message_fields = BTreeMap::new();
+    for file in &descriptor.file {
+        let package = match file.package.as_deref() {
+            Some(package) => package,
+            None => "",
+        };
+        for message in &file.message_type {
+            collect_message_fields(message, package, &mut message_fields)?;
+        }
+    }
+    for file in &descriptor.file {
+        let package = match file.package.as_deref() {
+            Some(package) => package,
+            None => "",
+        };
+        if package != "aos.hub.v1" {
+            continue;
+        }
+        for service in &file.service {
+            let service_name = required_proto_identifier(service.name.as_deref(), "service")?;
+            for method in &service.method {
+                let method_name = required_proto_identifier(method.name.as_deref(), "method")?;
+                let input_type = method.input_type.as_deref().ok_or_else(|| {
+                    failure(format!("RPC {service_name}/{method_name} has no input"))
+                })?;
+                let output_type = method.output_type.as_deref().ok_or_else(|| {
+                    failure(format!("RPC {service_name}/{method_name} has no output"))
+                })?;
+                let path = format!("/{package}.{service_name}/{method_name}");
+                if !seen.insert(path.clone()) {
+                    return Err(failure(format!("duplicate Connect path {path}")));
+                }
+                methods.push(ConnectMethod {
+                    path,
+                    service: service_name.to_owned(),
+                    method: method_name.to_owned(),
+                    input_type: input_type.to_owned(),
+                    output_type: output_type.to_owned(),
+                    input_fields: message_fields.get(input_type).cloned().ok_or_else(|| {
+                        failure(format!(
+                            "RPC {service_name}/{method_name} input is unresolved"
+                        ))
+                    })?,
+                });
+            }
+        }
+    }
+    if methods.is_empty() {
+        return Err(failure("aos.hub.v1 declares no RPC methods"));
+    }
+    methods.sort();
+    Ok(methods)
+}
+
+fn collect_message_fields(
+    message: &DescriptorProto,
+    prefix: &str,
+    messages: &mut BTreeMap<String, Vec<String>>,
+) -> BuildResult<()> {
+    let name = required_proto_identifier(message.name.as_deref(), "message")?;
+    let qualified = format!(".{prefix}.{name}");
+    let mut fields = Vec::with_capacity(message.field.len());
+    for field in &message.field {
+        fields.push(required_proto_identifier(field.name.as_deref(), "field")?.to_owned());
+    }
+    if messages.insert(qualified.clone(), fields).is_some() {
+        return Err(failure(format!("duplicate protobuf message {qualified}")));
+    }
+    let nested_prefix = qualified.trim_start_matches('.');
+    for nested in &message.nested_type {
+        collect_message_fields(nested, nested_prefix, messages)?;
+    }
+    Ok(())
+}
+
+fn required_proto_identifier<'a>(value: Option<&'a str>, kind: &str) -> BuildResult<&'a str> {
+    let value = value.ok_or_else(|| failure(format!("{kind} name is absent")))?;
+    let mut bytes = value.bytes();
+    let first = bytes
+        .next()
+        .ok_or_else(|| failure(format!("{kind} name is empty")))?;
+    if !(first == b'_' || first.is_ascii_alphabetic())
+        || !bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+    {
+        return Err(failure(format!(
+            "{kind} name {value:?} is not a protobuf identifier"
+        )));
+    }
+    Ok(value)
+}
+
+fn verify_checked_api_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
+    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json");
+    println!("cargo:rerun-if-changed={}", manifest_path.display());
+    let manifest_source = std::fs::read_to_string(&manifest_path)?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_source)?;
+    if manifest
+        .get("manifest_version")
+        .and_then(serde_json::Value::as_str)
+        != Some("aos.hub.api/v1")
+    {
+        return Err(failure("unexpected checked Hub API manifest version"));
+    }
+    let methods = manifest
+        .get("methods")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| failure("checked Hub API manifest has no methods array"))?;
+    let mut checked = Vec::with_capacity(methods.len());
+    let mut seen = BTreeSet::new();
+    for method in methods {
+        let path = checked_string(method, "path")?;
+        let path = format!("/{}", path.trim_start_matches('/'));
+        if !seen.insert(path.clone()) {
+            return Err(failure(format!("duplicate checked Hub API path {path}")));
+        }
+        let (qualified_service, method_name) = path
+            .strip_prefix("/aos.hub.v1.")
+            .and_then(|suffix| suffix.split_once('/'))
+            .ok_or_else(|| failure(format!("malformed checked Hub API path {path}")))?;
+        let service = checked_string(method, "service")?;
+        let declared_method = checked_string(method, "method")?;
+        if qualified_service != service || method_name != declared_method {
+            return Err(failure(format!(
+                "checked Hub API path fields disagree for {path}"
+            )));
+        }
+        checked.push(ConnectMethod {
+            path: path.clone(),
+            service: service.to_owned(),
+            method: declared_method.to_owned(),
+            input_type: format!(".aos.hub.v1.{}", checked_string(method, "request")?),
+            output_type: format!(".aos.hub.v1.{}", checked_string(method, "response")?),
+            input_fields: generated
+                .iter()
+                .find(|generated_method| generated_method.path == path)
+                .map(|generated_method| generated_method.input_fields.clone())
+                .ok_or_else(|| failure(format!("checked Hub API path {path} is not generated")))?,
+        });
+    }
+    checked.sort();
+    if checked != generated {
+        return Err(failure(
+            "checked Hub API manifest does not exactly match descriptor metadata",
+        ));
+    }
+    Ok(())
+}
+
+fn checked_string<'a>(value: &'a serde_json::Value, field: &str) -> BuildResult<&'a str> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| failure(format!("checked Hub API method has no {field}")))
 }

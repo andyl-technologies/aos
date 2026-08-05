@@ -157,13 +157,13 @@ pub fn parse_model(current_toml: &str) -> Option<ConfigFormModel> {
 /// Whether a committed `[caches]` is a stack the flat list editor cannot
 /// represent — i.e. it contains a `mirror` or any nesting.
 ///
-/// A single endpoint, a flat `try` of endpoints, and a legacy `[[caches]]`
-/// list are all representable as the simple ordered-URL editor; everything
-/// else is "advanced" and edited as raw TOML.
+/// A single endpoint and a flat `try` of endpoints are representable as the
+/// simple ordered-URL editor; everything else is "advanced" and edited as raw
+/// TOML.
 fn is_advanced_stack(cfg: &RegistryRootConfig) -> bool {
     match &cfg.caches {
-        None | Some(CachesConfig::List(_)) => false,
-        Some(CachesConfig::Stack(_)) => match cfg.cache_stack() {
+        None => false,
+        Some(CachesConfig(_)) => match cfg.cache_stack() {
             None => true, // unparseable: don't pretend the flat editor owns it
             Some(node) => !is_simple_stack(&node),
         },
@@ -408,7 +408,7 @@ fn caches_stack_value(urls: &[String]) -> Option<toml::Value> {
 ///
 /// Reparses the document's `[caches]` table through [`RegistryRootConfig`] so
 /// the advanced check matches [`parse_model`] exactly. A document with no
-/// `[caches]`, a legacy `[[caches]]` array, or a simple stack is not advanced.
+/// `[caches]` or a simple stack is not advanced.
 fn existing_caches_are_advanced(root: &toml::map::Map<String, toml::Value>) -> bool {
     let Some(caches) = root.get("caches") else {
         return false;
@@ -483,19 +483,6 @@ mod tests {
                 },
             ]
         );
-        assert!(!m.has_cache_stack);
-    }
-
-    #[test]
-    fn legacy_caches_array_still_form_models() {
-        // The backward-compat enum keeps a `[[caches]]` array editable.
-        let src = "[registry]\nname = \"andyl\"\n\n\
-                   [[caches]]\nurl = \"https://a\"\n\n\
-                   [[caches]]\nurl = \"https://b\"\npriority = 20\n";
-        let m = parse_model(src).expect("parses");
-        assert_eq!(m.caches.len(), 2);
-        assert_eq!(m.caches[0].url, "https://a");
-        assert_eq!(m.caches[1].url, "https://b");
         assert!(!m.has_cache_stack);
     }
 

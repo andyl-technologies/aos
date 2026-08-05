@@ -46,6 +46,7 @@
 }: let
   sbTop = systems.server-secureboot.config.system.build.toplevel;
   sbUki = systems.server-secureboot.config.system.build.uki;
+  sbImage = systems.server-secureboot.config.system.build.image.raw;
 
   # server-test bundles the guest agent and the CLI tools the producer needs
   # (it hand-seeds + pushes the registry with git) that image slimming dropped
@@ -71,9 +72,9 @@ in {
     registry = {
       system = serverWithRegistry;
       packages = ["aos-registry-server" "test-static-cache-server"];
-      # The producer owns the signed toplevel AND the standalone UKI it
-      # publishes as an image; both must resolve in the registry's store.
-      extraClosures = [sbTop sbUki pkgs.sbsigntools pkgs.binutils pkgs.systemd];
+      # The producer owns the signed toplevel, disk image, and exact UKI
+      # associated by image-info.json; all must resolve in its store.
+      extraClosures = [sbTop sbUki sbImage pkgs.sbsigntools pkgs.binutils pkgs.systemd];
       # `apr cache generate` writes a zstd static cache of the full
       # server-secureboot closure PLUS the standalone signed UKI image
       # (~300 MiB nar of its own) under /var/lib/sysreg-cache — larger than the plain
@@ -155,18 +156,21 @@ in {
           git init --bare --object-format=sha256 "$ORIGIN"
           git -C "$ORIGIN" symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
           git -C "$REG_DIR" remote add origin "$ORIGIN"
+          set -- '${sbUki}'/*.efi
+          SB_UKI="$1"
 
-          # Publish the signed toplevel as a sysroot, with the signed UKI
-          # attached as an image so its SB facts are derived and cataloged.
+          # Publish the signed toplevel with its raw disk image. Its canonical
+          # image-info.json binds the exact UKI used to derive SB facts.
           # Capture --json: it carries the derived facts verbatim.
           ${pkgs.aos}/bin/apr --json publish '${sbTop}' \\
             --name aos \\
-            --version test-sb \\
+            --version 0.1.0 \\
             --description 'secure-boot catalog fixture' \\
             --license MIT \\
             --maintainer test \\
             --sysroot \\
-            --image '${sbUki}' --image-format uki \\
+            --image '${sbImage}' --image-format raw \\
+            --image-uki "$SB_UKI" \\
             --no-ca \\
             --registry sysreg \\
             --no-commit > /tmp/publish.json

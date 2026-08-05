@@ -7,6 +7,20 @@
   },
   "cases": [
     {
+      "case_id": "authorization-cartesian-pair-omitted",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "add",
+          "pointer": "/auth_no_widening/source_principal_stable_ids/-",
+          "value": "principal/operator/second"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "auth_contract_invalid"
+    },
+    {
       "case_id": "authorization-permission-widening",
       "mutations": [
         {
@@ -180,37 +194,37 @@
           "target": "verification",
           "operation": "replace",
           "pointer": "/gc_validation/cutover_checks/expected_set_sha256",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9nYy1kaXNhYmxlZCJd"
+          "value": "989c0064b19fa6f0889484bcebca295133a5465e93e97ccbd1ba95f2c2867b92"
         },
         {
           "target": "verification",
           "operation": "replace",
           "pointer": "/gc_validation/cutover_checks/actual_set_sha256",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9nYy1kaXNhYmxlZCJd"
+          "value": "989c0064b19fa6f0889484bcebca295133a5465e93e97ccbd1ba95f2c2867b92"
         },
         {
           "target": "verification",
           "operation": "replace",
           "pointer": "/gc_validation/post_cutover_checks/expected_set_sha256",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9yZXRlbnRpb24tZnJlc2giLCJjaGVjay90YXJnZXQvaW52ZW50b3J5LWNvbXBsZXRlIl0"
+          "value": "3b87eaf72cc88ff14f1c2d7ac504586e45253b262f575f5910b5e5aa7e35fead"
         },
         {
           "target": "verification",
           "operation": "replace",
           "pointer": "/gc_validation/post_cutover_checks/actual_set_sha256",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9yZXRlbnRpb24tZnJlc2giLCJjaGVjay90YXJnZXQvaW52ZW50b3J5LWNvbXBsZXRlIl0"
+          "value": "3b87eaf72cc88ff14f1c2d7ac504586e45253b262f575f5910b5e5aa7e35fead"
         },
         {
           "target": "verification",
           "operation": "replace",
           "pointer": "/gc_validation/outstanding_checks/expected_set_sha256",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9yZXRlbnRpb24tZnJlc2giLCJjaGVjay90YXJnZXQvaW52ZW50b3J5LWNvbXBsZXRlIl0"
+          "value": "3b87eaf72cc88ff14f1c2d7ac504586e45253b262f575f5910b5e5aa7e35fead"
         },
         {
           "target": "verification",
           "operation": "replace",
           "pointer": "/gc_validation/outstanding_checks/actual_set_sha256",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:WyJjaGVjay9yZXRlbnRpb24tZnJlc2giLCJjaGVjay90YXJnZXQvaW52ZW50b3J5LWNvbXBsZXRlIl0"
+          "value": "3b87eaf72cc88ff14f1c2d7ac504586e45253b262f575f5910b5e5aa7e35fead"
         }
       ],
       "evaluation_stage": "semantic",
@@ -354,19 +368,19 @@
           "target": "plan",
           "operation": "replace",
           "pointer": "/execution_contract/idempotency_key",
-          "value": "derive:sha256:fixture/coordinated-arbitrary-key"
+          "value": "f95a8f215073cb722cc985877f6071cbb93e36cc78b104e20a971da32a89268c"
         },
         {
           "target": "report",
           "operation": "replace",
           "pointer": "/attempt/idempotency_key",
-          "value": "derive:sha256:fixture/coordinated-arbitrary-key"
+          "value": "f95a8f215073cb722cc985877f6071cbb93e36cc78b104e20a971da32a89268c"
         },
         {
           "target": "report",
           "operation": "replace",
           "pointer": "/attempt_history/0/idempotency_key",
-          "value": "derive:sha256:fixture/coordinated-arbitrary-key"
+          "value": "f95a8f215073cb722cc985877f6071cbb93e36cc78b104e20a971da32a89268c"
         }
       ],
       "evaluation_stage": "semantic",
@@ -418,7 +432,7 @@
             "purpose": "write",
             "stable_id": "credential/missing",
             "version": 1,
-            "metadata_digest": "derive:sha256:fixture/missing-credential"
+            "metadata_digest": "2cef3acbaf8befe5024accbad89b588383322627ea0ee449e4651c523478d3e2"
           }
         }
       ],
@@ -587,7 +601,7 @@
             "purpose": "read",
             "stable_id": "credential/test/1",
             "version": 1,
-            "metadata_digest": "derive:sha256:fixture/credential-test"
+            "metadata_digest": "0a8ee78e6d826b8a08d9ee36c7acaf277dc95ec17c885262ddd242c9d224d2ad"
           }
         },
         {
@@ -734,7 +748,7 @@
           "target": "report",
           "operation": "replace",
           "pointer": "/backup/0/aggregate_manifest_digest",
-          "value": "derive:sha256:fixture/tampered-aggregate"
+          "value": "cca26d9a9347c9d8e68001585afaa9238c11084c886b77c820bc2d5d97b1d692"
         }
       ],
       "evaluation_stage": "semantic",
@@ -771,7 +785,7 @@
           "target": "report",
           "operation": "replace",
           "pointer": "/backup/0/expected_object_set_digest",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3sibG9naWNhbF9kaWdlc3QiOiI4ZWQ3ZmQxZGM2YjUwMmJlYzg5NzlmYTA0YmI0Yjk4YzFiMGFmNjNiOGU3ZDZiYmU1YjczMGZhZTdiNGQ3ZGJmIiwib2JqZWN0X3N0YWJsZV9pZCI6ImR1cmFibGUtb2JqZWN0L2h1Yi1kYi9wcm9kdWN0aW9uIiwicm93X2NvdW50IjoyLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifSx7ImxvZ2ljYWxfZGlnZXN0IjoiZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMCIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9hIiwicm93X2NvdW50IjozLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifV0"
+          "value": "7a30ebf3a49e50879cd9888c88be2b78697c7809188a6061b4895fbd84401c91"
         },
         {
           "target": "report",
@@ -783,7 +797,7 @@
           "target": "report",
           "operation": "replace",
           "pointer": "/backup/0/aggregate_manifest_digest",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmRvLWFnZ3JlZ2F0ZS92MQ:eyJkYXRhYmFzZV9zdGFibGVfaWQiOiJkYXRhYmFzZS9kby90b3BvbG9neSIsIm9iamVjdF9tYW5pZmVzdHMiOlt7ImxvZ2ljYWxfZGlnZXN0IjoiOGVkN2ZkMWRjNmI1MDJiZWM4OTc5ZmEwNGJiNGI5OGMxYjBhZjYzYjhlN2Q2YmJlNWI3MzBmYWU3YjRkN2RiZiIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9odWItZGIvcHJvZHVjdGlvbiIsInJvd19jb3VudCI6Miwic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn0seyJsb2dpY2FsX2RpZ2VzdCI6ImZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTAiLCJvYmplY3Rfc3RhYmxlX2lkIjoiZHVyYWJsZS1vYmplY3QvYSIsInJvd19jb3VudCI6Mywic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn1dLCJyZWNvbXB1dGVkX29iamVjdF9jb3VudCI6MiwicmVjb21wdXRlZF9yb3dfY291bnQiOjV9"
+          "value": "22420fbdc46cb8fbdfb4e5a694aa0f1f170d93b1f338919a6eddc55f495ec35c"
         },
         {
           "target": "report",
@@ -830,13 +844,13 @@
           "target": "verification",
           "operation": "replace",
           "pointer": "/durable_object_aggregates/0/object_set_sha256",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLnNldC92MQ:W3sibG9naWNhbF9kaWdlc3QiOiI4ZWQ3ZmQxZGM2YjUwMmJlYzg5NzlmYTA0YmI0Yjk4YzFiMGFmNjNiOGU3ZDZiYmU1YjczMGZhZTdiNGQ3ZGJmIiwib2JqZWN0X3N0YWJsZV9pZCI6ImR1cmFibGUtb2JqZWN0L2h1Yi1kYi9wcm9kdWN0aW9uIiwicm93X2NvdW50IjoyLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifSx7ImxvZ2ljYWxfZGlnZXN0IjoiZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMCIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9hIiwicm93X2NvdW50IjozLCJzY2hlbWFfcmV2aXNpb24iOiJ0b3BvbG9neS0wMDAwMDEifV0"
+          "value": "7a30ebf3a49e50879cd9888c88be2b78697c7809188a6061b4895fbd84401c91"
         },
         {
           "target": "verification",
           "operation": "replace",
           "pointer": "/durable_object_aggregates/0/aggregate_sha256",
-          "value": "derive:domain-sha256:YW9zLmh1Yi50b3BvbG9neS1jdXRvdmVyLmRvLWFnZ3JlZ2F0ZS92MQ:eyJkYXRhYmFzZV9zdGFibGVfaWQiOiJkYXRhYmFzZS9kby90b3BvbG9neSIsIm9iamVjdF9tYW5pZmVzdHMiOlt7ImxvZ2ljYWxfZGlnZXN0IjoiOGVkN2ZkMWRjNmI1MDJiZWM4OTc5ZmEwNGJiNGI5OGMxYjBhZjYzYjhlN2Q2YmJlNWI3MzBmYWU3YjRkN2RiZiIsIm9iamVjdF9zdGFibGVfaWQiOiJkdXJhYmxlLW9iamVjdC9odWItZGIvcHJvZHVjdGlvbiIsInJvd19jb3VudCI6Miwic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn0seyJsb2dpY2FsX2RpZ2VzdCI6ImZlZGNiYTk4NzY1NDMyMTBmZWRjYmE5ODc2NTQzMjEwZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTAiLCJvYmplY3Rfc3RhYmxlX2lkIjoiZHVyYWJsZS1vYmplY3QvYSIsInJvd19jb3VudCI6Mywic2NoZW1hX3JldmlzaW9uIjoidG9wb2xvZ3ktMDAwMDAxIn1dLCJyZWNvbXB1dGVkX29iamVjdF9jb3VudCI6MiwicmVjb21wdXRlZF9yb3dfY291bnQiOjV9"
+          "value": "22420fbdc46cb8fbdfb4e5a694aa0f1f170d93b1f338919a6eddc55f495ec35c"
         },
         {
           "target": "verification",
@@ -856,7 +870,7 @@
           "target": "verification",
           "operation": "replace",
           "pointer": "/durable_object_aggregates/0/object_set_sha256",
-          "value": "derive:sha256:fixture/tampered-object-set"
+          "value": "ce49f2e2968bdb514564d51aa801728423acc34058c20f621ca3a8351e450f06"
         }
       ],
       "evaluation_stage": "semantic",
@@ -1436,7 +1450,7 @@
           "target": "report",
           "operation": "replace",
           "pointer": "/rollback/database_restores/0/expected_source_digest",
-          "value": "derive:sha256:fixture/wrong-restore"
+          "value": "652ef7f35541aab73c400cde33db05f7589dbdc351b27112030a7725e74363cd"
         }
       ],
       "evaluation_stage": "semantic",
@@ -1685,6 +1699,24 @@
       "expected_code": null
     },
     {
+      "case_id": "route-backend-smoke-omitted",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "remove",
+          "pointer": "/smoke_tests/5"
+        },
+        {
+          "target": "report",
+          "operation": "remove",
+          "pointer": "/smoke_tests/5"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "fail",
+      "expected_code": "smoke_contract_invalid"
+    },
+    {
       "case_id": "route-configuration-missing",
       "mutations": [
         {
@@ -1704,7 +1736,7 @@
           "target": "plan",
           "operation": "replace",
           "pointer": "/auth_no_widening/route_proofs/0/target_policy_configuration_digest",
-          "value": "derive:sha256:fixture/wrong-route-configuration"
+          "value": "18963f2ed7dd71be37109e3410707cda8e7d04e4815938f3eb5c15b63249b498"
         }
       ],
       "evaluation_stage": "semantic",
@@ -1712,12 +1744,32 @@
       "expected_code": "auth_contract_invalid"
     },
     {
+      "case_id": "route-public-to-authenticated-narrowing",
+      "mutations": [
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/auth_no_widening/route_proofs/1/source_access_policy",
+          "value": "public"
+        },
+        {
+          "target": "plan",
+          "operation": "replace",
+          "pointer": "/auth_no_widening/route_proofs/1/assertion",
+          "value": "narrower"
+        }
+      ],
+      "evaluation_stage": "semantic",
+      "expected_result": "pass",
+      "expected_code": null
+    },
+    {
       "case_id": "schema-entry-wrong-exact-role",
       "mutations": [
         {
           "target": "bundle_manifest",
           "operation": "replace",
-          "pointer": "/payload/entries/22/role",
+          "pointer": "/payload/entries/23/role",
           "value": "report_schema"
         }
       ],

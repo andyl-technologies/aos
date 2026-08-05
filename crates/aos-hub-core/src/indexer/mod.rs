@@ -13,15 +13,16 @@
 //! 3. Load the committed tree (`registry.toml`, `keys.toml`, packages,
 //!    closures) and extend the trusted set with the verified roster's
 //!    active keys, mirroring `apm`'s in-band rotation semantics.
-//! 4. Verify every semver release tag (signature + name binding), capped
-//!    at [`MAX_SEMVER_TAGS`], and probe each release's per-release
+//! 4. Verify every release tag (signature + name binding), rejecting an
+//!    advertisement above [`MAX_RELEASE_TAGS`], and probe each release's per-release
 //!    `objects/info/packs` for pack presence.
-//! 5. Resolve every channel (branch, capped at [`MAX_BRANCHES`]) by
+//! 5. Resolve every channel (rejecting more than [`MAX_BRANCHES`]) by
 //!    probing all 256 partition payloads, verifying each, and mapping its
 //!    target tag object to a release.
 //! 6. Enforce the anti-rollback floor: a channel whose frontier dropped
 //!    below the highest frontier ever indexed is rejected.
-//! 7. Write the snapshot in one transaction and raise the floors.
+//! 7. Write the snapshot and webhook event intents in one transaction, then
+//!    raise the floors.
 //!
 //! Failures are classified by [`index_and_record`]: transport-level fetch
 //! failures mark the index *stale* (surface unreachable, last good index
@@ -45,32 +46,38 @@ pub mod load;
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
-use aos_registry_surface::manifest::{self, RegistryRootConfig};
+use aos_registry_surface::manifest::RegistryRootConfig;
 use aos_registry_surface::object::{Commit, ObjectKind};
 use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
 use aos_registry_surface::sshsig;
 use aos_registry_surface::tag::{parse_signed_tag, verify_signed_tag, SignedTag};
 use aos_registry_surface::tagobject::{verify_name_binding, TagTarget};
+use base64::Engine as _;
+use ed25519_dalek::VerifyingKey;
+use futures_util::TryStreamExt as _;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use crate::db::{ChannelSummary, Database, IndexSnapshot, RegistryRecord, ReleaseRow};
-use crate::fetch::SurfaceFetch;
+use crate::db::{
+    ChannelSummary, Database, IndexSnapshot, RegistryRecord, ReleaseArtifactSnapshot,
+    ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact,
+};
+use crate::fetch::{SurfaceFetch, SurfaceProvider};
 
 use self::load::{load_registry_tree, ObjectReader};
 
 /// Maximum branches (channels) processed per index run.
 ///
 /// A hostile or runaway surface advertising thousands of branches would
-/// otherwise cost 256 partition fetches each; the first `MAX_BRANCHES`
-/// in deterministic (lexicographic) order are processed and the rest are
-/// skipped with a warning.
+/// otherwise cost 256 partition fetches each; larger advertisements fail
+/// closed rather than publishing incomplete retention inputs.
 pub const MAX_BRANCHES: usize = 64;
 
-/// Maximum semver release tags processed per index run.
+/// Maximum release tags processed per index run.
 ///
-/// The first `MAX_SEMVER_TAGS` in deterministic (lexicographic) order are
-/// processed and the rest are skipped with a warning.
-pub const MAX_SEMVER_TAGS: usize = 1024;
+/// Larger advertisements fail closed rather than publishing incomplete
+/// retention inputs.
+pub const MAX_RELEASE_TAGS: usize = 1024;
 
 /// Outcome of one indexing run.
 #[derive(Debug)]
@@ -103,7 +110,7 @@ fn pending_outcome() -> IndexOutcome {
         releases: 0,
         channels: 0,
         incremental: false,
-        pending: true,
+        pending: false,
     }
 }
 
@@ -157,20 +164,34 @@ pub async fn index_and_record(
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
 ) -> Result<IndexOutcome> {
-    // Snapshot the release set before indexing so a successful run can raise a
-    // `release.published` webhook for each newly indexed release.
-    let prior_releases: std::collections::HashSet<String> = db
-        .list_releases(registry.id)
-        .await
-        .map(|rows| rows.into_iter().map(|r| r.semver).collect())
-        .unwrap_or_default();
+    index_and_record_from_placement(db, fetch, registry, None).await
+}
 
-    match index_registry(db, fetch, registry).await {
+/// Indexes a registry from one known placement and records the resulting state.
+///
+/// Only a successful index tied to `indexed_placement_id` may cover uncertain
+/// writes for that placement. Callers without an immutable placement identity
+/// can still index through [`index_and_record`], but cannot release GC fences.
+///
+/// # Errors
+///
+/// Returns the indexing error after recording it.
+pub async fn index_and_record_from_placement(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    registry: &RegistryRecord,
+    indexed_placement_id: Option<i64>,
+) -> Result<IndexOutcome> {
+    let index_started_at = crate::clock::now_unix_secs();
+    match index_registry(db, fetch, registry, indexed_placement_id).await {
         Ok(outcome) => {
             // A pending run (no surface published yet) indexed nothing, so it
             // raises no `index.completed`/`release.published` events.
             if !outcome.pending {
-                dispatch_index_events(db, registry, &outcome, &prior_releases).await;
+                if let Some(placement_id) = indexed_placement_id {
+                    db.cover_registry_write_tickets(registry.id, placement_id, index_started_at)
+                        .await?;
+                }
             }
             Ok(outcome)
         }
@@ -186,61 +207,161 @@ pub async fn index_and_record(
     }
 }
 
-/// Fan out the webhook events a successful index raises: one `index.completed`
-/// plus a `release.published` for each release newly present since `prior`.
+/// Indexes every exact placement that owns an outstanding registry-write fence.
 ///
-/// Only org-owned registries have webhook subscriptions, so this is a no-op
-/// for unowned phase-1 registries. Dispatch failures are logged, never
-/// propagated — a webhook problem must not fail or roll back an index.
-async fn dispatch_index_events(
+/// This maintenance path deliberately ignores route visibility and effective
+/// read enablement. A ticket can be covered only by a successful read from the
+/// same physical placement that accepted its bytes.
+///
+/// # Errors
+///
+/// Returns an error when registry/placement discovery fails. Individual storage
+/// or index failures are logged and leave their ticket fences intact for retry.
+pub async fn index_outstanding_write_placements(
     db: &Database,
-    registry: &RegistryRecord,
-    outcome: &IndexOutcome,
-    prior: &std::collections::HashSet<String>,
-) {
-    let Some(org_id) = registry.org_id else {
-        return;
-    };
-    let now = unix_now();
-    let event = crate::webhook::WebhookEvent::IndexCompleted {
-        registry: registry.slug.clone(),
-        commit: outcome.commit.clone(),
-        packages: outcome.packages,
-        releases: outcome.releases,
-        channels: outcome.channels,
-        incremental: outcome.incremental,
-        at: now,
-    };
-    if let Err(err) = crate::webhook::dispatch(db, org_id, &event).await {
-        tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching index.completed webhook");
-    }
-
-    // `release.published` for each newly indexed release.
-    if let Ok(releases) = db.list_releases(registry.id).await {
-        for release in releases {
-            if prior.contains(&release.semver) {
+    surfaces: &dyn SurfaceProvider,
+) -> Result<usize> {
+    let registries = db.list_registries_with_write_tickets().await?;
+    let mut covered_placements = 0;
+    for registry in registries {
+        let authoritative = match db
+            .reconciled_surface_reader(crate::db::SurfaceTarget::Registry(registry.id))
+            .await
+        {
+            Ok(placement) => placement,
+            Err(error) => {
+                tracing::warn!(
+                    registry = %registry.slug,
+                    error = %format!("{error:#}"),
+                    "resolving authoritative registry reader failed"
+                );
                 continue;
             }
-            let event = crate::webhook::WebhookEvent::ReleasePublished {
-                registry: registry.slug.clone(),
-                semver: release.semver.clone(),
-                commit: release.commit_oid.clone(),
-                at: now,
+        };
+        let authoritative_fetch = match surfaces.placement_fetcher(&authoritative).await {
+            Ok(fetch) => fetch,
+            Err(error) => {
+                tracing::warn!(
+                    registry = %registry.slug,
+                    placement_id = authoritative.id,
+                    error = %format!("{error:#}"),
+                    "opening authoritative registry reader failed"
+                );
+                continue;
+            }
+        };
+        if let Err(error) = index_and_record_from_placement(
+            db,
+            authoritative_fetch.as_ref(),
+            &registry,
+            Some(authoritative.id),
+        )
+        .await
+        {
+            tracing::warn!(
+                registry = %registry.slug,
+                placement_id = authoritative.id,
+                error = %format!("{error:#}"),
+                "authoritative registry indexing failed"
+            );
+            continue;
+        }
+        let placements = db
+            .list_registry_write_ticket_placements(registry.id)
+            .await?;
+        for placement in placements {
+            if placement.id == authoritative.id {
+                covered_placements += 1;
+                continue;
+            }
+            let fetch = match surfaces.placement_fetcher(&placement).await {
+                Ok(fetch) => fetch,
+                Err(error) => {
+                    tracing::warn!(
+                        registry = %registry.slug,
+                        placement_id = placement.id,
+                        error = %format!("{error:#}"),
+                        "opening outstanding registry write placement failed"
+                    );
+                    continue;
+                }
             };
-            if let Err(err) = crate::webhook::dispatch(db, org_id, &event).await {
-                tracing::warn!(slug = %registry.slug, error = %format!("{err:#}"), "dispatching release.published webhook");
+            match reconcile_registry_replica(db, fetch.as_ref(), &registry, placement.id).await {
+                Ok(_) => covered_placements += 1,
+                Err(error) => tracing::warn!(
+                    registry = %registry.slug,
+                    placement_id = placement.id,
+                    error = %format!("{error:#}"),
+                    "reconciling outstanding registry write placement failed"
+                ),
             }
         }
     }
+    Ok(covered_placements)
 }
 
-/// Current Unix time in seconds.
+/// Reconciles one replica against the already-published signed registry generation.
 ///
-/// Routed through [`crate::clock::now_unix_secs`] so the indexer reads the wall
-/// clock on both the native hub (`std::time`) and the Cloudflare Worker (the JS
-/// `Date.now()`), where `std::time::SystemTime::now()` panics.
-fn unix_now() -> i64 {
-    crate::clock::now_unix_secs()
+/// This path never mutates global package, release, channel, event, or index
+/// visibility. It first proves that the replica advertises the exact indexed
+/// refs digest, then re-hashes every signed image root from that placement and
+/// records only placement-local presence evidence.
+///
+/// # Errors
+///
+/// Returns an error when the replica does not match the published generation,
+/// an image object is unavailable or corrupt, or persistence fails.
+pub async fn reconcile_registry_replica(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    registry: &RegistryRecord,
+    placement_id: i64,
+) -> Result<usize> {
+    let started_at = crate::clock::now_unix_secs();
+    let expected_refs = db
+        .refs_digest(registry.id)
+        .await?
+        .context("registry has no published refs digest")?;
+    let refs = fetch
+        .fetch("info/refs")
+        .await?
+        .context("replica has no info/refs")?;
+    let observed_refs = hex::encode(Sha256::digest(&refs));
+    anyhow::ensure!(
+        observed_refs == expected_refs,
+        "replica refs do not match the published registry generation"
+    );
+
+    let mut leases = Vec::new();
+    let outcome = async {
+        let roots = db.list_system_image_roots(registry.id).await?;
+        let mut objects = Vec::with_capacity(roots.len());
+        for (object_key, sha256, byte_size) in roots {
+            objects.push(
+                verify_system_image_object(fetch, object_key, sha256, byte_size, &mut leases)
+                    .await?,
+            );
+        }
+        if !objects.is_empty() {
+            db.record_registry_image_presence(
+                registry.id,
+                placement_id,
+                &objects,
+                crate::clock::now_unix_secs(),
+            )
+            .await?;
+        }
+        db.cover_registry_write_tickets(registry.id, placement_id, started_at)
+            .await?;
+        Ok::<usize, anyhow::Error>(objects.len())
+    }
+    .await;
+    let release = db.release_image_snapshot_leases(&leases).await;
+    match (outcome, release) {
+        (Ok(count), Ok(())) => Ok(count),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.context("releasing replica snapshot leases")),
+    }
 }
 
 /// Index one registered registry surface into the database.
@@ -254,6 +375,31 @@ pub async fn index_registry(
     db: &Database,
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
+    indexed_placement_id: Option<i64>,
+) -> Result<IndexOutcome> {
+    let mut snapshot_leases = Vec::new();
+    let outcome = index_registry_inner(
+        db,
+        fetch,
+        registry,
+        indexed_placement_id,
+        &mut snapshot_leases,
+    )
+    .await;
+    let release = db.release_image_snapshot_leases(&snapshot_leases).await;
+    match (outcome, release) {
+        (Ok(outcome), Ok(())) => Ok(outcome),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.context("releasing image snapshot index leases")),
+    }
+}
+
+async fn index_registry_inner(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    registry: &RegistryRecord,
+    indexed_placement_id: Option<i64>,
+    snapshot_leases: &mut Vec<String>,
 ) -> Result<IndexOutcome> {
     let refs_bytes = match fetch.fetch("info/refs").await {
         Ok(Some(bytes)) => bytes,
@@ -266,7 +412,10 @@ pub async fn index_registry(
             // transient backend error that genuinely warrants a retry. The home
             // page reads "nothing published yet" either way; the difference is
             // that `empty` no longer masquerades as in-progress work.
-            db.mark_index_empty(registry.id).await?;
+            let placement_id = indexed_placement_id
+                .context("empty registry indexing requires an authoritative placement")?;
+            db.mark_index_empty_from_placement(registry.id, placement_id)
+                .await?;
             return Ok(empty_outcome());
         }
         Err(err) if is_transient_backend_error(&err) => {
@@ -275,15 +424,27 @@ pub async fn index_registry(
             // again."), which the platform explicitly asks callers to retry. This
             // is NOT a permanent index failure, so it must never be recorded as
             // `failed` (which would leave the registry stuck showing "index
-            // failed: ... (10001)" until a manual re-index). Record the benign
-            // `pending` state so the next scheduled pass retries — but do not
-            // regress a registry that already holds a *terminal* index: a `fresh`
-            // index (don't hide a healthy registry's releases on a hiccup) or an
-            // `empty` one. The latter matters because R2 throws this same 10001
+            // failed: ... (10001)" until a manual re-index). Metadata-only
+            // registries record the benign `pending` state so the next scheduled
+            // pass retries, without regressing a terminal `fresh` or `empty`
+            // index. Image-bearing registries are the exception: a failed byte
+            // revalidation makes their index stale and hides direct downloads.
+            // The empty guard matters because R2 throws this same 10001
             // for a *missing* key, so an empty registry's `info/refs` read flaps
             // between a clean "absent" (→ `empty`) and a 10001 (→ here): without
             // this guard it would oscillate empty↔pending pass to pass. Once
             // empty, it stays empty until a surface is actually read.
+            // Direct image discovery is stricter than metadata-only package
+            // browsing: an unsuccessful refresh cannot attest that both the
+            // signed catalog and its exact disk bytes are still readable.
+            // Hide the last-good image rows until a complete revalidation
+            // succeeds. Package-only registries retain the historical benign
+            // pending behavior below.
+            if db.has_system_image_catalog(registry.id).await? {
+                db.mark_index_stale(registry.id, &format!("{err:#}"))
+                    .await?;
+                return Ok(pending_outcome());
+            }
             let already_terminal = db
                 .index_status(registry.id)
                 .await?
@@ -305,8 +466,11 @@ pub async fn index_registry(
         .index_status(registry.id)
         .await?
         .is_some_and(|status| status.state == "fresh");
-    if state_fresh && db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str()) {
-        return index_incremental(db, fetch, registry, &refs).await;
+    if state_fresh
+        && !db.has_system_image_catalog(registry.id).await?
+        && db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str())
+    {
+        return index_incremental(db, fetch, registry, &refs, indexed_placement_id).await;
     }
 
     let head = match fetch.fetch("HEAD").await? {
@@ -328,7 +492,14 @@ pub async fn index_registry(
     let reader = ObjectReader::new(fetch);
     let commit = reader.read_commit(commit_oid).await?;
     let mut trusted: Vec<String> = registry.trust_keys.clone();
-    if registry.require_signatures {
+    let typed_publication = append_signing_usage_key(
+        db,
+        &mut trusted,
+        &registry.stable_id,
+        "registry_publication",
+    )
+    .await?;
+    if registry.require_signatures || typed_publication {
         let signature = commit
             .signature
             .as_ref()
@@ -354,42 +525,113 @@ pub async fn index_registry(
         }
     }
 
-    // Releases: every semver tag, verified (signature + name binding) and
-    // resolved to its commit. BTreeMap iteration keeps the capped subset
-    // deterministic.
-    let mut semver_tags: Vec<_> = refs
-        .tags
-        .iter()
-        .filter(|(name, _)| semver::Version::parse(name).is_ok())
-        .collect();
-    if semver_tags.len() > MAX_SEMVER_TAGS {
-        tracing::warn!(
-            total = semver_tags.len(),
-            cap = MAX_SEMVER_TAGS,
-            "capping semver release tags; processing the first {MAX_SEMVER_TAGS}"
-        );
-        semver_tags.truncate(MAX_SEMVER_TAGS);
-    }
+    // Releases are retention and GC roots. Refuse an incomplete index instead
+    // of silently publishing a prefix of the advertised tag set.
+    validate_ref_cardinality(&refs)?;
+    let release_tags: Vec<_> = refs.tags.iter().collect();
     let mut releases = Vec::new();
-    for (tag_name, tag_oid) in semver_tags {
+    let mut release_artifact_snapshots = Vec::new();
+    let mut release_images = Vec::new();
+    let mut image_presence = Vec::new();
+    let mut image_release_tag_oids = std::collections::BTreeSet::new();
+    for (tag_name, tag_oid) in release_tags {
         let payload = reader.read_kind(*tag_oid, ObjectKind::Tag).await?;
-        let (signed, signer) = if registry.require_signatures {
-            let signed = verify_signed_tag(&payload, tag_name, &trusted)
-                .with_context(|| format!("release tag '{tag_name}'"))?;
-            let signer = parse_signed_tag(&payload)
-                .ok()
-                .map(|s| sshsig_signer(&s.signature));
-            (signed, signer.flatten())
-        } else {
-            (lenient_tag(&payload, tag_name)?, None)
-        };
-        if signed.tag.target_type != TagTarget::Commit {
+        let lenient = lenient_tag(&payload, tag_name)?;
+        if lenient.tag.target_type != TagTarget::Commit {
             bail!("release tag '{tag_name}' does not target a commit");
         }
+        let source_commit = lenient.tag.object.clone();
+        let release_tree = load_registry_tree(
+            fetch,
+            aos_registry_surface::object::Oid::from_hex(&source_commit)?,
+        )
+        .await
+        .with_context(|| format!("loading release artifact snapshot for '{tag_name}'"))?;
+        let has_image_catalog = release_tree.packages.iter().any(|package| {
+            package.package.sysroot
+                && package.versions.iter().any(|version| {
+                    version.platforms.values().any(|platform| {
+                        platform
+                            .images
+                            .iter()
+                            .any(|image| !image.delivery.is_legacy_store_only())
+                    })
+                })
+        });
+        let (signed, signer) =
+            if registry.require_signatures || typed_publication || has_image_catalog {
+                // An image catalog is always authenticated by its release tag,
+                // even for registries that otherwise permit unsigned package
+                // metadata. An unsigned HEAD roster cannot delegate image trust.
+                let image_trusted = if registry.require_signatures || typed_publication {
+                    trusted.as_slice()
+                } else {
+                    registry.trust_keys.as_slice()
+                };
+                let signed = verify_signed_tag(&payload, tag_name, image_trusted)
+                    .with_context(|| format!("signed image release tag '{tag_name}'"))?;
+                let signer = parse_signed_tag(&payload)
+                    .ok()
+                    .and_then(|signed| sshsig_signer(&signed.signature));
+                (signed, signer)
+            } else {
+                (lenient, None)
+            };
+        if has_image_catalog {
+            let catalog = verify_system_image_objects(
+                db,
+                fetch,
+                &source_commit,
+                &release_tree.root.registry.name,
+                &release_tree.packages,
+                snapshot_leases,
+            )
+            .await
+            .with_context(|| format!("verifying signed image release '{tag_name}'"))?;
+            let images = catalog
+                .images
+                .into_iter()
+                .filter(|image| image.release == tag_name.as_str())
+                .collect::<Vec<_>>();
+            if !images.is_empty() {
+                let selected_keys = images
+                    .iter()
+                    .flat_map(|image| {
+                        [
+                            image.delivery.object_key.clone(),
+                            image.delivery.image_info.object_key.clone(),
+                        ]
+                    })
+                    .collect::<std::collections::BTreeSet<_>>();
+                image_release_tag_oids.insert(tag_oid.to_hex());
+                release_images.push(ReleaseImageSnapshot {
+                    release_tag: tag_name.clone(),
+                    source_commit: source_commit.clone(),
+                    verified_tag_oid: tag_oid.to_hex(),
+                    catalog_digest: catalog.digest,
+                    images,
+                });
+                image_presence.extend(
+                    catalog
+                        .objects
+                        .into_iter()
+                        .filter(|object| selected_keys.contains(object.object_key.as_str())),
+                );
+            }
+        }
+        let artifacts = release_snapshot_artifacts(&release_tree.packages);
+        let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&artifacts)?));
+        release_artifact_snapshots.push(ReleaseArtifactSnapshot {
+            release_tag: tag_name.clone(),
+            source_commit: source_commit.clone(),
+            verified_tag_oid: tag_oid.to_hex(),
+            manifest_digest,
+            artifacts,
+        });
         releases.push(ReleaseRow {
             semver: tag_name.clone(),
             tag_oid: tag_oid.to_hex(),
-            commit_oid: signed.tag.object.clone(),
+            commit_oid: source_commit,
             signer,
             tagged_at: signed.tag.tagger_when,
             pack_present: probe_pack_presence(fetch, tag_name).await?,
@@ -398,14 +640,22 @@ pub async fn index_registry(
 
     // Channels: branches are channel names; each resolves through 256
     // partition payloads pointing at release tag objects.
-    let branch_names = capped_branch_names(&refs).await;
+    let branch_names = complete_branch_names(&refs)?;
     let tag_to_semver: BTreeMap<String, String> = releases
         .iter()
         .map(|release| (release.tag_oid.clone(), release.semver.clone()))
         .collect();
-    let channels =
-        resolve_channels(fetch, registry, &branch_names, &trusted, &tag_to_semver).await?;
-    enforce_floors(db, registry.id, &channels).await?;
+    let channels = resolve_channels(
+        db,
+        fetch,
+        registry,
+        &branch_names,
+        &trusted,
+        typed_publication,
+        &tag_to_semver,
+        &image_release_tag_oids,
+    )
+    .await?;
 
     // The committed [caches] cache stack (RFC-0004) is flattened into the
     // priority list stack-unaware clients and the display table resolve; when
@@ -413,6 +663,27 @@ pub async fn index_registry(
     // A malformed stack flattens to an empty list (logged) rather than failing
     // the whole index.
     let (caches, cache_stack) = resolve_cache_layout(registry, &tree.root);
+
+    image_presence.sort_by(|left, right| left.object_key.cmp(&right.object_key));
+    let mut deduplicated_presence: Vec<crate::db::VerifiedRegistryImageObject> =
+        Vec::with_capacity(image_presence.len());
+    for object in image_presence {
+        if let Some(previous) = deduplicated_presence.last() {
+            anyhow::ensure!(
+                previous.object_key != object.object_key
+                    || (previous.sha256 == object.sha256
+                        && previous.byte_size == object.byte_size
+                        && previous.strong_etag == object.strong_etag),
+                "signed image object '{}' has conflicting release identities",
+                object.object_key
+            );
+            if previous.object_key == object.object_key {
+                continue;
+            }
+        }
+        deduplicated_presence.push(object);
+    }
+    let image_presence = deduplicated_presence;
 
     let snapshot = IndexSnapshot {
         commit: commit_oid.to_hex(),
@@ -424,6 +695,8 @@ pub async fn index_registry(
         roster: roster_rows,
         packages: tree.packages,
         releases,
+        release_artifact_snapshots,
+        release_images,
         channels,
         refs_digest: Some(refs_digest),
     };
@@ -435,8 +708,21 @@ pub async fn index_registry(
         incremental: false,
         pending: false,
     };
-    db.apply_snapshot(registry.id, &snapshot).await?;
-    raise_floors(db, registry.id, &snapshot.channels).await?;
+    if let Some(placement_id) = indexed_placement_id {
+        db.apply_snapshot_with_image_presence(
+            registry.id,
+            &snapshot,
+            placement_id,
+            &image_presence,
+            crate::clock::now_unix_secs(),
+        )
+        .await?;
+    } else if !image_presence.is_empty() {
+        bail!("signed system images require an exact indexed placement");
+    } else {
+        db.apply_snapshot_from_placement(registry.id, &snapshot, None)
+            .await?;
+    }
 
     // Cross-reference the verified HEAD commit with the change-set log
     // (RFC-0004 "Configuration management"): a commit carrying an
@@ -455,6 +741,71 @@ pub async fn index_registry(
     .await;
 
     Ok(outcome)
+}
+
+fn release_snapshot_artifacts(
+    packages: &[aos_registry_surface::manifest::PackageToml],
+) -> Vec<ReleaseSnapshotArtifact> {
+    let mut artifacts = Vec::new();
+    for package in packages {
+        for version in &package.versions {
+            for (platform, entry) in &version.platforms {
+                artifacts.push(ReleaseSnapshotArtifact {
+                    package_name: package.package.name.clone(),
+                    package_version: version.version.clone(),
+                    platform: platform.clone(),
+                    artifact_kind: "output".to_string(),
+                    store_hash: store_hash_component(&entry.store_path),
+                    store_path: entry.store_path.clone(),
+                });
+                if !entry.source_drv.is_empty() {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package.package.name.clone(),
+                        package_version: version.version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "source_derivation".to_string(),
+                        store_hash: store_hash_component(&entry.source_drv),
+                        store_path: entry.source_drv.clone(),
+                    });
+                }
+                for image in &entry.images {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package.package.name.clone(),
+                        package_version: version.version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "image".to_string(),
+                        store_hash: store_hash_component(&image.store_path),
+                        store_path: image.store_path.clone(),
+                    });
+                }
+            }
+        }
+    }
+    artifacts.sort_by(|left, right| {
+        (
+            &left.package_name,
+            &left.package_version,
+            &left.platform,
+            &left.artifact_kind,
+            &left.store_path,
+            &left.store_hash,
+        )
+            .cmp(&(
+                &right.package_name,
+                &right.package_version,
+                &right.platform,
+                &right.artifact_kind,
+                &right.store_path,
+                &right.store_hash,
+            ))
+    });
+    artifacts.dedup();
+    artifacts
+}
+
+fn store_hash_component(path: &str) -> String {
+    let base = path.rsplit('/').next().unwrap_or(path);
+    base.split('-').next().unwrap_or(base).to_string()
 }
 
 /// A roster public-key → key-id map for resolving a commit signer to a roster
@@ -496,10 +847,11 @@ async fn record_commit_provenance(
         // scope is not within this registry — is treated as a no-trailer
         // (external) commit below, so a commit on registry B cannot mark a
         // change request scoped to registry A as applied by carrying A's id.
-        match db.changeset(&change_id).await {
-            Ok(Some(changeset))
-                if crate::domain::Scope::parse(&registry.slug)
-                    .contains(&crate::domain::Scope::parse(&changeset.scope)) =>
+        let registry_scope = db.registry_authorization_scope(registry.id).await;
+        match (db.changeset(&change_id).await, registry_scope) {
+            (Ok(Some(changeset)), Ok(registry_scope))
+                if crate::domain::Scope::try_parse(&changeset.scope).as_ref()
+                    == crate::domain::Scope::try_parse(&registry_scope).as_ref() =>
             {
                 if let Err(err) = db
                     .mark_changeset_applied_commit(&change_id, commit_oid_hex)
@@ -514,7 +866,7 @@ async fn record_commit_provenance(
                 }
                 return;
             }
-            Ok(Some(changeset)) => {
+            (Ok(Some(changeset)), _) => {
                 // The trailer references a real change-set scoped outside this
                 // registry: do not apply it; fall through to the external-commit
                 // audit so the foreign change request is untouched.
@@ -525,8 +877,8 @@ async fn record_commit_provenance(
                     "ignoring change-id trailer whose scope is not within this registry"
                 );
             }
-            Ok(None) => {}
-            Err(err) => tracing::warn!(
+            (Ok(None), _) => {}
+            (Err(err), _) => tracing::warn!(
                 slug = %registry.slug,
                 %change_id,
                 error = %format!("{err:#}"),
@@ -601,6 +953,308 @@ async fn synthesize_external_audit(
     }
 }
 
+#[derive(Debug)]
+struct VerifiedSystemImageCatalog {
+    digest: String,
+    images: Vec<crate::db::IndexedSystemImage>,
+    objects: Vec<crate::db::VerifiedRegistryImageObject>,
+}
+
+/// Proves that every signed direct-delivery object exists with its exact identity.
+async fn verify_system_image_objects(
+    _db: &Database,
+    fetch: &dyn SurfaceFetch,
+    commit: &str,
+    registry_identity: &str,
+    packages: &[aos_registry_surface::manifest::PackageToml],
+    snapshot_leases: &mut Vec<String>,
+) -> Result<VerifiedSystemImageCatalog> {
+    let mut expected = BTreeMap::<String, ExpectedImageObject>::new();
+    let mut images = Vec::new();
+    for package in packages.iter().filter(|package| package.package.sysroot) {
+        for version in &package.versions {
+            for (platform, artifact) in &version.platforms {
+                for image in &artifact.images {
+                    if image.delivery.is_legacy_store_only() {
+                        continue;
+                    }
+                    image.validate_delivery(&version.version, platform)?;
+                    images.push(crate::db::IndexedSystemImage {
+                        package: package.package.name.clone(),
+                        release: version.version.clone(),
+                        platform: platform.clone(),
+                        format: image.format.clone(),
+                        delivery: image.delivery.clone(),
+                    });
+                    for (key, hash, size, role) in [
+                        (
+                            image.delivery.object_key.as_str(),
+                            image.delivery.sha256.as_str(),
+                            image.delivery.byte_size,
+                            ImageObjectRole::Disk,
+                        ),
+                        (
+                            image.delivery.image_info.object_key.as_str(),
+                            image.delivery.image_info.sha256.as_str(),
+                            image.delivery.image_info.byte_size,
+                            ImageObjectRole::ImageInfo,
+                        ),
+                    ] {
+                        let size = i64::try_from(size)
+                            .context("signed image object size exceeds database range")?;
+                        let identity = ExpectedImageObject {
+                            sha256: hash.to_string(),
+                            byte_size: size,
+                            role,
+                        };
+                        match expected.entry(key.to_string()) {
+                            std::collections::btree_map::Entry::Vacant(entry) => {
+                                entry.insert(identity);
+                            }
+                            std::collections::btree_map::Entry::Occupied(entry)
+                                if entry.get() == &identity => {}
+                            std::collections::btree_map::Entry::Occupied(_) => {
+                                anyhow::bail!(
+                                    "signed image object key '{key}' has conflicting identities"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if expected.is_empty() {
+        return Ok(VerifiedSystemImageCatalog {
+            digest: image_catalog_digest(registry_identity, &expected)?,
+            images,
+            objects: Vec::new(),
+        });
+    }
+    verify_image_publication_receipt(fetch, commit, registry_identity, &expected).await?;
+    let digest = image_catalog_digest(registry_identity, &expected)?;
+
+    let mut verified = Vec::with_capacity(expected.len());
+    for (object_key, identity) in expected {
+        verified.push(
+            verify_system_image_object(
+                fetch,
+                object_key,
+                identity.sha256,
+                identity.byte_size,
+                snapshot_leases,
+            )
+            .await?,
+        );
+    }
+    Ok(VerifiedSystemImageCatalog {
+        digest,
+        images,
+        objects: verified,
+    })
+}
+
+const MAX_IMAGE_PUBLICATION_RECEIPT_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageObjectRole {
+    Disk,
+    ImageInfo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpectedImageObject {
+    sha256: String,
+    byte_size: i64,
+    role: ImageObjectRole,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ImagePublicationReceipt {
+    schema_version: u32,
+    commit: String,
+    registry: String,
+    catalog_digest: String,
+    objects: Vec<ImagePublicationReceiptObject>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ImagePublicationReceiptObject {
+    key: String,
+    role: String,
+    byte_size: u64,
+    sha256: String,
+}
+
+/// Requires a complete transaction marker for the exact signed image catalog.
+///
+/// `fetch` is already scoped to the placement selected for this index run. The
+/// receipt and every object it names are therefore proven through one physical
+/// placement, and the resulting presence rows retain that placement identity;
+/// a receipt observed elsewhere cannot confer availability on this placement.
+async fn verify_image_publication_receipt(
+    fetch: &dyn SurfaceFetch,
+    commit: &str,
+    registry_identity: &str,
+    expected: &BTreeMap<String, ExpectedImageObject>,
+) -> Result<()> {
+    let path = format!("publication-receipts/{commit}.json");
+    let bytes = fetch
+        .fetch_bounded(&path, MAX_IMAGE_PUBLICATION_RECEIPT_BYTES)
+        .await?
+        .with_context(|| format!("image publication receipt '{path}' is unavailable"))?;
+    validate_image_publication_receipt(&bytes, commit, registry_identity, expected)
+}
+
+fn validate_image_publication_receipt(
+    bytes: &[u8],
+    commit: &str,
+    registry_identity: &str,
+    expected: &BTreeMap<String, ExpectedImageObject>,
+) -> Result<()> {
+    let receipt: ImagePublicationReceipt =
+        serde_json::from_slice(bytes).context("parsing image publication receipt")?;
+    if receipt.schema_version != 1 {
+        bail!("unsupported image publication receipt schema");
+    }
+    if receipt.commit != commit {
+        bail!("image publication receipt does not match the indexed commit");
+    }
+    if receipt.registry != registry_identity {
+        bail!("image publication receipt does not match the signed registry identity");
+    }
+    let catalog_digest = image_catalog_digest(registry_identity, expected)?;
+    if receipt.catalog_digest != catalog_digest {
+        bail!("image publication receipt catalog digest does not match signed metadata");
+    }
+    if receipt.objects.len() != expected.len() {
+        bail!("image publication receipt does not cover the signed image catalog");
+    }
+
+    let mut observed = BTreeMap::new();
+    for object in receipt.objects {
+        let byte_size = i64::try_from(object.byte_size)
+            .context("publication receipt object size exceeds database range")?;
+        let identity = ExpectedImageObject {
+            sha256: object.sha256,
+            byte_size,
+            role: match object.role.as_str() {
+                "disk" => ImageObjectRole::Disk,
+                "image-info" => ImageObjectRole::ImageInfo,
+                _ => bail!("image publication receipt contains an unknown object role"),
+            },
+        };
+        if observed.insert(object.key.clone(), identity).is_some() {
+            bail!(
+                "image publication receipt repeats object key '{}'",
+                object.key
+            );
+        }
+    }
+    if &observed != expected {
+        bail!("image publication receipt identities do not match the signed image catalog");
+    }
+    Ok(())
+}
+
+fn image_catalog_digest(
+    registry_identity: &str,
+    expected: &BTreeMap<String, ExpectedImageObject>,
+) -> Result<String> {
+    let mut catalog_objects = Vec::with_capacity(expected.len());
+    for (key, identity) in expected {
+        catalog_objects.push((
+            key.as_str(),
+            match identity.role {
+                ImageObjectRole::Disk => "disk",
+                ImageObjectRole::ImageInfo => "image-info",
+            },
+            u64::try_from(identity.byte_size)
+                .context("signed image catalog contains a negative object size")?,
+            identity.sha256.as_str(),
+        ));
+    }
+    Ok(aos_registry_surface::manifest::image_catalog_digest(
+        registry_identity,
+        catalog_objects,
+    ))
+}
+
+/// Streams one signed image object with a catalog-sized hard bound.
+///
+/// This intentionally does not use [`SurfaceFetch::inventory_evidence`]. That
+/// generic inventory path trusts the backend-declared object length until the
+/// stream ends, whereas an image catalog already supplies the exact signed
+/// length. Rejecting a different declaration before polling the body and
+/// stopping as soon as the stream exceeds the signed length prevents a hostile
+/// placement from turning indexing into an unbounded transfer.
+async fn verify_system_image_object(
+    fetch: &dyn SurfaceFetch,
+    object_key: String,
+    sha256: String,
+    byte_size: i64,
+    snapshot_leases: &mut Vec<String>,
+) -> Result<crate::db::VerifiedRegistryImageObject> {
+    let expected_size =
+        u64::try_from(byte_size).context("signed image object size cannot be negative")?;
+    let before_etag = fetch.inventory_strong_etag(&object_key).await?;
+    let read = fetch
+        .fetch_stream(&object_key, None)
+        .await?
+        .with_context(|| format!("signed image object '{object_key}' is unavailable"))?;
+    if let Some(lease_id) = read.snapshot_lease_id.clone() {
+        snapshot_leases.push(lease_id);
+    }
+    if read.total != expected_size || read.range.is_some() {
+        bail!(
+            "signed image object '{object_key}' does not match catalog size: expected {expected_size} bytes, backend declared {}",
+            read.total
+        );
+    }
+    let streamed_etag = read.strong_etag.clone();
+
+    let mut stream = read.body.into_data_stream();
+    let mut hasher = Sha256::new();
+    let mut observed_size = 0_u64;
+    while let Some(chunk) = stream.try_next().await? {
+        observed_size = observed_size
+            .checked_add(chunk.len() as u64)
+            .with_context(|| format!("signed image object '{object_key}' size overflowed"))?;
+        if observed_size > expected_size {
+            bail!(
+                "signed image object '{object_key}' exceeded its signed {expected_size} byte size"
+            );
+        }
+        hasher.update(&chunk);
+    }
+    if observed_size != expected_size {
+        bail!(
+            "signed image object '{object_key}' ended at {observed_size} bytes, expected {expected_size}"
+        );
+    }
+    let after_etag = fetch.inventory_strong_etag(&object_key).await?;
+    if before_etag != after_etag || streamed_etag != after_etag {
+        bail!("signed image object '{object_key}' changed while it was verified");
+    }
+    let observed_sha256 = hex::encode(hasher.finalize());
+    if observed_sha256 != sha256 {
+        bail!("signed image object '{object_key}' does not match catalog SHA-256");
+    }
+    let strong_etag = after_etag.context(format!(
+        "signed image object '{object_key}' backend does not expose a strong version"
+    ))?;
+
+    Ok(crate::db::VerifiedRegistryImageObject {
+        object_key,
+        sha256,
+        byte_size,
+        strong_etag,
+    })
+}
+
 /// Extract the commit message body from a commit's signed payload.
 ///
 /// The payload is `headers\n\nmessage`; the message is everything after the
@@ -621,12 +1275,20 @@ async fn index_incremental(
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
     refs: &Refs,
+    indexed_placement_id: Option<i64>,
 ) -> Result<IndexOutcome> {
     tracing::debug!(source = %fetch.describe(), "refs unchanged; incremental channel refresh");
 
     // Rebuild the trusted set exactly as the full walk would have left
     // it: pinned anchors plus the verified roster's active keys.
     let mut trusted: Vec<String> = registry.trust_keys.clone();
+    let typed_publication = append_signing_usage_key(
+        db,
+        &mut trusted,
+        &registry.stable_id,
+        "registry_publication",
+    )
+    .await?;
     for (_key_id, public_key, status) in db.list_roster(registry.id).await? {
         if status == "active" && !public_key.is_empty() && !trusted.contains(&public_key) {
             trusted.push(public_key);
@@ -639,12 +1301,20 @@ async fn index_incremental(
         .map(|release| (release.tag_oid.clone(), release.semver.clone()))
         .collect();
 
-    let branch_names = capped_branch_names(refs).await;
-    let channels =
-        resolve_channels(fetch, registry, &branch_names, &trusted, &tag_to_semver).await?;
-    enforce_floors(db, registry.id, &channels).await?;
-    db.update_channels(registry.id, &channels).await?;
-    raise_floors(db, registry.id, &channels).await?;
+    let branch_names = complete_branch_names(refs)?;
+    let channels = resolve_channels(
+        db,
+        fetch,
+        registry,
+        &branch_names,
+        &trusted,
+        typed_publication,
+        &tag_to_semver,
+        &std::collections::BTreeSet::new(),
+    )
+    .await?;
+    db.update_channels_from_placement(registry.id, &channels, indexed_placement_id)
+        .await?;
 
     let commit = db
         .index_status(registry.id)
@@ -661,34 +1331,93 @@ async fn index_incremental(
     })
 }
 
-/// The advertised branch names in deterministic order, capped at
-/// [`MAX_BRANCHES`] with a warning.
-async fn capped_branch_names(refs: &Refs) -> Vec<String> {
-    let mut names: Vec<String> = refs.branches.keys().cloned().collect();
-    if names.len() > MAX_BRANCHES {
-        tracing::warn!(
-            total = names.len(),
-            cap = MAX_BRANCHES,
-            "capping channels; processing the first {MAX_BRANCHES}"
+/// Returns every advertised branch name or rejects an incomplete index.
+fn complete_branch_names(refs: &Refs) -> Result<Vec<String>> {
+    validate_ref_cardinality(refs)?;
+    let names: Vec<String> = refs.branches.keys().cloned().collect();
+    Ok(names)
+}
+
+/// Rejects ref advertisements that cannot be indexed completely.
+fn validate_ref_cardinality(refs: &Refs) -> Result<()> {
+    if refs.tags.len() > MAX_RELEASE_TAGS {
+        bail!(
+            "registry advertises {} release tags; complete indexing limit is {}",
+            refs.tags.len(),
+            MAX_RELEASE_TAGS
         );
-        names.truncate(MAX_BRANCHES);
     }
-    names
+    if refs.branches.len() > MAX_BRANCHES {
+        bail!(
+            "registry advertises {} channels; complete indexing limit is {}",
+            refs.branches.len(),
+            MAX_BRANCHES
+        );
+    }
+    Ok(())
 }
 
 /// Resolve channels by probing and verifying all 256 partitions each.
 ///
 /// `tag_to_semver` maps release tag oids (hex) to their semver, so a
 /// partition targeting an unknown tag object fails loudly.
+async fn append_signing_usage_key(
+    db: &Database,
+    trusted: &mut Vec<String>,
+    consumer_stable_id: &str,
+    purpose: &str,
+) -> Result<bool> {
+    let Some(key) = db
+        .active_signing_key_for_usage(consumer_stable_id, purpose)
+        .await?
+    else {
+        return Ok(false);
+    };
+    let key_name = key.name.clone();
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(&key.public_key)
+        .context("typed signing usage contains invalid public-key base64")?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("typed signing usage public key is not 32 bytes"))?;
+    let key = VerifyingKey::from_bytes(&bytes)
+        .context("typed signing usage public key is not valid Ed25519")?;
+    let line = sshsig::trusted_key_line(&key_name, &key);
+    if !trusted.contains(&line) {
+        trusted.push(line);
+    }
+    Ok(true)
+}
+
 async fn resolve_channels(
+    db: &Database,
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
     branch_names: &[String],
     trusted: &[String],
+    require_publication_signatures: bool,
     tag_to_semver: &BTreeMap<String, String>,
+    image_release_tag_oids: &std::collections::BTreeSet<String>,
 ) -> Result<Vec<ChannelSummary>> {
     let mut channels = Vec::new();
     for channel_name in branch_names {
+        let mut channel_trusted = trusted.to_vec();
+        let mut image_channel_trusted = registry.trust_keys.clone();
+        let consumer_stable_id = format!("channel:{}:{channel_name}", registry.stable_id);
+        let channel_usage = append_signing_usage_key(
+            db,
+            &mut channel_trusted,
+            &consumer_stable_id,
+            "channel_frontier",
+        )
+        .await?;
+        let _ = append_signing_usage_key(
+            db,
+            &mut image_channel_trusted,
+            &consumer_stable_id,
+            "channel_frontier",
+        )
+        .await?;
         let mut partitions: Vec<Option<String>> = vec![None; 256];
         let mut frontier: Option<semver::Version> = None;
         let mut present = false;
@@ -698,11 +1427,24 @@ async fn resolve_channels(
                 continue;
             };
             present = true;
-            let signed = if registry.require_signatures {
-                verify_signed_tag(&payload, channel_name, trusted)
-                    .with_context(|| format!("partition {path}"))?
+            let lenient = lenient_tag(&payload, channel_name)?;
+            let signed = if registry.require_signatures
+                || require_publication_signatures
+                || channel_usage
+                || image_release_tag_oids.contains(&lenient.tag.object)
+            {
+                let channel_trusted =
+                    if registry.require_signatures || require_publication_signatures {
+                        channel_trusted.as_slice()
+                    } else {
+                        // Image-bearing channels remain rooted in the configured
+                        // catalog anchors plus their exact typed channel usage.
+                        image_channel_trusted.as_slice()
+                    };
+                verify_signed_tag(&payload, channel_name, channel_trusted)
+                    .with_context(|| format!("signed image channel partition {path}"))?
             } else {
-                lenient_tag(&payload, channel_name)?
+                lenient
             };
             if signed.tag.target_type != TagTarget::Tag {
                 bail!("partition {path} does not target a tag object");
@@ -745,71 +1487,16 @@ async fn probe_pack_presence(fetch: &dyn SurfaceFetch, semver_str: &str) -> Resu
     Ok(fetch.fetch(&path).await?.is_some())
 }
 
-/// Reject any channel whose frontier fell below its recorded floor.
-async fn enforce_floors(
-    db: &Database,
-    registry_id: i64,
-    channels: &[ChannelSummary],
-) -> Result<()> {
-    for channel in channels {
-        let Some(frontier) = &channel.frontier else {
-            continue;
-        };
-        let Some(floor) = db.channel_floor(registry_id, &channel.name).await? else {
-            continue;
-        };
-        let (Ok(frontier_v), Ok(floor_v)) = (
-            semver::Version::parse(frontier),
-            semver::Version::parse(&floor),
-        ) else {
-            continue;
-        };
-        if frontier_v < floor_v {
-            bail!(
-                "channel '{}' frontier {frontier} is below the recorded floor {floor}: \
-                 refusing rollback",
-                channel.name
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Raise (never lower) each channel's floor to its new frontier.
-async fn raise_floors(db: &Database, registry_id: i64, channels: &[ChannelSummary]) -> Result<()> {
-    for channel in channels {
-        let Some(frontier) = &channel.frontier else {
-            continue;
-        };
-        let raise = match db.channel_floor(registry_id, &channel.name).await? {
-            None => true,
-            Some(floor) => match (
-                semver::Version::parse(frontier),
-                semver::Version::parse(&floor),
-            ) {
-                (Ok(frontier_v), Ok(floor_v)) => frontier_v > floor_v,
-                _ => false,
-            },
-        };
-        if raise {
-            db.set_channel_floor(registry_id, &channel.name, frontier)
-                .await?;
-        }
-    }
-    Ok(())
-}
-
 /// Resolve a registry's committed `[caches]` cache stack into the flattened
 /// priority union and the optional stored cache-stack JSON.
 ///
 /// The unified `[caches]` value is the single source of truth: its flattened
 /// `(url, priority)` entries always contribute. When `[caches]` is in stack
-/// form (a bare endpoint or a `kind`/`members` node) the parsed stack is also
+/// form (a bare endpoint or a `kind`/`members` node), the parsed stack is also
 /// serialized to JSON for [`Database::registry_cache_stack`] so coverage
-/// validation can recover its mirror groups. A legacy `[[caches]]` array
-/// contributes its entries but has no stack JSON. A malformed `[caches]`
-/// stack flattens to an empty list (logged here), so an authoring mistake
-/// never strands a registry's index.
+/// validation can recover its mirror groups. A malformed `[caches]` stack
+/// flattens to an empty list (logged here), so an authoring mistake never
+/// strands a registry's index.
 fn resolve_cache_layout(
     registry: &RegistryRecord,
     root: &RegistryRootConfig,
@@ -824,7 +1511,7 @@ fn resolve_cache_layout(
             .and_modify(|p| *p = (*p).max(cache.priority))
             .or_insert(cache.priority);
     }
-    if matches!(root.caches, Some(manifest::CachesConfig::Stack(_))) && by_url.is_empty() {
+    if root.caches.is_some() && by_url.is_empty() {
         tracing::warn!(
             slug = %registry.slug,
             "ignoring malformed committed [caches] stack; advertising no caches"
@@ -873,7 +1560,7 @@ fn sshsig_signer(armored: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::db::Database;
-    use crate::fetch::SurfaceFetch;
+    use crate::fetch::{StreamedRead, SurfaceFetch};
 
     #[test]
     fn pack_path_splits_semver_components() {
@@ -901,6 +1588,22 @@ mod tests {
         )));
     }
 
+    #[test]
+    fn retention_ref_caps_fail_closed_at_cap_plus_one() {
+        let oid = aos_registry_surface::object::Oid::from_hex(&"a".repeat(64)).unwrap();
+        let mut releases = Refs::default();
+        for index in 0..=MAX_RELEASE_TAGS {
+            releases.tags.insert(format!("1.0.{index}"), oid);
+        }
+        assert!(validate_ref_cardinality(&releases).is_err());
+
+        let mut channels = Refs::default();
+        for index in 0..=MAX_BRANCHES {
+            channels.branches.insert(format!("channel-{index}"), oid);
+        }
+        assert!(validate_ref_cardinality(&channels).is_err());
+    }
+
     /// A [`SurfaceFetch`] whose `info/refs` read fails with a given error, to
     /// exercise the indexer's transient-vs-permanent classification.
     struct FailingFetch {
@@ -917,13 +1620,352 @@ mod tests {
         }
     }
 
+    struct MissingFetch;
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for MissingFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            Ok(None)
+        }
+
+        fn describe(&self) -> String {
+            "missing-replica".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_replica_cannot_clear_the_authoritative_index() {
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("replica-safety", &[], false)
+            .await
+            .unwrap();
+        let snapshot = IndexSnapshot {
+            commit: "c".repeat(64),
+            name: "Authoritative registry".into(),
+            refs_digest: Some(hex::encode(Sha256::digest(b"authoritative refs"))),
+            ..Default::default()
+        };
+        db.apply_snapshot(registry_id, &snapshot).await.unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+
+        assert!(index_registry(&db, &MissingFetch, &registry, Some(999))
+            .await
+            .is_err());
+        assert!(
+            reconcile_registry_replica(&db, &MissingFetch, &registry, 999)
+                .await
+                .is_err()
+        );
+
+        let status = db.index_status(registry_id).await.unwrap().unwrap();
+        assert_eq!(status.state, "fresh");
+        assert_eq!(
+            status.last_indexed_commit.as_deref(),
+            Some(snapshot.commit.as_str())
+        );
+        assert_eq!(status.name.as_deref(), Some("Authoritative registry"));
+        assert_eq!(
+            db.refs_digest(registry_id).await.unwrap(),
+            snapshot.refs_digest
+        );
+    }
+
+    struct ImageObjectFetch {
+        declared_size: u64,
+        body: Vec<u8>,
+        strong_etag: Option<String>,
+    }
+
+    fn expected_receipt_objects() -> BTreeMap<String, ExpectedImageObject> {
+        BTreeMap::from([
+            (
+                "images/disk".to_string(),
+                ExpectedImageObject {
+                    sha256: "a".repeat(64),
+                    byte_size: 3,
+                    role: ImageObjectRole::Disk,
+                },
+            ),
+            (
+                "images/info".to_string(),
+                ExpectedImageObject {
+                    sha256: "b".repeat(64),
+                    byte_size: 2,
+                    role: ImageObjectRole::ImageInfo,
+                },
+            ),
+        ])
+    }
+
+    fn expected_receipt_digest(registry: &str) -> String {
+        let expected = expected_receipt_objects();
+        aos_registry_surface::manifest::image_catalog_digest(
+            registry,
+            expected.iter().map(|(key, identity)| {
+                (
+                    key.as_str(),
+                    match identity.role {
+                        ImageObjectRole::Disk => "disk",
+                        ImageObjectRole::ImageInfo => "image-info",
+                    },
+                    identity.byte_size as u64,
+                    identity.sha256.as_str(),
+                )
+            }),
+        )
+    }
+
+    #[test]
+    fn publication_receipt_must_exactly_cover_signed_catalog() {
+        let commit = "c".repeat(40);
+        let registry = "andyl";
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "commit": commit.as_str(),
+            "registry": registry,
+            "catalogDigest": expected_receipt_digest(registry),
+            "objects": [
+                {
+                    "key": "images/disk",
+                    "role": "disk",
+                    "byteSize": 3,
+                    "sha256": "a".repeat(64),
+                },
+                {
+                    "key": "images/info",
+                    "role": "image-info",
+                    "byteSize": 2,
+                    "sha256": "b".repeat(64),
+                }
+            ]
+        }))
+        .unwrap();
+        validate_image_publication_receipt(&bytes, &commit, registry, &expected_receipt_objects())
+            .unwrap();
+    }
+
+    #[test]
+    fn publication_receipt_rejects_missing_duplicate_and_wrong_identity() {
+        let commit = "c".repeat(40);
+        let registry = "andyl";
+        for objects in [
+            serde_json::json!([{
+                "key": "images/disk",
+                "role": "disk",
+                "byteSize": 3,
+                "sha256": "a".repeat(64),
+            }]),
+            serde_json::json!([
+                {
+                    "key": "images/disk",
+                    "role": "disk",
+                    "byteSize": 3,
+                    "sha256": "a".repeat(64),
+                },
+                {
+                    "key": "images/disk",
+                    "role": "disk",
+                    "byteSize": 3,
+                    "sha256": "a".repeat(64),
+                }
+            ]),
+            serde_json::json!([
+                {
+                    "key": "images/disk",
+                    "role": "disk",
+                    "byteSize": 4,
+                    "sha256": "a".repeat(64),
+                },
+                {
+                    "key": "images/info",
+                    "role": "image-info",
+                    "byteSize": 2,
+                    "sha256": "b".repeat(64),
+                }
+            ]),
+        ] {
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "commit": commit.as_str(),
+                "registry": registry,
+                "catalogDigest": expected_receipt_digest(registry),
+                "objects": objects,
+            }))
+            .unwrap();
+            assert!(validate_image_publication_receipt(
+                &bytes,
+                &commit,
+                registry,
+                &expected_receipt_objects()
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn publication_receipt_cannot_replay_across_commit_registry_or_catalog() {
+        let commit = "c".repeat(40);
+        let registry = "andyl";
+        let value = serde_json::json!({
+            "schemaVersion": 1,
+            "commit": commit.as_str(),
+            "registry": registry,
+            "catalogDigest": expected_receipt_digest(registry),
+            "objects": [
+                {
+                    "key": "images/disk",
+                    "role": "disk",
+                    "byteSize": 3,
+                    "sha256": "a".repeat(64),
+                },
+                {
+                    "key": "images/info",
+                    "role": "image-info",
+                    "byteSize": 2,
+                    "sha256": "b".repeat(64),
+                }
+            ]
+        });
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(validate_image_publication_receipt(
+            &bytes,
+            &"d".repeat(40),
+            registry,
+            &expected_receipt_objects(),
+        )
+        .is_err());
+        assert!(validate_image_publication_receipt(
+            &bytes,
+            &commit,
+            "different-registry",
+            &expected_receipt_objects(),
+        )
+        .is_err());
+        let mut wrong_digest = value;
+        wrong_digest["catalogDigest"] = serde_json::json!("f".repeat(64));
+        assert!(validate_image_publication_receipt(
+            &serde_json::to_vec(&wrong_digest).unwrap(),
+            &commit,
+            registry,
+            &expected_receipt_objects(),
+        )
+        .is_err());
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for ImageObjectFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            unreachable!("signed image verification must use the streaming path")
+        }
+
+        async fn fetch_stream(
+            &self,
+            _path: &str,
+            range: Option<(u64, u64)>,
+        ) -> Result<Option<StreamedRead>> {
+            assert!(range.is_none());
+            Ok(Some(StreamedRead {
+                body: axum::body::Body::from(self.body.clone()),
+                total: self.declared_size,
+                range: None,
+                strong_etag: self.strong_etag.clone(),
+                snapshot_lease_id: None,
+            }))
+        }
+
+        async fn inventory_strong_etag(&self, _path: &str) -> Result<Option<String>> {
+            Ok(self.strong_etag.clone())
+        }
+
+        fn describe(&self) -> String {
+            "malicious-image-object".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn signed_image_verifier_accepts_only_exact_bytes() {
+        let bytes = b"raw";
+        let mut leases = Vec::new();
+        let verified = verify_system_image_object(
+            &ImageObjectFetch {
+                declared_size: bytes.len() as u64,
+                body: bytes.to_vec(),
+                strong_etag: Some("\"fixture-version\"".into()),
+            },
+            "images/raw".into(),
+            hex::encode(Sha256::digest(bytes)),
+            bytes.len() as i64,
+            &mut leases,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verified.object_key, "images/raw");
+        assert_eq!(verified.byte_size, bytes.len() as i64);
+    }
+
+    #[tokio::test]
+    async fn signed_image_verifier_rejects_backend_without_strong_version() {
+        let bytes = b"raw";
+        let mut leases = Vec::new();
+        let error = verify_system_image_object(
+            &ImageObjectFetch {
+                declared_size: bytes.len() as u64,
+                body: bytes.to_vec(),
+                strong_etag: None,
+            },
+            "images/raw".into(),
+            hex::encode(Sha256::digest(bytes)),
+            bytes.len() as i64,
+            &mut leases,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("strong version"));
+    }
+
+    #[tokio::test]
+    async fn signed_image_verifier_rejects_oversized_declaration_before_streaming() {
+        let mut leases = Vec::new();
+        let error = verify_system_image_object(
+            &ImageObjectFetch {
+                declared_size: u64::MAX,
+                body: vec![0; 1024],
+                strong_etag: Some("\"fixture-version\"".into()),
+            },
+            "images/raw".into(),
+            hex::encode(Sha256::digest(b"raw")),
+            3,
+            &mut leases,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("backend declared"));
+    }
+
+    #[tokio::test]
+    async fn signed_image_verifier_stops_at_oversized_stream() {
+        let mut leases = Vec::new();
+        let error = verify_system_image_object(
+            &ImageObjectFetch {
+                declared_size: 3,
+                body: b"raw-plus-unbounded-tail".to_vec(),
+                strong_etag: Some("\"fixture-version\"".into()),
+            },
+            "images/raw".into(),
+            hex::encode(Sha256::digest(b"raw")),
+            3,
+            &mut leases,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("exceeded its signed 3 byte size"));
+    }
+
     #[tokio::test]
     async fn transient_surface_error_records_pending_not_failed() {
         let db = Database::open_in_memory().await.unwrap();
-        let id = db
-            .register_registry("acme/app", "", &[], false)
-            .await
-            .unwrap();
+        let id = db.register_registry("acme/app", &[], false).await.unwrap();
         let registry = db.registry_by_slug("acme/app").await.unwrap().unwrap();
         let fetch = FailingFetch {
             error: "R2 get acme/app/info/refs: get: We encountered an internal error. \
@@ -961,9 +2003,7 @@ mod tests {
     #[tokio::test]
     async fn permanent_surface_error_still_fails() {
         let db = Database::open_in_memory().await.unwrap();
-        db.register_registry("acme/bad", "", &[], false)
-            .await
-            .unwrap();
+        db.register_registry("acme/bad", &[], false).await.unwrap();
         let registry = db.registry_by_slug("acme/bad").await.unwrap().unwrap();
         // A non-transient error (e.g. a malformed surface) is a real failure.
         let fetch = FailingFetch {

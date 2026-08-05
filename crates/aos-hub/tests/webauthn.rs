@@ -49,9 +49,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: Arc::new(aos_hub::auth::magic::LogMailer),
         dev: true,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 

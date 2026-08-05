@@ -16,7 +16,7 @@
       },
       "additionalProperties": false
     },
-    "cases": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/fixtureCase" } }
+    "cases": { "type": "array", "minItems": 77, "maxItems": 77, "uniqueItems": true, "items": { "$ref": "#/$defs/fixtureCase" } }
   },
   "additionalProperties": false,
   "$defs": {
@@ -63,7 +63,9 @@
         "mutations": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/mutation" } },
         "evaluation_stage": { "enum": ["schema", "semantic", "signature", "bundle"] },
         "expected_result": { "enum": ["pass", "fail"] },
-        "expected_code": { "type": ["string", "null"], "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 127 }
+        "expected_code": {
+          "enum": [null, "attempt_contract_invalid", "auth_contract_invalid", "blocker_contract_invalid", "bundle_not_closed", "canonical_order_invalid", "database_restore_contract_invalid", "durable_object_aggregate_invalid", "gc_partition_invalid", "mapping_contract_invalid", "reference_contract_invalid", "signature_invalid", "signer_role_not_authorized", "smoke_contract_invalid", "transition_contract_invalid", "type_mismatch", "unknown_property", "verification_contract_invalid", "verifier_identity_mismatch"]
+        }
       },
       "additionalProperties": false
     }

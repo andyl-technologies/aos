@@ -17,11 +17,13 @@
 //! project:    demo/  (org root)
 //! binding:    local  →  {root}/seed-bucket           (local_fs)
 //! registry:   demo/cdn  (canonical)  bound to `local`, require_signatures=on
+//! registry:   demo/private-images  authenticated twin for consumer testing
 //! surface:    curl 8.5.0, openssl 3.2.1, jq 1.7.1    (x86_64-linux each)
+//!             aos-system 1.0.0 as exact raw + QCOW2 disk downloads
 //!             release 1.0.0, channel `stable` 100% rolled out
 //!             registry.toml + keys.toml + signed HEAD commit + signed tag +
 //!             256 signed partitions
-//! token:      a publish token for demo/cdn (secret printed once)
+//! token:      an org-scoped read/publish token (secret printed once)
 //! ```
 //!
 //! # Signed surface
@@ -41,11 +43,12 @@
 //! `serve --dev --seed` is safe to leave on across restarts.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use ed25519_dalek::SigningKey;
 
-use crate::db::{Database, SignupPolicy};
+use crate::db::{Database, GrantResource, NewSurfacePlacementSpec, SignupPolicy, SurfaceTarget};
 use crate::domain::{Permission, Principal, Role, Scope};
 use crate::fetch::LocalFsFetch;
 use crate::surface::object::{encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry};
@@ -62,6 +65,9 @@ pub const DEMO_ORG: &str = "demo";
 
 /// The demo registry name (its canonical path is `demo/cdn`).
 pub const DEMO_REGISTRY: &str = "cdn";
+
+/// The private image-registry name used by the authenticated dev fixture.
+pub const DEMO_PRIVATE_REGISTRY: &str = "private-images";
 
 /// The demo release semver and channel.
 const DEMO_SEMVER: &str = "1.0.0";
@@ -130,6 +136,20 @@ impl SeedReport {
 /// under `root`, or if the post-seed index fails (which would mean the
 /// generated surface did not verify — a bug, surfaced loudly).
 pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
+    let snapshots = crate::image_snapshot::ImageSnapshotStore::open(root)?;
+    seed_dev_with_snapshots(db, root, snapshots).await
+}
+
+/// Seeds a development instance using the runtime's retained image store.
+///
+/// # Errors
+///
+/// Returns an error when seed state cannot be written, signed, or indexed.
+pub async fn seed_dev_with_snapshots(
+    db: &Database,
+    root: &Path,
+    image_snapshots: Arc<crate::image_snapshot::ImageSnapshotStore>,
+) -> Result<SeedOutcome> {
     // Idempotency gate: a prior run leaves the `demo` org behind.
     if db.org_by_slug(DEMO_ORG).await?.is_some() {
         return Ok(SeedOutcome::AlreadySeeded);
@@ -147,11 +167,15 @@ pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
     let org_id = db.create_org(DEMO_ORG, "Demo Org").await?;
     db.create_project(org_id, "", "Demo Org root").await?;
     let principal = Principal::user(user_id);
-    // The org scope is just the org slug (see Scope::parse).
+    let org_scope = db
+        .org_by_id(org_id)
+        .await?
+        .context("seed organization disappeared")?
+        .stable_id;
     db.grant_membership(
         principal.kind.as_str(),
         principal.id,
-        Scope::parse(DEMO_ORG).as_str(),
+        Scope::parse(&org_scope).as_str(),
         Role::Owner.as_str(),
     )
     .await?;
@@ -160,17 +184,60 @@ pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
     let bucket = root.join("seed-bucket");
     std::fs::create_dir_all(&bucket)
         .with_context(|| format!("creating seed bucket {}", bucket.display()))?;
+    let org_record = db
+        .org_by_id(org_id)
+        .await?
+        .context("seed org disappeared")?;
     let binding_id = db
-        .create_storage_binding(org_id, "local", "local_fs", &bucket.to_string_lossy())
+        .create_topology_storage_binding(
+            Some(org_id),
+            &uuid::Uuid::new_v4().simple().to_string(),
+            &org_record.stable_id,
+            "local",
+            "local_fs",
+            Some(&bucket.to_string_lossy()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await?;
 
-    // Generate the maintainer key + write the signed surface into the binding
-    // root under the registry's prefix (`cdn`).
+    // The live E2E launchers inject the output of the real `apr release`
+    // producer here. Ordinary dev seeding retains the small in-process demo.
+    // Both public and private placements receive independent copies so neither
+    // registry depends on the other's availability.
+    let producer_fixture =
+        std::env::var_os("AOS_HUB_E2E_IMAGE_FIXTURE").map(std::path::PathBuf::from);
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let trust_key = sshsig::trusted_key_line("maintainer", &key.verifying_key());
+    let trust_key = if let Some(fixture) = &producer_fixture {
+        std::fs::read_to_string(fixture.join("trust-key"))
+            .context("reading producer fixture trust key")?
+            .trim()
+            .to_string()
+    } else {
+        sshsig::trusted_key_line("maintainer", &key.verifying_key())
+    };
     let surface_root = bucket.join(DEMO_REGISTRY);
-    write_signed_surface(&surface_root, &key, &trust_key)
-        .with_context(|| format!("writing seed surface to {}", surface_root.display()))?;
+    let private_surface_root = bucket.join(DEMO_PRIVATE_REGISTRY);
+    if let Some(fixture) = &producer_fixture {
+        let source = fixture.join("surface");
+        copy_surface_tree(&source, &surface_root, false)?;
+        copy_surface_tree(&source, &private_surface_root, false)?;
+    } else {
+        write_signed_surface(&surface_root, &key, &trust_key)
+            .with_context(|| format!("writing seed surface to {}", surface_root.display()))?;
+        write_signed_surface(&private_surface_root, &key, &trust_key).with_context(|| {
+            format!(
+                "writing private seed surface to {}",
+                private_surface_root.display()
+            )
+        })?;
+    }
 
     // Register the managed registry, pinning the maintainer trust key with
     // signature verification on, then index it from the binding root.
@@ -180,26 +247,79 @@ pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
             "",
             DEMO_REGISTRY,
             "public",
-            Some(binding_id),
-            DEMO_REGISTRY,
             std::slice::from_ref(&trust_key),
             true,
         )
         .await?;
-    let registry = db
-        .registry_by_id(registry_id)
-        .await?
-        .context("loading seeded registry after creation")?;
-    let fetch = LocalFsFetch::new(&surface_root);
-    crate::indexer::index_and_record(db, &fetch, &registry)
-        .await
-        .context("indexing seeded registry (the generated surface must verify)")?;
+    let private_registry_id = db
+        .create_managed_registry(
+            org_id,
+            "",
+            DEMO_PRIVATE_REGISTRY,
+            "private",
+            std::slice::from_ref(&trust_key),
+            true,
+        )
+        .await?;
+    let (registry, public_placement_id) =
+        seed_placement_and_index(db, binding_id, registry_id, DEMO_REGISTRY, &surface_root)
+            .await
+            .context("indexing public seeded registry")?;
+    let (_, private_placement_id) = seed_placement_and_index(
+        db,
+        binding_id,
+        private_registry_id,
+        DEMO_PRIVATE_REGISTRY,
+        &private_surface_root,
+    )
+    .await
+    .context("indexing private seeded registry")?;
+    if let Some(fixture) = &producer_fixture {
+        anyhow::ensure!(
+            db.list_system_images(registry_id).await?.is_empty()
+                && db.list_system_images(private_registry_id).await?.is_empty(),
+            "producer image became discoverable before release/channel publication"
+        );
+        let source = fixture.join("surface");
+        copy_surface_tree(&source, &surface_root, true)?;
+        copy_surface_tree(&source, &private_surface_root, true)?;
+        for (registry_id, placement_id, surface_root) in [
+            (registry_id, public_placement_id, surface_root.as_path()),
+            (
+                private_registry_id,
+                private_placement_id,
+                private_surface_root.as_path(),
+            ),
+        ] {
+            let registry = db
+                .registry_by_id(registry_id)
+                .await?
+                .context("seeded producer registry disappeared")?;
+            crate::indexer::index_and_record_from_placement(
+                db,
+                &LocalFsFetch::new(surface_root).with_image_snapshots(Arc::clone(&image_snapshots)),
+                &registry,
+                Some(placement_id),
+            )
+            .await?;
+        }
+    }
+    anyhow::ensure!(
+        db.list_system_image_root_keys(registry_id).await?.len() == 4
+            && db
+                .list_system_image_root_keys(private_registry_id)
+                .await?
+                .len()
+                == 4,
+        "seeded image publication did not become exact release GC roots"
+    );
 
-    // Mint a sample publish token scoped to the registry.
+    // Mint one org-scoped token so the fixture can prove both anonymous public
+    // access and authenticated private access through the same consumer CLI.
     let (token_id, token_secret) = db
         .create_token(
             principal,
-            &registry.slug,
+            &org_scope,
             &[Permission::Read, Permission::Publish],
             Some("seed demo publish token"),
             None,
@@ -215,6 +335,98 @@ pub async fn seed_dev(db: &Database, root: &Path) -> Result<SeedOutcome> {
         token_secret,
     };
     Ok(SeedOutcome::Seeded(report))
+}
+
+/// Copies a producer-created static origin without interpreting its contents.
+fn copy_surface_tree(source: &Path, destination: &Path, pointers_only: bool) -> Result<()> {
+    copy_surface_tree_inner(source, source, destination, pointers_only)
+}
+
+fn copy_surface_tree_inner(
+    root: &Path,
+    source: &Path,
+    destination: &Path,
+    pointers_only: bool,
+) -> Result<()> {
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)
+        .with_context(|| format!("reading producer surface {}", source.display()))?
+    {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let target = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_surface_tree_inner(root, &entry.path(), &target, pointers_only)?;
+        } else if file_type.is_file() {
+            let entry_path = entry.path();
+            let relative = entry_path
+                .strip_prefix(root)
+                .unwrap_or(entry_path.as_path())
+                .to_string_lossy()
+                .replace('\\', "/");
+            let pointer =
+                relative == "HEAD" || relative == "info/refs" || relative.starts_with("channels/");
+            if pointer == pointers_only {
+                std::fs::copy(entry.path(), &target)?;
+            }
+        } else {
+            anyhow::bail!("producer surface contains a non-file entry");
+        }
+    }
+    Ok(())
+}
+
+async fn seed_placement_and_index(
+    db: &Database,
+    binding_id: i64,
+    registry_id: i64,
+    prefix: &str,
+    surface_root: &Path,
+) -> Result<(crate::db::RegistryRecord, i64)> {
+    let consumer_scope = db.registry_authorization_scope(registry_id).await?;
+    let binding = db
+        .storage_binding(binding_id)
+        .await?
+        .context("seed storage binding disappeared")?;
+    db.grant_consumer_scope(
+        GrantResource::StorageBinding {
+            id: binding_id,
+            stable_id: &binding.stable_id,
+        },
+        &consumer_scope,
+        "explicit",
+        "seed",
+        &format!("seed-placement-grant-{registry_id}"),
+    )
+    .await?;
+    let placement = db
+        .create_surface_placement(&NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry_id),
+            name: "primary".to_string(),
+            storage_binding_id: binding_id,
+            prefix: prefix.to_string(),
+            kind: "complete".to_string(),
+            desired_state: "active".to_string(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await?;
+    db.observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await?;
+    let registry = db
+        .registry_by_id(registry_id)
+        .await?
+        .context("seeded registry disappeared")?;
+    crate::indexer::index_and_record_from_placement(
+        db,
+        &LocalFsFetch::new(surface_root),
+        &registry,
+        Some(placement.id),
+    )
+    .await?;
+    Ok((registry, placement.id))
 }
 
 /// A package to seed: name, description, version, and one platform's store
@@ -289,7 +501,7 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
          console without standing up a real registry. Everything here is \
          regenerated on each seed, so feel free to publish, roll out, and \
          delete at will.\n\"\"\"\n\n\
-         [[caches]]\nurl = \"https://cache.example.com/\"\npriority = 40\n",
+         [caches]\nendpoint = \"https://cache.example.com/\"\n",
     )?;
     let keys_toml = put_blob(&format!(
         "schema = 1\n\n[[keys]]\nid = \"maintainer\"\nkey = \"{trust_key}\"\n",
@@ -329,6 +541,22 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
         let closure_oid = put_blob(&format!("{}\n", pkg.store_hash))?;
         closure_entries.push((pkg.store_hash.to_string(), closure_oid));
     }
+
+    // One logical AOS system release with two end-user encodings. The image
+    // catalog is embedded in the signed package metadata; direct disk bytes
+    // and per-format image-info documents are written separately below.
+    let images = seed_system_images()?;
+    let mut system_package: toml::Value = toml::from_str(
+        "[package]\nname = \"aos-system\"\ndescription = \"AOS system image\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/aos-system-1.0.0\"\nnar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\nsource_drv = \"/var/lib/store/aos-system-1.0.0.drv\"\nsource_nar_hash = \"sha256:bb\"\nreferences = []\n",
+    )?;
+    system_package["versions"][0]["platforms"]["x86_64-linux"]["images"] =
+        toml::Value::try_from(&images)?;
+    let system_oid = put_blob(&toml::to_string(&system_package)?)?;
+    package_buckets
+        .entry('a')
+        .or_default()
+        .push(("aos-system.toml".to_string(), system_oid));
+    closure_entries.push(("aossystemhash".to_string(), put_blob("aossystemhash\n")?));
 
     // Build the `packages/` tree of per-letter bucket subtrees.
     let mut packages_entries: Vec<(String, Oid)> = Vec::new();
@@ -401,6 +629,8 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
     std::fs::create_dir_all(root.join("info"))?;
     std::fs::write(root.join("info/refs"), refs)?;
 
+    write_seed_image_objects(root, commit, &images)?;
+
     // Static nix-cache surface (one narinfo + one placeholder NAR).
     std::fs::write(
         root.join("nix-cache-info"),
@@ -414,6 +644,179 @@ fn write_signed_surface(root: &Path, key: &SigningKey, trust_key: &str) -> Resul
     std::fs::create_dir_all(root.join("nar"))?;
     std::fs::write(root.join("nar/h7j3k8l2m9n4.nar.zst"), b"not-a-real-nar")?;
 
+    Ok(())
+}
+
+fn seed_system_images() -> Result<Vec<aos_registry_surface::manifest::ImageEntry>> {
+    use aos_registry_surface::manifest::{
+        immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
+        ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
+        ImageVerificationState,
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let raw = b"AOS demo raw disk image bytes\n";
+    let qcow2 = b"QFI\xfbAOS demo qcow2 disk image bytes\n";
+    let raw_info = br#"{"schemaVersion":1,"format":"raw","target":"bare-metal"}"#;
+    let qcow2_info = br#"{"schemaVersion":1,"format":"qcow2","targets":["qemu-kvm","openstack"]}"#;
+    let raw_sha = hex::encode(Sha256::digest(raw));
+    let uki = ImageUkiIdentity {
+        filename: "aos.efi".to_string(),
+        esp_path: "EFI/Linux/aos.efi".to_string(),
+        byte_size: 8,
+        sha256: "e".repeat(64),
+        verification: ImageVerificationState::Unsigned,
+        signer_cert_sha256: None,
+        sbat: Vec::new(),
+        measured: false,
+        expected_pcr11: None,
+    };
+    let make = |format: &str,
+                filename: &str,
+                bytes: &[u8],
+                info: &[u8],
+                media_type: &str,
+                compatible_targets: Vec<ImageTarget>| {
+        let sha256 = hex::encode(Sha256::digest(bytes));
+        let info_sha256 = hex::encode(Sha256::digest(info));
+        ImageEntry {
+            format: format.to_string(),
+            store_path: format!("/var/lib/store/aos-system-{format}"),
+            nar_hash: format!("sha256:{sha256}"),
+            nar_size: bytes.len() as u64,
+            delivery: ImageDelivery {
+                schema_version: 1,
+                release: DEMO_SEMVER.to_string(),
+                platform: "x86_64-linux".to_string(),
+                architecture: "x86_64".to_string(),
+                logical_image_id: "d".repeat(64),
+                logical_disk_sha256: raw_sha.clone(),
+                rootfs_sha256: "f".repeat(64),
+                filename: filename.to_string(),
+                object_key: immutable_image_object_key(&sha256, filename),
+                media_type: media_type.to_string(),
+                compression: ImageCompression::None,
+                byte_size: bytes.len() as u64,
+                sha256: sha256.clone(),
+                compatible_targets,
+                uki: uki.clone(),
+                image_info: ImageInfoReference {
+                    filename: "image-info.json".to_string(),
+                    object_key: immutable_image_info_object_key(&sha256, &info_sha256),
+                    media_type: "application/vnd.aos.image-info+json".to_string(),
+                    byte_size: info.len() as u64,
+                    sha256: info_sha256,
+                },
+            },
+            sb_signer_cert_sha256: None,
+            sbat: Vec::new(),
+            expected_pcr11: None,
+            root_image: None,
+            root_verity: None,
+            root_hash: None,
+            root_hash_sig: None,
+        }
+    };
+    let images = vec![
+        make(
+            "raw",
+            "aos-demo-1.0.0-x86_64.img",
+            raw,
+            raw_info,
+            "application/vnd.aos.disk-image.raw",
+            vec![ImageTarget::BareMetal],
+        ),
+        make(
+            "qcow2",
+            "aos-demo-1.0.0-x86_64.qcow2",
+            qcow2,
+            qcow2_info,
+            "application/vnd.aos.disk-image.qcow2",
+            vec![ImageTarget::QemuKvm, ImageTarget::Openstack],
+        ),
+    ];
+    for image in &images {
+        image.validate_delivery(DEMO_SEMVER, "x86_64-linux")?;
+    }
+    Ok(images)
+}
+
+fn write_seed_image_objects(
+    root: &Path,
+    commit: Oid,
+    images: &[aos_registry_surface::manifest::ImageEntry],
+) -> Result<()> {
+    let objects = images
+        .iter()
+        .flat_map(|image| {
+            [
+                serde_json::json!({
+                    "key": image.delivery.object_key,
+                    "role": "disk",
+                    "byteSize": image.delivery.byte_size,
+                    "sha256": image.delivery.sha256,
+                }),
+                serde_json::json!({
+                    "key": image.delivery.image_info.object_key,
+                    "role": "image-info",
+                    "byteSize": image.delivery.image_info.byte_size,
+                    "sha256": image.delivery.image_info.sha256,
+                }),
+            ]
+        })
+        .collect::<Vec<_>>();
+    for image in images {
+        let (disk, info): (&[u8], &[u8]) = match image.format.as_str() {
+            "raw" => (
+                b"AOS demo raw disk image bytes\n",
+                br#"{"schemaVersion":1,"format":"raw","target":"bare-metal"}"#,
+            ),
+            "qcow2" => (
+                b"QFI\xfbAOS demo qcow2 disk image bytes\n",
+                br#"{"schemaVersion":1,"format":"qcow2","targets":["qemu-kvm","openstack"]}"#,
+            ),
+            other => anyhow::bail!("unsupported seeded image format {other}"),
+        };
+        for (key, bytes) in [
+            (image.delivery.object_key.as_str(), disk),
+            (image.delivery.image_info.object_key.as_str(), info),
+        ] {
+            let path = root.join(key);
+            std::fs::create_dir_all(path.parent().context("image object path has a parent")?)?;
+            std::fs::write(path, bytes)?;
+        }
+    }
+    let catalog_digest = aos_registry_surface::manifest::image_catalog_digest(
+        "demo",
+        images.iter().flat_map(|image| {
+            [
+                (
+                    image.delivery.object_key.as_str(),
+                    "disk",
+                    image.delivery.byte_size,
+                    image.delivery.sha256.as_str(),
+                ),
+                (
+                    image.delivery.image_info.object_key.as_str(),
+                    "image-info",
+                    image.delivery.image_info.byte_size,
+                    image.delivery.image_info.sha256.as_str(),
+                ),
+            ]
+        }),
+    );
+    let receipt = root.join(format!("publication-receipts/{}.json", commit.to_hex()));
+    std::fs::create_dir_all(receipt.parent().context("receipt path has a parent")?)?;
+    std::fs::write(
+        receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "commit": commit.to_hex(),
+            "registry": "demo",
+            "catalogDigest": catalog_digest,
+            "objects": objects,
+        }))?,
+    )?;
     Ok(())
 }
 

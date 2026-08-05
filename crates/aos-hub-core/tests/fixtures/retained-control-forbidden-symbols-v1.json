@@ -1,0 +1,306 @@
+{
+  "version": 1,
+  "symbols": [
+    {
+      "id": "api.create-service-account",
+      "category": "api",
+      "symbol": "CreateServiceAccount",
+      "targets": [
+        "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
+      ]
+    },
+    {
+      "id": "api.grant-membership",
+      "category": "api",
+      "symbol": "GrantMembership",
+      "targets": [
+        "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
+      ]
+    },
+    {
+      "id": "api.mint-token",
+      "category": "api",
+      "symbol": "MintToken",
+      "targets": [
+        "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
+      ]
+    },
+    {
+      "id": "api.revert-changeset",
+      "category": "api",
+      "symbol": "RevertChangeset",
+      "targets": [
+        "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
+      ]
+    },
+    {
+      "id": "api.revoke-membership",
+      "category": "api",
+      "symbol": "RevokeMembership",
+      "targets": [
+        "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
+      ]
+    },
+    {
+      "id": "api.revoke-token",
+      "category": "api",
+      "symbol": "RevokeToken",
+      "targets": [
+        "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
+      ]
+    },
+    {
+      "id": "api.update-instance-settings",
+      "category": "api",
+      "symbol": "UpdateInstanceSettings",
+      "targets": [
+        "crates/aos-proto/src/proto/aos/hub/v1/hub.proto"
+      ]
+    },
+    {
+      "id": "cli.config-revert",
+      "category": "cli",
+      "symbol": "HubConfigCmd::Revert",
+      "targets": [
+        "crates/aos/src/commands/hub.rs"
+      ]
+    },
+    {
+      "id": "cli.identity-root",
+      "category": "cli",
+      "symbol": "HubIdentityCmd",
+      "targets": [
+        "crates/aos/src/cli/hub.rs",
+        "crates/aos/src/commands/hub.rs"
+      ]
+    },
+    {
+      "id": "code.apply-revert-revision",
+      "category": "code",
+      "symbol": "apply_revert_revision",
+      "targets": [
+        "crates/aos-hub-core/src/service.rs"
+      ]
+    },
+    {
+      "id": "code.direct-channel-writer",
+      "category": "code",
+      "symbol": "advance_channel",
+      "targets": [
+        "crates/aos-hub-core/src/signing.rs"
+      ]
+    },
+    {
+      "id": "code.direct-config-change",
+      "category": "code",
+      "symbol": "config::change_membership",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/handlers.rs"
+      ]
+    },
+    {
+      "id": "code.direct-hosted-key-create",
+      "category": "code",
+      "symbol": ".create_hosted_key(",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/handlers.rs"
+      ]
+    },
+    {
+      "id": "code.direct-instance-config-write",
+      "category": "code",
+      "symbol": ".set_instance_config(",
+      "targets": [
+        "crates/aos-hub-core/src/service.rs",
+        "crates/aos-hub-core/src/web/console/handlers.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-key-by-name",
+      "category": "code",
+      "symbol": "hosted_key_by_name",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs",
+        "crates/aos-hub/tests/hosted.rs",
+        "crates/aos-hub/tests/operations.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-key-create",
+      "category": "code",
+      "symbol": "create_hosted_key",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs",
+        "crates/aos-hub/tests/hosted.rs",
+        "crates/aos-hub/tests/operations.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-key-list",
+      "category": "code",
+      "symbol": "list_hosted_keys",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-key-load",
+      "category": "code",
+      "symbol": "load_hosted_signing_key",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs",
+        "crates/aos-hub/tests/hosted.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-key-record",
+      "category": "code",
+      "symbol": "HostedKeyRecord",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-key-row-mapper",
+      "category": "code",
+      "symbol": "row_to_hosted_key",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-key-set-registry",
+      "category": "code",
+      "symbol": "set_registry_hosted_key",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs",
+        "crates/aos-hub/tests/hosted.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-key-single-load",
+      "category": "code",
+      "symbol": "fn hosted_key",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-resolution-domain",
+      "category": "code",
+      "symbol": "aos-hub-hosted-key-resolution-v1",
+      "targets": [
+        "crates/aos-hub-core/src/retained_control/signing.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-resolution-proof",
+      "category": "code",
+      "symbol": "HostedKeyResolutionProof",
+      "targets": [
+        "crates/aos-hub-core/src/retained_control/signing.rs"
+      ]
+    },
+    {
+      "id": "code.hosted-signing-custody-variant",
+      "category": "code",
+      "symbol": "KeyCustody::Hosted",
+      "targets": [
+        "crates/aos-hub-core/src/retained_control/signing.rs"
+      ]
+    },
+    {
+      "id": "schema.config-changesets",
+      "category": "schema",
+      "symbol": "CREATE TABLE config_changesets",
+      "targets": [
+        "crates/aos-hub-core/src/db/schema.sql"
+      ]
+    },
+    {
+      "id": "schema.config-revisions",
+      "category": "schema",
+      "symbol": "CREATE TABLE config_revisions",
+      "targets": [
+        "crates/aos-hub-core/src/db/schema.sql"
+      ]
+    },
+    {
+      "id": "schema.hosted-key-id",
+      "category": "schema",
+      "symbol": "hosted_key_id",
+      "targets": [
+        "crates/aos-hub-core/src/db/schema.sql"
+      ]
+    },
+    {
+      "id": "schema.hosted-keys",
+      "category": "schema",
+      "symbol": "hosted_keys",
+      "targets": [
+        "crates/aos-hub-core/src/db/mod.rs",
+        "crates/aos-hub-core/src/db/schema.sql"
+      ]
+    },
+    {
+      "id": "web.direct-cache-create",
+      "category": "web",
+      "symbol": ".create_binary_cache(",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/handlers.rs"
+      ]
+    },
+    {
+      "id": "web.direct-cache-delete",
+      "category": "web",
+      "symbol": ".soft_delete_binary_cache(",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/handlers.rs"
+      ]
+    },
+    {
+      "id": "web.direct-cache-update",
+      "category": "web",
+      "symbol": ".update_binary_cache(",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/handlers.rs"
+      ]
+    },
+    {
+      "id": "web.direct-org-create",
+      "category": "web",
+      "symbol": ".create_org(",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/handlers.rs"
+      ]
+    },
+    {
+      "id": "web.direct-org-delete",
+      "category": "web",
+      "symbol": ".soft_delete_org(",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/handlers.rs"
+      ]
+    },
+    {
+      "id": "web.runtime-removed-routes",
+      "category": "web",
+      "symbol": "REMOVED_ROUTES",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/manifest.rs",
+        "crates/aos-hub-core/src/web/console/mod.rs"
+      ]
+    },
+    {
+      "id": "web.signing-key-legacy-route",
+      "category": "web",
+      "symbol": "hosted-keys",
+      "targets": [
+        "crates/aos-hub-core/src/web/console/handlers.rs",
+        "crates/aos-hub-core/src/web/console/manifest.rs",
+        "crates/aos-hub-core/src/web/console/nested.rs",
+        "crates/aos-hub-core/src/web/console/router.rs"
+      ]
+    }
+  ]
+}

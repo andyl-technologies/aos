@@ -5,8 +5,7 @@
 //! partitions, NARs, …) through the [`SurfaceProvider`]/[`SurfaceFetch`] ports
 //! ([`aos_hub_core::fetch`]). On the Cloudflare Worker a topology placement maps
 //! its binding plus prefix to either the hub-owned R2 bucket or an external
-//! S3-compatible store. Unplaced resources retain the earlier resource-prefix
-//! resolver as a migration fallback. R2 reads map `{prefix}{path}` via the
+//! S3-compatible store. R2 reads map `{prefix}{path}` via the
 //! [`crate::keymap::r2_key`] mapping. The shared
 //! machine-surface facade
 //! ([`aos_hub_core::service::RpcService::registry_serve`] and
@@ -19,86 +18,295 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use worker::Bucket;
 
-use aos_hub_core::auth::seal::SecretSealer;
-use aos_hub_core::db::{Cache, Database, RegistryRecord, SurfacePlacementRecord};
-use aos_hub_core::fetch::{OriginFetch, StreamedRead, SurfaceFetch, SurfaceProvider};
+use aos_hub_core::db::{Database, SurfacePlacementRecord};
+use aos_hub_core::fetch::{
+    OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceProvider,
+};
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
-use aos_hub_core::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
+use aos_hub_core::secret_version::SecretVersionResolver;
+use aos_hub_core::storage_credential::{
+    DatabaseStorageCredentialResolver, StorageCredentialResolver,
+};
+use aos_hub_core::surface_write::{
+    MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
+};
 
+use crate::consoleports::WorkerEgressClient;
 use crate::keymap;
+use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2ListPage};
 
-/// Resolve a registry's storage binding into an external [`S3Surface`], or
-/// `Ok(None)` when the registry has no binding (or its binding is not an
-/// S3-compatible object store).
-///
-/// A managed registry with an `s3`/`r2` binding serves its surface from an
-/// external object store rather than the hub-owned R2 bucket; this loads the
-/// binding row from D1 and resolves it (unsealing private credentials) against
-/// the registry's `prefix`. Registries with no binding (`file://`/`http`
-/// phase-1 rows, or a non-object-store binding) return `Ok(None)` so the caller
-/// keeps the default R2 path.
-///
-/// # Errors
-///
-/// Returns an error if the D1 lookup of the binding fails, or if resolving the
-/// binding fails (missing endpoint, malformed or un-unsealable credentials).
-async fn registry_s3_surface(
-    db: &Database,
-    sealer: &dyn SecretSealer,
-    registry: &RegistryRecord,
-) -> Result<Option<S3Surface>> {
-    let Some(id) = registry.storage_binding_id else {
-        return Ok(None);
-    };
-    let Some(binding) = db.storage_binding(id).await? else {
-        return Ok(None);
-    };
-    // The instance-default binding *is* the hub's own bound R2 bucket
-    // (`REGISTRY_BUCKET`): read it directly via `env.bucket` (the `Ok(None)`
-    // fallthrough), not over the R2 S3 API — the Worker has no credentials or
-    // public-read path to its own bucket through that endpoint, so an S3 fetch
-    // 400s. Only genuinely external bindings serve their surface over S3.
-    if binding.is_instance_default {
-        return Ok(None);
-    }
-    S3Surface::from_binding(&binding, &registry.prefix, sealer)
+#[derive(Clone)]
+struct WorkerR2BucketAdapter {
+    /// Raw JavaScript R2 binding. Keeping reflection behind this exact value
+    /// makes the production adapter executable against a JS-shape fixture.
+    bucket: wasm_bindgen::JsValue,
 }
 
-/// Resolve a cache's storage binding into an external [`S3Surface`], or
-/// `Ok(None)` when the binding is not an S3-compatible object store.
-///
-/// The cache counterpart of [`registry_s3_surface`], scoped to the cache's
-/// `prefix`. A cache always names a binding (`Cache::storage_binding_id` is
-/// non-optional); a binding whose kind is not `s3`/`r2` (e.g. the hub-owned R2
-/// bucket) yields `Ok(None)`.
-///
-/// # Errors
-///
-/// Returns an error if the D1 lookup of the binding fails, or if resolving the
-/// binding fails (missing endpoint, malformed or un-unsealable credentials).
-async fn cache_s3_surface(
-    db: &Database,
-    sealer: &dyn SecretSealer,
-    cache: &Cache,
-) -> Result<Option<S3Surface>> {
-    // A binding-less (default-storage) cache has no external origin — it is
-    // served from the deployment R2 bucket by prefix (the fallthrough path).
-    let Some(binding_id) = cache.storage_binding_id else {
-        return Ok(None);
-    };
-    let Some(binding) = db.storage_binding(binding_id).await? else {
-        return Ok(None);
-    };
-    // Instance-default binding → the hub's bound R2 bucket (read via `env.bucket`,
-    // the `Ok(None)` fallthrough), not the R2 S3 API. See `registry_s3_surface`.
-    if binding.is_instance_default {
-        return Ok(None);
+#[async_trait(?Send)]
+impl R2BucketAdapter for WorkerR2BucketAdapter {
+    async fn put(&self, key: &str, bytes: &[u8]) -> Result<()> {
+        use js_sys::{Function, Promise, Reflect, Uint8Array};
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+        let bucket = &self.bucket;
+        let put: Function = Reflect::get(bucket, &JsValue::from_str("put"))
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: method: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: not a function: {e:?}"))?;
+        let bytes = Uint8Array::from(bytes);
+        let promise: Promise = put
+            .call2(bucket, &JsValue::from_str(key), bytes.as_ref())
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: call: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: not a promise: {e:?}"))?;
+        JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 put {key}: {e:?}"))?;
+        Ok(())
     }
-    S3Surface::from_binding(&binding, &cache.prefix, sealer)
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen_futures::JsFuture;
+        let promise = js_promise(
+            js_method(&self.bucket, "delete")?.call1(&self.bucket, &JsValue::from_str(key)),
+            key,
+            "delete",
+        )?;
+        JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 delete {key}: {e:?}"))?;
+        Ok(())
+    }
+
+    async fn list(&self, prefix: &str, cursor: Option<&str>, limit: usize) -> Result<R2ListPage> {
+        use js_sys::{Array, Function, Object, Promise, Reflect};
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+        let bucket = &self.bucket;
+        let list: Function = Reflect::get(bucket, &JsValue::from_str("list"))
+            .map_err(|e| anyhow::anyhow!("R2 list: method: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 list: not a function: {e:?}"))?;
+        let options = Object::new();
+        Reflect::set(
+            &options,
+            &JsValue::from_str("prefix"),
+            &JsValue::from_str(prefix),
+        )
+        .map_err(|e| anyhow::anyhow!("R2 list: prefix: {e:?}"))?;
+        Reflect::set(
+            &options,
+            &JsValue::from_str("limit"),
+            &JsValue::from_f64(limit as f64),
+        )
+        .map_err(|e| anyhow::anyhow!("R2 list: limit: {e:?}"))?;
+        if let Some(cursor) = cursor {
+            Reflect::set(
+                &options,
+                &JsValue::from_str("cursor"),
+                &JsValue::from_str(cursor),
+            )
+            .map_err(|e| anyhow::anyhow!("R2 list: cursor: {e:?}"))?;
+        }
+        let promise: Promise = list
+            .call1(bucket, &options)
+            .map_err(|e| anyhow::anyhow!("R2 list: call: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 list: not a promise: {e:?}"))?;
+        let result = JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 list: {e:?}"))?;
+        let objects: Array = Reflect::get(&result, &JsValue::from_str("objects"))
+            .map_err(|e| anyhow::anyhow!("R2 list: objects: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 list: objects not an array: {e:?}"))?;
+        let mut keys = Vec::with_capacity(objects.length() as usize);
+        for object in objects.iter() {
+            keys.push(
+                Reflect::get(&object, &JsValue::from_str("key"))
+                    .map_err(|e| anyhow::anyhow!("R2 list: key: {e:?}"))?
+                    .as_string()
+                    .context("R2 list object has no string key")?,
+            );
+        }
+        let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
+            .ok()
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let cursor = if truncated {
+            Some(
+                Reflect::get(&result, &JsValue::from_str("cursor"))
+                    .ok()
+                    .and_then(|value| value.as_string())
+                    .context("truncated R2 page has no cursor")?,
+            )
+        } else {
+            None
+        };
+        Ok(R2ListPage { keys, cursor })
+    }
+
+    async fn head(&self, key: &str) -> Result<Option<u64>> {
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen_futures::JsFuture;
+        let promise = js_promise(
+            js_method(&self.bucket, "head")?.call1(&self.bucket, &JsValue::from_str(key)),
+            key,
+            "head",
+        )?;
+        let object = JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 head {key}: {e:?}"))?;
+        if object.is_null() || object.is_undefined() {
+            return Ok(None);
+        }
+        let size = js_sys::Reflect::get(&object, &JsValue::from_str("size"))
+            .map_err(|e| anyhow::anyhow!("R2 head {key}: size: {e:?}"))?
+            .as_f64()
+            .context("R2 HEAD object has no numeric size")?;
+        anyhow::ensure!(
+            size.is_finite() && size >= 0.0 && size < (u64::MAX as f64) && size.fract() == 0.0,
+            "R2 HEAD object size is invalid"
+        );
+        Ok(Some(size as u64))
+    }
+
+    async fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        use js_sys::{Function, Promise, Reflect, Uint8Array};
+        use wasm_bindgen::{JsCast, JsValue};
+        use wasm_bindgen_futures::JsFuture;
+        let Some(object) = r2_get(&self.bucket, key).await? else {
+            return Ok(None);
+        };
+        let read: Function = Reflect::get(&object, &JsValue::from_str("arrayBuffer"))
+            .map_err(|e| anyhow::anyhow!("R2 read {key}: method: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 read {key}: not a function: {e:?}"))?;
+        let promise: Promise = read
+            .call0(&object)
+            .map_err(|e| anyhow::anyhow!("R2 read {key}: call: {e:?}"))?
+            .dyn_into()
+            .map_err(|e| anyhow::anyhow!("R2 read {key}: not a promise: {e:?}"))?;
+        let buffer = JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 read {key}: {e:?}"))?;
+        Ok(Some(Uint8Array::new(&buffer).to_vec()))
+    }
+
+    async fn create_multipart(&self, key: &str) -> Result<String> {
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen_futures::JsFuture;
+        let bucket = &self.bucket;
+        let promise = js_promise(
+            js_method(bucket, "createMultipartUpload")?.call1(bucket, &JsValue::from_str(key)),
+            key,
+            "createMultipartUpload",
+        )?;
+        let upload = JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 create {key}: {e:?}"))?;
+        js_sys::Reflect::get(&upload, &JsValue::from_str("uploadId"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .context("R2 multipart create returned no upload id")
+    }
+
+    async fn upload_part(
+        &self,
+        key: &str,
+        upload_id: &str,
+        part_number: u32,
+        bytes: &[u8],
+    ) -> Result<String> {
+        use js_sys::Uint8Array;
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen_futures::JsFuture;
+        let upload = resume_r2_multipart(&self.bucket, key, upload_id)?;
+        let bytes = Uint8Array::from(bytes);
+        let promise = js_promise(
+            js_method(&upload, "uploadPart")?.call2(
+                &upload,
+                &JsValue::from(part_number),
+                bytes.as_ref(),
+            ),
+            key,
+            "uploadPart",
+        )?;
+        let part = JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 part {key}: {e:?}"))?;
+        js_sys::Reflect::get(&part, &JsValue::from_str("etag"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .context("R2 multipart part returned no ETag")
+    }
+
+    async fn complete_multipart(
+        &self,
+        key: &str,
+        upload_id: &str,
+        parts: &[PartTag],
+    ) -> Result<()> {
+        use wasm_bindgen::JsValue;
+        use wasm_bindgen_futures::JsFuture;
+        let upload = resume_r2_multipart(&self.bucket, key, upload_id)?;
+        let array = js_sys::Array::new();
+        for part in parts {
+            let value = js_sys::Object::new();
+            js_sys::Reflect::set(
+                &value,
+                &JsValue::from_str("partNumber"),
+                &JsValue::from(part.part_number),
+            )
+            .map_err(|e| anyhow::anyhow!("R2 complete part: {e:?}"))?;
+            js_sys::Reflect::set(
+                &value,
+                &JsValue::from_str("etag"),
+                &JsValue::from_str(&part.etag),
+            )
+            .map_err(|e| anyhow::anyhow!("R2 complete ETag: {e:?}"))?;
+            array.push(&value);
+        }
+        let promise = js_promise(
+            js_method(&upload, "complete")?.call1(&upload, array.as_ref()),
+            key,
+            "complete",
+        )?;
+        JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 complete {key}: {e:?}"))?;
+        Ok(())
+    }
+
+    async fn abort_multipart(&self, key: &str, upload_id: &str) -> Result<()> {
+        use wasm_bindgen_futures::JsFuture;
+        let upload = resume_r2_multipart(&self.bucket, key, upload_id)?;
+        let promise = js_promise(js_method(&upload, "abort")?.call0(&upload), key, "abort")?;
+        JsFuture::from(promise)
+            .await
+            .map_err(|e| anyhow::anyhow!("R2 abort {key}: {e:?}"))?;
+        Ok(())
+    }
+}
+
+fn resume_r2_multipart(
+    bucket: &wasm_bindgen::JsValue,
+    key: &str,
+    upload_id: &str,
+) -> Result<wasm_bindgen::JsValue> {
+    use wasm_bindgen::JsValue;
+    js_method(bucket, "resumeMultipartUpload")?
+        .call2(
+            bucket,
+            &JsValue::from_str(key),
+            &JsValue::from_str(upload_id),
+        )
+        .map_err(|e| anyhow::anyhow!("R2 resumeMultipartUpload {key}: {e:?}"))
 }
 
 /// Resolves one explicit placement to an external object store.
@@ -108,8 +316,9 @@ async fn cache_s3_surface(
 /// placement prefix.
 async fn placement_s3_surface(
     db: &Database,
-    sealer: &dyn SecretSealer,
+    credentials: &dyn StorageCredentialResolver,
     placement: &SurfacePlacementRecord,
+    write: bool,
 ) -> Result<Option<S3Surface>> {
     let binding = db
         .storage_binding(placement.storage_binding_id)
@@ -129,12 +338,76 @@ async fn placement_s3_surface(
             placement.name, binding.kind
         )));
     }
-    S3Surface::from_binding(&binding, &placement.prefix, sealer).map_err(|error| {
+    let credential = if binding.access_mode.as_deref() == Some("private") {
+        if write {
+            let binding_revision = placement
+                .authority_observed_binding_write_revision
+                .context("write authority has no observed binding revision")?;
+            let revision = db
+                .storage_binding_write_revision(binding.id, binding_revision)
+                .await?
+                .context("write authority binding revision does not exist")?;
+            Some(
+                credentials
+                    .resolve_exact(
+                        binding.id,
+                        &revision.write_credential_purpose,
+                        revision.write_credential_generation,
+                    )
+                    .await?,
+            )
+        } else {
+            Some(credentials.resolve_current(binding.id, "read").await?)
+        }
+    } else {
+        None
+    };
+    S3Surface::from_binding(
+        &binding,
+        &placement.prefix,
+        credential
+            .as_ref()
+            .map(|credential| credential.secret())
+            .transpose()?,
+    )
+    .map_err(|error| {
         aos_hub_core::placement_read::terminal_read_error(format!(
             "placement '{}' has invalid object-store configuration: {error:#}",
             placement.name
         ))
     })
+}
+
+/// Resolves physical conditional-delete access without consulting write authority.
+async fn placement_s3_delete_surface(
+    db: &Database,
+    credentials: &dyn StorageCredentialResolver,
+    placement: &SurfacePlacementRecord,
+    expected_binding_resource_version: i64,
+    delete_credential_generation: i64,
+) -> Result<S3Surface> {
+    let binding = db
+        .storage_binding(placement.storage_binding_id)
+        .await?
+        .context("deletion placement references a missing storage binding")?;
+    if binding.resource_version != expected_binding_resource_version {
+        anyhow::bail!(
+            "placement '{}' storage binding changed after deletion was planned",
+            placement.name
+        );
+    }
+    if binding.is_instance_default || binding.kind != "s3" {
+        anyhow::bail!(
+            "placement '{}' backend '{}' cannot enforce conditional deletion",
+            placement.name,
+            binding.kind
+        );
+    }
+    let credential = credentials
+        .resolve_exact(binding.id, "delete", delete_credential_generation)
+        .await?;
+    S3Surface::from_binding(&binding, &placement.prefix, Some(credential.secret()?))?
+        .context("deletion placement object-store binding cannot be resolved")
 }
 
 /// Whether an R2 error message names a transient, retryable condition.
@@ -158,7 +431,10 @@ fn is_transient_r2(message: &str) -> bool {
 ///
 /// Returns an error if a non-transient error occurs or every attempt fails (the
 /// last error is reported, prefixed with the key).
-async fn r2_get(bucket: &Bucket, key: &str) -> Result<Option<wasm_bindgen::JsValue>> {
+async fn r2_get(
+    bucket: &wasm_bindgen::JsValue,
+    key: &str,
+) -> Result<Option<wasm_bindgen::JsValue>> {
     // Call the R2 binding's `get` method directly with *only* the key, rather
     // than via worker-rs `Bucket::get(key).execute()`. The 0.8 `GetOptionsBuilder`
     // always serializes an options object whose `onlyIf`/`range` keys are present
@@ -166,7 +442,7 @@ async fn r2_get(bucket: &Bucket, key: &str) -> Result<Option<wasm_bindgen::JsVal
     // unconditional `Reflect::set`), and the current workerd/R2 rejects those
     // present-but-`undefined` option keys by failing the GET with a *persistent*
     // `10001` "internal error" — the same class of 0.8 R2 option-serialization
-    // bug worked around in [`R2SurfaceFetch::list`] (unset `cursor`) and the
+    // bug worked around in [`R2SurfaceFetch::list_page`] (unset `cursor`) and the
     // ranged read in [`R2SurfaceFetch::fetch_stream`] (`suffix: undefined`).
     // Passing no options object at all avoids it; the returned value is the raw
     // R2 object (or `null`/`undefined` for a miss), read via `js_sys` since
@@ -175,15 +451,14 @@ async fn r2_get(bucket: &Bucket, key: &str) -> Result<Option<wasm_bindgen::JsVal
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
 
-    let jsbucket: &JsValue = bucket.as_ref();
-    let get_fn: Function = Reflect::get(jsbucket, &JsValue::from_str("get"))
+    let get_fn: Function = Reflect::get(bucket, &JsValue::from_str("get"))
         .map_err(|e| anyhow::anyhow!("R2 get {key}: get method: {e:?}"))?
         .dyn_into()
         .map_err(|e| anyhow::anyhow!("R2 get {key}: get is not a function: {e:?}"))?;
     let mut attempt = 0u32;
     loop {
         let promise: Promise = get_fn
-            .call1(jsbucket, &JsValue::from_str(key))
+            .call1(bucket, &JsValue::from_str(key))
             .map_err(|e| anyhow::anyhow!("R2 get {key}: call: {e:?}"))?
             .dyn_into()
             .map_err(|e| anyhow::anyhow!("R2 get {key}: get did not return a promise: {e:?}"))?;
@@ -258,7 +533,7 @@ fn r2_body_stream(
 /// binding.
 ///
 /// Holds the hub-owned bucket binding plus the shared [`Database`] and
-/// [`SecretSealer`] needed to resolve a per-resource storage binding;
+/// [`SecretVersionResolver`] needed to resolve a per-resource storage binding;
 /// [`fetcher`](SurfaceProvider::fetcher) scopes a reader to the requested
 /// registry's prefix — proxying to the external origin via signed URLs when the
 /// binding is external ([`S3SurfaceFetch`]), else reading the hub R2 bucket
@@ -266,20 +541,31 @@ fn r2_body_stream(
 pub struct R2SurfaceProvider {
     bucket: Bucket,
     db: Arc<Database>,
-    sealer: Arc<dyn SecretSealer>,
+    credentials: Arc<dyn StorageCredentialResolver>,
+    egress: Arc<WorkerEgressClient>,
 }
 
 impl R2SurfaceProvider {
     /// Wrap a bound R2 bucket (`env.bucket(binding)`) as a surface provider,
-    /// with the D1 [`Database`] and [`SecretSealer`] used to resolve external
+    /// with the HubDb [`Database`] and [`SecretVersionResolver`] used to resolve external
     /// S3/R2 storage bindings.
     #[must_use]
     pub fn new(
         bucket: Bucket,
         db: Arc<Database>,
-        sealer: Arc<dyn SecretSealer>,
+        secrets: Arc<dyn SecretVersionResolver>,
+        egress: Arc<WorkerEgressClient>,
     ) -> R2SurfaceProvider {
-        R2SurfaceProvider { bucket, db, sealer }
+        let credentials = Arc::new(DatabaseStorageCredentialResolver::new(
+            Arc::clone(&db),
+            secrets,
+        ));
+        R2SurfaceProvider {
+            bucket,
+            db,
+            credentials,
+            egress,
+        }
     }
 }
 
@@ -290,37 +576,19 @@ impl SurfaceProvider for R2SurfaceProvider {
         placement: &SurfacePlacementRecord,
     ) -> Result<Box<dyn SurfaceFetch>> {
         if let Some(surface) =
-            placement_s3_surface(&self.db, self.sealer.as_ref(), placement).await?
+            placement_s3_surface(&self.db, self.credentials.as_ref(), placement, false).await?
         {
-            return Ok(Box::new(S3SurfaceFetch { surface }));
+            return Ok(Box::new(S3SurfaceFetch {
+                surface,
+                egress: Arc::clone(&self.egress),
+            }));
         }
         Ok(Box::new(R2SurfaceFetch {
             bucket: self.bucket.clone(),
+            contract: R2Contract::new(WorkerR2BucketAdapter {
+                bucket: self.bucket.as_ref().clone(),
+            }),
             prefix: placement.prefix.clone(),
-        }))
-    }
-
-    async fn fetcher(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceFetch>> {
-        if let Some(surface) = registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
-        {
-            return Ok(Box::new(S3SurfaceFetch { surface }));
-        }
-        Ok(Box::new(R2SurfaceFetch {
-            bucket: self.bucket.clone(),
-            prefix: registry.prefix.clone(),
-        }))
-    }
-
-    async fn cache_fetcher(
-        &self,
-        cache: &aos_hub_core::db::Cache,
-    ) -> Result<Box<dyn SurfaceFetch>> {
-        if let Some(surface) = cache_s3_surface(&self.db, self.sealer.as_ref(), cache).await? {
-            return Ok(Box::new(S3SurfaceFetch { surface }));
-        }
-        Ok(Box::new(R2SurfaceFetch {
-            bucket: self.bucket.clone(),
-            prefix: cache.prefix.clone(),
         }))
     }
 }
@@ -328,125 +596,59 @@ impl SurfaceProvider for R2SurfaceProvider {
 /// A [`SurfaceFetch`] reading one registry's prefix from an R2 bucket.
 struct R2SurfaceFetch {
     bucket: Bucket,
+    contract: R2Contract<WorkerR2BucketAdapter>,
     prefix: String,
 }
 
 #[async_trait(?Send)]
 impl SurfaceFetch for R2SurfaceFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        use js_sys::{Function, Promise, Reflect, Uint8Array};
-        use wasm_bindgen::{JsCast, JsValue};
-        use wasm_bindgen_futures::JsFuture;
-
         let key = keymap::r2_key(&self.prefix, path);
-        let Some(object) = r2_get(&self.bucket, &key).await? else {
-            return Ok(None);
-        };
-        // Read the whole object via the R2 object's `arrayBuffer()`. A zero-length
-        // object yields an empty buffer (present-but-empty, not a miss), so legal
-        // empty pointers still resolve to `Some(vec![])`.
-        let array_buffer: Function = Reflect::get(&object, &JsValue::from_str("arrayBuffer"))
-            .map_err(|e| anyhow::anyhow!("R2 get {key}: arrayBuffer method: {e:?}"))?
-            .dyn_into()
-            .map_err(|e| anyhow::anyhow!("R2 get {key}: arrayBuffer not a function: {e:?}"))?;
-        let promise: Promise = array_buffer
-            .call0(&object)
-            .map_err(|e| anyhow::anyhow!("R2 read body {key}: arrayBuffer call: {e:?}"))?
-            .dyn_into()
-            .map_err(|e| anyhow::anyhow!("R2 read body {key}: not a promise: {e:?}"))?;
-        let buffer = JsFuture::from(promise).await.map_err(|e| {
-            // The platform provides no stable error code for this rejection.
-            // Unknown JS failures fail closed; only `r2_get`'s explicitly
-            // recognized transient 10001 class is retryable.
-            aos_hub_core::placement_read::terminal_read_error(format!("R2 read body {key}: {e:?}"))
-        })?;
-        Ok(Some(Uint8Array::new(&buffer).to_vec()))
+        self.contract
+            .read_bounded(
+                &key,
+                usize::try_from(aos_hub_core::s3surface::MAX_S3_BUFFERED_OBJECT_BYTES)
+                    .context("R2 buffered-object cap exceeds usize")?,
+            )
+            .await
     }
 
-    async fn list(&self) -> Result<Vec<String>> {
-        // List every key under the registry/cache's R2 prefix, paging through the
-        // cursor, and re-home each to a surface-relative path so the migration
-        // copy and the cache re-scan speak the same logical paths the rest of the
-        // ports do.
-        //
-        // We call the R2 binding's `list` directly rather than via
-        // `worker::Bucket::list()`: the worker-rs 0.8 `ListOptionsBuilder` always
-        // serializes the unset `cursor` as JS `null`, and the current workerd
-        // rejects a non-string `cursor` on `R2ListOptions` ("Incorrect type for
-        // the 'cursor' field … not of type 'string'"), so every list 500s. Here
-        // we build the options object ourselves and OMIT `cursor` until we have a
-        // real one.
-        use js_sys::{Array, Function, Object, Promise, Reflect};
-        use wasm_bindgen::{JsCast, JsValue};
-        use wasm_bindgen_futures::JsFuture;
-
-        let jserr = |ctx: &str, e: JsValue| anyhow::anyhow!("R2 list: {ctx}: {e:?}");
+    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+        anyhow::ensure!(
+            limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
+            "invalid R2 listing page limit"
+        );
         let listing_prefix = keymap::r2_key(&self.prefix, "");
-        let bucket: &JsValue = self.bucket.as_ref();
-        let list_fn: Function = Reflect::get(bucket, &JsValue::from_str("list"))
-            .map_err(|e| jserr("get list method", e))?
-            .dyn_into()
-            .map_err(|e| jserr("list is not a function", e))?;
-
-        let mut keys = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            let opts = Object::new();
-            Reflect::set(
-                &opts,
-                &JsValue::from_str("prefix"),
-                &JsValue::from_str(&listing_prefix),
-            )
-            .map_err(|e| jserr("set prefix", e))?;
-            Reflect::set(
-                &opts,
-                &JsValue::from_str("limit"),
-                &JsValue::from_f64(1000.0),
-            )
-            .map_err(|e| jserr("set limit", e))?;
-            if let Some(c) = &cursor {
-                Reflect::set(&opts, &JsValue::from_str("cursor"), &JsValue::from_str(c))
-                    .map_err(|e| jserr("set cursor", e))?;
-            }
-            let promise: Promise = list_fn
-                .call1(bucket, &opts)
-                .map_err(|e| jserr(&format!("calling list({listing_prefix})"), e))?
-                .dyn_into()
-                .map_err(|e| jserr("list did not return a promise", e))?;
-            let result = JsFuture::from(promise)
-                .await
-                .map_err(|e| jserr(&format!("awaiting list({listing_prefix})"), e))?;
-
-            let objects: Array = Reflect::get(&result, &JsValue::from_str("objects"))
-                .map_err(|e| jserr("get objects", e))?
-                .dyn_into()
-                .map_err(|e| jserr("objects is not an array", e))?;
-            for object in objects.iter() {
-                let key = Reflect::get(&object, &JsValue::from_str("key"))
-                    .ok()
-                    .and_then(|k| k.as_string())
-                    .unwrap_or_default();
-                if let Some(rel) = keymap::relative_key(&self.prefix, &key) {
-                    if !rel.is_empty() {
-                        keys.push(rel);
-                    }
+        let page = self.contract.list(&listing_prefix, cursor, limit).await?;
+        let mut paths = Vec::with_capacity(page.keys.len());
+        for key in page.keys {
+            if let Some(rel) = keymap::relative_key(&self.prefix, &key) {
+                if !rel.is_empty() {
+                    paths.push(rel);
                 }
             }
-            let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
-                .ok()
-                .and_then(|t| t.as_bool())
-                .unwrap_or(false);
-            if !truncated {
-                break;
-            }
-            cursor = Reflect::get(&result, &JsValue::from_str("cursor"))
-                .ok()
-                .and_then(|c| c.as_string());
-            if cursor.is_none() {
-                break;
-            }
         }
-        Ok(keys)
+        paths.sort();
+        paths.dedup();
+        Ok(SurfaceListPage {
+            paths,
+            next_cursor: page.cursor,
+        })
+    }
+
+    async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
+        use js_sys::Reflect;
+        use wasm_bindgen::JsValue;
+
+        let key = keymap::r2_key(&self.prefix, path);
+        let Some(object) = r2_get(self.bucket.as_ref(), &key).await? else {
+            return Ok(None);
+        };
+        let etag = Reflect::get(&object, &JsValue::from_str("etag"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .map(|value| value.trim().to_string());
+        Ok(etag.filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok()))
     }
 
     async fn fetch_stream(
@@ -470,9 +672,14 @@ impl SurfaceFetch for R2SurfaceFetch {
         // range end), so the memory-safety property the streaming path guarantees
         // is preserved; only the discarded pre-`start` bytes cross R2→isolate
         // (nil for the whole-object and prefix reads nix actually issues).
-        let Some(object) = r2_get(&self.bucket, &key).await? else {
+        let Some(object) = r2_get(self.bucket.as_ref(), &key).await? else {
             return Ok(None);
         };
+        let strong_etag = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("etag"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .map(|value| value.trim().to_string())
+            .filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok());
         // Read `size` and `body` off the raw R2 object via `js_sys` (worker-rs
         // `Object` is unreachable here — see `r2_get`).
         let total = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("size"))
@@ -496,6 +703,8 @@ impl SurfaceFetch for R2SurfaceFetch {
                 body: axum::body::Body::empty(),
                 total,
                 range: None,
+                strong_etag,
+                snapshot_lease_id: None,
             }));
         }
         let stream = r2_body_stream(body_js);
@@ -552,20 +761,14 @@ impl SurfaceFetch for R2SurfaceFetch {
             body,
             total,
             range: served,
+            strong_etag,
+            snapshot_lease_id: None,
         }))
     }
 
     async fn size(&self, path: &str) -> Result<Option<u64>> {
         let key = keymap::r2_key(&self.prefix, path);
-        // R2 `head` returns object metadata (including the size) without
-        // streaming the body — the cheap path for the write facade's overwrite
-        // quota delta. An absent key is `Ok(None)`.
-        let object = self
-            .bucket
-            .head(&key)
-            .await
-            .map_err(|err| anyhow::anyhow!("R2 head {key}: {err}"))?;
-        Ok(object.map(|object| u64::from(object.size())))
+        self.contract.head(&key).await
     }
 
     fn describe(&self) -> String {
@@ -578,33 +781,31 @@ impl SurfaceFetch for R2SurfaceFetch {
 ///
 /// The external-binding counterpart of [`R2SurfaceFetch`]: instead of an R2
 /// `get`/`head`, each operation mints a short-lived presigned URL with
-/// [`S3Surface::object_url`] and drives it over the Workers global Fetch API,
-/// streaming bodies through the isolate exactly like [`WorkerOriginFetch`] (so a
+/// [`S3Surface::object_url`] and sends it through [`WorkerEgressClient`], whose
+/// only platform Fetch destination is the fixed gateway. Response bodies stream
+/// through the isolate exactly like [`WorkerOriginFetch`] (so a
 /// large NAR never buffers). A presigned URL signs only the `Host` header, so a
 /// `Range` request header may be added freely on the streaming path.
 struct S3SurfaceFetch {
     surface: S3Surface,
+    egress: Arc<WorkerEgressClient>,
 }
 
 #[async_trait(?Send)]
 impl SurfaceFetch for S3SurfaceFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        use worker::Fetch;
-
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Get, path, now)?;
-        let mut response = Fetch::Url(
-            url.parse()
-                .map_err(|err| anyhow::anyhow!("s3 parse GET url: {err}"))?,
-        )
-        .send()
-        .await
-        .map_err(|err| {
-            aos_hub_core::placement_read::retryable_read_error(format!(
-                "s3 GET {}: {err}",
-                self.surface.describe()
-            ))
-        })?;
+        let mut response = self
+            .egress
+            .send(&url, "GET", None, None, None, None, None)
+            .await
+            .map_err(|err| {
+                aos_hub_core::placement_read::retryable_read_error(format!(
+                    "s3 GET {}: {err}",
+                    self.surface.describe()
+                ))
+            })?;
         let status = response.status_code();
         if status == 404 {
             return Ok(None);
@@ -615,7 +816,13 @@ impl SurfaceFetch for S3SurfaceFetch {
                 status,
             ));
         }
-        let bytes = response.bytes().await.map_err(|err| {
+        let bytes = crate::consoleports::read_response_capped(
+            &mut response,
+            aos_hub_core::s3surface::MAX_S3_BUFFERED_OBJECT_BYTES,
+            "S3 object GET",
+        )
+        .await
+        .map_err(|err| {
             aos_hub_core::placement_read::retryable_read_error(format!(
                 "s3 read body {}: {err}",
                 self.surface.describe()
@@ -624,45 +831,93 @@ impl SurfaceFetch for S3SurfaceFetch {
         Ok(Some(bytes))
     }
 
-    async fn list(&self) -> Result<Vec<String>> {
-        use worker::Fetch;
-
-        let mut keys = Vec::new();
-        let mut continuation: Option<String> = None;
-        loop {
-            let now = aos_hub_core::clock::now_unix_secs();
-            let url = self.surface.list_url(continuation.as_deref(), now)?;
-            let mut response = Fetch::Url(
-                url.parse()
-                    .map_err(|err| anyhow::anyhow!("s3 parse list url: {err}"))?,
-            )
-            .send()
+    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+        anyhow::ensure!(
+            limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
+            "invalid S3 listing page limit"
+        );
+        anyhow::ensure!(
+            cursor.is_none_or(|value| {
+                value.len() <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_CURSOR_BYTES
+            }),
+            "S3 listing cursor is too large"
+        );
+        let mut parsed_keys = 0_usize;
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.list_url(cursor, limit, now)?;
+        let mut response = self
+            .egress
+            .send(&url, "GET", None, None, None, None, None)
             .await
             .map_err(|err| anyhow::anyhow!("s3 list {}: {err}", self.surface.describe()))?;
-            let status = response.status_code();
-            if !(200..300).contains(&status) {
-                return Err(aos_hub_core::placement_read::http_status_read_error(
-                    &format!("s3 list {}", self.surface.describe()),
-                    status,
-                ));
-            }
-            let body = response.text().await.map_err(|err| {
-                anyhow::anyhow!("s3 list body {}: {err}", self.surface.describe())
-            })?;
-            let (page_keys, next) = aos_hub_core::s3surface::parse_list_objects_v2(&body);
-            for key in page_keys {
-                if let Some(rel) = self.surface.relative_from_key(&key) {
-                    if !rel.is_empty() {
-                        keys.push(rel);
-                    }
+        let status = response.status_code();
+        if !(200..300).contains(&status) {
+            return Err(aos_hub_core::placement_read::http_status_read_error(
+                &format!("s3 list {}", self.surface.describe()),
+                status,
+            ));
+        }
+        let body = crate::consoleports::read_response_capped(
+            &mut response,
+            aos_hub_core::s3surface::WORKER_MAX_S3_LIST_PAGE_BYTES,
+            "S3 ListObjectsV2",
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("s3 list body {}: {err}", self.surface.describe()))?;
+        let body = String::from_utf8(body).context("S3 ListObjectsV2 response is not UTF-8")?;
+        let mut paths = Vec::new();
+        let (next, truncated) = aos_hub_core::s3surface::visit_list_objects_v2(&body, |key| {
+            parsed_keys = parsed_keys
+                .checked_add(1)
+                .context("S3 inventory key count overflow")?;
+            anyhow::ensure!(
+                parsed_keys <= limit,
+                "S3 listing page exceeds the requested key limit"
+            );
+            if let Some(rel) = self.surface.relative_from_key(&key) {
+                if !rel.is_empty() {
+                    paths.push(rel);
                 }
             }
-            match next {
-                Some(token) => continuation = Some(token),
-                None => break,
-            }
+            Ok(())
+        })?;
+        paths.sort();
+        paths.dedup();
+        let next_cursor = if truncated {
+            Some(next.context("truncated S3 inventory page has no continuation token")?)
+        } else {
+            None
+        };
+        Ok(SurfaceListPage { paths, next_cursor })
+    }
+
+    async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Head, path, now)?;
+        let response = self
+            .egress
+            .send(&url, "HEAD", None, None, None, None, None)
+            .await
+            .map_err(|err| {
+                anyhow::anyhow!("s3 inventory HEAD {}: {err}", self.surface.describe())
+            })?;
+        let status = response.status_code();
+        if status == 404 {
+            return Ok(None);
         }
-        Ok(keys)
+        if !(200..300).contains(&status) {
+            return Err(aos_hub_core::placement_read::http_status_read_error(
+                &format!("s3 inventory HEAD {}", self.surface.describe()),
+                status,
+            ));
+        }
+        let etag = response
+            .headers()
+            .get("etag")
+            .ok()
+            .flatten()
+            .map(|value| value.trim().to_string());
+        Ok(etag.filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok()))
     }
 
     async fn fetch_stream(
@@ -671,35 +926,29 @@ impl SurfaceFetch for S3SurfaceFetch {
         range: Option<(u64, u64)>,
     ) -> Result<Option<StreamedRead>> {
         use futures_util::TryStreamExt as _;
-        use worker::{Fetch, Headers, Method, Request, RequestInit};
-
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Get, path, now)?;
 
         // The presigned URL signs only the Host header, so a `Range` request
         // header travels unsigned and the origin honors it as a normal byte
         // range — the served range/total are re-derived from the response.
-        let headers = Headers::new();
-        if let Some((start, end)) = range {
-            let spec = if end == u64::MAX {
+        let range = range.map(|(start, end)| {
+            if end == u64::MAX {
                 format!("bytes={start}-")
             } else {
                 format!("bytes={start}-{end}")
-            };
-            headers
-                .set("Range", &spec)
-                .map_err(|err| anyhow::anyhow!("s3 set Range: {err}"))?;
-        }
-        let mut init = RequestInit::new();
-        init.with_method(Method::Get).with_headers(headers);
-        let request = Request::new_with_init(&url, &init)
-            .map_err(|err| anyhow::anyhow!("s3 build request: {err}"))?;
-        let mut response = Fetch::Request(request).send().await.map_err(|err| {
-            aos_hub_core::placement_read::retryable_read_error(format!(
-                "s3 GET {}: {err}",
-                self.surface.describe()
-            ))
-        })?;
+            }
+        });
+        let mut response = self
+            .egress
+            .send(&url, "GET", None, None, range.as_deref(), None, None)
+            .await
+            .map_err(|err| {
+                aos_hub_core::placement_read::retryable_read_error(format!(
+                    "s3 GET {}: {err}",
+                    self.surface.describe()
+                ))
+            })?;
         let status = response.status_code();
         if status == 404 {
             return Ok(None);
@@ -744,6 +993,13 @@ impl SurfaceFetch for S3SurfaceFetch {
                 .and_then(|v| v.parse::<u64>().ok())
                 .ok_or_else(|| anyhow::anyhow!("s3 200 without a Content-Length"))?;
         }
+        let strong_etag = response
+            .headers()
+            .get("etag")
+            .ok()
+            .flatten()
+            .map(|value| value.trim().to_string())
+            .filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok());
         let stream = response
             .stream()
             .map_err(|err| anyhow::anyhow!("s3 stream {}: {err}", self.surface.describe()))?
@@ -756,20 +1012,17 @@ impl SurfaceFetch for S3SurfaceFetch {
             body,
             total,
             range: served,
+            strong_etag,
+            snapshot_lease_id: None,
         }))
     }
 
     async fn size(&self, path: &str) -> Result<Option<u64>> {
-        use worker::{Fetch, Method, Request, RequestInit};
-
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Head, path, now)?;
-        let mut init = RequestInit::new();
-        init.with_method(Method::Head);
-        let request = Request::new_with_init(&url, &init)
-            .map_err(|err| anyhow::anyhow!("s3 build HEAD request: {err}"))?;
-        let response = Fetch::Request(request)
-            .send()
+        let response = self
+            .egress
+            .send(&url, "HEAD", None, None, None, None, None)
             .await
             .map_err(|err| anyhow::anyhow!("s3 HEAD {}: {err}", self.surface.describe()))?;
         let status = response.status_code();
@@ -797,7 +1050,7 @@ impl SurfaceFetch for S3SurfaceFetch {
     }
 }
 
-/// A [`OriginFetch`] over the Workers global Fetch API.
+/// An [`OriginFetch`] over the fixed authenticated egress gateway.
 ///
 /// The Worker counterpart of the native `ReqwestOriginFetch`: it streams a
 /// private external origin's bytes through the isolate (the proxy-read
@@ -806,7 +1059,17 @@ impl SurfaceFetch for S3SurfaceFetch {
 /// origin's `Content-Range`/`Content-Length` response headers. The body is the
 /// `worker::Response` `ByteStream`, `SendWrapper`-wrapped into the axum body
 /// exactly like the R2 read path, so a large NAR never buffers in the isolate.
-pub struct WorkerOriginFetch;
+pub struct WorkerOriginFetch {
+    egress: Arc<WorkerEgressClient>,
+}
+
+impl WorkerOriginFetch {
+    /// Creates an origin reader over the fixed authenticated gateway.
+    #[must_use]
+    pub fn new(egress: Arc<WorkerEgressClient>) -> Self {
+        Self { egress }
+    }
+}
 
 #[async_trait(?Send)]
 impl OriginFetch for WorkerOriginFetch {
@@ -816,25 +1079,16 @@ impl OriginFetch for WorkerOriginFetch {
         range: Option<(u64, u64)>,
     ) -> Result<Option<StreamedRead>> {
         use futures_util::TryStreamExt as _;
-        use worker::{Fetch, Headers, Method, Request, RequestInit};
-
-        let headers = Headers::new();
-        if let Some((start, end)) = range {
-            let spec = if end == u64::MAX {
+        let range = range.map(|(start, end)| {
+            if end == u64::MAX {
                 format!("bytes={start}-")
             } else {
                 format!("bytes={start}-{end}")
-            };
-            headers
-                .set("Range", &spec)
-                .map_err(|err| anyhow::anyhow!("origin set Range: {err}"))?;
-        }
-        let mut init = RequestInit::new();
-        init.with_method(Method::Get).with_headers(headers);
-        let request = Request::new_with_init(url, &init)
-            .map_err(|err| anyhow::anyhow!("origin build request {url}: {err}"))?;
-        let mut response = Fetch::Request(request)
-            .send()
+            }
+        });
+        let mut response = self
+            .egress
+            .send(url, "GET", None, None, range.as_deref(), None, None)
             .await
             .map_err(|err| anyhow::anyhow!("origin GET {url}: {err}"))?;
         let status = response.status_code();
@@ -888,6 +1142,8 @@ impl OriginFetch for WorkerOriginFetch {
             body,
             total,
             range: served,
+            strong_etag: None,
+            snapshot_lease_id: None,
         }))
     }
 }
@@ -910,7 +1166,7 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
 /// into an external S3/R2 origin when the resource names an `s3`/`r2` binding.
 ///
 /// The write sibling of [`R2SurfaceProvider`]: holds the hub-owned bucket
-/// binding plus the shared [`Database`] and [`SecretSealer`] for resolving an
+/// binding plus the shared [`Database`] and [`SecretVersionResolver`] for resolving an
 /// external binding, and scopes a writer to the requested registry's prefix —
 /// signed `PUT`/`DELETE` against the external origin ([`S3Write`]) when the
 /// binding is external, else the hub R2 bucket ([`R2Write`]). The shared
@@ -919,43 +1175,79 @@ fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
 pub struct R2SurfaceWriteProvider {
     bucket: Bucket,
     db: Arc<Database>,
-    sealer: Arc<dyn SecretSealer>,
+    credentials: Arc<dyn StorageCredentialResolver>,
+    egress: Arc<WorkerEgressClient>,
 }
 
 impl R2SurfaceWriteProvider {
     /// Wrap a bound R2 bucket (`env.bucket(binding)`) as a surface write
-    /// provider, with the D1 [`Database`] and [`SecretSealer`] used to resolve
+    /// provider, with the HubDb [`Database`] and [`SecretVersionResolver`] used to resolve
     /// external S3/R2 storage bindings.
     #[must_use]
     pub fn new(
         bucket: Bucket,
         db: Arc<Database>,
-        sealer: Arc<dyn SecretSealer>,
+        secrets: Arc<dyn SecretVersionResolver>,
+        egress: Arc<WorkerEgressClient>,
     ) -> R2SurfaceWriteProvider {
-        R2SurfaceWriteProvider { bucket, db, sealer }
+        let credentials = Arc::new(DatabaseStorageCredentialResolver::new(
+            Arc::clone(&db),
+            secrets,
+        ));
+        R2SurfaceWriteProvider {
+            bucket,
+            db,
+            credentials,
+            egress,
+        }
     }
 }
 
 #[async_trait(?Send)]
 impl SurfaceWriteProvider for R2SurfaceWriteProvider {
-    async fn writer(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceWrite>> {
-        if let Some(surface) = registry_s3_surface(&self.db, self.sealer.as_ref(), registry).await?
+    async fn placement_writer(
+        &self,
+        placement: &SurfacePlacementRecord,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        if !placement.effective_write_enabled {
+            anyhow::bail!(
+                "placement '{}' is not the reconciled write authority",
+                placement.name
+            );
+        }
+        if let Some(surface) =
+            placement_s3_surface(&self.db, self.credentials.as_ref(), placement, true).await?
         {
-            return Ok(Box::new(S3Write { surface }));
+            return Ok(Box::new(S3Write {
+                surface,
+                egress: Arc::clone(&self.egress),
+            }));
         }
         Ok(Box::new(R2Write {
-            bucket: self.bucket.clone(),
-            prefix: registry.prefix.clone(),
+            contract: R2Contract::new(WorkerR2BucketAdapter {
+                bucket: self.bucket.as_ref().clone(),
+            }),
+            prefix: placement.prefix.clone(),
         }))
     }
 
-    async fn cache_writer(&self, cache: &aos_hub_core::db::Cache) -> Result<Box<dyn SurfaceWrite>> {
-        if let Some(surface) = cache_s3_surface(&self.db, self.sealer.as_ref(), cache).await? {
-            return Ok(Box::new(S3Write { surface }));
-        }
-        Ok(Box::new(R2Write {
-            bucket: self.bucket.clone(),
-            prefix: cache.prefix.clone(),
+    async fn placement_deleter(
+        &self,
+        placement: &SurfacePlacementRecord,
+        expected_binding_resource_version: i64,
+        delete_credential_generation: i64,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        let surface = placement_s3_delete_surface(
+            &self.db,
+            self.credentials.as_ref(),
+            placement,
+            expected_binding_resource_version,
+            delete_credential_generation,
+        )
+        .await?;
+        Ok(Box::new(S3Write {
+            surface,
+            egress: Arc::clone(&self.egress),
         }))
     }
 }
@@ -969,77 +1261,29 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
 /// R2 keys are a flat namespace, so there is no traversal/symlink escape to
 /// guard against (the key map normalizes the prefix join).
 struct R2Write {
-    bucket: Bucket,
+    contract: R2Contract<WorkerR2BucketAdapter>,
     prefix: String,
 }
 
 #[async_trait(?Send)]
 impl SurfaceWrite for R2Write {
+    fn multipart_protocol_version(&self) -> Option<u32> {
+        Some(1)
+    }
+
     async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let key = keymap::r2_key(&self.prefix, path);
-        // Call the R2 binding's `put` directly with only `(key, value)`, rather
-        // than via worker-rs `Bucket::put(key, value).execute()`. The 0.8
-        // `PutOptionsBuilder` serializes an options object whose keys (notably
-        // `md5`) are present and set via an unconditional `Reflect::set`, and the
-        // current workerd/R2 rejects the wrong-typed value ("Incorrect type for
-        // the 'md5' field on 'PutOptions'"), failing every write with a 500 —
-        // the same class of 0.8 R2 option-serialization bug bypassed for the
-        // read path in [`r2_get`]. Passing no options object avoids it.
-        use js_sys::{Function, Promise, Reflect, Uint8Array};
-        use wasm_bindgen::{JsCast, JsValue};
-        use wasm_bindgen_futures::JsFuture;
-
-        let jsbucket: &JsValue = self.bucket.as_ref();
-        let put_fn: Function = Reflect::get(jsbucket, &JsValue::from_str("put"))
-            .map_err(|e| anyhow::anyhow!("R2 put {key}: put method: {e:?}"))?
-            .dyn_into()
-            .map_err(|e| anyhow::anyhow!("R2 put {key}: put is not a function: {e:?}"))?;
-        let value = Uint8Array::from(bytes);
-        let promise: Promise = put_fn
-            .call2(jsbucket, &JsValue::from_str(&key), value.as_ref())
-            .map_err(|e| anyhow::anyhow!("R2 put {key}: call: {e:?}"))?
-            .dyn_into()
-            .map_err(|e| anyhow::anyhow!("R2 put {key}: put did not return a promise: {e:?}"))?;
-        JsFuture::from(promise)
-            .await
-            .map_err(|e| anyhow::anyhow!("R2 put {key}: {e:?}"))?;
-        Ok(())
+        self.contract.put(&key, bytes).await
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
         let key = keymap::r2_key(&self.prefix, path);
-        // R2 delete of an absent key is a no-op, so this is naturally
-        // idempotent.
-        self.bucket
-            .delete(&key)
-            .await
-            .map_err(|err| anyhow::anyhow!("R2 delete {key}: {err}"))?;
-        Ok(())
+        self.contract.delete(&key).await
     }
 
     async fn create_multipart(&self, path: &str) -> Result<String> {
-        use wasm_bindgen::JsValue;
-        use wasm_bindgen_futures::JsFuture;
         let key = keymap::r2_key(&self.prefix, path);
-        let jsbucket: &JsValue = self.bucket.as_ref();
-        // bucket.createMultipartUpload(key) -> Promise<R2MultipartUpload>. Call
-        // via js_sys with no options object: worker-rs 0.8.5's multipart builders
-        // share the option-serialization bug bypassed for r2_get / the put path.
-        let create = js_method(jsbucket, "createMultipartUpload")?;
-        let promise = js_promise(
-            create.call1(jsbucket, &JsValue::from_str(&key)),
-            &key,
-            "createMultipartUpload",
-        )?;
-        let mp = JsFuture::from(promise)
-            .await
-            .map_err(|e| anyhow::anyhow!("R2 createMultipartUpload {key}: {e:?}"))?;
-        js_sys::Reflect::get(&mp, &JsValue::from_str("uploadId"))
-            .ok()
-            .and_then(|v| v.as_string())
-            .ok_or_else(|| {
-                anyhow::anyhow!("R2 createMultipartUpload {key}: result has no uploadId")
-            })
+        self.contract.create_multipart(&key).await
     }
 
     async fn upload_part(
@@ -1049,26 +1293,10 @@ impl SurfaceWrite for R2Write {
         part_number: u32,
         bytes: &[u8],
     ) -> Result<PartTag> {
-        use js_sys::Uint8Array;
-        use wasm_bindgen::JsValue;
-        use wasm_bindgen_futures::JsFuture;
         let key = keymap::r2_key(&self.prefix, path);
-        let mp = self.resume_multipart(&key, upload_id)?;
-        let upload = js_method(&mp, "uploadPart")?;
-        let value = Uint8Array::from(bytes);
-        let promise = js_promise(
-            upload.call2(&mp, &JsValue::from(part_number), value.as_ref()),
-            &key,
-            "uploadPart",
-        )?;
-        let uploaded = JsFuture::from(promise)
+        self.contract
+            .upload_part(&key, upload_id, part_number, bytes)
             .await
-            .map_err(|e| anyhow::anyhow!("R2 uploadPart {key} #{part_number}: {e:?}"))?;
-        let etag = js_sys::Reflect::get(&uploaded, &JsValue::from_str("etag"))
-            .ok()
-            .and_then(|v| v.as_string())
-            .ok_or_else(|| anyhow::anyhow!("R2 uploadPart {key} #{part_number}: no etag"))?;
-        Ok(PartTag { part_number, etag })
     }
 
     async fn complete_multipart(
@@ -1077,74 +1305,295 @@ impl SurfaceWrite for R2Write {
         upload_id: &str,
         parts: &[PartTag],
     ) -> Result<()> {
-        use wasm_bindgen::JsValue;
-        use wasm_bindgen_futures::JsFuture;
         let key = keymap::r2_key(&self.prefix, path);
-        let mp = self.resume_multipart(&key, upload_id)?;
-        // R2.complete expects [{ partNumber, etag }, ...]; order by part number.
-        let mut sorted: Vec<&PartTag> = parts.iter().collect();
-        sorted.sort_by_key(|p| p.part_number);
-        let arr = js_sys::Array::new();
-        for p in sorted {
-            let obj = js_sys::Object::new();
-            js_sys::Reflect::set(
-                &obj,
-                &JsValue::from_str("partNumber"),
-                &JsValue::from(p.part_number),
-            )
-            .map_err(|e| anyhow::anyhow!("R2 complete {key}: build part: {e:?}"))?;
-            js_sys::Reflect::set(
-                &obj,
-                &JsValue::from_str("etag"),
-                &JsValue::from_str(&p.etag),
-            )
-            .map_err(|e| anyhow::anyhow!("R2 complete {key}: build part: {e:?}"))?;
-            arr.push(&obj);
-        }
-        let complete = js_method(&mp, "complete")?;
-        let promise = js_promise(complete.call1(&mp, arr.as_ref()), &key, "complete")?;
-        JsFuture::from(promise)
+        self.contract
+            .complete_multipart(&key, upload_id, parts)
             .await
-            .map_err(|e| anyhow::anyhow!("R2 complete {key}: {e:?}"))?;
-        Ok(())
     }
 
-    async fn abort_multipart(&self, path: &str, upload_id: &str) -> Result<()> {
-        use wasm_bindgen_futures::JsFuture;
+    async fn abort_multipart(&self, path: &str, upload_id: &str) -> Result<MultipartAbortOutcome> {
         let key = keymap::r2_key(&self.prefix, path);
-        // Best-effort: a resume/abort failure (e.g. an already-completed or
-        // unknown upload) is not fatal.
-        let Ok(mp) = self.resume_multipart(&key, upload_id) else {
-            return Ok(());
-        };
-        if let Ok(abort) = js_method(&mp, "abort") {
-            if let Ok(promise) = js_promise(abort.call0(&mp), &key, "abort") {
-                let _ = JsFuture::from(promise).await;
-            }
-        }
-        Ok(())
+        self.contract.abort_multipart(&key, upload_id).await
     }
 }
 
-impl R2Write {
-    /// Reconstruct an in-progress R2 multipart upload from `(key, upload_id)`.
-    ///
-    /// `bucket.resumeMultipartUpload(key, uploadId)` returns the
-    /// `R2MultipartUpload` handle synchronously (no `Promise`), so a fresh Worker
-    /// isolate can drive `uploadPart`/`complete`/`abort` against an upload begun
-    /// in an earlier request — the statelessness the multipart protocol relies on.
-    fn resume_multipart(&self, key: &str, upload_id: &str) -> Result<wasm_bindgen::JsValue> {
-        use wasm_bindgen::JsValue;
-        let jsbucket: &JsValue = self.bucket.as_ref();
-        let resume = js_method(jsbucket, "resumeMultipartUpload")?;
-        resume
-            .call2(
-                jsbucket,
-                &JsValue::from_str(key),
-                &JsValue::from_str(upload_id),
-            )
-            .map_err(|e| anyhow::anyhow!("R2 resumeMultipartUpload {key}: {e:?}"))
+/// Executes the production reflection adapter against an exact R2 JavaScript
+/// object shape inside workerd.
+///
+/// Open-source workerd cannot provision a real R2 binding, so the `do-e2e`
+/// artifact supplies the JavaScript methods and response objects that the
+/// production adapter reflects. This catches method-name, argument-shape,
+/// response-field, promise, and multipart-resume drift without substituting a
+/// second Rust implementation of [`R2BucketAdapter`].
+///
+/// # Errors
+///
+/// Returns an error when the production adapter rejects the fixture shape or
+/// emits any argument sequence other than the Cloudflare R2 contract.
+#[cfg(feature = "do-e2e")]
+pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsValue;
+
+    fn set_method(target: &Object, name: &str, value: &JsValue) -> Result<()> {
+        Reflect::set(target, &JsValue::from_str(name), value)
+            .map(|_| ())
+            .map_err(|error| anyhow::anyhow!("R2 JS fixture {name}: {error:?}"))
     }
+
+    let calls = Rc::new(RefCell::new(Vec::<String>::new()));
+    let bucket = Object::new();
+
+    let put_calls = Rc::clone(&calls);
+    let put = Closure::wrap(Box::new(move |key: JsValue, body: JsValue| -> JsValue {
+        let bytes = Uint8Array::new(&body).to_vec();
+        put_calls.borrow_mut().push(format!(
+            "put:{}:{bytes:?}",
+            key.as_string().unwrap_or_default()
+        ));
+        Promise::resolve(&JsValue::UNDEFINED).into()
+    }) as Box<dyn FnMut(JsValue, JsValue) -> JsValue>);
+    set_method(&bucket, "put", put.as_ref())?;
+
+    let delete_calls = Rc::clone(&calls);
+    let delete = Closure::wrap(Box::new(move |key: JsValue| -> JsValue {
+        delete_calls
+            .borrow_mut()
+            .push(format!("delete:{}", key.as_string().unwrap_or_default()));
+        Promise::resolve(&JsValue::UNDEFINED).into()
+    }) as Box<dyn FnMut(JsValue) -> JsValue>);
+    set_method(&bucket, "delete", delete.as_ref())?;
+
+    let list_calls = Rc::clone(&calls);
+    let list = Closure::wrap(Box::new(move |options: JsValue| -> JsValue {
+        let prefix = Reflect::get(&options, &JsValue::from_str("prefix"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .unwrap_or_default();
+        let cursor_key = JsValue::from_str("cursor");
+        let cursor = if Reflect::has(&options, &cursor_key).unwrap_or(true) {
+            Reflect::get(&options, &cursor_key)
+                .ok()
+                .and_then(|value| value.as_string())
+                .unwrap_or_else(|| "<non-string>".to_string())
+        } else {
+            "<absent>".to_string()
+        };
+        let limit = Reflect::get(&options, &JsValue::from_str("limit"))
+            .ok()
+            .and_then(|value| value.as_f64())
+            .unwrap_or_default() as u32;
+        list_calls
+            .borrow_mut()
+            .push(format!("list:{prefix}:{cursor}:{limit}"));
+        let object = Object::new();
+        let listed = Object::new();
+        let _ = Reflect::set(
+            &listed,
+            &JsValue::from_str("key"),
+            &JsValue::from_str("fixture/object"),
+        );
+        let objects = Array::new();
+        objects.push(&listed);
+        let _ = Reflect::set(&object, &JsValue::from_str("objects"), &objects);
+        let _ = Reflect::set(&object, &JsValue::from_str("truncated"), &JsValue::TRUE);
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("cursor"),
+            &JsValue::from_str("cursor-2"),
+        );
+        Promise::resolve(&object).into()
+    }) as Box<dyn FnMut(JsValue) -> JsValue>);
+    set_method(&bucket, "list", list.as_ref())?;
+
+    let head_calls = Rc::clone(&calls);
+    let head = Closure::wrap(Box::new(move |key: JsValue| -> JsValue {
+        head_calls
+            .borrow_mut()
+            .push(format!("head:{}", key.as_string().unwrap_or_default()));
+        let object = Object::new();
+        let _ = Reflect::set(&object, &JsValue::from_str("size"), &JsValue::from_f64(3.0));
+        Promise::resolve(&object).into()
+    }) as Box<dyn FnMut(JsValue) -> JsValue>);
+    set_method(&bucket, "head", head.as_ref())?;
+
+    let buffer_calls = Rc::clone(&calls);
+    let array_buffer = Closure::wrap(Box::new(move || -> JsValue {
+        buffer_calls.borrow_mut().push("arrayBuffer".to_string());
+        let bytes = Uint8Array::from(&[1_u8, 2, 3][..]);
+        let buffer: JsValue = bytes.buffer().into();
+        Promise::resolve(&buffer).into()
+    }) as Box<dyn FnMut() -> JsValue>);
+    let body = Object::new();
+    set_method(&body, "arrayBuffer", array_buffer.as_ref())?;
+    let get_calls = Rc::clone(&calls);
+    let get_body = body.clone();
+    let get = Closure::wrap(Box::new(move |key: JsValue| -> JsValue {
+        get_calls
+            .borrow_mut()
+            .push(format!("get:{}", key.as_string().unwrap_or_default()));
+        Promise::resolve(&get_body).into()
+    }) as Box<dyn FnMut(JsValue) -> JsValue>);
+    set_method(&bucket, "get", get.as_ref())?;
+
+    let create_calls = Rc::clone(&calls);
+    let create = Closure::wrap(Box::new(move |key: JsValue| -> JsValue {
+        create_calls.borrow_mut().push(format!(
+            "createMultipartUpload:{}",
+            key.as_string().unwrap_or_default()
+        ));
+        let upload = Object::new();
+        let _ = Reflect::set(
+            &upload,
+            &JsValue::from_str("uploadId"),
+            &JsValue::from_str("upload-1"),
+        );
+        Promise::resolve(&upload).into()
+    }) as Box<dyn FnMut(JsValue) -> JsValue>);
+    set_method(&bucket, "createMultipartUpload", create.as_ref())?;
+
+    let part_calls = Rc::clone(&calls);
+    let upload_part = Closure::wrap(Box::new(
+        move |part_number: JsValue, body: JsValue| -> JsValue {
+            let bytes = Uint8Array::new(&body).to_vec();
+            part_calls.borrow_mut().push(format!(
+                "uploadPart:{}:{bytes:?}",
+                part_number.as_f64().unwrap_or_default() as u32
+            ));
+            let part = Object::new();
+            let _ = Reflect::set(
+                &part,
+                &JsValue::from_str("etag"),
+                &JsValue::from_str("etag-2"),
+            );
+            Promise::resolve(&part).into()
+        },
+    ) as Box<dyn FnMut(JsValue, JsValue) -> JsValue>);
+
+    let complete_calls = Rc::clone(&calls);
+    let complete = Closure::wrap(Box::new(move |parts: JsValue| -> JsValue {
+        let parts = Array::from(&parts);
+        let rendered = parts
+            .iter()
+            .map(|part| {
+                let number = Reflect::get(&part, &JsValue::from_str("partNumber"))
+                    .ok()
+                    .and_then(|value| value.as_f64())
+                    .unwrap_or_default() as u32;
+                let etag = Reflect::get(&part, &JsValue::from_str("etag"))
+                    .ok()
+                    .and_then(|value| value.as_string())
+                    .unwrap_or_default();
+                format!("{number}:{etag}")
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        complete_calls
+            .borrow_mut()
+            .push(format!("complete:[{rendered}]"));
+        Promise::resolve(&JsValue::UNDEFINED).into()
+    }) as Box<dyn FnMut(JsValue) -> JsValue>);
+
+    let abort_calls = Rc::clone(&calls);
+    let abort = Closure::wrap(Box::new(move || -> JsValue {
+        abort_calls.borrow_mut().push("abort".to_string());
+        Promise::resolve(&JsValue::UNDEFINED).into()
+    }) as Box<dyn FnMut() -> JsValue>);
+
+    let upload = Object::new();
+    set_method(&upload, "uploadPart", upload_part.as_ref())?;
+    set_method(&upload, "complete", complete.as_ref())?;
+    set_method(&upload, "abort", abort.as_ref())?;
+    let resume_calls = Rc::clone(&calls);
+    let resumed_upload = upload.clone();
+    let resume = Closure::wrap(
+        Box::new(move |key: JsValue, upload_id: JsValue| -> JsValue {
+            resume_calls.borrow_mut().push(format!(
+                "resumeMultipartUpload:{}:{}",
+                key.as_string().unwrap_or_default(),
+                upload_id.as_string().unwrap_or_default()
+            ));
+            resumed_upload.clone().into()
+        }) as Box<dyn FnMut(JsValue, JsValue) -> JsValue>,
+    );
+    set_method(&bucket, "resumeMultipartUpload", resume.as_ref())?;
+
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.into(),
+    });
+    contract.put("fixture/object", &[1, 2, 3]).await?;
+    contract.delete("fixture/deleted").await?;
+    let first_page = contract.list("fixture/", None, 2).await?;
+    anyhow::ensure!(
+        first_page.keys == vec!["fixture/object".to_string()]
+            && first_page.cursor.as_deref() == Some("cursor-2"),
+        "R2 first list response shape did not round-trip"
+    );
+    let page = contract.list("fixture/", Some("cursor-1"), 2).await?;
+    anyhow::ensure!(
+        page.keys == vec!["fixture/object".to_string()]
+            && page.cursor.as_deref() == Some("cursor-2"),
+        "R2 list response shape did not round-trip"
+    );
+    anyhow::ensure!(
+        contract.read_bounded("fixture/object", 3).await? == Some(vec![1, 2, 3]),
+        "R2 HEAD/get/arrayBuffer shape did not round-trip"
+    );
+    anyhow::ensure!(
+        contract.create_multipart("fixture/object").await? == "upload-1",
+        "R2 createMultipartUpload response shape did not round-trip"
+    );
+    let part = contract
+        .upload_part("fixture/object", "upload-1", 2, &[4, 5])
+        .await?;
+    contract
+        .complete_multipart(
+            "fixture/object",
+            "upload-1",
+            &[
+                part,
+                PartTag {
+                    part_number: 1,
+                    etag: "etag-1".to_string(),
+                },
+            ],
+        )
+        .await?;
+    anyhow::ensure!(
+        contract
+            .abort_multipart("fixture/object", "upload-1")
+            .await?
+            == MultipartAbortOutcome::Aborted,
+        "R2 abort promise did not round-trip"
+    );
+
+    let expected = vec![
+        "put:fixture/object:[1, 2, 3]",
+        "delete:fixture/deleted",
+        "list:fixture/:<absent>:2",
+        "list:fixture/:cursor-1:2",
+        "head:fixture/object",
+        "get:fixture/object",
+        "arrayBuffer",
+        "createMultipartUpload:fixture/object",
+        "resumeMultipartUpload:fixture/object:upload-1",
+        "uploadPart:2:[4, 5]",
+        "resumeMultipartUpload:fixture/object:upload-1",
+        "complete:[1:etag-1,2:etag-2]",
+        "resumeMultipartUpload:fixture/object:upload-1",
+        "abort",
+    ];
+    let actual = calls.borrow().clone();
+    anyhow::ensure!(
+        actual.iter().map(String::as_str).eq(expected),
+        "production R2 adapter emitted the wrong JavaScript call shape: {:?}",
+        actual
+    );
+    Ok(())
 }
 
 /// Reflect method `name` off the JS object `obj` as a callable `Function`.
@@ -1174,27 +1623,26 @@ fn js_promise(
 ///
 /// The external-binding counterpart of [`R2Write`]: each operation mints a
 /// short-lived presigned `PUT`/`DELETE` URL with [`S3Surface::object_url`] and
-/// drives it over the Workers global Fetch API. A `DELETE` is idempotent — a
+/// sends it through the fixed authenticated gateway. A `DELETE` is idempotent — a
 /// `404`/`204` (absent key) is treated as success — matching the R2 path's
 /// no-op delete.
 struct S3Write {
     surface: S3Surface,
+    egress: Arc<WorkerEgressClient>,
 }
 
 #[async_trait(?Send)]
 impl SurfaceWrite for S3Write {
-    async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        use worker::{Fetch, Method, Request, RequestInit};
+    fn multipart_protocol_version(&self) -> Option<u32> {
+        Some(1)
+    }
 
+    async fn write(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Put, path, now)?;
-        let body: worker::wasm_bindgen::JsValue = js_sys::Uint8Array::from(bytes).into();
-        let mut init = RequestInit::new();
-        init.with_method(Method::Put).with_body(Some(body));
-        let request = Request::new_with_init(&url, &init)
-            .map_err(|err| anyhow::anyhow!("s3 build PUT request: {err}"))?;
-        let response = Fetch::Request(request)
-            .send()
+        let response = self
+            .egress
+            .send(&url, "PUT", Some(bytes.to_vec()), None, None, None, None)
             .await
             .map_err(|err| anyhow::anyhow!("s3 PUT {}: {err}", self.surface.describe()))?;
         let status = response.status_code();
@@ -1205,16 +1653,11 @@ impl SurfaceWrite for S3Write {
     }
 
     async fn delete(&self, path: &str) -> Result<()> {
-        use worker::{Fetch, Method, Request, RequestInit};
-
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Delete, path, now)?;
-        let mut init = RequestInit::new();
-        init.with_method(Method::Delete);
-        let request = Request::new_with_init(&url, &init)
-            .map_err(|err| anyhow::anyhow!("s3 build DELETE request: {err}"))?;
-        let response = Fetch::Request(request)
-            .send()
+        let response = self
+            .egress
+            .send(&url, "DELETE", None, None, None, None, None)
             .await
             .map_err(|err| anyhow::anyhow!("s3 DELETE {}: {err}", self.surface.describe()))?;
         let status = response.status_code();
@@ -1224,5 +1667,169 @@ impl SurfaceWrite for S3Write {
             return Ok(());
         }
         anyhow::bail!("s3 DELETE {}: status {status}", self.surface.describe());
+    }
+
+    async fn delete_if_matches(
+        &self,
+        path: &str,
+        expected: &aos_hub_core::surface_write::SurfaceDeletePrecondition,
+    ) -> Result<aos_hub_core::surface_write::SurfaceDeleteOutcome> {
+        let etag = expected
+            .etag
+            .as_deref()
+            .filter(|etag| !etag.is_empty())
+            .context("s3 identity-checked deletion requires a strong ETag")?;
+        let etag = aos_hub_core::surface_write::strong_if_match_etag(etag)?;
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Delete, path, now)?;
+        let response = self
+            .egress
+            .send(&url, "DELETE", None, None, None, Some(&etag), None)
+            .await
+            .map_err(|err| anyhow::anyhow!("s3 conditional DELETE: {err}"))?;
+        match response.status_code() {
+            200..=299 => Ok(aos_hub_core::surface_write::SurfaceDeleteOutcome::Deleted {
+                etag: expected.etag.clone(),
+                content_hash: expected.content_hash.clone(),
+                size: expected.size,
+            }),
+            404 => Ok(aos_hub_core::surface_write::SurfaceDeleteOutcome::NotFound),
+            412 => Ok(
+                aos_hub_core::surface_write::SurfaceDeleteOutcome::PreconditionFailed {
+                    detail: "backend object identity changed after inventory".to_string(),
+                },
+            ),
+            status => anyhow::bail!(
+                "s3 conditional DELETE {}: status {status}",
+                self.surface.describe()
+            ),
+        }
+    }
+
+    async fn create_multipart(&self, path: &str) -> Result<String> {
+        let url = self.surface.multipart_url(
+            "create",
+            path,
+            None,
+            None,
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let mut response = self
+            .egress
+            .send(&url, "POST", Some(Vec::new()), None, None, None, None)
+            .await
+            .context("S3 create multipart gateway request")?;
+        anyhow::ensure!(
+            (200..300).contains(&response.status_code()),
+            "S3 create multipart failed: {}",
+            response.status_code()
+        );
+        let body = crate::consoleports::read_response_capped(
+            &mut response,
+            1024 * 1024,
+            "S3 create multipart response",
+        )
+        .await?;
+        let body = String::from_utf8(body).context("S3 create multipart response is not UTF-8")?;
+        aos_hub_core::s3surface::parse_multipart_upload_id(&body)
+    }
+
+    async fn upload_part(
+        &self,
+        path: &str,
+        upload_id: &str,
+        part_number: u32,
+        bytes: &[u8],
+    ) -> Result<aos_hub_core::surface_write::PartTag> {
+        let url = self.surface.multipart_url(
+            "part",
+            path,
+            Some(upload_id),
+            Some(part_number),
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let response = self
+            .egress
+            .send(&url, "PUT", Some(bytes.to_vec()), None, None, None, None)
+            .await
+            .context("S3 upload-part gateway request")?;
+        anyhow::ensure!(
+            (200..300).contains(&response.status_code()),
+            "S3 upload part failed: {}",
+            response.status_code()
+        );
+        let etag = response
+            .headers()
+            .get("etag")?
+            .context("S3 upload-part response omitted ETag")?;
+        Ok(aos_hub_core::surface_write::PartTag { part_number, etag })
+    }
+
+    async fn complete_multipart(
+        &self,
+        path: &str,
+        upload_id: &str,
+        parts: &[aos_hub_core::surface_write::PartTag],
+    ) -> Result<()> {
+        let url = self.surface.multipart_url(
+            "complete",
+            path,
+            Some(upload_id),
+            None,
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let body = aos_hub_core::s3surface::complete_multipart_xml(parts)?.into_bytes();
+        let mut response = self
+            .egress
+            .send(
+                &url,
+                "POST",
+                Some(body),
+                Some("application/xml"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .context("S3 complete-multipart gateway request")?;
+        anyhow::ensure!(
+            (200..300).contains(&response.status_code()),
+            "S3 complete multipart failed: {}",
+            response.status_code()
+        );
+        let body = crate::consoleports::read_response_capped(
+            &mut response,
+            1024 * 1024,
+            "S3 complete multipart response",
+        )
+        .await?;
+        let body =
+            String::from_utf8(body).context("S3 complete multipart response is not UTF-8")?;
+        aos_hub_core::s3surface::validate_complete_multipart_response(&body)?;
+        Ok(())
+    }
+
+    async fn abort_multipart(
+        &self,
+        path: &str,
+        upload_id: &str,
+    ) -> Result<aos_hub_core::surface_write::MultipartAbortOutcome> {
+        let url = self.surface.multipart_url(
+            "abort",
+            path,
+            Some(upload_id),
+            None,
+            aos_hub_core::clock::now_unix_secs(),
+        )?;
+        let response = self
+            .egress
+            .send(&url, "DELETE", None, None, None, None, None)
+            .await
+            .context("S3 abort-multipart gateway request")?;
+        match response.status_code() {
+            404 => Ok(aos_hub_core::surface_write::MultipartAbortOutcome::Absent),
+            200..=299 => Ok(aos_hub_core::surface_write::MultipartAbortOutcome::Aborted),
+            status => anyhow::bail!("S3 abort multipart failed: {status}"),
+        }
     }
 }

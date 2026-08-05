@@ -27,7 +27,7 @@
 //!
 //! Coverage requirements derive from a registry's cache-stack semantics (see
 //! [`crate::stack`]). [`validate_registry`] probes the stack's distinct
-//! endpoints when a `[cache_stack]` is committed, else the flat `[[caches]]`
+//! endpoints from the committed `[caches]` stack
 //! list. For every `mirror` group in the stack, each member must
 //! *individually* cover the full closure set — a shortfall is a replication
 //! failure reported as a [`ValidationSummary::mirror_shortfall`]. For `try`
@@ -68,7 +68,7 @@
 //! Each run is recorded in the database (`validation_runs` plus per-hash
 //! `validation_findings`) and summarized for callers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -76,7 +76,6 @@ use sha2::{Digest, Sha256};
 
 use crate::db::{Database, FindingStatus, RegistryRecord, ValidationFinding};
 use crate::fetch;
-use crate::stack::StackNode;
 
 /// Maximum store hashes probed per cache per run.
 ///
@@ -153,7 +152,7 @@ pub struct ValidationSummary {
 /// A mirror-group coverage shortfall for one member cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MirrorShortfall {
-    /// Index of the mirror group in [`StackNode::mirror_groups`] order.
+    /// Index of the mirror group in [`crate::stack::StackNode::mirror_groups`] order.
     pub group_index: usize,
     /// Number of closure hashes this member is missing.
     pub missing: u64,
@@ -262,7 +261,7 @@ pub async fn validate_deep(
 ///
 /// The cache set is the registry's committed cache stack's distinct endpoints
 /// when a `[cache_stack]` is committed (see [`Database::registry_cache_stack`]),
-/// else the flat `[[caches]]` list. For every `mirror` group, each member's
+/// committed `[caches]` stack. For every `mirror` group, each member's
 /// per-member coverage is computed and a shortfall is attached to that
 /// member's summary (and recorded as findings).
 ///
@@ -286,22 +285,24 @@ pub async fn validate_registry(
         hashes.truncate(MAX_HASHES_PER_RUN);
     }
 
-    // The cache set and the mirror groups both come from the committed stack
-    // when present, falling back to the flat [[caches]] list otherwise.
-    let stack = db.registry_cache_stack(registry.id).await?;
-    let cache_urls: Vec<String> = match &stack {
-        Some(node) => node.endpoints(),
-        None => db
-            .list_advertised_caches(registry.id)
-            .await?
-            .into_iter()
-            .map(|(u, _)| u)
-            .collect(),
-    };
-    let mirror_groups: Vec<Vec<String>> = stack
-        .as_ref()
-        .map(StackNode::mirror_groups)
-        .unwrap_or_default();
+    // Both validation inputs come from the exact signed-stack projection. A
+    // mirror-group digest is stable across ordering changes and groups entries
+    // that satisfy the same availability requirement.
+    let stack_entries = db.registry_cache_stack_entries(registry.id).await?;
+    let cache_urls: Vec<String> = stack_entries
+        .iter()
+        .map(|entry| entry.committed_url.clone())
+        .collect();
+    let mut grouped = BTreeMap::<String, Vec<String>>::new();
+    for entry in &stack_entries {
+        if let Some(group_id) = &entry.mirror_group_id {
+            grouped
+                .entry(group_id.clone())
+                .or_default()
+                .push(entry.committed_url.clone());
+        }
+    }
+    let mirror_groups: Vec<Vec<String>> = grouped.into_values().collect();
 
     let client = fetch::hardened_client().await;
     let mut summaries = Vec::new();
@@ -1713,7 +1714,7 @@ async fn http_integrity_ok(
 ///
 /// SECURITY: the URL is gated through [`crate::fetch::is_safe_remote_url`]
 /// before any request is issued. The cache endpoints probed here come from a
-/// registry's committed `[cache_stack]`/`[[caches]]` and are re-checked on
+/// registry's committed `[caches]` stack and are re-checked on
 /// every reindex tick, so a committed literal-IP URL like
 /// `http://169.254.169.254/<hash>.narinfo` must not be reachable: the
 /// [`ValidatingResolver`](crate::fetch) only covers DNS *names*, not literal-IP
@@ -1736,6 +1737,7 @@ fn unix_now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stack::StackNode;
 
     /// Build a signed narinfo for `nar_bytes` and the matching trust roster
     /// key for a fixed test key, returning `(narinfo_text, trust_key_line)`.
@@ -2088,7 +2090,7 @@ mod tests {
     }
 
     /// Build a registry whose index references a single store hash `abc`,
-    /// with the given `[[caches]]` URLs, in a fresh in-memory db.
+    /// with the given committed cache-stack URLs, in a fresh in-memory db.
     async fn registry_with_caches(caches: Vec<(String, u32)>) -> (Database, RegistryRecord) {
         registry_with_caches_and_keys(caches, &[]).await
     }
@@ -2101,7 +2103,7 @@ mod tests {
     ) -> (Database, RegistryRecord) {
         let db = Database::open_in_memory().await.unwrap();
         let id = db
-            .register_registry("demo", "/srv/demo", trust_keys, false)
+            .register_registry("demo", trust_keys, false)
             .await
             .unwrap();
         let package: aos_package::registry::parse::PackageToml = toml::from_str(

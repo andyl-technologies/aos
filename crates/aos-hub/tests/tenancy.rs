@@ -42,9 +42,14 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
         auth,
         leases: std::sync::Arc::new(aos_hub::facade::LeaseMap::new()),
         sealer: aos_hub::auth::oidc::dev_sealer(),
+        secret_versions: aos_hub_core::secret_version::EmptySecretVersionResolver::shared(),
         http: aos_hub::fetch::hardened_client().await,
+        image_snapshots: None,
         mailer: std::sync::Arc::new(aos_hub::auth::magic::LogMailer),
         dev: false,
+        delivery_attestation_verifier: None,
+        domain_probe_terminator: None,
+        route_reservation_keyring: None,
     })
 }
 
@@ -118,6 +123,33 @@ async fn rpc(
     (status, value)
 }
 
+/// Executes a reviewed plan/apply pair using the returned confirmation hash.
+async fn planned_rpc(
+    app: &axum::Router,
+    plan_method: &str,
+    apply_method: &str,
+    mut plan_body: serde_json::Value,
+    auth: Option<&str>,
+    key: &str,
+) -> (StatusCode, serde_json::Value) {
+    plan_body["idempotencyKey"] = serde_json::Value::String(format!("{key}-plan"));
+    let (status, plan) = rpc(app, plan_method, plan_body, auth).await;
+    if status != StatusCode::OK {
+        return (status, plan);
+    }
+    rpc(
+        app,
+        apply_method,
+        serde_json::json!({
+            "planId": plan["plan"]["planId"],
+            "idempotencyKey": format!("{key}-apply"),
+            "confirmationHash": plan["plan"]["confirmationHash"],
+        }),
+        auth,
+    )
+    .await
+}
+
 /// Create org "acme", a `local_fs` binding over the surface's parent, and a
 /// managed registry at `acme/infra/prod/cdn` whose surface is the indexed
 /// fixture. Returns `(app, db)`.
@@ -132,18 +164,13 @@ async fn serve_managed(
     // name, so {root}/{prefix} == surface.
     let parent = surface.parent().unwrap().to_str().unwrap();
     let dir_name = surface.file_name().unwrap().to_str().unwrap();
-    let binding = db
-        .create_storage_binding(org, "primary", "local_fs", parent)
-        .await
-        .unwrap();
+    let binding = common::create_local_binding(&db, org, "primary", parent).await;
     let id = db
         .create_managed_registry(
             org,
             "infra/prod",
             "cdn",
             visibility,
-            Some(binding),
-            dir_name,
             std::slice::from_ref(&fixture.trust_key),
             true,
         )
@@ -201,14 +228,9 @@ async fn flat_phase1_slug_still_resolves() {
     let fixture = common::standard_registry(&surface);
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    db.register_registry(
-        "demo",
-        surface.to_str().unwrap(),
-        std::slice::from_ref(&fixture.trust_key),
-        true,
-    )
-    .await
-    .unwrap();
+    db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
+        .await
+        .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     index_and_record(&db, &LocalFsFetch::new(&surface), &registry)
         .await
@@ -276,9 +298,14 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
 
     // A member user with Read on the org.
     let user = db.create_user("dev@acme.com", None).await.unwrap();
-    db.grant_membership("user", user, "acme", Role::Developer.as_str())
-        .await
-        .unwrap();
+    db.grant_membership(
+        "user",
+        user,
+        &common::org_scope(&db, "acme").await,
+        Role::Developer.as_str(),
+    )
+    .await
+    .unwrap();
     let session = db.create_session(user, 3600, 0).await.unwrap();
 
     let app = router(app_state(Arc::clone(&db)).await).await;
@@ -303,7 +330,7 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     // A bearer token with Read on the registry scope also sees it.
     let token = bearer(
         Principal::user(user),
-        "acme/infra/prod/cdn",
+        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Read],
     );
     let (status, _) = get(&app, "/acme/infra/prod/cdn/HEAD", None, Some(&token)).await;
@@ -323,9 +350,14 @@ async fn internal_registry_requires_org_membership() {
     let outsider_session = db.create_session(outsider, 3600, 0).await.unwrap();
     // A member user.
     let member = db.create_user("dev@acme.com", None).await.unwrap();
-    db.grant_membership("user", member, "acme", Role::Viewer.as_str())
-        .await
-        .unwrap();
+    db.grant_membership(
+        "user",
+        member,
+        &common::org_scope(&db, "acme").await,
+        Role::Viewer.as_str(),
+    )
+    .await
+    .unwrap();
     let member_session = db.create_session(member, 3600, 0).await.unwrap();
 
     let app = router(app_state(Arc::clone(&db)).await).await;
@@ -353,7 +385,7 @@ async fn instance_home_lists_only_visible_registries() {
         let (project, name, vis) = (project.to_string(), name.to_string(), vis.to_string());
         let db = &db;
         async move {
-            db.create_managed_registry(org, &project, &name, &vis, None, "", &[], false)
+            db.create_managed_registry(org, &project, &name, &vis, &[], false)
                 .await
                 .unwrap();
             format!("acme/{project}/{name}")
@@ -402,9 +434,14 @@ async fn instance_home_lists_only_visible_registries() {
     // A member of acme (org Viewer grant): the org-scoped Read covers internal
     // and the private registry's sub-scope alike, so all three are listed.
     let member = db.create_user("dev@acme.com", None).await.unwrap();
-    db.grant_membership("user", member, "acme", Role::Viewer.as_str())
-        .await
-        .unwrap();
+    db.grant_membership(
+        "user",
+        member,
+        &common::org_scope(&db, "acme").await,
+        Role::Viewer.as_str(),
+    )
+    .await
+    .unwrap();
     let session = db.create_session(member, 3600, 0).await.unwrap();
     let cookie = format!("__Host-aos_session={session}");
     let (status, body) = get(&app, "/", Some(&cookie), None).await;
@@ -439,81 +476,211 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     let user = db.create_user("founder@acme.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
 
-    // CreateOrg with any authenticated principal; the caller becomes Owner.
-    let token = bearer(Principal::user(user), "", &[]);
-    let (status, value) = rpc(
+    // CreateOrganization with any authenticated principal; the caller becomes Owner.
+    let token = bearer(Principal::user(user), "instance", &[]);
+    let (status, value) = planned_rpc(
         &app,
-        "OrganizationService/CreateOrg",
-        serde_json::json!({"slug": "acme", "name": "Acme, Inc."}),
+        "OrganizationService/PlanCreateOrganization",
+        "OrganizationService/CreateOrganization",
+        serde_json::json!({"slug": "acme", "displayName": "Acme, Inc."}),
         Some(&token),
+        "create-acme",
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(value["org"]["slug"], "acme");
+    assert_eq!(value["organization"]["slug"], "acme");
+    let org = db.org_by_slug("acme").await.unwrap().unwrap();
+    let org_scope = org.stable_id.clone();
     // The auto-grant made the founder an Owner of acme.
     let grants = db.effective_scopes(Principal::user(user)).await.unwrap();
     assert!(grants
         .iter()
-        .any(|(s, r)| s.as_str() == "acme" && *r == Role::Owner));
+        .any(|(s, r)| s.as_str() == org_scope && *r == Role::Owner));
 
     // As Owner, the founder has registry.configure on acme — mint a token
     // carrying it for the subsequent mutations.
     let owner_token = bearer(
         Principal::user(user),
-        "acme",
-        &[Permission::RegistryConfigure],
+        &org_scope,
+        &[Permission::RegistryConfigure, Permission::StorageManage],
     );
 
     // CreateProject.
-    let (status, value) = rpc(
+    let (status, value) = planned_rpc(
         &app,
+        "ProjectService/PlanCreateProject",
         "ProjectService/CreateProject",
         serde_json::json!({"orgSlug": "acme", "path": "infra/prod", "name": "Prod"}),
         Some(&owner_token),
+        "create-project",
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(value["project"]["path"], "infra/prod");
 
-    // CreateBinding.
-    let (status, value) = rpc(
+    // Create a normalized identity/spec binding.
+    let (status, value) = planned_rpc(
         &app,
-        "StorageBindingService/CreateBinding",
-        serde_json::json!({"orgSlug": "acme", "name": "primary", "kind": "local_fs", "root": "/srv/aos-hub"}),
+        "StorageBindingService/PlanCreateStorageBinding",
+        "StorageBindingService/CreateStorageBinding",
+        serde_json::json!({
+            "stableId": "binding:acme-primary",
+            "ownerScopeKey": org_scope,
+            "spec": {
+                "name": "primary",
+                "kind": "local_fs",
+                "localRootPath": "/srv/aos-hub",
+                "accessMode": "private"
+            }
+        }),
         Some(&owner_token),
-    ).await
-    ;
+        "create-binding",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(value["binding"]["root"], "/srv/aos-hub");
+    assert_eq!(
+        value["storageBinding"]["spec"]["localRootPath"],
+        "/srv/aos-hub"
+    );
 
-    // CreateRegistry, bound to the new binding.
-    let (status, value) = rpc(
+    // Registry creation is identity-only; placement is a separate topology step.
+    let (status, value) = planned_rpc(
         &app,
+        "RegistryService/PlanCreateRegistry",
         "RegistryService/CreateRegistry",
         serde_json::json!({
             "orgSlug": "acme",
             "projectPath": "infra/prod",
             "name": "cdn",
             "visibility": "private",
-            "bindingName": "primary",
-            "prefix": "infra/prod/cdn",
             "trustKeys": ["cdn:Ed25519:AAAA"]
         }),
         Some(&owner_token),
+        "create-registry",
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
     assert_eq!(value["registry"]["slug"], "acme/infra/prod/cdn");
 
-    // The registry exists with the right ownership and storage binding.
+    // The registry exists with the right ownership but no implicit placement.
     let record = db
         .registry_by_slug("acme/infra/prod/cdn")
         .await
         .unwrap()
         .unwrap();
     assert_eq!(record.visibility, "private");
-    assert!(record.storage_binding_id.is_some());
-    assert_eq!(record.prefix, "infra/prod/cdn");
+    assert!(db
+        .list_surface_placements(aos_hub::db::SurfaceTarget::Registry(record.id))
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn organization_plans_enforce_cas_replay_and_delete_grace() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    db.set_signup_policy(aos_hub::db::SignupPolicy::Open)
+        .await
+        .unwrap();
+    let user = db.create_user("owner@acme.com", None).await.unwrap();
+    let app = router(app_state(Arc::clone(&db)).await).await;
+    let bootstrap = bearer(Principal::user(user), "instance", &[]);
+
+    let (status, plan) = rpc(
+        &app,
+        "OrganizationService/PlanCreateOrganization",
+        serde_json::json!({
+            "slug": "acme",
+            "displayName": "Acme",
+            "idempotencyKey": "org-create-plan"
+        }),
+        Some(&bootstrap),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    let apply = serde_json::json!({
+        "planId": plan["plan"]["planId"],
+        "idempotencyKey": "org-create-apply",
+        "confirmationHash": plan["plan"]["confirmationHash"]
+    });
+    let (status, created) = rpc(
+        &app,
+        "OrganizationService/CreateOrganization",
+        apply.clone(),
+        Some(&bootstrap),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let org_scope = common::org_scope(&db, "acme").await;
+    let (status, replayed) = rpc(
+        &app,
+        "OrganizationService/CreateOrganization",
+        apply,
+        Some(&bootstrap),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replayed}");
+    assert_eq!(created, replayed, "apply replay returns the sealed result");
+
+    let version = created["organization"]["resourceVersion"].as_str().unwrap();
+    let manager = bearer(
+        Principal::user(user),
+        &org_scope,
+        &[Permission::MembersManage, Permission::IamAdmin],
+    );
+    let (status, updated) = planned_rpc(
+        &app,
+        "OrganizationService/PlanUpdateOrganization",
+        "OrganizationService/UpdateOrganization",
+        serde_json::json!({
+            "slug": "acme",
+            "displayName": "Acme Systems",
+            "expectedResourceVersion": version
+        }),
+        Some(&manager),
+        "org-update",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["organization"]["displayName"], "Acme Systems");
+
+    let (status, stale) = rpc(
+        &app,
+        "OrganizationService/PlanUpdateOrganization",
+        serde_json::json!({
+            "slug": "acme",
+            "displayName": "Stale",
+            "expectedResourceVersion": version,
+            "idempotencyKey": "org-stale"
+        }),
+        Some(&manager),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{stale}");
+
+    let updated_version = updated["organization"]["resourceVersion"].as_str().unwrap();
+    let (status, deleted) = planned_rpc(
+        &app,
+        "OrganizationService/PlanDeleteOrganization",
+        "OrganizationService/DeleteOrganization",
+        serde_json::json!({
+            "slug": "acme",
+            "expectedResourceVersion": updated_version
+        }),
+        Some(&manager),
+        "org-delete",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{deleted}");
+    assert_eq!(deleted["deleted"], true);
+    assert!(db.org_by_slug("acme").await.unwrap().is_none());
+    assert!(
+        db.org_by_slug_including_deleted("acme")
+            .await
+            .unwrap()
+            .is_some(),
+        "soft-deleted organization remains during purge grace"
+    );
 }
 
 #[tokio::test]
@@ -531,7 +698,7 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     db.create_org("victimorg", "Victim Org").await.unwrap();
     let attacker = db.create_user("attacker@evil.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(attacker), "", &[]);
+    let token = bearer(Principal::user(attacker), "instance", &[]);
 
     for bad in [
         "/",
@@ -544,8 +711,8 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     ] {
         let (status, value) = rpc(
             &app,
-            "OrganizationService/CreateOrg",
-            serde_json::json!({"slug": bad, "name": "Anything"}),
+            "OrganizationService/PlanCreateOrganization",
+            serde_json::json!({"slug": bad, "displayName": "Anything", "idempotencyKey": format!("bad-{bad}")}),
             Some(&token),
         )
         .await;
@@ -570,23 +737,29 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     );
     // And the victim org's roster gained no Owner.
     assert!(db
-        .list_members_of_scope("victimorg")
+        .list_members_of_scope(&common::org_scope(&db, "victimorg").await)
         .await
         .unwrap()
         .is_empty());
-    assert!(db.list_members_of_scope("").await.unwrap().is_empty());
+    assert!(db
+        .list_members_of_scope("instance")
+        .await
+        .unwrap()
+        .is_empty());
 
     // Regression: a normal slug still creates the org and grants Owner at
     // exactly that org's scope.
-    let (status, value) = rpc(
+    let (status, value) = planned_rpc(
         &app,
-        "OrganizationService/CreateOrg",
-        serde_json::json!({"slug": "acme", "name": "Acme, Inc."}),
+        "OrganizationService/PlanCreateOrganization",
+        "OrganizationService/CreateOrganization",
+        serde_json::json!({"slug": "acme", "displayName": "Acme, Inc."}),
         Some(&token),
+        "normal-acme",
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{value}");
-    assert_eq!(value["org"]["slug"], "acme");
+    assert_eq!(value["organization"]["slug"], "acme");
     let grants = db
         .effective_scopes(Principal::user(attacker))
         .await
@@ -610,15 +783,17 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
         .unwrap();
     let founder = db.create_user("founder@acme.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(founder), "", &[]);
+    let token = bearer(Principal::user(founder), "instance", &[]);
 
     // The first CREATE_ORG_PER_OWNER creations in the window succeed.
     for i in 0..CREATE_ORG_PER_OWNER {
-        let (status, value) = rpc(
+        let (status, value) = planned_rpc(
             &app,
-            "OrganizationService/CreateOrg",
-            serde_json::json!({"slug": format!("acme{i}"), "name": "Acme"}),
+            "OrganizationService/PlanCreateOrganization",
+            "OrganizationService/CreateOrganization",
+            serde_json::json!({"slug": format!("acme{i}"), "displayName": "Acme"}),
             Some(&token),
+            &format!("rate-{i}"),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "create #{i}: {value}");
@@ -626,11 +801,13 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
 
     // The next one over the budget is rejected. Connect maps ResourceExhausted
     // to HTTP 429.
-    let (status, value) = rpc(
+    let (status, value) = planned_rpc(
         &app,
-        "OrganizationService/CreateOrg",
-        serde_json::json!({"slug": "acme-over", "name": "Acme"}),
+        "OrganizationService/PlanCreateOrganization",
+        "OrganizationService/CreateOrganization",
+        serde_json::json!({"slug": "acme-over", "displayName": "Acme"}),
         Some(&token),
+        "rate-over",
     )
     .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{value}");
@@ -638,12 +815,14 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
 
     // A *different* principal is unaffected — the limit is per-caller.
     let other = db.create_user("other@acme.com", None).await.unwrap();
-    let other_token = bearer(Principal::user(other), "", &[]);
-    let (status, value) = rpc(
+    let other_token = bearer(Principal::user(other), "instance", &[]);
+    let (status, value) = planned_rpc(
         &app,
-        "OrganizationService/CreateOrg",
-        serde_json::json!({"slug": "beta", "name": "Beta"}),
+        "OrganizationService/PlanCreateOrganization",
+        "OrganizationService/CreateOrganization",
+        serde_json::json!({"slug": "beta", "displayName": "Beta"}),
         Some(&other_token),
+        "rate-other",
     )
     .await;
     assert_eq!(
@@ -736,12 +915,17 @@ async fn private_registry_list_releases_requires_read() {
     // A member with Read, carrying a bearer scoped to the registry, sees the
     // releases (the permission is intersected with the owner's live grants).
     let user = db.create_user("dev@acme.com", None).await.unwrap();
-    db.grant_membership("user", user, "acme", Role::Developer.as_str())
-        .await
-        .unwrap();
+    db.grant_membership(
+        "user",
+        user,
+        &common::org_scope(&db, "acme").await,
+        Role::Developer.as_str(),
+    )
+    .await
+    .unwrap();
     let token = bearer(
         Principal::user(user),
-        "acme/infra/prod/cdn",
+        &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Read],
     );
     let (status, value) = rpc(
@@ -763,18 +947,22 @@ async fn rpc_mutations_reject_unauthenticated_and_unauthorized() {
     // No bearer at all: unauthenticated.
     let (status, _) = rpc(
         &app,
-        "OrganizationService/CreateOrg",
-        serde_json::json!({"slug": "globex", "name": "Globex"}),
+        "OrganizationService/PlanCreateOrganization",
+        serde_json::json!({"slug": "globex", "displayName": "Globex", "idempotencyKey": "unauth"}),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // Authenticated but lacking registry.configure on acme: denied.
-    let weak = bearer(Principal::user(1), "acme", &[Permission::Read]);
+    let weak = bearer(
+        Principal::user(1),
+        &common::org_scope(&db, "acme").await,
+        &[Permission::Read],
+    );
     let (status, _) = rpc(
         &app,
-        "ProjectService/CreateProject",
+        "ProjectService/PlanCreateProject",
         serde_json::json!({"orgSlug": "acme", "path": "infra", "name": "Infra"}),
         Some(&weak),
     )

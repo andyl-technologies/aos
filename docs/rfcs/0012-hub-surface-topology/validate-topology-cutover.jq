@@ -299,6 +299,10 @@ def transition_contract_valid($plan; $report):
        | [range(1; $instants|length) as $index
           | $instants[$index - 1] < $instants[$index]] | all)
   and ([$ledger[].admitted_target_write_count] | add) == 0
+  and ([range(0; $ledger|length) as $index
+        | select($ledger[$index].target_write_open_count == 1
+                 and ($index == 0 or $ledger[$index - 1].target_write_open_count == 0))]
+       | length) == (if $report.result == "succeeded" then 1 else 0 end)
   and (if $report.result == "succeeded" then
         $report.attempt.state == "completed"
         and [$ledger[].to_state] == ["quiesced","backed_up","transformed","validated","switched","closed"]
@@ -541,6 +545,8 @@ def verification_contract_valid($plan; $report; $verification):
   and $verification.transition_validation.attempt_ordinal == $report.attempt.ordinal
   and $verification.transition_validation.idempotency_key_matches
   and $verification.transition_validation.predecessor_chain_valid
+  and $verification.transition_validation.write_open_transition_count
+      == (if $report.result == "succeeded" then 1 else 0 end)
   and $verification.transition_validation.admitted_target_write_count == 0
   and $verification.gc_validation.partition_overlap_count == 0
   and $verification.gc_validation.undeclared_outstanding_count == 0

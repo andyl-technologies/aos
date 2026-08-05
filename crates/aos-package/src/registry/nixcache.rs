@@ -754,17 +754,19 @@ pub async fn upload_static_cache_to_all(
     Ok(())
 }
 
-/// Insert or update a `[[caches]]` entry in the registry's `registry.toml`.
+/// Insert a cache endpoint into the registry's committed `[caches]` stack.
 ///
-/// Adds a `{ url, priority }` entry for `cache_url`, or updates the priority
-/// of an existing entry with the same URL. Returns `true` when the file was
-/// modified and `false` when it already matched.
+/// Adds `cache_url` to the ordered top-level `try` stack, preserving an
+/// existing nested stack as the first member. Returns `true` when the file was
+/// modified and `false` when the endpoint is already present. The `priority`
+/// argument remains the `nix-cache-info` priority; committed topology order,
+/// not a second numeric field, defines endpoint preference after cutover.
 ///
 /// # Errors
 ///
 /// Returns an error when `registry.toml` cannot be read, parsed, or
-/// rewritten, or when its `caches` value is not an array of tables.
-pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, priority: u32) -> Result<bool> {
+/// rewritten, or when its `[caches]` value is malformed.
+pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, _priority: u32) -> Result<bool> {
     let path = registry_dir.join("registry.toml");
     let content =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -774,34 +776,33 @@ pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, priority: u32
     let root = value
         .as_table_mut()
         .ok_or_else(|| anyhow::anyhow!("registry.toml root is not a table"))?;
-    let caches = root
-        .entry("caches".to_string())
-        .or_insert_with(|| TomlValue::Array(Vec::new()));
-    let caches = caches
-        .as_array_mut()
-        .ok_or_else(|| anyhow::anyhow!("registry.toml [[caches]] is not an array"))?;
-
-    let mut changed = false;
-    if let Some(existing) = caches.iter_mut().find(|entry| {
-        entry
-            .get("url")
-            .and_then(TomlValue::as_str)
-            .map(|url| url == cache_url)
-            .unwrap_or(false)
-    }) {
-        if existing.get("priority").and_then(TomlValue::as_integer) != Some(priority as i64) {
-            existing
-                .as_table_mut()
-                .ok_or_else(|| anyhow::anyhow!("cache entry is not a table"))?
-                .insert("priority".to_string(), TomlValue::Integer(priority as i64));
-            changed = true;
-        }
-    } else {
+    let endpoint = || {
         let mut table = toml::map::Map::new();
-        table.insert("url".to_string(), TomlValue::String(cache_url.to_string()));
-        table.insert("priority".to_string(), TomlValue::Integer(priority as i64));
-        caches.push(TomlValue::Table(table));
-        changed = true;
+        table.insert(
+            "endpoint".to_string(),
+            TomlValue::String(cache_url.to_string()),
+        );
+        TomlValue::Table(table)
+    };
+    let already_present = root
+        .get("caches")
+        .is_some_and(|value| cache_stack_contains_endpoint(value, cache_url));
+    let changed = !already_present;
+    if changed {
+        match root.remove("caches") {
+            None => {
+                root.insert("caches".to_string(), endpoint());
+            }
+            Some(existing) => {
+                let mut table = toml::map::Map::new();
+                table.insert("kind".to_string(), TomlValue::String("try".to_string()));
+                table.insert(
+                    "members".to_string(),
+                    TomlValue::Array(vec![existing, endpoint()]),
+                );
+                root.insert("caches".to_string(), TomlValue::Table(table));
+            }
+        }
     }
 
     if changed {
@@ -809,6 +810,21 @@ pub fn upsert_registry_cache(registry_dir: &Path, cache_url: &str, priority: u32
             .with_context(|| format!("writing {}", path.display()))?;
     }
     Ok(changed)
+}
+
+fn cache_stack_contains_endpoint(value: &TomlValue, expected: &str) -> bool {
+    value
+        .get("endpoint")
+        .and_then(TomlValue::as_str)
+        .is_some_and(|endpoint| endpoint == expected)
+        || value
+            .get("members")
+            .and_then(TomlValue::as_array)
+            .is_some_and(|members| {
+                members
+                    .iter()
+                    .any(|member| cache_stack_contains_endpoint(member, expected))
+            })
 }
 
 /// Returns whether the registry references at least one cacheable store path.
@@ -1326,12 +1342,11 @@ name = "test"
 
         assert!(upsert_registry_cache(tmp.path(), "https://cache.example", 100).unwrap());
         assert!(!upsert_registry_cache(tmp.path(), "https://cache.example", 100).unwrap());
-        assert!(upsert_registry_cache(tmp.path(), "https://cache.example", 200).unwrap());
+        assert!(!upsert_registry_cache(tmp.path(), "https://cache.example", 200).unwrap());
 
         let content = std::fs::read_to_string(tmp.path().join("registry.toml")).unwrap();
-        assert!(content.contains("[[caches]]"));
-        assert!(content.contains("url = \"https://cache.example\""));
-        assert!(content.contains("priority = 200"));
+        assert!(content.contains("[caches]"));
+        assert!(content.contains("endpoint = \"https://cache.example\""));
     }
 
     #[tokio::test]

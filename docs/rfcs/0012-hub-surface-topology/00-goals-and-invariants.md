@@ -66,6 +66,13 @@ relationship is identified by comparing its current URL string.
 
 ### Placement is not publication
 
+Surface creation never creates a placement implicitly. Every placement is an
+independent, explicitly planned object with its own stable identity, binding,
+prefix, lifecycle intent, review, and apply operation. Instance and organization
+defaults may prefill or recommend values in a new-placement proposal only; they
+never materialize a placement, select write authority, or mutate an existing
+surface when the surface itself is created.
+
 Storing a registry or cache on a public binding does not publish it to clients.
 Adding a delivery route does not add a cache to a registry's signed cache
 stack. Adding a cache to a signed stack does not upload content or protect it

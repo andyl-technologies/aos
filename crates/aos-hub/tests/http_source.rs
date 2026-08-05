@@ -51,14 +51,9 @@ async fn http_source_indexes_and_facade_redirects() {
 
     // Index over HTTP, fail-closed, with full verification.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    db.register_registry(
-        "demo",
-        &upstream_url,
-        std::slice::from_ref(&fixture.trust_key),
-        true,
-    )
-    .await
-    .unwrap();
+    db.register_registry("demo", std::slice::from_ref(&fixture.trust_key), true)
+        .await
+        .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();
     let fetch = HttpFetch::new(&upstream_url).await;
     let outcome = index_and_record(&db, &fetch, &registry).await.unwrap();

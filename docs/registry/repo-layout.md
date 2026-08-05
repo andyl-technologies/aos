@@ -19,7 +19,7 @@ anything being placed in the tag message (tags are pure pointers — see
 
 ```
 <repo root>/                          ← a commit's tree (what `git checkout` yields)
-├── registry.toml                     ← [registry] name/description, content_addressed, [[caches]]
+├── registry.toml                     ← [registry] metadata and the unified [caches] stack
 ├── keys.toml                         ← trust roster: active signing key(s) + revoked list
 ├── packages/
 │   ├── a/apache.toml
@@ -57,20 +57,20 @@ The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
 name        = "aos-core"
 description = "AOS core packages"
 
-# Where NAR blobs (and, if served, the Nix-cache surface) live. Authenticated via the
-# signed tag. The consumer's client-side registries.d/<name>.toml may override/supplement.
-[[caches]]
-url      = "https://cache.aos.dev"     # absolute, OR relative (e.g. "./nar") = same origin
-priority = 1000                        # HIGHER is preferred (resolve_mirrors sorts descending)
-
-[[caches]]
-url      = "./nar"
-priority = 100                         # fallback
+# Ordered cache delivery endpoints, authenticated by the signed tag. Managed
+# endpoints correspond to explicit Hub delivery routes; external endpoints do
+# not gain a managed identity merely because their URL happens to match.
+[caches]
+kind = "try"
+members = [
+  { endpoint = "https://cache.aos.dev" },
+  { endpoint = "./nar" },
+]
 ```
 
-- `[[caches]]` is `CacheEntry { url, priority }` (`types.rs:753`),
-  `default_cache_priority() == 100`. `resolve_mirrors` sorts **descending** (higher
-  first); `resolve_mirror` takes the first. See
+- `[caches]` is the unified `StackNode` expression. `try` is ordered
+  fall-through and `mirror` declares equivalent replicas; nodes may nest.
+  Consumers flatten the stack depth-first when they need a simple URL list. See
   [`nix-cache-compatibility.md`](nix-cache-compatibility.md).
 - **No signing key here.** The in-repo `RegistryRootConfig.signing` field was
   removed; a key inside a file authenticated *by* that key is circular for
@@ -255,7 +255,7 @@ objects; the consumer fetches the objects and reconstructs the tree:
 /channels/stable/<bucket>     (signed partition tag — AOS rollout)
         │  → semver tag  refs/tags/<semver>  (+ /releases/<…>/ packs)   (signed)
         ▼
-     commit ──► TREE  ┌─ registry.toml  → [[caches]]
+     commit ──► TREE  ┌─ registry.toml  → [caches] stack
                       ├─ keys.toml      → trust roster
                       ├─ packages/*     → package metadata
                       └─ store/*        → realisation graph (bytes + deps + CAs)
@@ -277,7 +277,7 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 
 | File | Status (today's code) |
 |---|---|
-| `registry.toml` | `[registry]` + `[[caches]]` (no signing pubkey) |
+| `registry.toml` | `[registry]` + unified `[caches]` stack (no signing pubkey) |
 | `keys.toml` | emitted by `apr create` as a schema-1 roster; maintained by `apr keys generate/list/add/retire` (signed roster commits, survivor-vouched + re-signed retirement); **consumed by clients** during sync (`pin_rotated_keys`) as the authoritative trusted-key set |
 | `packages/<x>/<name>.toml` | nested `PackageToml` (`nar_hash`/`nar_size`/`references` legacy-optional, superseded by `store/`) |
 | `store/<2-char>/<ia-hash>` | realisation graph: blessed NARs + dependency edges + CA realisations (RFC-0005); written by `apr publish`, maintained by `apr store`, enforced by `apm` |

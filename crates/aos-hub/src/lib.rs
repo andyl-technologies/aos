@@ -53,12 +53,10 @@
 //!   exchange, anonymous browse/search).
 //! - [`validation`] — presence- and integrity-depth cache consistency
 //!   validation, stack-aware coverage, and repair planning.
-//! - [`compat`] — the machine-path read facade.
 //! - [`facade`] — the machine-path write facade: authenticated surface
 //!   uploads, the publish lease, and index-after-flip.
-//! - [`signing`] — hub-side hosted-key signing: signs release tags and
-//!   channel partitions for opt-in registries, writing surface objects the
-//!   indexer's own verifier accepts.
+//! - [`signing`] — pure release-tag and channel-partition signing primitives;
+//!   custody and consumer bindings are governed by retained control.
 //! - [`gitwrite`] — git-backed configuration change requests: writes a
 //!   draft-signed commit editing a committed file to
 //!   `refs/hub/changes/<change_id>` for a maintainer to review and promote.
@@ -72,9 +70,11 @@
 //! - [`server`] — axum router assembly tying the above together (including the
 //!   `/healthz` and Prometheus `/metrics` observability endpoints).
 
+#[cfg(all(feature = "test-support", not(debug_assertions)))]
+compile_error!("the aos-hub test-support feature must never be enabled in a release build");
+
 pub mod auth;
 pub mod cloudflare;
-pub mod compat;
 /// Config change-set staging/revert, re-exported from
 /// [`aos_hub_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
 pub use aos_hub_core::config;
@@ -86,12 +86,14 @@ pub use aos_hub_core::crawl;
 /// [`aos_hub_core::fetch::SurfaceProvider`]); RFC-0004 Phase 5.
 pub mod coreports;
 pub mod db;
+pub mod egress_gateway;
 /// The tenancy/IAM domain model, re-exported from [`aos_hub_core::domain`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
 pub use aos_hub_core::domain;
 pub mod export;
 pub mod facade;
 pub mod fetch;
+pub mod image_snapshot;
 /// Package/release listing filters, re-exported from
 /// [`aos_hub_core::filter`] (RFC-0004 Phase 5); keeps `crate::filter::…` stable.
 pub use aos_hub_core::filter;

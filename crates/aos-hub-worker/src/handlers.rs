@@ -5,8 +5,7 @@
 //! router ([`aos_hub_core::connect::router`]) over
 //! [`aos_hub_core::web`], single-sourced with the native hub. There is no
 //! schema-init or root-bootstrap endpoint: the schema is migrated and the root
-//! admin is created by the authenticated operator's CLI over D1
-//! (`aos-hub init --target d1:<name>`), never over HTTP.
+//! admin is created through the seal-authenticated HubDb bootstrap operation.
 //!
 //! This module only re-exports the binding names ([`bindings`]) the
 //! `fetch`/`scheduled` entry points, the README, and `wrangler.toml` agree on.

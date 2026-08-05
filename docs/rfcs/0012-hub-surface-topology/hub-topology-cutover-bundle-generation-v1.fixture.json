@@ -95,6 +95,13 @@
       "role": "signer_public_key"
     },
     {
+      "node_id": "key/verification/example",
+      "path": "keys/verification.pub",
+      "kind": "public_key",
+      "media_type": "application/octet-stream",
+      "role": "signer_public_key"
+    },
+    {
       "node_id": "manifest/api",
       "path": "manifests/api.json",
       "kind": "interface_manifest",
@@ -366,7 +373,7 @@
     {
       "from_node_id": "document/verification/signature-envelope",
       "relation": "authorized_by",
-      "to_node_id": "key/release/example"
+      "to_node_id": "key/verification/example"
     },
     {
       "from_node_id": "document/verification/signature-envelope",

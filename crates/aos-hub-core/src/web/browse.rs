@@ -24,6 +24,7 @@
 //! /{slug}/-/                       registry home (HTML)
 //! /{slug}/-/packages               package index (HTML; ?filter/?sort/?page)
 //! /{slug}/-/packages/{name}        package detail (HTML)
+//! /{slug}/-/images                 signed system-image downloads (HTML)
 //! /{slug}/-/channels               channel index (HTML)
 //! /{slug}/-/channels/{name}        channel 256-partition grid (HTML; ?bucket)
 //! /{slug}/-/releases               releases (HTML)
@@ -91,6 +92,8 @@ pub enum Rendered {
     /// and the surface ships no machine `index.html` to satisfy the `Accept`
     /// (content negotiation: `406 Not Acceptable`).
     NotAcceptable,
+    /// Required topology configuration is absent or temporarily unreadable.
+    ServiceUnavailable,
 }
 
 /// Maximum packages loaded for one browse page view.
@@ -154,7 +157,7 @@ fn accepts_html(headers: &HeaderMap) -> bool {
 /// any database error) yields the anonymous indicator.
 async fn session_indicator(svc: &RpcService, headers: &HeaderMap) -> SessionIndicator {
     // RFC-0004 ch.14 Phase C: resolve through the KV read-through cache when one
-    // is attached (off the D1 read path), else straight from the database.
+    // is attached (off the relational read path), else straight from the database.
     let resolved = match session::session_secret_from_headers(headers) {
         Some(secret) => svc.resolve_session_cached(&secret).await,
         None => Ok(None),
@@ -197,7 +200,10 @@ async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scop
     let Ok(grants) = svc.db.effective_scopes(Principal::user(auth.user_id)).await else {
         return false;
     };
-    iam::allow(&grants, Permission::Read, scope)
+    let Ok(Some(context)) = svc.db.authorization_context(scope.as_str()).await else {
+        return false;
+    };
+    iam::allow(&grants, Permission::Read, &context)
 }
 
 /// Whether the request's session user holds any membership covering `org_id`.
@@ -205,11 +211,11 @@ async fn session_is_org_member(svc: &RpcService, headers: &HeaderMap, org_id: i6
     let Some(org) = svc.db.org_by_id(org_id).await.ok().flatten() else {
         return false;
     };
-    session_allows_read(svc, headers, &Scope::parse(&org.slug)).await
+    session_allows_read(svc, headers, &Scope::parse(&org.stable_id)).await
 }
 
 /// Whether a bearer JWT in `headers` grants `Read` at `scope`.
-fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
+async fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> bool {
     let Some(value) = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
@@ -220,7 +226,10 @@ fn bearer_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scope) -> b
         return false;
     };
     match svc.jwt_keys.verify(token) {
-        Ok(claims) => iam::token_allows(&claims, Permission::Read, scope),
+        Ok(claims) => svc
+            .require_permission(&claims, Permission::Read, scope)
+            .await
+            .is_ok(),
         Err(_) => false,
     }
 }
@@ -251,9 +260,12 @@ async fn can_read_registry(
             Some(org_id) => session_is_org_member(svc, headers, org_id).await,
         },
         _ => {
-            let scope = Scope::parse(&registry.slug);
+            let Ok(scope_key) = svc.db.registry_authorization_scope(registry.id).await else {
+                return false;
+            };
+            let scope = Scope::parse(&scope_key);
             session_allows_read(svc, headers, &scope).await
-                || bearer_allows_read(svc, headers, &scope)
+                || bearer_allows_read(svc, headers, &scope).await
         }
     }
 }
@@ -288,11 +300,13 @@ async fn manage_link(svc: &RpcService, registry: &RegistryRecord, headers: &Head
     let Ok(grants) = svc.db.effective_scopes(Principal::user(auth.user_id)).await else {
         return false;
     };
-    iam::allow(
-        &grants,
-        Permission::RegistryConfigure,
-        &Scope::parse(&registry.slug),
-    )
+    let Ok(scope_key) = svc.db.registry_authorization_scope(registry.id).await else {
+        return false;
+    };
+    let Ok(Some(context)) = svc.db.authorization_context(&scope_key).await else {
+        return false;
+    };
+    iam::allow(&grants, Permission::RegistryConfigure, &context)
 }
 
 /// Collect strings into a sorted, de-duplicated, length-capped vector, dropping
@@ -326,6 +340,16 @@ pub struct BrowseQuery {
     pub page: Option<usize>,
     /// Channel-calculator bucket (`?bucket=`).
     pub bucket: Option<String>,
+    /// Exact system-image release filter.
+    pub release: Option<String>,
+    /// Exact system-image channel filter.
+    pub channel: Option<String>,
+    /// Exact system-image architecture filter.
+    pub architecture: Option<String>,
+    /// Exact system-image format filter.
+    pub format: Option<String>,
+    /// Exact system-image target filter.
+    pub target: Option<String>,
 }
 
 impl BrowseQuery {
@@ -344,6 +368,11 @@ impl BrowseQuery {
                 "sort" => out.sort = Some(value.into_owned()),
                 "dir" => out.dir = Some(value.into_owned()),
                 "bucket" => out.bucket = Some(value.into_owned()),
+                "release" => out.release = Some(value.into_owned()),
+                "channel" => out.channel = Some(value.into_owned()),
+                "architecture" => out.architecture = Some(value.into_owned()),
+                "format" => out.format = Some(value.into_owned()),
+                "target" => out.target = Some(value.into_owned()),
                 "page" => out.page = value.parse().ok(),
                 _ => {}
             }
@@ -381,7 +410,7 @@ impl BrowseQuery {
 /// Maximum number of registries whose visibility + index status the instance
 /// home resolves concurrently.
 ///
-/// Bounds the in-flight D1 fan-out so a large instance issues a steady wave of
+/// Bounds the in-flight relational fan-out so a large instance issues a steady wave of
 /// statements rather than one giant burst, while still collapsing the page's
 /// per-registry N+1 from a serial chain into a handful of round-trip waves.
 const HOME_RESOLVE_FANOUT: usize = 16;
@@ -398,7 +427,7 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
     let started = Instant::now();
     let session = session_indicator(svc, headers).await;
     // RFC-0004 ch.14 Phase D: anonymous fast path — serve the public listing
-    // from the KV directory projection (one KV read, no per-registry D1
+    // from the KV directory projection (one KV read, no per-registry database
     // fan-out — the home N+1) when it has been built. Authenticated requests
     // fall through to the live path, which also resolves private/internal
     // registries the caller may see; a cold projection falls through too.
@@ -423,10 +452,10 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
     if let Ok(registries) = svc.db.list_registries().await {
         use futures_util::stream::StreamExt as _;
         // Resolve each registry's visibility and index status concurrently
-        // rather than as a serial per-registry chain of D1 round-trips — the
+        // rather than as a serial per-registry chain of database round-trips — the
         // classic N+1 that made the instance home scale its latency with the
         // registry count. `buffered` caps the in-flight fan-out (so a large
-        // instance does not issue hundreds of simultaneous D1 statements) and
+        // instance does not issue hundreds of simultaneous statements) and
         // preserves the listing order the page paginates on.
         let resolved: Vec<Option<(RegistryRecord, Option<IndexStatus>)>> =
             futures_util::stream::iter(registries.into_iter().map(|registry| async move {
@@ -478,8 +507,8 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
     };
     // These reads are mutually independent — five keyed only on `registry.id`,
     // plus the session/manage indicators keyed on the request headers — so
-    // dispatch them as one concurrent wave rather than a serial chain of D1
-    // round-trips. On the Worker each underlying D1 promise is created on first
+    // dispatch them as one concurrent wave rather than a serial chain of database
+    // round-trips. On the Worker each underlying query promise is created on first
     // poll and resolves alongside the others, collapsing seven sequential
     // round-trips into one (the dominant cost of this page); on the native
     // sqlx pool they run across pooled connections.
@@ -488,7 +517,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
             futures_util::future::join5(
                 svc.db.list_channels(registry.id),
                 svc.db.list_packages(registry.id),
-                svc.db.list_advertised_caches(registry.id),
+                svc.db.registry_cache_stack_entries(registry.id),
                 // RFC-0004 ch.14 Phase C: trust roster read-through KV cache.
                 svc.list_roster_cached(registry.id),
                 svc.db.latest_validation_runs(registry.id),
@@ -501,16 +530,20 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         .await;
     let channels = channels.unwrap_or_default();
     let packages = packages.unwrap_or_default();
-    let caches = caches.unwrap_or_default();
+    let caches: Vec<(String, u32)> = caches
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            u32::try_from(entry.resolved_priority)
+                .ok()
+                .map(|priority| (entry.committed_url, priority))
+        })
+        .collect();
     let roster = roster.unwrap_or_default();
     let validations = validations.unwrap_or_default();
-    // Prefer a direct frontend (the registry's own, or inherited from its
-    // storage binding) so the setup snippets point clients straight at the
-    // bucket; fall back to the hub URL (RFC-0004 §12).
-    let external = svc
-        .registry_consumer_url(&registry)
-        .await
-        .unwrap_or_else(|_| format!("{}/{slug}", svc.external_url.trim_end_matches('/')));
+    let Ok(external) = svc.registry_consumer_url(&registry).await else {
+        return Rendered::ServiceUnavailable;
+    };
     Rendered::Html(pages::registry_home(
         &registry,
         status.as_ref(),
@@ -548,6 +581,44 @@ pub async fn packages(
     Rendered::Html(
         package_index_html(svc, &registry, status.as_ref(), query, started, &session).await,
     )
+}
+
+/// The signed system-image catalog and direct-download page.
+pub async fn images(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    query: &BrowseQuery,
+) -> Rendered {
+    if let Some(limited) = browse_rate_limited(svc, headers).await {
+        return limited;
+    }
+    let started = Instant::now();
+    let Some((registry, status)) = load_visible(svc, headers, slug).await else {
+        return Rendered::NotFound;
+    };
+    let (images, channels, session) = futures_util::future::join3(
+        svc.db.list_system_images(registry.id),
+        svc.db.list_channels(registry.id),
+        session_indicator(svc, headers),
+    )
+    .await;
+    Rendered::Html(pages::images_page(
+        &registry,
+        status.as_ref(),
+        &images.unwrap_or_default(),
+        &channels.unwrap_or_default(),
+        &pages::ImageBrowse {
+            query: query.q.as_deref(),
+            release: query.release.as_deref(),
+            channel: query.channel.as_deref(),
+            architecture: query.architecture.as_deref(),
+            format: query.format.as_deref(),
+            target: query.target.as_deref(),
+        },
+        started,
+        &session,
+    ))
 }
 
 /// Render the package index for one registry from the parsed query.
@@ -786,7 +857,7 @@ pub async fn releases(
 }
 
 /// The per-registry health page (HTML): the cache × coverage validation matrix
-/// plus the missing/corrupt drill-downs, repair history, freshness, frontends.
+/// plus missing/corrupt drill-downs, repair history, freshness, and routes.
 pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Rendered {
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
@@ -824,12 +895,41 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
         .list_repair_jobs(registry.id, HEALTH_REPAIR_JOB_LIMIT)
         .await
         .unwrap_or_default();
-    let frontends = svc.db.list_frontends(registry.id).await.unwrap_or_default();
-    let frontend_probes = svc
+    let route_records = svc
         .db
-        .list_frontend_probes(registry.id)
+        .list_delivery_routes(crate::db::SurfaceTarget::Registry(registry.id))
         .await
         .unwrap_or_default();
+    let mut routes = Vec::new();
+    for route in route_records {
+        let Some(snapshot) = svc
+            .db
+            .delivery_route_snapshot(&route.id)
+            .await
+            .ok()
+            .flatten()
+        else {
+            continue;
+        };
+        let mut capabilities = Vec::new();
+        if snapshot.spec.serves_git {
+            capabilities.push("git".to_string());
+        }
+        if snapshot.spec.serves_cache {
+            capabilities.push("cache".to_string());
+        }
+        if snapshot.spec.serves_web {
+            capabilities.push("web".to_string());
+        }
+        routes.push(pages::DeliveryRouteHealthRow {
+            id: route.id,
+            endpoint_id: route.endpoint_id,
+            base_path: route.base_path,
+            mode: route.mode,
+            enabled: route.enabled,
+            capabilities,
+        });
+    }
     let session = session_indicator(svc, headers).await;
     Rendered::Html(pages::health_page(
         &registry,
@@ -838,8 +938,7 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
         stack.as_ref(),
         &probes,
         &repair_jobs,
-        &frontends,
-        &frontend_probes,
+        &routes,
         started,
         &session,
     ))
@@ -852,7 +951,11 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
 /// Whether `cache` is readable by this caller — visibility-gated exactly like a
 /// registry ([`can_read_registry`]), but scoped on the cache's *owning org*
 /// (caches are not org-pathed) or root for an instance-level cache.
-async fn can_read_cache(svc: &RpcService, cache: &crate::db::Cache, headers: &HeaderMap) -> bool {
+async fn can_read_cache(
+    svc: &RpcService,
+    cache: &crate::db::BinaryCache,
+    headers: &HeaderMap,
+) -> bool {
     if cache.deleted_at.is_some() {
         return false;
     }
@@ -870,13 +973,13 @@ async fn can_read_cache(svc: &RpcService, cache: &crate::db::Cache, headers: &He
         _ => {
             let scope = match cache.org_id {
                 Some(org_id) => match svc.db.org_by_id(org_id).await.ok().flatten() {
-                    Some(org) => Scope::parse(&org.slug),
+                    Some(org) => Scope::parse(&org.stable_id),
                     None => return false,
                 },
                 None => Scope::root(),
             };
             session_allows_read(svc, headers, &scope).await
-                || bearer_allows_read(svc, headers, &scope)
+                || bearer_allows_read(svc, headers, &scope).await
         }
     }
 }
@@ -886,8 +989,8 @@ async fn load_visible_cache(
     svc: &RpcService,
     headers: &HeaderMap,
     slug: &str,
-) -> Option<crate::db::Cache> {
-    let cache = svc.db.cache_by_slug(slug).await.ok().flatten()?;
+) -> Option<crate::db::BinaryCache> {
+    let cache = svc.db.binary_cache_by_slug(slug).await.ok().flatten()?;
     if !can_read_cache(svc, &cache, headers).await {
         return None;
     }
@@ -915,39 +1018,38 @@ pub async fn cache_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Re
         return Rendered::NotFound;
     };
     let usage = svc.db.cache_usage(cache.id).await.unwrap_or_default();
-    let policy = svc.db.cache_gc_policy(cache.id).await.ok().flatten();
-    let link_count = svc
+    let policy = svc
         .db
-        .list_cache_links(cache.id)
+        .cache_gc_policy_topology(cache.id)
+        .await
+        .ok()
+        .flatten();
+    let subscription_count = svc
+        .db
+        .list_cache_retention_subscriptions_topology(cache.id)
         .await
         .map(|v| v.len())
         .unwrap_or(0);
     let root_count = svc
         .db
-        .list_cache_roots(cache.id)
+        .list_manual_retention_roots_topology(cache.id)
         .await
         .map(|v| v.len())
         .unwrap_or(0);
     let external = svc.external_url.clone();
-    // A signed cache advertises its Nix public key (derived from the hosted
-    // key's stored SSH line — public material, no sealer needed) so consumers
-    // can pin it as a trusted key.
-    let pubkey = match cache.hosted_key_id {
-        Some(id) => svc
-            .db
-            .hosted_key(id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|k| crate::nix_sign::nix_public_key_from_ssh_line(&k.public_key)),
-        None => None,
-    };
+    let pubkey = svc
+        .db
+        .active_signing_key_for_usage(&cache.stable_id, "narinfo")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|key| crate::nix_sign::nix_public_key_from_raw(&key.name, &key.public_key).ok());
     let session = session_indicator(svc, headers).await;
     Rendered::Html(pages::cache_home(
         &cache,
         &usage,
         policy.as_ref(),
-        link_count,
+        subscription_count,
         root_count,
         &external,
         pubkey.as_deref(),
@@ -968,8 +1070,12 @@ pub async fn cache_objects(
         return Rendered::NotFound;
     };
     let objects = match query.q.as_deref().filter(|q| !q.is_empty()) {
-        Some(q) => svc.db.search_cache_objects(cache.id, q, 200).await,
-        None => svc.db.list_cache_objects(cache.id, 200).await,
+        Some(q) => {
+            svc.db
+                .search_normalized_cache_objects(cache.id, q, 200)
+                .await
+        }
+        None => svc.db.list_normalized_cache_objects(cache.id, 200).await,
     }
     .unwrap_or_default();
     let session = session_indicator(svc, headers).await;
@@ -993,7 +1099,13 @@ pub async fn cache_object(
     let Some(cache) = load_visible_cache(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let Some(object) = svc.db.cache_object(cache.id, hash).await.ok().flatten() else {
+    let Some(object) = svc
+        .db
+        .normalized_cache_object(cache.id, hash)
+        .await
+        .ok()
+        .flatten()
+    else {
         return Rendered::NotFound;
     };
     let session = session_indicator(svc, headers).await;
@@ -1018,7 +1130,7 @@ pub async fn cache_closure(
         .cache_closure(
             auth.as_deref(),
             pb::CacheClosureRequest {
-                cache_slug: slug.to_string(),
+                cache_id: slug.to_string(),
                 store_hash: hash.to_string(),
             },
         )
@@ -1031,7 +1143,7 @@ pub async fn cache_closure(
         &cache,
         hash,
         &resp.nodes,
-        resp.total_size,
+        i64::try_from(resp.total_size).unwrap_or(i64::MAX),
         started,
         &session,
     ))
@@ -1040,7 +1152,7 @@ pub async fn cache_closure(
 /// `GET /{slug}/-/api/objects` for a public cache: the object list (JSON).
 pub async fn api_cache_objects(svc: &RpcService, slug: &str, query: &BrowseQuery) -> Rendered {
     // Public-only, like the registry `/-/api/…` reads.
-    let Some(cache) = svc.db.cache_by_slug(slug).await.ok().flatten() else {
+    let Some(cache) = svc.db.binary_cache_by_slug(slug).await.ok().flatten() else {
         return Rendered::NotFound;
     };
     if cache.visibility != "public" || cache.deleted_at.is_some() {
@@ -1054,8 +1166,12 @@ pub async fn api_cache_objects(svc: &RpcService, slug: &str, query: &BrowseQuery
         }
     }
     let objects = match query.q.as_deref().filter(|q| !q.is_empty()) {
-        Some(q) => svc.db.search_cache_objects(cache.id, q, 500).await,
-        None => svc.db.list_cache_objects(cache.id, 500).await,
+        Some(q) => {
+            svc.db
+                .search_normalized_cache_objects(cache.id, q, 500)
+                .await
+        }
+        None => svc.db.list_normalized_cache_objects(cache.id, 500).await,
     }
     .unwrap_or_default();
     let objects: Vec<_> = objects
@@ -1068,7 +1184,7 @@ pub async fn api_cache_objects(svc: &RpcService, slug: &str, query: &BrowseQuery
                 "narSize": o.nar_size,
                 "fileSize": o.file_size,
                 "compression": o.compression,
-                "references": o.refs,
+                "references": o.references,
             })
         })
         .collect();

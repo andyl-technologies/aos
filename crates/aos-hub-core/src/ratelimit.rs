@@ -4,7 +4,7 @@
 //! abuse-prone operations (currently `CreateOrg`). *How* the count is kept
 //! differs by deployment — the native hub uses an in-process token bucket,
 //! while the Cloudflare Worker must keep it across stateless isolate
-//! invocations (D1/KV or a Durable Object) — so the mechanism is a port:
+//! invocations (KV or a Durable Object) — so the mechanism is a port:
 //! [`RateLimiter`]. The shared service calls [`RateLimiter::check`] and acts on
 //! the [`RateDecision`]; each shell supplies the concrete limiter.
 //!
@@ -67,7 +67,7 @@ pub enum RateDecision {
 /// A per-key request-rate limiter (the abuse-bound port).
 ///
 /// Implemented by each shell: an in-process token bucket on the native hub, a
-/// D1/KV- or Durable-Object-backed counter on the Cloudflare Worker. The method
+/// KV- or Durable-Object-backed counter on the Cloudflare Worker. The method
 /// is `async` so the Worker's durable backing can be awaited; the in-process
 /// native limiter satisfies it trivially. The [`BackendBounds`] supertrait
 /// applies the same target-conditional `Send + Sync` (native) / unbounded
@@ -87,12 +87,12 @@ pub trait RateLimiter: BackendBounds {
 /// The fixed-window length, in seconds, for the [`CoordinatorRateLimiter`].
 ///
 /// One minute matches the burst horizon the service's budgets are expressed
-/// against (the same window the Worker's prior D1 limiter used).
+/// against the same fixed admission window.
 const WINDOW_SECS: i64 = 60;
 
 /// A [`RateLimiter`] backed by the strongly-consistent [`Coordinator`] port.
 ///
-/// RFC-0004 chapter 14 routes rate limiting off D1 — whose per-window upsert was
+/// RFC-0004 chapter 14 routes rate limiting to a coordinator because a relational upsert was
 /// a *write on every browse request* (the read-path-poisoning anti-pattern) — and
 /// onto the [`Coordinator`]'s atomic [`admit`](Coordinator::admit). On the Worker
 /// the coordinator is a Durable Object (`WorkerCoordinator`); natively it is the
@@ -118,7 +118,7 @@ impl CoordinatorRateLimiter {
 
     /// The per-window attempt budget for a metered class.
     ///
-    /// Mirrors the burst budgets the Worker's prior D1 limiter enforced; classes
+    /// Defines the Worker burst budgets; classes
     /// the shared service does not yet meter keep a conservative default so a
     /// future call site is bounded rather than unlimited.
     #[must_use]

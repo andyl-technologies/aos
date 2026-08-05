@@ -23,7 +23,7 @@ Organization   (tenant boundary; SSO/audit scope)
   | Role | Grants |
   | --- | --- |
   | `owner` | everything incl. delete, ownership transfer, IAM |
-  | `admin` | members, tokens, registries, frontends, hosted keys |
+  | `admin` | members, tokens, registries, frontends, signing keys |
   | `maintainer` | publish, tag, advance channels, manage rosters |
   | `developer` | read private registries, self-service tokens |
   | `viewer` | read-only |
@@ -136,14 +136,13 @@ public-only by definition.
 
 Always authenticated: org/project dashboards and member lists
 (viewer+), audit feed (admin+), publish console and upload-credential
-minting (maintainer+), channel advance (maintainer+ — hosted-key orgs
-only; BYO-key orgs prepare advances for CLI signing, see
+minting (maintainer+), channel advance (maintainer+ with reviewed signing-key
+custody resolution; external-custody users prepare advances for CLI signing, see
 "Configuration management"), validation repair jobs (maintainer+,
 `validation.repair`), roster mutations (maintainer+; the roster itself
 is *readable* per visibility — it is public data on a public registry),
-hosted-key enrollment (admin+), own-token management (developer+),
+signing-key enrollment/rotation/usage/retirement (admin+), own-token management (developer+),
 others' tokens (admin+), registry/frontend/storage/cache-store
 configuration (admin+ at parent, `storage.manage`), org
 delete/ownership transfer (owner; last-owner removal is hard-blocked).
 ConnectRPC services map method-by-method onto the same matrix.
-
