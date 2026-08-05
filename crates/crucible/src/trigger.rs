@@ -48,6 +48,8 @@ mod conditions;
 mod evaluation;
 mod event_graph;
 mod evidence;
+mod guest_assertion_declarations;
+mod guest_assertion_observation;
 mod observability;
 
 pub use assertions::*;
@@ -55,6 +57,8 @@ pub use conditions::*;
 pub use evaluation::*;
 pub use event_graph::*;
 use evidence::*;
+use guest_assertion_declarations::*;
+use guest_assertion_observation::*;
 pub use observability::*;
 
 #[cfg(test)]

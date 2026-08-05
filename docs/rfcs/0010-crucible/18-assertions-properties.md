@@ -869,7 +869,9 @@ verdict; it only shapes the next schedule the search tries.
   zero-guest-cooperation source. Built-in black-box predicates reuse the shared
   condition evaluator, named host predicates receive the read-only
   `ObservedState` view, warnings do not fail the run, and violations are
-  normalized through `AssertionRunVerdict`. The gate verifies all five
+  normalized through `AssertionRunVerdict`. A satisfied existential or liveness
+  obligation emits its terminal outcome at the exact evaluation boundary, so an
+  event graph can consume `AssertionState::Satisfied` online. The gate verifies all five
   quantifiers in black-box mode, failure/warning reporting, named predicate
   access to observed ordering facts, and static absence of host time, thread RNG,
   and unordered map/set inputs in the host assertion evaluator.
@@ -887,7 +889,13 @@ verdict; it only shapes the next schedule the search tries.
   world-derived white-box policy rather than self-attested marker data. Generic
   `GuestMarker` predicates match only bare guest-marker events, while assertion
   markers are folded only by `HostAssertionEvaluator` from their recorded
-  condition. The gate verifies marker-defined Always/Sometimes/Reachable/
+  condition. A canonically authored `AssertionDef::guest_sometimes` declaration
+  persists the guest assertion id and message in `ScenarioDef`, pre-seeds that
+  same evaluator state, and lets an event graph depend on its validated
+  `AssertionState` without a duplicate host-side property. The declared message
+  remains authoritative, and a marker whose message drifts from the declaration
+  is a violation. The gate verifies
+  marker-defined Always/Sometimes/Reachable/
   Unreachable outcomes, all five authored property quantifiers over guest-marker
   predicates, disabled-node rejection, payload finalization fields, terminal
   outcome immutability, kind-mismatch diagnostics, and static absence of host

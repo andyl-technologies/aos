@@ -1109,14 +1109,16 @@ fn happy_path_properties(world: &World) -> Result<Properties, EngineError> {
                 id: AssertionId::from_name("all-requests-succeed"),
                 message: String::from("client observes 100 successful HTTP responses"),
                 property: Property::Eventually {
-                    trigger: Predicate::once(Predicate::network_match(
-                        Some(LinkId::from_name("client--server")),
-                        FramePredicate::contains(b"GET /".to_vec()),
+                    trigger: Predicate::once(Predicate::console_match(
+                        node("client"),
+                        RegexProgram::from_pattern("(^|\\n)CLIENT_STARTED(\\r?\\n|$)"),
                     )),
                     property: Predicate::all_of(vec![
-                        Predicate::network_match(
-                            Some(LinkId::from_name("client--server")),
-                            FramePredicate::contains(b"http_200_count=100".to_vec()),
+                        Predicate::console_match(
+                            node("client"),
+                            RegexProgram::from_pattern(
+                                "(^|\\n)CLIENT_RESULT requests=100 successful=100 failed=0(\\r?\\n|$)",
+                            ),
                         ),
                         Predicate::node_state(node("client"), NodeLifecycle::Exited),
                     ]),
@@ -1133,7 +1135,10 @@ fn happy_path_plan(world: &World, properties: &Properties) -> Result<Plan, Engin
     let graph = EventGraph::builder()
         .event("pass-on-quiescence")
         .when(Predicate::all_of(vec![
-            Predicate::node_state(node("client"), NodeLifecycle::Exited),
+            Predicate::once(Predicate::assertion_state(
+                AssertionId::from_name("all-requests-succeed"),
+                AssertionPhase::Satisfied,
+            )),
             Predicate::quiescent(),
         ]))
         .action(Action::pass())
@@ -1167,19 +1172,14 @@ fn happy_path_observations() -> Vec<ObservableEvent> {
         ObservableEvent::console_output(
             VirtualTime { ticks: 12 },
             node("client"),
-            b"client ready\n".to_vec(),
+            b"client ready\nCLIENT_STARTED\n".to_vec(),
         ),
-        ObservableEvent::network_delivered(
-            VirtualTime { ticks: 20 },
-            Some(LinkId::from_name("client--server")),
-            b"GET / HTTP/1.1\r\nHost: server\r\n".to_vec(),
-        ),
-        ObservableEvent::network_delivered(
+        ObservableEvent::console_output(
             VirtualTime {
                 ticks: HAPPY_PATH_TERMINAL_TICKS,
             },
-            Some(LinkId::from_name("client--server")),
-            b"HTTP/1.1 200 OK\r\nhttp_200_count=100\r\n".to_vec(),
+            node("client"),
+            b"CLIENT_RESULT requests=100 successful=100 failed=0\n".to_vec(),
         ),
         ObservableEvent::node_state(
             VirtualTime {

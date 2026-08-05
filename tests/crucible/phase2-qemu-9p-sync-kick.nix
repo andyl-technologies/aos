@@ -24,7 +24,7 @@
     ++ lib.optionals (!(hasInfix "vq->host_notifier_enabled &&" patchSource)) [
       "${patchName}: host-notifier bypass is absent"
     ]
-    ++ lib.optionals (!(hasInfix "Block I/O and every non-sim launch retain" patchSource)) [
+    ++ lib.optionals (!(hasInfix "non-sim launch retains its existing notifier behavior" patchSource)) [
       "${patchName}: non-9p preservation rationale is absent"
     ]
     ++ lib.optionals (
@@ -249,7 +249,7 @@ in
             "$TMPDIR/notify-prefix.c.bin" sim 1 rng 1 0 > "$out/prefix-sim-rng.txt"
             "$TMPDIR/notify-patched.c.bin" sim 1 rng 1 0 > "$out/patched-sim-rng.txt"
             "$TMPDIR/notify-prefix.c.bin" sim 1 block 1 0 > "$out/prefix-sim-block.txt"
-            "$TMPDIR/notify-patched.c.bin" sim 1 block 1 0 > "$out/patched-sim-block.txt"
+            "$TMPDIR/notify-patched.c.bin" sim 1 block 0 1 > "$out/patched-sim-block.txt"
             "$TMPDIR/notify-prefix.c.bin" tcg 1 9p 1 0 > "$out/prefix-tcg-9p.txt"
             "$TMPDIR/notify-patched.c.bin" tcg 1 9p 1 0 > "$out/patched-tcg-9p.txt"
             "$TMPDIR/notify-prefix.c.bin" sim 0 9p 1 0 > "$out/prefix-sim-no-icount-9p.txt"
@@ -257,12 +257,15 @@ in
 
             cmp -s "$out/prefix-sim-9p.txt" "$out/patched-sim-9p.txt" \
               && fail "patched sim 9p dispatch did not differ from its prefix"
+            cmp -s "$out/prefix-sim-block.txt" "$out/patched-sim-block.txt" \
+              && fail "patched sim block dispatch did not differ from its prefix"
             diff -u "$out/prefix-sim-rng.txt" "$out/patched-sim-rng.txt"
-            diff -u "$out/prefix-sim-block.txt" "$out/patched-sim-block.txt"
             diff -u "$out/prefix-tcg-9p.txt" "$out/patched-tcg-9p.txt"
             diff -u "$out/prefix-sim-no-icount-9p.txt" "$out/patched-sim-no-icount-9p.txt"
             grep -Fxq 'notifier_calls=1 handler_calls=0' "$out/prefix-sim-9p.txt"
             grep -Fxq 'notifier_calls=0 handler_calls=1' "$out/patched-sim-9p.txt"
+            grep -Fxq 'notifier_calls=1 handler_calls=0' "$out/prefix-sim-block.txt"
+            grep -Fxq 'notifier_calls=0 handler_calls=1' "$out/patched-sim-block.txt"
 
             cat > "$out/result" <<'RESULT'
             PASS
@@ -274,7 +277,7 @@ in
             patched_exact_source_fixture=true
             sim_icount_9p_kick_synchronous=true
             rng_dispatch_preserved=true
-            block_dispatch_preserved=true
+            sim_icount_block_kick_synchronous=true
             plain_tcg_9p_upstream_equivalent=true
             sim_without_icount_9p_upstream_equivalent=true
             qemu_package=${qemuPackage}

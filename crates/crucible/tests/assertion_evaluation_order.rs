@@ -6,9 +6,9 @@
 
 use crucible::{
     AssertionDef, AssertionId, AssertionRunVerdict, ConditionLeaf, HostAssertionEvaluator,
-    HostAssertionPredicate, LintedHostAssertionOracle, ObservedState, OfflineAssertionChecker,
-    Predicate, Properties, Property, RecordedAssertionLog, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogEntry, VirtualTime, World,
+    HostAssertionOutcomeKind, HostAssertionPredicate, LintedHostAssertionOracle, ObservedState,
+    OfflineAssertionChecker, Predicate, Properties, Property, RecordedAssertionLog,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, VirtualTime, World,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,7 +175,12 @@ fn eventually_trigger_and_property_share_one_named_leaf_evaluation_per_point() {
 
     let outcomes = evaluator.observe_prefix(&prefix(vec![boundary_entry(0, 1)]), &mut oracle);
 
-    assert!(outcomes.is_empty());
+    assert_eq!(outcomes.len(), 1);
+    assert_eq!(
+        outcomes[0].kind,
+        HostAssertionOutcomeKind::Satisfied,
+        "a discharged Eventually obligation emits at its evaluation point"
+    );
     assert_eq!(
         &*oracle.oracle().calls.borrow(),
         &vec![EvaluationCall {

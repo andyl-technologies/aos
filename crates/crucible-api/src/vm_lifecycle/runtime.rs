@@ -345,7 +345,19 @@ impl ProductionVmLifecycleLoop {
                 message: format!("prepare QEMU restart overlay for `{}`: {error}", node.name),
             },
         )?;
-        let launch = self
+        let white_box_enabled = self
+            .trigger_world
+            .vm_nodes()
+            .iter()
+            .find(|vm| vm.id == *node)
+            .map(|vm| vm.white_box == crucible::WhiteBoxPolicy::Enabled)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "production QEMU restart has no World node for `{}`",
+                    node.name
+                ),
+            })?;
+        let mut launch = self
             .launch_configs
             .get(node)
             .cloned()
@@ -355,8 +367,10 @@ impl ProductionVmLifecycleLoop {
                     node.name
                 ),
             })?
-            .with_app_random(self.app_random_continuation_config(node)?)
             .with_run_directory(&node_directory);
+        if white_box_enabled {
+            launch = launch.with_app_random(self.app_random_continuation_config(node)?);
+        }
         let backend = launch_production_live_node(
             &launch,
             &node_directory,
