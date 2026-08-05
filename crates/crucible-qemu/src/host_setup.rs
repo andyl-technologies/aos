@@ -16,13 +16,14 @@ use crucible_protocol::{
     SetupDescriptorFds,
 };
 use crucible_shmem::{
-    ABI_VERSION, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR, FAULT_COMMAND_ABI_MINOR,
-    FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultBoundaryPhase, FaultCapabilityRowV1,
-    FaultCommandHeaderV1, FaultCommandKind, FaultResultStatus, FaultTransportError,
-    MappedSetupRegionAccessError, RegionAllocation, RegionConfig, RegionLayoutError,
-    RegionSerializationError, RegionSetupValidationError, SetupRegionMapError,
-    ValidatedSetupRegion, decode_fault_capability_manifest, dequeue_fault_result,
-    enqueue_fault_command, mmap_setup_region, validate_setup_region_header,
+    ABI_VERSION, DEFAULT_FAULT_COMMAND_CAPACITY, DequeuedFaultResult, FAULT_COMMAND_ABI_MAJOR,
+    FAULT_COMMAND_ABI_MINOR, FAULT_COMMAND_SEMANTIC_VERSION, FaultAbiError, FaultBoundaryPhase,
+    FaultCapabilityRowV1, FaultCapabilityScope, FaultCommandHeaderV1, FaultCommandKind,
+    FaultResultStatus, FaultTransportError, MappedSetupRegionAccessError, RegionAllocation,
+    RegionConfig, RegionLayoutError, RegionSerializationError, RegionSetupValidationError,
+    SetupRegionMapError, ValidatedSetupRegion, decode_fault_capability_manifest,
+    dequeue_fault_result, enqueue_fault_command, fault_capability_manifest_digest,
+    mmap_setup_region, validate_setup_region_header,
 };
 use thiserror::Error;
 
@@ -38,6 +39,84 @@ pub struct QemuHostPluginSetup {
     setup_ack: SchedulableNodeSetup,
     region: ValidatedSetupRegion,
     fault_capabilities: Vec<FaultCapabilityRowV1>,
+    fault_capability_digest: [u8; 32],
+}
+
+/// Exact QEMU fault capability manifest required before guest execution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QemuFaultCapabilityRequirement {
+    rows: Vec<FaultCapabilityRowV1>,
+    digest: [u8; 32],
+}
+
+impl QemuFaultCapabilityRequirement {
+    /// Builds an exact, canonically ordered capability requirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultAbiError`] when rows are empty, invalid, duplicated, or
+    /// not in canonical `(kind, version, scope)` order.
+    pub fn exact(rows: Vec<FaultCapabilityRowV1>) -> Result<Self, FaultAbiError> {
+        let digest = fault_capability_manifest_digest(&rows)?;
+        Ok(Self { rows, digest })
+    }
+
+    /// Returns the exact 0047-0048 capability set before mutation patches.
+    #[must_use]
+    pub fn abi_boundary_v1() -> Self {
+        let row = |command_kind, maximum_pending_commands, name: &[u8], schema: &[u8]| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"crucible.qemu-fault-capability.v1\0");
+            hasher.update(name);
+            hasher.update(&[0]);
+            hasher.update(schema);
+            FaultCapabilityRowV1 {
+                command_kind,
+                semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
+                scope: FaultCapabilityScope::All,
+                phase_mask: FaultBoundaryPhase::NodeBoundary.bit(),
+                maximum_payload_bytes: 0,
+                maximum_pending_commands,
+                required_feature_bits: 0,
+                capability_hash: *hasher.finalize().as_bytes(),
+            }
+        };
+        let rows = vec![
+            row(
+                FaultCommandKind::QueryCapabilities,
+                1,
+                b"qemu.fault-command-abi.v1",
+                b"empty; use capability query API",
+            ),
+            row(
+                FaultCommandKind::BoundaryProbe,
+                DEFAULT_FAULT_COMMAND_CAPACITY,
+                b"qemu.fault-boundary-probe.v1",
+                b"empty",
+            ),
+        ];
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"crucible.qemu-fault-capabilities.v1\0");
+        for row in &rows {
+            hasher.update(&row.encode());
+        }
+        Self {
+            rows,
+            digest: *hasher.finalize().as_bytes(),
+        }
+    }
+
+    /// Returns the exact required rows.
+    #[must_use]
+    pub fn rows(&self) -> &[FaultCapabilityRowV1] {
+        &self.rows
+    }
+
+    /// Returns the canonical manifest digest bound to execution identity.
+    #[must_use]
+    pub const fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
 }
 
 impl QemuHostPluginSetup {
@@ -69,6 +148,12 @@ impl QemuHostPluginSetup {
     #[must_use]
     pub fn fault_capabilities(&self) -> &[FaultCapabilityRowV1] {
         &self.fault_capabilities
+    }
+
+    /// Returns the admitted exact capability-manifest digest.
+    #[must_use]
+    pub const fn fault_capability_digest(&self) -> [u8; 32] {
+        self.fault_capability_digest
     }
 
     /// Returns the retained host shared-memory descriptor.
@@ -215,6 +300,7 @@ pub fn complete_qemu_host_plugin_setup(
     resources: QemuSpawnSetupResources,
     config: RegionConfig,
     slot_index: u32,
+    required_capabilities: &QemuFaultCapabilityRequirement,
 ) -> Result<QemuHostPluginSetup, QemuHostPluginSetupError> {
     let allocation = RegionAllocation::new(config)
         .map_err(|source| QemuHostPluginSetupError::RegionLayout { source })?;
@@ -260,7 +346,8 @@ pub fn complete_qemu_host_plugin_setup(
     let setup_ack = control
         .host_accept_setup_ack()
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
-    let fault_capabilities = accept_capability_result(&mut admission_region, slot_index)?;
+    let fault_capabilities =
+        accept_capability_result(&mut admission_region, slot_index, required_capabilities)?;
     control
         .enter_run_via_shared_memory()
         .map_err(|source| QemuHostPluginSetupError::Control { source })?;
@@ -273,6 +360,7 @@ pub fn complete_qemu_host_plugin_setup(
         setup_ack,
         region,
         fault_capabilities,
+        fault_capability_digest: required_capabilities.digest(),
     })
 }
 
@@ -323,6 +411,7 @@ fn enqueue_capability_query(
 fn accept_capability_result(
     region: &mut crucible_shmem::MappedSetupRegion,
     slot_index: u32,
+    required: &QemuFaultCapabilityRequirement,
 ) -> Result<Vec<FaultCapabilityRowV1>, QemuHostPluginSetupError> {
     let transport = region
         .fault_result_transport_mut(slot_index)
@@ -360,8 +449,17 @@ fn accept_capability_result(
             phase: header.phase,
         });
     }
-    decode_fault_capability_manifest(&payload)
-        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })
+    let observed = decode_fault_capability_manifest(&payload)
+        .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+    if observed != required.rows {
+        let observed_digest = fault_capability_manifest_digest(&observed)
+            .map_err(|source| QemuHostPluginSetupError::AdmissionManifest { source })?;
+        return Err(QemuHostPluginSetupError::AdmissionCapabilityMismatch {
+            required_digest: required.digest,
+            observed_digest,
+        });
+    }
+    Ok(observed)
 }
 
 fn write_shmem_setup_region(fd: RawFd, bytes: &[u8]) -> Result<(), QemuHostPluginSetupError> {
@@ -512,6 +610,16 @@ pub enum QemuHostPluginSetupError {
         /// Exact manifest codec failure.
         source: FaultAbiError,
     },
+    /// QEMU advertised a valid manifest other than the launch-bound exact set.
+    #[error(
+        "fault capability manifest mismatch: required={required_digest:02x?} observed={observed_digest:02x?}"
+    )]
+    AdmissionCapabilityMismatch {
+        /// Digest of the launch-bound exact manifest.
+        required_digest: [u8; 32],
+        /// Digest of the manifest returned by live QEMU.
+        observed_digest: [u8; 32],
+    },
     /// The control-protocol lifecycle failed.
     #[error("setup control lifecycle failed")]
     Control {
@@ -570,8 +678,12 @@ pub(crate) mod tests {
         let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
         let plugin_peer = thread::spawn(move || plugin_peer_complete_setup(plugin_socket));
 
-        let mut setup =
-            complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)?;
+        let mut setup = complete_qemu_host_plugin_setup(
+            resources.into_setup_resources(),
+            config,
+            0,
+            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        )?;
 
         assert_eq!(
             setup.control_state(),
@@ -621,9 +733,14 @@ pub(crate) mod tests {
         let (resources, _plugin_socket) =
             create_test_spawn_resource_pair(layout.region_size + 4096)?;
 
-        let error = complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0)
-            .err()
-            .ok_or("setup should reject mismatched spawn region length")?;
+        let error = complete_qemu_host_plugin_setup(
+            resources.into_setup_resources(),
+            config,
+            0,
+            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+        )
+        .err()
+        .ok_or("setup should reject mismatched spawn region length")?;
 
         assert!(matches!(
             error,
@@ -637,8 +754,47 @@ pub(crate) mod tests {
         Ok(())
     }
 
+    #[test]
+    fn qemu_host_plugin_setup_rejects_a_valid_but_inexact_capability_manifest()
+    -> Result<(), Box<dyn Error>> {
+        let config = RegionConfig::new(1, 4, 0);
+        let layout = RegionLayout::for_config(config)?;
+        let (resources, plugin_socket) = create_test_spawn_resource_pair(layout.region_size)?;
+        let required = QemuFaultCapabilityRequirement::abi_boundary_v1();
+        let mut observed = required.rows().to_vec();
+        let _omitted_boundary = observed
+            .pop()
+            .ok_or("baseline manifest must not be empty")?;
+        let plugin_peer =
+            thread::spawn(move || plugin_peer_complete_setup_with_rows(plugin_socket, &observed));
+
+        let error =
+            complete_qemu_host_plugin_setup(resources.into_setup_resources(), config, 0, &required)
+                .err()
+                .ok_or("setup should reject an inexact manifest")?;
+        assert!(matches!(
+            error,
+            QemuHostPluginSetupError::AdmissionCapabilityMismatch {
+                required_digest,
+                observed_digest,
+            } if required_digest == required.digest() && observed_digest != required_digest
+        ));
+        let _peer_result = plugin_peer
+            .join()
+            .map_err(|_panic| "plugin setup peer panicked")?;
+        Ok(())
+    }
+
     fn plugin_peer_complete_setup(
         plugin_socket: UnixStream,
+    ) -> Result<ValidatedSetupRegion, String> {
+        let requirement = QemuFaultCapabilityRequirement::abi_boundary_v1();
+        plugin_peer_complete_setup_with_rows(plugin_socket, requirement.rows())
+    }
+
+    fn plugin_peer_complete_setup_with_rows(
+        plugin_socket: UnixStream,
+        rows: &[FaultCapabilityRowV1],
     ) -> Result<ValidatedSetupRegion, String> {
         let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
             .map_err(|error| error.to_string())?;
@@ -667,7 +823,7 @@ pub(crate) mod tests {
         write_eventfd_counter(setup.descriptors.wake_fd.as_raw_fd(), EVENTFD_WAKE_PROBE)
             .map_err(|error| error.to_string())?;
 
-        publish_test_capability_result(&mut mapped).map_err(|error| error.to_string())?;
+        publish_capability_result(&mut mapped, rows).map_err(|error| error.to_string())?;
 
         plugin
             .plugin_send_ready_setup_ack()
@@ -684,6 +840,14 @@ pub(crate) mod tests {
 
     pub(crate) fn publish_test_capability_result(
         mapped: &mut crucible_shmem::MappedSetupRegion,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let rows = QemuFaultCapabilityRequirement::abi_boundary_v1();
+        publish_capability_result(mapped, rows.rows())
+    }
+
+    fn publish_capability_result(
+        mapped: &mut crucible_shmem::MappedSetupRegion,
+        rows: &[FaultCapabilityRowV1],
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let command_transport = mapped.fault_command_transport_mut(0)?;
         let command = crucible_shmem::dequeue_fault_command(
@@ -710,17 +874,7 @@ pub(crate) mod tests {
         {
             return Err("unexpected setup-time fault command".into());
         }
-        let rows = [FaultCapabilityRowV1 {
-            command_kind: FaultCommandKind::QueryCapabilities,
-            semantic_version: FAULT_COMMAND_SEMANTIC_VERSION,
-            scope: 1,
-            phase_mask: FaultBoundaryPhase::NodeBoundary.bit(),
-            maximum_payload_bytes: 0,
-            maximum_pending_commands: 1,
-            required_feature_bits: 0,
-            capability_hash: *blake3::hash(b"test capability").as_bytes(),
-        }];
-        let payload = crucible_shmem::encode_fault_capability_manifest(&rows)?;
+        let payload = crucible_shmem::encode_fault_capability_manifest(rows)?;
         let result_transport = mapped.fault_result_transport_mut(0)?;
         crucible_shmem::enqueue_fault_result(
             result_transport.ring,

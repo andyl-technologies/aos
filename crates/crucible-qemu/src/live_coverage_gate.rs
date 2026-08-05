@@ -511,9 +511,13 @@ fn run_loaded_qemu_once(
     )
     .map_err(|source| LoadedQemuCoverageGateError::Spawn { mode, source })?;
     let (mut child, resources) = spawned.into_parts();
-    let mut setup =
-        complete_qemu_host_plugin_setup(resources.into_setup_resources(), region_config, GATE_SLOT)
-            .map_err(|source| LoadedQemuCoverageGateError::HostSetup { mode, source })?;
+    let mut setup = complete_qemu_host_plugin_setup(
+        resources.into_setup_resources(),
+        region_config,
+        GATE_SLOT,
+        &crate::QemuFaultCapabilityRequirement::abi_boundary_v1(),
+    )
+    .map_err(|source| LoadedQemuCoverageGateError::HostSetup { mode, source })?;
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| LoadedQemuCoverageGateError::RegionMap { mode, source })?;
     let coverage_config = match coverage {

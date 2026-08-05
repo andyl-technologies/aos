@@ -112,7 +112,8 @@ pub use gdbstub_proxy::{
 };
 #[cfg(target_os = "linux")]
 pub use host_setup::{
-    QemuHostPluginSetup, QemuHostPluginSetupError, complete_qemu_host_plugin_setup,
+    QemuFaultCapabilityRequirement, QemuHostPluginSetup, QemuHostPluginSetupError,
+    complete_qemu_host_plugin_setup,
 };
 pub use host_worker_pool::{
     QemuHostCompletionOrderKey, QemuHostWorkerOutcome, QemuHostWorkerPool, QemuHostWorkerPoolError,

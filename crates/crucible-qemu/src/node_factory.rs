@@ -22,8 +22,8 @@ use crucible_shmem::{
 use thiserror::Error;
 
 use crate::{
-    QemuAsyncDriverPolicy, QemuCrashDetector, QemuHostIoRuntime, QemuHostPluginSetup,
-    QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
+    QemuAsyncDriverPolicy, QemuCrashDetector, QemuFaultCapabilityRequirement, QemuHostIoRuntime,
+    QemuHostPluginSetup, QemuHostPluginSetupError, QemuLaunchCommand, QemuLaunchPluginSwitch,
     QemuLoadvmCommandAuthorization, QemuLoadvmCommandPurpose, QemuMappedQuantumShmemHotPath,
     QemuMappedQuantumShmemHotPathError, QemuNode, QemuNodeChannelError, QemuNodeChannels,
     QemuNodeChild, QemuQmpMachineControlChannel, QemuQmpVmStateControlChannel,
@@ -464,6 +464,7 @@ where
         resources.into_setup_resources(),
         region_config,
         slot_index,
+        &QemuFaultCapabilityRequirement::abi_boundary_v1(),
     )
     .map_err(|source| QemuWarmRestoreLaunchError::HostSetup { source })?;
 

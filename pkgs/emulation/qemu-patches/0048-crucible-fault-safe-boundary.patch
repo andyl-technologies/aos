@@ -1,7 +1,7 @@
-From 1a4a0ef97f4d3538a5f4ddca542368e21a86dc2b Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Crucible Patch Regenerator <crucible@aos.invalid>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] 0048-crucible-fault-safe-boundary
+Subject: [PATCH 48/48] 0048-crucible-fault-safe-boundary
 
 Signed-off-by: Crucible Patch Regenerator <crucible@aos.invalid>
 ---
@@ -88,10 +88,10 @@ index dfdaeb4..e5a54f3 100644
                          crucible_sim_observer_notify_current_icount(
                              current_icount);
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
-index 21a4741..e3a9cfc 100644
+index 3ba9b95..d18d463 100644
 --- a/include/qemu/crucible-fault.h
 +++ b/include/qemu/crucible-fault.h
-@@ -39,6 +39,9 @@ void qemu_crucible_fault_registry_seal(void);
+@@ -46,6 +46,9 @@ void qemu_crucible_fault_registry_seal(void);
  void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
                                             uint64_t observed_icount);
  bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount);
@@ -103,10 +103,10 @@ index 21a4741..e3a9cfc 100644
  
  #endif
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
-index 1f574c0..f88dd2a 100644
+index 99046b4..fec5434 100644
 --- a/plugins/crucible-fault.c
 +++ b/plugins/crucible-fault.c
-@@ -421,19 +421,42 @@ bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount)
+@@ -443,19 +443,42 @@ bool qemu_crucible_fault_has_pending_at_or_before(uint64_t icount)
      return found;
  }
  

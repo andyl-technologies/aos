@@ -1,16 +1,16 @@
-From f8df9f7257aa5aaf322a049feffea025a189fb88 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Crucible Patch Regenerator <crucible@aos.invalid>
 Date: Mon, 1 Jan 2001 00:00:01 +0000
-Subject: [PATCH] 0047-crucible-fault-command-abi
+Subject: [PATCH 47/48] 0047-crucible-fault-command-abi
 
 Signed-off-by: Crucible Patch Regenerator <crucible@aos.invalid>
 ---
  MAINTAINERS                   |   1 +
- include/qemu/crucible-fault.h |  44 +++
- include/qemu/qemu-plugin.h    | 120 ++++++++
- plugins/crucible-fault.c      | 522 ++++++++++++++++++++++++++++++++++
+ include/qemu/crucible-fault.h |  51 +++
+ include/qemu/qemu-plugin.h    | 133 ++++++++
+ plugins/crucible-fault.c      | 580 ++++++++++++++++++++++++++++++++++
  plugins/meson.build           |   3 +-
- 5 files changed, 688 insertions(+), 2 deletions(-)
+ 5 files changed, 766 insertions(+), 2 deletions(-)
  create mode 100644 include/qemu/crucible-fault.h
  create mode 100644 plugins/crucible-fault.c
 
@@ -28,10 +28,10 @@ index d54b557..8314a96 100644
  F: contrib/plugins/
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000..21a4741
+index 0000000..3ba9b95
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,51 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -43,6 +43,7 @@ index 0000000..21a4741
 +#ifndef QEMU_CRUCIBLE_FAULT_H
 +#define QEMU_CRUCIBLE_FAULT_H
 +
++#include "aos/crucible/crucible_shmem_abi.h"
 +#include "qemu/qemu-plugin.h"
 +
 +typedef struct QemuCrucibleFaultHandler QemuCrucibleFaultHandler;
@@ -53,7 +54,12 @@ index 0000000..21a4741
 +typedef int (*QemuCrucibleFaultArmFn)(
 +    const struct qemu_plugin_crucible_fault_command *command,
 +    const uint8_t *payload, size_t payload_len, void **state_out);
-+typedef int (*QemuCrucibleFaultApplyFn)(
++typedef int (*QemuCrucibleFaultPrepareFn)(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void *state,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *result_payload);
++typedef void (*QemuCrucibleFaultCommitFn)(
 +    const struct qemu_plugin_crucible_fault_command *command,
 +    const uint8_t *payload, size_t payload_len, void *state,
 +    struct qemu_plugin_crucible_fault_result *result,
@@ -64,7 +70,8 @@ index 0000000..21a4741
 +    struct qemu_plugin_crucible_fault_capability capability;
 +    QemuCrucibleFaultValidateFn validate;
 +    QemuCrucibleFaultArmFn arm;
-+    QemuCrucibleFaultApplyFn apply;
++    QemuCrucibleFaultPrepareFn prepare;
++    QemuCrucibleFaultCommitFn commit;
 +    QemuCrucibleFaultFreeFn free_state;
 +};
 +
@@ -77,10 +84,10 @@ index 0000000..21a4741
 +
 +#endif
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
-index d8fde5e..7658f29 100644
+index d8fde5e..0689e65 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
-@@ -1787,6 +1787,126 @@ void qemu_plugin_crucible_pause_vm(void);
+@@ -1787,6 +1787,139 @@ void qemu_plugin_crucible_pause_vm(void);
  QEMU_PLUGIN_API
  int64_t qemu_plugin_clock_deadline_ns(void);
  
@@ -189,6 +196,19 @@ index d8fde5e..7658f29 100644
 +int qemu_plugin_crucible_fault_cancel(uint64_t command_sequence);
 +
 +/**
++ * qemu_plugin_crucible_fault_peek() - inspect one completed result
++ * @result: fixed result destination
++ * @payload_length: exact result payload byte count
++ *
++ * Returns one when a result is ready, zero when none is ready, or -EINVAL for
++ * an invalid pointer contract. This call never consumes or changes the result.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fault_peek(
++    struct qemu_plugin_crucible_fault_result *result,
++    size_t *payload_length);
++
++/**
 + * qemu_plugin_crucible_fault_poll() - copy one completed result
 + * @result: fixed result destination
 + * @payload: result payload destination
@@ -209,10 +229,10 @@ index d8fde5e..7658f29 100644
   *
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000..1f574c0
+index 0000000..99046b4
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,522 @@
+@@ -0,0 +1,580 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -223,11 +243,10 @@ index 0000000..1f574c0
 +
 +#include "qemu/osdep.h"
 +#include "qemu/crucible-fault.h"
++#include "qemu/error-report.h"
 +#include "qemu/module.h"
 +#include "qemu/queue.h"
 +#include "system/cpu-timers.h"
-+
-+#include <aos/crucible/crucible_shmem_abi.h>
 +
 +#define CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY 4096
 +
@@ -291,10 +310,18 @@ index 0000000..1f574c0
 +    g_assert(handler);
 +    g_assert(handler->capability.command_kind != 0);
 +    g_assert(handler->capability.semantic_version != 0);
++    g_assert(handler->capability.scope >=
++             CRUCIBLE_FAULT_CAPABILITY_SCOPE_ALL);
++    g_assert(handler->capability.scope <=
++             CRUCIBLE_FAULT_CAPABILITY_SCOPE_VIRTIO);
 +    g_assert(handler->capability.phase_mask != 0);
 +    g_assert(handler->capability.maximum_pending_commands != 0);
 +    g_assert(handler->capability.name);
 +    g_assert(handler->capability.payload_schema);
++    g_assert(!(handler->capability.required_feature_bits &
++               ~CRUCIBLE_FAULT_CAPABILITY_FEATURES_V1_MASK));
++    g_assert(handler->prepare);
++    g_assert(handler->commit);
 +
 +    g_mutex_lock(&crucible_fault_lock);
 +    crucible_fault_ensure_registry();
@@ -302,11 +329,13 @@ index 0000000..1f574c0
 +    for (i = 0; i < crucible_fault_handlers->len; i++) {
 +        const QemuCrucibleFaultHandler *existing =
 +            g_ptr_array_index(crucible_fault_handlers, i);
++        /*
++         * Dispatch keys omit scope, so one kind/version has one handler.
++         */
 +        g_assert(existing->capability.command_kind !=
 +                 handler->capability.command_kind ||
 +                 existing->capability.semantic_version !=
-+                 handler->capability.semantic_version ||
-+                 existing->capability.scope != handler->capability.scope);
++                 handler->capability.semantic_version);
 +    }
 +    g_ptr_array_add(crucible_fault_handlers, (void *)handler);
 +    g_mutex_unlock(&crucible_fault_lock);
@@ -598,11 +627,24 @@ index 0000000..1f574c0
 +            observed_icount > pending->command.authorization_ceiling_icount) {
 +            result.status = CRUCIBLE_FAULT_STATUS_PAST_BOUNDARY;
 +        } else {
-+            status = pending->handler->apply(
++            status = pending->handler->prepare(
 +                &pending->command, pending->payload, pending->payload_len,
 +                pending->handler_state, &result, result_payload);
-+            if (status != 0 && result.status == 0) {
-+                result.status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
++            if (status != 0) {
++                if (result.status == 0) {
++                    result.status = CRUCIBLE_FAULT_STATUS_INTERNAL_ERROR;
++                }
++            } else {
++                pending->handler->commit(
++                    &pending->command, pending->payload,
++                    pending->payload_len, pending->handler_state,
++                    &result, result_payload);
++                if (result.status != CRUCIBLE_FAULT_STATUS_APPLIED ||
++                    result.applied_icount != observed_icount) {
++                    error_report(
++                        "Crucible fault commit violated its infallible contract");
++                    abort();
++                }
 +            }
 +        }
 +        if (result.status != CRUCIBLE_FAULT_STATUS_APPLIED) {
@@ -682,7 +724,42 @@ index 0000000..1f574c0
 +    return 1;
 +}
 +
-+static int crucible_boundary_probe_apply(
++int qemu_plugin_crucible_fault_peek(
++    struct qemu_plugin_crucible_fault_result *result,
++    size_t *payload_length)
++{
++    CrucibleCompletedFault *completed;
++
++    if (!result || !payload_length) {
++        return -EINVAL;
++    }
++    g_mutex_lock(&crucible_fault_lock);
++    completed = QTAILQ_FIRST(&crucible_completed_faults);
++    if (!completed) {
++        g_mutex_unlock(&crucible_fault_lock);
++        return 0;
++    }
++    *result = completed->result;
++    *payload_length = completed->payload->len;
++    g_mutex_unlock(&crucible_fault_lock);
++    return 1;
++}
++
++static int crucible_boundary_probe_prepare(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void *state,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *result_payload)
++{
++    (void)command;
++    (void)payload;
++    (void)payload_len;
++    (void)state;
++    (void)result_payload;
++    return 0;
++}
++
++static void crucible_boundary_probe_commit(
 +    const struct qemu_plugin_crucible_fault_command *command,
 +    const uint8_t *payload, size_t payload_len, void *state,
 +    struct qemu_plugin_crucible_fault_result *result,
@@ -695,7 +772,6 @@ index 0000000..1f574c0
 +    (void)result_payload;
 +    result->status = CRUCIBLE_FAULT_STATUS_APPLIED;
 +    result->applied_icount = result->observed_icount;
-+    return 0;
 +}
 +
 +static const QemuCrucibleFaultHandler crucible_boundary_probe_handler = {
@@ -710,7 +786,8 @@ index 0000000..1f574c0
 +        .name = "qemu.fault-boundary-probe.v1",
 +        .payload_schema = "empty",
 +    },
-+    .apply = crucible_boundary_probe_apply,
++    .prepare = crucible_boundary_probe_prepare,
++    .commit = crucible_boundary_probe_commit,
 +};
 +
 +static const QemuCrucibleFaultHandler crucible_capability_query_handler = {
@@ -725,7 +802,8 @@ index 0000000..1f574c0
 +        .name = "qemu.fault-command-abi.v1",
 +        .payload_schema = "empty; use capability query API",
 +    },
-+    .apply = crucible_boundary_probe_apply,
++    .prepare = crucible_boundary_probe_prepare,
++    .commit = crucible_boundary_probe_commit,
 +};
 +
 +static void crucible_fault_register_abi_handlers(void)
