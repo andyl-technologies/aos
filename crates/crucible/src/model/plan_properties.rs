@@ -557,6 +557,7 @@ impl Plan {
     /// validation failures, or a plan validation error when the parsed entries do
     /// not layer over `world`.
     pub fn from_canonical_toml_for_world(world: &World, input: &str) -> Result<Self, EngineError> {
+        validate_scenario_toml_size(input)?;
         validate_plan_entries_in_toml(input)?;
         let toml = toml::from_str::<PlanToml>(input)
             .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;
@@ -575,6 +576,7 @@ impl Plan {
         assertions: impl IntoIterator<Item = AssertionId>,
         input: &str,
     ) -> Result<Self, EngineError> {
+        validate_scenario_toml_size(input)?;
         validate_plan_entries_in_toml(input)?;
         let toml = toml::from_str::<PlanToml>(input)
             .map_err(|source| scenario_serialization_error(format!("parse plan TOML: {source}")))?;

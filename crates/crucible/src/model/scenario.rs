@@ -595,6 +595,7 @@ impl World {
     /// mismatch, or a world validation error for invalid topology, launch fields,
     /// ready points, or workload scenario-parameter delivery.
     pub fn from_canonical_toml(input: &str) -> Result<Self, EngineError> {
+        validate_scenario_toml_size(input)?;
         validate_no_host_path_image_refs_in_toml(input)?;
         let toml = toml::from_str::<WorldToml>(input).map_err(|source| {
             scenario_serialization_error(format!("parse world TOML: {source}"))

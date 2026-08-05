@@ -261,11 +261,17 @@ impl WorldIoNode {
     /// Returns the content-derived fault target for this complete node definition.
     #[must_use]
     pub fn device_id(&self) -> DeviceId {
-        let hash = ContentHash::from_canonical_material(
+        let hash = self.fault_target_hash();
+        DeviceId::from_name(ContentAddressedBlobRef::from_hash(hash).to_uri())
+    }
+
+    /// Returns the immutable content identity used by fault selectors.
+    #[must_use]
+    pub fn fault_target_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
             "crucible.model.world-io-node.v1",
             &world_io_node_material(self),
-        );
-        DeviceId::from_name(ContentAddressedBlobRef::from_hash(hash).to_uri())
+        )
     }
 
     /// Projects this world node to its concrete scheduler graph identity.
@@ -400,6 +406,22 @@ impl LinkLossProbability {
 }
 
 impl LinkDef {
+    /// Returns the deterministic segment identity exposed to fault selectors.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultContractError::InvalidId`] only if the implementation's
+    /// fixed `segment-<digest>` spelling violates its own identifier contract.
+    pub fn fault_segment_id(&self) -> Result<FaultObjectId, FaultContractError> {
+        let (left, right) = self.endpoints();
+        let material = format!("endpoint-a={}\nendpoint-b={}", left.name, right.name);
+        let digest = ContentHash::from_canonical_material(
+            "crucible.model.network-segment-identity.v1",
+            &material,
+        );
+        FaultObjectId::parse(format!("segment-{}", digest.to_hex()))
+    }
+
     /// Builds a link with a canonical endpoint ordering.
     ///
     /// `LinkDef::new(a, b)` and `LinkDef::new(b, a)` produce equal links. A

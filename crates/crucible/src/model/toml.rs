@@ -46,14 +46,32 @@ pub(super) const MAX_SCENARIO_BINARY_STRING_BYTES: usize = 16 * 1024 * 1024;
 pub(super) const MAX_SCENARIO_BINARY_BLOB_BYTES: usize = 256 * 1024 * 1024;
 pub(super) const MAX_REPRODUCTION_SCENARIO_BLOB_BYTES: usize =
     MAX_SCENARIO_BINARY_BLOB_BYTES + HARD_FAULT_SIGNAL_PLAN_WIRE_BYTES;
+pub(super) const MAX_SCENARIO_TOML_BYTES: usize = 256 * 1024 * 1024;
+
+pub(super) fn validate_scenario_toml_size(input: &str) -> Result<(), EngineError> {
+    if input.len() > MAX_SCENARIO_TOML_BYTES {
+        return Err(scenario_serialization_error(format!(
+            "scenario TOML contains {} bytes, hard limit is {MAX_SCENARIO_TOML_BYTES}",
+            input.len()
+        )));
+    }
+    Ok(())
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ScenarioDefToml {
+    pub(super) schema: ScenarioSchemaToml,
     pub(super) scenario: ScenarioHeaderToml,
     pub(super) world: WorldToml,
     pub(super) plan: PlanToml,
     pub(super) properties: PropertiesToml,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub(super) enum ScenarioSchemaToml {
+    #[serde(rename = "crucible.scenario.v2")]
+    V2,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -175,11 +193,14 @@ pub(super) struct LinkToml {
 #[serde(deny_unknown_fields)]
 pub(super) struct PlanToml {
     pub(super) id: String,
+    pub(super) fault_model: FaultModelToml,
     pub(super) fault_signal_semantic_version: u16,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) signal_program: Vec<toml::Value>,
+    pub(super) signal: Vec<toml::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) fault_binding: Vec<toml::Value>,
+    #[serde(default)]
+    pub(super) resource_limits: SignalResourceLimits,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) kind: Option<PlanKindToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -188,6 +209,12 @@ pub(super) struct PlanToml {
     pub(super) fault_entry: Vec<FaultPlanEntryToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) event: Vec<EventToml>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum FaultModelToml {
+    SignalBindingsV1,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -763,6 +790,7 @@ pub(super) fn scenario_form_to_toml(
     form: &ScenarioDefForm,
 ) -> Result<ScenarioDefToml, EngineError> {
     Ok(ScenarioDefToml {
+        schema: ScenarioSchemaToml::V2,
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
             seed: format_seed_ref(form.seed),
@@ -1054,16 +1082,16 @@ pub(super) fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
 }
 
 pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
-    let fault_signals = FaultSignalPlanWire::from_plan(plan.fault_signals());
-    let (signal_program, fault_binding) = fault_signals
-        .to_toml_rows()
+    let fault_signals = FaultSignalAuthoringRows::from_plan(plan.fault_signals())
         .map_err(|error| scenario_serialization_error(error.to_string()))?;
     Ok(match &plan.kind {
         PlanKind::ScheduledEntries { entries } => PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
+            fault_model: FaultModelToml::SignalBindingsV1,
             fault_signal_semantic_version: fault_signals.semantic_version,
-            signal_program,
-            fault_binding,
+            signal: fault_signals.signals,
+            fault_binding: fault_signals.bindings,
+            resource_limits: fault_signals.resource_limits,
             kind: None,
             entry: entries.iter().map(plan_entry_to_toml).collect(),
             fault_entry: Vec::new(),
@@ -1071,9 +1099,11 @@ pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
         },
         PlanKind::FaultPlan { plan: fault_plan } => PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
+            fault_model: FaultModelToml::SignalBindingsV1,
             fault_signal_semantic_version: fault_signals.semantic_version,
-            signal_program,
-            fault_binding,
+            signal: fault_signals.signals,
+            fault_binding: fault_signals.bindings,
+            resource_limits: fault_signals.resource_limits,
             kind: Some(PlanKindToml::FaultPlan),
             entry: Vec::new(),
             fault_entry: fault_plan
@@ -1085,9 +1115,11 @@ pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
         },
         PlanKind::EventGraph { graph } => PlanToml {
             id: format_content_hash_ref(plan.content_hash()),
+            fault_model: FaultModelToml::SignalBindingsV1,
             fault_signal_semantic_version: fault_signals.semantic_version,
-            signal_program,
-            fault_binding,
+            signal: fault_signals.signals,
+            fault_binding: fault_signals.bindings,
+            resource_limits: fault_signals.resource_limits,
             kind: Some(PlanKindToml::EventGraph),
             entry: Vec::new(),
             fault_entry: Vec::new(),
@@ -1107,13 +1139,13 @@ pub(super) fn plan_from_toml_with_assertions(
 ) -> Result<Plan, EngineError> {
     let id = parse_content_hash_ref(&toml.id)?;
     let serialized_kind = serialized_plan_kind(&toml)?;
-    let fault_signals = FaultSignalPlanWire::from_toml_rows(
-        toml.fault_signal_semantic_version,
-        toml.signal_program,
-        toml.fault_binding,
-    )
-    .map_err(|error| scenario_serialization_error(error.to_string()))?
-    .admit()
+    let fault_signals = FaultSignalAuthoringRows {
+        semantic_version: toml.fault_signal_semantic_version,
+        resource_limits: toml.resource_limits,
+        signals: toml.signal,
+        bindings: toml.fault_binding,
+    }
+    .admit(world)
     .map_err(|error| scenario_serialization_error(error.to_string()))?;
     let plan = match serialized_kind {
         SerializedPlanKind::ScheduledEntries => {
