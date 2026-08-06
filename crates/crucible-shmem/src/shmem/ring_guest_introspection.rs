@@ -357,4 +357,28 @@ mod tests {
         );
         assert_eq!(header.dequeue_guest_introspection(&entries), Ok(None));
     }
+
+    #[test]
+    fn peek_requires_matching_commit_before_releasing_request() {
+        let header = RingHeader::new();
+        let mut entries = vec![GuestIntrospectionEntry::default(); 2];
+        let first = GuestIntrospectionEntry::new(7, &close_record(1))
+            .unwrap_or_else(|error| panic!("entry should build: {error}"));
+        header
+            .enqueue_guest_introspection(&mut entries, first)
+            .unwrap_or_else(|error| panic!("entry should enqueue: {error}"));
+
+        assert_eq!(header.peek_guest_introspection(&entries), Ok(Some(first)));
+        assert_eq!(header.peek_guest_introspection(&entries), Ok(Some(first)));
+        assert_eq!(
+            header.commit_guest_introspection(&entries, 8),
+            Err(SpscRingError::GuestIntrospectionSequenceMismatch {
+                expected: 8,
+                actual: 7,
+            })
+        );
+        assert_eq!(header.peek_guest_introspection(&entries), Ok(Some(first)));
+        assert_eq!(header.commit_guest_introspection(&entries, 7), Ok(()));
+        assert_eq!(header.peek_guest_introspection(&entries), Ok(None));
+    }
 }

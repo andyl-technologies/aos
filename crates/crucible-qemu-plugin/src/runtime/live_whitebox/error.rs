@@ -36,6 +36,12 @@ pub enum LiveWhiteboxError {
         /// Underlying mapped-region access error.
         source: crucible_shmem::MappedSetupRegionAccessError,
     },
+    /// The mapped setup region could not expose this VM's introspection rings.
+    #[error("mapped guest-introspection rings are unavailable")]
+    MappedGuestIntrospectionRings {
+        /// Underlying mapped-region access error.
+        source: crucible_shmem::MappedSetupRegionAccessError,
+    },
     /// A required upstream QEMU or GLib symbol was absent.
     #[error("required live white-box capability `{symbol}` is unavailable")]
     CapabilityUnavailable {
@@ -90,6 +96,14 @@ pub enum LiveWhiteboxError {
     PayloadLengthOverflow {
         /// Guest-provided length.
         len: u64,
+    },
+    /// A guest-provided payload exceeds the callback read bound.
+    #[error("guest white-box payload length {len} exceeds maximum {maximum}")]
+    PayloadTooLarge {
+        /// Guest-provided length.
+        len: usize,
+        /// Fixed callback read bound.
+        maximum: usize,
     },
     /// The safe doorbell callback rejected the live event.
     #[error("safe white-box callback failed: {message}")]

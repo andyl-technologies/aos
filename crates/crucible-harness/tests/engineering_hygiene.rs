@@ -16,7 +16,11 @@ use crucible_harness::spec_index::crate_spec_index;
 
 const SOFT_LINE_LIMIT: usize = 600;
 const HARD_LINE_LIMIT: usize = 1_000;
-const QEMU_BOUNDARY_PACKAGES: &[&str] = &["crucible-qemu", "crucible-qemu-plugin"];
+const QEMU_BOUNDARY_PACKAGES: &[&str] = &[
+    "crucible-debug-gateway",
+    "crucible-qemu",
+    "crucible-qemu-plugin",
+];
 const QEMU_SPECIFIC_TOKENS: &[&str] = &[
     "qemu",
     "Qemu",

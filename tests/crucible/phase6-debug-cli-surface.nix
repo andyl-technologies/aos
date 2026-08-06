@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugCliSurface",
-  taskIds ? ["T-DBG-8" "T-CLI-18"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-DBG-8" "T-CLI-18"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};

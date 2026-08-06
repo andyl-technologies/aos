@@ -9,6 +9,12 @@
 //! [`DebugGateway`] owns the two-phase active/prepared backend transition.
 //! [`classify_rsp_packet`] enforces canonical read-only policy and diverts run
 //! control to the scheduler-owning host instead of forwarding it to QEMU.
+//!
+//! Module map: this crate root owns validated backend identities, transactional
+//! replacement state, and bounded RSP packet classification. The binary entry
+//! point owns Unix-socket transport, connection supervision, and protocol I/O.
+//!
+//! Spec index: RFC-0010 files 36.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

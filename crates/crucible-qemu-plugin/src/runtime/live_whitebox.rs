@@ -27,6 +27,7 @@ use crate::{
 mod api;
 mod app_random;
 mod error;
+mod guest_introspection;
 mod marker;
 pub(crate) use api::LiveWhiteboxApis;
 use api::{QemuPluginRegDescriptor, QemuPluginRegister};
@@ -64,6 +65,24 @@ pub(crate) struct LiveWhiteboxState {
     request_shutdown: QemuRequestShutdownFn,
     marker_sink: LiveMarkerSink,
     app_random: Option<LiveAppRandomState>,
+    guest_introspection: guest_introspection::LiveGuestIntrospectionState,
+}
+
+pub(crate) struct LiveWhiteboxShmem {
+    marker_output: LiveWhiteboxMarkerShmemProducer,
+    guest_introspection_rings: crucible_shmem::DetachedPluginGuestIntrospectionRings,
+}
+
+impl LiveWhiteboxShmem {
+    pub(crate) const fn new(
+        marker_output: LiveWhiteboxMarkerShmemProducer,
+        guest_introspection_rings: crucible_shmem::DetachedPluginGuestIntrospectionRings,
+    ) -> Self {
+        Self {
+            marker_output,
+            guest_introspection_rings,
+        }
+    }
 }
 
 /// Architecture-specific trap identity admitted by setup validation.
@@ -99,7 +118,7 @@ impl LiveWhiteboxState {
         vcpu_count: u32,
         icount_raw: QemuIcountRawFn,
         request_shutdown: QemuRequestShutdownFn,
-        marker_output: LiveWhiteboxMarkerShmemProducer,
+        shmem: LiveWhiteboxShmem,
         app_random_config: Option<&PluginAppRandomConfig>,
     ) -> Result<Self, LiveWhiteboxError> {
         let architecture = target.architecture;
@@ -136,11 +155,7 @@ impl LiveWhiteboxState {
             doorbell.trap(),
             WhiteboxDoorbellSetupResources::from_observed_resources(&[], &[]),
         );
-        let capabilities = if app_random_config.is_some() {
-            WhiteboxDoorbellCapabilities::bidirectional()
-        } else {
-            WhiteboxDoorbellCapabilities::guest_to_host()
-        };
+        let capabilities = WhiteboxDoorbellCapabilities::bidirectional();
         let plan = doorbell
             .registration_plan(capabilities, validation)
             .map_err(|source| LiveWhiteboxError::RegistrationPlan {
@@ -162,6 +177,11 @@ impl LiveWhiteboxState {
             .map_err(|source| LiveWhiteboxError::RegistrationPlan {
                 message: source.to_string(),
             })?;
+        let guest_input_capability = doorbell
+            .require_guest_input_capability(capabilities)
+            .map_err(|source| LiveWhiteboxError::RegistrationPlan {
+                message: source.to_string(),
+            })?;
 
         Ok(Self {
             apis,
@@ -171,8 +191,12 @@ impl LiveWhiteboxState {
             vcpu_count,
             icount_raw,
             request_shutdown,
-            marker_sink: LiveMarkerSink::new(marker_output),
+            marker_sink: LiveMarkerSink::new(shmem.marker_output),
             app_random,
+            guest_introspection: guest_introspection::LiveGuestIntrospectionState::new(
+                shmem.guest_introspection_rings,
+                guest_input_capability,
+            ),
         })
     }
 
@@ -268,6 +292,12 @@ impl LiveWhiteboxState {
         )?;
         let len = usize::try_from(len_u64)
             .map_err(|_source| LiveWhiteboxError::PayloadLengthOverflow { len: len_u64 })?;
+        if len > MAX_FRAME_DATA {
+            return Err(LiveWhiteboxError::PayloadTooLarge {
+                len,
+                maximum: MAX_FRAME_DATA,
+            });
+        }
         let current_icount = (self.icount_raw)();
         let event = WhiteboxDoorbellTrapEvent::from_register_pointer_length(
             vcpu_index as u32,
@@ -284,7 +314,9 @@ impl LiveWhiteboxState {
             .map_err(|source| LiveWhiteboxError::Callback {
                 message: source.to_string(),
             })?;
-        if app_random::is_request(&payload) {
+        if guest_introspection::is_exchange(&payload) {
+            self.handle_guest_introspection(&mut reader, event, &payload)
+        } else if app_random::is_request(&payload) {
             self.handle_app_random(&mut reader, event, current_icount, vcpu_index)
         } else {
             handle_whitebox_doorbell_callback(

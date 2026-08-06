@@ -883,6 +883,28 @@ it contains no native pointers or process-private objects. Adding this transport
 an explicit shared-memory ABI version change and must pass ABI conformance on both
 x86_64 and aarch64.
 
+The concrete port reuses the already-attested per-architecture white-box
+doorbell as a deterministic guest rendezvous rather than adding another QEMU
+control plane. The guest supplies one fixed 4,608-byte mutable `CRGX` v1 buffer.
+On each trap the GPL-side plugin validates an optional complete `CRGI` response,
+publishes it to the plugin-to-host ring, dequeues at most one host request, and
+overwrites the same guest buffer with that request or an idle reply. The frame
+has a 16-byte pointer-free header, a bounded complete `CRGI` record, and a
+zero-checked tail. Guest and plugin directions are closed and fail loudly when
+reversed. This makes the port “virtio-serial-style” at the stream API without
+introducing a virtual device or transferring a descriptor across the process
+boundary.
+
+The response exchange is acknowledged. When the fixed 64-entry plugin-to-host
+ring is full, the plugin returns `retry`, retains the guest response sequence,
+and does not dequeue a host request. The guest retries the same complete record
+after a fixed deterministic spin interval. A host request is peeked but not
+committed until the corresponding guest-memory write succeeds. Both directional
+rings start at sequence one and fail closed on gaps, duplicates, stale entries,
+or overflow. The host and plugin validate not only the outer exchange direction
+but also the embedded `CRGI` request/response kind; the reserved feature channel
+can carry only the initial feature advertisement.
+
 The native surface supports argv-based noninteractive exec and an interactive PTY.
 An SSH-compatible byte bridge is also provided for existing operator tooling, but
 it terminates at the guest agent rather than exposing a host shell. Opening any of
@@ -890,6 +912,36 @@ these channels requires the `shell` capability and an explicit whole-world
 non-canonical scenario fork first. Whole-world scope is the initial implementation:
 forking only one node while peers continue on canonical history would create an
 ambiguous network world.
+
+The guest agent launches exec and PTY children directly from argv without shell
+parsing. PTYs use an in-guest pseudoterminal and accept resize records. SSH
+compatibility is advertised only when the image configures an in-guest SSH server
+argv that speaks its protocol over standard input/output; the bridge does not
+assume or discover a host executable.
+
+The agent bounds concurrent channels at 64, its global response backlog at 64
+records, and each output-reader handoff at two 4,096-byte chunks. Full queues
+apply child-pipe backpressure rather than consuming guest memory without bound.
+Channel-local open, capacity, input, and terminal errors return a typed `CRGI`
+terminal error without terminating the agent; the channel is closed and its
+identifier becomes reusable after that record. Reader I/O failures use the same
+terminal path, and terminal records have priority over ordinary output when
+capacity returns. Round-robin channel and per-stream cursors prevent a noisy
+stdout from starving stderr, another channel, or exit status. Transport
+corruption remains fatal. SSH protocol stdout and diagnostic stderr remain
+distinct streams. Every child runs in a private session/process group; PTY
+children additionally acquire the slave as their controlling terminal. Resize
+retains an owned control descriptor, and channel close removes that descriptor
+and sends `SIGHUP` to the PTY process group. Direct-child exit also hangs up
+descendants that retain stream descriptors. Agent shutdown terminates and reaps
+remaining process groups and joins their bounded readers.
+
+An idle agent still has a causal instruction-count cost: it polls only after a
+fixed spin count, but it is not timing-neutral. Therefore an image or daemon MUST
+NOT activate `crucible-guest agent` on canonical execution. Activation belongs
+to the authorized whole-world non-canonical debug fork and is recorded as part
+of that fork's causal configuration. A future interrupt-backed device may remove
+polling, but is not required by this protocol version.
 
 Guest streams are ephemeral by default and excluded from canonical artifacts. An
 operator may explicitly request transcript recording on the non-canonical branch.
@@ -1305,7 +1357,7 @@ complete from model-double evidence.
 - [ ] **T-DBG-12** Version the public shared-memory ABI for the debug guest agent and
   implement whole-world-forked argv exec, PTY, resize, exit/close, and SSH-compatible
   byte bridging; close all streams on reposition and keep recording opt-in. —
-  satisfies [DBG-45], [DBG-46]; spec §36.9.3.
+  satisfies [DBG-45], [DBG-46], [SHM-47], [SHM-48]; spec §36.9.3, 13 §13.3.9.
   The independently implementable `crucible-protocol::guest_introspection`
   codec now freezes the owned `CRGI` v1 record header and closed feature, argv
   exec, PTY, SSH bridge, input, resize, close, output, and exit vocabulary. It
@@ -1314,8 +1366,17 @@ complete from model-double evidence.
   appends one bounded request ring and one bounded response ring per VM, with
   checked C and Rust geometry, role-specific host/plugin accessors, full-record
   validation before publication and consumption, and fail-loud backpressure.
-  Completion remains open for the QEMU/guest-agent transport, fork-gated
-  daemon/CLI surface, reposition teardown, and live evidence.
+  The `CRGX` v1 fixed guest-buffer exchange, role-preserving detached plugin
+  ring handle, live QEMU callback adapter, host `QemuNode` request/response
+  methods, and `crucible-guest agent` runtime now connect those rings end to end.
+  The agent advertises capabilities, launches direct argv exec and controlling-
+  terminal PTY children, applies bounded output backpressure, isolates SSH
+  diagnostics, resizes PTYs through owned descriptors, reports typed channel
+  errors and exit status/signal, and optionally bridges to a configured in-guest
+  SSH stdio server. Direction and sequence validation, retry acknowledgement,
+  post-write request commit, and child cleanup are implemented. Completion
+  remains open for the fork-gated daemon/CLI surface, reposition teardown, and
+  live x86_64/aarch64 evidence.
 - [ ] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.
