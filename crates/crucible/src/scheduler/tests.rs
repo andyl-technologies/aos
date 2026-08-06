@@ -1,7 +1,9 @@
 //! Scheduler unit tests separated from the production quantum-loop implementation.
 
 use super::*;
-use crate::{BackendEffect, MockSimulationBackend, RngDecision, ScenarioDef};
+use crate::{
+    BackendEffect, BackendNetworkFaultContinuation, MockSimulationBackend, RngDecision, ScenarioDef,
+};
 
 #[path = "tests/production_backend.rs"]
 mod production_backend;
@@ -172,6 +174,290 @@ fn backend_quantum_loop_applies_resolved_preemption_before_run() {
     assert_eq!(
         adapter.backend().state().applied_effects,
         vec![BackendEffect::Preemption(decision)]
+    );
+}
+
+#[test]
+fn pending_network_boundary_release_settles_before_a_far_quantum() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct FarLoop;
+
+    impl QuantumLoop for FarLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 10_000 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+
+        fn backend_network_output_time(
+            &self,
+            _node: &NodeId,
+            _at: Icount,
+        ) -> Result<VirtualTime, SchedulerError> {
+            Ok(VirtualTime { ticks: 0 })
+        }
+    }
+
+    struct RecordingInterceptor(Rc<Cell<Option<u64>>>);
+
+    impl BackendNetworkOutputInterceptor<FarLoop, MockSimulationBackend> for RecordingInterceptor {
+        fn intercept_network_outputs(
+            &mut self,
+            _loop_impl: &mut FarLoop,
+            _backend: &mut MockSimulationBackend,
+            frontier: VirtualTime,
+            _pending_outputs: &mut Vec<BackendNetworkOutput>,
+            outputs: &mut Vec<BackendNetworkOutput>,
+        ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+            self.0.set(Some(frontier.ticks));
+            outputs.clear();
+            Ok(Vec::new())
+        }
+    }
+
+    let observed = Rc::new(Cell::new(None));
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
+        FarLoop,
+        MockSimulationBackend::default(),
+        RecordingInterceptor(Rc::clone(&observed)),
+    );
+    let opportunity = ContentHash::from_bytes(b"boundary-release");
+    let mut output = BackendNetworkOutput {
+        source: NodeId {
+            name: String::from("source"),
+        },
+        destination: NodeId {
+            name: String::from("destination"),
+        },
+        emit_icount: Icount { retired: 0 },
+        sequence: 1,
+        payload: vec![1],
+        route: None,
+        fault_continuation: BackendNetworkFaultContinuation::default(),
+    };
+    output
+        .fault_continuation
+        .cursor_mut()
+        .defer_until(10_000, opportunity);
+    output
+        .fault_continuation
+        .cursor_mut()
+        .reschedule_queue_until(opportunity, 0)
+        .unwrap_or_else(|error| panic!("release pending frame: {error}"));
+    adapter.network_transaction_parts_mut().3.push(output);
+
+    let settlement = adapter
+        .settle_pending_network_outputs_at_current_frontier()
+        .unwrap_or_else(|error| panic!("settle boundary frame: {error}"));
+    let (decisions, configuration, appends) = settlement.into_parts();
+    assert!(decisions.is_empty());
+    assert!(configuration.is_none());
+    assert!(appends.is_empty());
+    assert_eq!(observed.get(), Some(0));
+    assert!(adapter.network_transaction_parts_mut().3.is_empty());
+}
+
+#[test]
+fn equal_boundary_custody_releases_settle_in_priority_order() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct BoundaryLoop;
+
+    impl QuantumLoop for BoundaryLoop {
+        fn drive_quantum(
+            &mut self,
+            request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Ok(QuantumOutcome {
+                configuration: request.configuration,
+                frontier: VirtualTime { ticks: 0 },
+                advanced_node: None,
+                resolved_events: Vec::new(),
+                decisions: Vec::new(),
+                event_log_entries: Vec::new(),
+                event_log_segment_bytes: Vec::new(),
+                event_log_segment_text: String::new(),
+                event_log_segment_hash: None,
+                event_log_offset: EventLogOffset::default(),
+                scheduler_quiescence: None,
+            })
+        }
+
+        fn backend_network_output_time(
+            &self,
+            _node: &NodeId,
+            _at: Icount,
+        ) -> Result<VirtualTime, SchedulerError> {
+            Ok(VirtualTime { ticks: 0 })
+        }
+    }
+
+    struct SequenceInterceptor(Rc<RefCell<Vec<u64>>>);
+
+    impl BackendNetworkOutputInterceptor<BoundaryLoop, MockSimulationBackend> for SequenceInterceptor {
+        fn intercept_network_outputs(
+            &mut self,
+            _loop_impl: &mut BoundaryLoop,
+            _backend: &mut MockSimulationBackend,
+            _frontier: VirtualTime,
+            _pending_outputs: &mut Vec<BackendNetworkOutput>,
+            outputs: &mut Vec<BackendNetworkOutput>,
+        ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+            self.0
+                .borrow_mut()
+                .extend(outputs.iter().map(|output| output.sequence));
+            outputs.clear();
+            Ok(Vec::new())
+        }
+    }
+
+    let observed = Rc::new(RefCell::new(Vec::new()));
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
+        BoundaryLoop,
+        MockSimulationBackend::default(),
+        SequenceInterceptor(Rc::clone(&observed)),
+    );
+    for (sequence, priority) in [(1_u64, 3_u8), (2_u64, 0_u8)] {
+        let opportunity = ContentHash::from_bytes(&sequence.to_be_bytes());
+        let mut output = BackendNetworkOutput {
+            source: NodeId {
+                name: String::from("source"),
+            },
+            destination: NodeId {
+                name: String::from("destination"),
+            },
+            emit_icount: Icount { retired: 0 },
+            sequence,
+            payload: vec![u8::try_from(sequence).unwrap_or(0)],
+            route: None,
+            fault_continuation: BackendNetworkFaultContinuation::default(),
+        };
+        output
+            .fault_continuation
+            .cursor_mut()
+            .defer_repeated_effect_until(
+                0,
+                opportunity,
+                crate::model::EffectKind::NetworkCustodyQueue,
+                Some(priority),
+            );
+        adapter.network_transaction_parts_mut().3.push(output);
+    }
+    adapter
+        .network_transaction_parts_mut()
+        .3
+        .push(BackendNetworkOutput {
+            source: NodeId {
+                name: String::from("source"),
+            },
+            destination: NodeId {
+                name: String::from("destination"),
+            },
+            emit_icount: Icount { retired: 0 },
+            sequence: 3,
+            payload: vec![3],
+            route: None,
+            fault_continuation: BackendNetworkFaultContinuation::default(),
+        });
+
+    adapter
+        .settle_pending_network_outputs_at_current_frontier()
+        .unwrap_or_else(|error| panic!("settle prioritized custody frames: {error}"));
+    assert_eq!(&*observed.borrow(), &[2, 3, 1]);
+}
+
+#[test]
+fn failed_exact_boundary_network_append_poison_preserves_pending_frame() {
+    struct RejectingLoop;
+
+    impl QuantumLoop for RejectingLoop {
+        fn drive_quantum(
+            &mut self,
+            _request: QuantumRequest,
+        ) -> Result<QuantumOutcome, SchedulerError> {
+            Err(SchedulerError::BoundaryViolation {
+                message: String::from("drive must not follow poison"),
+            })
+        }
+
+        fn backend_network_output_time(
+            &self,
+            _node: &NodeId,
+            _at: Icount,
+        ) -> Result<VirtualTime, SchedulerError> {
+            Ok(VirtualTime { ticks: 0 })
+        }
+    }
+
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
+        RejectingLoop,
+        MockSimulationBackend::default(),
+        NoopBackendNetworkOutputInterceptor,
+    );
+    let opportunity = ContentHash::from_bytes(b"failed-boundary-release");
+    let mut output = BackendNetworkOutput {
+        source: NodeId {
+            name: String::from("source"),
+        },
+        destination: NodeId {
+            name: String::from("destination"),
+        },
+        emit_icount: Icount { retired: 0 },
+        sequence: 9,
+        payload: vec![9],
+        route: None,
+        fault_continuation: BackendNetworkFaultContinuation::default(),
+    };
+    output
+        .fault_continuation
+        .cursor_mut()
+        .defer_until(100, opportunity);
+    output
+        .fault_continuation
+        .cursor_mut()
+        .reschedule_queue_until(opportunity, 0)
+        .unwrap_or_else(|error| panic!("release failed-append frame: {error}"));
+    adapter
+        .network_transaction_parts_mut()
+        .3
+        .push(output.clone());
+
+    assert!(
+        adapter
+            .settle_pending_network_outputs_at_current_frontier()
+            .is_err()
+    );
+    assert_eq!(adapter.network_transaction_parts_mut().3, &[output]);
+    let config = Configuration::genesis(ScenarioDef::from_canonical_material(
+        "crucible.test.scheduler.poisoned-network-settlement",
+        "scenario=poisoned-network-settlement",
+    ));
+    let error = adapter
+        .drive_quantum(QuantumRequest {
+            configuration: config,
+            control: Vec::new(),
+        })
+        .expect_err("poisoned settlement must reject all later drive attempts");
+    assert!(
+        error
+            .to_string()
+            .contains("network settlement continuation is poisoned")
     );
 }
 

@@ -97,6 +97,108 @@ fn network_effect_policy_references_are_typed_and_world_owned() {
 }
 
 #[test]
+fn overflow_typed_errors_are_contextual_between_control_and_custody() {
+    let program = program(true);
+    let binding = binding(&program);
+    let overflow = object_id("overflow-policy");
+    let control = object_id("control-error");
+    let response = object_id("frame-error");
+    let headers = crate::model::NetworkPolicyResponseHeaders {
+        source_mac: None,
+        source_ipv4: None,
+        source_ipv6: None,
+        hop_limit: 64,
+        ipv4_identification: 1,
+        delay_nanos: None,
+    };
+    let mut topology = WorldFaultTopology {
+        network_policy_artifacts: vec![
+            WorldNetworkPolicyArtifact {
+                id: control.clone(),
+                semantic_version: 1,
+                artifact: NetworkPolicyArtifactKind::ControlResult {
+                    schema: object_id("control-schema"),
+                    bytes: vec![1],
+                },
+            },
+            WorldNetworkPolicyArtifact {
+                id: response.clone(),
+                semantic_version: 1,
+                artifact: NetworkPolicyArtifactKind::TypedResponse(
+                    crate::model::NetworkPolicyTypedResponseSet {
+                        responses: vec![crate::model::NetworkPolicyTypedResponse {
+                            response: crate::model::NetworkPolicyTypedResponseKind::TcpReset,
+                            headers,
+                        }],
+                        unmatched: crate::model::NetworkPolicyUnmatchedResponse::Suppress,
+                    },
+                ),
+            },
+            WorldNetworkPolicyArtifact {
+                id: overflow.clone(),
+                semantic_version: 1,
+                artifact: NetworkPolicyArtifactKind::Overflow {
+                    disposition: crate::model::NetworkPolicyOverflow::TypedError,
+                    timeout_nanos: None,
+                    typed_error: Some(response.clone()),
+                },
+            },
+        ],
+        ..WorldFaultTopology::default()
+    };
+    topology
+        .network_policy_artifacts
+        .sort_by(|left, right| left.id.cmp(&right.id));
+
+    require_overflow_typed_error(
+        &topology,
+        &binding,
+        &overflow,
+        NetworkPolicyArtifactClass::TypedResponse,
+        "custody_policy.typed_error",
+    )
+    .unwrap_or_else(|error| panic!("custody response class: {error}"));
+    assert!(
+        require_overflow_typed_error(
+            &topology,
+            &binding,
+            &overflow,
+            NetworkPolicyArtifactClass::ControlResult,
+            "overflow_policy.typed_error",
+        )
+        .is_err()
+    );
+
+    let declaration = topology
+        .network_policy_artifacts
+        .iter_mut()
+        .find(|artifact| artifact.id == overflow)
+        .unwrap_or_else(|| panic!("overflow artifact"));
+    let NetworkPolicyArtifactKind::Overflow { typed_error, .. } = &mut declaration.artifact else {
+        panic!("overflow artifact kind")
+    };
+    *typed_error = Some(control);
+    require_overflow_typed_error(
+        &topology,
+        &binding,
+        &overflow,
+        NetworkPolicyArtifactClass::ControlResult,
+        "overflow_policy.typed_error",
+    )
+    .unwrap_or_else(|error| panic!("control result class: {error}"));
+    assert!(
+        require_overflow_typed_error(
+            &topology,
+            &binding,
+            &overflow,
+            NetworkPolicyArtifactClass::TypedResponse,
+            "custody_policy.typed_error",
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn shared_medium_binding_matches_world_policy_channels_and_participants() {
     let program = program(true);
     let policy_id = object_id("radio-access-policy");

@@ -120,6 +120,8 @@ pub struct ResolvedNetworkFrameEffects {
     serialization_rate_cap_bps: Option<u64>,
     /// Whether adapter-owned queue service already consumed serialization time.
     serialization_accounted: bool,
+    /// Canonical identities of intermittent-contact services already reserved.
+    contact_services_accounted: Vec<[u8; 32]>,
     /// Whether the adapter resolved this frame to no delivery.
     drop: bool,
     /// Added-copy gaps from the primary delivery, in canonical copy order.
@@ -141,6 +143,9 @@ pub enum ResolvedNetworkFrameEffectsError {
     /// The bounded per-frame copy count was exceeded.
     #[error("resolved network duplicate count exceeds 256")]
     DuplicateLimit,
+    /// The bounded per-frame contact-service identity count was exceeded.
+    #[error("resolved network contact-service count exceeds 256")]
+    ContactServiceLimit,
 }
 
 impl ResolvedNetworkFrameEffects {
@@ -204,12 +209,36 @@ impl ResolvedNetworkFrameEffects {
         self.serialization_accounted = true;
     }
 
+    /// Marks one exact contact service and downstream serialization as consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolvedNetworkFrameEffectsError::ContactServiceLimit`] when
+    /// the frame has already traversed 256 distinct contact services.
+    pub fn mark_contact_service_accounted(
+        &mut self,
+        identity: [u8; 32],
+    ) -> Result<(), ResolvedNetworkFrameEffectsError> {
+        match self.contact_services_accounted.binary_search(&identity) {
+            Ok(_index) => {}
+            Err(index) => {
+                if self.contact_services_accounted.len() == 256 {
+                    return Err(ResolvedNetworkFrameEffectsError::ContactServiceLimit);
+                }
+                self.contact_services_accounted.insert(index, identity);
+            }
+        }
+        self.serialization_accounted = true;
+        Ok(())
+    }
+
     /// Requires a later queue or link to serialize this frame again.
     ///
     /// Protocol expansion uses this after an upstream service point because
     /// every child is a new downstream frame with its own copied headers.
-    pub const fn require_serialization(&mut self) {
+    pub fn require_serialization(&mut self) {
         self.serialization_accounted = false;
+        self.contact_services_accounted.clear();
     }
 
     /// Adds one bounded copy gap and preserves canonical gap ordering.
@@ -254,6 +283,20 @@ impl ResolvedNetworkFrameEffects {
     #[must_use]
     pub const fn serialization_is_accounted(&self) -> bool {
         self.serialization_accounted
+    }
+
+    /// Returns whether custody already reserved this exact contact service.
+    #[must_use]
+    pub fn contact_service_is_accounted(&self, identity: &[u8; 32]) -> bool {
+        self.contact_services_accounted
+            .binary_search(identity)
+            .is_ok()
+    }
+
+    /// Returns exact contact services already consumed in canonical order.
+    #[must_use]
+    pub fn accounted_contact_services(&self) -> &[[u8; 32]] {
+        &self.contact_services_accounted
     }
 
     /// Returns whether the frame resolves to no delivery.

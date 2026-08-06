@@ -3,7 +3,10 @@
 use super::*;
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
-    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+    fn drive_quantum(
+        &mut self,
+        mut request: QuantumRequest,
+    ) -> Result<QuantumOutcome, SchedulerError> {
         self.reconcile_backend_membership()?;
         let mut pre_quantum_appends = Vec::new();
         let fault_append = self.evaluate_signal_fault_boundary()?;
@@ -11,6 +14,14 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             pre_quantum_appends.push(fault_append);
         }
         pre_quantum_appends.extend(self.settle_trigger_graph()?);
+        let (pre_quantum_decisions, settled_configuration, network_appends) = self
+            .inner
+            .settle_pending_network_outputs_at_current_frontier()?
+            .into_parts();
+        pre_quantum_appends.extend(network_appends);
+        if let Some(configuration) = settled_configuration {
+            request.configuration = configuration;
+        }
         self.reconcile_backend_membership()?;
         if self.branch.as_ref().is_some_and(|branch| {
             branch.base == request.configuration && !request.control.is_empty()
@@ -98,11 +109,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                         ),
                     });
                 }
-                let decisions = branch.decisions.clone();
+                let branch_decisions = branch.decisions.clone();
                 let (configuration, append) = self
                     .inner
                     .loop_impl_mut()
-                    .append_branch_prefix_overrides(decisions.clone())?;
+                    .append_branch_prefix_overrides(branch_decisions.clone())?;
                 if let Some(seed) = branch.seed {
                     self.inner.loop_impl_mut().reseed_future_decisions(seed)?;
                 }
@@ -110,6 +121,8 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 let frontier = self.inner.loop_impl().frontier();
                 let scheduler_quiescence = Some(self.inner.loop_impl().quiescence()?);
                 self.branch = None;
+                let mut decisions = pre_quantum_decisions;
+                decisions.extend(branch_decisions);
                 let mut outcome = QuantumOutcome {
                     configuration,
                     frontier,
@@ -139,6 +152,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             }
         }
         let mut outcome = crucible_session::drive_engine_quantum(&mut self.inner, request)?;
+        if !pre_quantum_decisions.is_empty() {
+            let mut decisions = pre_quantum_decisions;
+            decisions.extend(std::mem::take(&mut outcome.decisions));
+            outcome.decisions = decisions;
+        }
         prepend_event_log_appends(&mut outcome, pre_quantum_appends);
         for append in self.settle_trigger_graph()? {
             merge_event_log_append(&mut outcome, append);

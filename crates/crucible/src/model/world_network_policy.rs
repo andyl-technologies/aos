@@ -294,6 +294,14 @@ pub struct NetworkPolicyAssociationCandidate {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkPolicyContactInterval {
+    /// Stable identity of this directed contact opportunity.
+    pub contact: FaultObjectId,
+    /// Exclusive capacity resource shared by contacts that cannot overlap.
+    pub service_resource: FaultObjectId,
+    /// Positive integer route cost used before stable contact-ID tie breaking.
+    pub route_cost: PositiveU64,
+    /// Exact propagation delay applied after service on this routing edge.
+    pub routing_propagation_nanos: u64,
     /// Inclusive contact start in virtual nanoseconds.
     pub start_nanos: u64,
     /// Exclusive contact end in virtual nanoseconds.
@@ -578,12 +586,12 @@ pub enum NetworkPolicyArtifactKind {
         disposition: NetworkPolicyOverflow,
         /// Optional modeled timeout.
         timeout_nanos: Option<PositiveU64>,
-        /// Typed control result returned only by `typed_error`.
+        /// Context-checked control result or reverse-path response for `typed_error`.
         typed_error: Option<FaultObjectId>,
     },
     /// Ordered intermittent-contact intervals.
     ContactPlan {
-        /// Strictly ordered, non-overlapping contact intervals.
+        /// Canonically ordered contact intervals for the finite schedule graph.
         intervals: Vec<NetworkPolicyContactInterval>,
     },
     /// Canonical candidate set for one broadcast or multicast membership version.
@@ -896,9 +904,17 @@ impl WorldNetworkPolicyArtifact {
                                 .is_some_and(|transition| {
                                     transition <= interval.end_nanos - interval.start_nanos
                                 })
-                    }) && intervals
-                        .windows(2)
-                        .all(|pair| pair[0].end_nanos <= pair[1].start_nanos),
+                    }) && intervals.windows(2).all(|pair| {
+                        (pair[0].start_nanos, pair[0].end_nanos, &pair[0].contact)
+                            < (pair[1].start_nanos, pair[1].end_nanos, &pair[1].contact)
+                    }) && intervals.iter().enumerate().all(|(index, interval)| {
+                        intervals[index + 1..].iter().all(|candidate| {
+                            interval.contact != candidate.contact
+                                && (interval.service_resource != candidate.service_resource
+                                    || interval.end_nanos <= candidate.start_nanos
+                                    || candidate.end_nanos <= interval.start_nanos)
+                        })
+                    }),
                     "network contact interval order",
                 )
             }
@@ -1220,6 +1236,10 @@ mod tests {
     #[test]
     fn contact_intervals_validate_complete_directed_records() {
         let interval = NetworkPolicyContactInterval {
+            contact: id("contact-a"),
+            service_resource: id("radio-a"),
+            route_cost: positive(1),
+            routing_propagation_nanos: 1,
             start_nanos: 100,
             end_nanos: 200,
             source: id("satellite"),
@@ -1243,6 +1263,29 @@ mod tests {
             },
         };
         assert!(valid.validate().is_ok());
+
+        let mut concurrent = interval.clone();
+        concurrent.contact = id("contact-b");
+        concurrent.service_resource = id("radio-b");
+        concurrent.source = id("relay");
+        let concurrent_plan = WorldNetworkPolicyArtifact {
+            id: id("concurrent-contact-plan"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::ContactPlan {
+                intervals: vec![interval.clone(), concurrent.clone()],
+            },
+        };
+        assert!(concurrent_plan.validate().is_ok());
+
+        concurrent.service_resource = interval.service_resource.clone();
+        let conflicting_plan = WorldNetworkPolicyArtifact {
+            id: id("conflicting-contact-plan"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::ContactPlan {
+                intervals: vec![interval.clone(), concurrent],
+            },
+        };
+        assert!(conflicting_plan.validate().is_err());
 
         let mut invalid_interval = interval;
         invalid_interval.acquisition_nanos = 90;

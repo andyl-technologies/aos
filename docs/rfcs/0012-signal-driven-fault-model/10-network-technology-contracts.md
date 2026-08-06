@@ -293,6 +293,83 @@ bound. Route selection minimizes declared integer cost with contact/path ID ties
 Custody queues are bounded and checkpointed; overflow, expiry, contact-plan
 mutation, stale plan, and missed contact are explicit outcomes.
 
+Every interval supplies a unique contact ID, exclusive service-resource ID,
+positive integer route cost, exact post-service propagation delay, directed
+graph edge, and complete service window.
+The bounded search rejects repeated nodes, fails before mutation after 262,144
+labels, and admits only paths whose every hop can finish before both its contact
+close and the bundle expiry. It orders candidates by total cost, contact-ID path,
+arrival coordinate, and endpoint. Initial selection is non-mutating. A future
+first hop queues the real frame at acquisition-open. Equal-coordinate resumptions
+are ordered `critical`, `expedited`, `normal`, then `bulk`, with ordinary
+non-custody traffic assigned `normal` service rank and the canonical frame key
+breaking every equal-rank tie; only in that order does each frame reselect and
+atomically reserve every hop's real shared service cursor. A contact already
+open retains arrival order. Every hop advances arrival through service finish
+plus its declared propagation delay before the next contact and expiry checks.
+Failure to commit reselection is an adapter error rather than a partial
+reservation. The adapter is the delay-tolerant
+overlay router: the real scheduler-owned frame remains in custody until the
+final reserved hop finishes, and only then enters ordinary link delivery to its
+final endpoint. No shadow packet, test double, or immediate synthetic delivery
+stands in for that frame.
+
+The executable custody identity is the complete immutable frame identity:
+producer and destination, producer sequence, protocol-expansion path,
+generated-response ancestry, forwarding-mutation ancestry, length, and payload
+digest. A custody queue holds the real scheduler-owned frame, never a shadow
+packet. Its byte and bundle limits apply simultaneously. `drop_newest` rejects
+the arrival; `drop_oldest` evicts in enqueue-time then bundle-ID order until the
+arrival fits; `typed_error` rejects the arrival using the referenced reverse-path
+`typed_response`; and `timeout` retains the over-capacity arrival in a separately
+bounded timeout set until the earlier of its timeout and bundle expiry. Expiry
+drops the bundle at the exact expiry coordinate.
+
+Acquisition opens traffic at `start_nanos + acquisition_nanos`; teardown closes
+traffic at `end_nanos - teardown_nanos`. Contacts with different exclusive
+service-resource IDs may overlap. Contacts naming the same resource may not.
+Each reservation uses exact integer integration of the interval service curve
+and a cursor keyed by schedule, contact, resource, directed endpoint pair, and
+interval bounds. Custody records every consumed contact identity in a bounded
+canonical set, so a later contact effect skips both the exact service and fixed
+post-service propagation already reserved for that contact; it does not also
+apply the direct-contact range lookup. An unrelated contact never inherits that
+accounting. Frames without
+custody reserve the same keyed cursor directly. Priority orders custody service
+at equal future-contact coordinates; `drop_oldest` remains enqueue-time then
+bundle-ID order.
+The cursors, counts, selected paths, stale-plan and missed-contact counts, queue
+entries, overflow timeouts, exact wakeups, repeat owner, and bundle identities
+are checkpoint and continuation evidence.
+
+Every committed hop also has a checkpointed reservation ledger containing its
+custody owner, frame opportunity, service start, service finish,
+post-propagation arrival, and byte count. Eviction or healing cancels only
+unfinished entries owned by that frame, recomputes the service cursor, and
+clears the frame's accounted-contact set before ordinary serialization resumes.
+Completed direct entries and custody entries without a live owning frame fold
+into an exact settled cursor and cumulative counters. At most 262,144 keyed
+service states and 262,144 live reservation records may exist across the
+adapter; admission fails before mutation if a direct traversal or complete
+custody path would exceed either bound.
+Restore rejects a ledger unless its keys match the immutable schedule, its
+route is a unique directed producer-to-destination chain, its release equals
+the last hop arrival, its enqueue/expiry and byte/bundle occupancy match the
+queue configuration, and its pending routed frame exactly matches the stored
+bundle identity, wakeup, repeat owner, priority, and committed contact-identity
+set.
+
+Schedule artifacts are immutable. A live contact-plan mutation is represented
+only by removing the old persistent contribution and admitting a new binding to
+a different schedule artifact; there is no in-place or deprecated mutation
+path. Removal releases every frame and overflow waiter owned by the old
+contribution, deletes its queue state, and synchronously settles those frames at
+that exact boundary before the VM may advance another quantum. A graph that has
+no bounded endpoint path records `stale_plan`; a graph path whose windows or
+shared capacity cannot meet expiry records `missed_contact`; reaching expiry
+records and applies `expired`. Healing never silently waits for an obsolete
+contact or timer.
+
 ## 10.10 Failure domains and correlation
 
 Conduit, rack/chassis, provider, spectrum region, cell/sector, beam/gateway,

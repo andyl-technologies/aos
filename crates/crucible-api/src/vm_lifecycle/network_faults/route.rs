@@ -261,6 +261,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                         })
                                     })
                                     .and_then(crucible::LinkDef::bandwidth_bps);
+                                let repeated_phase_effect =
+                                    output.fault_continuation.cursor().repeated_phase_effect();
                                 apply_network_frame_actions(
                                     &mut output.payload,
                                     &mut resolved_effects,
@@ -277,19 +279,22 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     &mut staged_effect_state,
                                     &mut staged_pending,
                                     base_rate_bps,
+                                    repeated_phase_effect,
                                 )?
                             } else {
                                 NetworkFrameApplication::default()
                             };
-                            output
-                                .fault_continuation
-                                .cursor_mut()
-                                .complete(stage.target.clone(), phase)
-                                .map_err(|error| SchedulerError::BoundaryViolation {
-                                    message: format!(
-                                        "network fault continuation cursor failed: {error}"
-                                    ),
-                                })?;
+                            if application.repeat_effect_on_resume.is_none() {
+                                output
+                                    .fault_continuation
+                                    .cursor_mut()
+                                    .complete(stage.target.clone(), phase)
+                                    .map_err(|error| SchedulerError::BoundaryViolation {
+                                        message: format!(
+                                            "network fault continuation cursor failed: {error}"
+                                        ),
+                                    })?;
+                            }
                             next_wakeup_nanos =
                                 earliest_wakeup(next_wakeup_nanos, application.next_wakeup_nanos);
                             if let Some(response) = application.typed_response.as_ref() {
@@ -390,10 +395,22 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                         ),
                                     });
                                 }
-                                output
-                                    .fault_continuation
-                                    .cursor_mut()
-                                    .defer_until(not_before_nanos, opportunity.id());
+                                if let Some(effect) = application.repeat_effect_on_resume {
+                                    output
+                                        .fault_continuation
+                                        .cursor_mut()
+                                        .defer_repeated_effect_until(
+                                            not_before_nanos,
+                                            opportunity.id(),
+                                            effect,
+                                            application.queue_priority,
+                                        );
+                                } else {
+                                    output
+                                        .fault_continuation
+                                        .cursor_mut()
+                                        .defer_until(not_before_nanos, opportunity.id());
+                                }
                                 output
                                     .fault_continuation
                                     .set_resolved_frame_effects(resolved_effects);
@@ -450,6 +467,220 @@ pub(super) fn earliest_wakeup(current: Option<u64>, candidate: Option<u64>) -> O
     }
 }
 
+pub(super) fn apply_network_custody_removals(
+    state: &mut NetworkEffectRuntimeState,
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    actions: &[ResolvedBindingAction],
+    now: u64,
+) -> Result<bool, SchedulerError> {
+    let mut released_due = false;
+    for action in actions.iter().filter(|action| {
+        action.kind == BindingActionKind::RemovePersistent
+            && action.effect.kind() == crucible::model::EffectKind::NetworkCustodyQueue
+    }) {
+        let Some(queue) = state
+            .custody_queues
+            .remove(&NetworkEffectStateKey::from_action(action))
+        else {
+            continue;
+        };
+        let opportunities = queue
+            .reservations
+            .iter()
+            .map(|reservation| reservation.opportunity)
+            .chain(
+                queue
+                    .overflow_timeouts
+                    .iter()
+                    .map(|timeout| timeout.opportunity),
+            )
+            .collect::<BTreeSet<_>>();
+        cancel_network_contact_reservations(
+            &mut state.contact_services,
+            &NetworkEffectStateKey::from_action(action),
+            &opportunities,
+            now,
+            action,
+        )?;
+        for opportunity in queue
+            .reservations
+            .iter()
+            .map(|reservation| reservation.opportunity)
+            .chain(
+                queue
+                    .overflow_timeouts
+                    .iter()
+                    .map(|timeout| timeout.opportunity),
+            )
+        {
+            let output = pending_outputs
+                .iter_mut()
+                .find(|output| {
+                    output.fault_continuation.cursor().queue_opportunity() == Some(opportunity)
+                })
+                .ok_or_else(|| {
+                    network_effect_application_error(
+                        action,
+                        "removed custody entry has no scheduler-owned pending frame",
+                    )
+                })?;
+            output
+                .fault_continuation
+                .cursor_mut()
+                .reschedule_queue_until(opportunity, now)
+                .map_err(|error| network_effect_application_error(action, &error.to_string()))?;
+            let mut effects = output.fault_continuation.resolved_frame_effects().clone();
+            effects.require_serialization();
+            output
+                .fault_continuation
+                .set_resolved_frame_effects(effects);
+            released_due = true;
+        }
+    }
+    Ok(released_due)
+}
+
+fn cancel_network_contact_reservations(
+    services: &mut BTreeMap<NetworkContactServiceKey, NetworkContactServiceState>,
+    owner: &NetworkEffectStateKey,
+    opportunities: &BTreeSet<ContentHash>,
+    now: u64,
+    action: &impl NetworkEffectContext,
+) -> Result<(), SchedulerError> {
+    for (key, service) in services {
+        service.settled_cursor_nanos = service.settled_cursor_nanos.max(key.start_nanos);
+        let (removed_bundles, removed_bytes) = service
+            .reservations
+            .iter()
+            .filter(|reservation| {
+                reservation.custody_owner.as_ref() == Some(owner)
+                    && opportunities.contains(&reservation.opportunity)
+                    && reservation.finish_nanos > now
+            })
+            .try_fold((0_u64, 0_u64), |(bundles, bytes), reservation| {
+                bundles
+                    .checked_add(1)
+                    .zip(bytes.checked_add(reservation.bytes))
+            })
+            .ok_or_else(|| {
+                network_effect_application_error(action, "contact cancellation count overflowed")
+            })?;
+        service.reservations.retain(|reservation| {
+            reservation.custody_owner.as_ref() != Some(owner)
+                || !opportunities.contains(&reservation.opportunity)
+                || reservation.finish_nanos <= now
+        });
+        service.settled_cursor_nanos = service.settled_cursor_nanos.max(
+            service
+                .reservations
+                .iter()
+                .filter(|reservation| reservation.finish_nanos <= now)
+                .map(|reservation| reservation.finish_nanos)
+                .max()
+                .unwrap_or(key.start_nanos),
+        );
+        service.reservations.retain(|reservation| {
+            reservation.finish_nanos > now
+                || reservation.custody_owner.as_ref() != Some(owner)
+                || !opportunities.contains(&reservation.opportunity)
+        });
+        service.served_bundles = service
+            .served_bundles
+            .checked_sub(removed_bundles)
+            .ok_or_else(|| {
+                network_effect_application_error(action, "contact bundle cancellation underflowed")
+            })?;
+        service.served_bytes =
+            service
+                .served_bytes
+                .checked_sub(removed_bytes)
+                .ok_or_else(|| {
+                    network_effect_application_error(
+                        action,
+                        "contact byte cancellation underflowed",
+                    )
+                })?;
+        service.service_cursor_nanos = service.settled_cursor_nanos.max(
+            service
+                .reservations
+                .iter()
+                .map(|reservation| reservation.finish_nanos)
+                .max()
+                .unwrap_or(key.start_nanos),
+        );
+    }
+    Ok(())
+}
+
+fn prune_network_contact_services(state: &mut NetworkEffectRuntimeState, now: u64) {
+    let live_custody = state
+        .custody_queues
+        .iter()
+        .flat_map(|(owner, queue)| {
+            queue
+                .reservations
+                .iter()
+                .map(|reservation| (owner.clone(), reservation.opportunity))
+        })
+        .collect::<BTreeSet<_>>();
+    for (key, service) in &mut state.contact_services {
+        service.settled_cursor_nanos = service.settled_cursor_nanos.max(key.start_nanos);
+        service.reservations.retain(|reservation| {
+            let live = reservation.custody_owner.as_ref().is_some_and(|owner| {
+                live_custody.contains(&(owner.clone(), reservation.opportunity))
+            });
+            if reservation.finish_nanos <= now && !live {
+                service.settled_cursor_nanos =
+                    service.settled_cursor_nanos.max(reservation.finish_nanos);
+                false
+            } else {
+                true
+            }
+        });
+        service.service_cursor_nanos = service.settled_cursor_nanos.max(
+            service
+                .reservations
+                .iter()
+                .map(|reservation| reservation.finish_nanos)
+                .max()
+                .unwrap_or(key.start_nanos),
+        );
+    }
+}
+
+fn network_contact_reservation_count(state: &NetworkEffectRuntimeState) -> Option<usize> {
+    state
+        .contact_services
+        .values()
+        .try_fold(0_usize, |total, service| {
+            total.checked_add(service.reservations.len())
+        })
+}
+
+fn network_contact_service_state_capacity_allows(current: usize, additional: usize) -> bool {
+    current
+        .checked_add(additional)
+        .is_some_and(|count| count <= HARD_CONTACT_SERVICE_STATES)
+}
+
+fn admit_network_contact_service_keys(
+    state: &NetworkEffectRuntimeState,
+    keys: &BTreeSet<NetworkContactServiceKey>,
+    action: &impl NetworkEffectContext,
+) -> Result<(), SchedulerError> {
+    let additional = keys
+        .iter()
+        .filter(|key| !state.contact_services.contains_key(*key))
+        .count();
+    if !network_contact_service_state_capacity_allows(state.contact_services.len(), additional) {
+        return Err(network_effect_application_error(
+            action,
+            "contact service state exceeds 262,144 keyed cursors",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn availability_allows(
     state: NetworkAvailabilityState,
     direction: crucible::model::FaultDirection,
@@ -476,7 +707,56 @@ fn apply_network_frame_actions(
     state: &mut NetworkEffectRuntimeState,
     pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
     base_rate_bps: Option<u64>,
+    repeated_phase_effect: Option<crucible::model::EffectKind>,
 ) -> Result<NetworkFrameApplication, SchedulerError> {
+    let actions = actions
+        .iter()
+        .filter(|action| repeated_phase_effect.is_none_or(|effect| action.effect.kind() == effect))
+        .cloned()
+        .collect::<Vec<_>>();
+    let actions = actions.as_slice();
+    if opportunity.phase() == FaultPhase::Queue {
+        let custody_count = actions
+            .iter()
+            .filter(|action| {
+                action.effect.kind() == crucible::model::EffectKind::NetworkCustodyQueue
+            })
+            .count();
+        if custody_count > 1 {
+            let action = actions
+                .iter()
+                .find(|action| {
+                    action.effect.kind() == crucible::model::EffectKind::NetworkCustodyQueue
+                })
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("custody conflict lost its owning action"),
+                })?;
+            return Err(network_effect_application_error(
+                action,
+                "multiple custody queues survived conflict composition",
+            ));
+        }
+        let queue_policy_count = actions
+            .iter()
+            .filter(|action| {
+                action.effect.kind() == crucible::model::EffectKind::NetworkQueuePolicy
+            })
+            .count();
+        if queue_policy_count > 1 {
+            let action = actions
+                .iter()
+                .find(|action| {
+                    action.effect.kind() == crucible::model::EffectKind::NetworkQueuePolicy
+                })
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("queue-policy conflict lost its owning action"),
+                })?;
+            return Err(network_effect_application_error(
+                action,
+                "multiple queue policies survived conflict composition",
+            ));
+        }
+    }
     let mut deferred_until = None;
     let mut queue_policy = None;
     let mut service_curves = Vec::new();
@@ -484,6 +764,8 @@ fn apply_network_frame_actions(
     let mut typed_response = None;
     let mut forwarding_recipients = None;
     let mut state_machine_wakeup = None;
+    let mut repeat_effect_on_resume = None;
+    let mut queue_priority = None;
     let backpressure_wakeup = apply_network_backpressure_transitions(
         state,
         pending_outputs,
@@ -678,6 +960,40 @@ fn apply_network_frame_actions(
                 )?;
                 deferred_until = latest_wakeup(deferred_until, release);
             }
+            NetworkEffectSpecification::CustodyQueue {
+                capacity_bytes,
+                capacity_bundles,
+                expiry_nanos,
+                custody_policy,
+                route_contact_plan,
+                priority,
+                max_visited_hops,
+            } if opportunity.phase() == FaultPhase::Queue => {
+                let application = apply_network_custody_queue(
+                    payload,
+                    effects,
+                    state,
+                    pending_outputs,
+                    topology,
+                    action,
+                    opportunity,
+                    capacity_bytes.get(),
+                    u64::from(capacity_bundles.get()),
+                    expiry_nanos.get(),
+                    custody_policy,
+                    route_contact_plan,
+                    *priority,
+                    max_visited_hops.get(),
+                    &mut typed_response,
+                )?;
+                deferred_until = latest_wakeup(deferred_until, application.defer_until);
+                if application.repeat_phase_on_resume {
+                    repeat_effect_on_resume =
+                        Some(crucible::model::EffectKind::NetworkCustodyQueue);
+                    queue_priority = Some(priority.rank());
+                }
+            }
+            NetworkEffectSpecification::CustodyQueue { .. } => {}
             NetworkEffectSpecification::ForwardingMutation { selector, mutation } => {
                 apply_network_forwarding_mutation(
                     payload,
@@ -797,6 +1113,8 @@ fn apply_network_frame_actions(
         deferred_until.filter(|coordinate| *coordinate > opportunity.coordinate().virtual_nanos);
     Ok(NetworkFrameApplication {
         defer_until,
+        repeat_effect_on_resume,
+        queue_priority,
         next_wakeup_nanos: earliest_wakeup(
             earliest_wakeup(defer_until, state_machine_wakeup),
             earliest_wakeup(
@@ -815,6 +1133,8 @@ fn apply_network_frame_actions(
 #[derive(Clone, Debug, Default)]
 struct NetworkFrameApplication {
     defer_until: Option<u64>,
+    repeat_effect_on_resume: Option<crucible::model::EffectKind>,
+    queue_priority: Option<u8>,
     next_wakeup_nanos: Option<u64>,
     expanded_payloads: Vec<Vec<u8>>,
     typed_response: Option<FaultObjectId>,
@@ -2978,6 +3298,922 @@ fn apply_network_burst_error(
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct NetworkCustodyApplication {
+    defer_until: Option<u64>,
+    repeat_phase_on_resume: bool,
+}
+
+fn network_bundle_identity(
+    opportunity: &FaultOpportunity,
+    action: &ResolvedBindingAction,
+    priority: crucible::model::NetworkBundlePriority,
+) -> Result<NetworkBundleIdentity, SchedulerError> {
+    let OpportunityPayload::NetworkFrame {
+        producer,
+        destination,
+        producer_sequence,
+        protocol_expansion_path,
+        generated_response_depth,
+        generated_response_cause,
+        forwarding_mutation_path,
+        length_bytes,
+        payload_digest,
+    } = opportunity.payload()
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "custody queue received a non-frame opportunity",
+        ));
+    };
+    Ok(NetworkBundleIdentity {
+        producer: producer.clone(),
+        destination: destination.clone(),
+        producer_sequence: *producer_sequence,
+        protocol_expansion_path: protocol_expansion_path.clone(),
+        generated_response_depth: *generated_response_depth,
+        generated_response_cause: *generated_response_cause,
+        forwarding_mutation_path: forwarding_mutation_path.clone(),
+        length_bytes: *length_bytes,
+        payload_digest: *payload_digest,
+        priority,
+    })
+}
+
+fn contact_traffic_bounds(
+    interval: &crucible::model::NetworkPolicyContactInterval,
+    action: &ResolvedBindingAction,
+) -> Result<(u64, u64), SchedulerError> {
+    let open = interval
+        .start_nanos
+        .checked_add(interval.acquisition_nanos)
+        .ok_or_else(|| {
+            network_effect_application_error(action, "contact acquisition overflowed")
+        })?;
+    let end = interval
+        .end_nanos
+        .checked_sub(interval.teardown_nanos)
+        .ok_or_else(|| network_effect_application_error(action, "contact teardown underflowed"))?;
+    Ok((open, end))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reserve_network_contact_service(
+    state: &mut NetworkEffectRuntimeState,
+    topology: &crucible::model::WorldFaultTopology,
+    plan: &FaultObjectId,
+    interval: &crucible::model::NetworkPolicyContactInterval,
+    producer: &FaultObjectId,
+    destination: &FaultObjectId,
+    now: u64,
+    payload_bytes: u64,
+    opportunity: ContentHash,
+    action: &ResolvedBindingAction,
+) -> Result<Option<(u64, [u8; 32])>, SchedulerError> {
+    prune_network_contact_services(state, now);
+    let (open, traffic_end) = contact_traffic_bounds(interval, action)?;
+    if &interval.source != producer
+        || &interval.destination != destination
+        || now < open
+        || now >= traffic_end
+    {
+        return Ok(None);
+    }
+    let capacity = topology
+        .network_policy_artifact(&interval.capacity_profile)
+        .ok_or_else(|| network_effect_application_error(action, "contact capacity disappeared"))?;
+    let crucible::model::NetworkPolicyArtifactKind::ServiceCurve { segments } = &capacity.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "contact capacity changed type after admission",
+        ));
+    };
+    let key = NetworkContactServiceKey {
+        plan: plan.clone(),
+        contact: interval.contact.clone(),
+        service_resource: interval.service_resource.clone(),
+        source: producer.clone(),
+        destination: destination.clone(),
+        start_nanos: interval.start_nanos,
+        end_nanos: interval.end_nanos,
+    };
+    let identity = network_contact_service_identity(&key);
+    let start = state
+        .contact_services
+        .get(&key)
+        .map_or(now.max(open), |service| {
+            now.max(open).max(service.service_cursor_nanos)
+        });
+    if start >= traffic_end {
+        return Ok(None);
+    }
+    let bits = payload_bytes
+        .checked_mul(8)
+        .ok_or_else(|| network_effect_application_error(action, "contact frame size overflowed"))?;
+    let finish = network_service_finish(
+        start,
+        bits,
+        None,
+        &[NetworkServiceCurveState {
+            activation_nanos: interval.start_nanos,
+            segments: segments.as_slice().to_vec(),
+        }],
+        action,
+    )?;
+    if finish > traffic_end {
+        return Ok(None);
+    }
+    admit_network_contact_service_keys(state, &BTreeSet::from([key.clone()]), action)?;
+    if network_contact_reservation_count(state)
+        .and_then(|count| count.checked_add(1))
+        .is_none_or(|count| count > HARD_CONTACT_SERVICE_RESERVATIONS)
+    {
+        return Err(network_effect_application_error(
+            action,
+            "contact reservation ledger exceeds 262,144 live entries",
+        ));
+    }
+    let (next_served_bundles, next_served_bytes) = state
+        .contact_services
+        .get(&key)
+        .map_or(Some((1, payload_bytes)), |service| {
+            service
+                .served_bundles
+                .checked_add(1)
+                .zip(service.served_bytes.checked_add(payload_bytes))
+        })
+        .ok_or_else(|| {
+            network_effect_application_error(
+                action,
+                "contact service counters overflow before direct reservation",
+            )
+        })?;
+    let key_start = key.start_nanos;
+    let service = state
+        .contact_services
+        .entry(key)
+        .or_insert_with(|| NetworkContactServiceState {
+            settled_cursor_nanos: key_start,
+            service_cursor_nanos: key_start,
+            ..NetworkContactServiceState::default()
+        });
+    service.service_cursor_nanos = finish;
+    service.served_bundles = next_served_bundles;
+    service.served_bytes = next_served_bytes;
+    service.reservations.push(NetworkContactServiceReservation {
+        custody_owner: None,
+        opportunity,
+        start_nanos: start,
+        finish_nanos: finish,
+        arrival_nanos: finish,
+        bytes: payload_bytes,
+    });
+    service.reservations.sort_by(|left, right| {
+        (left.start_nanos, left.finish_nanos, left.opportunity).cmp(&(
+            right.start_nanos,
+            right.finish_nanos,
+            right.opportunity,
+        ))
+    });
+    Ok(Some((finish, identity)))
+}
+
+#[derive(Clone, Debug)]
+struct NetworkContactRouteLabel {
+    node: FaultObjectId,
+    arrival_nanos: u64,
+    cost: u64,
+    interval_indexes: Vec<usize>,
+    contact_ids: Vec<FaultObjectId>,
+    visited_nodes: BTreeSet<FaultObjectId>,
+}
+
+#[derive(Clone, Debug)]
+struct NetworkContactRouteReservation {
+    first_start_nanos: u64,
+    finish_nanos: u64,
+    contacts: Vec<FaultObjectId>,
+    identities: Vec<[u8; 32]>,
+}
+
+fn preview_network_contact_service(
+    state: &NetworkEffectRuntimeState,
+    topology: &crucible::model::WorldFaultTopology,
+    plan: &FaultObjectId,
+    interval: &crucible::model::NetworkPolicyContactInterval,
+    earliest_nanos: u64,
+    payload_bytes: u64,
+    action: &ResolvedBindingAction,
+) -> Result<Option<(u64, u64, u64, NetworkContactServiceKey, [u8; 32])>, SchedulerError> {
+    let (open, traffic_end) = contact_traffic_bounds(interval, action)?;
+    let key = NetworkContactServiceKey {
+        plan: plan.clone(),
+        contact: interval.contact.clone(),
+        service_resource: interval.service_resource.clone(),
+        source: interval.source.clone(),
+        destination: interval.destination.clone(),
+        start_nanos: interval.start_nanos,
+        end_nanos: interval.end_nanos,
+    };
+    let start = state
+        .contact_services
+        .get(&key)
+        .map_or(earliest_nanos.max(open), |service| {
+            earliest_nanos.max(open).max(service.service_cursor_nanos)
+        });
+    if start >= traffic_end {
+        return Ok(None);
+    }
+    let capacity = topology
+        .network_policy_artifact(&interval.capacity_profile)
+        .ok_or_else(|| network_effect_application_error(action, "contact capacity disappeared"))?;
+    let crucible::model::NetworkPolicyArtifactKind::ServiceCurve { segments } = &capacity.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "contact capacity changed type after admission",
+        ));
+    };
+    let bits = payload_bytes
+        .checked_mul(8)
+        .ok_or_else(|| network_effect_application_error(action, "contact frame size overflowed"))?;
+    let finish = network_service_finish(
+        start,
+        bits,
+        None,
+        &[NetworkServiceCurveState {
+            activation_nanos: interval.start_nanos,
+            segments: segments.as_slice().to_vec(),
+        }],
+        action,
+    )?;
+    if finish > traffic_end {
+        return Ok(None);
+    }
+    let arrival = finish
+        .checked_add(interval.routing_propagation_nanos)
+        .ok_or_else(|| {
+            network_effect_application_error(action, "contact propagation overflowed")
+        })?;
+    let identity = network_contact_service_identity(&key);
+    Ok(Some((start, finish, arrival, key, identity)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reserve_network_contact_route(
+    state: &mut NetworkEffectRuntimeState,
+    topology: &crucible::model::WorldFaultTopology,
+    plan: &FaultObjectId,
+    intervals: &[crucible::model::NetworkPolicyContactInterval],
+    producer: &FaultObjectId,
+    destination: &FaultObjectId,
+    now: u64,
+    expiry_nanos: u64,
+    payload_bytes: u64,
+    max_visited_hops: u32,
+    owner: &NetworkEffectStateKey,
+    opportunity: ContentHash,
+    commit: bool,
+    action: &ResolvedBindingAction,
+) -> Result<Option<NetworkContactRouteReservation>, SchedulerError> {
+    const HARD_CONTACT_ROUTE_LABELS: usize = 262_144;
+    let mut visited_nodes = BTreeSet::new();
+    visited_nodes.insert(producer.clone());
+    let mut frontier = vec![NetworkContactRouteLabel {
+        node: producer.clone(),
+        arrival_nanos: now,
+        cost: 0,
+        interval_indexes: Vec::new(),
+        contact_ids: Vec::new(),
+        visited_nodes,
+    }];
+    let mut expanded = 0_usize;
+    let selected = loop {
+        frontier.sort_by(|left, right| {
+            (left.cost, &left.contact_ids, left.arrival_nanos, &left.node).cmp(&(
+                right.cost,
+                &right.contact_ids,
+                right.arrival_nanos,
+                &right.node,
+            ))
+        });
+        if frontier.is_empty() {
+            break None;
+        }
+        let label = frontier.remove(0);
+        if &label.node == destination {
+            break Some(label);
+        }
+        if label.interval_indexes.len()
+            >= usize::try_from(max_visited_hops).map_err(|_error| {
+                network_effect_application_error(action, "contact hop bound exceeds usize")
+            })?
+        {
+            continue;
+        }
+        for (index, interval) in intervals.iter().enumerate() {
+            if interval.source != label.node || label.visited_nodes.contains(&interval.destination)
+            {
+                continue;
+            }
+            let Some((_start, _finish, arrival, _key, _identity)) =
+                preview_network_contact_service(
+                    state,
+                    topology,
+                    plan,
+                    interval,
+                    label.arrival_nanos,
+                    payload_bytes,
+                    action,
+                )?
+            else {
+                continue;
+            };
+            if arrival > expiry_nanos {
+                continue;
+            }
+            let mut candidate = label.clone();
+            candidate.node = interval.destination.clone();
+            candidate.arrival_nanos = arrival;
+            candidate.cost = candidate
+                .cost
+                .checked_add(interval.route_cost.get())
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "contact route cost overflowed")
+                })?;
+            candidate.interval_indexes.push(index);
+            candidate.contact_ids.push(interval.contact.clone());
+            candidate.visited_nodes.insert(interval.destination.clone());
+            frontier.push(candidate);
+            expanded = expanded.checked_add(1).ok_or_else(|| {
+                network_effect_application_error(action, "contact route label count overflowed")
+            })?;
+            if expanded > HARD_CONTACT_ROUTE_LABELS {
+                return Err(network_effect_application_error(
+                    action,
+                    "contact route search exceeds 262,144 labels",
+                ));
+            }
+        }
+    };
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+    if commit {
+        let keys = selected
+            .interval_indexes
+            .iter()
+            .map(|index| {
+                let interval = &intervals[*index];
+                NetworkContactServiceKey {
+                    plan: plan.clone(),
+                    contact: interval.contact.clone(),
+                    service_resource: interval.service_resource.clone(),
+                    source: interval.source.clone(),
+                    destination: interval.destination.clone(),
+                    start_nanos: interval.start_nanos,
+                    end_nanos: interval.end_nanos,
+                }
+            })
+            .collect::<BTreeSet<_>>();
+        admit_network_contact_service_keys(state, &keys, action)?;
+    }
+    if commit
+        && network_contact_reservation_count(state)
+            .and_then(|count| count.checked_add(selected.interval_indexes.len()))
+            .is_none_or(|count| count > HARD_CONTACT_SERVICE_RESERVATIONS)
+    {
+        return Err(network_effect_application_error(
+            action,
+            "contact reservation ledger exceeds 262,144 live entries",
+        ));
+    }
+    if commit {
+        for index in &selected.interval_indexes {
+            let interval = &intervals[*index];
+            let key = NetworkContactServiceKey {
+                plan: plan.clone(),
+                contact: interval.contact.clone(),
+                service_resource: interval.service_resource.clone(),
+                source: interval.source.clone(),
+                destination: interval.destination.clone(),
+                start_nanos: interval.start_nanos,
+                end_nanos: interval.end_nanos,
+            };
+            if state.contact_services.get(&key).is_some_and(|service| {
+                service.served_bundles.checked_add(1).is_none()
+                    || service.served_bytes.checked_add(payload_bytes).is_none()
+            }) {
+                return Err(network_effect_application_error(
+                    action,
+                    "contact service counters overflow during atomic route reservation",
+                ));
+            }
+        }
+    }
+    let mut cursor = now;
+    let mut first_start_nanos = None;
+    let mut identities = Vec::with_capacity(selected.interval_indexes.len());
+    for index in &selected.interval_indexes {
+        let interval = &intervals[*index];
+        let Some((start, finish, arrival, key, identity)) = preview_network_contact_service(
+            state,
+            topology,
+            plan,
+            interval,
+            cursor,
+            payload_bytes,
+            action,
+        )?
+        else {
+            return Err(network_effect_application_error(
+                action,
+                "selected contact route changed during atomic reservation",
+            ));
+        };
+        first_start_nanos.get_or_insert(start);
+        if commit {
+            let key_start = key.start_nanos;
+            let service =
+                state
+                    .contact_services
+                    .entry(key)
+                    .or_insert_with(|| NetworkContactServiceState {
+                        settled_cursor_nanos: key_start,
+                        service_cursor_nanos: key_start,
+                        ..NetworkContactServiceState::default()
+                    });
+            service.service_cursor_nanos = finish;
+            service.served_bundles = service.served_bundles.checked_add(1).ok_or_else(|| {
+                network_effect_application_error(action, "contact served-bundle count overflowed")
+            })?;
+            service.served_bytes =
+                service
+                    .served_bytes
+                    .checked_add(payload_bytes)
+                    .ok_or_else(|| {
+                        network_effect_application_error(
+                            action,
+                            "contact served-byte count overflowed",
+                        )
+                    })?;
+            service.reservations.push(NetworkContactServiceReservation {
+                custody_owner: Some(owner.clone()),
+                opportunity,
+                start_nanos: start,
+                finish_nanos: finish,
+                arrival_nanos: arrival,
+                bytes: payload_bytes,
+            });
+            service.reservations.sort_by(|left, right| {
+                (left.start_nanos, left.finish_nanos, left.opportunity).cmp(&(
+                    right.start_nanos,
+                    right.finish_nanos,
+                    right.opportunity,
+                ))
+            });
+        }
+        identities.push(identity);
+        cursor = arrival;
+    }
+    Ok(Some(NetworkContactRouteReservation {
+        first_start_nanos: first_start_nanos.ok_or_else(|| {
+            network_effect_application_error(action, "selected contact route is empty")
+        })?,
+        finish_nanos: selected.arrival_nanos,
+        contacts: selected.contact_ids,
+        identities,
+    }))
+}
+
+fn contact_graph_has_path(
+    intervals: &[crucible::model::NetworkPolicyContactInterval],
+    producer: &FaultObjectId,
+    destination: &FaultObjectId,
+    max_visited_hops: u32,
+) -> bool {
+    let mut frontier = vec![(producer.clone(), 0_u32)];
+    let mut visited = BTreeSet::new();
+    visited.insert((producer.clone(), 0_u32));
+    while let Some((node, hops)) = frontier.pop() {
+        if &node == destination {
+            return true;
+        }
+        if hops == max_visited_hops {
+            continue;
+        }
+        for interval in intervals.iter().filter(|interval| interval.source == node) {
+            let candidate = (interval.destination.clone(), hops.saturating_add(1));
+            if visited.insert(candidate.clone()) {
+                frontier.push(candidate);
+            }
+        }
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_network_custody_queue(
+    payload: &[u8],
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    state: &mut NetworkEffectRuntimeState,
+    pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    capacity_bytes: u64,
+    capacity_bundles: u64,
+    expiry_duration: u64,
+    custody_policy: &FaultObjectId,
+    route_contact_plan: &FaultObjectId,
+    priority: crucible::model::NetworkBundlePriority,
+    max_visited_hops: u32,
+    typed_response: &mut Option<FaultObjectId>,
+) -> Result<NetworkCustodyApplication, SchedulerError> {
+    let now = opportunity.coordinate().virtual_nanos;
+    prune_network_contact_services(state, now);
+    let bundle = network_bundle_identity(opportunity, action, priority)?;
+    let payload_bytes = u64::try_from(payload.len()).map_err(|_error| {
+        network_effect_application_error(action, "custody bundle length exceeds u64")
+    })?;
+    if payload_bytes != bundle.length_bytes {
+        return Err(network_effect_application_error(
+            action,
+            "custody opportunity length differs from the frame payload",
+        ));
+    }
+    let policy = topology
+        .network_policy_artifact(custody_policy)
+        .ok_or_else(|| {
+            network_effect_application_error(action, "custody overflow policy disappeared")
+        })?;
+    let crucible::model::NetworkPolicyArtifactKind::Overflow {
+        disposition,
+        timeout_nanos,
+        typed_error,
+    } = &policy.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "custody overflow policy changed type after admission",
+        ));
+    };
+    let plan = topology
+        .network_policy_artifact(route_contact_plan)
+        .ok_or_else(|| {
+            network_effect_application_error(action, "custody contact plan disappeared")
+        })?;
+    let crucible::model::NetworkPolicyArtifactKind::ContactPlan { intervals } = &plan.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "custody contact plan changed type after admission",
+        ));
+    };
+    let owner = NetworkEffectStateKey::from_action(action);
+    let configuration = NetworkCustodyConfiguration {
+        owner: owner.clone(),
+        capacity_bytes,
+        capacity_bundles,
+        expiry_nanos: expiry_duration,
+        custody_policy: custody_policy.clone(),
+        route_contact_plan: route_contact_plan.clone(),
+        priority,
+        max_visited_hops,
+    };
+    let queue = state.custody_queues.entry(owner.clone()).or_default();
+    match &queue.configuration {
+        Some(existing) if existing != &configuration => {
+            return Err(network_effect_application_error(
+                action,
+                "custody queue configuration changed without removal",
+            ));
+        }
+        Some(_existing) => {}
+        None => queue.configuration = Some(configuration),
+    }
+
+    if let Some(index) = queue
+        .overflow_timeouts
+        .iter()
+        .position(|timeout| timeout.bundle == bundle)
+    {
+        let timeout = queue.overflow_timeouts.remove(index);
+        if now < timeout.deadline_nanos {
+            return Err(network_effect_application_error(
+                action,
+                "custody timeout resumed before its deadline",
+            ));
+        }
+        queue.dropped_bundles = queue.dropped_bundles.checked_add(1).ok_or_else(|| {
+            network_effect_application_error(action, "custody drop count overflowed")
+        })?;
+        effects.mark_drop();
+        return Ok(NetworkCustodyApplication::default());
+    }
+
+    let existing = queue
+        .reservations
+        .iter()
+        .position(|reservation| reservation.bundle == bundle)
+        .map(|index| queue.reservations.remove(index));
+    let was_existing = existing.is_some();
+    let (enqueue_nanos, expiry_nanos, _prior_contact_path, prior_path_committed) =
+        if let Some(existing) = existing {
+            if now < existing.release_nanos {
+                return Err(network_effect_application_error(
+                    action,
+                    "custody bundle resumed before its release coordinate",
+                ));
+            }
+            (
+                existing.enqueue_nanos,
+                existing.expiry_nanos,
+                existing.contact_path,
+                existing.contact_path_committed,
+            )
+        } else {
+            let expiry_nanos = now.checked_add(expiry_duration).ok_or_else(|| {
+                network_effect_application_error(action, "custody expiry overflowed")
+            })?;
+            (now, expiry_nanos, Vec::new(), false)
+        };
+    if was_existing && prior_path_committed {
+        queue.released_bundles = queue.released_bundles.checked_add(1).ok_or_else(|| {
+            network_effect_application_error(action, "custody release count overflowed")
+        })?;
+        return Ok(NetworkCustodyApplication::default());
+    }
+    if now >= expiry_nanos {
+        queue.expired_bundles = queue.expired_bundles.checked_add(1).ok_or_else(|| {
+            network_effect_application_error(action, "custody expiry count overflowed")
+        })?;
+        queue.dropped_bundles = queue.dropped_bundles.checked_add(1).ok_or_else(|| {
+            network_effect_application_error(action, "custody drop count overflowed")
+        })?;
+        effects.mark_drop();
+        return Ok(NetworkCustodyApplication::default());
+    }
+
+    if !was_existing {
+        let (custody_queues, contact_services) =
+            (&mut state.custody_queues, &mut state.contact_services);
+        let queue = custody_queues
+            .get_mut(&owner)
+            .ok_or_else(|| network_effect_application_error(action, "custody queue disappeared"))?;
+        let mut occupied_bytes = queue
+            .reservations
+            .iter()
+            .try_fold(0_u64, |total, reservation| {
+                total.checked_add(reservation.bytes)
+            })
+            .ok_or_else(|| {
+                network_effect_application_error(action, "custody occupancy overflowed")
+            })?;
+        let mut over_capacity = occupied_bytes
+            .checked_add(payload_bytes)
+            .is_none_or(|bytes| bytes > capacity_bytes)
+            || u64::try_from(queue.reservations.len())
+                .ok()
+                .and_then(|count| count.checked_add(1))
+                .is_none_or(|count| count > capacity_bundles);
+        if over_capacity {
+            match disposition {
+                crucible::model::NetworkPolicyOverflow::DropNewest => {
+                    queue.dropped_bundles =
+                        queue.dropped_bundles.checked_add(1).ok_or_else(|| {
+                            network_effect_application_error(
+                                action,
+                                "custody drop count overflowed",
+                            )
+                        })?;
+                    effects.mark_drop();
+                    return Ok(NetworkCustodyApplication::default());
+                }
+                crucible::model::NetworkPolicyOverflow::DropOldest => {
+                    while over_capacity {
+                        let Some((victim_index, victim)) = queue
+                            .reservations
+                            .iter()
+                            .enumerate()
+                            .min_by(|(_left_index, left), (_right_index, right)| {
+                                (left.enqueue_nanos, &left.bundle)
+                                    .cmp(&(right.enqueue_nanos, &right.bundle))
+                            })
+                            .map(|(index, reservation)| (index, reservation.clone()))
+                        else {
+                            queue.dropped_bundles =
+                                queue.dropped_bundles.checked_add(1).ok_or_else(|| {
+                                    network_effect_application_error(
+                                        action,
+                                        "custody drop count overflowed",
+                                    )
+                                })?;
+                            effects.mark_drop();
+                            return Ok(NetworkCustodyApplication::default());
+                        };
+                        queue.reservations.remove(victim_index);
+                        cancel_network_contact_reservations(
+                            contact_services,
+                            &owner,
+                            &BTreeSet::from([victim.opportunity]),
+                            now,
+                            action,
+                        )?;
+                        pending_outputs.retain(|output| {
+                            output.fault_continuation.cursor().queue_opportunity()
+                                != Some(victim.opportunity)
+                        });
+                        queue.dropped_bundles =
+                            queue.dropped_bundles.checked_add(1).ok_or_else(|| {
+                                network_effect_application_error(
+                                    action,
+                                    "custody drop count overflowed",
+                                )
+                            })?;
+                        occupied_bytes =
+                            occupied_bytes.checked_sub(victim.bytes).ok_or_else(|| {
+                                network_effect_application_error(
+                                    action,
+                                    "custody eviction occupancy underflowed",
+                                )
+                            })?;
+                        over_capacity = occupied_bytes
+                            .checked_add(payload_bytes)
+                            .is_none_or(|bytes| bytes > capacity_bytes)
+                            || u64::try_from(queue.reservations.len())
+                                .ok()
+                                .and_then(|count| count.checked_add(1))
+                                .is_none_or(|count| count > capacity_bundles);
+                    }
+                }
+                crucible::model::NetworkPolicyOverflow::TypedError => {
+                    let response = typed_error.as_ref().ok_or_else(|| {
+                        network_effect_application_error(
+                            action,
+                            "typed custody overflow omitted its response artifact",
+                        )
+                    })?;
+                    request_typed_response(typed_response, response, action)?;
+                    queue.dropped_bundles =
+                        queue.dropped_bundles.checked_add(1).ok_or_else(|| {
+                            network_effect_application_error(
+                                action,
+                                "custody drop count overflowed",
+                            )
+                        })?;
+                    effects.mark_drop();
+                    return Ok(NetworkCustodyApplication::default());
+                }
+                crucible::model::NetworkPolicyOverflow::Timeout => {
+                    let timeout = timeout_nanos.ok_or_else(|| {
+                        network_effect_application_error(
+                            action,
+                            "custody timeout duration disappeared",
+                        )
+                    })?;
+                    let deadline = now
+                        .checked_add(timeout.get())
+                        .ok_or_else(|| {
+                            network_effect_application_error(action, "custody timeout overflowed")
+                        })?
+                        .min(expiry_nanos);
+                    queue.overflow_timeouts.push(NetworkCustodyTimeout {
+                        bundle,
+                        opportunity: opportunity.id(),
+                        enqueue_nanos: now,
+                        expiry_nanos,
+                        deadline_nanos: deadline,
+                    });
+                    queue.overflow_timeouts.sort_by(|left, right| {
+                        (left.deadline_nanos, &left.bundle)
+                            .cmp(&(right.deadline_nanos, &right.bundle))
+                    });
+                    return Ok(NetworkCustodyApplication {
+                        defer_until: Some(deadline),
+                        repeat_phase_on_resume: true,
+                    });
+                }
+            }
+        }
+        queue.admitted_bundles = queue.admitted_bundles.checked_add(1).ok_or_else(|| {
+            network_effect_application_error(action, "custody admission count overflowed")
+        })?;
+    }
+    let mut reservation = reserve_network_contact_route(
+        state,
+        topology,
+        route_contact_plan,
+        intervals,
+        &bundle.producer,
+        &bundle.destination,
+        now,
+        expiry_nanos,
+        payload_bytes,
+        max_visited_hops,
+        &owner,
+        opportunity.id(),
+        was_existing,
+        action,
+    )?;
+    if !was_existing
+        && reservation
+            .as_ref()
+            .is_some_and(|reservation| reservation.first_start_nanos <= now)
+    {
+        reservation = reserve_network_contact_route(
+            state,
+            topology,
+            route_contact_plan,
+            intervals,
+            &bundle.producer,
+            &bundle.destination,
+            now,
+            expiry_nanos,
+            payload_bytes,
+            max_visited_hops,
+            &owner,
+            opportunity.id(),
+            true,
+            action,
+        )?;
+    }
+    let (release_nanos, contact_path, contact_path_committed) =
+        if let Some(reservation) = reservation {
+            let committed = was_existing || reservation.first_start_nanos <= now;
+            if committed {
+                for identity in reservation.identities {
+                    effects
+                        .mark_contact_service_accounted(identity)
+                        .map_err(|error| {
+                            network_effect_application_error(action, &error.to_string())
+                        })?;
+                }
+            }
+            (
+                if committed {
+                    reservation.finish_nanos
+                } else {
+                    reservation.first_start_nanos
+                },
+                reservation.contacts,
+                committed,
+            )
+        } else {
+            let queue = state.custody_queues.get_mut(&owner).ok_or_else(|| {
+                network_effect_application_error(action, "custody queue disappeared")
+            })?;
+            if contact_graph_has_path(
+                intervals,
+                &bundle.producer,
+                &bundle.destination,
+                max_visited_hops,
+            ) {
+                queue.missed_contact_bundles =
+                    queue.missed_contact_bundles.checked_add(1).ok_or_else(|| {
+                        network_effect_application_error(action, "missed-contact count overflowed")
+                    })?;
+            } else {
+                queue.stale_plan_bundles =
+                    queue.stale_plan_bundles.checked_add(1).ok_or_else(|| {
+                        network_effect_application_error(action, "stale-plan count overflowed")
+                    })?;
+            }
+            (expiry_nanos, Vec::new(), false)
+        };
+    let queue = state
+        .custody_queues
+        .get_mut(&owner)
+        .ok_or_else(|| network_effect_application_error(action, "custody queue disappeared"))?;
+    queue.reservations.push(NetworkCustodyReservation {
+        bundle,
+        opportunity: opportunity.id(),
+        enqueue_nanos,
+        expiry_nanos,
+        release_nanos,
+        bytes: payload_bytes,
+        contact_path,
+        contact_path_committed,
+    });
+    queue.reservations.sort_by(|left, right| {
+        (
+            left.bundle.priority.rank(),
+            left.enqueue_nanos,
+            &left.bundle,
+        )
+            .cmp(&(
+                right.bundle.priority.rank(),
+                right.enqueue_nanos,
+                &right.bundle,
+            ))
+    });
+    Ok(NetworkCustodyApplication {
+        defer_until: Some(release_nanos),
+        repeat_phase_on_resume: true,
+    })
+}
+
 fn apply_network_frame_action(
     payload: &mut Vec<u8>,
     effects: &mut crucible::ResolvedNetworkFrameEffects,
@@ -3310,11 +4546,15 @@ fn apply_network_frame_action(
             range_delay_lookup,
             ..
         } => {
-            let declaration = topology.network_policy_artifact(intervals).ok_or_else(|| {
-                network_effect_application_error(action, "contact plan disappeared")
-            })?;
-            let crucible::model::NetworkPolicyArtifactKind::ContactPlan { intervals } =
-                &declaration.artifact
+            let contact_plan = intervals;
+            let declaration = topology
+                .network_policy_artifact(contact_plan)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "contact plan disappeared")
+                })?;
+            let crucible::model::NetworkPolicyArtifactKind::ContactPlan {
+                intervals: contact_intervals,
+            } = &declaration.artifact
             else {
                 return Err(network_effect_application_error(
                     action,
@@ -3333,7 +4573,22 @@ fn apply_network_frame_action(
                     "contact effect received a non-frame opportunity",
                 ));
             };
-            let interval = intervals.iter().find(|interval| {
+            if contact_intervals.iter().any(|interval| {
+                effects.contact_service_is_accounted(&network_contact_service_identity(
+                    &NetworkContactServiceKey {
+                        plan: contact_plan.clone(),
+                        contact: interval.contact.clone(),
+                        service_resource: interval.service_resource.clone(),
+                        source: interval.source.clone(),
+                        destination: interval.destination.clone(),
+                        start_nanos: interval.start_nanos,
+                        end_nanos: interval.end_nanos,
+                    },
+                ))
+            }) {
+                return Ok(());
+            }
+            let interval = contact_intervals.iter().find(|interval| {
                 let open = interval.start_nanos.checked_add(interval.acquisition_nanos);
                 let teardown = interval.end_nanos.checked_sub(interval.teardown_nanos);
                 &interval.source == producer
@@ -3376,51 +4631,44 @@ fn apply_network_frame_action(
                     network_effect_application_error(action, "contact delay is negative")
                 })?)
                 .map_err(map_effect_error)?;
-            let capacity = topology
-                .network_policy_artifact(&interval.capacity_profile)
-                .ok_or_else(|| {
-                    network_effect_application_error(action, "contact capacity disappeared")
-                })?;
-            let crucible::model::NetworkPolicyArtifactKind::ServiceCurve { segments } =
-                &capacity.artifact
-            else {
-                return Err(network_effect_application_error(
-                    action,
-                    "contact capacity changed type after admission",
-                ));
+            let contact_key = NetworkContactServiceKey {
+                plan: contact_plan.clone(),
+                contact: interval.contact.clone(),
+                service_resource: interval.service_resource.clone(),
+                source: producer.clone(),
+                destination: destination.clone(),
+                start_nanos: interval.start_nanos,
+                end_nanos: interval.end_nanos,
             };
-            let bits = u64::try_from(payload.len())
-                .ok()
-                .and_then(|bytes| bytes.checked_mul(8))
-                .ok_or_else(|| {
-                    network_effect_application_error(action, "contact frame size overflowed")
-                })?;
-            let finish = network_service_finish(
+            let contact_identity = network_contact_service_identity(&contact_key);
+            debug_assert!(!effects.contact_service_is_accounted(&contact_identity));
+            let payload_bytes = u64::try_from(payload.len()).map_err(|_error| {
+                network_effect_application_error(action, "contact frame size exceeds u64")
+            })?;
+            let Some((finish, reserved_identity)) = reserve_network_contact_service(
+                state,
+                topology,
+                contact_plan,
+                interval,
+                producer,
+                destination,
                 now,
-                bits,
-                None,
-                &[NetworkServiceCurveState {
-                    activation_nanos: interval.start_nanos,
-                    segments: segments.as_slice().to_vec(),
-                }],
+                payload_bytes,
+                opportunity.id(),
                 action,
-            )?;
-            let traffic_end = interval
-                .end_nanos
-                .checked_sub(interval.teardown_nanos)
-                .ok_or_else(|| {
-                    network_effect_application_error(action, "contact teardown underflowed")
-                })?;
-            if finish > traffic_end {
+            )?
+            else {
                 effects.mark_drop();
                 return Ok(());
-            }
+            };
             effects
                 .add_delay(finish.checked_sub(now).ok_or_else(|| {
                     network_effect_application_error(action, "contact service regressed")
                 })?)
                 .map_err(map_effect_error)?;
-            effects.mark_serialization_accounted();
+            effects
+                .mark_contact_service_accounted(reserved_identity)
+                .map_err(map_effect_error)?;
         }
         NetworkEffectSpecification::RfChannel {
             transmit_power_femtowatts,
@@ -4345,7 +5593,7 @@ mod tests {
                 generated_response_cause: None,
                 forwarding_mutation_path: Vec::new(),
                 length_bytes: 1,
-                payload_digest: ContentHash::from_bytes(&sequence.to_be_bytes()),
+                payload_digest: ContentHash::from_bytes(&[u8::try_from(sequence).unwrap_or(0)]),
             },
         )
         .unwrap_or_else(|error| panic!("test opportunity should be valid: {error}"))
@@ -4892,6 +6140,7 @@ mod tests {
             &mut state,
             &mut Vec::new(),
             None,
+            None,
         )
         .unwrap_or_else(|error| panic!("flood mutation: {error}"));
         assert_eq!(
@@ -4941,6 +6190,7 @@ mod tests {
             &topology,
             &mut state,
             &mut Vec::new(),
+            None,
             None,
         )
         .unwrap_or_else(|error| panic!("loop mutation: {error}"));
@@ -5022,6 +6272,7 @@ mod tests {
             &mut state,
             &mut Vec::new(),
             None,
+            None,
         )
         .unwrap_or_else(|error| panic!("firewall state: {error}"));
         assert!(effects.is_dropped());
@@ -5050,6 +6301,7 @@ mod tests {
             &mut state,
             &mut Vec::new(),
             None,
+            None,
         )
         .unwrap_or_else(|error| panic!("first connection: {error}"));
         assert!(!effects.is_dropped());
@@ -5064,6 +6316,7 @@ mod tests {
             &topology,
             &mut state,
             &mut Vec::new(),
+            None,
             None,
         )
         .unwrap_or_else(|error| panic!("overflow connection: {error}"));
@@ -5133,6 +6386,7 @@ mod tests {
             &crucible::model::WorldFaultTopology::default(),
             &mut state,
             &mut Vec::new(),
+            None,
             None,
         )
         .unwrap_or_else(|error| panic!("MTU expansion: {error}"));
@@ -5651,5 +6905,1309 @@ mod tests {
             ),
             std::cmp::Ordering::Less
         );
+    }
+
+    fn custody_topology(
+        disposition: crucible::model::NetworkPolicyOverflow,
+        contact_start: u64,
+    ) -> crucible::model::WorldFaultTopology {
+        let timeout_nanos = (disposition == crucible::model::NetworkPolicyOverflow::Timeout)
+            .then_some(positive(25));
+        let typed_error = (disposition == crucible::model::NetworkPolicyOverflow::TypedError)
+            .then_some(id("custody-reject"));
+        let mut artifacts = vec![
+            crucible::model::WorldNetworkPolicyArtifact {
+                id: id("contact-capacity"),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::ServiceCurve {
+                    segments: crucible::model::NetworkServiceSegments::new(vec![
+                        crucible::model::NetworkServiceSegment {
+                            at_nanos: 0,
+                            rate_bps: positive(8_000_000_000),
+                        },
+                    ])
+                    .unwrap_or_else(|error| panic!("contact service curve: {error}")),
+                },
+            },
+            crucible::model::WorldNetworkPolicyArtifact {
+                id: id("contact-plan"),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::ContactPlan {
+                    intervals: vec![crucible::model::NetworkPolicyContactInterval {
+                        contact: id("contact-a"),
+                        service_resource: id("resource-a"),
+                        route_cost: positive(1),
+                        routing_propagation_nanos: 1,
+                        start_nanos: contact_start,
+                        end_nanos: contact_start + 100,
+                        source: id("sender"),
+                        destination: id("receiver"),
+                        beam: id("beam-a"),
+                        gateway: id("gateway-a"),
+                        minimum_range_mm: 1,
+                        maximum_range_mm: 2,
+                        capacity_profile: id("contact-capacity"),
+                        acquisition_nanos: 10,
+                        teardown_nanos: 10,
+                        confidence: crucible::model::ProbabilityMillionths::new(1_000_000)
+                            .unwrap_or_else(|error| panic!("contact confidence: {error}")),
+                        provenance: id("contact-test"),
+                    }],
+                },
+            },
+            crucible::model::WorldNetworkPolicyArtifact {
+                id: id("custody-policy"),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::Overflow {
+                    disposition,
+                    timeout_nanos,
+                    typed_error,
+                },
+            },
+        ];
+        if disposition == crucible::model::NetworkPolicyOverflow::TypedError {
+            artifacts.push(crucible::model::WorldNetworkPolicyArtifact {
+                id: id("custody-reject"),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::TypedResponse(
+                    crucible::model::NetworkPolicyTypedResponseSet {
+                        responses: vec![crucible::model::NetworkPolicyTypedResponse {
+                            response: crucible::model::NetworkPolicyTypedResponseKind::TcpReset,
+                            headers: crucible::model::NetworkPolicyResponseHeaders {
+                                source_mac: None,
+                                source_ipv4: None,
+                                source_ipv6: None,
+                                hop_limit: 64,
+                                ipv4_identification: 1,
+                                delay_nanos: None,
+                            },
+                        }],
+                        unmatched: crucible::model::NetworkPolicyUnmatchedResponse::Suppress,
+                    },
+                ),
+            });
+        }
+        artifacts.sort_by(|left, right| left.id.cmp(&right.id));
+        crucible::model::WorldFaultTopology {
+            network_policy_artifacts: artifacts,
+            ..crucible::model::WorldFaultTopology::default()
+        }
+    }
+
+    fn custody_action() -> ResolvedBindingAction {
+        action_with_network_effect(NetworkEffectSpecification::CustodyQueue {
+            capacity_bytes: positive(1),
+            capacity_bundles: crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 1)
+                .unwrap_or_else(|error| panic!("custody bundle capacity: {error}")),
+            expiry_nanos: positive(1_000),
+            custody_policy: id("custody-policy"),
+            route_contact_plan: id("contact-plan"),
+            priority: crucible::model::NetworkBundlePriority::Normal,
+            max_visited_hops: crucible::model::BoundedCount::new(
+                CountLimit::DuplicatesOrInstructionReplay,
+                8,
+            )
+            .unwrap_or_else(|error| panic!("custody hop bound: {error}")),
+        })
+    }
+
+    fn opportunity_at(sequence: u64, now: u64) -> FaultOpportunity {
+        let mut opportunity = opportunity(sequence);
+        opportunity = FaultOpportunity::new(
+            opportunity.target().clone(),
+            opportunity.operation(),
+            opportunity.phase(),
+            FaultCoordinate {
+                virtual_nanos: now,
+                retired_instructions: None,
+            },
+            sequence,
+            opportunity.direction(),
+            opportunity.payload().clone(),
+        )
+        .unwrap_or_else(|error| panic!("coordinate-adjusted opportunity: {error}"));
+        opportunity
+    }
+
+    fn pending_custody_frame(
+        opportunity: &FaultOpportunity,
+        release_nanos: u64,
+    ) -> crucible::BackendNetworkOutput {
+        let mut continuation = crucible::BackendNetworkFaultContinuation::default();
+        continuation
+            .cursor_mut()
+            .defer_until(release_nanos, opportunity.id());
+        let sequence = match opportunity.payload() {
+            OpportunityPayload::NetworkFrame {
+                producer_sequence, ..
+            } => *producer_sequence,
+            _ => panic!("test custody opportunity must be a frame"),
+        };
+        crucible::BackendNetworkOutput {
+            source: crucible::NodeId {
+                name: String::from("sender"),
+            },
+            destination: crucible::NodeId {
+                name: String::from("logical-router"),
+            },
+            emit_icount: crucible::Icount { retired: 0 },
+            sequence,
+            payload: vec![u8::try_from(sequence).unwrap_or(0)],
+            route: Some(crucible::BackendNetworkRoute {
+                link: crucible::LinkId::from_name("custody-test-link"),
+                direction: crucible::device::NetworkLinkDirection::EndpointAToEndpointB,
+                destination: crucible::NodeId {
+                    name: String::from("receiver"),
+                },
+            }),
+            fault_continuation: continuation,
+        }
+    }
+
+    #[test]
+    fn custody_waits_for_contact_then_conserves_shared_capacity() {
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
+        let action = custody_action();
+        let mut state = NetworkEffectRuntimeState::default();
+        let mut pending = Vec::new();
+        let mut typed_response = None;
+        let mut first_effects = crucible::ResolvedNetworkFrameEffects::default();
+        let waiting = apply_network_custody_queue(
+            &[1],
+            &mut first_effects,
+            &mut state,
+            &mut pending,
+            &topology,
+            &action,
+            &opportunity_at(1, 0),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut typed_response,
+        )
+        .unwrap_or_else(|error| panic!("queue before contact: {error}"));
+        assert_eq!(waiting.defer_until, Some(110));
+        assert!(waiting.repeat_phase_on_resume);
+
+        let service = apply_network_custody_queue(
+            &[1],
+            &mut first_effects,
+            &mut state,
+            &mut pending,
+            &topology,
+            &action,
+            &opportunity_at(1, 110),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut typed_response,
+        )
+        .unwrap_or_else(|error| panic!("reserve at contact: {error}"));
+        assert_eq!(service.defer_until, Some(112));
+        assert_eq!(first_effects.additional_delay_nanos(), 0);
+        assert_eq!(first_effects.accounted_contact_services().len(), 1);
+        let released = apply_network_custody_queue(
+            &[1],
+            &mut first_effects,
+            &mut state,
+            &mut pending,
+            &topology,
+            &action,
+            &opportunity_at(1, 112),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut typed_response,
+        )
+        .unwrap_or_else(|error| panic!("release after propagation: {error}"));
+        assert_eq!(released.defer_until, None);
+
+        let mut second_effects = crucible::ResolvedNetworkFrameEffects::default();
+        let second = apply_network_custody_queue(
+            &[2],
+            &mut second_effects,
+            &mut state,
+            &mut pending,
+            &topology,
+            &action,
+            &opportunity_at(2, 112),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut typed_response,
+        )
+        .unwrap_or_else(|error| panic!("second contact reservation: {error}"));
+        assert_eq!(second.defer_until, Some(114));
+        apply_network_custody_queue(
+            &[2],
+            &mut second_effects,
+            &mut state,
+            &mut pending,
+            &topology,
+            &action,
+            &opportunity_at(2, 114),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut typed_response,
+        )
+        .unwrap_or_else(|error| panic!("second contact release: {error}"));
+        assert_eq!(second_effects.additional_delay_nanos(), 0);
+        let queue = state
+            .custody_queues
+            .get(&NetworkEffectStateKey::from_action(&action))
+            .unwrap_or_else(|| panic!("custody queue state"));
+        assert_eq!(queue.released_bundles, 2);
+        assert!(queue.reservations.is_empty());
+    }
+
+    #[test]
+    fn custody_selects_and_reserves_a_bounded_multihop_contact_route() {
+        let mut topology =
+            custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
+        let plan = topology
+            .network_policy_artifacts
+            .iter_mut()
+            .find(|artifact| artifact.id == id("contact-plan"))
+            .unwrap_or_else(|| panic!("contact plan"));
+        let crucible::model::NetworkPolicyArtifactKind::ContactPlan { intervals } =
+            &mut plan.artifact
+        else {
+            panic!("contact plan type")
+        };
+        let mut first = intervals[0].clone();
+        first.contact = id("contact-a-relay");
+        first.service_resource = id("radio-a-relay");
+        first.destination = id("relay");
+        first.route_cost = positive(1);
+        let mut second = intervals[0].clone();
+        second.contact = id("contact-b-receiver");
+        second.service_resource = id("radio-b-receiver");
+        second.start_nanos = 120;
+        second.end_nanos = 220;
+        second.source = id("relay");
+        second.route_cost = positive(1);
+        let mut direct = intervals[0].clone();
+        direct.contact = id("contact-c-direct");
+        direct.service_resource = id("radio-c-direct");
+        direct.route_cost = positive(10);
+        *intervals = vec![first, direct, second];
+
+        let action = custody_action();
+        let mut state = NetworkEffectRuntimeState::default();
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut response = None;
+        let reserved = apply_network_custody_queue(
+            &[1],
+            &mut effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &action,
+            &opportunity_at(1, 0),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut response,
+        )
+        .unwrap_or_else(|error| panic!("reserve multihop route: {error}"));
+        assert_eq!(reserved.defer_until, Some(110));
+        assert!(effects.accounted_contact_services().is_empty());
+        assert!(state.contact_services.is_empty());
+        let reserved = apply_network_custody_queue(
+            &[1],
+            &mut effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &action,
+            &opportunity_at(1, 110),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut response,
+        )
+        .unwrap_or_else(|error| panic!("commit multihop route: {error}"));
+        assert_eq!(reserved.defer_until, Some(132));
+        assert_eq!(effects.accounted_contact_services().len(), 2);
+        let queue = state
+            .custody_queues
+            .get(&NetworkEffectStateKey::from_action(&action))
+            .unwrap_or_else(|| panic!("custody queue"));
+        assert_eq!(
+            queue.reservations[0].contact_path,
+            vec![id("contact-a-relay"), id("contact-b-receiver")]
+        );
+        assert_eq!(state.contact_services.len(), 2);
+
+        let contact = action_with_network_effect(NetworkEffectSpecification::Contact {
+            intervals: id("contact-plan"),
+            range_delay_lookup: id("direct-range-delay"),
+            beams: crucible::model::ObjectIdSet::new(vec![id("beam-a")])
+                .unwrap_or_else(|error| panic!("contact beams: {error}")),
+            gateways: crucible::model::ObjectIdSet::new(vec![id("gateway-a")])
+                .unwrap_or_else(|error| panic!("contact gateways: {error}")),
+        });
+        apply_network_frame_action(
+            &mut vec![1],
+            &mut effects,
+            &contact,
+            &opportunity_at(1, 132),
+            ContentHash::from_bytes(b"multihop-contact-composition"),
+            &topology,
+            &mut state,
+        )
+        .unwrap_or_else(|error| panic!("compose multihop custody with contact: {error}"));
+        assert!(!effects.is_dropped());
+        assert_eq!(effects.additional_delay_nanos(), 0);
+        assert_eq!(state.contact_services.len(), 2);
+    }
+
+    #[test]
+    fn custody_checkpoint_rejects_broken_contact_graph_joins() {
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
+        let action = custody_action();
+        let owner = NetworkEffectStateKey::from_action(&action);
+        let mut state = NetworkEffectRuntimeState::default();
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut response = None;
+        let first = opportunity_at(1, 0);
+        let waiting = apply_network_custody_queue(
+            &[1],
+            &mut effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &action,
+            &first,
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut response,
+        )
+        .unwrap_or_else(|error| panic!("stage custody route: {error}"));
+        let service_opportunity = opportunity_at(
+            1,
+            waiting
+                .defer_until
+                .unwrap_or_else(|| panic!("custody route must wait for contact")),
+        );
+        let mut planned_pending = vec![pending_custody_frame(
+            &first,
+            service_opportunity.coordinate().virtual_nanos,
+        )];
+        planned_pending[0]
+            .fault_continuation
+            .cursor_mut()
+            .defer_repeated_effect_until(
+                service_opportunity.coordinate().virtual_nanos,
+                first.id(),
+                crucible::model::EffectKind::NetworkCustodyQueue,
+                Some(crucible::model::NetworkBundlePriority::Normal.rank()),
+            );
+        validate_custody_contact_topology(&state, &planned_pending, &topology)
+            .unwrap_or_else(|error| panic!("valid planned custody checkpoint: {error}"));
+        let mut planned_extra = planned_pending.clone();
+        let mut planned_effects = crucible::ResolvedNetworkFrameEffects::default();
+        planned_effects
+            .mark_contact_service_accounted([0x6b; 32])
+            .unwrap_or_else(|error| panic!("planned extra contact: {error}"));
+        planned_extra[0]
+            .fault_continuation
+            .set_resolved_frame_effects(planned_effects);
+        assert!(validate_custody_contact_topology(&state, &planned_extra, &topology).is_err());
+        let committed = apply_network_custody_queue(
+            &[1],
+            &mut effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &action,
+            &service_opportunity,
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut response,
+        )
+        .unwrap_or_else(|error| panic!("commit custody route: {error}"));
+        let release = committed
+            .defer_until
+            .unwrap_or_else(|| panic!("committed custody route must have a release"));
+        let mut pending = vec![pending_custody_frame(&service_opportunity, release)];
+        pending[0]
+            .fault_continuation
+            .cursor_mut()
+            .defer_repeated_effect_until(
+                release,
+                service_opportunity.id(),
+                crucible::model::EffectKind::NetworkCustodyQueue,
+                Some(crucible::model::NetworkBundlePriority::Normal.rank()),
+            );
+        pending[0]
+            .fault_continuation
+            .set_resolved_frame_effects(effects);
+        validate_custody_contact_topology(&state, &pending, &topology)
+            .unwrap_or_else(|error| panic!("valid custody checkpoint join: {error}"));
+
+        let mut mismatched_output = pending.clone();
+        mismatched_output[0].payload.push(2);
+        assert!(validate_custody_contact_topology(&state, &mismatched_output, &topology).is_err());
+
+        let mut mismatched_priority = state.clone();
+        mismatched_priority
+            .custody_queues
+            .get_mut(&owner)
+            .unwrap_or_else(|| panic!("custody queue"))
+            .reservations[0]
+            .bundle
+            .priority = crucible::model::NetworkBundlePriority::Bulk;
+        assert!(
+            validate_custody_contact_topology(&mismatched_priority, &pending, &topology).is_err()
+        );
+
+        let mut mismatched_bytes = state.clone();
+        mismatched_bytes
+            .contact_services
+            .values_mut()
+            .next()
+            .unwrap_or_else(|| panic!("contact service"))
+            .reservations[0]
+            .bytes = 2;
+        assert!(validate_custody_contact_topology(&mismatched_bytes, &pending, &topology).is_err());
+
+        let mut orphaned_ledger = state.clone();
+        orphaned_ledger
+            .contact_services
+            .values_mut()
+            .next()
+            .unwrap_or_else(|| panic!("contact service"))
+            .reservations[0]
+            .custody_owner = Some(NetworkEffectStateKey {
+            binding: id("missing-custody-binding"),
+            target: action.target.clone(),
+            effect: crucible::model::EffectKind::NetworkCustodyQueue,
+        });
+        assert!(validate_custody_contact_topology(&orphaned_ledger, &pending, &topology).is_err());
+
+        let mut overlapping_ledger = state.clone();
+        let service = overlapping_ledger
+            .contact_services
+            .values_mut()
+            .next()
+            .unwrap_or_else(|| panic!("contact service"));
+        let mut duplicate = service.reservations[0].clone();
+        duplicate.opportunity = ContentHash::from_bytes(b"overlapping-contact-reservation");
+        service.served_bundles += 1;
+        service.served_bytes += duplicate.bytes;
+        service.reservations.push(duplicate);
+        service.reservations.sort_by(|left, right| {
+            (left.start_nanos, left.finish_nanos, left.opportunity).cmp(&(
+                right.start_nanos,
+                right.finish_nanos,
+                right.opportunity,
+            ))
+        });
+        assert!(
+            validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                effect_state: overlapping_ledger,
+            })
+            .is_err()
+        );
+
+        let mut mismatched_expiry = state.clone();
+        mismatched_expiry
+            .custody_queues
+            .get_mut(&owner)
+            .unwrap_or_else(|| panic!("custody queue"))
+            .reservations[0]
+            .expiry_nanos += 1;
+        assert!(
+            validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                effect_state: mismatched_expiry,
+            })
+            .is_err()
+        );
+
+        let mut over_byte_capacity = state.clone();
+        let reservation = &mut over_byte_capacity
+            .custody_queues
+            .get_mut(&owner)
+            .unwrap_or_else(|| panic!("custody queue"))
+            .reservations[0];
+        reservation.bytes = 2;
+        reservation.bundle.length_bytes = 2;
+        assert!(
+            validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                effect_state: over_byte_capacity,
+            })
+            .is_err()
+        );
+
+        let mut over_bundle_capacity = state.clone();
+        let queue = over_bundle_capacity
+            .custody_queues
+            .get_mut(&owner)
+            .unwrap_or_else(|| panic!("custody queue"));
+        let mut second = queue.reservations[0].clone();
+        second.bundle.producer_sequence = 2;
+        second.bundle.payload_digest = ContentHash::from_bytes(&[2]);
+        second.opportunity = ContentHash::from_bytes(b"second-capacity-bundle");
+        second.enqueue_nanos = 1;
+        second.expiry_nanos = 1_001;
+        queue.reservations.push(second);
+        queue.reservations.sort_by(|left, right| {
+            (
+                left.bundle.priority.rank(),
+                left.enqueue_nanos,
+                &left.bundle,
+            )
+                .cmp(&(
+                    right.bundle.priority.rank(),
+                    right.enqueue_nanos,
+                    &right.bundle,
+                ))
+        });
+        assert!(
+            validate_network_adapter_checkpoint(&NetworkAdapterCheckpoint {
+                semantic_version: NETWORK_ADAPTER_CHECKPOINT_VERSION,
+                coordinate: Some(release),
+                coordinate_sequence: 0,
+                effect_state: over_bundle_capacity,
+            })
+            .is_err()
+        );
+
+        let mut missing_contact = state.clone();
+        missing_contact
+            .custody_queues
+            .get_mut(&owner)
+            .unwrap_or_else(|| panic!("custody queue"))
+            .reservations[0]
+            .contact_path[0] = id("missing-contact");
+        assert!(validate_custody_contact_topology(&missing_contact, &pending, &topology).is_err());
+
+        let mut missing_frame_accounting = pending.clone();
+        let mut stripped_effects = missing_frame_accounting[0]
+            .fault_continuation
+            .resolved_frame_effects()
+            .clone();
+        stripped_effects.require_serialization();
+        missing_frame_accounting[0]
+            .fault_continuation
+            .set_resolved_frame_effects(stripped_effects);
+        assert!(
+            validate_custody_contact_topology(&state, &missing_frame_accounting, &topology,)
+                .is_err()
+        );
+
+        let mut extra_frame_accounting = pending.clone();
+        let mut extra_effects = extra_frame_accounting[0]
+            .fault_continuation
+            .resolved_frame_effects()
+            .clone();
+        extra_effects
+            .mark_contact_service_accounted([0x5a; 32])
+            .unwrap_or_else(|error| panic!("extra contact accounting: {error}"));
+        extra_frame_accounting[0]
+            .fault_continuation
+            .set_resolved_frame_effects(extra_effects);
+        assert!(
+            validate_custody_contact_topology(&state, &extra_frame_accounting, &topology,).is_err()
+        );
+
+        let mut missing_priority = pending.clone();
+        missing_priority[0]
+            .fault_continuation
+            .cursor_mut()
+            .defer_repeated_effect_until(
+                release,
+                service_opportunity.id(),
+                crucible::model::EffectKind::NetworkCustodyQueue,
+                None,
+            );
+        assert!(validate_custody_contact_topology(&state, &missing_priority, &topology).is_err());
+
+        let mut mismatched_cursor = pending.clone();
+        mismatched_cursor[0]
+            .fault_continuation
+            .cursor_mut()
+            .defer_repeated_effect_until(
+                release + 1,
+                service_opportunity.id(),
+                crucible::model::EffectKind::NetworkCustodyQueue,
+                Some(crucible::model::NetworkBundlePriority::Normal.rank()),
+            );
+        assert!(validate_custody_contact_topology(&state, &mismatched_cursor, &topology).is_err());
+
+        let mut mismatched_release = state.clone();
+        let reservation = &mut mismatched_release
+            .custody_queues
+            .get_mut(&owner)
+            .unwrap_or_else(|| panic!("custody queue"))
+            .reservations[0];
+        reservation.release_nanos = reservation.release_nanos.saturating_add(1);
+        assert!(
+            validate_custody_contact_topology(&mismatched_release, &pending, &topology,).is_err()
+        );
+
+        let mut service_before_enqueue = state.clone();
+        let reservation = &mut service_before_enqueue
+            .custody_queues
+            .get_mut(&owner)
+            .unwrap_or_else(|| panic!("custody queue"))
+            .reservations[0];
+        reservation.enqueue_nanos = 111;
+        reservation.expiry_nanos = 1_111;
+        assert!(
+            validate_custody_contact_topology(&service_before_enqueue, &pending, &topology)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn completed_contact_ledgers_fold_into_the_settled_cursor() {
+        let key = NetworkContactServiceKey {
+            plan: id("contact-plan"),
+            contact: id("contact-a"),
+            service_resource: id("resource-a"),
+            source: id("sender"),
+            destination: id("receiver"),
+            start_nanos: 100,
+            end_nanos: 200,
+        };
+        let mut state = NetworkEffectRuntimeState::default();
+        state.contact_services.insert(
+            key,
+            NetworkContactServiceState {
+                settled_cursor_nanos: 100,
+                service_cursor_nanos: 112,
+                served_bundles: 1,
+                served_bytes: 1,
+                reservations: vec![NetworkContactServiceReservation {
+                    custody_owner: None,
+                    opportunity: ContentHash::from_bytes(b"settled-contact"),
+                    start_nanos: 110,
+                    finish_nanos: 112,
+                    arrival_nanos: 112,
+                    bytes: 1,
+                }],
+            },
+        );
+
+        prune_network_contact_services(&mut state, 112);
+        let service = state
+            .contact_services
+            .values()
+            .next()
+            .unwrap_or_else(|| panic!("contact service"));
+        assert!(service.reservations.is_empty());
+        assert_eq!(service.settled_cursor_nanos, 112);
+        assert_eq!(service.service_cursor_nanos, 112);
+        assert_eq!(service.served_bundles, 1);
+        assert_eq!(service.served_bytes, 1);
+    }
+
+    #[test]
+    fn direct_contact_counter_overflow_fails_before_mutation() {
+        assert!(network_contact_service_state_capacity_allows(
+            HARD_CONTACT_SERVICE_STATES - 1,
+            1,
+        ));
+        assert!(!network_contact_service_state_capacity_allows(
+            HARD_CONTACT_SERVICE_STATES,
+            1,
+        ));
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
+        let plan = topology
+            .network_policy_artifact(&id("contact-plan"))
+            .unwrap_or_else(|| panic!("contact plan"));
+        let crucible::model::NetworkPolicyArtifactKind::ContactPlan { intervals } = &plan.artifact
+        else {
+            panic!("contact plan type")
+        };
+        let interval = intervals[0].clone();
+        let action = custody_action();
+        for (served_bundles, served_bytes) in [(u64::MAX, 0), (0, u64::MAX)] {
+            let key = NetworkContactServiceKey {
+                plan: id("contact-plan"),
+                contact: interval.contact.clone(),
+                service_resource: interval.service_resource.clone(),
+                source: interval.source.clone(),
+                destination: interval.destination.clone(),
+                start_nanos: interval.start_nanos,
+                end_nanos: interval.end_nanos,
+            };
+            let mut state = NetworkEffectRuntimeState::default();
+            state.contact_services.insert(
+                key.clone(),
+                NetworkContactServiceState {
+                    settled_cursor_nanos: 100,
+                    service_cursor_nanos: 100,
+                    served_bundles,
+                    served_bytes,
+                    reservations: Vec::new(),
+                },
+            );
+            let error = reserve_network_contact_service(
+                &mut state,
+                &topology,
+                &id("contact-plan"),
+                &interval,
+                &id("sender"),
+                &id("receiver"),
+                110,
+                1,
+                ContentHash::from_bytes(b"overflow-direct-contact"),
+                &action,
+            )
+            .expect_err("direct contact counter overflow must fail");
+            assert!(error.to_string().contains("before direct reservation"));
+            let service = state
+                .contact_services
+                .get(&key)
+                .unwrap_or_else(|| panic!("contact service"));
+            assert_eq!(service.service_cursor_nanos, 100);
+            assert_eq!(service.served_bundles, served_bundles);
+            assert_eq!(service.served_bytes, served_bytes);
+            assert!(service.reservations.is_empty());
+        }
+    }
+
+    #[test]
+    fn custody_accounting_skips_direct_contact_propagation_and_revalidation() {
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
+        let action = action_with_network_effect(NetworkEffectSpecification::Contact {
+            intervals: id("contact-plan"),
+            range_delay_lookup: id("direct-range-delay"),
+            beams: crucible::model::ObjectIdSet::new(vec![id("beam-a")])
+                .unwrap_or_else(|error| panic!("contact beams: {error}")),
+            gateways: crucible::model::ObjectIdSet::new(vec![id("gateway-a")])
+                .unwrap_or_else(|error| panic!("contact gateways: {error}")),
+        });
+        let key = NetworkContactServiceKey {
+            plan: id("contact-plan"),
+            contact: id("contact-a"),
+            service_resource: id("resource-a"),
+            source: id("sender"),
+            destination: id("receiver"),
+            start_nanos: 100,
+            end_nanos: 200,
+        };
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        effects
+            .mark_contact_service_accounted(network_contact_service_identity(&key))
+            .unwrap_or_else(|error| panic!("account custody contact: {error}"));
+
+        apply_network_frame_action(
+            &mut vec![1],
+            &mut effects,
+            &action,
+            &opportunity_at(1, 250),
+            ContentHash::from_bytes(b"accounted-contact"),
+            &topology,
+            &mut NetworkEffectRuntimeState::default(),
+        )
+        .unwrap_or_else(|error| panic!("skip direct contact after custody: {error}"));
+        assert!(!effects.is_dropped());
+        assert_eq!(effects.additional_delay_nanos(), 0);
+    }
+
+    #[test]
+    fn custody_priority_arbitrates_equal_contact_release_coordinates() {
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
+        let bulk = custody_action();
+        let mut critical = custody_action();
+        critical.binding = id("critical-custody-binding");
+        let mut state = NetworkEffectRuntimeState::default();
+        let mut response = None;
+        let mut bulk_effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut critical_effects = crucible::ResolvedNetworkFrameEffects::default();
+        for (sequence, action, priority, effects) in [
+            (
+                1,
+                &bulk,
+                crucible::model::NetworkBundlePriority::Bulk,
+                &mut bulk_effects,
+            ),
+            (
+                2,
+                &critical,
+                crucible::model::NetworkBundlePriority::Critical,
+                &mut critical_effects,
+            ),
+        ] {
+            let waiting = apply_network_custody_queue(
+                &[u8::try_from(sequence).unwrap_or(0)],
+                effects,
+                &mut state,
+                &mut Vec::new(),
+                &topology,
+                action,
+                &opportunity_at(sequence, 0),
+                1,
+                1,
+                1_000,
+                &id("custody-policy"),
+                &id("contact-plan"),
+                priority,
+                8,
+                &mut response,
+            )
+            .unwrap_or_else(|error| panic!("stage priority bundle: {error}"));
+            assert_eq!(waiting.defer_until, Some(110));
+        }
+        let critical_service = apply_network_custody_queue(
+            &[2],
+            &mut critical_effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &critical,
+            &opportunity_at(2, 110),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Critical,
+            8,
+            &mut response,
+        )
+        .unwrap_or_else(|error| panic!("serve critical bundle: {error}"));
+        let bulk_service = apply_network_custody_queue(
+            &[1],
+            &mut bulk_effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &bulk,
+            &opportunity_at(1, 110),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Bulk,
+            8,
+            &mut response,
+        )
+        .unwrap_or_else(|error| panic!("serve bulk bundle: {error}"));
+        assert_eq!(critical_service.defer_until, Some(112));
+        assert_eq!(bulk_service.defer_until, Some(113));
+    }
+
+    #[test]
+    fn custody_expiry_precedes_an_unreachable_future_contact() {
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 2_000);
+        let action = custody_action();
+        let mut state = NetworkEffectRuntimeState::default();
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut typed_response = None;
+        let waiting = apply_network_custody_queue(
+            &[1],
+            &mut effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &action,
+            &opportunity_at(1, 0),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut typed_response,
+        )
+        .unwrap_or_else(|error| panic!("queue until expiry: {error}"));
+        assert_eq!(waiting.defer_until, Some(1_000));
+        apply_network_custody_queue(
+            &[1],
+            &mut effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &action,
+            &opportunity_at(1, 1_000),
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut typed_response,
+        )
+        .unwrap_or_else(|error| panic!("expire custody bundle: {error}"));
+        assert!(effects.is_dropped());
+    }
+
+    #[test]
+    fn custody_overflow_executes_every_closed_disposition() {
+        for disposition in [
+            crucible::model::NetworkPolicyOverflow::DropNewest,
+            crucible::model::NetworkPolicyOverflow::DropOldest,
+            crucible::model::NetworkPolicyOverflow::TypedError,
+            crucible::model::NetworkPolicyOverflow::Timeout,
+        ] {
+            let topology = custody_topology(disposition, 500);
+            let action = custody_action();
+            let mut state = NetworkEffectRuntimeState::default();
+            let first = opportunity_at(1, 0);
+            let mut pending = Vec::new();
+            let mut first_effects = crucible::ResolvedNetworkFrameEffects::default();
+            let mut response = None;
+            let first_application = apply_network_custody_queue(
+                &[1],
+                &mut first_effects,
+                &mut state,
+                &mut pending,
+                &topology,
+                &action,
+                &first,
+                1,
+                1,
+                1_000,
+                &id("custody-policy"),
+                &id("contact-plan"),
+                crucible::model::NetworkBundlePriority::Normal,
+                8,
+                &mut response,
+            )
+            .unwrap_or_else(|error| panic!("first custody admission: {error}"));
+            let first_release = first_application
+                .defer_until
+                .unwrap_or_else(|| panic!("first bundle must wait"));
+            pending.push(pending_custody_frame(&first, first_release));
+
+            let second = opportunity_at(2, 1);
+            let mut second_effects = crucible::ResolvedNetworkFrameEffects::default();
+            let second_application = apply_network_custody_queue(
+                &[2],
+                &mut second_effects,
+                &mut state,
+                &mut pending,
+                &topology,
+                &action,
+                &second,
+                1,
+                1,
+                1_000,
+                &id("custody-policy"),
+                &id("contact-plan"),
+                crucible::model::NetworkBundlePriority::Normal,
+                8,
+                &mut response,
+            )
+            .unwrap_or_else(|error| panic!("custody overflow: {error}"));
+            match disposition {
+                crucible::model::NetworkPolicyOverflow::DropNewest => {
+                    assert!(second_effects.is_dropped());
+                    assert_eq!(pending.len(), 1);
+                }
+                crucible::model::NetworkPolicyOverflow::DropOldest => {
+                    assert!(!second_effects.is_dropped());
+                    assert!(second_application.repeat_phase_on_resume);
+                    assert!(pending.is_empty());
+                    let queue = state
+                        .custody_queues
+                        .get(&NetworkEffectStateKey::from_action(&action))
+                        .unwrap_or_else(|| panic!("custody queue"));
+                    assert_eq!(queue.reservations[0].bundle.producer_sequence, 2);
+                }
+                crucible::model::NetworkPolicyOverflow::TypedError => {
+                    assert!(second_effects.is_dropped());
+                    assert_eq!(response, Some(id("custody-reject")));
+                }
+                crucible::model::NetworkPolicyOverflow::Timeout => {
+                    assert_eq!(second_application.defer_until, Some(26));
+                    let mut timed_out = crucible::ResolvedNetworkFrameEffects::default();
+                    apply_network_custody_queue(
+                        &[2],
+                        &mut timed_out,
+                        &mut state,
+                        &mut pending,
+                        &topology,
+                        &action,
+                        &opportunity_at(2, 26),
+                        1,
+                        1,
+                        1_000,
+                        &id("custody-policy"),
+                        &id("contact-plan"),
+                        crucible::model::NetworkBundlePriority::Normal,
+                        8,
+                        &mut response,
+                    )
+                    .unwrap_or_else(|error| panic!("custody overflow timeout: {error}"));
+                    assert!(timed_out.is_dropped());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn custody_removal_releases_the_real_pending_frame_at_the_boundary() {
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 500);
+        let action = custody_action();
+        let first = opportunity_at(1, 0);
+        let mut state = NetworkEffectRuntimeState::default();
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut response = None;
+        let waiting = apply_network_custody_queue(
+            &[1],
+            &mut effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &action,
+            &first,
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut response,
+        )
+        .unwrap_or_else(|error| panic!("queue custody frame: {error}"));
+        let release = waiting
+            .defer_until
+            .unwrap_or_else(|| panic!("custody frame must be pending"));
+        assert_eq!(release, 510);
+        let service_opportunity = opportunity_at(1, release);
+        let service = apply_network_custody_queue(
+            &[1],
+            &mut effects,
+            &mut state,
+            &mut Vec::new(),
+            &topology,
+            &action,
+            &service_opportunity,
+            1,
+            1,
+            1_000,
+            &id("custody-policy"),
+            &id("contact-plan"),
+            crucible::model::NetworkBundlePriority::Normal,
+            8,
+            &mut response,
+        )
+        .unwrap_or_else(|error| panic!("commit custody contact: {error}"));
+        let service_release = service
+            .defer_until
+            .unwrap_or_else(|| panic!("committed custody frame must be pending"));
+        let mut pending = vec![pending_custody_frame(&first, service_release)];
+        pending[0]
+            .fault_continuation
+            .cursor_mut()
+            .defer_repeated_effect_until(
+                service_release,
+                service_opportunity.id(),
+                crucible::model::EffectKind::NetworkCustodyQueue,
+                Some(crucible::model::NetworkBundlePriority::Normal.rank()),
+            );
+        pending[0]
+            .fault_continuation
+            .set_resolved_frame_effects(effects);
+        let mut removal = action;
+        removal.kind = BindingActionKind::RemovePersistent;
+        removal.coordinate.virtual_nanos = 510;
+        assert!(
+            apply_network_custody_removals(&mut state, &mut pending, &[removal], 510)
+                .unwrap_or_else(|error| panic!("remove custody binding: {error}"))
+        );
+        assert!(state.custody_queues.is_empty());
+        assert!(
+            state
+                .contact_services
+                .values()
+                .all(|service| service.reservations.is_empty() && service.served_bundles == 0)
+        );
+        assert_eq!(
+            pending[0].fault_continuation.cursor().not_before_nanos(),
+            510
+        );
+        assert!(
+            pending[0]
+                .fault_continuation
+                .resolved_frame_effects()
+                .accounted_contact_services()
+                .is_empty()
+        );
+        assert!(
+            !pending[0]
+                .fault_continuation
+                .resolved_frame_effects()
+                .serialization_is_accounted()
+        );
+    }
+
+    #[test]
+    fn simultaneous_custody_queues_fail_before_state_mutation() {
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
+        let first = custody_action();
+        let mut second = custody_action();
+        second.binding = id("second-custody-binding");
+        let mut payload = vec![1];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut state = NetworkEffectRuntimeState::default();
+        let error = apply_network_frame_actions(
+            &mut payload,
+            &mut effects,
+            &[first, second],
+            &opportunity_at(1, 0),
+            ContentHash::from_bytes(b"custody-conflict"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+            None,
+        )
+        .expect_err("two custody queues must conflict");
+        assert!(error.to_string().contains("multiple custody queues"));
+        assert!(state.custody_queues.is_empty());
+        assert!(state.contact_services.is_empty());
+    }
+
+    #[test]
+    fn custody_resume_does_not_charge_other_queue_effects_twice() {
+        let topology = custody_topology(crucible::model::NetworkPolicyOverflow::DropNewest, 100);
+        let token = action_with_network_effect(NetworkEffectSpecification::TokenBucket {
+            rate_bps: positive(8),
+            burst_bits: positive(16),
+            initial_bits: 16,
+        });
+        let custody = custody_action();
+        let actions = vec![token, custody];
+        let mut payload = vec![1];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut state = NetworkEffectRuntimeState::default();
+        let first = apply_network_frame_actions(
+            &mut payload,
+            &mut effects,
+            &actions,
+            &opportunity_at(1, 0),
+            ContentHash::from_bytes(b"custody-repeat"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+            None,
+        )
+        .unwrap_or_else(|error| panic!("first queue evaluation: {error}"));
+        assert_eq!(
+            first.repeat_effect_on_resume,
+            Some(crucible::model::EffectKind::NetworkCustodyQueue)
+        );
+        let token_state = state
+            .token_buckets
+            .values()
+            .next()
+            .map(|bucket| {
+                (
+                    bucket.tokens_nano_bits,
+                    bucket.last_refill_nanos,
+                    bucket.transition_sequence,
+                )
+            })
+            .unwrap_or_else(|| panic!("token bucket state"));
+        let release = first
+            .defer_until
+            .unwrap_or_else(|| panic!("custody release"));
+        let resumed = apply_network_frame_actions(
+            &mut payload,
+            &mut effects,
+            &actions,
+            &opportunity_at(1, release),
+            ContentHash::from_bytes(b"custody-repeat"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+            Some(crucible::model::EffectKind::NetworkCustodyQueue),
+        )
+        .unwrap_or_else(|error| panic!("custody resume: {error}"));
+        assert_eq!(
+            resumed.repeat_effect_on_resume,
+            Some(crucible::model::EffectKind::NetworkCustodyQueue)
+        );
+        let final_release = resumed
+            .defer_until
+            .unwrap_or_else(|| panic!("committed custody release"));
+        let finalized = apply_network_frame_actions(
+            &mut payload,
+            &mut effects,
+            &actions,
+            &opportunity_at(1, final_release),
+            ContentHash::from_bytes(b"custody-repeat"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+            Some(crucible::model::EffectKind::NetworkCustodyQueue),
+        )
+        .unwrap_or_else(|error| panic!("custody finalize: {error}"));
+        assert_eq!(finalized.repeat_effect_on_resume, None);
+        let resumed_token_state = state
+            .token_buckets
+            .values()
+            .next()
+            .map(|bucket| {
+                (
+                    bucket.tokens_nano_bits,
+                    bucket.last_refill_nanos,
+                    bucket.transition_sequence,
+                )
+            })
+            .unwrap_or_else(|| panic!("resumed token bucket state"));
+        assert_eq!(resumed_token_state, token_state);
     }
 }

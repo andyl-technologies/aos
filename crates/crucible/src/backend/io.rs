@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::LinkId;
-use crate::model::ResolvedFaultTarget;
+use crate::model::{EffectKind, ResolvedFaultTarget};
 
 /// One scheduler-validated directed route for a guest-originated frame.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -39,6 +39,10 @@ pub struct BackendNetworkFaultCursor {
     completed_release_nanos: u64,
     /// Queue opportunity that owns the current reservation, when deferred.
     queue_opportunity: Option<ContentHash>,
+    /// Sole effect kind allowed to repeat an intentionally incomplete phase.
+    repeated_phase_effect: Option<EffectKind>,
+    /// Queue service rank used to order equal-coordinate resumptions.
+    queue_priority: Option<u8>,
     /// Path version locked for preserve semantics across deferred phases.
     route_path_version: Option<FaultObjectId>,
 }
@@ -103,6 +107,18 @@ impl BackendNetworkFaultCursor {
         self.queue_opportunity
     }
 
+    /// Returns the effect that exclusively owns a repeated phase, when any.
+    #[must_use]
+    pub const fn repeated_phase_effect(&self) -> Option<EffectKind> {
+        self.repeated_phase_effect
+    }
+
+    /// Returns the queue service rank for an equal-coordinate resume.
+    #[must_use]
+    pub const fn queue_priority(&self) -> Option<u8> {
+        self.queue_priority
+    }
+
     /// Returns the route path version locked for this frame, when one exists.
     #[must_use]
     pub const fn route_path_version(&self) -> Option<&FaultObjectId> {
@@ -147,6 +163,8 @@ impl BackendNetworkFaultCursor {
         };
         self.not_before_nanos = 0;
         self.queue_opportunity = None;
+        self.repeated_phase_effect = None;
+        self.queue_priority = None;
         Ok(())
     }
 
@@ -154,6 +172,22 @@ impl BackendNetworkFaultCursor {
     pub fn defer_until(&mut self, not_before_nanos: u64, opportunity: ContentHash) {
         self.not_before_nanos = not_before_nanos;
         self.queue_opportunity = Some(opportunity);
+        self.repeated_phase_effect = None;
+        self.queue_priority = None;
+    }
+
+    /// Defers a phase while allowing only its owning effect to run on resume.
+    pub fn defer_repeated_effect_until(
+        &mut self,
+        not_before_nanos: u64,
+        opportunity: ContentHash,
+        effect: EffectKind,
+        queue_priority: Option<u8>,
+    ) {
+        self.not_before_nanos = not_before_nanos;
+        self.queue_opportunity = Some(opportunity);
+        self.repeated_phase_effect = Some(effect);
+        self.queue_priority = queue_priority;
     }
 
     /// Replaces the current queue reservation's release coordinate.

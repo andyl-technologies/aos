@@ -2089,6 +2089,10 @@ mod tests {
     fn contact_plan_exposes_acquisition_open_and_teardown_boundaries() {
         let contact = ContactPlanState {
             intervals: vec![crucible::model::NetworkPolicyContactInterval {
+                contact: id("contact-a"),
+                service_resource: id("resource-a"),
+                route_cost: positive(1),
+                routing_propagation_nanos: 1,
                 start_nanos: 100,
                 end_nanos: 200,
                 source: id("satellite"),
