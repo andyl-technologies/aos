@@ -22,7 +22,6 @@
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
-        aos.apm.desiredPackages = [ "aos-test-agent" ];
         environment.etc."rfc0011-gc-generation".text = "one\n";
       }
     '';
@@ -45,21 +44,20 @@
 
 
       def switch(value):
-          host = f'''{{
+          host = f"""{{
             aos.provisioning.storage.partitions.var.sizeMin = "2G";
-            aos.apm.desiredPackages = [ "aos-test-agent" ];
             environment.etc."rfc0011-gc-generation".text = "{value}\\n";
           }}
-          '''
+          """
           encoded = base64.b64encode(host.encode()).decode()
           target.succeed(
               f"printf '%s' {encoded} | base64 -d > /run/rfc0011-gc-{value}.nix"
           )
-          target.succeed(f'''
+          target.succeed(f"""
               {APM} switch \
                 --from /run/rfc0011-gc-{value}.nix \
                 --eval-root /run/rfc0011-gc-eval-{value}
-          ''', timeout=300)
+          """, timeout=300)
           generation = current_generation()
           target.succeed(
               f'test "$(cat /etc/rfc0011-gc-generation)" = {value}'
@@ -87,14 +85,14 @@
           generation_dir = f"/var/lib/profiles/system/gen-{number}"
           target.succeed(f"test -d {generation_dir}/cfg")
           target.succeed(f"test -d {generation_dir}/cfgsrc")
-          target.succeed(f'''
+          target.succeed(f"""
               set -eu
               for root in {generation_dir}/cfg/* {generation_dir}/cfgsrc/*; do
                 test -L "$root"
                 target_path=$(readlink -f "$root")
                 test -e "$target_path"
               done
-          ''')
+          """)
           inputs = [
               generation["host_nix_ref"],
               generation["facts_ref"],
@@ -104,15 +102,31 @@
           ]
           for input_path in inputs:
               target.succeed(f"test -e {input_path}")
-              target.succeed(f'''
+              target.succeed(f"""
                   ${pkgs.findutils}/bin/find {generation_dir}/cfgsrc \
                     -type l -lname {input_path} | ${pkgs.grep}/bin/grep -q .
-              ''')
+              """)
 
 
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-      )
+      target.wait_until_succeeds("""
+          systemctl is-active --quiet aos-graph-compile.service ||
+            systemctl is-failed --quiet aos-eval.service ||
+            systemctl is-failed --quiet aos-graph-compile.service
+      """, timeout=300)
+      graph_status = target.succeed(
+          "systemctl is-active aos-graph-compile.service || true"
+      ).strip()
+      if graph_status != "active":
+          diagnostics = target.succeed("""
+              systemctl --no-pager --full status \
+                aos-eval.service aos-graph-compile.service || true
+              journalctl --no-pager -u aos-eval.service \
+                -u aos-graph-compile.service || true
+          """)
+          raise AssertionError(
+              f"configuration pipeline did not become active: {graph_status}\n"
+              f"{diagnostics}"
+          )
       first = current_generation()
       second = switch("two")
       third = switch("three")
