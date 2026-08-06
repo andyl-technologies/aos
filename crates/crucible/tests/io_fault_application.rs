@@ -7,8 +7,8 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    BlockFault, CombinedFaults, Decision, DeviceId, DeviceSchedulingSubNode, Fault,
-    FaultBandwidthBitsPerSecond, FaultDecision, FaultDuration, FaultRateBasisPoints, IoFailureMode,
+    BlockFault, CombinedFaults, Decision, DeviceId, DeviceSchedulingSubNode, EffectOutcomeDecision,
+    Fault, FaultBandwidthBitsPerSecond, FaultDuration, FaultRateBasisPoints, IoFailureMode,
     NinePErrno, NinePFault, SchedulerNodeId, SchedulerState, SchedulingNodeKind, Seed, VirtualTime,
     apply_combined_block_faults_to_subnode, apply_combined_block_faults_to_subnode_and_state,
     apply_combined_ninep_faults_to_subnode, apply_combined_ninep_faults_to_subnode_and_state,
@@ -500,7 +500,7 @@ fn assert_fault_fired(decisions: &[Decision], device: &DeviceId, kind: &str, fir
     assert!(
         decisions.iter().any(|decision| matches!(
             decision,
-            Decision::FaultFires(FaultDecision { fault, fired: actual, .. })
+            Decision::EffectOutcome(EffectOutcomeDecision { fault, fired: actual, .. })
                 if fault == &io_fault_id(device, kind) && *actual == fired
         )),
         "expected {kind} fired={fired} decision"

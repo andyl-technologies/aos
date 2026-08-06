@@ -1039,7 +1039,7 @@ pub(super) fn external_scheduled_event_payload_material(payload: &ScheduledEvent
             lines.push(String::from("event.payload=fault-activation"));
             lines.push(external_fault_id_material("event.payload.fault", fault));
         }
-        ScheduledEventPayload::ProbabilisticFault(choice) => {
+        ScheduledEventPayload::ProbabilisticEffect(choice) => {
             lines.push(String::from("event.payload=probabilistic-fault"));
             lines.push(external_fault_id_material(
                 "event.payload.fault",
@@ -1085,8 +1085,8 @@ pub(super) fn external_decision_material(decision: &Decision) -> String {
                 ));
             }
         }
-        D::FaultFires(fault) => {
-            lines.push(String::from("decision=fault-fires"));
+        D::EffectOutcome(fault) => {
+            lines.push(String::from("decision=effect-outcome"));
             lines.push(format!("decision.at_ticks={}", fault.at.ticks));
             lines.push(external_fault_id_material("decision.fault", &fault.fault));
             lines.push(format!("decision.fired={}", fault.fired));
@@ -1595,7 +1595,7 @@ pub(super) fn external_scheduled_event_resolve_class_label(
         ScheduledEventResolveClass::FrameDelivery => "frame-delivery",
         ScheduledEventResolveClass::IoCompletion => "io-completion",
         ScheduledEventResolveClass::FaultActivation => "fault-activation",
-        ScheduledEventResolveClass::ProbabilisticFault => "probabilistic-fault",
+        ScheduledEventResolveClass::ProbabilisticEffect => "probabilistic-fault",
         ScheduledEventResolveClass::Control => "control",
     }
 }

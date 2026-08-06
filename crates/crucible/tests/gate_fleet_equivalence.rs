@@ -7,7 +7,7 @@
 use std::error::Error;
 
 use crucible::{
-    ChoiceTag, Configuration, ContentHash, Decision, EngineError, FaultDecision, FaultId,
+    ChoiceTag, Configuration, ContentHash, Decision, EffectOutcomeDecision, EngineError, FaultId,
     FleetEquivalenceReport, FleetWorkStealingConfig, GenesisCheckpoint, Icount,
     MaterializationPolicy, MaterializationTrigger, NodeId, NodeTemplate, OverrideDecision, Plan,
     Properties, ReadyPoint, RngDecision, RngStreamId, ScenarioDefForm, SchedulingPoint,
@@ -296,7 +296,7 @@ fn fleet_root_decisions() -> Vec<Decision> {
 }
 
 fn fault_decision(fault: impl Into<String>, fired: bool) -> Decision {
-    Decision::FaultFires(FaultDecision {
+    Decision::EffectOutcome(EffectOutcomeDecision {
         at: time(12),
         fault: FaultId { name: fault.into() },
         fired,

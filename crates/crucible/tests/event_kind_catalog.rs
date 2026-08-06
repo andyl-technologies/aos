@@ -13,11 +13,11 @@ use crucible::{
 };
 
 const EXPECTED_CATALOG_HASH: &str =
-    "db39d152e86256550dc3cc1a82cdfb05d3e5dd5b34f4f8579734bd73f05f74ca";
+    "f1f372237b42557088734e4d880c4cf359eae1f344772e9d02178d6dff1c5b0a";
 
 #[test]
 fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
-    assert_eq!(EVENT_KIND_CATALOG_VERSION, 2);
+    assert_eq!(EVENT_KIND_CATALOG_VERSION, 3);
 
     let mut kinds = BTreeSet::new();
     let mut previous = "";
@@ -46,7 +46,7 @@ fn event_kind_catalog_contains_rfc_19_7_required_kinds() {
         ("binding_activation", EventClass::Causal),
         ("binding_deactivation", EventClass::Causal),
         ("fault_opportunity", EventClass::Causal),
-        ("fault_choice", EventClass::Causal),
+        ("effect_choice", EventClass::Causal),
         ("effect_combined", EventClass::Causal),
         ("effect_applied", EventClass::Causal),
         ("effect_rejected", EventClass::Causal),
@@ -98,9 +98,9 @@ fn event_kind_catalog_records_structural_dependency_map() {
             "binding_activation",
             "binding_deactivation",
             "effect_applied",
+            "effect_choice",
             "effect_combined",
             "effect_rejected",
-            "fault_choice",
             "fault_opportunity",
             "network_profile",
             "signal_sample",

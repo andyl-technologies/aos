@@ -4,10 +4,10 @@ use super::*;
 
 /// Records every probabilistic RESOLVE choice in canonical event order.
 ///
-/// Only [`ScheduledEventPayload::ProbabilisticFault`] payloads produce decisions.
+/// Only [`ScheduledEventPayload::ProbabilisticEffect`] payloads produce decisions.
 /// For each such event, this helper draws from the payload's seeded stream and
 /// records the raw [`Decision::RngDraw`] followed by the derived
-/// [`Decision::FaultFires`] outcome. Non-probabilistic events are ignored.
+/// [`Decision::EffectOutcome`] outcome. Non-probabilistic events are ignored.
 #[must_use]
 pub fn resolve_probabilistic_decisions(
     configuration: Configuration,
@@ -35,12 +35,12 @@ fn record_probabilistic_decisions(
     let mut decisions = Vec::new();
 
     for event in ordered_scheduled_events(resolved_events) {
-        let ScheduledEventPayload::ProbabilisticFault(choice) = &event.payload else {
+        let ScheduledEventPayload::ProbabilisticEffect(choice) = &event.payload else {
             continue;
         };
 
         let before = recorder.schedule().len();
-        recorder.decide_fault_basis_points(
+        recorder.decide_effect_basis_points(
             event.key.virtual_time(),
             choice.fault.clone(),
             choice.stream.clone(),

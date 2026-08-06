@@ -659,7 +659,7 @@ fn event_payload(event: &ScheduledEvent) -> Vec<u8> {
         ScheduledEventPayload::BackendInput(input) => input.payload.clone(),
         ScheduledEventPayload::IoCompletion(completion) => completion.payload.clone(),
         ScheduledEventPayload::FaultActivation(_)
-        | ScheduledEventPayload::ProbabilisticFault(_)
+        | ScheduledEventPayload::ProbabilisticEffect(_)
         | ScheduledEventPayload::Control(_) => Vec::new(),
     }
 }

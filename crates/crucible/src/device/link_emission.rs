@@ -38,9 +38,9 @@ pub fn emit_link_frame_with_recorded_stream_at_position(
     let duplicate_fired =
         !partitioned && !loss_fired && fault_table.duplicate.fires(draws.duplicate);
     let corrupt_fired = !partitioned && !loss_fired && fault_table.corrupt.fires(draws.corrupt);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "loss", loss_fired);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "duplicate", duplicate_fired);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "corrupt", corrupt_fired);
+    push_link_effect_outcome(&mut decisions, at, fault_id, "loss", loss_fired);
+    push_link_effect_outcome(&mut decisions, at, fault_id, "duplicate", duplicate_fired);
+    push_link_effect_outcome(&mut decisions, at, fault_id, "corrupt", corrupt_fired);
     Ok(LinkEmitDecisionRecord {
         outcome,
         draws,
@@ -92,9 +92,9 @@ pub fn emit_link_frame_with_injected_draws_at_position(
     let loss_fired = !partitioned && faults.loss_fires(draws.loss, &draws.additional_loss);
     let duplicate_fired = !partitioned && !loss_fired && faults.duplicate.fires(draws.duplicate);
     let corrupt_fired = !partitioned && !loss_fired && faults.corrupt.fires(draws.corrupt);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "loss", loss_fired);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "duplicate", duplicate_fired);
-    push_link_fault_outcome(&mut decisions, at, fault_id, "corrupt", corrupt_fired);
+    push_link_effect_outcome(&mut decisions, at, fault_id, "loss", loss_fired);
+    push_link_effect_outcome(&mut decisions, at, fault_id, "duplicate", duplicate_fired);
+    push_link_effect_outcome(&mut decisions, at, fault_id, "corrupt", corrupt_fired);
     Ok(LinkEmitDecisionRecord {
         outcome,
         draws,

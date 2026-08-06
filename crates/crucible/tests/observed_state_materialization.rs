@@ -6,10 +6,10 @@
 
 use crucible::{
     AppRandomDecision, BackendInput, ConditionEvaluationError, ConditionEvaluationPass,
-    ConditionLeaf, ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision, EventKey,
-    FaultDecision, FaultId, Icount, IrqVector, NodeId, ObservableEvent, ObservedFaultFact,
-    ObservedOrderingFact, OverrideDecision, PreemptionDecision, PreemptionKind, RngDecision,
-    RngStreamId, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    ConditionLeaf, ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision,
+    EffectOutcomeDecision, EventKey, FaultId, Icount, IrqVector, NodeId, ObservableEvent,
+    ObservedFaultFact, ObservedOrderingFact, OverrideDecision, PreemptionDecision, PreemptionKind,
+    RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
     SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
     VcpuId, VirtualTime,
 };
@@ -89,7 +89,7 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
         payload_entry(
             7,
             time(6),
-            SchedulerEventLogPayload::Decision(Decision::FaultFires(FaultDecision {
+            SchedulerEventLogPayload::Decision(Decision::EffectOutcome(EffectOutcomeDecision {
                 at: time(6),
                 fault: fault.clone(),
                 fired: true,

@@ -14,8 +14,8 @@ use crucible::{
     AppRandomDecision, Checkpoint, CheckpointKind, CheckpointMeta, Configuration, ContentHash,
     CowDeltaKind, CowDeltaRef, DagStore, DagStoreError, DagStoreReproductionArtifact, Decision,
     DecisionRngState, DeliveryOrderDecision, DeviceId, DeviceOverlayDelta, DeviceRngState,
-    EngineError, EventKey, EventLogOffset, EventSequenceState, FaultDecision, FaultId, FaultState,
-    FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
+    EffectOutcomeDecision, EngineError, EventKey, EventLogOffset, EventSequenceState, FaultId,
+    FaultState, FrontierReductionPolicy, FrontierReductionReason, Icount, IrqVector, LocalDagStore,
     MaterializationPolicy, MaterializationTrigger, MaterializedState, MemoryDagStore,
     NetworkLinkRuntimeCursor, NodeBlobRef, NodeId, PartialOrderReductionPolicy, PendingFrame,
     PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, RngStreamPosition, ScenarioDef,
@@ -187,7 +187,7 @@ fn gate_content_address_excludes_materialization_cache_from_identity() {
     let scenario = scenario("scenario=cache\nnodes=a\nseed=17");
     let configuration = step(
         &Configuration::genesis(scenario.clone()),
-        Decision::FaultFires(FaultDecision {
+        Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime { ticks: 5 },
             fault: FaultId {
                 name: String::from("disk-delay"),
@@ -1938,7 +1938,7 @@ fn fixed_schedule() -> Schedule {
             at: VirtualTime { ticks: 1 },
             order: vec![event_key(1, 2), event_key(1, 3)],
         }))
-        .appended(Decision::FaultFires(FaultDecision {
+        .appended(Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime { ticks: 4 },
             fault: FaultId {
                 name: String::from("link-a-b/drop"),
@@ -1972,7 +1972,7 @@ fn generated_decision(seed: u64, index: u64) -> Decision {
             },
             order: vec![event_key(seed + index, index)],
         }),
-        1 => Decision::FaultFires(FaultDecision {
+        1 => Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime {
                 ticks: seed + index,
             },

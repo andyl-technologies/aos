@@ -296,7 +296,7 @@ fn branch_prefix_admission_records_only_explorer_overrides() {
 fn branch_reseed_restarts_the_authoritative_rng_stream() {
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("scheduler", SchedulingNodeKind::ControlPlane);
-    let event = probabilistic_fault_event(
+    let event = probabilistic_effect_event(
         11,
         &consumer,
         &producer,
@@ -389,20 +389,20 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
 }
 
 #[test]
-fn branch_fault_choice_replaces_seeded_resolution_at_matching_point() {
+fn branch_effect_choice_replaces_seeded_resolution_at_matching_point() {
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("scheduler", SchedulingNodeKind::ControlPlane);
     let fault = FaultId {
         name: String::from("branch-loss"),
     };
-    let event = probabilistic_fault_event(11, &consumer, &producer, 0, fault.clone());
+    let event = probabilistic_effect_event(11, &consumer, &producer, 0, fault.clone());
     let stream = RngStreamId::from_name("test-probabilistic-fault");
     let forced = vec![
         Decision::RngDraw(RngDecision {
             stream: stream.clone(),
             value: 0,
         }),
-        Decision::FaultFires(FaultDecision {
+        Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime { ticks: 11 },
             fault,
             fired: true,
@@ -410,8 +410,8 @@ fn branch_fault_choice_replaces_seeded_resolution_at_matching_point() {
     ];
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
     scheduler
-        .install_branch_fault_choices(forced.clone())
-        .expect("valid branch fault choice must install");
+        .install_branch_effect_choices(forced.clone())
+        .expect("valid branch effect choice must install");
     let mut resolved = resolve_probabilistic_decisions(
         scheduler.configuration().clone(),
         std::slice::from_ref(&event),
@@ -419,18 +419,18 @@ fn branch_fault_choice_replaces_seeded_resolution_at_matching_point() {
     .decisions;
 
     scheduler
-        .apply_branch_fault_choices(&[event], &mut resolved)
+        .apply_branch_effect_choices(&[event], &mut resolved)
         .expect("matching branch choice must replace the seeded resolution");
 
     assert_eq!(resolved, forced);
-    assert_eq!(scheduler.pending_branch_fault_choice_count(), 0);
+    assert_eq!(scheduler.pending_branch_effect_choice_count(), 0);
 }
 
 #[test]
 fn quantum_captures_pre_choice_runtime_search_frontier() {
     let consumer = scheduler_node("node-a", SchedulingNodeKind::Vm);
     let producer = scheduler_node("scheduler", SchedulingNodeKind::ControlPlane);
-    let event = probabilistic_fault_event(
+    let event = probabilistic_effect_event(
         1,
         &consumer,
         &producer,

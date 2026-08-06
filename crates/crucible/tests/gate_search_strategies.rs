@@ -9,19 +9,20 @@ use std::error::Error;
 
 use crucible::{
     AssertionDef, AssertionId, ChoiceTag, CodePoint, Configuration, ContentHash, Decision,
-    EngineError, EventLogOffset, FaultDecision, FaultId, FindingDiscoveryPath, FrontierChild,
-    FrontierReductionReport, GenesisCheckpoint, GuestAssertionDetail, GuestAssertionKind,
-    GuestAssertionMarker, Icount, MarkerId, MaterializationPolicy, MaterializationTrigger,
-    MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate, ObservableEvent, OverrideDecision,
-    Plan, Predicate, Properties, Property, ReachabilityExpectation, ReachableDisposition,
-    ReadyPoint, RecordedAssertionLog, ResolvedCodePoint, ResolvedMemPlace, RngDecision,
-    RngStreamId, RuntimeState, ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind,
-    SchedulerQuiescence, SchedulerQuiescenceBlocker, SchedulerState, SchedulingPoint, SearchBudget,
-    SearchExpansion, SearchFailureOracle, SearchFrontierChoices, SearchReplayOracleSamplingConfig,
-    SearchRetainedLogAssertionEvidence, SearchRetainedLogPredicateResolutions,
-    SearchScheduleNamedPredicateKey, SearchScheduleNamedPredicateTruths, SearchStrategy, Seed,
-    TemporalGraph, TemporalGraphRuntime, TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime,
-    WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    EffectOutcomeDecision, EngineError, EventLogOffset, FaultId, FindingDiscoveryPath,
+    FrontierChild, FrontierReductionReport, GenesisCheckpoint, GuestAssertionDetail,
+    GuestAssertionKind, GuestAssertionMarker, Icount, MarkerId, MaterializationPolicy,
+    MaterializationTrigger, MemPlace, MemoryCmp, MemoryWidth, NodeId, NodeTemplate,
+    ObservableEvent, OverrideDecision, Plan, Predicate, Properties, Property,
+    ReachabilityExpectation, ReachableDisposition, ReadyPoint, RecordedAssertionLog,
+    ResolvedCodePoint, ResolvedMemPlace, RngDecision, RngStreamId, RuntimeState, ScenarioDefForm,
+    Schedule, SchedulerEvaluationBoundaryKind, SchedulerQuiescence, SchedulerQuiescenceBlocker,
+    SchedulerState, SchedulingPoint, SearchBudget, SearchExpansion, SearchFailureOracle,
+    SearchFrontierChoices, SearchReplayOracleSamplingConfig, SearchRetainedLogAssertionEvidence,
+    SearchRetainedLogPredicateResolutions, SearchScheduleNamedPredicateKey,
+    SearchScheduleNamedPredicateTruths, SearchStrategy, Seed, TemporalGraph, TemporalGraphRuntime,
+    TemporalGraphSearch, TemporalGraphSearchRun, VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    bake, try_step,
 };
 
 #[test]
@@ -1765,7 +1766,7 @@ fn strategy_root_decisions() -> Vec<Decision> {
 }
 
 fn fault_decision(fault: impl Into<String>, fired: bool) -> Decision {
-    Decision::FaultFires(FaultDecision {
+    Decision::EffectOutcome(EffectOutcomeDecision {
         at: time(12),
         fault: FaultId { name: fault.into() },
         fired,
@@ -1954,7 +1955,7 @@ fn search_run_for_root_decision(
 }
 
 fn timed_fault_decision(name: &str, at: VirtualTime) -> Decision {
-    Decision::FaultFires(FaultDecision {
+    Decision::EffectOutcome(EffectOutcomeDecision {
         at,
         fault: FaultId {
             name: name.to_owned(),

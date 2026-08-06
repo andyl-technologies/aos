@@ -459,16 +459,16 @@ fn partition_drop_does_not_record_loss_fault_fire() {
 
     assert!(record.outcome.deliveries.is_empty());
     assert_eq!(
-        fault_outcome(&record.decisions, &link_id, "loss"),
+        effect_outcome(&record.decisions, &link_id, "loss"),
         Some(false),
         "partition drops are deterministic topology effects, not probabilistic loss fires"
     );
     assert_eq!(
-        fault_outcome(&record.decisions, &link_id, "duplicate"),
+        effect_outcome(&record.decisions, &link_id, "duplicate"),
         Some(false)
     );
     assert_eq!(
-        fault_outcome(&record.decisions, &link_id, "corrupt"),
+        effect_outcome(&record.decisions, &link_id, "corrupt"),
         Some(false)
     );
 }
@@ -507,10 +507,10 @@ fn device(name: &str) -> DeviceId {
     }
 }
 
-fn fault_outcome(decisions: &[Decision], device: &DeviceId, kind: &str) -> Option<bool> {
+fn effect_outcome(decisions: &[Decision], device: &DeviceId, kind: &str) -> Option<bool> {
     let expected = crucible::io_fault_id(device, kind);
     decisions.iter().find_map(|decision| match decision {
-        Decision::FaultFires(outcome) if outcome.fault == expected => Some(outcome.fired),
+        Decision::EffectOutcome(outcome) if outcome.fault == expected => Some(outcome.fired),
         _ => None,
     })
 }

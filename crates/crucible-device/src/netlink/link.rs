@@ -144,7 +144,7 @@ pub struct ResolveOutcome {
 
 /// The injected RNG draws one frame's fault resolution consumes, in fixed order.
 ///
-/// Each probabilistic fault draws from this struct in the order the model
+/// Each probabilistic effect draws from this struct in the order the model
 /// applies them: jitter, reorder, loss rates, duplicate, corrupt (with
 /// `corrupt_bits` supplying selectors for payload corruption strategies).
 /// Supplying the same draws and the same frame yields byte-identical deliveries
@@ -424,7 +424,7 @@ impl NetLink {
     ///
     /// Computes the delivery icount from the base latency (clamped to the floor,
     /// [IO-33]) plus bandwidth serialization and seeded jitter/reorder shifts,
-    /// then applies the probabilistic faults from `draws` ([IO-20]): loss drops
+    /// then applies the probabilistic effects from `draws` ([IO-20]): loss drops
     /// the frame (zero deliveries), duplicate emits a second delivery at a
     /// deterministically-derived later icount, and corrupt mutates payload bytes.
     /// Each produced delivery is inserted into the delivery-ordered
@@ -556,7 +556,7 @@ impl NetLink {
     /// [`NetLink::emit`], advances [`NetLink::rng_position`], and returns both the
     /// [`ResolveOutcome`] and the raw draws. The engine uses this to record the
     /// same draw stream as engine `RngDraw` decisions without re-deriving link
-    /// fault choices from the final payload.
+    /// effect choices from the final payload.
     ///
     /// # Errors
     ///

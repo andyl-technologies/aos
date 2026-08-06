@@ -329,7 +329,7 @@ fn record_representative_decision(recorder: &mut DecisionRecorder, index: u64) {
             let _value = recorder.draw_u64(stream(&format!("node-a/faults/{index}")));
         }
         1 => {
-            let _fired = recorder.decide_fault_basis_points(
+            let _fired = recorder.decide_effect_basis_points(
                 VirtualTime { ticks: index + 1 },
                 FaultId {
                     name: format!("link-a-b/drop-{index}"),

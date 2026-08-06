@@ -14,9 +14,9 @@ use std::fmt;
 use crucible_sim::{DecisionRng, DecisionStream};
 
 use crate::{
-    AppRandomDecision, Configuration, Decision, FaultDecision, FaultId, FaultRateBasisPoints,
-    Icount, PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, Schedule, VcpuId,
-    VirtualTime, step,
+    AppRandomDecision, Configuration, Decision, EffectOutcomeDecision, FaultId,
+    FaultRateBasisPoints, Icount, PreemptionDecision, PreemptionKind, RngDecision, RngStreamId,
+    Schedule, VcpuId, VirtualTime, step,
 };
 
 /// Records intended nondeterminism into a configuration's [`Schedule`].
@@ -72,12 +72,12 @@ impl DecisionRecorder {
         value
     }
 
-    /// Resolves a basis-point probabilistic fault through `stream`.
+    /// Resolves a basis-point probabilistic effect through `stream`.
     ///
     /// The raw draw is recorded first. The fault then fires when that draw's
     /// deterministic basis-point bucket is strictly below `rate`; the derived
-    /// [`Decision::FaultFires`] outcome is recorded immediately after the draw.
-    pub fn decide_fault_basis_points(
+    /// [`Decision::EffectOutcome`] outcome is recorded immediately after the draw.
+    pub fn decide_effect_basis_points(
         &mut self,
         at: VirtualTime,
         fault: FaultId,
@@ -86,21 +86,25 @@ impl DecisionRecorder {
     ) -> bool {
         let value = self.draw_u64(stream);
         let fired = rate.fires_on_draw(value);
-        self.append_decision(Decision::FaultFires(FaultDecision { at, fault, fired }));
+        self.append_decision(Decision::EffectOutcome(EffectOutcomeDecision {
+            at,
+            fault,
+            fired,
+        }));
         fired
     }
 
-    /// Records a pre-resolved fault outcome in the schedule.
+    /// Records a pre-resolved effect outcome in the schedule.
     ///
-    /// Unlike [`DecisionRecorder::decide_fault_basis_points`], which draws and
+    /// Unlike [`DecisionRecorder::decide_effect_basis_points`], which draws and
     /// tests in one step, this appends a caller-resolved
-    /// [`Decision::FaultFires`] outcome. It is the recording surface for device
+    /// [`Decision::EffectOutcome`] outcome. It is the recording surface for device
     /// faults whose firing test is the exact-fraction `crucible-device` model:
     /// the caller draws the raw value with [`DecisionRecorder::draw_u64`]
     /// (recording the draw), resolves the fault, and records the derived outcome
     /// here.
-    pub fn record_fault_outcome(&mut self, decision: FaultDecision) {
-        self.append_decision(Decision::FaultFires(decision));
+    pub fn record_effect_outcome(&mut self, decision: EffectOutcomeDecision) {
+        self.append_decision(Decision::EffectOutcome(decision));
     }
 
     /// Serves an application-requested random value and records it.
@@ -403,7 +407,7 @@ mod tests {
     };
 
     #[test]
-    fn decision_recorder_records_rng_draws_and_fault_outcomes() {
+    fn decision_recorder_records_rng_draws_and_effect_outcomes() {
         assert_decision_rng_branch_coverage();
     }
 
@@ -982,7 +986,7 @@ mod tests {
         let mut recorder = DecisionRecorder::new(config);
 
         let raw = recorder.draw_u64(stream.clone());
-        let fired = recorder.decide_fault_basis_points(
+        let fired = recorder.decide_effect_basis_points(
             VirtualTime { ticks: 4 },
             fault.clone(),
             stream.clone(),
@@ -1001,7 +1005,7 @@ mod tests {
         ));
         assert!(matches!(
             &recorder.schedule().decisions()[2],
-            Decision::FaultFires(FaultDecision { at, fault: recorded, fired: true })
+            Decision::EffectOutcome(EffectOutcomeDecision { at, fault: recorded, fired: true })
                 if *at == (VirtualTime { ticks: 4 }) && recorded == &fault
         ));
     }

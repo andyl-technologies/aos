@@ -92,7 +92,7 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
                 hasher.write_u64(key.sequence);
             }
         }
-        Decision::FaultFires(fault) => {
+        Decision::EffectOutcome(fault) => {
             hasher.write_u64(1);
             write_virtual_time(hasher, fault.at);
             hasher.write_bytes(fault.fault.name.as_bytes());

@@ -975,7 +975,7 @@ fn replay_to_savepoint_decision_fixtures(
             let payload = format!("{decision:?}");
             let kind = match decision {
                 crucible::Decision::DeliveryOrder(_) => "delivery-order",
-                crucible::Decision::FaultFires(_) => "fault-fires",
+                crucible::Decision::EffectOutcome(_) => "effect-outcome",
                 crucible::Decision::RngDraw(_) => "rng-draw",
                 crucible::Decision::Override(_) => "override",
                 crucible::Decision::Preemption(_) => "preemption",

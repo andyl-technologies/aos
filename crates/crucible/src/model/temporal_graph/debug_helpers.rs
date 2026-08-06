@@ -261,7 +261,7 @@ pub(in crate::model) fn debug_payload_is_timer_grain(payload: &SchedulerEventLog
                 event.payload,
                 ScheduledEventPayload::IoCompletion(_)
                     | ScheduledEventPayload::FaultActivation(_)
-                    | ScheduledEventPayload::ProbabilisticFault(_)
+                    | ScheduledEventPayload::ProbabilisticEffect(_)
             )
         }
         SchedulerEventLogPayload::TriggerActionApplied(application) => {

@@ -9,7 +9,7 @@ use std::error::Error;
 
 use crucible::{
     Checkpoint, CheckpointKind, Configuration, ContentHash, Decision, DecisionRngState,
-    EngineError, EventLogOffset, FaultDecision, FaultId, FrontierReductionPolicy,
+    EffectOutcomeDecision, EngineError, EventLogOffset, FaultId, FrontierReductionPolicy,
     FrontierReductionReason, GenesisCheckpoint, Icount, IrqVector, MaterializationPolicy,
     MaterializationTrigger, MaterializedState, NodeBlobRef, NodeId, PartialOrderReductionPolicy,
     PreemptionDecision, PreemptionKind, Schedule, SchedulerState, SearchBudget,
@@ -242,7 +242,7 @@ fn preemption_decision(node: &str, retired: u64) -> Decision {
 }
 
 fn fault_decision(name: &str, fired: bool) -> Decision {
-    Decision::FaultFires(FaultDecision {
+    Decision::EffectOutcome(EffectOutcomeDecision {
         at: VirtualTime { ticks: 17 },
         fault: FaultId {
             name: String::from(name),

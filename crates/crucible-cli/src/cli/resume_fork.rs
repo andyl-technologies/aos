@@ -1616,7 +1616,7 @@ pub(super) fn fork_artifact_canonical_log(
 pub(super) fn fork_artifact_decision_kind(decision: &crucible::Decision) -> &'static str {
     match decision {
         crucible::Decision::DeliveryOrder(_) => "delivery_order",
-        crucible::Decision::FaultFires(_) => "fault_fires",
+        crucible::Decision::EffectOutcome(_) => "effect_outcome",
         crucible::Decision::RngDraw(_) => "rng_draw",
         crucible::Decision::Override(_) => "override",
         crucible::Decision::Preemption(_) => "preemption",

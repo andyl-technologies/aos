@@ -1,7 +1,7 @@
 //! The engine-side bridge to the `crucible-device` I/O sub-nodes.
 //!
 //! `crucible-device` (L1) models block, 9p, and network sub-nodes whose
-//! probabilistic faults are pure functions of an injected RNG draw. This module
+//! probabilistic effects are pure functions of an injected RNG draw. This module
 //! is the L3 seam that supplies those draws from the scenario's determinism RNG
 //! and records each one in the [`Schedule`](crate::Schedule) ([IO-21],
 //! [SCHED-30]), and that folds each device's RNG cursor and active I/O faults
@@ -44,7 +44,7 @@ use crucible_device::{
 use crate::decision::DecisionRecorder;
 use crate::{
     CombinedBlockFaults, CombinedNetworkFaults, CombinedNinePFaults, CombinedPartitionFault,
-    Decision, DeviceId, DeviceOverlayDelta, DeviceRngState, FaultDecision, FaultId,
+    Decision, DeviceId, DeviceOverlayDelta, DeviceRngState, EffectOutcomeDecision, FaultId,
     FaultRateBasisPoints, FaultState, IoFailureMode, NetworkCorruptionFault, RngDecision,
     RngStreamId, RngStreamPosition, SchedulerError, SchedulerLookaheadEdge,
     SchedulerLookaheadEdgeEndpoint, SchedulerNodeId, SchedulerState, SchedulerTopologyChange, Seed,
@@ -85,7 +85,7 @@ pub fn device_stream_id(device: &DeviceId) -> RngStreamId {
 /// Draws one raw `u64` from the device's decision stream — recorded as a
 /// [`Decision::RngDraw`] — and resolves the fault from
 /// it through the same exact-fraction test [`crucible_device::Probability`] uses,
-/// then records the derived [`Decision::FaultFires`]
+/// then records the derived [`Decision::EffectOutcome`]
 /// outcome. The recording is total-ordered in the schedule, so a device's
 /// probabilistic choices are reproducible from the seed ([IO-21], [IO-24]).
 ///
@@ -102,7 +102,7 @@ pub fn record_device_fault(
     let stream = device_stream_id(device);
     let value = recorder.draw_u64(stream);
     let fired = denominator != 0 && (value % denominator) < numerator;
-    recorder.record_fault_outcome(FaultDecision { at, fault, fired });
+    recorder.record_effect_outcome(EffectOutcomeDecision { at, fault, fired });
     fired
 }
 
@@ -113,7 +113,7 @@ pub struct LinkEmitDecisionRecord {
     pub outcome: ResolveOutcome,
     /// The exact fixed-order draw vector consumed by this frame.
     pub draws: FrameDraws,
-    /// The raw RNG draws and derived fault outcomes recorded for the schedule.
+    /// The raw RNG draws and derived effect outcomes recorded for the schedule.
     pub decisions: Vec<Decision>,
 }
 
@@ -157,7 +157,7 @@ impl NetworkLinkDirection {
 /// produced by the real link implementation and the returned schedule decisions
 /// record the exact same raw draw values in fixed model order: jitter, reorder,
 /// loss rates, duplicate, corrupt, and corruption selectors. The derived
-/// loss/duplicate/corrupt outcomes are appended as [`Decision::FaultFires`] using
+/// loss/duplicate/corrupt outcomes are appended as [`Decision::EffectOutcome`] using
 /// the same device-scoped [`FaultId`] namespace as block and 9p faults.
 ///
 /// # Errors
@@ -185,7 +185,7 @@ pub fn emit_link_frame_with_recorded_faults(
 ///
 /// World-backed schedulers use this entry point so adapters cannot substitute
 /// an identity-external device label for the link stream declared by the World.
-/// `fault_id` names the recorded derived fault outcomes; `stream` alone selects
+/// `fault_id` names the recorded derived effect outcomes; `stream` alone selects
 /// the raw draw sequence.
 ///
 /// # Errors
@@ -227,15 +227,15 @@ fn link_rng_draw_decisions(stream: &RngStreamId, draws: &FrameDraws) -> Vec<Deci
         .collect()
 }
 
-/// Pushes a link fault outcome into a decision list.
-fn push_link_fault_outcome(
+/// Pushes a link effect outcome into a decision list.
+fn push_link_effect_outcome(
     decisions: &mut Vec<Decision>,
     at: VirtualTime,
     link: &DeviceId,
     kind: &str,
     fired: bool,
 ) {
-    decisions.push(Decision::FaultFires(FaultDecision {
+    decisions.push(Decision::EffectOutcome(EffectOutcomeDecision {
         at,
         fault: io_fault_id(link, kind),
         fired,
@@ -848,13 +848,13 @@ mod tests {
         ));
         assert!(matches!(
             &decisions[1],
-            crate::Decision::FaultFires(outcome)
+            crate::Decision::EffectOutcome(outcome)
                 if outcome.fault == io_fault_id(&disk, "loss") && outcome.fired
         ));
     }
 
     #[test]
-    fn link_emit_records_seeded_rng_draws_fault_outcomes_and_cursor() {
+    fn link_emit_records_seeded_rng_draws_effect_outcomes_and_cursor() {
         let seed = Seed::from_u64(0x10_21_22_23);
         let link_id = device("link-a-b");
         let mut faults = LinkFaults::none();
@@ -943,7 +943,7 @@ mod tests {
             }));
         }
         for (kind, fired) in [("loss", false), ("duplicate", true), ("corrupt", true)] {
-            decisions.push(Decision::FaultFires(FaultDecision {
+            decisions.push(Decision::EffectOutcome(EffectOutcomeDecision {
                 at: VirtualTime { ticks: emit_icount },
                 fault: io_fault_id(link_id, kind),
                 fired,

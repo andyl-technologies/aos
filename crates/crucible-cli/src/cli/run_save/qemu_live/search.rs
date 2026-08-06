@@ -307,11 +307,11 @@ async fn qemu_search_realize(
     // crucible-lint: allow host-nondeterminism-state -- requested search state is canonical input checked against every live replay prefix.
     requested: &crucible::Configuration,
 ) -> Result<(Option<QemuSearchFrontier>, Option<QemuSearchFinding>), CliError> {
-    let choices = branch_fault_choice_decisions(&requested.schedule);
+    let choices = branch_effect_choice_decisions(&requested.schedule);
     let network_choices = branch_network_choice_decisions(&requested.schedule);
     let branch_config = config
         .clone()
-        .with_branch_fault_choices(choices)
+        .with_branch_effect_choices(choices)
         .with_branch_network_choices(network_choices);
     let control_plane = production_qemu_control_plane(branch_config, scenario);
     let client = InProcessLifecycleClient::new(control_plane);
@@ -597,7 +597,7 @@ fn configuration_has_prefix(
 }
 
 // crucible-lint: allow host-nondeterminism-state -- this pure projection selects recorded causal decisions from a canonical schedule.
-fn branch_fault_choice_decisions(schedule: &crucible::Schedule) -> Vec<crucible::Decision> {
+fn branch_effect_choice_decisions(schedule: &crucible::Schedule) -> Vec<crucible::Decision> {
     // crucible-lint: allow host-nondeterminism-state -- the immutable decision slice remains owned by canonical schedule material.
     let decisions = schedule.decisions();
     let mut choices = Vec::new();
@@ -605,8 +605,8 @@ fn branch_fault_choice_decisions(schedule: &crucible::Schedule) -> Vec<crucible:
     while index + 1 < decisions.len() {
         // crucible-lint: allow host-nondeterminism-state -- matching the closed decision taxonomy cannot inject a host-derived choice.
         if matches!(decisions[index], crucible::Decision::RngDraw(_))
-            // crucible-lint: allow host-nondeterminism-state -- the adjacent fault outcome is retained only with its recorded draw.
-            && matches!(decisions[index + 1], crucible::Decision::FaultFires(_))
+            // crucible-lint: allow host-nondeterminism-state -- the adjacent effect outcome is retained only with its recorded draw.
+            && matches!(decisions[index + 1], crucible::Decision::EffectOutcome(_))
         {
             choices.extend_from_slice(&decisions[index..=index + 1]);
             index += 2;

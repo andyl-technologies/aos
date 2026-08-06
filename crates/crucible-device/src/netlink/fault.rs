@@ -11,7 +11,7 @@
 //! Faults are applied in a fixed order so the result is a pure function of the
 //! frame, the table, and the injected RNG draws. The order matters: bandwidth
 //! serialization and latency are deterministic shifts computed first; the
-//! probabilistic faults (jitter, reorder, loss, duplicate, corrupt) each consume
+//! probabilistic effects (jitter, reorder, loss, duplicate, corrupt) each consume
 //! one or more draws in this fixed sequence.
 //!
 //! ```text
@@ -158,7 +158,7 @@ pub struct LinkFaults {
 }
 
 impl LinkFaults {
-    /// Returns a fault-free table (the default): no shifts, no probabilistic faults.
+    /// Returns a fault-free table (the default): no shifts, no probabilistic effects.
     #[must_use]
     pub fn none() -> Self {
         Self::default()

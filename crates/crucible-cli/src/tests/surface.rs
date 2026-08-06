@@ -511,7 +511,7 @@ pub(super) fn search_retained_evidence_world() -> Result<crucible::World, Box<dy
 
 pub(super) fn search_frontier_decisions() -> Vec<crucible::Decision> {
     vec![
-        crucible::Decision::FaultFires(crucible::FaultDecision {
+        crucible::Decision::EffectOutcome(crucible::EffectOutcomeDecision {
             at: crucible::VirtualTime { ticks: 12 },
             fault: crucible::FaultId {
                 name: String::from("cli-search/packet-loss"),

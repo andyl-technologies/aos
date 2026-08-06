@@ -810,7 +810,7 @@ impl FaultRateBasisPoints {
     ///
     /// The result is always in `[0, 10_000)`. Bernoulli decisions compare this
     /// integer bucket directly against [`Self::basis_points`], keeping
-    /// determinism-relevant fault choices out of floating-point arithmetic.
+    /// determinism-relevant effect choices out of floating-point arithmetic.
     #[must_use]
     pub const fn draw_bucket(raw_draw: u64) -> u16 {
         (raw_draw % Self::DENOMINATOR as u64) as u16

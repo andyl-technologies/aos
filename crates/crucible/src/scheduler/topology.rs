@@ -664,15 +664,15 @@ pub enum ScheduledEventResolveClass {
     IoCompletion,
     /// A planned fault activation.
     FaultActivation,
-    /// A probabilistic fault choice resolved by the scheduler.
-    ProbabilisticFault,
+    /// A probabilistic effect choice resolved by the scheduler.
+    ProbabilisticEffect,
     /// A control-plane operation admitted at the boundary.
     Control,
 }
 
-/// A probabilistic fault choice attached to a scheduled RESOLVE event.
+/// A probabilistic effect choice attached to a scheduled RESOLVE event.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SchedulerResolveFaultChoice {
+pub struct SchedulerResolveEffectChoice {
     /// The fault whose probabilistic outcome is being resolved.
     pub fault: FaultId,
     /// The seeded decision-RNG stream used for this choice.
@@ -753,14 +753,14 @@ pub(super) fn search_frontier_choices_from_scheduled_events(
 ) -> SearchFrontierChoices {
     let mut choices = Vec::new();
     for event in ordered_scheduled_events(events) {
-        let ScheduledEventPayload::ProbabilisticFault(choice) = &event.payload else {
+        let ScheduledEventPayload::ProbabilisticEffect(choice) = &event.payload else {
             continue;
         };
         if choice.rate.basis_points() > 0 {
-            choices.push(probabilistic_fault_search_choice(event, choice, 0, true));
+            choices.push(probabilistic_effect_search_choice(event, choice, 0, true));
         }
         if u32::from(choice.rate.basis_points()) < FaultRateBasisPoints::DENOMINATOR {
-            choices.push(probabilistic_fault_search_choice(
+            choices.push(probabilistic_effect_search_choice(
                 event,
                 choice,
                 u64::from(choice.rate.basis_points()),
@@ -771,9 +771,9 @@ pub(super) fn search_frontier_choices_from_scheduled_events(
     SearchFrontierChoices::from_decision_sequences(choices)
 }
 
-pub(super) fn probabilistic_fault_search_choice(
+pub(super) fn probabilistic_effect_search_choice(
     event: &ScheduledEvent,
-    choice: &SchedulerResolveFaultChoice,
+    choice: &SchedulerResolveEffectChoice,
     value: u64,
     fired: bool,
 ) -> Vec<Decision> {
@@ -782,7 +782,7 @@ pub(super) fn probabilistic_fault_search_choice(
             stream: choice.stream.clone(),
             value,
         }),
-        Decision::FaultFires(FaultDecision {
+        Decision::EffectOutcome(EffectOutcomeDecision {
             at: event.key.virtual_time(),
             fault: choice.fault.clone(),
             fired,
@@ -797,8 +797,8 @@ pub fn scheduled_event_resolve_class(event: &ScheduledEvent) -> ScheduledEventRe
         ScheduledEventPayload::BackendInput(_) => ScheduledEventResolveClass::FrameDelivery,
         ScheduledEventPayload::IoCompletion(_) => ScheduledEventResolveClass::IoCompletion,
         ScheduledEventPayload::FaultActivation(_) => ScheduledEventResolveClass::FaultActivation,
-        ScheduledEventPayload::ProbabilisticFault(_) => {
-            ScheduledEventResolveClass::ProbabilisticFault
+        ScheduledEventPayload::ProbabilisticEffect(_) => {
+            ScheduledEventResolveClass::ProbabilisticEffect
         }
         ScheduledEventPayload::Control(_) => ScheduledEventResolveClass::Control,
     }
@@ -813,8 +813,8 @@ pub enum ScheduledEventPayload {
     IoCompletion(IoCompletion),
     /// A fault activation resolved at the boundary.
     FaultActivation(FaultId),
-    /// A probabilistic fault outcome resolved at the boundary.
-    ProbabilisticFault(SchedulerResolveFaultChoice),
+    /// A probabilistic effect outcome resolved at the boundary.
+    ProbabilisticEffect(SchedulerResolveEffectChoice),
     /// A control operation admitted at a quantum boundary.
     Control(ControlOperation),
 }
@@ -969,7 +969,7 @@ pub fn exact_local_event_from_scheduled_event(
             }))
         }
         ScheduledEventPayload::BackendInput(_)
-        | ScheduledEventPayload::ProbabilisticFault(_)
+        | ScheduledEventPayload::ProbabilisticEffect(_)
         | ScheduledEventPayload::Control(_) => Ok(None),
     }
 }
@@ -1015,7 +1015,7 @@ pub fn scheduled_event_delivery_time(
                 })
         }
         ScheduledEventPayload::FaultActivation(_)
-        | ScheduledEventPayload::ProbabilisticFault(_)
+        | ScheduledEventPayload::ProbabilisticEffect(_)
         | ScheduledEventPayload::Control(_) => Ok(SimInstant {
             nanos: event.key.virtual_time().ticks,
         }),

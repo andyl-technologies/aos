@@ -264,13 +264,13 @@ impl QuantumLoop for SingleScheduler {
                     .decisions
                     .into_iter()
                     .map(|decision| match decision {
-                        Decision::FaultFires(mut fault) => {
+                        Decision::EffectOutcome(mut fault) => {
                             // The frame retains its exact guest TX icount for
                             // link delivery arithmetic. The probabilistic link
                             // choice becomes causal when the shared frontier
                             // admits the buffered TX batch.
                             fault.at = admission_boundary;
-                            Decision::FaultFires(fault)
+                            Decision::EffectOutcome(fault)
                         }
                         other => other,
                     })
@@ -283,9 +283,9 @@ impl QuantumLoop for SingleScheduler {
                             choice
                                 .into_iter()
                                 .map(|decision| match decision {
-                                    Decision::FaultFires(mut fault) => {
+                                    Decision::EffectOutcome(mut fault) => {
                                         fault.at = admission_boundary;
-                                        Decision::FaultFires(fault)
+                                        Decision::EffectOutcome(fault)
                                     }
                                     other => other,
                                 })

@@ -58,7 +58,7 @@ pub struct ProductionVmLifecycleConfig {
     coverage: ProductionPluginSwitch,
     debug: Option<ProductionVmDebugConfig>,
     branch: Option<ProductionVmBranchConfig>,
-    branch_fault_choices: Vec<Decision>,
+    branch_effect_choices: Vec<Decision>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
     signal_artifacts: Option<Arc<dyn SignalArtifactProvider>>,
 }
@@ -80,7 +80,7 @@ impl std::fmt::Debug for ProductionVmLifecycleConfig {
             .field("coverage", &self.coverage)
             .field("debug", &self.debug)
             .field("branch", &self.branch)
-            .field("branch_fault_choices", &self.branch_fault_choices)
+            .field("branch_effect_choices", &self.branch_effect_choices)
             .field("branch_network_choices", &self.branch_network_choices)
             .field(
                 "signal_artifacts_configured",
@@ -144,7 +144,7 @@ impl ProductionVmLifecycleConfig {
             coverage: ProductionPluginSwitch::Off,
             debug: None,
             branch: None,
-            branch_fault_choices: Vec::new(),
+            branch_effect_choices: Vec::new(),
             branch_network_choices: Vec::new(),
             signal_artifacts: None,
         }
@@ -260,14 +260,14 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
-    /// Returns this configuration with exact probabilistic fault branch choices.
+    /// Returns this configuration with exact probabilistic effect branch choices.
     ///
     /// The decisions are installed into the authoritative scheduler and consumed
     /// only at matching RESOLVE points. Invalid or unconsumed choices fail the
     /// lifecycle rather than silently falling back to the seeded default.
     #[must_use]
-    pub fn with_branch_fault_choices(mut self, decisions: Vec<Decision>) -> Self {
-        self.branch_fault_choices = decisions;
+    pub fn with_branch_effect_choices(mut self, decisions: Vec<Decision>) -> Self {
+        self.branch_effect_choices = decisions;
         self
     }
 
@@ -595,7 +595,7 @@ pub fn build_production_vm_lifecycle_loop(
         .attach_world_network_links(source.world())
         .map_err(|error| loop_factory_error(format!("attach QEMU World network: {error}")))?;
     scheduler
-        .install_branch_fault_choices(config.branch_fault_choices.clone())
+        .install_branch_effect_choices(config.branch_effect_choices.clone())
         .map_err(|error| loop_factory_error(format!("install QEMU branch choices: {error}")))?;
     scheduler
         .install_branch_network_choices(config.branch_network_choices.clone())

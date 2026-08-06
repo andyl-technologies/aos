@@ -8,7 +8,7 @@ use std::error::Error;
 
 use crucible::{
     AssertionDef, AssertionId, AssertionQuantifierKind, AssertionRunVerdict, BlackBoxHostOracle,
-    ChoiceTag, Configuration, ContentHash, Decision, EngineError, FaultDecision, FaultId,
+    ChoiceTag, Configuration, ContentHash, Decision, EffectOutcomeDecision, EngineError, FaultId,
     FindingDiscoveryPath, FindingReproductionArtifact, Icount, MarkerId, MinimizationConfig,
     NodeId, NodeTemplate, ObservableEvent, OfflineAssertionChecker, OverrideDecision, Plan,
     Predicate, Properties, Property, ReadyPoint, RecordedAssertionLog, ScenarioDefForm, Schedule,
@@ -63,7 +63,7 @@ fn gate_minimization_shrinks_schedule_and_fault_decisions_deterministically()
         accepted
             .removed_decisions
             .iter()
-            .any(|decision| matches!(decision, Decision::FaultFires(_)))
+            .any(|decision| matches!(decision, Decision::EffectOutcome(_)))
     );
     assert_eq!(
         first.minimized.discovery_path,
@@ -313,7 +313,7 @@ fn override_decision(point: &str, choice: &str) -> Decision {
 }
 
 fn fault_decision(name: &str, fired: bool) -> Decision {
-    Decision::FaultFires(FaultDecision {
+    Decision::EffectOutcome(EffectOutcomeDecision {
         at: VirtualTime { ticks: 10 },
         fault: FaultId {
             name: name.to_owned(),

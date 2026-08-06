@@ -399,7 +399,7 @@ pub(super) fn push_observed_state_facts(
                 order: order.order.clone(),
             });
         }
-        SchedulerEventLogPayload::Decision(Decision::FaultFires(fault)) => {
+        SchedulerEventLogPayload::Decision(Decision::EffectOutcome(fault)) => {
             fault_facts.push(ObservedFaultFact::ProbabilisticOutcome {
                 sequence: entry.sequence(),
                 at: entry.at(),
@@ -578,7 +578,7 @@ pub(super) fn push_resolved_happening_observed_facts(
                 fault: fault.clone(),
             });
         }
-        ScheduledEventPayload::ProbabilisticFault(choice) => {
+        ScheduledEventPayload::ProbabilisticEffect(choice) => {
             fault_facts.push(ObservedFaultFact::ScheduledProbabilisticChoice {
                 sequence,
                 at,

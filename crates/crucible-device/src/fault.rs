@@ -58,7 +58,7 @@ pub struct Probability {
 }
 
 impl Probability {
-    /// A probability that never fires (the absence of a probabilistic fault).
+    /// A probability that never fires (the absence of a probabilistic effect).
     pub const NEVER: Self = Self {
         numerator: 0,
         denominator: 1,
@@ -326,7 +326,7 @@ pub struct IoFaults {
 }
 
 impl IoFaults {
-    /// Returns a fault-free table (the default): no shifts, no probabilistic faults.
+    /// Returns a fault-free table (the default): no shifts, no probabilistic effects.
     #[must_use]
     pub fn none() -> Self {
         Self::default()
@@ -501,7 +501,7 @@ pub struct ResolvedResponse {
 /// The outcome of resolving one modeled response through [`IoFaults::resolve`].
 ///
 /// Carries the perturbed primary response, an optional duplicate, and which
-/// probabilistic faults fired (the per-fault outcomes the engine records as
+/// probabilistic effects fired (the per-effect outcomes the engine records as
 /// `Decision`s). One modeled response resolves to one primary plus zero or one
 /// duplicate. A block failure in `Drop` mode records a fired loss decision but
 /// suppresses response emission; error-status block failures and 9p failures
