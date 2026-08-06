@@ -239,6 +239,7 @@ where
                 left.sequence,
                 &left.destination,
                 &left.route,
+                &left.fault_continuation,
                 &left.payload,
             )
                 .cmp(&(
@@ -247,6 +248,7 @@ where
                     right.sequence,
                     &right.destination,
                     &right.route,
+                    &right.fault_continuation,
                     &right.payload,
                 ))
         });

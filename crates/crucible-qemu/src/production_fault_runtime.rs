@@ -12,8 +12,8 @@ use crucible::model::{
     BindingEvaluation, ContentHash, EffectKind, FaultAdapterManifests, FaultCapabilityId,
     FaultCapabilityManifest, FaultCoordinate, FaultExecutionError, FaultObjectId, FaultOpportunity,
     FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
-    NetworkEffectSpecification, NetworkInFlightPolicy, OwnedFaultExecutionRuntime,
-    SignalArtifactProvider, SignalBoundarySnapshot,
+    NetworkEffectSpecification, OwnedFaultExecutionRuntime, SignalArtifactProvider,
+    SignalBoundarySnapshot,
 };
 use crucible::{BackendError, NodeId};
 
@@ -421,22 +421,7 @@ fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), Production
                 },
             );
         }
-        if *queued_policy != NetworkInFlightPolicy::Drop {
-            return Err(
-                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
-                    binding: binding.id().clone(),
-                    parameter: "network.availability.queued_policy requires drop",
-                },
-            );
-        }
-        if *in_flight_policy != NetworkInFlightPolicy::Drop {
-            return Err(
-                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
-                    binding: binding.id().clone(),
-                    parameter: "network.availability.in_flight_policy requires drop",
-                },
-            );
-        }
+        let _ = (queued_policy, in_flight_policy);
     }
     Ok(())
 }
@@ -709,33 +694,33 @@ mod tests {
     }
 
     #[test]
-    fn production_rejects_unimplemented_availability_transition_policies() {
+    fn production_admits_every_availability_transition_policy_pair() {
         let target = ResolvedFaultTarget::NetworkSegment {
             segment: object_id("segment-left-right"),
             direction: FaultDirection::AToB,
         };
-        let plan = availability_plan(
-            &target,
-            NetworkInFlightPolicy::Preserve,
-            NetworkInFlightPolicy::Drop,
-        );
         let nodes = QemuNodeSet::new();
-        let result = ProductionFaultRuntime::new(
-            plan,
-            Some(Arc::new(NoArtifacts)),
-            SignalBoundarySnapshot::default(),
-            ContentHash::from_bytes(b"unsupported-availability-policy"),
-            &nodes,
-        );
-
-        assert!(matches!(
-            result,
-            Err(
-                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
-                    parameter: "network.availability.queued_policy requires drop",
-                    ..
-                }
-            )
-        ));
+        for queued in [
+            NetworkInFlightPolicy::Preserve,
+            NetworkInFlightPolicy::Reevaluate,
+            NetworkInFlightPolicy::Drop,
+            NetworkInFlightPolicy::TypedError,
+        ] {
+            for in_flight in [
+                NetworkInFlightPolicy::Preserve,
+                NetworkInFlightPolicy::Reevaluate,
+                NetworkInFlightPolicy::Drop,
+                NetworkInFlightPolicy::TypedError,
+            ] {
+                let result = ProductionFaultRuntime::new(
+                    availability_plan(&target, queued, in_flight),
+                    Some(Arc::new(NoArtifacts)),
+                    SignalBoundarySnapshot::default(),
+                    ContentHash::from_bytes(b"availability-policy-matrix"),
+                    &nodes,
+                );
+                assert!(result.is_ok(), "policy pair {queued:?}/{in_flight:?}");
+            }
+        }
     }
 }

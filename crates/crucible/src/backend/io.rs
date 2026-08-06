@@ -14,6 +14,50 @@ pub struct BackendNetworkRoute {
     pub destination: NodeId,
 }
 
+/// One availability contribution captured before a queued frame's transition.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkPreservedAvailability {
+    /// Binding whose later availability state must not affect this frame.
+    pub binding: FaultObjectId,
+    /// Adapter phase at which the prior contribution was captured.
+    pub phase: FaultPhase,
+}
+
+/// Fault-policy continuation retained with one scheduler-queued frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkFaultContinuation {
+    /// Canonical contributions whose pre-transition profile is preserved.
+    preserved_availability: Vec<BackendNetworkPreservedAvailability>,
+}
+
+impl BackendNetworkFaultContinuation {
+    /// Preserves the pre-transition state of one binding and phase.
+    pub fn preserve_availability(&mut self, binding: FaultObjectId, phase: FaultPhase) {
+        let preserved = BackendNetworkPreservedAvailability { binding, phase };
+        match self.preserved_availability.binary_search(&preserved) {
+            Ok(_index) => {}
+            Err(index) => self.preserved_availability.insert(index, preserved),
+        }
+    }
+
+    /// Returns whether a later contribution must be ignored for this frame.
+    #[must_use]
+    pub fn preserves_availability(&self, binding: &FaultObjectId, phase: FaultPhase) -> bool {
+        self.preserved_availability
+            .binary_search(&BackendNetworkPreservedAvailability {
+                binding: binding.clone(),
+                phase,
+            })
+            .is_ok()
+    }
+
+    /// Returns captured contributions in canonical identity order.
+    #[must_use]
+    pub fn preserved_availability(&self) -> &[BackendNetworkPreservedAvailability] {
+        &self.preserved_availability
+    }
+}
+
 /// Deterministic input delivered to a backend.
 ///
 /// This payload represents backend delivery for model-controlled inputs, not a
@@ -50,6 +94,8 @@ pub struct BackendNetworkOutput {
     /// copies before modeled link mutation. A supplied route is revalidated
     /// against the World and frame destination before use.
     pub route: Option<BackendNetworkRoute>,
+    /// Policy continuation for frames retained across availability transitions.
+    pub fault_continuation: BackendNetworkFaultContinuation,
 }
 
 /// Derives the stable locally administered unicast MAC for a World VM.
