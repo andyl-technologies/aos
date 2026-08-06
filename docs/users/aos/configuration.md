@@ -134,6 +134,12 @@ Apply a reviewed configuration with the same evaluator and graph compiler:
 apm switch --from ./host.nix
 ```
 
+The switch also reconciles `aos.apm.desiredPackages`: authenticated rendered
+unit artifacts are attached to the candidate generation, selected package
+targets are enabled and started after the `/etc` swap, and targets removed from
+the desired set are stopped. Packages bundled in the image remain inert unless
+the active host configuration selects them.
+
 `--from` selects the input for this transaction; it does not replace the
 metadata-delivered policy or its last-known-good cache. Update and, in signed
 mode, sign the authoritative metadata input before relying on the change after

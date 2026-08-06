@@ -19,6 +19,7 @@ pub struct OptionReadObservation {
 struct OptionReadState {
     observations: BTreeSet<OptionReadObservation>,
     provenance: BTreeMap<u64, OptionValueProvenance>,
+    source_roots: Option<Vec<Vec<u8>>>,
 }
 
 #[derive(Default)]
@@ -48,6 +49,38 @@ impl PartialEq for OptionReadObserver {
 impl Eq for OptionReadObserver {}
 
 impl OptionReadObserver {
+    /// Creates an observer restricted to imported sources beneath `roots`.
+    ///
+    /// An unrestricted observer is useful for evaluator tests. Production
+    /// option-graph capture supplies the authenticated package-module roots so
+    /// unrelated base-library `config` accesses do not acquire provenance.
+    pub fn for_source_roots(roots: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        let mut roots = roots.into_iter().collect::<Vec<_>>();
+        roots.sort();
+        roots.dedup();
+        Self(Arc::new(Mutex::new(OptionReadState {
+            source_roots: Some(roots),
+            ..OptionReadState::default()
+        })))
+    }
+
+    /// Returns whether reads executed in `source` belong to this observer.
+    pub(crate) fn observes_source(&self, source: &[u8]) -> bool {
+        self.0
+            .lock()
+            .map(|state| {
+                state.source_roots.as_ref().is_none_or(|roots| {
+                    roots.iter().any(|root| {
+                        source == root
+                            || source
+                                .strip_prefix(root.as_slice())
+                                .is_some_and(|suffix| suffix.first() == Some(&b'/'))
+                    })
+                })
+            })
+            .unwrap_or(false)
+    }
+
     /// Records one executed read, ignoring a poisoned diagnostic sink.
     pub(crate) fn record(&self, source: Vec<u8>, path: Vec<Vec<u8>>) {
         if let Ok(mut state) = self.0.lock() {

@@ -80,7 +80,11 @@ impl NixNative {
                 .then_with(|| left.cmp(right))
         });
         let root_owners = root_owners.into_iter().collect::<BTreeMap<_, _>>();
-        let observer = OptionReadObserver::default();
+        let observer = OptionReadObserver::for_source_roots(
+            module_owners
+                .iter()
+                .map(|(path, _)| path.as_os_str().as_encoded_bytes().to_vec()),
+        );
         let mut evaluator = self.clone();
         if !module_owners.is_empty() {
             evaluator.options.set_option_read_observer(observer.clone());

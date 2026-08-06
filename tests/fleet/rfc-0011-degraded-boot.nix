@@ -74,11 +74,6 @@ in {
       bootMode = "image";
       imageDiskMiB = 16384;
       memoryMiB = 4096;
-      packages = [
-        "desired-config-test"
-        "desired-prune-test"
-        "test-http-server"
-      ];
       metadata."host.nix" = ''
         {
           aos.provisioning.storage.partitions.var.sizeMin = "2G";
@@ -250,7 +245,7 @@ in {
 
       # Drive the porcelain through the same evaluator, graph compiler, fetch,
       # render, and activation implementations used by the boot units.
-      degraded.succeed(r"""
+      degraded.succeed(textwrap.dedent(r"""
           cat > /run/rfc0011-degraded-host.nix <<'EOF'
           {
             aos.provisioning.storage.partitions.var.sizeMin = "2G";
@@ -265,7 +260,7 @@ in {
           ${pkgs.aos}/bin/apm switch \
             --from /run/rfc0011-degraded-host.nix \
             --eval-root /run/rfc0011-degraded-eval
-      """, timeout=600)
+      """), timeout=600)
 
       degraded.succeed("systemctl is-active --quiet desired-config-test.service")
       degraded.succeed("systemctl is-active --quiet desired-prune-test.service")
@@ -290,25 +285,38 @@ in {
           ${pkgs.jq}/bin/jq --arg bad "$bad" --arg hash "$hash" '
             .packageOutputs["test-http-server"] as $pin
             | ($pin.store_path | split("/")[3] | split("-")[0]) as $old_hash
+            | $pin.expose_artifact.store_path as $expose_artifact
             | ($pin.closure[]
                 | select(.store_path_hash == $old_hash)
                 | .realisations[0]) as $realisation
             | .ownership.storePaths as $owners
             | .storePaths = [
                 .storePaths[]
-                | select(($owners[.] // "") != "test-http-server")
+                | select(
+                    ($owners[.] // "") != "test-http-server"
+                    or . == $expose_artifact
+                  )
               ]
             | .ownership.storePaths |= with_entries(
-                select(.value != "test-http-server")
+                select(
+                  .value != "test-http-server"
+                  or .key == $expose_artifact
+                )
               )
             | .storePaths = ((.storePaths + [$bad]) | sort | unique)
             | .ownership.storePaths[$bad] = "test-http-server"
             | .packageOutputs["test-http-server"].store_path = $bad
-            | .packageOutputs["test-http-server"].closure = [{
-                store_path_hash: $hash,
-                store_path: $bad,
-                realisations: [$realisation]
-              }]
+            | .packageOutputs["test-http-server"].closure = (
+                [
+                  .packageOutputs["test-http-server"].closure[]
+                  | select(.store_path_hash != $old_hash)
+                ] + [{
+                  store_path_hash: $hash,
+                  store_path: $bad,
+                  realisations: [$realisation]
+                }]
+                | sort_by(.store_path_hash)
+              )
             | .graph.edges["desired-prune-test"] = ["test-http-server"]
           ' /run/aos/full-intent-before-failure.json > /run/aos/manifest.json.new
           mv /run/aos/manifest.json.new /run/aos/manifest.json
@@ -321,6 +329,10 @@ in {
       # The template exhausted its real Restart=on-failure budget. Its failure
       # remained a soft Wants edge, so all umbrella targets and the compiler
       # completed and the host remained remotely manageable.
+      degraded.wait_until_succeeds(
+          "systemctl is-failed --quiet aos-pkg-fetch@test-http-server.service",
+          timeout=120,
+      )
       fetch = degraded.succeed(
           "systemctl show aos-pkg-fetch@test-http-server.service "
           "-p ActiveState -p Result -p NRestarts -p Restart"
@@ -348,6 +360,10 @@ in {
       degraded.succeed("test -s /run/aos/fetch/desired-config-test.ok")
       degraded.succeed("test -s /run/aos/render/desired-config-test.ok")
       degraded.succeed("systemctl is-active --quiet desired-config-test.service")
+      degraded.fail("systemctl is-active --quiet desired-prune-test.service")
+      degraded.fail("systemctl is-active --quiet test-http-server.socket")
+      degraded.fail("systemctl is-enabled --quiet aos-pkg-desired-prune-test.target")
+      degraded.fail("systemctl is-enabled --quiet aos-pkg-test-http-server.target")
       degraded.succeed(
           "test \"$(cat /etc/aos/packages/desired-config-test/config.env)\" "
           "= TOKEN=desired-token"
@@ -406,30 +422,28 @@ in {
       )
 
       # The independent negative machine never reaches the guest agent. The
-      # serial transcript must show both the deliberately failed required
-      # mount and systemd's emergency transition, rather than stage 2.
+      # serial transcript must show the deliberately failed required mount and
+      # no switch-root transition. initrd-fs.target's standard OnFailure edge
+      # activates emergency.target on its primary console; the serial capture
+      # reliably exposes the audit result for the failed hard dependency.
       hard_log = Path(hard_edge.serial_log_path)
       deadline = time.monotonic() + 180
       hard_text = ""
       while time.monotonic() < deadline:
           if hard_log.exists():
               hard_text = hard_log.read_text(errors="replace")
-              if (
-                  "rfc0011-hard-edge" in hard_text
-                  and (
-                      "emergency.target" in hard_text
-                      or "Emergency Mode" in hard_text
-                      or "emergency shell" in hard_text.lower()
-                  )
+              if any(
+                  "unit=mount-var " in line and " res=failed" in line
+                  for line in hard_text.splitlines()
               ):
                   break
           time.sleep(1)
-      assert "rfc0011-hard-edge" in hard_text, hard_text[-8000:]
-      assert (
-          "emergency.target" in hard_text
-          or "Emergency Mode" in hard_text
-          or "emergency shell" in hard_text.lower()
+      assert any(
+          "unit=mount-var " in line and " res=failed" in line
+          for line in hard_text.splitlines()
       ), hard_text[-8000:]
+      assert "Switching root" not in hard_text, hard_text[-8000:]
+      assert "hard_edge login:" not in hard_text, hard_text[-8000:]
       assert "hard_edge login:" not in hard_text, hard_text[-8000:]
     '';
 }

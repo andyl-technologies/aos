@@ -1787,6 +1787,7 @@ fn enrich_runtime_projection(
         .entry("credentials")
         .or_insert_with(|| serde_json::json!({}));
     enrich_expose_config_projections(object, runtime)?;
+    enrich_exposed_units(object, runtime)?;
     let packages: Vec<String> = runtime.packages.keys().cloned().collect();
     object.insert("packages".into(), serde_json::to_value(&packages)?);
     object.insert(
@@ -1811,6 +1812,12 @@ fn enrich_runtime_projection(
             .values()
             .map(|package| package.store_path.clone()),
     );
+    store_paths.extend(runtime.packages.values().filter_map(|package| {
+        package
+            .expose_artifact
+            .as_ref()
+            .map(|artifact| artifact.store_path.clone())
+    }));
     let etc_store_owners = {
         let etc = object
             .get("etc")
@@ -1860,30 +1867,38 @@ fn enrich_runtime_projection(
         .context("manifest ownership.storePaths must be an object")?;
 
     for (name, package) in &runtime.packages {
-        if let Some(existing) = owned.get(&package.store_path) {
-            let existing = existing.as_str().with_context(|| {
-                format!(
-                    "manifest ownership.storePaths.{} must be a string",
-                    package.store_path
-                )
-            })?;
-            if existing != name {
-                if existing == "@base" {
-                    anyhow::bail!(
-                        "runtime output {} for authenticated package {name} aliases an image-bundled store path owned by @base; base content cannot be reclassified as a package output",
-                        package.store_path
-                    );
-                }
-                anyhow::bail!(
-                    "runtime output {} is owned by {existing}, not authenticated package {name}",
-                    package.store_path
-                );
-            }
-        }
-        owned.insert(
-            package.store_path.clone(),
-            serde_json::Value::String(name.clone()),
+        let package_paths = std::iter::once(package.store_path.as_str()).chain(
+            package
+                .expose_artifact
+                .as_ref()
+                .map(|artifact| artifact.store_path.as_str()),
         );
+        for package_path in package_paths {
+            if let Some(existing) = owned.get(package_path) {
+                let existing = existing.as_str().with_context(|| {
+                    format!("manifest ownership.storePaths.{package_path} must be a string")
+                })?;
+                if existing != name {
+                    if existing == "@base" && package_path == package.store_path {
+                        anyhow::bail!(
+                            "runtime output {} for authenticated package {name} aliases an image-bundled store path owned by @base; base content cannot be reclassified as a package output",
+                            package.store_path
+                        );
+                    }
+                    if existing != "@base" {
+                        anyhow::bail!(
+                            "runtime artifact {package_path} is owned by {existing}, not authenticated package {name}"
+                        );
+                    }
+                }
+            }
+            // A bundled expose artifact can remain image-owned. Its unit links
+            // are immutable and the package-owned enablement edge below is
+            // what makes selecting or removing the package operational.
+            owned
+                .entry(package_path.to_string())
+                .or_insert_with(|| serde_json::Value::String(name.clone()));
+        }
     }
 
     for (path, expected_owner) in etc_store_owners {
@@ -1899,6 +1914,144 @@ fn enrich_runtime_projection(
     for path in &store_paths {
         if !owned.contains_key(path) {
             anyhow::bail!("manifest store path {path} has no authenticated artifact owner");
+        }
+    }
+    Ok(())
+}
+
+/// Projects authenticated package units and their atomic enablement edge.
+fn enrich_exposed_units(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    runtime: &runtime::RuntimeResolution,
+) -> Result<()> {
+    let existing_store_owners = object
+        .get("ownership")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|ownership| ownership.get("storePaths"))
+        .and_then(serde_json::Value::as_object)
+        .context("manifest ownership.storePaths must be an object")?;
+    let existing_etc_owners = object
+        .get("ownership")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|ownership| ownership.get("etc"))
+        .and_then(serde_json::Value::as_object)
+        .context("manifest ownership.etc must be an object")?
+        .clone();
+    let mut entries = Vec::new();
+    let mut package_presets = Vec::new();
+    for (package, pin) in &runtime.packages {
+        match (&pin.expose, &pin.expose_artifact) {
+            (None, None) => continue,
+            (Some(expose), Some(artifact)) => {
+                crate::types::validate_expose_meta_for_package(package, expose)
+                    .with_context(|| format!("validating runtime expose metadata for {package}"))?;
+                crate::types::validate_expose_artifact_meta(artifact)
+                    .with_context(|| format!("validating runtime expose artifact for {package}"))?;
+                let unit_owner = existing_store_owners
+                    .get(&artifact.store_path)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|owner| *owner == "@base")
+                    .unwrap_or(package);
+                for unit in &expose.units {
+                    entries.push((
+                        format!("systemd/system/{unit}"),
+                        serde_json::json!({
+                            "kind": "store-symlink",
+                            "target": format!("{}/units/{unit}", artifact.store_path),
+                        }),
+                        unit_owner.to_string(),
+                        package.clone(),
+                    ));
+                }
+                entries.push((
+                    format!("systemd/system/multi-user.target.wants/{}", expose.target),
+                    serde_json::json!({"kind": "symlink", "target": format!("../{}", expose.target)}),
+                    package.clone(),
+                    package.clone(),
+                ));
+                entries.push((
+                    format!("systemd/system-preset/30-aos-config-{package}.preset"),
+                    serde_json::json!({
+                        "kind": "text",
+                        "text": format!("enable {}\n", expose.target),
+                        "mode": "0644",
+                    }),
+                    package.clone(),
+                    package.clone(),
+                ));
+                package_presets.push((expose.target.clone(), package.clone()));
+            }
+            _ => anyhow::bail!(
+                "runtime package {package:?} must carry expose metadata and its artifact together"
+            ),
+        }
+    }
+
+    let etc = object
+        .get_mut("etc")
+        .and_then(serde_json::Value::as_object_mut)
+        .context("manifest etc must be an object")?;
+    let mut newly_owned = Vec::new();
+    for (path, entry, owner, package) in entries {
+        if let Some(existing) = etc.get(&path) {
+            if existing == &entry {
+                continue;
+            }
+            if existing_etc_owners
+                .get(&path)
+                .and_then(serde_json::Value::as_str)
+                == Some("@base")
+            {
+                etc.insert(path.clone(), entry);
+                newly_owned.push((path, owner));
+            } else {
+                anyhow::bail!(
+                    "runtime package {package:?} unit projection conflicts with existing /etc/{path}"
+                );
+            }
+        } else {
+            etc.insert(path.clone(), entry);
+            newly_owned.push((path, owner));
+        }
+    }
+    let owned = object
+        .get_mut("ownership")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|ownership| ownership.get_mut("etc"))
+        .and_then(serde_json::Value::as_object_mut)
+        .context("manifest ownership.etc must be an object")?;
+    for (path, package) in newly_owned {
+        owned.insert(path, serde_json::Value::String(package));
+    }
+
+    let presets = object
+        .get_mut("presets")
+        .and_then(serde_json::Value::as_array_mut)
+        .context("manifest presets must be an array")?;
+    for (target, package) in &package_presets {
+        let record = serde_json::json!({
+            "unit": target,
+            "policy": "enable",
+            "source": package,
+        });
+        if presets.contains(&record) {
+            anyhow::bail!("manifest already contains runtime preset for package {package:?}");
+        }
+        presets.push(record);
+    }
+    let preset_owners = object
+        .get_mut("ownership")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|ownership| ownership.get_mut("presets"))
+        .and_then(serde_json::Value::as_object_mut)
+        .context("manifest ownership.presets must be an object")?;
+    for (target, package) in package_presets {
+        let key = format!("{target}:{package}");
+        if preset_owners
+            .insert(key, serde_json::Value::String(package.clone()))
+            .is_some()
+        {
+            anyhow::bail!("manifest preset ownership collides for package {package:?}");
         }
     }
     Ok(())
@@ -2115,26 +2268,14 @@ pub fn reeval_cross_abi(
         .ok_or_else(|| anyhow::anyhow!("cross-ABI evaluator manifest is not an object"))?;
 
     // Package resolution is an authenticated input of the old intent, not a
-    // mutable registry lookup. Preserve those pins while accepting newly
-    // evaluated aggregate artifacts from the running image's base library.
-    object.insert("packages".into(), serde_json::to_value(&source.packages)?);
-    object.insert(
-        "packageOutputs".into(),
-        serde_json::to_value(&source.package_outputs)?,
-    );
-    object.insert(
-        "storePaths".into(),
-        serde_json::to_value(&source.store_paths)?,
-    );
-    object.insert("graph".into(), serde_json::to_value(&source.graph)?);
-    let ownership = object
-        .get_mut("ownership")
-        .and_then(serde_json::Value::as_object_mut)
-        .context("cross-ABI evaluator omitted ownership")?;
-    ownership.insert(
-        "storePaths".into(),
-        serde_json::to_value(&source.ownership.store_paths)?,
-    );
+    // mutable registry lookup. Re-project those exact pins into the newly
+    // evaluated aggregate artifacts so config, units, presets, and ownership
+    // are rebuilt against the running image's base library.
+    let runtime = runtime::RuntimeResolution {
+        packages: source.package_outputs.clone(),
+        edges: source.graph.edges.clone(),
+    };
+    enrich_runtime_projection(object, &runtime)?;
     object.insert(
         "module_abi".into(),
         serde_json::json!(retained.to_module_abi),

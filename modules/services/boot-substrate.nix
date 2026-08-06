@@ -82,7 +82,7 @@
     # fstab-generated var.mount unit already active.
     "mount-var" = {
       description = "Mount /var Partition";
-      wantedBy = ["initrd-fs.target"];
+      requiredBy = ["initrd-fs.target"];
       before = [
         filesUnit
         "etc-overlay-setup.service"
@@ -100,6 +100,8 @@
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
+        StandardOutput = "journal+console";
+        StandardError = "journal+console";
       };
       script = ''
         set -euo pipefail

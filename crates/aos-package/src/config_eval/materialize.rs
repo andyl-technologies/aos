@@ -454,6 +454,21 @@ impl ConfigManifest {
                 bail!("packageOutputs.{package}.store_path is not owned by that package");
             }
             validate_runtime_pin(package, pin)?;
+            if let Some(artifact) = &pin.expose_artifact {
+                if !self.store_paths.contains(&artifact.store_path) {
+                    bail!(
+                        "packageOutputs.{package}.expose_artifact.store_path is absent from manifest storePaths"
+                    );
+                }
+                if !matches!(
+                    self.ownership.store_paths.get(&artifact.store_path),
+                    Some(owner) if owner == package || owner == "@base"
+                ) {
+                    bail!(
+                        "packageOutputs.{package}.expose_artifact.store_path has invalid ownership"
+                    );
+                }
+            }
         }
         for (package, deps) in &self.graph.edges {
             if !package_set.contains(package.as_str()) {
@@ -777,10 +792,31 @@ pub(crate) fn expose_config_schema_hash(config: &crate::types::ExposeConfigMeta)
 }
 
 fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
+    match (&pin.expose, &pin.expose_artifact) {
+        (Some(expose), Some(artifact)) => {
+            crate::types::validate_expose_meta_for_package(package, expose)
+                .with_context(|| format!("validating packageOutputs.{package}.expose"))?;
+            crate::types::validate_expose_artifact_meta(artifact)
+                .with_context(|| format!("validating packageOutputs.{package}.expose_artifact"))?;
+        }
+        (None, None) => {}
+        _ => bail!("packageOutputs.{package} must carry expose metadata and its artifact together"),
+    }
     if pin.config_projection.is_some() && pin.legacy_config.is_some() {
         bail!("packageOutputs.{package} must not carry both migrated and legacy config schemas");
     }
     if let Some(projection) = &pin.config_projection {
+        validate_canonical_store_path(&projection.config_output).with_context(|| {
+            format!("validating packageOutputs.{package}.config_projection.config_output")
+        })?;
+        let canonical = crate::registry::store::NarBytes::from_hash(&projection.config_nar_hash, 0)
+            .with_context(|| {
+                format!("validating packageOutputs.{package}.config_projection.config_nar_hash")
+            })?
+            .nar_hash();
+        if canonical != projection.config_nar_hash {
+            bail!("packageOutputs.{package}.config_projection.config_nar_hash is not canonical");
+        }
         crate::types::validate_expose_config_meta(&projection.config).with_context(|| {
             format!("validating packageOutputs.{package}.config_projection.config")
         })?;
@@ -844,6 +880,33 @@ fn validate_runtime_pin(package: &str, pin: &RuntimePackagePin) -> Result<()> {
     }
     if !includes_root {
         bail!("packageOutputs.{package}.closure omits its runtime output root");
+    }
+    if let Some(artifact) = &pin.expose_artifact {
+        let artifact_hash = crate::registry::store_path_hash(&artifact.store_path);
+        let Some(member) = pin
+            .closure
+            .iter()
+            .find(|member| member.store_path_hash == artifact_hash)
+        else {
+            bail!("packageOutputs.{package}.closure omits its expose artifact root");
+        };
+        if member.store_path.as_deref() != Some(artifact.store_path.as_str()) {
+            bail!(
+                "packageOutputs.{package}.expose artifact root is not a named fetchable closure member"
+            );
+        }
+        let expected =
+            crate::registry::store::NarBytes::from_hash(&artifact.nar_hash, artifact.nar_size)
+                .with_context(|| {
+                    format!("validating packageOutputs.{package}.expose_artifact NAR identity")
+                })?;
+        if !member.realisations.iter().any(|realisation| {
+            realisation.nar_hash == expected.nar_hash() && realisation.nar_size == expected.size
+        }) {
+            bail!(
+                "packageOutputs.{package}.expose artifact disagrees with its authenticated closure"
+            );
+        }
     }
     Ok(())
 }

@@ -3327,7 +3327,7 @@ async fn activate_post_etc_swap_inner(plan_path: &Path, printer: &Printer) -> Re
 }
 
 /// Convert a [`UnitDiff`] into a serializable [`Plan`], folding install-only
-/// units (new units with no live counterpart) into the start list.
+/// units and newly enabled targets into the start list.
 fn plan_from_diff(generation: u32, mut diff: UnitDiff) -> Plan {
     let install_only = std::mem::take(&mut diff.install_only);
     for unit in install_only {
@@ -4364,13 +4364,8 @@ mod tests {
             "console=ttyS0,115200 console=tty0 root=/dev/disk/by-partlabel/root-a roothash=deadbeef\n",
         )
         .unwrap();
-        load_running_image_generation_from(
-            &image_profile,
-            &os_release,
-            &toplevel_link,
-            &cmdline,
-        )
-        .unwrap();
+        load_running_image_generation_from(&image_profile, &os_release, &toplevel_link, &cmdline)
+            .unwrap();
 
         std::fs::write(
             &cmdline,
