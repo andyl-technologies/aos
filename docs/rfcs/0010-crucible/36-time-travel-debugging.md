@@ -1415,7 +1415,14 @@ complete from model-double evidence.
   Transcript recording is explicitly opt-in at the CLI, uses an exclusively
   created bounded `CRGT` v1 file containing direction-tagged complete `CRGI`
   records, and remains outside canonical artifacts. Completion remains open for
-  live x86_64/aarch64 evidence.
+  fork-time activation of `crucible-guest agent`, a bounded missing-agent
+  failure, and live x86_64/aarch64 evidence. A 2026-08 manual production-VM
+  exercise confirmed that requests cross the authenticated remote API, session,
+  backend, and shared-memory request ring after the production loop delegates
+  guest-introspection methods; the shipped fixture then produced no response
+  because its canonical init does not run the debug agent. Starting the agent
+  canonically would violate [DBG-44], so activation remains part of the explicit
+  whole-world fork rather than a fixture workaround.
 - [x] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.
@@ -1435,5 +1442,11 @@ complete from model-double evidence.
   packaged x86_64 `microvm` and aarch64 `virt` emulators under TCG without a
   model double, negotiates RSP with the packaged GDB, proves repeated register
   reads are identical, and exercises insert/remove hardware-breakpoint packets.
-  Completion remains open for the full controller/gateway atomic replacement,
-  scheduler run-control, and guest-introspection matrix on both architectures.
+  A 2026-08 manual x86_64 production-daemon exercise additionally connected the
+  packaged GDB through the client relay and standalone gateway to live QEMU and
+  read registers and thread state. It exposed and fixed missing remote-debug CLI
+  routing plus the distinction between graph coordinates and authoritative QEMU
+  scheduler/event-log/icount evidence. QEMU still rejects GDB's optional
+  trace-status and detach packets. Completion remains open for the full
+  controller/gateway atomic replacement, scheduler run-control, fork-time guest
+  agent activation, and guest-introspection matrix on both architectures.

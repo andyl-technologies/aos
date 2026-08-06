@@ -154,8 +154,16 @@ available at subsequent scheduler boundaries.
 fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.
 
-For remote guest introspection, first create the explicit branch, then open a
-channel in a second invocation. Both commands acquire and release the exclusive
+The remote guest-introspection commands and transport are present, but the
+shipped production VM lifecycle does not yet activate `crucible-guest agent`
+when `fork-debug` creates the non-canonical branch. Consequently `exec`, `pty`,
+and `ssh` are not yet operational against the shipped fixtures. Images used for
+development must arrange an agent themselves; production users should treat
+these verbs as preview-only until the fork-time activation and live gates in
+RFC-0010 T-DBG-12 and T-DBG-14 are complete.
+
+The intended workflow first creates the explicit branch, then opens a channel
+in a second invocation. Both commands acquire and release the exclusive
 controller lease:
 
 ```sh
@@ -225,6 +233,11 @@ For example:
   replay-oracle artifact.
 - Artifact-targeted `attach-gdb` does not keep a GDB session open after the
   bounded local probe exits.
+- Packaged GDB can inspect registers and threads through a live x86_64 daemon
+  relay. QEMU currently rejects GDB's optional trace-status and detach packets;
+  GDB reports those packet errors even though inspection succeeds.
+- The shipped fixtures do not start the debug guest agent at fork time, so
+  remote `exec`, `pty`, and `ssh` are not yet production-ready.
 - A successful debugger runtime reposition invalidates every active guest
   channel and the next channel poll returns a typed `ClosedChannel` error.
 - Guest transcripts are operator-owned files. Runtime reposition closes the
