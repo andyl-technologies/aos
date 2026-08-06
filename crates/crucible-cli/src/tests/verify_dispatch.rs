@@ -2796,6 +2796,32 @@ pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<
 }
 
 #[test]
+pub(super) fn cli_debug_reverse_condition_parser_accepts_documented_forms() {
+    assert_eq!(
+        parse_debug_reverse_condition("quiescent")
+            .unwrap_or_else(|error| panic!("quiescent condition must parse: {error}")),
+        crucible::Predicate::quiescent()
+    );
+    assert_eq!(
+        parse_debug_reverse_condition("at:42")
+            .unwrap_or_else(|error| panic!("at condition must parse: {error}")),
+        crucible::Predicate::at(crucible::VirtualTime { ticks: 42 })
+    );
+    let predicate = crucible::Predicate::quiescent();
+    let encoded = predicate
+        .to_compact_binary()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(
+        parse_debug_reverse_condition(&format!("hex:{encoded}"))
+            .unwrap_or_else(|error| panic!("compact condition must parse: {error}")),
+        predicate
+    );
+    assert!(parse_debug_reverse_condition("unknown").is_err());
+}
+
+#[test]
 pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preserve_argv()
 -> Result<(), Box<dyn Error>> {
     let denied = Cli::try_parse_from([

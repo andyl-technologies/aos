@@ -998,9 +998,8 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         SessionError::InvalidTransition { .. }
         | SessionError::InvalidEngineState { .. }
         | SessionError::DebugAttachRequired { .. }
-        | SessionError::DebugNonCanonicalBranchRequired { .. } => {
-            CommandRejectionKind::InvalidState
-        }
+        | SessionError::DebugNonCanonicalBranchRequired { .. }
+        | SessionError::DebugHistoryUnavailable { .. } => CommandRejectionKind::InvalidState,
         SessionError::BreakpointNotFound { .. } => CommandRejectionKind::NotFound,
         SessionError::BreakpointConditionPrefix { .. } => CommandRejectionKind::InvalidArgument,
         SessionError::UnsupportedBreakpointAction { .. }

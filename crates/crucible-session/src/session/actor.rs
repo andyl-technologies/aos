@@ -121,6 +121,16 @@ pub enum SessionError {
         /// Operation blocked until branch metadata is recorded.
         operation: &'static str,
     },
+    /// A resumed session does not carry event history before its checkpoint boundary.
+    #[error(
+        "debug operation {operation} reached the resumed event-history floor at sequence {floor}"
+    )]
+    DebugHistoryUnavailable {
+        /// Debug operation that requires unavailable pre-resume history.
+        operation: &'static str,
+        /// First scheduler event sequence observable by this actor.
+        floor: u64,
+    },
     /// The runtime reported success for a different debug target than requested.
     #[error("debug runtime reposition evidence mismatch: {0}")]
     DebugRuntimeRepositionMismatch(Box<DebugRuntimeRepositionEvidenceMismatch>),
@@ -177,6 +187,14 @@ pub(super) fn is_recoverable_command_rejection(
     command: &SessionCommand,
     error: &SessionError,
 ) -> bool {
+    if matches!(error, SessionError::DebugHistoryUnavailable { .. })
+        && matches!(
+            command,
+            SessionCommand::DebugReverseStep { .. } | SessionCommand::DebugReverseContinue { .. }
+        )
+    {
+        return true;
+    }
     let SessionCommand::Acknowledge { .. } = command else {
         return false;
     };
@@ -188,7 +206,8 @@ pub(super) fn is_recoverable_command_rejection(
         | SessionError::UnsupportedBreakpointFault { .. }
         | SessionError::BreakpointNotFound { .. }
         | SessionError::DebugAttachRequired { .. }
-        | SessionError::DebugNonCanonicalBranchRequired { .. } => true,
+        | SessionError::DebugNonCanonicalBranchRequired { .. }
+        | SessionError::DebugHistoryUnavailable { .. } => true,
         SessionError::Engine(error) => is_recoverable_engine_rejection(error),
         SessionError::Scheduler(error) => is_recoverable_scheduler_rejection(error),
         SessionError::ChannelClosed
@@ -414,6 +433,9 @@ pub struct SessionActor<L> {
     pub(super) last_published_state: EngineState,
     pub(super) fork_loop_factory: Option<SessionForkLoopFactory<L>>,
     pub(super) condition_event_log: Vec<SchedulerEventLogEntry>,
+    pub(super) debug_event_coordinates: BTreeMap<u64, Configuration>,
+    pub(super) debug_history_floor: u64,
+    pub(super) debug_index_configuration: Configuration,
     pub(super) commands_applied: u64,
     pub(super) yielded_after_quanta: u64,
     pub(super) control_acknowledgements: u64,
@@ -453,6 +475,8 @@ impl<L> SessionActor<L> {
         fork_loop_factory: Option<SessionForkLoopFactory<L>>,
     ) -> Self {
         let last_published_state = engine.state().clone();
+        let debug_history_floor = u64::try_from(engine.event_log_len()).unwrap_or(u64::MAX);
+        let debug_index_configuration = engine.snapshot().configuration;
         let live = Arc::new(LiveSnapshot::new(&engine.snapshot()));
         Self {
             engine,
@@ -464,6 +488,9 @@ impl<L> SessionActor<L> {
             last_published_state,
             fork_loop_factory,
             condition_event_log: Vec::new(),
+            debug_event_coordinates: BTreeMap::new(),
+            debug_history_floor,
+            debug_index_configuration,
             commands_applied: 0,
             yielded_after_quanta: 0,
             control_acknowledgements: 0,
@@ -580,12 +607,54 @@ impl<L> SessionActor<L> {
         self.last_published_state = after_state;
     }
 
-    pub(super) fn append_event_log_entries(&mut self, entries: &[SchedulerEventLogEntry]) {
+    pub(super) fn append_event_log_entries(
+        &mut self,
+        entries: &[SchedulerEventLogEntry],
+    ) -> Result<(), SessionError> {
         let base_len = self.engine.event_log_len().saturating_sub(entries.len());
         self.event_log.truncate_to_len(base_len);
-        self.condition_event_log.truncate(base_len);
+        let base_sequence = u64::try_from(base_len).unwrap_or(u64::MAX);
+        self.condition_event_log
+            .retain(|entry| entry.sequence() < base_sequence);
+        self.debug_event_coordinates
+            .retain(|sequence, _| *sequence < base_sequence);
         self.event_log.append_entries(entries);
         self.condition_event_log.extend(entries.iter().cloned());
+        let current = self.engine.snapshot().configuration;
+        let mut coordinate = self.debug_index_configuration.clone();
+        for entry in entries {
+            if let SchedulerEventLogPayload::Decision(decision) = entry.payload()
+                && current.schedule.decisions().get(coordinate.schedule.len()) == Some(decision)
+            {
+                coordinate = Configuration {
+                    def: current.def.clone(),
+                    schedule: current
+                        .schedule
+                        .prefix(coordinate.schedule.len().saturating_add(1))
+                        .map_err(EngineError::SchedulePrefix)?,
+                };
+            }
+            if matches!(
+                entry.payload(),
+                SchedulerEventLogPayload::EvaluationBoundary(
+                    SchedulerEvaluationBoundaryKind::Quantum
+                )
+            ) {
+                coordinate = current.clone();
+            }
+            self.debug_event_coordinates
+                .insert(entry.sequence(), coordinate.clone());
+        }
+        self.debug_index_configuration = current;
+        Ok(())
+    }
+
+    pub(super) fn debug_current_event_limit(&self, current: &Configuration) -> Option<u64> {
+        self.debug_event_coordinates
+            .iter()
+            .filter_map(|(sequence, configuration)| (configuration == current).then_some(*sequence))
+            .min()
+            .or_else(|| u64::try_from(self.engine.event_log_len()).ok())
     }
 
     fn condition_event_log_prefix(&self) -> Vec<SchedulerEventLogEntry> {
@@ -762,15 +831,15 @@ where
                 };
                 let entries = self.engine.drain_event_log_entries();
                 let emitted_event_log_entries = entries.len();
-                self.append_event_log_entries(&entries);
+                self.append_event_log_entries(&entries)?;
                 self.engine
                     .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
-                self.append_event_log_entries(&breakpoint_entries);
+                self.append_event_log_entries(&breakpoint_entries)?;
                 self.engine.stop_on_continuous_quiescence()?;
                 let shutdown_entries = self.engine.drain_event_log_entries();
-                self.append_event_log_entries(&shutdown_entries);
+                self.append_event_log_entries(&shutdown_entries)?;
                 self.control_acknowledgements = self
                     .control_acknowledgements
                     .saturating_add(pending_control);
@@ -825,15 +894,15 @@ where
                 };
                 let entries = self.engine.drain_event_log_entries();
                 let emitted_event_log_entries = entries.len();
-                self.append_event_log_entries(&entries);
+                self.append_event_log_entries(&entries)?;
                 self.engine
                     .evaluate_breakpoints(&self.condition_event_log, emitted_event_log_entries)?;
                 self.sync_reproduction_log();
                 let breakpoint_entries = self.engine.drain_event_log_entries();
-                self.append_event_log_entries(&breakpoint_entries);
+                self.append_event_log_entries(&breakpoint_entries)?;
                 self.engine.stop_on_continuous_quiescence()?;
                 let shutdown_entries = self.engine.drain_event_log_entries();
-                self.append_event_log_entries(&shutdown_entries);
+                self.append_event_log_entries(&shutdown_entries)?;
                 self.control_acknowledgements = self
                     .control_acknowledgements
                     .saturating_add(pending_control);
@@ -979,6 +1048,59 @@ where
             && command.requires_running_quantum_ack();
         let control_acknowledged = command.is_control_acknowledged();
         let condition_event_log = self.condition_event_log_prefix();
+        let mut command = command;
+        match &mut command {
+            SessionCommand::DebugGoto { request, .. } => {
+                request.current = self.engine.snapshot().configuration;
+                request.event_coordinates = self.debug_event_coordinates.clone();
+            }
+            SessionCommand::DebugReverseStep { request, .. } => {
+                request.current = self.engine.snapshot().configuration;
+                request.event_log.clone_from(&condition_event_log);
+                request.event_coordinates = self.debug_event_coordinates.clone();
+                if let Some(sequence) = self.debug_current_event_limit(&request.current) {
+                    request.current_event_sequence = Some(sequence);
+                }
+            }
+            SessionCommand::DebugReverseContinue { request, .. } => {
+                request.current = self.engine.snapshot().configuration;
+                request.event_log.clone_from(&condition_event_log);
+                request.event_coordinates = self.debug_event_coordinates.clone();
+                if let Some(sequence) = self.debug_current_event_limit(&request.current) {
+                    request.current_event_sequence = Some(sequence);
+                }
+            }
+            _ => {}
+        }
+        let history_operation = match &command {
+            SessionCommand::DebugReverseStep { request, .. }
+                if self.debug_history_floor > 0
+                    && request.grain != DebugReverseStepGrain::Instruction
+                    && request
+                        .current_event_sequence
+                        .is_some_and(|sequence| sequence <= self.debug_history_floor) =>
+            {
+                Some("debug-reverse-step")
+            }
+            SessionCommand::DebugReverseContinue { request, .. }
+                if self.debug_history_floor > 0
+                    && request
+                        .current_event_sequence
+                        .is_some_and(|sequence| sequence <= self.debug_history_floor) =>
+            {
+                Some("debug-reverse-continue")
+            }
+            _ => None,
+        };
+        if let Some(operation) = history_operation {
+            let error = SessionError::DebugHistoryUnavailable {
+                operation,
+                floor: self.debug_history_floor,
+            };
+            command.complete_error(error.clone());
+            complete_acknowledgement(acknowledgement, &Err(error.clone()));
+            return Err(error);
+        }
         if let Err(error) = self
             .engine
             .apply_command_with_event_log(command.clone(), &condition_event_log)
@@ -988,7 +1110,7 @@ where
             return Err(error);
         }
         let entries = self.engine.drain_event_log_entries();
-        self.append_event_log_entries(&entries);
+        self.append_event_log_entries(&entries)?;
         self.sync_reproduction_log();
         let pending_control_after = self.engine.pending_control_len() as u64;
         if self.engine.quanta() > quanta_before && pending_control_after < pending_control_before {

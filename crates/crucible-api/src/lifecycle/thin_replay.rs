@@ -44,6 +44,7 @@ where
             reproduction_log,
             state_transitions,
             debug_access: DebugCoordinator::new(),
+            debug_operation_gate: Arc::new(Mutex::new(())),
             debug_genesis,
             actor_task,
         };

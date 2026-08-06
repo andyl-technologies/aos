@@ -39,6 +39,20 @@ impl QuantumLoop for NoopLoop {
     ) -> Result<GdbAttachInfo, SchedulerError> {
         GdbAttachInfo::new(node, "127.0.0.1:39001", listen).map_err(SchedulerError::from)
     }
+
+    fn reposition_debug_runtime(
+        &mut self,
+        request: crucible::DebugRuntimeRepositionRequest,
+    ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
+        let endpoint = crucible::DebugGdbEndpoint::new("qemu_gdbstub", "127.0.0.1:39002").map_err(
+            |error| SchedulerError::BoundaryViolation {
+                message: format!("test reposition endpoint is invalid: {error}"),
+            },
+        )?;
+        Ok(crucible::DebugRuntimeRepositionReport::completed(
+            &request, endpoint, 2,
+        ))
+    }
 }
 
 pub(super) struct FailingLoop;

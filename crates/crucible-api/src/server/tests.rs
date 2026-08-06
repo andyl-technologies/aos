@@ -181,6 +181,92 @@ async fn server_read_only_mode_rejects_debug_controller_before_authorization()
 }
 
 #[tokio::test]
+async fn debugger_reposition_requires_writable_authenticated_service() -> Result<(), Box<dyn Error>>
+{
+    let request = format!(
+        "crucible.rpc/debug-goto-request\nsession-id=42\nepoch=7\nseed={TEST_SEED}\ngeneration=1\ncoordinate=virtual-time:9\n"
+    );
+    let read_only = handle_debug_goto(
+        State(test_state(LifecycleServerMode::read_only())),
+        None,
+        rpc_request(request.clone()),
+    )
+    .await;
+    assert_eq!(read_only.status(), StatusCode::FORBIDDEN);
+    assert!(response_text(read_only).await?.contains("reason=read-only"));
+
+    let denied = handle_debug_goto(
+        State(test_state(LifecycleServerMode::read_write())),
+        None,
+        rpc_request(request),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert!(response_text(denied).await?.contains("debug"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn debugger_operation_gate_blocks_controller_handoff_until_dispatch_finishes() {
+    let state = test_state(LifecycleServerMode::read_write());
+    let scenario = crucible::happy_path_scenario()
+        .expect("operation-gate scenario must build")
+        .scenario;
+    let session = state
+        .control_plane
+        .lock()
+        .await
+        .create_session(CreateSessionRequest::inline_form(
+            scenario.clone(),
+            scenario.seed(),
+        ))
+        .await
+        .expect("operation-gate session must start")
+        .session;
+    let active = debug_operation_guard(&state, session).await;
+    let waiting_state = state.clone();
+    let waiting = tokio::spawn(async move { debug_operation_guard(&waiting_state, session).await });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), async {
+            while !waiting.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_err(),
+        "controller handoff must wait while reposition dispatch owns the gate"
+    );
+    drop(active);
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+        .await
+        .expect("controller handoff must resume when dispatch finishes")
+        .expect("operation gate task must not fail");
+    drop(completed);
+    state
+        .control_plane
+        .lock()
+        .await
+        .destroy_session(DestroySessionRequest::new(session))
+        .await
+        .expect("operation-gate session must stop");
+}
+
+#[tokio::test]
+async fn nonexistent_debug_sessions_do_not_retain_operation_gates() {
+    let state = test_state(LifecycleServerMode::read_write());
+    let missing = SessionRef::new(SessionId::new(42), 7, Seed::from_u64(77));
+    let first = debug_operation_guard(&state, missing).await;
+    let waiting_state = state.clone();
+    let second = tokio::spawn(async move { debug_operation_guard(&waiting_state, missing).await });
+    let independent = tokio::time::timeout(std::time::Duration::from_secs(1), second)
+        .await
+        .expect("a nonexistent session must not retain a shared operation gate")
+        .expect("nonexistent operation-gate task must not fail");
+    drop(independent);
+    drop(first);
+}
+
+#[tokio::test]
 async fn server_read_only_mode_rejects_session_destruction() -> Result<(), Box<dyn Error>> {
     let response = handle_destroy_session(
         State(test_state(LifecycleServerMode::read_only())),

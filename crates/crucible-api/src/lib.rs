@@ -68,8 +68,8 @@ pub use event_log_stream::{
     SessionEventLogSnapshot, SessionEventLogStream, SessionEventLogStreamError,
 };
 pub use lifecycle::{
-    CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
-    DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
+    CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DebugRepositionDispatch,
+    DestroySessionRequest, DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
     GuestIntrospectionDispatch, InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,

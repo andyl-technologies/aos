@@ -1287,7 +1287,7 @@ complete from model-double evidence.
   restore-plus-replay `debug_goto`. `DebugFailureFooterCommand` centralizes the
   copy-pasteable `crucible debug <artifact> --at-failure` footer and the CLI failure
   artifact writer uses it.
-- [ ] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
+- [x] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,
   `--checkpoint-stride`) and verbs attach-gdb/fork-debug/goto/reverse-step/reverse-continue
@@ -1318,8 +1318,21 @@ complete from model-double evidence.
   in-guest `ssh` byte bridging. The fork RPC requires the transport-derived
   controller to hold `control`, `mutate`, and `shell`, records a typed
   guest-introspection trigger/action on the whole-world branch, and every guest
-  record is rejected while the session remains canonical. Completion remains
-  open for the remaining remote goto/reverse dispatch and live gates.
+  record is rejected while the session remains canonical. Authenticated remote
+  `goto`, `reverse-step`, and `reverse-continue` send only operator intent under
+  the exclusive controller lease. The actor overwrites caller state with its
+  current configuration, checked scheduler-event prefix, and
+  event-to-schedule-prefix map before invoking the existing
+  replay-oracle-checked time-travel path. Each schedule-matching causal decision
+  advances that map to its exact prefix, quantum boundaries bind the completed
+  configuration, and other records retain the deterministic
+  scheduler boundary at which forward stepping would expose them. A per-session
+  operation gate prevents controller release or reassignment between lease
+  authorization and actor completion. Checkpoint-only resume inputs do not carry
+  the historical event log, so reverse event-like operations fail explicitly at
+  the actor's resume-history floor while instruction and coordinate `goto`
+  remain available. The CLI accepts the closed reverse grain set and
+  `quiescent`, `at:<ticks>`, or canonical compact-binary 17a conditions.
 - [ ] **T-DBG-9** Replace the Apache-side one-QEMU proxy with the standalone GPL
   debugger gateway, a stable asynchronous GDB listener, bounded fail-closed RSP
   parsing, and scheduler-routed `continue`/`step`/`vCont`. Prove split/coalesced

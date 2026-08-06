@@ -994,10 +994,98 @@ pub(super) fn run_remote_debug_relay(
         }
         DebugInteractiveVerbPlan::Goto(_)
         | DebugInteractiveVerbPlan::ReverseStep { .. }
-        | DebugInteractiveVerbPlan::ReverseContinue { .. } => Err(usage_error(
-            "this remote debug operation is not yet implemented by the unary debugger client",
-        )),
+        | DebugInteractiveVerbPlan::ReverseContinue { .. } => runtime.block_on(
+            run_remote_debug_reposition(daemon, &backend_plan, session, node, &plan.verb),
+        ),
     }
+}
+
+async fn run_remote_debug_reposition(
+    daemon: &str,
+    backend_plan: &BackendSelectionPlan,
+    session: SessionRef,
+    node: crucible::NodeId,
+    verb: &DebugInteractiveVerbPlan,
+) -> Result<(), CliError> {
+    let client = remote_rpc_client(daemon, backend_plan)?;
+    let lease = client
+        .acquire_debug_controller(session)
+        .await
+        .map_err(control_client_error)?;
+    let reposition_result: Result<Option<String>, CliError> = async {
+        client
+            .attach_debugger(session, &lease, &node)
+            .await
+            .map_err(control_client_error)?;
+        match verb {
+            DebugInteractiveVerbPlan::Goto(target) => client
+                .debug_goto(session, &lease, target)
+                .await
+                .map(Some)
+                .map_err(control_client_error),
+            DebugInteractiveVerbPlan::ReverseStep { grain } => client
+                .debug_reverse_step(session, &lease, *grain)
+                .await
+                .map(Some)
+                .map_err(control_client_error),
+            DebugInteractiveVerbPlan::ReverseContinue { condition } => {
+                let condition = parse_debug_reverse_condition(condition)?;
+                client
+                    .debug_reverse_continue(session, &lease, &condition)
+                    .await
+                    .map_err(control_client_error)
+            }
+            DebugInteractiveVerbPlan::AttachGdb
+            | DebugInteractiveVerbPlan::ForkDebug
+            | DebugInteractiveVerbPlan::Exec { .. }
+            | DebugInteractiveVerbPlan::Pty { .. }
+            | DebugInteractiveVerbPlan::Ssh => Err(backend_error(
+                "non-reposition debug verb reached reposition dispatcher",
+            )),
+        }
+    }
+    .await;
+    let release_result = client.release_debug_controller(session, &lease).await;
+    let target = reposition_result?;
+    release_result.map_err(control_client_error)?;
+    match target {
+        Some(target) => println!("crucible: debugger repositioned to {target}"),
+        None => println!("crucible: reverse-continue found no matching prior condition"),
+    }
+    Ok(())
+}
+
+pub(super) fn parse_debug_reverse_condition(value: &str) -> Result<crucible::Predicate, CliError> {
+    if value == "quiescent" {
+        return Ok(crucible::Predicate::quiescent());
+    }
+    if let Some(ticks) = value.strip_prefix("at:") {
+        return Ok(crucible::Predicate::at(crucible::VirtualTime {
+            ticks: parse_u64_value("reverse-continue at", ticks)?,
+        }));
+    }
+    if let Some(encoded) = value.strip_prefix("hex:") {
+        if !encoded.len().is_multiple_of(2) {
+            return Err(usage_error(
+                "reverse-continue hex condition has an odd number of digits",
+            ));
+        }
+        let mut bytes = Vec::with_capacity(encoded.len() / 2);
+        for pair in encoded.as_bytes().chunks_exact(2) {
+            let high = hex_nibble(pair[0]).ok_or_else(|| {
+                usage_error("reverse-continue hex condition contains a non-hex digit")
+            })?;
+            let low = hex_nibble(pair[1]).ok_or_else(|| {
+                usage_error("reverse-continue hex condition contains a non-hex digit")
+            })?;
+            bytes.push((high << 4) | low);
+        }
+        return crucible::Predicate::from_compact_binary(&bytes)
+            .map_err(|error| usage_error(format!("invalid reverse-continue condition: {error}")));
+    }
+    Err(usage_error(
+        "reverse-continue condition must be `quiescent`, `at:<ticks>`, or `hex:<compact-predicate>`",
+    ))
 }
 
 async fn run_remote_guest_fork(
