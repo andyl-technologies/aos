@@ -127,9 +127,9 @@ controller lease:
 ```
 
 `exec` uses direct argv execution and does not invoke a shell. `pty` bridges the
-local standard streams to a guest controlling terminal. The current client does
-not put the local terminal into raw mode, so the PTY verb is suitable for line-
-oriented diagnosis but is not yet a transparent full-screen terminal.
+local standard streams to a guest controlling terminal. When standard input is
+a terminal, the client enters raw mode, restores the original mode on every
+normal exit path, and forwards `SIGWINCH` size changes to the guest PTY.
 
 `ssh` is a transport byte bridge to the SSH server configured in the guest
 agent; it is intended as an SSH `ProxyCommand`, not as an interactive SSH client
@@ -170,10 +170,6 @@ For example:
   replay-oracle artifact.
 - Artifact-targeted `attach-gdb` does not keep a GDB session open after the
   bounded local probe exits.
-- Automatic propagation of local terminal resize events is not implemented yet;
-  pass the initial PTY dimensions explicitly.
-- The PTY client does not yet switch the local terminal to raw mode or restore
-  it after exit; use line-oriented commands rather than full-screen programs.
 - A successful debugger runtime reposition invalidates every active guest
   channel and the next channel poll returns a typed `ClosedChannel` error.
 - Guest transcript persistence is reserved but not yet exposed by the CLI.
