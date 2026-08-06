@@ -29,7 +29,9 @@ use crucible::{
     SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
     SingleScheduler, VirtualTime, World,
 };
-use crucible_qemu::{ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint};
+use crucible_qemu::{
+    ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
+};
 
 use crate::LifecycleApiError;
 

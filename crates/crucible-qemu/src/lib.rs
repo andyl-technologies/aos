@@ -182,6 +182,7 @@ pub use node_factory::{
 pub use node_set::QemuNodeSet;
 pub use production_fault_runtime::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError,
+    ProductionNetworkStateCheckpoint,
 };
 pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{

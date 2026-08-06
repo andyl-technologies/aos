@@ -50,6 +50,65 @@ fn stage_pending_network_output(
     Ok(())
 }
 
+fn validate_pending_network_outputs(
+    pending: &[crucible::BackendNetworkOutput],
+) -> Result<(), SchedulerError> {
+    if pending.len() > HARD_PENDING_NETWORK_FRAMES {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "restored pending network frame count exceeds hard bound {HARD_PENDING_NETWORK_FRAMES}"
+            ),
+        });
+    }
+    let bytes = pending.iter().try_fold(0_usize, |total, output| {
+        total.checked_add(output.payload.len())
+    });
+    if bytes.is_none_or(|bytes| bytes > HARD_PENDING_NETWORK_BYTES) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "restored pending network bytes exceed hard bound {HARD_PENDING_NETWORK_BYTES}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn validate_network_adapter_checkpoint(
+    checkpoint: &NetworkAdapterCheckpoint,
+) -> Result<(), SchedulerError> {
+    if checkpoint.semantic_version != FAULT_RUNTIME_STATE_VERSION
+        || checkpoint.coordinate.is_none() && checkpoint.coordinate_sequence != 0
+        || checkpoint.effect_state.token_buckets.len() > 65_536
+        || checkpoint.effect_state.queues.len() > 65_536
+        || checkpoint.effect_state.burst_states.len() > 65_536
+        || checkpoint.effect_state.state_machines.len() > 65_536
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "network adapter checkpoint schema or top-level bounds are invalid",
+            ),
+        });
+    }
+    for queue in checkpoint.effect_state.queues.values() {
+        if queue.reservations.len() > HARD_PENDING_NETWORK_FRAMES
+            || queue.served_frames_by_class.len() > 65_536
+            || queue.served_bytes_by_class.len() > 65_536
+            || queue.reservations.iter().any(|reservation| {
+                reservation.service_curves.len() > 65_536
+                    || reservation
+                        .service_curves
+                        .iter()
+                        .any(|curve| curve.segments.is_empty() || curve.segments.len() > 65_536)
+            })
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network adapter queue checkpoint exceeds hard bounds"),
+            });
+        }
+    }
+    checkpoint.effect_state.boundary.validate_bounds()
+}
+
 #[derive(Clone, Debug)]
 struct NetworkAvailabilityTransitionRecord {
     action: ContentHash,
@@ -68,7 +127,7 @@ struct NetworkAvailabilityTransitionRecord {
     evidence: ContentHash,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 struct NetworkEffectStateKey {
     binding: FaultObjectId,
     target: crucible::model::ResolvedFaultTarget,
@@ -85,14 +144,14 @@ impl NetworkEffectStateKey {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkTokenBucketState {
     tokens_nano_bits: u128,
     last_refill_nanos: u64,
     transition_sequence: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct NetworkQueueReservation {
     enqueue_nanos: u64,
     ready_nanos: u64,
@@ -105,13 +164,13 @@ struct NetworkQueueReservation {
     opportunity: ContentHash,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct NetworkServiceCurveState {
     activation_nanos: u64,
     segments: Vec<crucible::model::NetworkServiceSegment>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkQueueState {
     service_cursor_nanos: u64,
     reservations: Vec<NetworkQueueReservation>,
@@ -120,13 +179,101 @@ struct NetworkQueueState {
     red_average_bytes_q32: u128,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkEffectRuntimeState {
     token_buckets: BTreeMap<NetworkEffectStateKey, NetworkTokenBucketState>,
     queues: BTreeMap<crucible::model::ResolvedFaultTarget, NetworkQueueState>,
     burst_states: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
     state_machines: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
     boundary: boundary::BoundaryNetworkState,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkAdapterCheckpoint {
+    semantic_version: u16,
+    coordinate: Option<u64>,
+    coordinate_sequence: u64,
+    effect_state: NetworkEffectRuntimeState,
+}
+
+struct StagedNetworkRestore {
+    scheduler: SingleScheduler,
+    pending_outputs: Vec<crucible::BackendNetworkOutput>,
+    adapter: NetworkAdapterCheckpoint,
+    identity: ContentHash,
+}
+
+fn stage_network_restore(
+    checkpoint: &ProductionFaultRuntimeCheckpoint,
+    scheduler: &SingleScheduler,
+) -> Result<StagedNetworkRestore, SchedulerError> {
+    let network =
+        checkpoint
+            .network_state()
+            .cloned()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "restored production fault runtime omitted its network continuation",
+                ),
+            })?;
+    let (scheduler_state, pending_outputs, adapter_bytes, identity) = network.into_parts();
+    validate_pending_network_outputs(&pending_outputs)?;
+    let adapter: NetworkAdapterCheckpoint =
+        serde_json::from_slice(&adapter_bytes).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("decode production network adapter checkpoint: {error}"),
+            }
+        })?;
+    validate_network_adapter_checkpoint(&adapter)?;
+    let mut staged_scheduler = scheduler.clone();
+    staged_scheduler.restore_network_checkpoint(&scheduler_state)?;
+    let actual = network_state_digest_from_parts(
+        &staged_scheduler,
+        &pending_outputs,
+        adapter.coordinate,
+        adapter.coordinate_sequence,
+        &adapter.effect_state,
+    )?;
+    if actual != identity {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "restored network continuation identity {}, expected {}",
+                actual.to_hex(),
+                identity.to_hex()
+            ),
+        });
+    }
+    Ok(StagedNetworkRestore {
+        scheduler: staged_scheduler,
+        pending_outputs,
+        adapter,
+        identity,
+    })
+}
+
+fn network_state_digest_from_parts(
+    scheduler: &SingleScheduler,
+    pending_outputs: &[crucible::BackendNetworkOutput],
+    coordinate: Option<u64>,
+    coordinate_sequence: u64,
+    effect_state: &NetworkEffectRuntimeState,
+) -> Result<ContentHash, SchedulerError> {
+    let mut material = Vec::new();
+    material.extend_from_slice(&scheduler.network_continuation_digest()?.bytes);
+    material.extend_from_slice(&coordinate.unwrap_or(u64::MAX).to_be_bytes());
+    material.extend_from_slice(&coordinate_sequence.to_be_bytes());
+    let pending_count = u64::try_from(pending_outputs.len()).map_err(|_error| {
+        SchedulerError::BoundaryViolation {
+            message: String::from("pending network output count exceeds the checkpoint width"),
+        }
+    })?;
+    material.extend_from_slice(&pending_count.to_be_bytes());
+    for output in pending_outputs {
+        append_backend_output_evidence(&mut material, output)?;
+    }
+    append_network_effect_state(&mut material, effect_state)?;
+    Ok(ContentHash::from_bytes(&material))
 }
 
 /// Owns the production signal continuation at the pre-routing network seam.
@@ -159,6 +306,58 @@ impl ProductionFaultNetworkInterceptor {
         }
     }
 
+    /// Restores an authenticated adapter, scheduler, and pending-frame continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the runtime has no paired network state,
+    /// its schema/bounds are invalid, scheduler restoration fails, or the
+    /// independently recomputed continuation identity differs.
+    pub(super) fn restore(
+        plan: crucible::model::FaultSignalPlan,
+        artifacts: Option<Arc<dyn SignalArtifactProvider>>,
+        scenario_seed: ContentHash,
+        checkpoint: ProductionFaultRuntimeCheckpoint,
+        nodes: &mut ProductionNodeSet,
+        topology: crucible::model::WorldFaultTopology,
+        links: Vec<crucible::LinkDef>,
+        scheduler: &mut SingleScheduler,
+        pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
+    ) -> Result<Self, SchedulerError> {
+        let staged = stage_network_restore(&checkpoint, scheduler)?;
+        let mut runtime =
+            ProductionFaultRuntime::restore(plan, artifacts, scenario_seed, checkpoint, nodes)
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("restore production signal fault continuation: {error}"),
+                })?;
+        let authenticated = runtime.take_restored_network_state().ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "authenticated production fault runtime lost its network continuation",
+                ),
+            }
+        })?;
+        if authenticated.id() != staged.identity {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production fault and staged network continuation identities differ",
+                ),
+            });
+        }
+        let restored = Self {
+            runtime,
+            topology,
+            links,
+            coordinate: staged.adapter.coordinate,
+            coordinate_sequence: staged.adapter.coordinate_sequence,
+            transition_ledger: BTreeMap::new(),
+            effect_state: staged.adapter.effect_state,
+        };
+        *scheduler = staged.scheduler;
+        *pending_outputs = staged.pending_outputs;
+        Ok(restored)
+    }
+
     /// Captures the fault runtime together with all network adapter state.
     ///
     /// # Errors
@@ -172,8 +371,23 @@ impl ProductionFaultNetworkInterceptor {
         backend: &mut ProductionNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, SchedulerError> {
         let network_state = self.network_state_digest(scheduler, pending_outputs)?;
+        let adapter_state = serde_json::to_vec(&NetworkAdapterCheckpoint {
+            semantic_version: FAULT_RUNTIME_STATE_VERSION,
+            coordinate: self.coordinate,
+            coordinate_sequence: self.coordinate_sequence,
+            effect_state: self.effect_state.clone(),
+        })
+        .map_err(|error| SchedulerError::BoundaryViolation {
+            message: format!("encode production network adapter checkpoint: {error}"),
+        })?;
+        let network_checkpoint = ProductionNetworkStateCheckpoint::new(
+            network_state,
+            scheduler.network_checkpoint(),
+            pending_outputs.to_vec(),
+            adapter_state,
+        );
         self.runtime
-            .checkpoint_with_network_state(backend, network_state)
+            .checkpoint_with_network_state(backend, network_checkpoint)
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("capture production fault continuation: {error}"),
             })
@@ -184,45 +398,13 @@ impl ProductionFaultNetworkInterceptor {
         scheduler: &SingleScheduler,
         pending_outputs: &[crucible::BackendNetworkOutput],
     ) -> Result<ContentHash, SchedulerError> {
-        let mut material = Vec::new();
-        material.extend_from_slice(&scheduler.network_continuation_digest()?.bytes);
-        material.extend_from_slice(&self.coordinate.unwrap_or(u64::MAX).to_be_bytes());
-        material.extend_from_slice(&self.coordinate_sequence.to_be_bytes());
-        let pending_count = u64::try_from(pending_outputs.len()).map_err(|_error| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("pending network output count exceeds the checkpoint width"),
-            }
-        })?;
-        material.extend_from_slice(&pending_count.to_be_bytes());
-        for output in pending_outputs {
-            append_backend_output_evidence(&mut material, output)?;
-        }
-        let transition_count = u64::try_from(self.transition_ledger.len()).map_err(|_error| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("network transition count exceeds the checkpoint width"),
-            }
-        })?;
-        material.extend_from_slice(&transition_count.to_be_bytes());
-        for transition in self.transition_ledger.values() {
-            material.extend_from_slice(&transition.action.bytes);
-            append_evidence_bytes(&mut material, transition.binding.as_str().as_bytes())?;
-            append_evidence_bytes(&mut material, transition.target.kind().as_str().as_bytes())?;
-            append_evidence_bytes(&mut material, transition.phase.as_str().as_bytes())?;
-            material.extend_from_slice(&transition.transition_sequence.to_be_bytes());
-            material.push(availability_state_tag(transition.old_state));
-            material.push(availability_state_tag(transition.state));
-            material.push(in_flight_policy_tag(transition.queued_policy));
-            material.push(in_flight_policy_tag(transition.in_flight_policy));
-            append_evidence_bytes(&mut material, transition.source.name.as_bytes())?;
-            append_evidence_bytes(&mut material, transition.destination.name.as_bytes())?;
-            material.extend_from_slice(&transition.in_flight.evidence.bytes);
-            for output in &transition.queued {
-                append_backend_output_evidence(&mut material, output)?;
-            }
-            material.extend_from_slice(&transition.evidence.bytes);
-        }
-        append_network_effect_state(&mut material, &self.effect_state)?;
-        Ok(ContentHash::from_bytes(&material))
+        network_state_digest_from_parts(
+            scheduler,
+            pending_outputs,
+            self.coordinate,
+            self.coordinate_sequence,
+            &self.effect_state,
+        )
     }
 
     /// Evaluates one ordered scheduler boundary through the owned continuation.
@@ -1168,7 +1350,7 @@ mod tests {
 
         let nodes = ProductionNodeSet::new();
         let runtime = ProductionFaultRuntime::new(
-            down_plan(segment),
+            down_plan(segment.clone()),
             Some(Arc::new(NoArtifacts)),
             SignalBoundarySnapshot::default(),
             ContentHash::from_bytes(b"production-availability-drop"),
@@ -1234,6 +1416,78 @@ mod tests {
         let checkpoint = interceptor
             .checkpoint(&scheduler, &pending_outputs, &mut nodes)
             .unwrap_or_else(|error| panic!("network checkpoint should encode: {error}"));
+        let restored_scenario = SchedulerLivenessScenario::from_runnable_world(
+            "production-availability-drop",
+            Shift::default(),
+            16,
+            SimInstant { nanos: 128 },
+            0,
+            &world,
+        );
+        let mut restored_scheduler = SingleScheduler::from_world(
+            restored_scenario,
+            &world,
+            &MemoryDagStore::new(),
+            WorldIoLayoutPolicy::default(),
+        )
+        .unwrap_or_else(|error| panic!("restored scheduler should build: {error}"));
+        let malformed = interceptor
+            .runtime
+            .checkpoint_with_network_state(
+                &mut nodes,
+                ProductionNetworkStateCheckpoint::new(
+                    ContentHash::from_bytes(b"unauthenticated-network-state"),
+                    scheduler.network_checkpoint(),
+                    pending_outputs.clone(),
+                    b"{}".to_vec(),
+                ),
+            )
+            .unwrap_or_else(|error| {
+                panic!("malformed fixture should authenticate outside: {error}")
+            });
+        let scheduler_before_rejection = restored_scheduler
+            .network_continuation_digest()
+            .unwrap_or_else(|error| panic!("scheduler should digest: {error}"));
+        let mut rejected_pending = Vec::new();
+        let error = ProductionFaultNetworkInterceptor::restore(
+            down_plan(segment.clone()),
+            Some(Arc::new(NoArtifacts)),
+            ContentHash::from_bytes(b"production-availability-drop"),
+            malformed,
+            &mut nodes,
+            world.fault_topology().clone(),
+            world.links().to_vec(),
+            &mut restored_scheduler,
+            &mut rejected_pending,
+        )
+        .err()
+        .unwrap_or_else(|| panic!("malformed adapter checkpoint should fail closed"));
+        assert!(error.to_string().contains("network adapter checkpoint"));
+        assert_eq!(
+            restored_scheduler
+                .network_continuation_digest()
+                .unwrap_or_else(|digest_error| panic!("scheduler should digest: {digest_error}")),
+            scheduler_before_rejection
+        );
+        assert!(rejected_pending.is_empty());
+        let mut restored_pending = Vec::new();
+        let restored_interceptor = ProductionFaultNetworkInterceptor::restore(
+            down_plan(segment),
+            Some(Arc::new(NoArtifacts)),
+            ContentHash::from_bytes(b"production-availability-drop"),
+            checkpoint.clone(),
+            &mut nodes,
+            world.fault_topology().clone(),
+            world.links().to_vec(),
+            &mut restored_scheduler,
+            &mut restored_pending,
+        )
+        .unwrap_or_else(|error| panic!("network continuation should restore: {error}"));
+        let restored_checkpoint = restored_interceptor
+            .checkpoint(&restored_scheduler, &restored_pending, &mut nodes)
+            .unwrap_or_else(|error| panic!("restored checkpoint should encode: {error}"));
+        assert_eq!(restored_checkpoint.id(), checkpoint.id());
+        assert_eq!(restored_pending, pending_outputs);
         let mut divergent_pending = pending_outputs.clone();
         divergent_pending[0].payload.push(0xff);
         let divergent = interceptor

@@ -7,13 +7,13 @@
 use super::*;
 use std::collections::BTreeSet;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct TimedOutage {
     unavailable_until: u64,
     transition_sequence: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct NegotiatedModeState {
     usable_after: u64,
     rate_bps: u64,
@@ -23,7 +23,7 @@ struct NegotiatedModeState {
     transition_sequence: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct RouteTransitionState {
     converged_after: u64,
     old_route: FaultObjectId,
@@ -33,7 +33,7 @@ struct RouteTransitionState {
 }
 
 /// Exact mutable state for all network effects admitted at `boundary`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct BoundaryNetworkState {
     outages: BTreeMap<NetworkEffectStateKey, TimedOutage>,
     negotiated_modes: BTreeMap<NetworkEffectStateKey, NegotiatedModeState>,
@@ -60,6 +60,18 @@ pub(super) struct BoundaryRouteApplication {
 }
 
 impl BoundaryNetworkState {
+    pub(super) fn validate_bounds(&self) -> Result<(), SchedulerError> {
+        if self.outages.len() > 65_536
+            || self.negotiated_modes.len() > 65_536
+            || self.route_transitions.len() > 65_536
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network boundary checkpoint exceeds hard state bounds"),
+            });
+        }
+        Ok(())
+    }
+
     /// Applies one atomic boundary batch and expires completed timers.
     pub(super) fn apply_actions(
         &mut self,

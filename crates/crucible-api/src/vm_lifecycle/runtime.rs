@@ -257,6 +257,17 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
+        *interceptor = ProductionFaultNetworkInterceptor::restore(
+            self.source.plan().fault_signals().clone(),
+            self.config.signal_artifacts.clone(),
+            self.scenario.id(),
+            target.fault_checkpoint.clone(),
+            backend,
+            self.source.world().fault_topology().clone(),
+            self.source.world().links().to_vec(),
+            scheduler,
+            pending_outputs,
+        )?;
         let (mut backend, run_directory) = replay.take_replayed_node(node)?;
         let observed = SimulationBackend::now(&backend).ticks;
         if self.inner.backend().contains(node) {
