@@ -2827,6 +2827,7 @@ where
 {
     let root_path = PathBuf::from(&store.path);
     let root = root_path.as_path();
+    let immutable_store_output = store_dir_from_store_path(&store.path).is_some();
     let root_meta = fs::symlink_metadata(root)
         .with_context(|| format!("inspecting image output {}", root.display()))?;
     if root_meta.file_type().is_symlink() || !root_meta.is_dir() {
@@ -2851,8 +2852,12 @@ where
     }
 
     let info_path = root.join("image-info.json");
-    let (mut info_file, info_identity) =
-        open_stable_regular_file_at(&root_file, "image-info.json", &info_path)?;
+    let (mut info_file, info_identity) = open_stable_regular_file_at_with_links(
+        &root_file,
+        "image-info.json",
+        &info_path,
+        immutable_store_output,
+    )?;
     if info_identity.len == 0 || info_identity.len > MAX_IMAGE_INFO_BYTES {
         bail!("image-info.json size must be between 1 and {MAX_IMAGE_INFO_BYTES} bytes");
     }
@@ -2996,8 +3001,12 @@ where
     }
 
     let image_path = root.join(&producer.filename);
-    let (mut image_file, image_identity) =
-        open_stable_regular_file_at(&root_file, &producer.filename, &image_path)?;
+    let (mut image_file, image_identity) = open_stable_regular_file_at_with_links(
+        &root_file,
+        &producer.filename,
+        &image_path,
+        immutable_store_output,
+    )?;
     let actual_sha256 = sha256_open_file(&mut image_file, &image_path)?;
     verify_stable_regular_file(&image_path, &image_file, &image_identity)?;
     let actual_size = image_identity.len;
@@ -3030,7 +3039,12 @@ where
     if !producer.uki.filename.ends_with(".efi") {
         bail!("image-info UKI filename must end in .efi");
     }
-    let (mut uki_file, uki_identity) = open_stable_regular_file(uki_path)?;
+    let immutable_uki_output = uki_path
+        .parent()
+        .and_then(Path::to_str)
+        .is_some_and(|parent| store_dir_from_store_path(parent).is_some());
+    let (mut uki_file, uki_identity) =
+        open_stable_regular_file_with_links(uki_path, immutable_uki_output)?;
     let uki_sha256 = sha256_open_file(&mut uki_file, uki_path)?;
     verify_stable_regular_file(uki_path, &uki_file, &uki_identity)?;
     if producer.uki.byte_size != uki_identity.len || producer.uki.sha256 != uki_sha256 {
@@ -3626,6 +3640,15 @@ fn file_identity(metadata: &fs::Metadata) -> FileIdentity {
 }
 
 fn open_stable_regular_file(path: &Path) -> Result<(fs::File, FileIdentity)> {
+    open_stable_regular_file_with_links(path, false)
+}
+
+/// Opens a regular file while allowing store-optimizer links only for an
+/// already-validated immutable Nix store output.
+fn open_stable_regular_file_with_links(
+    path: &Path,
+    allow_immutable_store_links: bool,
+) -> Result<(fs::File, FileIdentity)> {
     let path_metadata =
         fs::symlink_metadata(path).with_context(|| format!("inspecting {}", path.display()))?;
     if path_metadata.file_type().is_symlink() || !path_metadata.is_file() {
@@ -3643,7 +3666,7 @@ fn open_stable_regular_file(path: &Path) -> Result<(fs::File, FileIdentity)> {
     let file = fs::File::from(handle);
     let opened_identity = file_identity(&file.metadata()?);
     #[cfg(unix)]
-    if opened_identity.links != 1 {
+    if !allow_immutable_store_links && opened_identity.links != 1 {
         bail!(
             "artifact must have exactly one hard link: {}",
             path.display()
@@ -3655,10 +3678,13 @@ fn open_stable_regular_file(path: &Path) -> Result<(fs::File, FileIdentity)> {
     Ok((file, opened_identity))
 }
 
-fn open_stable_regular_file_at(
+/// Opens a direct child while allowing store-optimizer links only for an
+/// already-validated immutable Nix store output.
+fn open_stable_regular_file_at_with_links(
     directory: &fs::File,
     name: &str,
     display_path: &Path,
+    allow_immutable_store_links: bool,
 ) -> Result<(fs::File, FileIdentity)> {
     let handle = rustix::fs::openat(
         directory,
@@ -3670,7 +3696,7 @@ fn open_stable_regular_file_at(
     let file = fs::File::from(handle);
     let identity = file_identity(&file.metadata()?);
     #[cfg(unix)]
-    if identity.links != 1 {
+    if !allow_immutable_store_links && identity.links != 1 {
         bail!(
             "artifact must have exactly one hard link: {}",
             display_path.display()
@@ -13786,6 +13812,18 @@ mod tests {
         )
         .unwrap();
         assert!(inspect_test_image("raw", store, "2026.08", "x86_64-linux").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_file_open_allows_store_optimizer_links_after_store_validation() {
+        let temp = TempDir::new().unwrap();
+        let artifact = temp.path().join("artifact");
+        fs::write(&artifact, b"immutable store bytes").unwrap();
+        fs::hard_link(&artifact, temp.path().join("store-optimizer-link")).unwrap();
+
+        assert!(open_stable_regular_file(&artifact).is_err());
+        assert!(open_stable_regular_file_with_links(&artifact, true).is_ok());
     }
 
     #[test]
