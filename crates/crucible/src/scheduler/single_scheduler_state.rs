@@ -294,6 +294,7 @@ impl SingleScheduler {
             world_network_rng_positions: BTreeMap::new(),
             world_network_decisions: Vec::new(),
             device_horizons: BTreeMap::new(),
+            signal_fault_wakeup: None,
             #[cfg(test)]
             broken_device_delivery_stamp: false,
             control_inbox: Vec::new(),
@@ -326,6 +327,52 @@ impl SingleScheduler {
     #[must_use]
     pub fn configuration(&self) -> &Configuration {
         &self.configuration
+    }
+
+    /// Replaces the exact global wakeup requested by signal-driven bindings.
+    ///
+    /// The wakeup is folded into every live node's effective exact horizon so
+    /// the shared frontier reaches the evaluation coordinate without polling.
+    /// `None` disarms the wakeup when no cadence or residence transition is due.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the requested wakeup
+    /// is not strictly after the current shared frontier or is not representable
+    /// at the scenario's fixed icount shift.
+    pub fn set_signal_fault_wakeup(
+        &mut self,
+        wakeup_nanos: Option<u64>,
+    ) -> Result<(), SchedulerError> {
+        if let Some(wakeup_nanos) = wakeup_nanos
+            && wakeup_nanos <= self.frontier.ticks
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "signal fault wakeup {wakeup_nanos} must be after scheduler frontier {}",
+                    self.frontier.ticks
+                ),
+            });
+        }
+        if let Some(wakeup_nanos) = wakeup_nanos {
+            let scale = 1_u64 << self.timeline.shift().bits;
+            if wakeup_nanos % scale != 0 {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "signal fault wakeup {wakeup_nanos} is not aligned to icount shift {}",
+                        self.timeline.shift().bits
+                    ),
+                });
+            }
+        }
+        self.signal_fault_wakeup = wakeup_nanos.map(|nanos| SimInstant { nanos });
+        Ok(())
+    }
+
+    /// Returns the armed exact signal-fault evaluation boundary.
+    #[must_use]
+    pub const fn signal_fault_wakeup(&self) -> Option<SimInstant> {
+        self.signal_fault_wakeup
     }
 
     /// Installs a deterministic exact-completion I/O sub-node (disk/9p) on its target VM node

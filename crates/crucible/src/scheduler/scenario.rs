@@ -640,6 +640,10 @@ pub(super) fn exact_local_event_material(event: &ExactLocalEvent) -> String {
             fault.name.len(),
             fault.name,
         ),
+        ExactLocalEvent::SignalFaultEvaluation { virtual_time } => format!(
+            "exact_local_event=signal_fault_evaluation\nexact_local_event_ns={}",
+            virtual_time.nanos,
+        ),
     }
 }
 

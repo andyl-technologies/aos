@@ -399,6 +399,11 @@ pub struct SingleScheduler {
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// and is never double-counted.
     pub(super) device_horizons: BTreeMap<NodeId, SimInstant>,
+    /// Earliest exact global evaluation boundary requested by the signal fault runtime.
+    ///
+    /// This runtime-only term is folded into every live VM's horizon so the
+    /// shared frontier reaches cadence and residence deadlines without polling.
+    pub(super) signal_fault_wakeup: Option<SimInstant>,
     /// Test-only fault injection: when `true`,
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// stamps each I/O completion's key with the consumer's *frontier* icount

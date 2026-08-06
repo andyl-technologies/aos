@@ -262,6 +262,9 @@ impl ProductionVmLifecycleLoop {
             })?;
         self.inner
             .loop_impl_mut()
+            .set_signal_fault_wakeup(evaluation.next_wakeup_nanos)?;
+        self.inner
+            .loop_impl_mut()
             .append_fault_observations(evaluation.observations)
     }
 }

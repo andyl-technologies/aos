@@ -28,6 +28,10 @@ fn test_segment_id() -> FaultObjectId {
 }
 
 fn test_world() -> World {
+    test_world_with_shift(0)
+}
+
+fn test_world_with_shift(icount_shift: u8) -> World {
     let nodes = ["left", "right"]
         .into_iter()
         .map(|name| WorldNode {
@@ -42,7 +46,7 @@ fn test_world() -> World {
             },
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: 1,
-            icount_shift: 0,
+            icount_shift,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -793,6 +797,28 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
             .unwrap_or_else(|error| panic!("decode max cadence: {error}")),
         cadence_plan,
     );
+}
+
+#[test]
+fn world_validation_rejects_unrepresentable_binding_wakeups() {
+    let program = program(true);
+    let binding = binding_with_sampling(
+        &program,
+        BindingSampling::CadenceNanos(
+            PositiveU64::new("cadence_nanos", 6).unwrap_or_else(|error| panic!("cadence: {error}")),
+        ),
+    );
+    let plan = FaultSignalPlan::new(vec![program], vec![binding])
+        .unwrap_or_else(|error| panic!("fault plan: {error}"));
+
+    let error = plan
+        .validate_for_world(&test_world_with_shift(2))
+        .expect_err("6ns cannot be represented when one instruction is 4ns");
+    assert!(error.to_string().contains("is not representable"));
+    plan.validate_for_world(&test_world())
+        .unwrap_or_else(|error| {
+            panic!("shift zero should admit every integer nanosecond: {error}")
+        });
 }
 
 #[test]
