@@ -129,7 +129,11 @@ pub struct PreparedActionResult {
     pub observation: FaultObservation,
 }
 
-/// Validated, still-uncommitted result for an atomic action batch.
+/// One prepared or committed atomic action batch.
+///
+/// `prepare_batch` returns the transaction with prediction-only results;
+/// callers must not retain those results as application evidence. A successful
+/// `commit_batch` returns the same transaction with backend-observed results.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PreparedActionBatch {
     /// Adapter-owned opaque transaction identity used for the commit.
@@ -192,8 +196,8 @@ impl BindingRuntimeCheckpoint {
 pub trait FaultActionSink {
     /// Validates and prepares every action without changing visible state.
     ///
-    /// Returned observations must describe actual application or rejection,
-    /// including adapter-owned before/after evidence where required.
+    /// Returned observations are predictions used only to prove complete action
+    /// ordering. Actual application evidence is returned by `commit_batch`.
     ///
     /// # Errors
     ///
@@ -213,16 +217,29 @@ pub trait FaultActionSink {
     /// terminally poisoned after this error.
     fn abort_batch(&mut self, transaction: ContentHash) -> Result<(), FaultRuntimeError>;
 
-    /// Atomically commits one previously prepared transaction.
-    ///
-    /// A successful return carries no adapter-controlled evidence: all result
-    /// records were structurally validated before this method was called.
+    /// Atomically commits one previously prepared transaction and returns actual evidence.
     ///
     /// # Errors
     ///
-    /// Returns [`RejectedActionBatch`] only when adapter-visible state remains
-    /// unchanged and the prepared transaction has been discarded.
-    fn commit_batch(&mut self, transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>>;
+    /// Returns [`FaultActionCommitError::Rejected`] only when adapter-visible
+    /// state remains unchanged. Returns [`FaultActionCommitError::Fatal`] when
+    /// the backend cannot prove whether a destructive commit became visible;
+    /// the owning runtime must become terminally poisoned.
+    fn commit_batch(
+        &mut self,
+        transaction: ContentHash,
+    ) -> Result<PreparedActionBatch, FaultActionCommitError>;
+}
+
+/// Failure class for an atomic adapter commit.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum FaultActionCommitError {
+    /// The entire batch was rejected before any visible state changed.
+    #[error("fault action commit was rejected: {0:?}")]
+    Rejected(Box<RejectedActionBatch>),
+    /// Visibility is ambiguous or partial and the run cannot safely continue.
+    #[error("fault action commit became fatal: {0}")]
+    Fatal(FaultRuntimeError),
 }
 
 /// Atomic adapter rejection with durable failure evidence.
@@ -546,7 +563,10 @@ impl<'a> FaultBindingRuntime<'a> {
         match prepare_and_commit(sink, &evaluation.actions) {
             Ok(observations) => evaluation.observations.extend(observations),
             Err(error) => {
-                if matches!(error, BindingRuntimeError::AdapterAbort(_)) {
+                if matches!(
+                    error,
+                    BindingRuntimeError::AdapterAbort(_) | BindingRuntimeError::AdapterCommit(_)
+                ) {
                     self.poisoned = true;
                 }
                 self.active = active;
@@ -804,7 +824,11 @@ impl<'a> FaultBindingRuntime<'a> {
                     Ok(evaluation)
                 }
                 Err(error) => {
-                    if matches!(error, BindingRuntimeError::AdapterAbort(_)) {
+                    if matches!(
+                        error,
+                        BindingRuntimeError::AdapterAbort(_)
+                            | BindingRuntimeError::AdapterCommit(_)
+                    ) {
                         self.poisoned = true;
                     }
                     self.states = states;
@@ -1794,20 +1818,22 @@ fn prepare_and_commit(
         }
     };
     let transaction = prepared.transaction;
-    let observations = match validate_prepared_batch(actions, prepared) {
-        Ok(observations) => observations,
-        Err(error) => {
-            sink.abort_batch(transaction)
-                .map_err(BindingRuntimeError::AdapterAbort)?;
-            return Err(error);
-        }
-    };
     match sink.commit_batch(transaction) {
-        Ok(()) => Ok(observations),
-        Err(rejected) if validate_rejected_batch(actions, &rejected) => {
+        Ok(committed) if committed.transaction == transaction => {
+            validate_prepared_batch(actions, committed).map_err(|_error| {
+                BindingRuntimeError::AdapterCommit(FaultRuntimeError::IncompleteAdapterState)
+            })
+        }
+        Ok(_) => Err(BindingRuntimeError::AdapterCommit(
+            FaultRuntimeError::IncompleteAdapterState,
+        )),
+        Err(FaultActionCommitError::Rejected(rejected))
+            if validate_rejected_batch(actions, &rejected) =>
+        {
             Err(BindingRuntimeError::AdapterRejected(rejected))
         }
-        Err(_) => Err(BindingRuntimeError::AdapterResult),
+        Err(FaultActionCommitError::Rejected(_)) => Err(BindingRuntimeError::AdapterResult),
+        Err(FaultActionCommitError::Fatal(error)) => Err(BindingRuntimeError::AdapterCommit(error)),
     }
 }
 
@@ -2795,6 +2821,8 @@ pub enum BindingRuntimeError {
     AdapterResult,
     /// Production adapter could not discard a prepared transaction.
     AdapterAbort(FaultRuntimeError),
+    /// Production adapter commit visibility became ambiguous or partial.
+    AdapterCommit(FaultRuntimeError),
 }
 
 impl fmt::Display for BindingRuntimeError {
@@ -2811,6 +2839,7 @@ impl Error for BindingRuntimeError {
             Self::Trace(error) => Some(error),
             Self::Runtime(error) => Some(error),
             Self::AdapterAbort(error) => Some(error),
+            Self::AdapterCommit(error) => Some(error),
             Self::AdapterRejected(error) => Some(&error.error),
             _ => None,
         }
