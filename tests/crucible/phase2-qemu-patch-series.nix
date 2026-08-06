@@ -342,6 +342,27 @@
       enforces = "PERF-32";
       capability = "off-by-default sim translation generation on a dedicated registered TCG helper";
     }
+    {
+      file = "0047-crucible-fault-command-abi.patch";
+      catalogName = "crucible-fault-command-abi";
+      class = "F";
+      enforces = "FAULT-ABI,FAULT-CAP,REP-15";
+      capability = "versioned closed fault command/result rings and exact capability manifest";
+    }
+    {
+      file = "0048-crucible-fault-safe-boundary.patch";
+      catalogName = "crucible-fault-safe-boundary";
+      class = "D";
+      enforces = "FAULT-BOUNDARY,FAULT-AUTH,DET-1";
+      capability = "exact node-icount fault boundary with authorization-ceiling enforcement";
+    }
+    {
+      file = "0049-crucible-memory-boundary-mutate.patch";
+      catalogName = "crucible-memory-boundary-mutate";
+      class = "F";
+      enforces = "QFP-MEM-1,QFP-MEM-2,FAULT-ORDER";
+      capability = "atomic GPA/GVA mutation with translation, RAM-map, dirty-page, and TB evidence";
+    }
   ];
 
   carriedPatchFiles = map (patch: patch.file) carriedPatches;

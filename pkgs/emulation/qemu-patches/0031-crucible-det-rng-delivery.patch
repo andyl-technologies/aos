@@ -1,4 +1,5 @@
 diff --git a/backends/rng-builtin.c b/backends/rng-builtin.c
+index 4cfa7e5..7c949af 100644
 --- a/backends/rng-builtin.c
 +++ b/backends/rng-builtin.c
 @@ -34,6 +34,28 @@ static void rng_builtin_receive_entropy_bh(void *opaque)
@@ -39,6 +40,7 @@ diff --git a/backends/rng-builtin.c b/backends/rng-builtin.c
  
  static const TypeInfo rng_builtin_info = {
 diff --git a/backends/rng.c b/backends/rng.c
+index 1f6fb10..853d207 100644
 --- a/backends/rng.c
 +++ b/backends/rng.c
 @@ -11,7 +11,9 @@
@@ -91,6 +93,7 @@ diff --git a/backends/rng.c b/backends/rng.c
  
          QSIMPLEQ_INSERT_TAIL(&s->requests, req, next);
 diff --git a/include/qemu/guest-random.h b/include/qemu/guest-random.h
+index 5060d49..5caa7b0 100644
 --- a/include/qemu/guest-random.h
 +++ b/include/qemu/guest-random.h
 @@ -65,4 +65,16 @@ int qemu_guest_getrandom(void *buf, size_t len, Error **errp);
@@ -111,6 +114,7 @@ diff --git a/include/qemu/guest-random.h b/include/qemu/guest-random.h
 +
  #endif /* QEMU_GUEST_RANDOM_H */
 diff --git a/include/system/rng.h b/include/system/rng.h
+index e383f87..d51a6ac 100644
 --- a/include/system/rng.h
 +++ b/include/system/rng.h
 @@ -44,6 +44,16 @@ struct RngBackendClass
@@ -131,6 +135,7 @@ diff --git a/include/system/rng.h b/include/system/rng.h
  };
  
 diff --git a/util/guest-random.c b/util/guest-random.c
+index 656fc56..ae07da6 100644
 --- a/util/guest-random.c
 +++ b/util/guest-random.c
 @@ -20,6 +20,8 @@

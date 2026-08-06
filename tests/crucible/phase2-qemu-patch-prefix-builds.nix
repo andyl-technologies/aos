@@ -75,6 +75,8 @@ in
           git config user.email "${series.deterministicAuthorEmail}"
           git config commit.gpgsign false
           git config core.autocrlf false
+          git config gc.auto 0
+          git config maintenance.auto false
           git add -A
           GIT_AUTHOR_NAME="${series.deterministicAuthorName}" \
           GIT_AUTHOR_EMAIL="${series.deterministicAuthorEmail}" \
@@ -108,7 +110,7 @@ in
             GIT_COMMITTER_NAME="${series.deterministicAuthorName}" \
             GIT_COMMITTER_EMAIL="${series.deterministicAuthorEmail}" \
             GIT_COMMITTER_DATE="${series.deterministicPatchDate}" \
-              git -c commit.gpgsign=false commit -q -m "''${patch_name%.patch}"
+              git -c commit.gpgsign=false commit -q -s -m "''${patch_name%.patch}"
             actual_branch_commit=$(git rev-parse HEAD)
             actual_branch_tree=$(git rev-parse HEAD^{tree})
             test "$actual_branch_commit" = "$branch_commit"

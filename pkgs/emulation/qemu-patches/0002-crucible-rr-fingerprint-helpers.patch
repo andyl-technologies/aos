@@ -1,4 +1,5 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 402d3e3..a1a2d14 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,6 +24,7 @@
@@ -85,6 +86,7 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
          timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
                                           icount_timer_cb, NULL);
 diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
+index 27cf104..e5d1420 100644
 --- a/accel/tcg/tcg-accel-ops-icount.c
 +++ b/accel/tcg/tcg-accel-ops-icount.c
 @@ -93,7 +93,21 @@ void icount_handle_deadline(void)
@@ -133,6 +135,7 @@ diff --git a/accel/tcg/tcg-accel-ops-icount.c b/accel/tcg/tcg-accel-ops-icount.c
      cpu->neg.icount_decr.u16.low = insns_left;
      cpu->icount_extra = cpu->icount_budget - insns_left;
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index f62cf24..7426205 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -111,6 +111,16 @@ static void rr_wait_io_event(void)
@@ -153,6 +156,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
      }
  
 diff --git a/hw/i386/multiboot.c b/hw/i386/multiboot.c
+index cd07a05..4add523 100644
 --- a/hw/i386/multiboot.c
 +++ b/hw/i386/multiboot.c
 @@ -288,6 +288,13 @@ int load_multiboot(X86MachineState *x86ms,
@@ -170,6 +174,7 @@ diff --git a/hw/i386/multiboot.c b/hw/i386/multiboot.c
  
      /* Calculate space for cmdlines, bootloader name, and mb_mods */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 3a850aa..1c0888f 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -931,6 +931,146 @@ QEMU_PLUGIN_API
@@ -320,6 +325,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index 64ae54f..b7955d8 100644
 --- a/include/system/cpu-timers.h
 +++ b/include/system/cpu-timers.h
 @@ -68,6 +68,9 @@ bool icount_configure(QemuOpts *opts, Error **errp);
@@ -333,6 +339,7 @@ diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
  void icount_start_warp_timer(void);
  void icount_account_warp_timer(void);
 diff --git a/migration/savevm.c b/migration/savevm.c
+index ce158c3..ab5afbe 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
 @@ -1832,6 +1832,127 @@ int qemu_save_device_state(QEMUFile *f)
@@ -464,6 +471,7 @@ diff --git a/migration/savevm.c b/migration/savevm.c
  {
      SaveStateEntry *se;
 diff --git a/migration/savevm.h b/migration/savevm.h
+index 138c39a..58761d8 100644
 --- a/migration/savevm.h
 +++ b/migration/savevm.h
 @@ -62,6 +62,8 @@ void qemu_savevm_send_postcopy_ram_discard(QEMUFile *f, const char *name,
@@ -476,6 +484,7 @@ diff --git a/migration/savevm.h b/migration/savevm.h
  int qemu_loadvm_state(QEMUFile *f);
  void qemu_loadvm_state_cleanup(MigrationIncomingState *mis);
 diff --git a/plugins/api.c b/plugins/api.c
+index 604ce06..18391d9 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -39,8 +39,18 @@
@@ -1008,6 +1017,7 @@ diff --git a/plugins/api.c b/plugins/api.c
  {
      return plugin_scoreboard_new(element_size);
 diff --git a/qemu-options.hx b/qemu-options.hx
+index c860453..c0e288a 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
 @@ -4917,13 +4917,13 @@ SRST
@@ -1043,6 +1053,7 @@ diff --git a/qemu-options.hx b/qemu-options.hx
      Typically this happens when the shift value is high (how high
      depends on the host machine). The default if icount is enabled
 diff --git a/system/cpu-timers.c b/system/cpu-timers.c
+index 23dd82b..91fa999 100644
 --- a/system/cpu-timers.c
 +++ b/system/cpu-timers.c
 @@ -25,6 +25,7 @@
@@ -1107,6 +1118,7 @@ diff --git a/system/cpu-timers.c b/system/cpu-timers.c
      },
      .subsections = (const VMStateDescription * const []) {
 diff --git a/system/vl.c b/system/vl.c
+index ec93988..9d56aeb 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -446,6 +446,9 @@ static QemuOptsList qemu_icount_opts = {

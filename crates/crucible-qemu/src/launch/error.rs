@@ -27,6 +27,12 @@ pub enum QemuLaunchCommandError {
     /// A translation-prefetch experiment lacked a safe absolute report path.
     #[error("translation-prefetch report path must be absolute and comma-free")]
     InvalidTranslationPrefetchReportPath,
+    /// The executable name did not identify an implemented fault architecture.
+    #[error("QEMU executable does not identify an x86_64 or aarch64 fault backend: `{executable}`")]
+    UnsupportedFaultCapabilityArchitecture {
+        /// Executable path whose basename was unsupported.
+        executable: String,
+    },
     /// White-box mode lacked a live QEMU port-map validation.
     #[error("white-box QEMU launch requires live setup collision validation")]
     MissingWhiteboxSetupValidation,

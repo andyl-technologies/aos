@@ -1,4 +1,5 @@
 diff --git a/block/crucible-shmem.c b/block/crucible-shmem.c
+index edad53d..3db26a7 100644
 --- a/block/crucible-shmem.c
 +++ b/block/crucible-shmem.c
 @@ -14,6 +14,8 @@

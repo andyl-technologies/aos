@@ -93,6 +93,15 @@
     "0044-crucible-time-advance-enqueue-kick.patch" = [];
     "0045-crucible-time-advance-arm-at-vcpu-boundary.patch" = [];
     "0046-crucible-translation-prefetch-helper.patch" = [];
+    "0047-crucible-fault-command-abi.patch" = [
+      "qemu_plugin_crucible_fault_capabilities"
+      "qemu_plugin_crucible_fault_submit"
+      "qemu_plugin_crucible_fault_cancel"
+      "qemu_plugin_crucible_fault_peek"
+      "qemu_plugin_crucible_fault_poll"
+    ];
+    "0048-crucible-fault-safe-boundary.patch" = [];
+    "0049-crucible-memory-boundary-mutate.patch" = [];
   };
 
   dropOnes =

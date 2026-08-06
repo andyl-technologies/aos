@@ -1,4 +1,5 @@
 diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
+index bb2843d..cd7cd42 100644
 --- a/hw/9pfs/virtio-9p-device.c
 +++ b/hw/9pfs/virtio-9p-device.c
 @@ -26,8 +26,34 @@
@@ -37,6 +38,7 @@ diff --git a/hw/9pfs/virtio-9p-device.c b/hw/9pfs/virtio-9p-device.c
  {
      V9fsState *s = pdu->s;
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 6f5655c..8757156 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -202,6 +202,49 @@ typedef int64_t (*qemu_plugin_blk_poll_cb_t)(uint32_t request_id,

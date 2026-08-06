@@ -1,4 +1,5 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 377e631..1a39377 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -798,6 +798,43 @@ uint64_t qemu_plugin_icount_raw(void);
@@ -47,6 +48,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   * @data: Ethernet frame bytes
 diff --git a/include/system/crucible-plugin-wake.h b/include/system/crucible-plugin-wake.h
 new file mode 100644
+index 0000000..806cc49
 --- /dev/null
 +++ b/include/system/crucible-plugin-wake.h
 @@ -0,0 +1,19 @@
@@ -70,6 +72,7 @@ new file mode 100644
 +
 +#endif
 diff --git a/plugins/api-system.c b/plugins/api-system.c
+index c2861bf..6bda431 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -12,6 +12,11 @@

@@ -15,10 +15,13 @@ fn fingerprint_plugin_switch_is_emitted_only_when_enabled() {
         "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so",
         0,
     );
+    let fault_hash = lowercase_hex(&base.fault_node_hash());
     // Disabled default is byte-identical to the pre-fingerprint ABI: no key.
     assert_eq!(
         base.plugin_args_raw(),
-        "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+        format!(
+            "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+        )
     );
     assert_eq!(
         base.clone()
@@ -31,13 +34,17 @@ fn fingerprint_plugin_switch_is_emitted_only_when_enabled() {
         base.clone()
             .with_fingerprint(QemuLaunchPluginSwitch::On)
             .plugin_args_raw(),
-        "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on"
+        format!(
+            "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on"
+        )
     );
     assert_eq!(
         base.with_fingerprint(QemuLaunchPluginSwitch::On)
             .with_fingerprint_oracle(QemuLaunchPluginSwitch::On)
             .plugin_args_raw(),
-        "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on,fingerprint_oracle=on"
+        format!(
+            "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off,fingerprint=on,fingerprint_oracle=on"
+        )
     );
 }
 

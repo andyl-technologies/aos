@@ -579,7 +579,7 @@ pub struct QemuLaunchCommandBuilder {
     qmp: Option<QemuQmpChannelConfig>,
     translation_prefetch: Option<QemuTranslationPrefetchExperiment>,
     console_capture: bool,
-    fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
+    fault_capability_requirement: Option<crate::QemuFaultCapabilityRequirement>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -597,16 +597,25 @@ impl QemuLaunchCommandBuilder {
         executable: impl Into<String>,
         plugin: QemuLaunchPluginConfig,
     ) -> Self {
+        let executable = executable.into();
+        let architecture = if executable.ends_with("qemu-system-x86_64") {
+            Some(LivePluginGuestArchitecture::X86_64)
+        } else if executable.ends_with("qemu-system-aarch64") {
+            Some(LivePluginGuestArchitecture::Aarch64)
+        } else {
+            None
+        };
         Self {
             profile,
             vm,
-            executable: executable.into(),
+            executable,
             plugin,
             gdbstub: None,
             qmp: None,
             translation_prefetch: None,
             console_capture: false,
-            fault_capability_requirement: crate::QemuFaultCapabilityRequirement::current_v1(),
+            fault_capability_requirement: architecture
+                .map(crate::QemuFaultCapabilityRequirement::current_v1),
         }
     }
 
@@ -640,7 +649,7 @@ impl QemuLaunchCommandBuilder {
         mut self,
         requirement: crate::QemuFaultCapabilityRequirement,
     ) -> Self {
-        self.fault_capability_requirement = requirement;
+        self.fault_capability_requirement = Some(requirement);
         self
     }
 
@@ -672,6 +681,11 @@ impl QemuLaunchCommandBuilder {
     /// validator.
     pub fn build(self) -> Result<QemuLaunchCommand, QemuLaunchCommandError> {
         validate_store_path("qemu_executable", &self.executable)?;
+        let fault_capability_requirement = self.fault_capability_requirement.ok_or_else(|| {
+            QemuLaunchCommandError::UnsupportedFaultCapabilityArchitecture {
+                executable: self.executable.clone(),
+            }
+        })?;
         self.vm.validate()?;
         self.plugin.validate()?;
         if let Some(gdbstub) = &self.gdbstub {
@@ -734,7 +748,7 @@ impl QemuLaunchCommandBuilder {
             qmp: self.qmp,
             plugin_coverage: self.plugin.coverage(),
             plugin_fault_node_hash: self.plugin.fault_node_hash(),
-            fault_capability_requirement: self.fault_capability_requirement,
+            fault_capability_requirement,
         })
     }
 }

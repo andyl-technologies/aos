@@ -1,4 +1,5 @@
 diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
+index faf8c90..3d5cfaf 100644
 --- a/accel/tcg/tcg-all.c
 +++ b/accel/tcg/tcg-all.c
 @@ -33,6 +33,7 @@
@@ -18,6 +19,7 @@ diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
  }
  
 diff --git a/include/system/rtc.h b/include/system/rtc.h
+index cde83fa..309a4b0 100644
 --- a/include/system/rtc.h
 +++ b/include/system/rtc.h
 @@ -55,4 +55,14 @@ void qemu_get_timedate(struct tm *tm, time_t offset);
@@ -36,6 +38,7 @@ diff --git a/include/system/rtc.h b/include/system/rtc.h
 +
  #endif
 diff --git a/system/rtc.c b/system/rtc.c
+index 5695128..e360fd6 100644
 --- a/system/rtc.c
 +++ b/system/rtc.c
 @@ -44,8 +44,34 @@ static int rtc_realtime_clock_offset; /* used only with QEMU_CLOCK_REALTIME */

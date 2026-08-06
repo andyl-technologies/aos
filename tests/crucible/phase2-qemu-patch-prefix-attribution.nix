@@ -258,6 +258,24 @@
       kind = "recorded";
       symbols = [];
     };
+    "0047-crucible-fault-command-abi.patch" = {
+      kind = "interface";
+      symbols = [
+        "qemu_plugin_crucible_fault_capabilities"
+        "qemu_plugin_crucible_fault_submit"
+        "qemu_plugin_crucible_fault_cancel"
+        "qemu_plugin_crucible_fault_peek"
+        "qemu_plugin_crucible_fault_poll"
+      ];
+    };
+    "0048-crucible-fault-safe-boundary.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0049-crucible-memory-boundary-mutate.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

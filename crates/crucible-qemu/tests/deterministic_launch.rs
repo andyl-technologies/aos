@@ -62,6 +62,10 @@ fn artifact(domain: &str, path: &str) -> QemuLaunchArtifact {
     QemuLaunchArtifact::new(ContentHash::from_canonical_material(domain, path), path)
 }
 
+fn lowercase_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn default_launch_command() -> QemuLaunchCommand {
     default_profile()
         .qemu_launch_command(
@@ -1232,6 +1236,10 @@ fn launch_hash_material_records_every_determinism_field() {
 fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
     let command = default_launch_command();
     let args = command.args();
+    let fault_hash = lowercase_hex(&default_plugin_config().fault_node_hash());
+    let plugin_argument = format!(
+        "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+    );
 
     assert_eq!(command.executable(), default_qemu_binary());
     assert!(args.windows(2).any(|window| {
@@ -1255,13 +1263,10 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
                 "virtio-blk-pci,drive=crucible-root0,id=crucible-root-device0",
             ]
     }));
-    assert!(args.windows(2).any(|window| {
-        window
-            == [
-                "-plugin",
-                "/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
-            ]
-    }));
+    assert!(
+        args.windows(2)
+            .any(|window| window[0] == "-plugin" && window[1] == plugin_argument)
+    );
     assert!(
         validate_pre_spawn_qemu_launch_args(args).is_ok(),
         "full launch command must remain accepted by the pre-spawn determinism validator"
@@ -1278,7 +1283,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
         "argv[34]=-kernel",
         "argv[35]=/nix/store/33333333333333333333333333333333-crucible-kernel/bzImage",
         "argv[40]=-plugin",
-        "argv[41]=/nix/store/22222222222222222222222222222222-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
+        &format!("argv[41]={plugin_argument}"),
     ] {
         assert!(material.contains(expected), "missing {expected}");
     }
@@ -1295,18 +1300,20 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
         .with_whitebox(QemuLaunchPluginSwitch::On)
         .with_whitebox_setup(validated_whitebox_setup())
         .with_coverage(QemuLaunchPluginSwitch::On);
-    assert_eq!(
-        plugin_config.plugin_args_raw(),
-        "simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1"
+    let fault_hash = lowercase_hex(&plugin_config.fault_node_hash());
+    let expected_plugin_args = format!(
+        "simfd=3,slot=2,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1"
     );
+    assert_eq!(plugin_config.plugin_args_raw(), expected_plugin_args);
     let command = default_profile()
         .qemu_launch_command(vm_config, default_qemu_binary(), plugin_config)
         .unwrap_or_else(|error| panic!("complete plugin launch command should build: {error}"));
     assert!(command.args().windows(2).any(|window| {
-        window == [
-            "-plugin",
-            "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,simfd=3,slot=2,shmemfd=4,wakefd=5,whitebox=on,coverage=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
-        ]
+        window[0] == "-plugin"
+            && window[1]
+                == format!(
+                    "/nix/store/66666666666666666666666666666666-crucible-qemu-plugin/lib/libcrucible_qemu_plugin.so,{expected_plugin_args}"
+                )
     }));
     assert!(command.args().windows(2).any(|window| {
         window

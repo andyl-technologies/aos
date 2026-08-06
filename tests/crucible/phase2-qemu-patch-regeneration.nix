@@ -170,6 +170,8 @@ in
             git config user.email "${series.deterministicAuthorEmail}"
             git config commit.gpgsign false
             git config core.autocrlf false
+            git config gc.auto 0
+            git config maintenance.auto false
             git add -A
             GIT_AUTHOR_NAME="${series.deterministicAuthorName}" \
             GIT_AUTHOR_EMAIL="${series.deterministicAuthorEmail}" \
@@ -224,6 +226,13 @@ in
                 || fail "subject for $patch_name is $subject, expected $patch_subject"
               test "$tree" = "$expected_tree" \
                 || fail "tree for $patch_name is $tree, expected $expected_tree"
+              dco_count=$(git log -1 --format=%B "$commit" | gawk '
+                /^Signed-off-by:/ { total++ }
+                $0 == "Signed-off-by: ${series.deterministicAuthorName} <${series.deterministicAuthorEmail}>" { expected++ }
+                END { print (total + 0) ":" (expected + 0) }
+              ')
+              test "$dco_count" = "1:1" \
+                || fail "$patch_name must carry exactly one manifest-contributor DCO sign-off (observed $dco_count)"
               printf '%s %s %s %s\n' "$patch_name" "$subject" "$commit" "$tree" \
                 >> "$out/patch-branch-manifest.actual"
 
@@ -234,7 +243,7 @@ in
               while IFS= read -r changed_path; do
                 git diff --unified=3 --no-ext-diff --src-prefix=a/ --dst-prefix=b/ \
                   "$parent_commit" "$commit" -- "$changed_path" \
-                  | sed '/^index /d' >> "$generated_patch"
+                  >> "$generated_patch"
               done < "$paths_file"
 
               if ! cmp -s "$committed_patch" "$generated_patch"; then
@@ -337,6 +346,7 @@ in
             qemu_version=${series.qemuVersion}
             qemu_source_hash=${series.qemuSourceHash}
             patch_regeneration_from_tracked_stack=true
+            every_patch_commit_has_exactly_one_dco_signoff=true
             patch_branch_bundle_verified=true
             patch_branch_bundle_is_thin=true
             patch_branch_bundle_bytes=$bundle_bytes

@@ -1,0 +1,2454 @@
+diff --git a/MAINTAINERS b/MAINTAINERS
+index c03d797..b5b12db 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -3839,6 +3839,7 @@ S: Maintained
+ F: docs/devel/tcg-plugins.rst
+ F: plugins/
+ F: include/qemu/crucible-fault.h
++F: plugins/crucible-fault-memory.c
+ F: tests/tcg/plugins/
+ F: tests/functional/test_aarch64_tcg_plugins.py
+ F: contrib/plugins/
+diff --git a/hw/core/cpu-system.c b/hw/core/cpu-system.c
+index aed5076..6d1775e 100644
+--- a/hw/core/cpu-system.c
++++ b/hw/core/cpu-system.c
+@@ -303,3 +303,18 @@ void cpu_vmstate_unregister(CPUState *cpu)
+         vmstate_unregister(NULL, &vmstate_cpu_common, cpu);
+     }
+ }
++bool cpu_get_fault_translation(CPUState *cpu, vaddr addr,
++                               CPUFaultTranslation *result)
++{
++    const SysemuCPUOps *ops;
++
++    if (!cpu || !result) {
++        return false;
++    }
++    ops = cpu->cc->sysemu_ops;
++    if (!ops || !ops->get_fault_translation) {
++        return false;
++    }
++    memset(result, 0, sizeof(*result));
++    return ops->get_fault_translation(cpu, addr, result);
++}
+diff --git a/include/exec/memory.h b/include/exec/memory.h
+index 2b1dd71..1a444df 100644
+--- a/include/exec/memory.h
++++ b/include/exec/memory.h
+@@ -2027,6 +2027,21 @@ MemoryRegion *memory_region_from_host(void *ptr, ram_addr_t *offset);
+  */
+ void *memory_region_get_ram_ptr(MemoryRegion *mr);
+ 
++/**
++ * memory_region_fault_commit_ram: Commits an already validated RAM mutation.
++ * @mr: Normal writable RAM MemoryRegion selected during preparation.
++ * @addr: Byte offset within @mr.
++ * @bytes: Replacement bytes.
++ * @length: Positive number of bytes to replace.
++ *
++ * This deterministic-fault helper is deliberately infallible: callers must
++ * resolve and validate the complete range before the first call.  It copies
++ * directly to RAM, updates migration/display dirty state, and invalidates any
++ * translated code covering the range.
++ */
++void memory_region_fault_commit_ram(MemoryRegion *mr, hwaddr addr,
++                                    const uint8_t *bytes, hwaddr length);
++
+ /* memory_region_ram_resize: Resize a RAM region.
+  *
+  * Resizing RAM while migrating can result in the migration being canceled.
+diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
+index abd8764..0258271 100644
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -702,6 +702,44 @@ enum CPUDumpFlags {
+ void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
+ 
+ #ifndef CONFIG_USER_ONLY
++/**
++ * CPUFaultTranslation:
++ * @physical_address: Exact physical address corresponding to the input byte.
++ * @page_size: Translation granule in bytes.
++ * @attrs: Memory transaction attributes selected by the architecture.
++ * @readable: Whether the selected context may read the page.
++ * @writable: Whether the selected context may write the page.
++ * @executable: Whether the selected context may execute the page.
++ * @user: Whether the translation was made in a user context.
++ *
++ * Architecture-neutral result of a side-effect-free fault translation.
++ */
++typedef struct CPUFaultTranslation {
++    hwaddr physical_address;
++    uint64_t page_size;
++    MemTxAttrs attrs;
++    bool readable;
++    bool writable;
++    bool executable;
++    bool user;
++} CPUFaultTranslation;
++
++/**
++ * cpu_get_fault_translation:
++ * @cpu: The CPU whose current translation context is selected.
++ * @addr: Virtual byte address to translate.
++ * @result: Receives the exact translation and effective permissions.
++ *
++ * Performs an architecture page-table walk without updating accessed, dirty,
++ * fault, or architectural state.  This interface exists for deterministic
++ * fault injection at a stopped safe boundary, not for debugger access.
++ *
++ * Returns: %true on success, or %false when translation is unsupported or the
++ * address is not readable and writable in the current context.
++ */
++bool cpu_get_fault_translation(CPUState *cpu, vaddr addr,
++                               CPUFaultTranslation *result);
++
+ /**
+  * cpu_get_phys_page_attrs_debug:
+  * @cpu: The CPU to obtain the physical page address for.
+diff --git a/include/hw/core/sysemu-cpu-ops.h b/include/hw/core/sysemu-cpu-ops.h
+index 8778923..06b7cb0 100644
+--- a/include/hw/core/sysemu-cpu-ops.h
++++ b/include/hw/core/sysemu-cpu-ops.h
+@@ -42,6 +42,12 @@ typedef struct SysemuCPUOps {
+      */
+     hwaddr (*get_phys_page_attrs_debug)(CPUState *cpu, vaddr addr,
+                                         MemTxAttrs *attrs);
++    /**
++     * @get_fault_translation: Side-effect-free exact translation used by the
++     *       deterministic fault boundary.
++     */
++    bool (*get_fault_translation)(CPUState *cpu, vaddr addr,
++                                  CPUFaultTranslation *result);
+     /**
+      * @asidx_from_attrs: Callback to return the CPU AddressSpace to use for
+      *       a memory access with the specified memory transaction attributes.
+diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
+index 926623a..bbe9daa 100644
+--- a/include/qemu/crucible-fault.h
++++ b/include/qemu/crucible-fault.h
+@@ -48,6 +48,7 @@ struct QemuCrucibleFaultHandler {
+ };
+ 
+ void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler);
++void qemu_crucible_fault_memory_register(uint16_t scope, const char *name);
+ void qemu_crucible_fault_registry_seal(void);
+ void qemu_crucible_fault_dispatch_boundary(uint16_t phase,
+                                            uint64_t observed_icount);
+diff --git a/plugins/crucible-fault-memory.c b/plugins/crucible-fault-memory.c
+new file mode 100644
+index 0000000..e8223f3
+--- /dev/null
++++ b/plugins/crucible-fault-memory.c
+@@ -0,0 +1,1029 @@
++/*
++ * Crucible deterministic guest-RAM boundary mutation
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "exec/address-spaces.h"
++#include "exec/cpu-common.h"
++#include "exec/memory.h"
++#include "hw/core/cpu.h"
++#include "qemu/crucible-fault.h"
++#include "qemu/module.h"
++#include "qom/object.h"
++
++#define CRUCIBLE_MEMORY_MAX_MAPPINGS 16384
++#define CRUCIBLE_MEMORY_DIRTY_PAGE_SIZE 4096
++
++typedef struct CrucibleMemoryMapping {
++    MemoryRegion *mr;
++    uint8_t *host;
++    uint64_t gpa;
++    uint64_t length;
++    uint64_t mr_offset;
++    uint64_t ram_block_offset;
++    uint8_t mr_identity[32];
++    uint8_t ram_block_identity[32];
++} CrucibleMemoryMapping;
++
++typedef struct CrucibleMemoryTranslation {
++    uint64_t virtual_page;
++    uint64_t physical_page;
++    uint64_t page_size;
++    uint16_t permissions;
++    uint16_t attributes;
++    uint32_t covered_bytes;
++} CrucibleMemoryTranslation;
++
++typedef struct CrucibleMemoryFragment {
++    CrucibleMemoryMapping *mapping;
++    uint64_t gpa;
++    uint32_t request_offset;
++    uint32_t length;
++    uint32_t flags;
++    uint64_t mr_offset;
++    uint64_t ram_block_offset;
++    uint8_t mr_identity[32];
++    uint8_t ram_block_identity[32];
++} CrucibleMemoryFragment;
++
++typedef struct CrucibleMemoryDirtyRange {
++    uint8_t ram_block_identity[32];
++    uint64_t offset;
++    uint64_t end;
++} CrucibleMemoryDirtyRange;
++
++typedef struct CrucibleMemoryMutation {
++    uint16_t address_space;
++    uint16_t transform;
++    uint32_t vcpu_index;
++    uint64_t address;
++    uint32_t length;
++    uint8_t expected_translation[32];
++    uint8_t *mask;
++    uint8_t *values;
++    GArray *mappings;
++    GArray *translations;
++    GArray *fragments;
++    GArray *dirty_ranges;
++    GByteArray *before;
++    GByteArray *after;
++    uint8_t translation_hash[32];
++    uint8_t mapping_hash[32];
++    uint8_t dirty_hash[32];
++} CrucibleMemoryMutation;
++
++typedef struct CrucibleMemoryMapCollector {
++    GArray *mappings;
++    int status;
++} CrucibleMemoryMapCollector;
++
++static uint16_t crucible_lduw(const uint8_t *bytes, size_t offset)
++{
++    return lduw_le_p(bytes + offset);
++}
++
++static uint32_t crucible_ldl(const uint8_t *bytes, size_t offset)
++{
++    return ldl_le_p(bytes + offset);
++}
++
++static uint64_t crucible_ldq(const uint8_t *bytes, size_t offset)
++{
++    return ldq_le_p(bytes + offset);
++}
++
++static void crucible_sha256_parts(const void *first, size_t first_len,
++                                  const void *second, size_t second_len,
++                                  uint8_t digest[32])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    gsize digest_len = 32;
++
++    g_checksum_update(checksum, first, first_len);
++    if (second_len) {
++        g_checksum_update(checksum, second, second_len);
++    }
++    g_checksum_get_digest(checksum, digest, &digest_len);
++    g_assert(digest_len == 32);
++}
++
++static void crucible_checksum_u16(GChecksum *checksum, uint16_t value)
++{
++    uint8_t bytes[2];
++
++    stw_le_p(bytes, value);
++    g_checksum_update(checksum, bytes, sizeof(bytes));
++}
++
++static void crucible_checksum_u32(GChecksum *checksum, uint32_t value)
++{
++    uint8_t bytes[4];
++
++    stl_le_p(bytes, value);
++    g_checksum_update(checksum, bytes, sizeof(bytes));
++}
++
++static void crucible_checksum_u64(GChecksum *checksum, uint64_t value)
++{
++    uint8_t bytes[8];
++
++    stq_le_p(bytes, value);
++    g_checksum_update(checksum, bytes, sizeof(bytes));
++}
++
++static void crucible_checksum_finish(GChecksum *checksum, uint8_t digest[32])
++{
++    gsize digest_len = 32;
++
++    g_checksum_get_digest(checksum, digest, &digest_len);
++    g_assert(digest_len == 32);
++}
++
++static bool crucible_digest_is_zero(const uint8_t digest[32])
++{
++    uint8_t combined = 0;
++
++    for (size_t i = 0; i < 32; i++) {
++        combined |= digest[i];
++    }
++    return combined == 0;
++}
++
++static int crucible_memory_parse(const uint8_t *payload, size_t payload_len,
++                                 CrucibleMemoryMutation *mutation,
++                                 bool allocate)
++{
++    uint32_t length;
++    uint32_t mask_length;
++    uint32_t values_length;
++    size_t expected;
++
++    if (!payload || !mutation ||
++        payload_len < CRUCIBLE_MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES ||
++        memcmp(payload, CRUCIBLE_MEMORY_MUTATION_PAYLOAD_MAGIC_V1, 8) != 0 ||
++        crucible_lduw(payload, CRUCIBLE_MEMORY_MUTATION_VERSION_OFFSET) !=
++            CRUCIBLE_MEMORY_MUTATION_PAYLOAD_VERSION_V1 ||
++        crucible_lduw(payload, CRUCIBLE_MEMORY_MUTATION_ATOMICITY_OFFSET) !=
++            CRUCIBLE_MEMORY_MUTATION_ATOMIC_ALL_OR_NOTHING) {
++        return -EINVAL;
++    }
++    for (size_t i = CRUCIBLE_MEMORY_MUTATION_RESERVED_OFFSET;
++         i < CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET; i++) {
++        if (payload[i] != 0) {
++            return -EINVAL;
++        }
++    }
++    length = crucible_ldl(payload, CRUCIBLE_MEMORY_MUTATION_LENGTH_OFFSET);
++    mask_length = crucible_ldl(payload,
++                               CRUCIBLE_MEMORY_MUTATION_MASK_LENGTH_OFFSET);
++    values_length = crucible_ldl(payload,
++                                 CRUCIBLE_MEMORY_MUTATION_VALUES_LENGTH_OFFSET);
++    expected = CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET +
++               (size_t)mask_length + values_length;
++    if (length == 0 || length > CRUCIBLE_MEMORY_MUTATION_HARD_BYTES ||
++        mask_length != length ||
++        payload_len > CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES ||
++        expected != payload_len) {
++        return -EINVAL;
++    }
++    mutation->address_space = crucible_lduw(
++        payload, CRUCIBLE_MEMORY_MUTATION_ADDRESS_SPACE_OFFSET);
++    mutation->transform = crucible_lduw(
++        payload, CRUCIBLE_MEMORY_MUTATION_TRANSFORM_OFFSET);
++    mutation->vcpu_index = crucible_ldl(
++        payload, CRUCIBLE_MEMORY_MUTATION_VCPU_INDEX_OFFSET);
++    mutation->address = crucible_ldq(payload,
++                                     CRUCIBLE_MEMORY_MUTATION_ADDRESS_OFFSET);
++    mutation->length = length;
++    if (mutation->address > UINT64_MAX - (length - 1) ||
++        (mutation->transform == CRUCIBLE_MEMORY_MUTATION_TRANSFORM_BIT_FLIP &&
++         values_length != 0) ||
++        (mutation->transform == CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE &&
++         values_length != length) ||
++        (mutation->transform != CRUCIBLE_MEMORY_MUTATION_TRANSFORM_BIT_FLIP &&
++         mutation->transform != CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE)) {
++        return -EINVAL;
++    }
++    memcpy(mutation->expected_translation,
++           payload + CRUCIBLE_MEMORY_MUTATION_TRANSLATION_SHA256_OFFSET, 32);
++    if ((mutation->address_space == CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA &&
++         (mutation->vcpu_index != CRUCIBLE_MEMORY_MUTATION_NO_VCPU ||
++          !crucible_digest_is_zero(mutation->expected_translation))) ||
++        (mutation->address_space == CRUCIBLE_MEMORY_MUTATION_ADDRESS_GVA &&
++         (mutation->vcpu_index == CRUCIBLE_MEMORY_MUTATION_NO_VCPU ||
++          crucible_digest_is_zero(mutation->expected_translation))) ||
++        (mutation->address_space != CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA &&
++         mutation->address_space != CRUCIBLE_MEMORY_MUTATION_ADDRESS_GVA)) {
++        return -EINVAL;
++    }
++    if (allocate) {
++        mutation->mask = g_memdup2(
++            payload + CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET, length);
++        if (values_length) {
++            mutation->values = g_memdup2(
++                payload + CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET + length,
++                length);
++        }
++    }
++    return 0;
++}
++
++static int crucible_memory_validate(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len)
++{
++    CrucibleMemoryMutation mutation = { 0 };
++
++    if (command->phase != CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
++        crucible_digest_is_zero(command->target_node_hash) ||
++        crucible_digest_is_zero(command->expected_precondition_hash)) {
++        return -EINVAL;
++    }
++    return crucible_memory_parse(payload, payload_len, &mutation, false);
++}
++
++static int crucible_memory_arm(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void **state_out)
++{
++    CrucibleMemoryMutation *mutation = g_new0(CrucibleMemoryMutation, 1);
++
++    (void)command;
++    if (crucible_memory_parse(payload, payload_len, mutation, true) != 0) {
++        g_free(mutation);
++        return -EINVAL;
++    }
++    *state_out = mutation;
++    return 0;
++}
++
++static void crucible_memory_identity_region(MemoryRegion *mr,
++                                            uint8_t digest[32], int *status)
++{
++    g_autofree char *owner_path = NULL;
++    g_autoptr(GChecksum) checksum = NULL;
++    Object *owner = memory_region_owner(mr);
++    const char *name = memory_region_name(mr);
++    size_t owner_len;
++    size_t name_len;
++
++    if (!owner || !name || !name[0]) {
++        *status = -ENODATA;
++        return;
++    }
++    owner_path = object_get_canonical_path(owner);
++    if (!owner_path || !owner_path[0] ||
++        strlen(owner_path) > UINT32_MAX || strlen(name) > UINT32_MAX) {
++        *status = -ENODATA;
++        return;
++    }
++    owner_len = strlen(owner_path);
++    name_len = strlen(name);
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_checksum_update(checksum,
++        (const guchar *)CRUCIBLE_MEMORY_REGION_IDENTITY_SHA256_DOMAIN_V1,
++        CRUCIBLE_MEMORY_REGION_IDENTITY_SHA256_DOMAIN_V1_BYTES);
++    crucible_checksum_u32(checksum, owner_len);
++    g_checksum_update(checksum, (const guchar *)owner_path, owner_len);
++    crucible_checksum_u32(checksum, name_len);
++    g_checksum_update(checksum, (const guchar *)name, name_len);
++    crucible_checksum_finish(checksum, digest);
++}
++
++static void crucible_memory_identity_ram_block(RAMBlock *block,
++                                               uint8_t digest[32], int *status)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    const char *id = qemu_ram_get_idstr(block);
++    size_t id_len;
++
++    if (!id || !id[0] || strlen(id) > UINT32_MAX) {
++        *status = -ENODATA;
++        return;
++    }
++    id_len = strlen(id);
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_checksum_update(checksum,
++        (const guchar *)CRUCIBLE_MEMORY_RAM_BLOCK_IDENTITY_SHA256_DOMAIN_V1,
++        CRUCIBLE_MEMORY_RAM_BLOCK_IDENTITY_SHA256_DOMAIN_V1_BYTES);
++    crucible_checksum_u32(checksum, id_len);
++    g_checksum_update(checksum, (const guchar *)id, id_len);
++    crucible_checksum_finish(checksum, digest);
++}
++
++static bool crucible_memory_collect_mapping(
++    const MemoryRegionSection *section, void *opaque)
++{
++    CrucibleMemoryMapCollector *collector = opaque;
++    CrucibleMemoryMapping mapping = { 0 };
++    RAMBlock *block;
++    ram_addr_t block_offset;
++
++    if (!memory_region_is_ram(section->mr)) {
++        return false;
++    }
++    if (memory_region_is_protected(section->mr)) {
++        return false;
++    }
++    if (section->readonly || memory_region_is_rom(section->mr) ||
++        memory_region_is_ram_device(section->mr)) {
++        return false;
++    }
++    if (collector->mappings->len >= CRUCIBLE_MEMORY_MAX_MAPPINGS ||
++        int128_gethi(section->size) != 0) {
++        collector->status = -E2BIG;
++        return true;
++    }
++    mapping.mr = section->mr;
++    mapping.gpa = section->offset_within_address_space;
++    mapping.length = int128_getlo(section->size);
++    mapping.mr_offset = section->offset_within_region;
++    if (mapping.length == 0 ||
++        mapping.gpa > UINT64_MAX - (mapping.length - 1) ||
++        mapping.mr_offset > UINT64_MAX - (mapping.length - 1)) {
++        collector->status = -EOVERFLOW;
++        return true;
++    }
++    mapping.host = memory_region_get_ram_ptr(mapping.mr) + mapping.mr_offset;
++    block = qemu_ram_block_from_host(mapping.host, false, &block_offset);
++    if (!block || block_offset > UINT64_MAX - (mapping.length - 1)) {
++        collector->status = -ENODATA;
++        return true;
++    }
++    mapping.ram_block_offset = block_offset;
++    crucible_memory_identity_region(mapping.mr, mapping.mr_identity,
++                                    &collector->status);
++    if (collector->status == 0) {
++        crucible_memory_identity_ram_block(block, mapping.ram_block_identity,
++                                           &collector->status);
++    }
++    if (collector->status != 0) {
++        return true;
++    }
++    g_array_append_val(collector->mappings, mapping);
++    return false;
++}
++
++static void crucible_memory_encode_mapping(const CrucibleMemoryMapping *mapping,
++                                           uint8_t bytes[104])
++{
++    memset(bytes, 0, 104);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_MAPPING_GPA_OFFSET, mapping->gpa);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_MAPPING_LENGTH_OFFSET, mapping->length);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_MAPPING_REGION_OFFSET,
++             mapping->mr_offset);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_MAPPING_RAM_BLOCK_OFFSET,
++             mapping->ram_block_offset);
++    memcpy(bytes + CRUCIBLE_MEMORY_MAPPING_REGION_IDENTITY_OFFSET,
++           mapping->mr_identity, 32);
++    memcpy(bytes + CRUCIBLE_MEMORY_MAPPING_RAM_BLOCK_IDENTITY_OFFSET,
++           mapping->ram_block_identity, 32);
++}
++
++static int crucible_memory_collect_mappings(CrucibleMemoryMutation *mutation)
++{
++    CrucibleMemoryMapCollector collector = {
++        .mappings = g_array_new(false, false, sizeof(CrucibleMemoryMapping)),
++    };
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    FlatView *view = address_space_to_flatview(&address_space_memory);
++
++    flatview_for_each_section(view, crucible_memory_collect_mapping,
++                              &collector);
++    if (collector.status != 0 || collector.mappings->len == 0) {
++        g_array_unref(collector.mappings);
++        return collector.status ? collector.status : -ENODATA;
++    }
++    g_checksum_update(checksum,
++        (const guchar *)CRUCIBLE_MEMORY_MAPPING_SHA256_DOMAIN_V1,
++        CRUCIBLE_MEMORY_MAPPING_SHA256_DOMAIN_V1_BYTES);
++    crucible_checksum_u32(checksum, collector.mappings->len);
++    for (guint i = 0; i < collector.mappings->len; i++) {
++        CrucibleMemoryMapping *mapping = &g_array_index(
++            collector.mappings, CrucibleMemoryMapping, i);
++        uint8_t encoded[CRUCIBLE_MEMORY_MAPPING_RECORD_V1_BYTES];
++
++        crucible_memory_encode_mapping(mapping, encoded);
++        g_checksum_update(checksum, encoded, sizeof(encoded));
++    }
++    crucible_checksum_finish(checksum, mutation->mapping_hash);
++    mutation->mappings = collector.mappings;
++    return 0;
++}
++
++static void crucible_memory_encode_translation(
++    const CrucibleMemoryTranslation *translation, uint8_t bytes[32])
++{
++    memset(bytes, 0, 32);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_TRANSLATION_VIRTUAL_PAGE_OFFSET,
++             translation->virtual_page);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_TRANSLATION_PHYSICAL_PAGE_OFFSET,
++             translation->physical_page);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_TRANSLATION_PAGE_SIZE_OFFSET,
++             translation->page_size);
++    stw_le_p(bytes + CRUCIBLE_MEMORY_TRANSLATION_PERMISSIONS_OFFSET,
++             translation->permissions);
++    stw_le_p(bytes + CRUCIBLE_MEMORY_TRANSLATION_ATTRIBUTES_OFFSET,
++             translation->attributes);
++    stl_le_p(bytes + CRUCIBLE_MEMORY_TRANSLATION_COVERED_BYTES_OFFSET,
++             translation->covered_bytes);
++}
++
++static int crucible_memory_translate(CrucibleMemoryMutation *mutation)
++{
++    g_autoptr(GChecksum) checksum = NULL;
++    uint64_t current = mutation->address;
++    uint32_t remaining = mutation->length;
++    CPUState *cpu;
++
++    mutation->translations = g_array_new(
++        false, false, sizeof(CrucibleMemoryTranslation));
++    if (mutation->address_space == CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA) {
++        memset(mutation->translation_hash, 0, 32);
++        return 0;
++    }
++    cpu = qemu_get_cpu(mutation->vcpu_index);
++    if (!cpu) {
++        return -ENOENT;
++    }
++    while (remaining) {
++        CPUFaultTranslation resolved;
++        CrucibleMemoryTranslation translation = { 0 };
++        uint64_t offset;
++        uint64_t available;
++
++        if (!cpu_get_fault_translation(cpu, current, &resolved) ||
++            resolved.page_size == 0 ||
++            current % resolved.page_size > resolved.physical_address) {
++            return -EFAULT;
++        }
++        offset = current % resolved.page_size;
++        translation.virtual_page = current - offset;
++        translation.physical_page = resolved.physical_address - offset;
++        translation.page_size = resolved.page_size;
++        available = resolved.page_size - offset;
++        translation.covered_bytes = MIN((uint64_t)remaining, available);
++        translation.permissions = CRUCIBLE_MEMORY_TRANSLATION_PERMISSION_READ |
++                                  CRUCIBLE_MEMORY_TRANSLATION_PERMISSION_WRITE;
++        if (resolved.executable) {
++            translation.permissions |=
++                CRUCIBLE_MEMORY_TRANSLATION_PERMISSION_EXECUTE;
++        }
++        if (resolved.user) {
++            translation.permissions |=
++                CRUCIBLE_MEMORY_TRANSLATION_PERMISSION_USER;
++            translation.attributes |=
++                CRUCIBLE_MEMORY_TRANSLATION_ATTRIBUTE_USER;
++        }
++        if (resolved.attrs.secure) {
++            translation.attributes |=
++                CRUCIBLE_MEMORY_TRANSLATION_ATTRIBUTE_SECURE;
++        }
++        g_array_append_val(mutation->translations, translation);
++        current += translation.covered_bytes;
++        remaining -= translation.covered_bytes;
++    }
++    checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_checksum_update(checksum,
++        (const guchar *)CRUCIBLE_MEMORY_TRANSLATION_SHA256_DOMAIN_V1,
++        CRUCIBLE_MEMORY_TRANSLATION_SHA256_DOMAIN_V1_BYTES);
++    crucible_checksum_u32(checksum, mutation->vcpu_index);
++    crucible_checksum_u32(checksum, mutation->translations->len);
++    for (guint i = 0; i < mutation->translations->len; i++) {
++        CrucibleMemoryTranslation *translation = &g_array_index(
++            mutation->translations, CrucibleMemoryTranslation, i);
++        uint8_t encoded[CRUCIBLE_MEMORY_TRANSLATION_RECORD_V1_BYTES];
++
++        crucible_memory_encode_translation(translation, encoded);
++        g_checksum_update(checksum, encoded, sizeof(encoded));
++    }
++    crucible_checksum_finish(checksum, mutation->translation_hash);
++    if (memcmp(mutation->translation_hash, mutation->expected_translation,
++               32) != 0) {
++        return -ESTALE;
++    }
++    return 0;
++}
++
++static CrucibleMemoryMapping *crucible_memory_find_mapping(
++    CrucibleMemoryMutation *mutation, uint64_t gpa)
++{
++    for (guint i = 0; i < mutation->mappings->len; i++) {
++        CrucibleMemoryMapping *mapping = &g_array_index(
++            mutation->mappings, CrucibleMemoryMapping, i);
++
++        if (gpa >= mapping->gpa && gpa - mapping->gpa < mapping->length) {
++            return mapping;
++        }
++    }
++    return NULL;
++}
++
++static int crucible_memory_append_physical_fragments(
++    CrucibleMemoryMutation *mutation, uint64_t gpa, uint32_t request_offset,
++    uint32_t length, bool invalidate_tb)
++{
++    while (length) {
++        CrucibleMemoryMapping *mapping =
++            crucible_memory_find_mapping(mutation, gpa);
++        CrucibleMemoryFragment fragment = { 0 };
++        uint64_t mapping_offset;
++        uint64_t available;
++
++        if (!mapping) {
++            return -EFAULT;
++        }
++        mapping_offset = gpa - mapping->gpa;
++        available = mapping->length - mapping_offset;
++        fragment.mapping = mapping;
++        fragment.gpa = gpa;
++        fragment.request_offset = request_offset;
++        fragment.length = MIN((uint64_t)length, available);
++        fragment.flags = invalidate_tb ?
++            CRUCIBLE_MEMORY_MUTATION_FRAGMENT_TB_INVALIDATED : 0;
++        fragment.mr_offset = mapping->mr_offset + mapping_offset;
++        fragment.ram_block_offset = mapping->ram_block_offset + mapping_offset;
++        memcpy(fragment.mr_identity, mapping->mr_identity, 32);
++        memcpy(fragment.ram_block_identity, mapping->ram_block_identity, 32);
++        g_array_append_val(mutation->fragments, fragment);
++        gpa += fragment.length;
++        request_offset += fragment.length;
++        length -= fragment.length;
++    }
++    return 0;
++}
++
++static int crucible_memory_resolve_fragments(CrucibleMemoryMutation *mutation)
++{
++    mutation->fragments = g_array_new(false, false,
++                                      sizeof(CrucibleMemoryFragment));
++    if (mutation->address_space == CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA) {
++        return crucible_memory_append_physical_fragments(
++            mutation, mutation->address, 0, mutation->length, true);
++    }
++    uint32_t request_offset = 0;
++    for (guint i = 0; i < mutation->translations->len; i++) {
++        CrucibleMemoryTranslation *translation = &g_array_index(
++            mutation->translations, CrucibleMemoryTranslation, i);
++        uint64_t virtual_address = mutation->address + request_offset;
++        uint64_t gpa = translation->physical_page +
++                       (virtual_address - translation->virtual_page);
++        bool invalidate_tb = translation->permissions &
++                             CRUCIBLE_MEMORY_TRANSLATION_PERMISSION_EXECUTE;
++        int status = crucible_memory_append_physical_fragments(
++            mutation, gpa, request_offset, translation->covered_bytes,
++            invalidate_tb);
++
++        if (status != 0) {
++            return status;
++        }
++        request_offset += translation->covered_bytes;
++    }
++    return request_offset == mutation->length ? 0 : -EFAULT;
++}
++
++static int crucible_dirty_compare(gconstpointer left, gconstpointer right)
++{
++    const CrucibleMemoryDirtyRange *a = left;
++    const CrucibleMemoryDirtyRange *b = right;
++    int identity = memcmp(a->ram_block_identity, b->ram_block_identity, 32);
++
++    if (identity) {
++        return identity;
++    }
++    return a->offset < b->offset ? -1 : a->offset > b->offset;
++}
++
++static void crucible_memory_encode_dirty(
++    const CrucibleMemoryDirtyRange *range, uint8_t bytes[48])
++{
++    uint64_t pages = (range->end - range->offset) /
++                     CRUCIBLE_MEMORY_DIRTY_PAGE_SIZE;
++
++    g_assert(pages > 0 && pages <= UINT32_MAX);
++    memset(bytes, 0, 48);
++    memcpy(bytes + CRUCIBLE_MEMORY_DIRTY_RANGE_RAM_BLOCK_IDENTITY_OFFSET,
++           range->ram_block_identity, 32);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_DIRTY_RANGE_RAM_BLOCK_OFFSET,
++             range->offset);
++    stl_le_p(bytes + CRUCIBLE_MEMORY_DIRTY_RANGE_PAGE_COUNT_OFFSET, pages);
++    stl_le_p(bytes + CRUCIBLE_MEMORY_DIRTY_RANGE_PAGE_SIZE_OFFSET,
++             CRUCIBLE_MEMORY_DIRTY_PAGE_SIZE);
++}
++
++static int crucible_memory_derive_dirty(CrucibleMemoryMutation *mutation)
++{
++    GArray *raw = g_array_new(false, false, sizeof(CrucibleMemoryDirtyRange));
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++
++    mutation->dirty_ranges = g_array_new(
++        false, false, sizeof(CrucibleMemoryDirtyRange));
++    for (guint i = 0; i < mutation->fragments->len; i++) {
++        CrucibleMemoryFragment *fragment = &g_array_index(
++            mutation->fragments, CrucibleMemoryFragment, i);
++        CrucibleMemoryDirtyRange range = { 0 };
++        uint64_t last = fragment->ram_block_offset + fragment->length - 1;
++
++        memcpy(range.ram_block_identity, fragment->ram_block_identity, 32);
++        range.offset = fragment->ram_block_offset /
++                       CRUCIBLE_MEMORY_DIRTY_PAGE_SIZE *
++                       CRUCIBLE_MEMORY_DIRTY_PAGE_SIZE;
++        range.end = (last / CRUCIBLE_MEMORY_DIRTY_PAGE_SIZE + 1) *
++                    CRUCIBLE_MEMORY_DIRTY_PAGE_SIZE;
++        if (range.end <= range.offset) {
++            g_array_unref(raw);
++            return -EOVERFLOW;
++        }
++        g_array_append_val(raw, range);
++    }
++    g_array_sort(raw, crucible_dirty_compare);
++    for (guint i = 0; i < raw->len; i++) {
++        CrucibleMemoryDirtyRange range = g_array_index(
++            raw, CrucibleMemoryDirtyRange, i);
++        if (mutation->dirty_ranges->len) {
++            CrucibleMemoryDirtyRange *previous = &g_array_index(
++                mutation->dirty_ranges, CrucibleMemoryDirtyRange,
++                mutation->dirty_ranges->len - 1);
++            if (memcmp(previous->ram_block_identity,
++                       range.ram_block_identity, 32) == 0 &&
++                range.offset <= previous->end) {
++                previous->end = MAX(previous->end, range.end);
++                continue;
++            }
++        }
++        g_array_append_val(mutation->dirty_ranges, range);
++    }
++    g_array_unref(raw);
++    g_checksum_update(checksum,
++        (const guchar *)CRUCIBLE_MEMORY_DIRTY_SHA256_DOMAIN_V1,
++        CRUCIBLE_MEMORY_DIRTY_SHA256_DOMAIN_V1_BYTES);
++    crucible_checksum_u32(checksum, mutation->dirty_ranges->len);
++    for (guint i = 0; i < mutation->dirty_ranges->len; i++) {
++        CrucibleMemoryDirtyRange *range = &g_array_index(
++            mutation->dirty_ranges, CrucibleMemoryDirtyRange, i);
++        uint8_t encoded[CRUCIBLE_MEMORY_DIRTY_RANGE_V1_BYTES];
++
++        if ((range->end - range->offset) /
++            CRUCIBLE_MEMORY_DIRTY_PAGE_SIZE > UINT32_MAX) {
++            return -EOVERFLOW;
++        }
++        crucible_memory_encode_dirty(range, encoded);
++        g_checksum_update(checksum, encoded, sizeof(encoded));
++    }
++    crucible_checksum_finish(checksum, mutation->dirty_hash);
++    return 0;
++}
++
++static void crucible_memory_capture_bytes(CrucibleMemoryMutation *mutation)
++{
++    mutation->before = g_byte_array_sized_new(mutation->length);
++    mutation->after = g_byte_array_sized_new(mutation->length);
++    g_byte_array_set_size(mutation->before, mutation->length);
++    g_byte_array_set_size(mutation->after, mutation->length);
++    for (guint i = 0; i < mutation->fragments->len; i++) {
++        CrucibleMemoryFragment *fragment = &g_array_index(
++            mutation->fragments, CrucibleMemoryFragment, i);
++        memcpy(mutation->before->data + fragment->request_offset,
++               fragment->mapping->host +
++                   (fragment->mr_offset - fragment->mapping->mr_offset),
++               fragment->length);
++    }
++    for (uint32_t i = 0; i < mutation->length; i++) {
++        uint8_t before = mutation->before->data[i];
++
++        if (mutation->transform ==
++            CRUCIBLE_MEMORY_MUTATION_TRANSFORM_BIT_FLIP) {
++            mutation->after->data[i] = before ^ mutation->mask[i];
++        } else {
++            mutation->after->data[i] =
++                (before & ~mutation->mask[i]) |
++                (mutation->values[i] & mutation->mask[i]);
++        }
++    }
++}
++
++static void crucible_memory_encode_fragment(
++    const CrucibleMemoryFragment *fragment, uint8_t bytes[104])
++{
++    memset(bytes, 0, 104);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_MUTATION_FRAGMENT_GPA_OFFSET,
++             fragment->gpa);
++    stl_le_p(bytes + CRUCIBLE_MEMORY_MUTATION_FRAGMENT_REQUEST_OFFSET,
++             fragment->request_offset);
++    stl_le_p(bytes + CRUCIBLE_MEMORY_MUTATION_FRAGMENT_LENGTH_OFFSET,
++             fragment->length);
++    stl_le_p(bytes + CRUCIBLE_MEMORY_MUTATION_FRAGMENT_FLAGS_OFFSET,
++             fragment->flags);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_MUTATION_FRAGMENT_REGION_OFFSET,
++             fragment->mr_offset);
++    stq_le_p(bytes + CRUCIBLE_MEMORY_MUTATION_FRAGMENT_RAM_BLOCK_OFFSET,
++             fragment->ram_block_offset);
++    memcpy(bytes + CRUCIBLE_MEMORY_MUTATION_FRAGMENT_REGION_IDENTITY_OFFSET,
++           fragment->mr_identity, 32);
++    memcpy(bytes + CRUCIBLE_MEMORY_MUTATION_FRAGMENT_RAM_BLOCK_IDENTITY_OFFSET,
++           fragment->ram_block_identity, 32);
++}
++
++static void crucible_memory_node_fingerprint(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const CrucibleMemoryMutation *mutation, uint64_t observed_icount,
++    const uint8_t before_hash[32], const uint8_t after_hash[32],
++    bool invalidated, uint64_t invalidated_start, uint64_t invalidated_end,
++    uint8_t digest[32])
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    uint8_t present = invalidated;
++
++    g_checksum_update(checksum,
++        (const guchar *)CRUCIBLE_MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1,
++        CRUCIBLE_MEMORY_BOUNDARY_FINGERPRINT_SHA256_DOMAIN_V1_BYTES);
++    g_checksum_update(checksum, command->target_node_hash, 32);
++    crucible_checksum_u64(checksum, observed_icount);
++    crucible_checksum_u16(checksum, mutation->address_space);
++    crucible_checksum_u16(checksum, mutation->transform);
++    crucible_checksum_u32(checksum, mutation->vcpu_index);
++    crucible_checksum_u64(checksum, mutation->address);
++    crucible_checksum_u32(checksum, mutation->length);
++    g_checksum_update(checksum, before_hash, 32);
++    g_checksum_update(checksum, after_hash, 32);
++    g_checksum_update(checksum, mutation->translation_hash, 32);
++    g_checksum_update(checksum, mutation->mapping_hash, 32);
++    g_checksum_update(checksum, mutation->dirty_hash, 32);
++    g_checksum_update(checksum, &present, 1);
++    crucible_checksum_u64(checksum, invalidated_start);
++    crucible_checksum_u64(checksum, invalidated_end);
++    crucible_checksum_finish(checksum, digest);
++}
++
++static void crucible_memory_build_evidence(
++    const struct qemu_plugin_crucible_fault_command *command,
++    CrucibleMemoryMutation *mutation,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *payload)
++{
++    uint32_t inline_len = mutation->length <=
++                          CRUCIBLE_MEMORY_MUTATION_EVIDENCE_INLINE_BYTES ?
++                          mutation->length : 0;
++    bool invalidated = false;
++    uint64_t invalidated_start = UINT64_MAX;
++    uint64_t invalidated_end = 0;
++    uint16_t flags = inline_len ?
++        CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FLAG_INLINE_BYTES : 0;
++    uint8_t node_fingerprint[32];
++    size_t body_size;
++
++    for (guint i = 0; i < mutation->fragments->len; i++) {
++        CrucibleMemoryFragment *fragment = &g_array_index(
++            mutation->fragments, CrucibleMemoryFragment, i);
++        if (fragment->flags &
++            CRUCIBLE_MEMORY_MUTATION_FRAGMENT_TB_INVALIDATED) {
++            invalidated = true;
++            invalidated_start = MIN(invalidated_start, fragment->gpa);
++            invalidated_end = MAX(invalidated_end,
++                                  fragment->gpa + fragment->length - 1);
++        }
++    }
++    if (invalidated) {
++        flags |= CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FLAG_TB_INVALIDATED;
++    } else {
++        invalidated_start = 0;
++    }
++    crucible_memory_node_fingerprint(
++        command, mutation, result->observed_icount, result->before_hash,
++        result->after_hash, invalidated, invalidated_start, invalidated_end,
++        node_fingerprint);
++    body_size = mutation->translations->len *
++                    CRUCIBLE_MEMORY_TRANSLATION_RECORD_V1_BYTES +
++                mutation->fragments->len *
++                    CRUCIBLE_MEMORY_MUTATION_FRAGMENT_V1_BYTES +
++                mutation->mappings->len *
++                    CRUCIBLE_MEMORY_MAPPING_RECORD_V1_BYTES +
++                mutation->dirty_ranges->len *
++                    CRUCIBLE_MEMORY_DIRTY_RANGE_V1_BYTES +
++                2 * inline_len;
++    g_byte_array_set_size(payload,
++        CRUCIBLE_MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES + body_size);
++    memset(payload->data, 0,
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES);
++    memcpy(payload->data, CRUCIBLE_MEMORY_MUTATION_EVIDENCE_MAGIC_V1, 8);
++    stw_le_p(payload->data + CRUCIBLE_MEMORY_MUTATION_EVIDENCE_VERSION_OFFSET,
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_VERSION_V1);
++    stw_le_p(payload->data + CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FLAGS_OFFSET,
++             flags);
++    stw_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_ADDRESS_SPACE_OFFSET,
++             mutation->address_space);
++    stw_le_p(payload->data + CRUCIBLE_MEMORY_MUTATION_EVIDENCE_TRANSFORM_OFFSET,
++             mutation->transform);
++    stl_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_VCPU_INDEX_OFFSET,
++             mutation->vcpu_index);
++    stl_le_p(payload->data + CRUCIBLE_MEMORY_MUTATION_EVIDENCE_LENGTH_OFFSET,
++             mutation->length);
++    stq_le_p(payload->data + CRUCIBLE_MEMORY_MUTATION_EVIDENCE_ADDRESS_OFFSET,
++             mutation->address);
++    stq_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_OBSERVED_ICOUNT_OFFSET,
++             result->observed_icount);
++    stl_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_TRANSLATION_COUNT_OFFSET,
++             mutation->translations->len);
++    stl_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FRAGMENT_COUNT_OFFSET,
++             mutation->fragments->len);
++    stl_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_MAPPING_COUNT_OFFSET,
++             mutation->mappings->len);
++    stl_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_DIRTY_COUNT_OFFSET,
++             mutation->dirty_ranges->len);
++    stl_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_INLINE_LENGTH_OFFSET,
++             inline_len);
++    memcpy(payload->data +
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_BEFORE_SHA256_OFFSET,
++           result->before_hash, 32);
++    memcpy(payload->data +
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_AFTER_SHA256_OFFSET,
++           result->after_hash, 32);
++    memcpy(payload->data +
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_TRANSLATION_SHA256_OFFSET,
++           mutation->translation_hash, 32);
++    memcpy(payload->data +
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_MAPPING_SHA256_OFFSET,
++           mutation->mapping_hash, 32);
++    memcpy(payload->data +
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_DIRTY_SHA256_OFFSET,
++           mutation->dirty_hash, 32);
++    stq_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_INVALIDATED_START_OFFSET,
++             invalidated_start);
++    stq_le_p(payload->data +
++             CRUCIBLE_MEMORY_MUTATION_EVIDENCE_INVALIDATED_END_OFFSET,
++             invalidated_end);
++    memcpy(payload->data +
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_TARGET_NODE_HASH_OFFSET,
++           command->target_node_hash, 32);
++    memcpy(payload->data +
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_NODE_FINGERPRINT_OFFSET,
++           node_fingerprint, 32);
++
++    size_t offset = CRUCIBLE_MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES;
++    for (guint i = 0; i < mutation->translations->len; i++) {
++        CrucibleMemoryTranslation *translation = &g_array_index(
++            mutation->translations, CrucibleMemoryTranslation, i);
++        crucible_memory_encode_translation(translation, payload->data + offset);
++        offset += CRUCIBLE_MEMORY_TRANSLATION_RECORD_V1_BYTES;
++    }
++    for (guint i = 0; i < mutation->fragments->len; i++) {
++        CrucibleMemoryFragment *fragment = &g_array_index(
++            mutation->fragments, CrucibleMemoryFragment, i);
++        crucible_memory_encode_fragment(fragment, payload->data + offset);
++        offset += CRUCIBLE_MEMORY_MUTATION_FRAGMENT_V1_BYTES;
++    }
++    for (guint i = 0; i < mutation->mappings->len; i++) {
++        CrucibleMemoryMapping *mapping = &g_array_index(
++            mutation->mappings, CrucibleMemoryMapping, i);
++        crucible_memory_encode_mapping(mapping, payload->data + offset);
++        offset += CRUCIBLE_MEMORY_MAPPING_RECORD_V1_BYTES;
++    }
++    for (guint i = 0; i < mutation->dirty_ranges->len; i++) {
++        CrucibleMemoryDirtyRange *range = &g_array_index(
++            mutation->dirty_ranges, CrucibleMemoryDirtyRange, i);
++        crucible_memory_encode_dirty(range, payload->data + offset);
++        offset += CRUCIBLE_MEMORY_DIRTY_RANGE_V1_BYTES;
++    }
++    if (inline_len) {
++        memcpy(payload->data + offset, mutation->before->data, inline_len);
++        offset += inline_len;
++        memcpy(payload->data + offset, mutation->after->data, inline_len);
++    }
++    crucible_sha256_parts(payload->data, payload->len, NULL, 0,
++                          result->evidence_hash);
++}
++
++static int crucible_memory_prepare(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void *state,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *result_payload)
++{
++    CrucibleMemoryMutation *mutation = state;
++    int status;
++
++    (void)payload;
++    (void)payload_len;
++    status = crucible_memory_collect_mappings(mutation);
++    if (status == 0) {
++        status = crucible_memory_translate(mutation);
++    }
++    if (status == 0) {
++        status = crucible_memory_resolve_fragments(mutation);
++    }
++    if (status == 0) {
++        status = crucible_memory_derive_dirty(mutation);
++    }
++    if (status != 0) {
++        result->status =
++            status == -E2BIG ? CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT :
++            status == -ESTALE ? CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH :
++            CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
++        return status;
++    }
++    crucible_memory_capture_bytes(mutation);
++    crucible_sha256_parts(mutation->before->data, mutation->before->len,
++                          NULL, 0, result->before_hash);
++    if (memcmp(result->before_hash, command->expected_precondition_hash,
++               32) != 0) {
++        result->status = CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH;
++        return -ESTALE;
++    }
++    crucible_sha256_parts(mutation->after->data, mutation->after->len,
++                          NULL, 0, result->after_hash);
++    crucible_memory_build_evidence(command, mutation, result, result_payload);
++    return 0;
++}
++
++static void crucible_memory_commit(
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len, void *state,
++    struct qemu_plugin_crucible_fault_result *result,
++    GByteArray *result_payload)
++{
++    CrucibleMemoryMutation *mutation = state;
++
++    (void)command;
++    (void)payload;
++    (void)payload_len;
++    (void)result_payload;
++    for (guint i = 0; i < mutation->fragments->len; i++) {
++        CrucibleMemoryFragment *fragment = &g_array_index(
++            mutation->fragments, CrucibleMemoryFragment, i);
++        memory_region_fault_commit_ram(
++            fragment->mapping->mr, fragment->mr_offset,
++            mutation->after->data + fragment->request_offset,
++            fragment->length);
++    }
++    result->status = CRUCIBLE_FAULT_STATUS_APPLIED;
++    result->applied_icount = result->observed_icount;
++}
++
++static void crucible_memory_free(void *state)
++{
++    CrucibleMemoryMutation *mutation = state;
++
++    if (!mutation) {
++        return;
++    }
++    g_free(mutation->mask);
++    g_free(mutation->values);
++    g_clear_pointer(&mutation->mappings, g_array_unref);
++    g_clear_pointer(&mutation->translations, g_array_unref);
++    g_clear_pointer(&mutation->fragments, g_array_unref);
++    g_clear_pointer(&mutation->dirty_ranges, g_array_unref);
++    g_clear_pointer(&mutation->before, g_byte_array_unref);
++    g_clear_pointer(&mutation->after, g_byte_array_unref);
++    g_free(mutation);
++}
++
++static QemuCrucibleFaultHandler crucible_memory_handler = {
++    .capability = {
++        .command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_MUTATION,
++        .scope = QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL,
++        .semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION,
++        .phase_mask = 1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1),
++        .maximum_payload_bytes = CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES,
++        .maximum_pending_commands = CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY,
++        .required_feature_bits =
++            CRUCIBLE_FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION,
++        .name = "qemu.memory.mutate.unregistered.v1",
++        .payload_schema = "crucible.memory-mutation-payload.v1",
++    },
++    .validate = crucible_memory_validate,
++    .arm = crucible_memory_arm,
++    .prepare = crucible_memory_prepare,
++    .commit = crucible_memory_commit,
++    .free_state = crucible_memory_free,
++};
++
++void qemu_crucible_fault_memory_register(uint16_t scope, const char *name)
++{
++    static bool registered;
++
++    g_assert(scope == QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 ||
++             scope == QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64);
++    g_assert(name);
++    if (registered) {
++        g_assert(crucible_memory_handler.capability.scope == scope);
++        g_assert(strcmp(crucible_memory_handler.capability.name, name) == 0);
++        return;
++    }
++    crucible_memory_handler.capability.scope = scope;
++    crucible_memory_handler.capability.name = name;
++    qemu_crucible_fault_register(&crucible_memory_handler);
++    registered = true;
++}
+diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
+index 21443b6..158c42d 100644
+--- a/plugins/crucible-fault.c
++++ b/plugins/crucible-fault.c
+@@ -14,6 +14,7 @@
+ #include "system/cpu-timers.h"
+ 
+ #define CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY 4096
++#define CRUCIBLE_FAULT_SEQUENCE_WINDOW 4096
+ 
+ typedef struct CruciblePendingFault {
+     QTAILQ_ENTRY(CruciblePendingFault) link;
+@@ -32,6 +33,7 @@ typedef struct CrucibleCompletedFault {
+ 
+ static GMutex crucible_fault_lock;
+ static GPtrArray *crucible_fault_handlers;
++static GHashTable *crucible_seen_sequences;
+ static QTAILQ_HEAD(, CruciblePendingFault) crucible_pending_faults =
+     QTAILQ_HEAD_INITIALIZER(crucible_pending_faults);
+ static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
+@@ -39,12 +41,14 @@ static QTAILQ_HEAD(, CrucibleCompletedFault) crucible_completed_faults =
+ static size_t crucible_pending_count;
+ static size_t crucible_completed_count;
+ static bool crucible_registry_sealed;
+-static uint64_t crucible_last_command_sequence;
++static uint64_t crucible_max_command_sequence;
+ 
+ static void crucible_fault_ensure_registry(void)
+ {
+     if (!crucible_fault_handlers) {
+         crucible_fault_handlers = g_ptr_array_new();
++        crucible_seen_sequences = g_hash_table_new_full(
++            g_int64_hash, g_int64_equal, g_free, NULL);
+     }
+ }
+ 
+@@ -148,15 +152,44 @@ static size_t crucible_fault_handler_pending_count(
+     return count;
+ }
+ 
++static int crucible_fault_pending_compare(const CruciblePendingFault *a,
++                                          const CruciblePendingFault *b)
++{
++    int order;
++
++    if (a->command.target_icount != b->command.target_icount) {
++        return a->command.target_icount < b->command.target_icount ? -1 : 1;
++    }
++    if (a->command.phase != b->command.phase) {
++        return a->command.phase < b->command.phase ? -1 : 1;
++    }
++    if (a->handler->capability.command_kind !=
++        b->handler->capability.command_kind) {
++        return a->handler->capability.command_kind <
++               b->handler->capability.command_kind ? -1 : 1;
++    }
++    order = memcmp(a->command.binding_hash, b->command.binding_hash, 32);
++    if (order) {
++        return order;
++    }
++    order = memcmp(a->command.opportunity_hash,
++                   b->command.opportunity_hash, 32);
++    if (order) {
++        return order;
++    }
++    if (a->command.command_sequence != b->command.command_sequence) {
++        return a->command.command_sequence < b->command.command_sequence ?
++               -1 : 1;
++    }
++    return 0;
++}
++
+ static void crucible_fault_insert_pending(CruciblePendingFault *pending)
+ {
+     CruciblePendingFault *cursor;
+ 
+     QTAILQ_FOREACH(cursor, &crucible_pending_faults, link) {
+-        if (pending->command.target_icount < cursor->command.target_icount ||
+-            (pending->command.target_icount == cursor->command.target_icount &&
+-             pending->command.command_sequence <
+-                 cursor->command.command_sequence)) {
++        if (crucible_fault_pending_compare(pending, cursor) < 0) {
+             QTAILQ_INSERT_BEFORE(cursor, pending, link);
+             return;
+         }
+@@ -164,6 +197,41 @@ static void crucible_fault_insert_pending(CruciblePendingFault *pending)
+     QTAILQ_INSERT_TAIL(&crucible_pending_faults, pending, link);
+ }
+ 
++static bool crucible_fault_accept_sequence(uint64_t sequence)
++{
++    uint64_t floor = 0;
++    guint64 lookup = sequence;
++    guint64 *stored;
++
++    if (crucible_max_command_sequence >= CRUCIBLE_FAULT_SEQUENCE_WINDOW) {
++        floor = crucible_max_command_sequence -
++                CRUCIBLE_FAULT_SEQUENCE_WINDOW + 1;
++    }
++    if (sequence < floor ||
++        g_hash_table_contains(crucible_seen_sequences, &lookup)) {
++        return false;
++    }
++    if (sequence > crucible_max_command_sequence) {
++        GHashTableIter iterator;
++        gpointer key;
++
++        crucible_max_command_sequence = sequence;
++        if (sequence >= CRUCIBLE_FAULT_SEQUENCE_WINDOW) {
++            floor = sequence - CRUCIBLE_FAULT_SEQUENCE_WINDOW + 1;
++            g_hash_table_iter_init(&iterator, crucible_seen_sequences);
++            while (g_hash_table_iter_next(&iterator, &key, NULL)) {
++                if (*(guint64 *)key < floor) {
++                    g_hash_table_iter_remove(&iterator);
++                }
++            }
++        }
++    }
++    stored = g_new(guint64, 1);
++    *stored = sequence;
++    g_hash_table_add(crucible_seen_sequences, stored);
++    return true;
++}
++
+ static void crucible_fault_result_rejected(
+     struct qemu_plugin_crucible_fault_result *result,
+     const struct qemu_plugin_crucible_fault_command *command,
+@@ -260,13 +328,12 @@ int qemu_plugin_crucible_fault_submit(
+         g_mutex_unlock(&crucible_fault_lock);
+         return status;
+     }
+-    if (command->command_sequence <= crucible_last_command_sequence) {
++    if (!crucible_fault_accept_sequence(command->command_sequence)) {
+         status = crucible_fault_reject_submit(
+             command, CRUCIBLE_FAULT_STATUS_DUPLICATE_SEQUENCE);
+         g_mutex_unlock(&crucible_fault_lock);
+         return status;
+     }
+-    crucible_last_command_sequence = command->command_sequence;
+     handler = crucible_fault_find_handler(command->command_kind,
+                                           command->semantic_version);
+     if (!handler) {
+diff --git a/plugins/meson.build b/plugins/meson.build
+index 955a3ec..e5bd2ce 100644
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -59,6 +59,7 @@ if host_os == 'windows'
+ endif
+ 
+ user_ss.add(files('user.c', 'api-user.c'))
+-system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c'))
++system_ss.add(files('system.c', 'api-system.c', 'crucible-fault.c',
++                    'crucible-fault-memory.c'))
+ 
+ common_ss.add(files('loader.c', 'api.c', 'core.c'))
+diff --git a/system/physmem.c b/system/physmem.c
+index 333a5eb..a16c3ad 100644
+--- a/system/physmem.c
++++ b/system/physmem.c
+@@ -2835,6 +2835,26 @@ static void invalidate_and_set_dirty(MemoryRegion *mr, hwaddr addr,
+     cpu_physical_memory_set_dirty_range(addr, length, dirty_log_mask);
+ }
+ 
++void memory_region_fault_commit_ram(MemoryRegion *mr, hwaddr addr,
++                                    const uint8_t *bytes, hwaddr length)
++{
++    uint64_t region_size;
++
++    assert(mr);
++    assert(bytes);
++    assert(length > 0);
++    assert(memory_region_is_ram(mr));
++    assert(!memory_region_is_rom(mr));
++    assert(!memory_region_is_ram_device(mr));
++    assert(!memory_region_is_protected(mr));
++    assert(int128_gethi(mr->size) == 0);
++    region_size = int128_getlo(mr->size);
++    assert(addr <= region_size);
++    assert(length <= region_size - addr);
++    memcpy(memory_region_get_ram_ptr(mr) + addr, bytes, length);
++    invalidate_and_set_dirty(mr, addr, length);
++}
++
+ void memory_region_flush_rom_device(MemoryRegion *mr, hwaddr addr, hwaddr size)
+ {
+     /*
+diff --git a/target/arm/cpu.c b/target/arm/cpu.c
+index 7413b57..6657597 100644
+--- a/target/arm/cpu.c
++++ b/target/arm/cpu.c
+@@ -37,6 +37,7 @@
+ #include "exec/exec-all.h"
+ #include "hw/qdev-properties.h"
+ #if !defined(CONFIG_USER_ONLY)
++#include "qemu/crucible-fault.h"
+ #include "hw/loader.h"
+ #include "hw/boards.h"
+ #ifdef CONFIG_TCG
+@@ -2696,6 +2697,7 @@ static const gchar *arm_gdb_arch_name(CPUState *cs)
+ static const struct SysemuCPUOps arm_sysemu_ops = {
+     .has_work = arm_cpu_has_work,
+     .get_phys_page_attrs_debug = arm_cpu_get_phys_page_attrs_debug,
++    .get_fault_translation = arm_cpu_get_fault_translation,
+     .asidx_from_attrs = arm_asidx_from_attrs,
+     .write_elf32_note = arm_cpu_write_elf32_note,
+     .write_elf64_note = arm_cpu_write_elf64_note,
+@@ -2812,6 +2814,11 @@ static const TypeInfo arm_cpu_type_info = {
+ static void arm_cpu_register_types(void)
+ {
+     type_register_static(&arm_cpu_type_info);
++#ifdef TARGET_AARCH64
++    qemu_crucible_fault_memory_register(
++        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64,
++        "qemu.memory.mutate.aarch64.v1");
++#endif
+ }
+ 
+ type_init(arm_cpu_register_types)
+diff --git a/target/arm/cpu.h b/target/arm/cpu.h
+index a8177c6..290efb9 100644
+--- a/target/arm/cpu.h
++++ b/target/arm/cpu.h
+@@ -1204,6 +1204,8 @@ void arm_v7m_cpu_do_interrupt(CPUState *cpu);
+ 
+ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
+                                          MemTxAttrs *attrs);
++bool arm_cpu_get_fault_translation(CPUState *cpu, vaddr addr,
++                                   CPUFaultTranslation *result);
+ #endif /* !CONFIG_USER_ONLY */
+ 
+ int arm_cpu_gdb_read_register(CPUState *cpu, GByteArray *buf, int reg);
+diff --git a/target/arm/ptw.c b/target/arm/ptw.c
+index 4330900..011358e 100644
+--- a/target/arm/ptw.c
++++ b/target/arm/ptw.c
+@@ -3645,3 +3645,32 @@ hwaddr arm_cpu_get_phys_page_attrs_debug(CPUState *cs, vaddr addr,
+     }
+     return res.f.phys_addr;
+ }
++
++bool arm_cpu_get_fault_translation(CPUState *cs, vaddr addr,
++                                   CPUFaultTranslation *result)
++{
++    ARMCPU *cpu = ARM_CPU(cs);
++    CPUARMState *env = &cpu->env;
++    ARMMMUIdx mmu_idx = arm_mmu_idx(env);
++    S1Translate ptw = {
++        .in_mmu_idx = mmu_idx,
++        .in_space = arm_security_space(env),
++        .in_debug = true,
++    };
++    GetPhysAddrResult res = {};
++    ARMMMUFaultInfo fi = {};
++
++    if (get_phys_addr_gpc(env, &ptw, addr, MMU_DATA_STORE, 0, &res, &fi) ||
++        !(res.f.prot & PAGE_READ) || !(res.f.prot & PAGE_WRITE) ||
++        res.f.lg_page_size >= 64) {
++        return false;
++    }
++    result->physical_address = res.f.phys_addr;
++    result->page_size = 1ULL << res.f.lg_page_size;
++    result->attrs = res.f.attrs;
++    result->readable = res.f.prot & PAGE_READ;
++    result->writable = res.f.prot & PAGE_WRITE;
++    result->executable = res.f.prot & PAGE_EXEC;
++    result->user = arm_current_el(env) == 0;
++    return true;
++}
+diff --git a/target/i386/cpu.c b/target/i386/cpu.c
+index 1b64cea..deee0bf 100644
+--- a/target/i386/cpu.c
++++ b/target/i386/cpu.c
+@@ -36,6 +36,7 @@
+ #include "hw/qdev-properties.h"
+ #include "hw/i386/topology.h"
+ #ifndef CONFIG_USER_ONLY
++#include "qemu/crucible-fault.h"
+ #include "system/reset.h"
+ #include "qapi/qapi-commands-machine-target.h"
+ #include "exec/address-spaces.h"
+@@ -8895,6 +8896,7 @@ static const struct SysemuCPUOps i386_sysemu_ops = {
+     .get_memory_mapping = x86_cpu_get_memory_mapping,
+     .get_paging_enabled = x86_cpu_get_paging_enabled,
+     .get_phys_page_attrs_debug = x86_cpu_get_phys_page_attrs_debug,
++    .get_fault_translation = x86_cpu_get_fault_translation,
+     .asidx_from_attrs = x86_asidx_from_attrs,
+     .get_crash_info = x86_cpu_get_crash_info,
+     .write_elf32_note = x86_cpu_write_elf32_note,
+@@ -9028,6 +9030,11 @@ static void x86_cpu_register_types(void)
+     }
+     type_register_static(&max_x86_cpu_type_info);
+     type_register_static(&x86_base_cpu_type_info);
++#ifdef TARGET_X86_64
++    qemu_crucible_fault_memory_register(
++        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64,
++        "qemu.memory.mutate.x86_64.v1");
++#endif
+ }
+ 
+ type_init(x86_cpu_register_types)
+diff --git a/target/i386/cpu.h b/target/i386/cpu.h
+index 76f2444..0b07cae 100644
+--- a/target/i386/cpu.h
++++ b/target/i386/cpu.h
+@@ -2375,6 +2375,8 @@ int x86_cpu_pending_interrupt(CPUState *cs, int interrupt_request);
+ 
+ hwaddr x86_cpu_get_phys_page_attrs_debug(CPUState *cpu, vaddr addr,
+                                          MemTxAttrs *attrs);
++bool x86_cpu_get_fault_translation(CPUState *cpu, vaddr addr,
++                                   CPUFaultTranslation *result);
+ int cpu_get_pic_interrupt(CPUX86State *s);
+ 
+ /* MS-DOS compatibility mode FPU exception support */
+diff --git a/target/i386/tcg/system/excp_helper.c b/target/i386/tcg/system/excp_helper.c
+index 6876329..f7e2288 100644
+--- a/target/i386/tcg/system/excp_helper.c
++++ b/target/i386/tcg/system/excp_helper.c
+@@ -31,6 +31,7 @@ typedef struct TranslateParams {
+     int mmu_idx;
+     int ptw_idx;
+     MMUAccessType access_type;
++    bool update_page_tables;
+ } TranslateParams;
+ 
+ typedef struct TranslateResult {
+@@ -182,7 +183,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+                 if (pte & (rsvd_mask | PG_PSE_MASK)) {
+                     goto do_fault_rsvd;
+                 }
+-                if (!ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
++                if (in->update_page_tables &&
++                    !ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
+                     goto restart_5;
+                 }
+                 ptep = pte ^ PG_NX_MASK;
+@@ -206,7 +208,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+             if (pte & (rsvd_mask | PG_PSE_MASK)) {
+                 goto do_fault_rsvd;
+             }
+-            if (!ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
++            if (in->update_page_tables &&
++                !ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
+                 goto restart_4;
+             }
+             ptep &= pte ^ PG_NX_MASK;
+@@ -226,7 +229,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+             if (pte & rsvd_mask) {
+                 goto do_fault_rsvd;
+             }
+-            if (!ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
++            if (in->update_page_tables &&
++                !ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
+                 goto restart_3_lma;
+             }
+             ptep &= pte ^ PG_NX_MASK;
+@@ -254,7 +258,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+             if (pte & (rsvd_mask | PG_NX_MASK)) {
+                 goto do_fault_rsvd;
+             }
+-            if (!ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
++            if (in->update_page_tables &&
++                !ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
+                 goto restart_3_nolma;
+             }
+             ptep = PG_NX_MASK | PG_USER_MASK | PG_RW_MASK;
+@@ -281,7 +286,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+             ptep &= pte ^ PG_NX_MASK;
+             goto do_check_protect;
+         }
+-        if (!ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
++        if (in->update_page_tables &&
++            !ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
+             goto restart_2_pae;
+         }
+         ptep &= pte ^ PG_NX_MASK;
+@@ -329,7 +335,8 @@ static bool mmu_translate(CPUX86State *env, const TranslateParams *in,
+             rsvd_mask = 0x200000;
+             goto do_check_protect_pse36;
+         }
+-        if (!ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
++        if (in->update_page_tables &&
++            !ptw_setl(&pte_trans, pte, PG_ACCESSED_MASK)) {
+             goto restart_2_nopae;
+         }
+ 
+@@ -423,7 +430,7 @@ do_check_protect_pse36:
+              */
+             prot &= ~PAGE_WRITE;
+         }
+-        if (!ptw_setl(&pte_trans, pte, set)) {
++        if (in->update_page_tables && !ptw_setl(&pte_trans, pte, set)) {
+             /*
+              * We can arrive here from any of 3 levels and 2 formats.
+              * The only safe thing is to restart the entire lookup.
+@@ -550,6 +557,7 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+ 
+     in.addr = addr;
+     in.access_type = access_type;
++    in.update_page_tables = true;
+ 
+     switch (mmu_idx) {
+     case MMU_PHYS_IDX:
+@@ -606,6 +614,60 @@ static bool get_physical_address(CPUX86State *env, vaddr addr,
+     return true;
+ }
+ 
++bool x86_cpu_get_fault_translation(CPUState *cs, vaddr addr,
++                                   CPUFaultTranslation *result)
++{
++    CPUX86State *env = cpu_env(cs);
++    TranslateResult out;
++    TranslateFault err;
++    int mmu_idx = cpu_mmu_index(cs, false);
++    TranslateParams in = {
++        .addr = addr,
++        .access_type = MMU_DATA_STORE,
++        .update_page_tables = false,
++    };
++
++    if (env->hflags2 & HF2_NPT_MASK) {
++        return false;
++    }
++    if (is_mmu_index_32(mmu_idx)) {
++        in.addr = (uint32_t)addr;
++    }
++    if (env->cr[0] & CR0_PG_MASK) {
++        in.cr3 = env->cr[3];
++        in.mmu_idx = mmu_idx;
++        in.ptw_idx = MMU_PHYS_IDX;
++        in.pg_mode = get_pg_mode(env);
++        if (in.pg_mode & PG_MODE_LMA) {
++            int shift = in.pg_mode & PG_MODE_LA57 ? 56 : 47;
++            int64_t sext = (int64_t)addr >> shift;
++
++            if (sext != 0 && sext != -1) {
++                return false;
++            }
++        }
++        if (!mmu_translate(env, &in, &out, &err, 0)) {
++            return false;
++        }
++    } else {
++        out.paddr = addr & x86_get_a20_mask(env);
++        out.prot = PAGE_READ | PAGE_WRITE | PAGE_EXEC;
++        out.page_size = TARGET_PAGE_SIZE;
++    }
++    if (!(out.prot & PAGE_READ) || !(out.prot & PAGE_WRITE) ||
++        out.page_size <= 0) {
++        return false;
++    }
++    result->physical_address = out.paddr;
++    result->page_size = out.page_size;
++    result->attrs = cpu_get_mem_attrs(env);
++    result->readable = out.prot & PAGE_READ;
++    result->writable = out.prot & PAGE_WRITE;
++    result->executable = out.prot & PAGE_EXEC;
++    result->user = is_mmu_index_user(mmu_idx);
++    return true;
++}
++
+ bool x86_cpu_tlb_fill(CPUState *cs, vaddr addr, int size,
+                       MMUAccessType access_type, int mmu_idx,
+                       bool probe, uintptr_t retaddr)
+diff --git a/tests/tcg/plugins/crucible-memory.c b/tests/tcg/plugins/crucible-memory.c
+new file mode 100644
+index 0000000..f47b431
+--- /dev/null
++++ b/tests/tcg/plugins/crucible-memory.c
+@@ -0,0 +1,785 @@
++/*
++ * Live Crucible memory-boundary mutation test plugin
++ *
++ * Copyright (c) 2026 ANDYL Technologies
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include <glib.h>
++#include <qemu-plugin.h>
++
++#include "aos/crucible/crucible_shmem_abi.h"
++
++QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
++
++static uint64_t test_address = 0x8000;
++static uint8_t test_before = 0x5a;
++static uint8_t test_after = 0xa5;
++static uint64_t test_icount = 100;
++static uint32_t test_length = 1;
++static uint32_t test_vcpu = CRUCIBLE_MEMORY_MUTATION_NO_VCPU;
++static uint16_t test_address_space = CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA;
++static uint16_t test_transform = CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE;
++static uint16_t test_expected_status = CRUCIBLE_FAULT_STATUS_APPLIED;
++static uint16_t test_malformed;
++static uint16_t test_overlap_results;
++static bool test_overlap_order;
++static bool test_translation_mismatch;
++static bool test_expect_tb_invalidation;
++static bool test_expect_execution_effect;
++static bool test_expect_unchanged_byte;
++static bool test_defer_submit;
++static bool test_current_tb_target;
++static bool test_submitted;
++static uint32_t test_expected_translations;
++static uint32_t test_minimum_fragments = 1;
++static uint8_t test_expected_translation[32];
++static uint8_t *test_before_data;
++static uint8_t *test_after_data;
++static char *test_before_hex;
++static char *test_after_hex;
++static char *test_evidence_path;
++static uint8_t *test_evidence;
++static struct qemu_plugin_crucible_fault_command test_deferred_command;
++static uint8_t *test_deferred_payload;
++static size_t test_deferred_payload_len;
++static GByteArray *test_paging_ready;
++static GByteArray *test_observed_byte;
++static uint64_t test_paging_ready_address = 0x102001;
++static uint64_t test_execution_result_address;
++static uint64_t test_unchanged_address;
++static bool test_validated;
++
++static uint16_t test_get_u16(const uint8_t *bytes)
++{
++    return bytes[0] | (uint16_t)bytes[1] << 8;
++}
++
++static uint32_t test_get_u32(const uint8_t *bytes)
++{
++    return bytes[0] | (uint32_t)bytes[1] << 8 |
++           (uint32_t)bytes[2] << 16 | (uint32_t)bytes[3] << 24;
++}
++
++static uint64_t test_get_u64(const uint8_t *bytes)
++{
++    return test_get_u32(bytes) | (uint64_t)test_get_u32(bytes + 4) << 32;
++}
++
++static void test_put_u16(uint8_t *bytes, uint16_t value)
++{
++    bytes[0] = value;
++    bytes[1] = value >> 8;
++}
++
++static void test_put_u32(uint8_t *bytes, uint32_t value)
++{
++    for (size_t i = 0; i < 4; i++) {
++        bytes[i] = value >> (8 * i);
++    }
++}
++
++static void test_put_u64(uint8_t *bytes, uint64_t value)
++{
++    for (size_t i = 0; i < 8; i++) {
++        bytes[i] = value >> (8 * i);
++    }
++}
++
++static void test_fail(const char *message)
++{
++    g_printerr("Crucible memory mutation live test failed: %s\n", message);
++    abort();
++}
++
++static void test_sha256(const uint8_t *bytes, size_t length, uint8_t digest[32])
++{
++    if (qemu_plugin_crucible_sha256_bytes(bytes, length, digest) != 0) {
++        test_fail("QEMU SHA-256 service rejected test bytes");
++    }
++}
++
++static bool test_digest_is_zero(const uint8_t digest[32])
++{
++    uint8_t combined = 0;
++
++    for (size_t i = 0; i < 32; i++) {
++        combined |= digest[i];
++    }
++    return combined == 0;
++}
++
++static void test_validate_result(void)
++{
++    struct qemu_plugin_crucible_fault_result result = { 0 };
++    uint8_t expected_before_hash[32];
++    uint8_t expected_after_hash[32];
++    uint8_t overlap_before;
++    uint8_t overlap_after;
++    size_t evidence_len = 0;
++    uint32_t translations;
++    uint32_t fragments;
++    uint32_t mappings;
++    uint32_t dirty_ranges;
++    uint32_t inline_len;
++    uint32_t expected_inline_len;
++    size_t fragments_offset;
++    size_t inline_offset;
++    bool saw_tb_invalidation = false;
++    int status;
++
++    status = qemu_plugin_crucible_fault_poll(
++        &result, test_evidence, 2 * 1024 * 1024, &evidence_len);
++    if (status == 0) {
++        return;
++    }
++    if (status != 1 || result.status != test_expected_status ||
++        result.command_kind != CRUCIBLE_FAULT_COMMAND_MEMORY_MUTATION ||
++        result.command_sequence != test_overlap_results + 1 ||
++        (test_expected_status != CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND &&
++         result.observed_icount != test_icount) ||
++        (test_expected_status == CRUCIBLE_FAULT_STATUS_APPLIED &&
++         result.applied_icount != test_icount) ||
++        (test_expected_status != CRUCIBLE_FAULT_STATUS_APPLIED &&
++         result.applied_icount != 0)) {
++        g_printerr("status=%d result-status=%u expected-status=%u "
++                   "kind=%u sequence=%" G_GUINT64_FORMAT " "
++                   "observed=%" G_GUINT64_FORMAT " applied=%" G_GUINT64_FORMAT
++                   " expected-icount=%" G_GUINT64_FORMAT "\n",
++                   status, result.status, test_expected_status,
++                   result.command_kind, result.command_sequence,
++                   result.observed_icount, result.applied_icount, test_icount);
++        test_fail("result status or boundary metadata is incorrect");
++    }
++    overlap_before = test_overlap_results == 0 ? 0x5a : 0x0f;
++    overlap_after = test_overlap_results == 0 ? 0x0f : 0xa5;
++    test_sha256(test_overlap_order ? &overlap_before : test_before_data,
++                test_overlap_order ? 1 : test_length,
++                expected_before_hash);
++    test_sha256(test_overlap_order ? &overlap_after : test_after_data,
++                test_overlap_order ? 1 : test_length,
++                expected_after_hash);
++    if (test_expected_status != CRUCIBLE_FAULT_STATUS_APPLIED) {
++        if (evidence_len != 0 ||
++            memcmp(result.after_hash, result.before_hash, 32) != 0) {
++            test_fail("rejected mutation published evidence or changed bytes");
++        }
++        if (test_expected_status ==
++                CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH &&
++            !test_translation_mismatch &&
++            memcmp(result.before_hash, expected_before_hash, 32) != 0) {
++            test_fail("precondition rejection omitted the observed byte hash");
++        }
++        if (test_translation_mismatch &&
++            (!test_digest_is_zero(result.before_hash) ||
++             !test_digest_is_zero(result.after_hash))) {
++            test_fail("translation rejection observed or changed guest bytes");
++        }
++        if (test_expect_unchanged_byte &&
++            (!qemu_plugin_read_memory_vaddr(test_unchanged_address,
++                                            test_observed_byte, 1) ||
++             test_observed_byte->data[0] != test_before)) {
++            test_fail("rejected multi-fragment mutation changed its valid prefix");
++        }
++        test_validated = true;
++        g_printerr("CRUCIBLE_MEMORY_MUTATION_LIVE_PASS\n");
++        qemu_plugin_request_shutdown(0);
++        return;
++    }
++    if (memcmp(result.before_hash, expected_before_hash, 32) != 0 ||
++        memcmp(result.after_hash, expected_after_hash, 32) != 0) {
++        test_fail("result before/after digests disagree with live RAM bytes");
++    }
++    if (evidence_len < CRUCIBLE_MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES ||
++        memcmp(test_evidence, CRUCIBLE_MEMORY_MUTATION_EVIDENCE_MAGIC_V1,
++               8) != 0 ||
++        test_get_u16(test_evidence +
++                     CRUCIBLE_MEMORY_MUTATION_EVIDENCE_VERSION_OFFSET) !=
++            CRUCIBLE_MEMORY_MUTATION_EVIDENCE_VERSION_V1 ||
++        test_get_u64(
++            test_evidence +
++            CRUCIBLE_MEMORY_MUTATION_EVIDENCE_OBSERVED_ICOUNT_OFFSET) !=
++            test_icount ||
++        test_get_u64(test_evidence +
++                     CRUCIBLE_MEMORY_MUTATION_EVIDENCE_ADDRESS_OFFSET) !=
++            test_address ||
++        test_get_u16(test_evidence +
++                     CRUCIBLE_MEMORY_MUTATION_EVIDENCE_ADDRESS_SPACE_OFFSET) !=
++            test_address_space ||
++        test_get_u16(test_evidence +
++                     CRUCIBLE_MEMORY_MUTATION_EVIDENCE_TRANSFORM_OFFSET) !=
++            test_transform ||
++        test_get_u32(test_evidence +
++                     CRUCIBLE_MEMORY_MUTATION_EVIDENCE_LENGTH_OFFSET) !=
++            test_length ||
++        memcmp(test_evidence +
++                   CRUCIBLE_MEMORY_MUTATION_EVIDENCE_TRANSLATION_SHA256_OFFSET,
++               test_expected_translation, 32) != 0) {
++        test_fail("evidence header is not the canonical version-1 record");
++    }
++    translations = test_get_u32(test_evidence +
++        CRUCIBLE_MEMORY_MUTATION_EVIDENCE_TRANSLATION_COUNT_OFFSET);
++    fragments = test_get_u32(test_evidence +
++        CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FRAGMENT_COUNT_OFFSET);
++    mappings = test_get_u32(test_evidence +
++        CRUCIBLE_MEMORY_MUTATION_EVIDENCE_MAPPING_COUNT_OFFSET);
++    dirty_ranges = test_get_u32(test_evidence +
++        CRUCIBLE_MEMORY_MUTATION_EVIDENCE_DIRTY_COUNT_OFFSET);
++    inline_len = test_get_u32(test_evidence +
++        CRUCIBLE_MEMORY_MUTATION_EVIDENCE_INLINE_LENGTH_OFFSET);
++    expected_inline_len = test_length <=
++        CRUCIBLE_MEMORY_MUTATION_EVIDENCE_INLINE_BYTES ? test_length : 0;
++    fragments_offset = CRUCIBLE_MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES +
++        translations * CRUCIBLE_MEMORY_TRANSLATION_RECORD_V1_BYTES;
++    for (uint32_t i = 0; i < fragments; i++) {
++        size_t flags_offset = fragments_offset +
++            i * CRUCIBLE_MEMORY_MUTATION_FRAGMENT_V1_BYTES +
++            CRUCIBLE_MEMORY_MUTATION_FRAGMENT_FLAGS_OFFSET;
++
++        if (test_get_u16(test_evidence + flags_offset) &
++            CRUCIBLE_MEMORY_MUTATION_FRAGMENT_TB_INVALIDATED) {
++            saw_tb_invalidation = true;
++        }
++    }
++    inline_offset = CRUCIBLE_MEMORY_MUTATION_EVIDENCE_HEADER_V1_BYTES +
++        translations * CRUCIBLE_MEMORY_TRANSLATION_RECORD_V1_BYTES +
++        fragments * CRUCIBLE_MEMORY_MUTATION_FRAGMENT_V1_BYTES +
++        mappings * CRUCIBLE_MEMORY_MAPPING_RECORD_V1_BYTES +
++        dirty_ranges * CRUCIBLE_MEMORY_DIRTY_RANGE_V1_BYTES;
++    if (translations != test_expected_translations ||
++        fragments < test_minimum_fragments || mappings == 0 ||
++        dirty_ranges == 0 || inline_len != expected_inline_len ||
++        inline_offset + 2 * expected_inline_len != evidence_len ||
++        (expected_inline_len != 0 &&
++         (memcmp(test_evidence + inline_offset,
++                 test_overlap_order ? &overlap_before : test_before_data,
++                 test_length) != 0 ||
++          memcmp(test_evidence + inline_offset + test_length,
++                 test_overlap_order ? &overlap_after : test_after_data,
++                 test_length) != 0))) {
++        test_fail("evidence records or inline bytes are incomplete");
++    }
++    if (test_expect_tb_invalidation &&
++        (!(test_get_u16(test_evidence +
++            CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FLAGS_OFFSET) &
++           CRUCIBLE_MEMORY_MUTATION_EVIDENCE_FLAG_TB_INVALIDATED) ||
++         !saw_tb_invalidation)) {
++        test_fail("mutation did not publish required TB invalidation evidence");
++    }
++    if (test_evidence_path &&
++        !g_file_set_contents(test_evidence_path, (const char *)test_evidence,
++                             evidence_len, NULL)) {
++        test_fail("could not write the requested live evidence file");
++    }
++    if (test_overlap_order && ++test_overlap_results < 2) {
++        return;
++    }
++    test_validated = true;
++    g_printerr("CRUCIBLE_MEMORY_MUTATION_LIVE_PASS\n");
++    qemu_plugin_request_shutdown(0);
++}
++
++static void test_tb_exec(unsigned int cpu_index, void *opaque)
++{
++    (void)cpu_index;
++    (void)opaque;
++    if (!test_submitted) {
++        uint64_t current_icount;
++
++        if (!qemu_plugin_read_memory_vaddr(test_paging_ready_address,
++                                           test_paging_ready, 1) ||
++            test_paging_ready->data[0] != 0x5a) {
++            return;
++        }
++        current_icount = qemu_plugin_icount_raw();
++        if (test_current_tb_target) {
++            test_icount = current_icount;
++        } else {
++            if (UINT64_MAX - current_icount < test_icount) {
++                test_fail("deferred target icount overflows u64");
++            }
++            test_icount += current_icount;
++        }
++        test_deferred_command.target_icount = test_icount;
++        test_deferred_command.authorization_ceiling_icount = test_icount;
++        if (qemu_plugin_crucible_fault_submit(
++                &test_deferred_command, test_deferred_payload,
++                test_deferred_payload_len) != 0) {
++            test_fail(
++                "QEMU rejected deferred live memory mutation command");
++        }
++        test_submitted = true;
++        if (test_current_tb_target) {
++            qemu_plugin_force_vcpu_exit();
++        }
++        return;
++    }
++    if (test_expect_execution_effect &&
++        (!qemu_plugin_read_memory_vaddr(test_execution_result_address,
++                                        test_observed_byte, 1) ||
++         test_observed_byte->data[0] != test_after)) {
++        return;
++    }
++    if (!test_validated) {
++        test_validate_result();
++    }
++}
++
++static void test_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
++{
++    (void)id;
++    qemu_plugin_register_vcpu_tb_exec_cb(
++        tb, test_tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
++}
++
++static void test_exit(qemu_plugin_id_t id, void *opaque)
++{
++    (void)id;
++    (void)opaque;
++    if (!test_validated) {
++        test_fail("applied result was not validated before process exit");
++    }
++    g_free(test_before_data);
++    g_free(test_after_data);
++    g_free(test_before_hex);
++    g_free(test_after_hex);
++    g_free(test_evidence_path);
++    g_free(test_evidence);
++    g_free(test_deferred_payload);
++    g_byte_array_unref(test_paging_ready);
++    g_byte_array_unref(test_observed_byte);
++}
++
++static bool test_parse_u64(const char *argument, const char *prefix,
++                           uint64_t *value)
++{
++    const char *text;
++    char *end;
++
++    if (!g_str_has_prefix(argument, prefix)) {
++        return false;
++    }
++    text = argument + strlen(prefix);
++    *value = g_ascii_strtoull(text, &end, 0);
++    if (!text[0] || *end) {
++        test_fail("plugin numeric argument is malformed");
++    }
++    return true;
++}
++
++static bool test_parse_name(const char *argument, const char *prefix,
++                            const char **value)
++{
++    if (!g_str_has_prefix(argument, prefix)) {
++        return false;
++    }
++    *value = argument + strlen(prefix);
++    if (!**value) {
++        test_fail("plugin named argument is empty");
++    }
++    return true;
++}
++
++static bool test_parse_digest(const char *argument, const char *prefix,
++                              uint8_t digest[32])
++{
++    const char *text;
++
++    if (!test_parse_name(argument, prefix, &text)) {
++        return false;
++    }
++    if (strlen(text) != 64) {
++        test_fail("translation digest must contain 64 hexadecimal digits");
++    }
++    for (size_t i = 0; i < 32; i++) {
++        int high = g_ascii_xdigit_value(text[2 * i]);
++        int low = g_ascii_xdigit_value(text[2 * i + 1]);
++
++        if (high < 0 || low < 0) {
++            test_fail("translation digest contains a non-hexadecimal digit");
++        }
++        digest[i] = high << 4 | low;
++    }
++    return true;
++}
++
++static void test_decode_bytes(const char *text, uint8_t repeated,
++                              uint8_t *bytes)
++{
++    if (!text) {
++        memset(bytes, repeated, test_length);
++        return;
++    }
++    if (strlen(text) != 2 * test_length) {
++        test_fail("byte string length does not match mutation length");
++    }
++    for (size_t i = 0; i < test_length; i++) {
++        int high = g_ascii_xdigit_value(text[2 * i]);
++        int low = g_ascii_xdigit_value(text[2 * i + 1]);
++
++        if (high < 0 || low < 0) {
++            test_fail("byte string contains a non-hexadecimal digit");
++        }
++        bytes[i] = high << 4 | low;
++    }
++}
++
++QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
++                                           const qemu_info_t *info,
++                                           int argc, char **argv)
++{
++    struct qemu_plugin_crucible_fault_command command = { 0 };
++    struct qemu_plugin_crucible_fault_capability capabilities[64];
++    g_autofree uint8_t *payload = NULL;
++    g_autofree uint8_t *before = NULL;
++    uint8_t before_hash[32];
++    uint8_t intermediate_hash[32];
++    uint64_t parsed;
++    size_t count;
++    size_t payload_len;
++    uint32_t wire_length;
++    const char *name;
++
++    if (!info->system_emulation || info->system.smp_vcpus != 1 ||
++        (strcmp(info->target_name, "x86_64") != 0 &&
++         strcmp(info->target_name, "aarch64") != 0)) {
++        test_fail("test requires one x86_64 or aarch64 system vCPU");
++    }
++    for (int i = 0; i < argc; i++) {
++        if (test_parse_u64(argv[i], "address=", &test_address)) {
++            continue;
++        }
++        if (test_parse_u64(argv[i], "before=", &parsed)) {
++            if (parsed > UINT8_MAX) {
++                test_fail("before byte exceeds u8");
++            }
++            test_before = parsed;
++            continue;
++        }
++        if (test_parse_u64(argv[i], "after=", &parsed)) {
++            if (parsed > UINT8_MAX) {
++                test_fail("after byte exceeds u8");
++            }
++            test_after = parsed;
++            continue;
++        }
++        if (test_parse_u64(argv[i], "length=", &parsed)) {
++            if (parsed == 0 || parsed > CRUCIBLE_MEMORY_MUTATION_HARD_BYTES) {
++                test_fail("length is outside the supported mutation bound");
++            }
++            test_length = parsed;
++            continue;
++        }
++        if (test_parse_u64(argv[i], "vcpu=", &parsed)) {
++            if (parsed > UINT32_MAX) {
++                test_fail("vCPU index exceeds u32");
++            }
++            test_vcpu = parsed;
++            continue;
++        }
++        if (test_parse_u64(argv[i], "icount=", &test_icount)) {
++            continue;
++        }
++        if (test_parse_u64(argv[i], "translations=", &parsed)) {
++            if (parsed > UINT32_MAX) {
++                test_fail("translation count exceeds u32");
++            }
++            test_expected_translations = parsed;
++            continue;
++        }
++        if (test_parse_u64(argv[i], "fragments=", &parsed)) {
++            if (parsed == 0 || parsed > UINT32_MAX) {
++                test_fail("minimum fragment count is invalid");
++            }
++            test_minimum_fragments = parsed;
++            continue;
++        }
++        if (test_parse_u64(argv[i], "execution-result=", &parsed)) {
++            test_execution_result_address = parsed;
++            test_expect_execution_effect = true;
++            continue;
++        }
++        if (test_parse_u64(argv[i], "unchanged-vaddr=", &parsed)) {
++            test_unchanged_address = parsed;
++            test_expect_unchanged_byte = true;
++            continue;
++        }
++        if (test_parse_u64(argv[i], "paging-ready=", &parsed)) {
++            test_paging_ready_address = parsed;
++            continue;
++        }
++        if (test_parse_digest(argv[i], "translation=",
++                              test_expected_translation)) {
++            continue;
++        }
++        if (test_parse_name(argv[i], "before-bytes=", &name)) {
++            g_free(test_before_hex);
++            test_before_hex = g_strdup(name);
++            continue;
++        }
++        if (test_parse_name(argv[i], "after-bytes=", &name)) {
++            g_free(test_after_hex);
++            test_after_hex = g_strdup(name);
++            continue;
++        }
++        if (test_parse_name(argv[i], "evidence=", &name)) {
++            g_free(test_evidence_path);
++            test_evidence_path = g_strdup(name);
++            continue;
++        }
++        if (test_parse_name(argv[i], "address-space=", &name)) {
++            if (strcmp(name, "gpa") == 0) {
++                test_address_space = CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA;
++            } else if (strcmp(name, "gva") == 0) {
++                test_address_space = CRUCIBLE_MEMORY_MUTATION_ADDRESS_GVA;
++            } else {
++                test_fail("address-space must be gpa or gva");
++            }
++            continue;
++        }
++        if (test_parse_name(argv[i], "transform=", &name)) {
++            if (strcmp(name, "replace") == 0) {
++                test_transform = CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE;
++            } else if (strcmp(name, "bit-flip") == 0) {
++                test_transform = CRUCIBLE_MEMORY_MUTATION_TRANSFORM_BIT_FLIP;
++            } else {
++                test_fail("transform must be replace or bit-flip");
++            }
++            continue;
++        }
++        if (test_parse_name(argv[i], "status=", &name)) {
++            if (strcmp(name, "applied") == 0) {
++                test_expected_status = CRUCIBLE_FAULT_STATUS_APPLIED;
++            } else if (strcmp(name, "precondition-mismatch") == 0) {
++                test_expected_status =
++                    CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH;
++            } else if (strcmp(name, "translation-mismatch") == 0) {
++                test_expected_status =
++                    CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH;
++                test_translation_mismatch = true;
++            } else if (strcmp(name, "invalid-target") == 0) {
++                test_expected_status = CRUCIBLE_FAULT_STATUS_INVALID_TARGET;
++            } else if (strcmp(name, "malformed-command") == 0) {
++                test_expected_status = CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND;
++            } else {
++                test_fail("unsupported expected result status");
++            }
++            continue;
++        }
++        if (test_parse_name(argv[i], "tb-invalidated=", &name)) {
++            if (strcmp(name, "required") != 0) {
++                test_fail("tb-invalidated must be required");
++            }
++            test_expect_tb_invalidation = true;
++            continue;
++        }
++        if (test_parse_name(argv[i], "submit=", &name)) {
++            if (strcmp(name, "paging-ready") != 0) {
++                test_fail("submit must be paging-ready");
++            }
++            test_defer_submit = true;
++            continue;
++        }
++        if (test_parse_name(argv[i], "target-mode=", &name)) {
++            if (strcmp(name, "current-tb") != 0) {
++                test_fail("target-mode must be current-tb");
++            }
++            test_current_tb_target = true;
++            continue;
++        }
++        if (test_parse_name(argv[i], "malformed=", &name)) {
++            if (strcmp(name, "zero-length") == 0) {
++                test_malformed = 1;
++            } else if (strcmp(name, "overflow") == 0) {
++                test_malformed = 2;
++            } else if (strcmp(name, "over-limit") == 0) {
++                test_malformed = 3;
++            } else {
++                test_fail("unsupported malformed payload case");
++            }
++            test_expected_status = CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND;
++            continue;
++        }
++        if (test_parse_name(argv[i], "mode=", &name)) {
++            if (strcmp(name, "overlap-order") != 0) {
++                test_fail("unsupported live test mode");
++            }
++            test_overlap_order = true;
++            continue;
++        }
++        test_fail("unknown plugin argument");
++    }
++    count = qemu_plugin_crucible_fault_capabilities(NULL, 0);
++    bool found_memory = false;
++    if (count < 3 || count > G_N_ELEMENTS(capabilities) ||
++        qemu_plugin_crucible_fault_capabilities(
++            capabilities, G_N_ELEMENTS(capabilities)) != count) {
++        test_fail("fault capability registry could not be copied atomically");
++    }
++    for (size_t i = 0; i < count; i++) {
++        if (capabilities[i].command_kind ==
++            CRUCIBLE_FAULT_COMMAND_MEMORY_MUTATION &&
++            capabilities[i].required_feature_bits ==
++                CRUCIBLE_FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION &&
++            capabilities[i].semantic_version ==
++                CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION &&
++            capabilities[i].phase_mask ==
++                1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1) &&
++            capabilities[i].maximum_payload_bytes ==
++                CRUCIBLE_FAULT_HARD_PAYLOAD_BYTES &&
++            capabilities[i].maximum_pending_commands ==
++                CRUCIBLE_FAULT_DEFAULT_COMMAND_CAPACITY &&
++            capabilities[i].scope ==
++                (strcmp(info->target_name, "x86_64") == 0 ?
++                     QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_X86_64 :
++                     QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_AARCH64) &&
++            strcmp(capabilities[i].name,
++                   strcmp(info->target_name, "x86_64") == 0 ?
++                       "qemu.memory.mutate.x86_64.v1" :
++                       "qemu.memory.mutate.aarch64.v1") == 0 &&
++            strcmp(capabilities[i].payload_schema,
++                   "crucible.memory-mutation-payload.v1") == 0) {
++            if (found_memory) {
++                test_fail("memory mutation capability was duplicated");
++            }
++            found_memory = true;
++        }
++    }
++    if (!found_memory) {
++        test_fail("memory mutation capability was not advertised exactly");
++    }
++    if (test_current_tb_target && !test_defer_submit) {
++        test_fail("current-tb target mode requires deferred submission");
++    }
++    if (test_address_space == CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA) {
++        test_vcpu = CRUCIBLE_MEMORY_MUTATION_NO_VCPU;
++        memset(test_expected_translation, 0, 32);
++        test_expected_translations = 0;
++    } else if (test_vcpu == CRUCIBLE_MEMORY_MUTATION_NO_VCPU) {
++        test_fail("GVA mutation requires an explicit vCPU index");
++    }
++    if (test_overlap_order &&
++        (test_address_space != CRUCIBLE_MEMORY_MUTATION_ADDRESS_GPA ||
++         test_transform != CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE ||
++         test_length != 1 || test_malformed ||
++         test_expected_status != CRUCIBLE_FAULT_STATUS_APPLIED ||
++         test_before != 0x5a || test_after != 0xa5 ||
++         test_before_hex || test_after_hex || test_defer_submit)) {
++        test_fail("overlap-order mode requires its canonical byte defaults");
++    }
++    if (test_expect_execution_effect &&
++        test_expected_status != CRUCIBLE_FAULT_STATUS_APPLIED) {
++        test_fail("execution-result requires an applied mutation");
++    }
++    if (test_expect_unchanged_byte &&
++        test_expected_status == CRUCIBLE_FAULT_STATUS_APPLIED) {
++        test_fail("unchanged-vaddr requires a rejected mutation");
++    }
++    wire_length = test_malformed == 1 ? 0 :
++                  test_malformed == 2 ? 2 :
++                  test_malformed == 3 ?
++                      CRUCIBLE_MEMORY_MUTATION_HARD_BYTES + 1 : test_length;
++    if (test_malformed == 2) {
++        test_address = UINT64_MAX;
++    }
++    payload_len = CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET + wire_length;
++    if (test_transform == CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE) {
++        payload_len += wire_length;
++    }
++    payload = g_malloc0(payload_len);
++    before = g_malloc(test_length);
++    test_before_data = g_malloc(test_length);
++    test_after_data = g_malloc(test_length);
++    test_decode_bytes(test_before_hex, test_before, test_before_data);
++    test_decode_bytes(test_after_hex, test_after, test_after_data);
++    memcpy(before, test_before_data, test_length);
++    memcpy(payload, CRUCIBLE_MEMORY_MUTATION_PAYLOAD_MAGIC_V1, 8);
++    test_put_u16(payload + CRUCIBLE_MEMORY_MUTATION_VERSION_OFFSET,
++                 CRUCIBLE_MEMORY_MUTATION_PAYLOAD_VERSION_V1);
++    test_put_u16(payload + CRUCIBLE_MEMORY_MUTATION_ADDRESS_SPACE_OFFSET,
++                 test_address_space);
++    test_put_u16(payload + CRUCIBLE_MEMORY_MUTATION_TRANSFORM_OFFSET,
++                 test_transform);
++    test_put_u16(payload + CRUCIBLE_MEMORY_MUTATION_ATOMICITY_OFFSET,
++                 CRUCIBLE_MEMORY_MUTATION_ATOMIC_ALL_OR_NOTHING);
++    test_put_u32(payload + CRUCIBLE_MEMORY_MUTATION_VCPU_INDEX_OFFSET,
++                 test_vcpu);
++    test_put_u32(payload + CRUCIBLE_MEMORY_MUTATION_LENGTH_OFFSET,
++                 wire_length);
++    test_put_u64(payload + CRUCIBLE_MEMORY_MUTATION_ADDRESS_OFFSET,
++                 test_address);
++    test_put_u32(payload + CRUCIBLE_MEMORY_MUTATION_MASK_LENGTH_OFFSET,
++                 wire_length);
++    test_put_u32(payload + CRUCIBLE_MEMORY_MUTATION_VALUES_LENGTH_OFFSET,
++                 test_transform == CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE ?
++                     wire_length : 0);
++    memcpy(payload + CRUCIBLE_MEMORY_MUTATION_TRANSLATION_SHA256_OFFSET,
++           test_expected_translation, 32);
++    if (test_transform == CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE) {
++        memset(payload + CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET, 0xff,
++               wire_length);
++    } else {
++        for (size_t i = 0; i < wire_length; i++) {
++            payload[CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET + i] =
++                test_before_data[i % test_length] ^
++                test_after_data[i % test_length];
++        }
++    }
++    if (test_transform == CRUCIBLE_MEMORY_MUTATION_TRANSFORM_REPLACE) {
++        for (size_t i = 0; i < wire_length; i++) {
++            payload[CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET + wire_length + i] =
++                test_after_data[i % test_length];
++        }
++    }
++    test_sha256(before, test_length, before_hash);
++    if (test_expected_status ==
++            CRUCIBLE_FAULT_STATUS_PRECONDITION_MISMATCH &&
++        !test_translation_mismatch) {
++        before_hash[0] ^= 0xff;
++    }
++    command.abi_major = CRUCIBLE_FAULT_COMMAND_ABI_MAJOR;
++    command.abi_minor = CRUCIBLE_FAULT_COMMAND_ABI_MINOR;
++    command.command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_MUTATION;
++    command.phase = CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY;
++    command.semantic_version = CRUCIBLE_FAULT_COMMAND_SEMANTIC_VERSION;
++    command.command_sequence = 1;
++    memset(command.target_node_hash, 0x11, 32);
++    command.target_icount = test_icount;
++    command.authorization_ceiling_icount = test_icount;
++    memcpy(command.expected_precondition_hash, before_hash, 32);
++    if (test_overlap_order) {
++        uint8_t intermediate = 0x0f;
++
++        test_sha256(&intermediate, 1, intermediate_hash);
++        command.command_sequence = 2;
++        command.binding_hash[0] = 2;
++        memcpy(command.expected_precondition_hash, intermediate_hash, 32);
++        if (qemu_plugin_crucible_fault_submit(&command, payload,
++                                              payload_len) != 0) {
++            test_fail("QEMU rejected the second overlapping command");
++        }
++        command.command_sequence = 1;
++        command.binding_hash[0] = 1;
++        memcpy(command.expected_precondition_hash, before_hash, 32);
++        payload[CRUCIBLE_MEMORY_MUTATION_BODY_OFFSET + wire_length] =
++            intermediate;
++    }
++    if (test_defer_submit) {
++        test_deferred_command = command;
++        test_deferred_payload = g_steal_pointer(&payload);
++        test_deferred_payload_len = payload_len;
++    } else {
++        if (qemu_plugin_crucible_fault_submit(&command, payload,
++                                              payload_len) != 0) {
++            test_fail("QEMU rejected the live memory mutation command");
++        }
++        test_submitted = true;
++    }
++    test_evidence = g_malloc0(2 * 1024 * 1024);
++    test_paging_ready = g_byte_array_new();
++    test_observed_byte = g_byte_array_new();
++    qemu_plugin_register_vcpu_tb_trans_cb(id, test_tb_trans);
++    qemu_plugin_register_atexit_cb(id, test_exit, NULL);
++    return 0;
++}
+diff --git a/tests/tcg/plugins/meson.build b/tests/tcg/plugins/meson.build
+index 41f02f2..24a8a7b 100644
+--- a/tests/tcg/plugins/meson.build
++++ b/tests/tcg/plugins/meson.build
+@@ -1,15 +1,18 @@
+ t = []
+ if get_option('plugins')
+-  foreach i : ['bb', 'empty', 'inline', 'insn', 'mem', 'reset', 'syscall']
++  foreach i : ['bb', 'crucible-memory', 'empty', 'inline', 'insn', 'mem',
++               'reset', 'syscall']
+     if host_os == 'windows'
+       t += shared_module(i, files(i + '.c') + '../../../contrib/plugins/win32_linker.c',
+-                        include_directories: '../../../include/qemu',
++                        include_directories: ['../../../include/qemu',
++                                              '../../../include'],
+                         link_depends: [win32_qemu_plugin_api_lib],
+                         link_args: win32_qemu_plugin_api_link_flags,
+                         dependencies: glib)
+     else
+       t += shared_module(i, files(i + '.c'),
+-                        include_directories: '../../../include/qemu',
++                        include_directories: ['../../../include/qemu',
++                                              '../../../include'],
+                         dependencies: glib)
+     endif
+   endforeach

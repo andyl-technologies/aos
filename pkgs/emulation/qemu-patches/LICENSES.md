@@ -21,6 +21,8 @@ The series currently creates these QEMU source files:
 | `accel/tcg/crucible-translation-prefetch.c` | GPL-2.0-or-later | QEMU default |
 | `include/qemu/crucible-fault.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-fault-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/tcg/plugins/crucible-memory.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

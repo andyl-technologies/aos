@@ -1,4 +1,5 @@
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
+index 928eaff..98c4301 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -168,6 +168,29 @@ int64_t icount_get_raw(void)
@@ -32,6 +33,7 @@ diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
  int64_t icount_get(void)
  {
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index 7426205..2a86b16 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -31,6 +31,7 @@
@@ -51,6 +53,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
                  if (r == EXCP_DEBUG) {
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
+index c3ff6d1..0aca978 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -177,6 +177,17 @@ void qemu_plugin_atexit_cb(void);
@@ -82,6 +85,7 @@ diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
  void qemu_plugin_add_dyn_cb_arr(GArray *arr)
  { }
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 1a39377..e3373e8 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -154,6 +154,16 @@ typedef void (*qemu_plugin_vcpu_simple_cb_t)(qemu_plugin_id_t id,
@@ -147,6 +151,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
   * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
   * @data: Ethernet frame bytes
 diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
+index 6b7aaa2..ed2d445 100644
 --- a/include/system/cpu-timers.h
 +++ b/include/system/cpu-timers.h
 @@ -46,6 +46,9 @@ void icount_update(CPUState *cpu);
@@ -160,6 +165,7 @@ diff --git a/include/system/cpu-timers.h b/include/system/cpu-timers.h
  int64_t icount_get(void);
  /*
 diff --git a/plugins/api-system.c b/plugins/api-system.c
+index 6bda431..e2a2c4e 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -116,6 +116,8 @@ static int64_t qemu_plugin_time_advance_target;

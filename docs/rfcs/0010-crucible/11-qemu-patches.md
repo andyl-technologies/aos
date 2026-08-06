@@ -1,6 +1,6 @@
 # 11 — The QEMU patch series
 
-The carried series contains **46 patches**. This count is checked against
+The carried series contains **49 patches**. This count is checked against
 `pkgs/emulation/qemu-patches/_series.nix` by
 `checks.crucible.referenceIntegrity`.
 
@@ -230,6 +230,11 @@ TCG SIM CORRECTNESS / PERF                             class  enforces
   crucible-9p-sync-kick ......... sync sim-mode 9p vq dispatch D    DET-16, PATCH-29, PLUG-22, IO-32
   crucible-whitebox-guest-write . callback guest-memory reply   F    PLUG-34, PLUG-51, GHC-32, GHC-37
   crucible-translation-prefetch-helper dedicated demand TCG helper F PERF-32
+
+SIGNAL-DRIVEN FAULT EXECUTION                          class  enforces
+  crucible-fault-command-abi ... closed command/result registry F FAULT-ABI, FAULT-CAP, FAULT-ORDER
+  crucible-fault-safe-boundary exact icount/quiescent commit      D FAULT-BOUNDARY, FAULT-AUTH, DET-1
+  crucible-memory-boundary-mutate atomic GPA/GVA RAM mutation    F QFP-MEM-1, QFP-MEM-2, FAULT-ORDER
 
 GUEST↔HOST CHANNEL (coordinate with 16)                class  enforces
   (no new patch required — see §11.7)                   —     GHC reuse
@@ -1782,9 +1787,12 @@ time-control primitives the whole design rests on.
     `gate:patch-microtests`: the gate rebuilds the ordered patch stack from the
     checked-in `crucible/qemu-10.0.0` thin git bundle, requires the pinned QEMU
     base commit as its prerequisite, verifies the base/head commits and each
-    per-patch commit/tree entry, regenerates deterministic `--unified=3`
-    patch bytes, fails on committed-file drift, applies the regenerated series
-    with fuzz disabled, and records the QEMU source hash, patch count,
+    per-patch commit/tree entry, and requires exactly one DCO `Signed-off-by`
+    trailer matching the manifest's authorized human contributor on every patch
+    commit. It regenerates canonical
+    `--unified=3` patch bytes, including Git blob-identity `index` lines, fails
+    on committed-file drift, applies the regenerated series with fuzz disabled,
+    and records the QEMU source hash, patch count,
     patch-series hash, patch-branch bundle/material, and QEMU build identity. The
     reproduction-artifact-shaped fixture pins that build identity and rejects a
     deliberate changed-build negative control, making a QEMU pin or patch change
