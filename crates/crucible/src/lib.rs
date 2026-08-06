@@ -43,7 +43,8 @@ pub mod tracing_bridge;
 pub mod trigger;
 
 pub use backend::{
-    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
+    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput,
+    BackendNetworkFaultContinuation, BackendNetworkOutput, BackendNetworkPreservedAvailability,
     BackendNetworkRoute, BackendSnapshot, ExecutionFingerprint, ExecutionHorizon,
     FingerprintSample, GdbAttachInfo, GdbListen, MockSimulationBackend, MockSimulationBackendState,
     SimulationBackend, StepObservation, deterministic_node_mac, deterministic_node_mac_string,

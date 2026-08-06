@@ -267,7 +267,22 @@ impl ProductionFaultNetworkInterceptor {
         let mut observations = Vec::new();
         let mut records = Vec::new();
         for ((source, destination), route_blockers) in blockers {
-            let in_flight = scheduler.drop_network_inflight_for_route(&source, &destination)?;
+            let destructive_in_flight = route_blockers.iter().any(|action| {
+                let EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                    in_flight_policy,
+                    ..
+                }) = action.effect.specification()
+                else {
+                    return false;
+                };
+                *in_flight_policy != NetworkInFlightPolicy::Preserve
+            });
+            let in_flight = if destructive_in_flight {
+                scheduler.drop_network_inflight_for_route(&source, &destination)?
+            } else {
+                let mut preview = scheduler.clone();
+                preview.drop_network_inflight_for_route(&source, &destination)?
+            };
             let queued = queued_by_route
                 .remove(&(source.clone(), destination.clone()))
                 .unwrap_or_default();
@@ -316,6 +331,19 @@ impl ProductionFaultNetworkInterceptor {
                     opportunity: action.opportunity,
                     evidence,
                 });
+                if *queued_policy == NetworkInFlightPolicy::TypedError
+                    || *in_flight_policy == NetworkInFlightPolicy::TypedError
+                {
+                    observations.push(FaultObservation {
+                        semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                        kind: FaultObservationKind::EffectRejected,
+                        coordinate,
+                        binding: Some(action.binding.clone()),
+                        target: Some(action.target.clone()),
+                        opportunity: action.opportunity,
+                        evidence,
+                    });
+                }
                 records.push(NetworkAvailabilityTransitionRecord {
                     action: action.id(),
                     binding: action.binding.clone(),
@@ -387,9 +415,29 @@ fn partition_transition_queued_outputs(
             let mut routed = output.clone();
             routed.destination = route.destination.clone();
             routed.route = Some(route);
-            if blockers.contains_key(&key) {
-                dropped.entry(key).or_default().push(routed);
-            } else {
+            let Some(route_blockers) = blockers.get(&key) else {
+                retained.push(routed);
+                continue;
+            };
+            let mut destructive = false;
+            for action in route_blockers {
+                let EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                    queued_policy,
+                    ..
+                }) = action.effect.specification()
+                else {
+                    continue;
+                };
+                if *queued_policy == NetworkInFlightPolicy::Preserve {
+                    routed
+                        .fault_continuation
+                        .preserve_availability(action.binding.clone(), action.phase);
+                } else {
+                    destructive = true;
+                }
+            }
+            dropped.entry(key).or_default().push(routed.clone());
+            if !destructive {
                 retained.push(routed);
             }
         }
@@ -450,6 +498,15 @@ fn append_backend_output_evidence(
             append_evidence_bytes(material, route.destination.name.as_bytes())?;
         }
         None => material.push(0),
+    }
+    let preserved_count = u64::try_from(output.fault_continuation.preserved_availability().len())
+        .map_err(|_error| SchedulerError::BoundaryViolation {
+        message: String::from("preserved network profile count exceeds the canonical width"),
+    })?;
+    material.extend_from_slice(&preserved_count.to_be_bytes());
+    for preserved in output.fault_continuation.preserved_availability() {
+        append_evidence_bytes(material, preserved.binding.as_str().as_bytes())?;
+        append_evidence_bytes(material, preserved.phase.as_str().as_bytes())?;
     }
     append_evidence_bytes(material, &output.payload)
 }
@@ -603,6 +660,12 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 .host_state()
                                 .matching(opportunity.target(), phase)
                             {
+                                if output
+                                    .fault_continuation
+                                    .preserves_availability(&action.binding, phase)
+                                {
+                                    continue;
+                                }
                                 let EffectSpecification::Network(
                                     NetworkEffectSpecification::Availability { state, .. },
                                 ) = action.effect.specification()
@@ -807,6 +870,20 @@ mod tests {
     }
 
     fn down_plan_at(segment: FaultObjectId, phase: FaultPhase) -> crucible::model::FaultSignalPlan {
+        down_plan_with_policies(
+            segment,
+            phase,
+            NetworkInFlightPolicy::Drop,
+            NetworkInFlightPolicy::Drop,
+        )
+    }
+
+    fn down_plan_with_policies(
+        segment: FaultObjectId,
+        phase: FaultPhase,
+        queued_policy: NetworkInFlightPolicy,
+        in_flight_policy: NetworkInFlightPolicy,
+    ) -> crucible::model::FaultSignalPlan {
         let output = signal_id("network-down");
         let program = crucible::model::SignalProgram::new(
             vec![SignalNode {
@@ -836,8 +913,8 @@ mod tests {
             EffectLifetime::Persistent,
             EffectSpecification::Network(NetworkEffectSpecification::Availability {
                 state: NetworkAvailabilityState::Down,
-                queued_policy: NetworkInFlightPolicy::Drop,
-                in_flight_policy: NetworkInFlightPolicy::Drop,
+                queued_policy,
+                in_flight_policy,
             }),
         )
         .unwrap_or_else(|error| panic!("test effect should be valid: {error}"));
@@ -930,6 +1007,7 @@ mod tests {
                 sequence: 1,
                 payload,
                 route: None,
+                fault_continuation: Default::default(),
             }],
         )
         .unwrap_or_else(|error| panic!("test frame should route: {error}"));
@@ -961,6 +1039,7 @@ mod tests {
                 sequence: 2,
                 payload: queued_forward_payload,
                 route: None,
+                fault_continuation: Default::default(),
             },
             BackendNetworkOutput {
                 source: destination.clone(),
@@ -969,6 +1048,7 @@ mod tests {
                 sequence: 3,
                 payload: queued_reverse_payload,
                 route: None,
+                fault_continuation: Default::default(),
             },
         ];
         let append = interceptor
@@ -1070,6 +1150,7 @@ mod tests {
             sequence: 1,
             payload,
             route: None,
+            fault_continuation: Default::default(),
         }];
         interceptor
             .intercept_network_outputs(
@@ -1081,5 +1162,108 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("resolve opportunity should execute: {error}"));
         assert!(outputs.is_empty());
+    }
+
+    #[test]
+    fn production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile() {
+        let (world, segment) = availability_world();
+        let scenario = SchedulerLivenessScenario::from_runnable_world(
+            "production-preserve-availability",
+            Shift::default(),
+            16,
+            SimInstant { nanos: 128 },
+            0,
+            &world,
+        );
+        let mut scheduler = SingleScheduler::from_world(
+            scenario,
+            &world,
+            &MemoryDagStore::new(),
+            WorldIoLayoutPolicy::default(),
+        )
+        .unwrap_or_else(|error| panic!("test scheduler should build: {error}"));
+        let source = crucible::NodeId {
+            name: String::from("left"),
+        };
+        let destination = crucible::NodeId {
+            name: String::from("right"),
+        };
+        let mut payload = vec![0_u8; 14];
+        payload[..6].copy_from_slice(&deterministic_node_mac(&destination));
+        QuantumLoop::append_backend_network_outputs(
+            &mut scheduler,
+            vec![BackendNetworkOutput {
+                source: source.clone(),
+                destination: destination.clone(),
+                emit_icount: Icount { retired: 0 },
+                sequence: 1,
+                payload: payload.clone(),
+                route: None,
+                fault_continuation: Default::default(),
+            }],
+        )
+        .unwrap_or_else(|error| panic!("test frame should route: {error}"));
+
+        let mut nodes = ProductionNodeSet::new();
+        let runtime = ProductionFaultRuntime::new(
+            down_plan_with_policies(
+                segment,
+                FaultPhase::Admit,
+                NetworkInFlightPolicy::Preserve,
+                NetworkInFlightPolicy::Preserve,
+            ),
+            Some(Arc::new(NoArtifacts)),
+            SignalBoundarySnapshot::default(),
+            ContentHash::from_bytes(b"production-preserve-availability"),
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("test fault runtime should build: {error}"));
+        let mut interceptor = ProductionFaultNetworkInterceptor::new(
+            runtime,
+            world.fault_topology().clone(),
+            world.links().to_vec(),
+        );
+        let mut pending_outputs = vec![BackendNetworkOutput {
+            source: source.clone(),
+            destination: destination.clone(),
+            emit_icount: Icount { retired: 0 },
+            sequence: 2,
+            payload,
+            route: None,
+            fault_continuation: Default::default(),
+        }];
+        interceptor
+            .evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: 0,
+                    retired_instructions: None,
+                },
+                &mut scheduler,
+                &mut nodes,
+                &mut pending_outputs,
+            )
+            .unwrap_or_else(|error| panic!("preserve transition should execute: {error}"));
+
+        assert_eq!(pending_outputs.len(), 1);
+        assert!(
+            pending_outputs[0]
+                .fault_continuation
+                .preserves_availability(&object_id("network-down-binding"), FaultPhase::Admit)
+        );
+        let preserved_inflight = scheduler
+            .drop_network_inflight_for_route(&source, &destination)
+            .unwrap_or_else(|error| panic!("preserved route should remain valid: {error}"));
+        assert_eq!(preserved_inflight.frame_count, 1);
+        let mut outputs = std::mem::take(&mut pending_outputs);
+        interceptor
+            .intercept_network_outputs(
+                &mut scheduler,
+                &mut nodes,
+                VirtualTime { ticks: 0 },
+                &mut pending_outputs,
+                &mut outputs,
+            )
+            .unwrap_or_else(|error| panic!("preserved frame should bypass new outage: {error}"));
+        assert_eq!(outputs.len(), 1);
     }
 }

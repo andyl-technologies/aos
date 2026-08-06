@@ -360,6 +360,7 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
         sequence: 0,
         payload,
         route: None,
+        fault_continuation: Default::default(),
     };
     let routes = scheduler
         .resolve_backend_network_routes(&output)
@@ -473,6 +474,7 @@ fn backend_network_route_resolution_expands_and_locks_flood_routes() {
         sequence: 7,
         payload,
         route: None,
+        fault_continuation: Default::default(),
     };
 
     let routes = scheduler
@@ -676,6 +678,7 @@ fn network_branch_fixture(
         sequence: 0,
         payload,
         route: None,
+        fault_continuation: Default::default(),
     };
     let mut adapter = BackendQuantumLoop::new(
         scheduler,

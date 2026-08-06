@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::model::{FaultObjectId, FaultPhase};
 use crate::{
     Checkpoint, CheckpointKind, ContentHash, Decision, Icount, NodeId, ObservableEvent,
     PreemptionDecision, VirtualTime,

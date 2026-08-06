@@ -1272,6 +1272,7 @@ impl SimulationBackend for QemuNode {
                 sequence: frame.sequence,
                 payload: frame.payload,
                 route: None,
+                fault_continuation: Default::default(),
             });
         }
         while let Some(frame) = self.emit_frame().map_err(BackendError::from)? {
@@ -1282,6 +1283,7 @@ impl SimulationBackend for QemuNode {
                 sequence: frame.sequence,
                 payload: frame.payload,
                 route: None,
+                fault_continuation: Default::default(),
             });
         }
         Ok(outputs)
