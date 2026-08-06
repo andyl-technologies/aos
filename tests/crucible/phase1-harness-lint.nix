@@ -697,6 +697,7 @@
 
   isBinaryBoundarySource = package: path:
     (package == "crucible-cli" && lib.hasPrefix (toString (../../crates + "/crucible-cli/src/")) (toString path))
+    || (builtins.elem package ["crucible-debug-gateway" "crucible-guest"] && lib.hasSuffix "/src/main.rs" (toString path))
     || hasInfix "/src/bin/" (toString path);
 
   sourceDeclaresTypedError = content: let

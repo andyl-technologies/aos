@@ -304,6 +304,63 @@ impl RingHeader {
         Ok(Some(entry))
     }
 
+    /// Peeks at the next validated guest-introspection entry without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the entry slice or shared indices are
+    /// invalid, or the next cross-process entry is malformed.
+    pub fn peek_guest_introspection(
+        &self,
+        entries: &[GuestIntrospectionEntry],
+    ) -> Result<Option<GuestIntrospectionEntry>, SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Ok(None);
+        }
+        let slot = (head & (capacity - 1)) as usize;
+        entries[slot]
+            .validate()
+            .map(Some)
+            .map_err(|source| SpscRingError::InvalidGuestIntrospectionEntry { source })
+    }
+
+    /// Commits consumption of a previously peeked guest-introspection entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the queue changed unexpectedly, is empty,
+    /// or its next validated entry does not carry `expected_sequence`.
+    pub fn commit_guest_introspection(
+        &self,
+        entries: &[GuestIntrospectionEntry],
+        expected_sequence: u64,
+    ) -> Result<(), SpscRingError> {
+        let capacity = validated_capacity(entries)?;
+        let head = self.read_idx.load(Ordering::Relaxed);
+        let tail = self.write_idx.load(Ordering::Acquire);
+        if live_count(head, tail, capacity)? == 0 {
+            return Err(SpscRingError::GuestIntrospectionSequenceMismatch {
+                expected: expected_sequence,
+                actual: 0,
+            });
+        }
+        let slot = (head & (capacity - 1)) as usize;
+        let entry = entries[slot]
+            .validate()
+            .map_err(|source| SpscRingError::InvalidGuestIntrospectionEntry { source })?;
+        if entry.sequence() != expected_sequence {
+            return Err(SpscRingError::GuestIntrospectionSequenceMismatch {
+                expected: expected_sequence,
+                actual: entry.sequence(),
+            });
+        }
+        self.read_idx.store(head.wrapping_add(1), Ordering::Release);
+        Ok(())
+    }
+
     /// Captures the live ring entries in FIFO order under quiescence.
     ///
     /// This method is not concurrency-safe; callers must ensure the producer and

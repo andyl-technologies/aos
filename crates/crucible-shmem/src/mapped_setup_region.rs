@@ -150,6 +150,104 @@ pub struct MappedPluginGuestIntrospectionRingsMut<'a> {
     pub responses: MappedGuestIntrospectionProducerRingMut<'a>,
 }
 
+/// Role-preserving process-lifetime handle for plugin guest-introspection rings.
+///
+/// The handle erases the mapping borrow so a pinned QEMU callback owner can
+/// retain it. Its private raw addresses are process-local adapter state and are
+/// never stored in shared memory. Methods preserve the plugin's sole request
+/// consumer and response producer roles.
+pub struct DetachedPluginGuestIntrospectionRings {
+    request_header: NonNull<RingHeader>,
+    request_entries: NonNull<GuestIntrospectionEntry>,
+    request_capacity: usize,
+    response_header: NonNull<RingHeader>,
+    response_entries: NonNull<GuestIntrospectionEntry>,
+    response_capacity: usize,
+}
+
+impl MappedPluginGuestIntrospectionRingsMut<'_> {
+    /// Detaches this role view for a process-lifetime callback owner.
+    ///
+    /// # Safety
+    ///
+    /// The caller must retain the owning [`MappedSetupRegion`] without moving,
+    /// unmapping, or creating another plugin-side view for these rings until
+    /// the returned handle is dropped. QEMU callbacks using the handle must be
+    /// serialized according to the SPSC role contract.
+    #[must_use]
+    pub unsafe fn detach_for_mapping_lifetime(self) -> DetachedPluginGuestIntrospectionRings {
+        let request_entries = self.requests.entries.as_mut_ptr();
+        let response_entries = self.responses.entries.as_mut_ptr();
+        // SAFETY: validated guest-introspection queues have fixed nonzero
+        // capacity, so each slice supplies a non-null first-entry address.
+        let request_entries = unsafe { NonNull::new_unchecked(request_entries) };
+        // SAFETY: same invariant as the request queue above.
+        let response_entries = unsafe { NonNull::new_unchecked(response_entries) };
+        DetachedPluginGuestIntrospectionRings {
+            request_header: NonNull::from(self.requests.header),
+            request_entries,
+            request_capacity: self.requests.entries.len(),
+            response_header: NonNull::from(self.responses.header),
+            response_entries,
+            response_capacity: self.responses.entries.len(),
+        }
+    }
+}
+
+impl DetachedPluginGuestIntrospectionRings {
+    /// Peeks at the next validated host request without consuming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when ring indices or the next shared entry are
+    /// malformed.
+    pub fn peek_request(&mut self) -> Result<Option<GuestIntrospectionEntry>, SpscRingError> {
+        // SAFETY: the detach contract retains the mapping and unique plugin
+        // role for this exact entry range while the handle is live.
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(self.request_entries.as_ptr(), self.request_capacity)
+        };
+        // SAFETY: the same detach contract retains the shared header.
+        unsafe { self.request_header.as_ref() }.peek_guest_introspection(entries)
+    }
+
+    /// Commits a previously peeked host request after guest delivery succeeds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when the queue changed or its next entry does
+    /// not have `expected_sequence`.
+    pub fn commit_request(&mut self, expected_sequence: u64) -> Result<(), SpscRingError> {
+        // SAFETY: the detach contract retains the mapping and unique plugin
+        // role for this exact entry range while the handle is live.
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(self.request_entries.as_ptr(), self.request_capacity)
+        };
+        // SAFETY: the same detach contract retains the shared header.
+        unsafe { self.request_header.as_ref() }
+            .commit_guest_introspection(entries, expected_sequence)
+    }
+
+    /// Enqueues one validated guest response for the host consumer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SpscRingError`] when ring indices are invalid or the response
+    /// queue is full.
+    pub fn enqueue_response(
+        &mut self,
+        entry: GuestIntrospectionEntry,
+    ) -> Result<(), SpscRingError> {
+        // SAFETY: the detach contract retains the mapping and unique plugin
+        // role for this exact entry range while the handle is live.
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(self.response_entries.as_ptr(), self.response_capacity)
+        };
+        // SAFETY: the same detach contract retains the shared header.
+        unsafe { self.response_header.as_ref() }.enqueue_guest_introspection(entries, entry)
+    }
+}
+
 struct GuestIntrospectionRawRingMut<'a> {
     header: &'a RingHeader,
     entries: &'a mut [GuestIntrospectionEntry],

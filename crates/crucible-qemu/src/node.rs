@@ -18,6 +18,7 @@ use crucible::{
     FingerprintSample, GdbAttachInfo, GdbListen, Icount, NodeId, ObservableEvent,
     SchedulerEventLogAppend, SimulationBackend, StepObservation, VirtualTime,
 };
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
     SchedulerPreemptionCommand, SchedulerPreemptionKind as ShmemSchedulerPreemptionKind,
 };
@@ -204,6 +205,37 @@ pub trait QemuPluginIpcControlChannel: Send {
 
 /// Shared-memory hot-path channel for per-quantum data.
 pub trait QemuShmemHotPathChannel: Send {
+    /// Enqueues one guest-agent request through the public shared-memory ABI.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when guest introspection is unavailable
+    /// or the request queue cannot accept the record.
+    fn send_guest_introspection(
+        &mut self,
+        _record: GuestIntrospectionRecord,
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "send guest introspection",
+            "guest introspection is unavailable on this channel",
+        ))
+    }
+
+    /// Dequeues one guest-agent response, if one is currently available.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when guest introspection is unavailable
+    /// or the response queue is malformed.
+    fn receive_guest_introspection(
+        &mut self,
+    ) -> Result<Option<GuestIntrospectionRecord>, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "receive guest introspection",
+            "guest introspection is unavailable on this channel",
+        ))
+    }
+
     /// Returns whether this channel owns a plugin-to-host coverage queue.
     ///
     /// The registration-time value is immutable. Direct node APIs use it to
@@ -485,6 +517,41 @@ pub struct QemuNode {
 }
 
 impl QemuNode {
+    /// Sends one request to this VM's debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory request path is
+    /// unavailable, malformed, or full.
+    pub fn send_guest_introspection(
+        &mut self,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .send_guest_introspection(record)
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
+    /// Receives one currently available response from this VM's debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when the shared-memory response path is
+    /// unavailable or malformed.
+    pub fn receive_guest_introspection(
+        &mut self,
+    ) -> Result<Option<GuestIntrospectionRecord>, QemuNodeError> {
+        self.channels
+            .shmem_hot_path
+            .receive_guest_introspection()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
+            })
+    }
+
     /// Builds a QEMU scheduler node from one owned child handle and its channels.
     #[must_use]
     pub fn new(

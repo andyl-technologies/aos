@@ -24,13 +24,17 @@ pub const GUEST_INTROSPECTION_PROTOCOL_VERSION: u16 = 1;
 /// Fixed record-header length in bytes.
 pub const GUEST_INTROSPECTION_HEADER_LEN: usize = 20;
 /// Maximum encoded record length admitted by either peer.
-pub const GUEST_INTROSPECTION_MAX_RECORD_BYTES: usize = 4608;
+pub const GUEST_INTROSPECTION_MAX_RECORD_BYTES: usize = 4592;
 /// Maximum data bytes carried by one input or output record.
 pub const GUEST_INTROSPECTION_MAX_CHUNK_BYTES: usize = 4096;
 /// Maximum argv entries carried by one open request.
 pub const GUEST_INTROSPECTION_MAX_ARGV: usize = 128;
 /// Maximum UTF-8 bytes carried by one argv entry.
 pub const GUEST_INTROSPECTION_MAX_ARG_BYTES: usize = 4096;
+/// Reserved channel used only for the agent feature advertisement.
+pub const GUEST_INTROSPECTION_FEATURE_CHANNEL_ID: u64 = u64::MAX;
+/// Maximum UTF-8 bytes carried by one channel-local failure.
+pub const GUEST_INTROSPECTION_MAX_ERROR_BYTES: usize = 1024;
 
 const FLAG_RECORD_TRANSCRIPT: u8 = 1 << 0;
 const FLAG_STDERR: u8 = 1 << 1;
@@ -112,6 +116,56 @@ pub enum GuestOutputStream {
     Stderr,
 }
 
+/// Stable class of one channel-local guest-agent failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestIntrospectionFailureCode {
+    /// A child process or PTY could not be opened.
+    OpenFailed,
+    /// The channel identifier is already active.
+    DuplicateChannel,
+    /// No active channel has the requested identifier.
+    UnknownChannel,
+    /// The configured concurrent-channel limit is exhausted.
+    ChannelLimit,
+    /// Input or terminal control targeted a closed channel.
+    ClosedChannel,
+    /// A PTY-only operation targeted another channel mode.
+    NotPty,
+    /// An in-guest process I/O operation failed.
+    ProcessIo,
+    /// The requested optional feature is unavailable.
+    Unsupported,
+}
+
+impl GuestIntrospectionFailureCode {
+    const fn wire_value(self) -> u16 {
+        match self {
+            Self::OpenFailed => 1,
+            Self::DuplicateChannel => 2,
+            Self::UnknownChannel => 3,
+            Self::ChannelLimit => 4,
+            Self::ClosedChannel => 5,
+            Self::NotPty => 6,
+            Self::ProcessIo => 7,
+            Self::Unsupported => 8,
+        }
+    }
+
+    const fn from_wire_value(value: u16) -> Option<Self> {
+        match value {
+            1 => Some(Self::OpenFailed),
+            2 => Some(Self::DuplicateChannel),
+            3 => Some(Self::UnknownChannel),
+            4 => Some(Self::ChannelLimit),
+            5 => Some(Self::ClosedChannel),
+            6 => Some(Self::NotPty),
+            7 => Some(Self::ProcessIo),
+            8 => Some(Self::Unsupported),
+            _ => None,
+        }
+    }
+}
+
 /// One owned guest-introspection protocol message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GuestIntrospectionMessage {
@@ -165,6 +219,16 @@ pub enum GuestIntrospectionMessage {
         /// Optional terminating signal number.
         signal: Option<u32>,
     },
+    /// Reports a terminal channel-local failure without terminating the agent.
+    ///
+    /// The channel is closed before publication and its identifier may be
+    /// reused after the host receives this record.
+    Error {
+        /// Stable failure class.
+        code: GuestIntrospectionFailureCode,
+        /// Bounded human-readable diagnostic from inside the guest.
+        message: String,
+    },
 }
 
 /// One channel-scoped guest-introspection record.
@@ -206,6 +270,72 @@ impl GuestIntrospectionRecord {
     #[must_use]
     pub const fn message(&self) -> &GuestIntrospectionMessage {
         &self.message
+    }
+
+    /// Validates that this record may travel from the host to the guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestIntrospectionError::WrongDirection`] for a guest response
+    /// kind or [`GuestIntrospectionError::FeatureChannelMismatch`] when the
+    /// reserved feature channel is used by a request.
+    pub fn validate_host_request(&self) -> Result<(), GuestIntrospectionError> {
+        if self.channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID {
+            return Err(GuestIntrospectionError::FeatureChannelMismatch);
+        }
+        match &self.message {
+            GuestIntrospectionMessage::Exec { .. }
+            | GuestIntrospectionMessage::Pty { .. }
+            | GuestIntrospectionMessage::Ssh { .. }
+            | GuestIntrospectionMessage::Input(_)
+            | GuestIntrospectionMessage::Resize { .. }
+            | GuestIntrospectionMessage::Close => Ok(()),
+            GuestIntrospectionMessage::Features(_)
+            | GuestIntrospectionMessage::Output { .. }
+            | GuestIntrospectionMessage::Exit { .. }
+            | GuestIntrospectionMessage::Error { .. } => {
+                Err(GuestIntrospectionError::WrongDirection)
+            }
+        }
+    }
+
+    /// Validates that this record may travel from the guest agent to the host.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestIntrospectionError::WrongDirection`] for a host request
+    /// kind or [`GuestIntrospectionError::FeatureChannelMismatch`] when a
+    /// feature advertisement uses another channel, or another response uses
+    /// the reserved feature channel.
+    pub fn validate_guest_response(&self) -> Result<(), GuestIntrospectionError> {
+        match &self.message {
+            GuestIntrospectionMessage::Features(_)
+                if self.channel_id == GUEST_INTROSPECTION_FEATURE_CHANNEL_ID =>
+            {
+                Ok(())
+            }
+            GuestIntrospectionMessage::Features(_) => {
+                Err(GuestIntrospectionError::FeatureChannelMismatch)
+            }
+            GuestIntrospectionMessage::Output { .. }
+            | GuestIntrospectionMessage::Exit { .. }
+            | GuestIntrospectionMessage::Error { .. }
+                if self.channel_id != GUEST_INTROSPECTION_FEATURE_CHANNEL_ID =>
+            {
+                Ok(())
+            }
+            GuestIntrospectionMessage::Output { .. }
+            | GuestIntrospectionMessage::Exit { .. }
+            | GuestIntrospectionMessage::Error { .. } => {
+                Err(GuestIntrospectionError::FeatureChannelMismatch)
+            }
+            GuestIntrospectionMessage::Exec { .. }
+            | GuestIntrospectionMessage::Pty { .. }
+            | GuestIntrospectionMessage::Ssh { .. }
+            | GuestIntrospectionMessage::Input(_)
+            | GuestIntrospectionMessage::Resize { .. }
+            | GuestIntrospectionMessage::Close => Err(GuestIntrospectionError::WrongDirection),
+        }
     }
 
     /// Encodes one complete little-endian protocol record.
@@ -284,6 +414,7 @@ const KIND_RESIZE: u8 = 6;
 const KIND_CLOSE: u8 = 7;
 const KIND_OUTPUT: u8 = 8;
 const KIND_EXIT: u8 = 9;
+const KIND_ERROR: u8 = 10;
 
 fn encode_message(
     message: &GuestIntrospectionMessage,
@@ -340,6 +471,12 @@ fn encode_message(
             payload.extend_from_slice(&status.to_le_bytes());
             payload.extend_from_slice(&signal.unwrap_or(0).to_le_bytes());
             Ok((KIND_EXIT, 0, payload))
+        }
+        GuestIntrospectionMessage::Error { code, message } => {
+            let mut payload = Vec::with_capacity(2 + message.len());
+            payload.extend_from_slice(&code.wire_value().to_le_bytes());
+            payload.extend_from_slice(message.as_bytes());
+            Ok((KIND_ERROR, 0, payload))
         }
     }
 }
@@ -428,6 +565,16 @@ fn decode_message(
                 signal: (signal != 0).then_some(signal),
             })
         }
+        KIND_ERROR => {
+            require_flags(flags, 0)?;
+            let wire_code = read_u16(payload, 0)?;
+            let code = GuestIntrospectionFailureCode::from_wire_value(wire_code)
+                .ok_or(GuestIntrospectionError::UnknownFailureCode { code: wire_code })?;
+            let message = std::str::from_utf8(&payload[2..])
+                .map_err(|_| GuestIntrospectionError::InvalidUtf8)?
+                .to_owned();
+            Ok(GuestIntrospectionMessage::Error { code, message })
+        }
         _ => Err(GuestIntrospectionError::UnknownKind { kind }),
     }
 }
@@ -472,6 +619,13 @@ fn validate_message(message: &GuestIntrospectionMessage) -> Result<(), GuestIntr
         GuestIntrospectionMessage::Resize { .. }
         | GuestIntrospectionMessage::Close
         | GuestIntrospectionMessage::Exit { .. } => Ok(()),
+        GuestIntrospectionMessage::Error { message, .. } => {
+            if message.is_empty() || message.len() > GUEST_INTROSPECTION_MAX_ERROR_BYTES {
+                Err(GuestIntrospectionError::InvalidErrorLength { len: message.len() })
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -626,6 +780,18 @@ pub enum GuestIntrospectionError {
         /// Received feature bits.
         bits: u32,
     },
+    /// A channel-local failure uses an unknown stable code.
+    #[error("guest-introspection failure code {code} is unknown")]
+    UnknownFailureCode {
+        /// Rejected wire code.
+        code: u16,
+    },
+    /// A record kind is valid but is traveling in the wrong direction.
+    #[error("guest-introspection record kind is invalid for this direction")]
+    WrongDirection,
+    /// The reserved feature channel is used by the wrong record kind.
+    #[error("guest-introspection feature channel use is invalid")]
+    FeatureChannelMismatch,
     /// Channel zero is reserved and cannot carry requests.
     #[error("guest-introspection channel identifier must be nonzero")]
     ZeroChannelId,
@@ -659,6 +825,12 @@ pub enum GuestIntrospectionError {
         columns: u16,
         /// Requested terminal rows.
         rows: u16,
+    },
+    /// A channel-local error diagnostic is empty or exceeds its bound.
+    #[error("guest-introspection error message length {len} is invalid")]
+    InvalidErrorLength {
+        /// Rejected UTF-8 byte length.
+        len: usize,
     },
     /// An argv entry is not valid UTF-8.
     #[error("guest-introspection argv contains invalid UTF-8")]
@@ -729,6 +901,13 @@ mod tests {
                     signal: Some(9),
                 },
             ),
+            GuestIntrospectionRecord::new(
+                10,
+                GuestIntrospectionMessage::Error {
+                    code: GuestIntrospectionFailureCode::OpenFailed,
+                    message: String::from("program not found"),
+                },
+            ),
         ];
         for record in records {
             let record = record.unwrap_or_else(|error| panic!("record should validate: {error}"));
@@ -765,6 +944,43 @@ mod tests {
         assert_eq!(
             GuestIntrospectionRecord::decode(&unknown),
             Err(GuestIntrospectionError::UnknownKind { kind: u8::MAX })
+        );
+    }
+
+    #[test]
+    fn request_and_response_directions_are_closed() {
+        let request = GuestIntrospectionRecord::new(1, GuestIntrospectionMessage::Close)
+            .unwrap_or_else(|error| panic!("request should validate: {error}"));
+        let response = GuestIntrospectionRecord::new(
+            1,
+            GuestIntrospectionMessage::Output {
+                stream: GuestOutputStream::Stdout,
+                bytes: vec![1],
+            },
+        )
+        .unwrap_or_else(|error| panic!("response should validate: {error}"));
+        let features = GuestIntrospectionRecord::new(
+            GUEST_INTROSPECTION_FEATURE_CHANNEL_ID,
+            GuestIntrospectionMessage::Features(GuestIntrospectionFeatures::new(
+                true, true, true, false, 1,
+            )),
+        )
+        .unwrap_or_else(|error| panic!("features should validate: {error}"));
+
+        assert_eq!(request.validate_host_request(), Ok(()));
+        assert_eq!(
+            request.validate_guest_response(),
+            Err(GuestIntrospectionError::WrongDirection)
+        );
+        assert_eq!(response.validate_guest_response(), Ok(()));
+        assert_eq!(
+            response.validate_host_request(),
+            Err(GuestIntrospectionError::WrongDirection)
+        );
+        assert_eq!(features.validate_guest_response(), Ok(()));
+        assert_eq!(
+            features.validate_host_request(),
+            Err(GuestIntrospectionError::FeatureChannelMismatch)
         );
     }
 }

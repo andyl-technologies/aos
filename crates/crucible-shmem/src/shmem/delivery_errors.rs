@@ -370,6 +370,14 @@ pub enum SpscRingError {
         #[source]
         source: GuestIntrospectionEntryError,
     },
+    /// A directional guest-introspection publication sequence is discontinuous.
+    #[error("SPSC guest-introspection sequence mismatch: expected {expected}, actual {actual}")]
+    GuestIntrospectionSequenceMismatch {
+        /// Next sequence required by the consumer.
+        expected: u64,
+        /// Sequence observed in the shared entry.
+        actual: u64,
+    },
     /// A quiescent snapshot cannot fit in the target ring.
     #[error("SPSC snapshot length {len} exceeds ring capacity {capacity}")]
     SnapshotTooLarge {

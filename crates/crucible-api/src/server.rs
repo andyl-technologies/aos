@@ -276,6 +276,7 @@ where
 
     loop {
         tokio::select! {
+            biased;
             result = listener.accept() => {
                 let (stream, _peer) = result?;
                 let acceptor = tls_acceptor.clone();
@@ -321,6 +322,7 @@ async fn serve_authenticated_connection(
     let connection = builder.serve_connection(io, service);
     tokio::pin!(connection);
     tokio::select! {
+        biased;
         _result = &mut connection => {}
         changed = shutdown.changed() => {
             if changed.is_ok() && *shutdown.borrow() {

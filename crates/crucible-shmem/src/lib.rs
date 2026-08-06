@@ -119,11 +119,11 @@ use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 pub use abi_header::generated_c_header;
 #[cfg(unix)]
 pub use mapped_setup_region::{
-    MappedCoverageRingMut, MappedDirectedRingMut, MappedGuestIntrospectionConsumerRingMut,
-    MappedGuestIntrospectionProducerRingMut, MappedHostGuestIntrospectionRingsMut,
-    MappedNodeRingPairMut, MappedPluginGuestIntrospectionRingsMut, MappedSetupRegion,
-    MappedSetupRegionAccessError, MappedWhiteboxMarkerRingMut, SetupRegionMapError,
-    mmap_setup_region,
+    DetachedPluginGuestIntrospectionRings, MappedCoverageRingMut, MappedDirectedRingMut,
+    MappedGuestIntrospectionConsumerRingMut, MappedGuestIntrospectionProducerRingMut,
+    MappedHostGuestIntrospectionRingsMut, MappedNodeRingPairMut,
+    MappedPluginGuestIntrospectionRingsMut, MappedSetupRegion, MappedSetupRegionAccessError,
+    MappedWhiteboxMarkerRingMut, SetupRegionMapError, mmap_setup_region,
 };
 
 use thiserror::Error;

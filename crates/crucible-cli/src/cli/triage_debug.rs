@@ -991,6 +991,7 @@ async fn run_remote_debug_relay_async(
     };
     println!("crucible: remote GDB relay listening at {address}");
     let accepted = tokio::select! {
+        biased;
         accepted = listener.accept() => Some(accepted),
         signal = tokio::signal::ctrl_c() => {
             match signal {
@@ -1023,6 +1024,7 @@ async fn run_remote_debug_relay_async(
     let relay_result: Result<(), CliError> = async {
         loop {
             tokio::select! {
+            biased;
             read = local.read(&mut local_buffer) => {
                 let length = read.map_err(|error| backend_error(format!("local GDB read failed: {error}")))?;
                 if length == 0 {
