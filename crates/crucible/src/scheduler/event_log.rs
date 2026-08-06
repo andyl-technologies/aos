@@ -124,6 +124,28 @@ pub trait QuantumLoop {
         Ok(())
     }
 
+    /// Returns the next GDB run-control packet awaiting scheduler admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the mediated gateway cannot be polled.
+    fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
+    }
+
+    /// Delivers the scheduler's RSP completion to the mediated GDB connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the gateway cannot deliver the response.
+    fn complete_gdb_run_control(&mut self, response: &[u8]) -> Result<(), SchedulerError> {
+        let _ = response;
+        Err(BackendError::Unsupported {
+            capability: "complete_gdb_run_control",
+        }
+        .into())
+    }
+
     /// Applies scheduler-owned control at the current boundary.
     ///
     /// This hook is for control operations that must take effect without

@@ -819,6 +819,16 @@ file operations, watchpoints not explicitly supported, and unknown packets fail
 closed. `continue`, `step`, and `vCont` are sent to the session scheduler rather
 than directly to QEMU.
 
+Scheduler run control permits one outstanding operator request. In RSP
+acknowledgement mode, the gateway writes `+` before making that request visible to
+the host, deduplicates retransmission, and binds the request to both a monotone
+request ID and the operator-connection generation. Poll and completion are
+idempotent across control-channel reconnects. Ctrl-C supersedes either a queued or
+in-flight continue, while operator disconnect cancels the request without failing
+the simulation session. Scheduler-produced stop packets retain their encoded bytes
+until GDB acknowledges them; `-` retransmits the same packet and is never forwarded
+to QEMU.
+
 - **[DBG-41]** The standalone GPL debugger gateway MUST own one stable operator GDB
   connection across QEMU replacement. Replacement MUST use prepare/validate/hydrate
   then commit, with bounded I/O and the old backend retained until the candidate's
@@ -1251,10 +1261,14 @@ complete from model-double evidence.
   state-epoch checked; semantic `OK` responses, not transport acknowledgements,
   define replayable thread/breakpoint state. A process-boundary gate keeps one GDB
   connection across two QEMU Unix RSP backends, including asynchronous console
-  output and atomic commit barriers. No unauthenticated TCP listener exists by
-  default; the component-only loopback listener requires an explicit trusted-host
-  launch policy. Scheduler-routed run control, the authenticated daemon relay, and
-  production lifecycle replacement remain open, so this task is not complete.
+  output, scheduler-routed `continue`/`step`/`vCont`, and atomic commit barriers.
+  Run-control packets are queued across the versioned gateway boundary and consumed
+  by the session actor as ordinary session commands, so canonical repositioning still
+  rejects forward execution until `fork-debug`; the gateway never forwards them
+  directly to QEMU. No unauthenticated TCP listener exists by default; the
+  component-only loopback listener requires an explicit trusted-host launch policy.
+  The authenticated daemon relay and live breakpoint/terminal run-control gates
+  remain open, so this task is not complete.
 - [ ] **T-DBG-10** Implement production whole-world candidate instantiate/replay,
   gateway prepare/hydrate/commit, verified endpoint/generation evidence, rollback
   before promotion, and stable GDB state across goto/reverse/fork. — satisfies

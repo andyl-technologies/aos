@@ -174,6 +174,38 @@ impl DebugGatewayProcess {
         &mut self.client
     }
 
+    /// Returns the next scheduler-owned RSP run-control request, if one is queued.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the control exchange fails or
+    /// the gateway returns an unexpected response kind.
+    pub fn poll_run_control(&mut self) -> Result<Option<Vec<u8>>, DebugGatewayClientError> {
+        match self.client.poll_run_control() {
+            Ok(request) => Ok(request),
+            Err(_) => {
+                self.reconnect_control()?;
+                self.client.poll_run_control()
+            }
+        }
+    }
+
+    /// Sends a scheduler-produced RSP response to the attached operator.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] when the control exchange fails or
+    /// no operator connection can receive the response.
+    pub fn complete_run_control(&mut self, response: &[u8]) -> Result<(), DebugGatewayClientError> {
+        match self.client.complete_run_control(response) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                self.reconnect_control()?;
+                self.client.complete_run_control(response)
+            }
+        }
+    }
+
     /// Reconnects and renegotiates the private control channel.
     ///
     /// The gateway process and any operator-facing GDB connection remain
@@ -185,8 +217,10 @@ impl DebugGatewayProcess {
     /// Returns [`DebugGatewayClientError`] when the gateway cannot be reached or
     /// version negotiation fails.
     pub fn reconnect_control(&mut self) -> Result<(), DebugGatewayClientError> {
+        let pending_run_control_stream = self.client.pending_run_control_stream;
         self.client.disconnect();
         self.client = DebugGatewayControlClient::connect(&self.control_socket)?;
+        self.client.pending_run_control_stream = pending_run_control_stream;
         Ok(())
     }
 
@@ -321,6 +355,7 @@ fn format_reconciliation(
 /// Blocking control client for one debugger gateway process.
 pub struct DebugGatewayControlClient {
     stream: UnixStream,
+    pending_run_control_stream: Option<u32>,
 }
 
 impl DebugGatewayControlClient {
@@ -333,7 +368,10 @@ impl DebugGatewayControlClient {
     /// capability contract.
     pub fn connect(path: impl AsRef<Path>) -> Result<Self, DebugGatewayClientError> {
         let stream = UnixStream::connect(path).map_err(DebugGatewayClientError::Connect)?;
-        let mut client = Self { stream };
+        let mut client = Self {
+            stream,
+            pending_run_control_stream: None,
+        };
         let reply = client.request(DebugGatewayMessageKind::Hello, 0, Vec::new())?;
         if reply.kind != DebugGatewayMessageKind::HelloAck
             || reply.payload != DEBUG_GATEWAY_V1_CAPABILITY
@@ -391,6 +429,62 @@ impl DebugGatewayControlClient {
             .parse()
             .map(Some)
             .map_err(|_| DebugGatewayClientError::InvalidOperatorListen(value.to_owned()))
+    }
+
+    /// Polls one raw RSP run-control packet queued by the operator connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] for transport, framing, or an
+    /// unexpected gateway reply.
+    pub fn poll_run_control(&mut self) -> Result<Option<Vec<u8>>, DebugGatewayClientError> {
+        let reply = self.request(DebugGatewayMessageKind::RunControl, 1, Vec::new())?;
+        match reply.kind {
+            DebugGatewayMessageKind::RunControl if reply.payload.is_empty() => Ok(None),
+            DebugGatewayMessageKind::RunControl => {
+                if self.pending_run_control_stream == Some(reply.stream_id) {
+                    return Ok(None);
+                }
+                self.pending_run_control_stream = Some(reply.stream_id);
+                Ok(Some(reply.payload))
+            }
+            actual => Err(DebugGatewayClientError::UnexpectedReply {
+                expected: DebugGatewayMessageKind::RunControl,
+                actual,
+            }),
+        }
+    }
+
+    /// Delivers a scheduler-produced RSP response to the operator connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DebugGatewayClientError`] for an empty response, transport,
+    /// framing, gateway rejection, or an unexpected reply.
+    pub fn complete_run_control(&mut self, response: &[u8]) -> Result<(), DebugGatewayClientError> {
+        if response.is_empty() {
+            return Err(DebugGatewayClientError::InvalidPayload(String::from(
+                "scheduler RSP response must not be empty",
+            )));
+        }
+        let stream_id = self.pending_run_control_stream.ok_or_else(|| {
+            DebugGatewayClientError::InvalidPayload(String::from(
+                "no scheduler RSP request is pending",
+            ))
+        })?;
+        let reply = self.request(
+            DebugGatewayMessageKind::RspData,
+            stream_id,
+            response.to_vec(),
+        )?;
+        if reply.kind != DebugGatewayMessageKind::Ack {
+            return Err(DebugGatewayClientError::UnexpectedReply {
+                expected: DebugGatewayMessageKind::Ack,
+                actual: reply.kind,
+            });
+        }
+        self.pending_run_control_stream = None;
+        Ok(())
     }
 
     /// Connects and validates a candidate private QEMU RSP endpoint.

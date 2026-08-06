@@ -199,6 +199,30 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.bind_latest_debug_runtime_evidence(runtime)
     }
 
+    fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        self.debug_gateway.as_mut().map_or(Ok(None), |gateway| {
+            gateway
+                .poll_run_control()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("poll debugger scheduler run control: {error}"),
+                })
+        })
+    }
+
+    fn complete_gdb_run_control(&mut self, response: &[u8]) -> Result<(), SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        self.debug_gateway
+            .as_mut()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("production debugger gateway process is unavailable"),
+            })?
+            .complete_run_control(response)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("complete debugger scheduler run control: {error}"),
+            })
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,

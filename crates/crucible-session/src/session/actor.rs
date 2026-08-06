@@ -1,6 +1,7 @@
 //! Asynchronous session actor, mailbox scheduling, and live state mirrors.
 
 use super::*;
+use std::time::Duration;
 
 /// Error returned by the session actor or engine state machine.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -419,6 +420,7 @@ pub struct SessionActor<L> {
     pub(super) state_transition_sequence: u64,
     pub(super) terminal_command_keepalive: bool,
     pub(super) terminal_shutdown_requested: bool,
+    pub(super) gdb_run_control_stop: Option<Vec<u8>>,
 }
 
 impl<L> SessionActor<L> {
@@ -468,6 +470,7 @@ impl<L> SessionActor<L> {
             state_transition_sequence: 0,
             terminal_command_keepalive: false,
             terminal_shutdown_requested: false,
+            gdb_run_control_stop: None,
         }
     }
 
@@ -614,6 +617,40 @@ pub(super) fn split_acknowledged_command(
     }
 }
 
+fn gdb_run_control_command(packet: &[u8]) -> Option<SessionCommand> {
+    if packet == [0x03] {
+        return Some(SessionCommand::Pause);
+    }
+    if packet == b"c" {
+        return Some(SessionCommand::Continue);
+    }
+    if packet == b"s" {
+        return Some(SessionCommand::Step {
+            mode: StepMode::Quantum,
+        });
+    }
+    let actions = packet.strip_prefix(b"vCont;")?.split(|byte| *byte == b';');
+    let mut mode = None;
+    for action in actions {
+        let next = match action {
+            b"c" => b'c',
+            b"s" => b's',
+            _ => return None,
+        };
+        if mode.is_some_and(|mode| mode != next) {
+            return None;
+        }
+        mode = Some(next);
+    }
+    match mode {
+        Some(b'c') => Some(SessionCommand::Continue),
+        Some(b's') => Some(SessionCommand::Step {
+            mode: StepMode::Quantum,
+        }),
+        _ => None,
+    }
+}
+
 pub(super) fn acknowledged_stop_command(command: &SessionCommand) -> bool {
     matches!(
         command,
@@ -692,8 +729,21 @@ where
     }
 
     pub(super) async fn run_once(&mut self) -> Result<(), SessionError> {
+        let result = self.run_once_inner().await;
+        if result.is_err() {
+            self.fail_pending_gdb_run_control();
+        }
+        result
+    }
+
+    async fn run_once_inner(&mut self) -> Result<(), SessionError> {
         match self.engine.state().clone() {
             EngineState::Running => {
+                if self.poll_gdb_run_control().await? {
+                    self.publish_live_snapshot();
+                    self.complete_pending_gdb_run_control()?;
+                    return Ok(());
+                }
                 if let Some(command) = self.next_boundary_command()? {
                     self.apply_command_or_recover(command).await?;
                     return Ok(());
@@ -705,6 +755,7 @@ where
                     Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
                         self.engine.stop_after_backend_crash(error.to_string())?;
                         self.publish_live_snapshot();
+                        self.complete_pending_gdb_run_control()?;
                         return Ok(());
                     }
                     Err(error) => return Err(error),
@@ -724,17 +775,17 @@ where
                     .control_acknowledgements
                     .saturating_add(pending_control);
                 self.publish_live_snapshot();
+                self.complete_pending_gdb_run_control()?;
                 self.yielded_after_quanta = self.yielded_after_quanta.saturating_add(1);
                 tokio::task::yield_now().await;
                 Ok(())
             }
             EngineState::Loaded | EngineState::Paused { .. } => {
-                let command = self
-                    .mailbox
-                    .recv()
-                    .await
-                    .ok_or(SessionError::ChannelClosed)?;
-                self.apply_command_or_recover(command).await
+                match tokio::time::timeout(Duration::from_millis(10), self.mailbox.recv()).await {
+                    Ok(Some(command)) => self.apply_command_or_recover(command).await,
+                    Ok(None) => Err(SessionError::ChannelClosed),
+                    Err(_) => self.poll_gdb_run_control().await.map(|_| ()),
+                }
             }
             EngineState::Stopped { .. } => {
                 if self.terminal_command_keepalive && !self.terminal_shutdown_requested {
@@ -750,6 +801,11 @@ where
     async fn run_once_without_spawning_forks(&mut self) -> Result<(), SessionError> {
         match self.engine.state().clone() {
             EngineState::Running => {
+                if self.poll_gdb_run_control().await? {
+                    self.publish_live_snapshot();
+                    self.complete_pending_gdb_run_control()?;
+                    return Ok(());
+                }
                 if let Some(command) = self.next_boundary_command()? {
                     self.apply_command_without_spawning_forks_or_recover(command)
                         .await?;
@@ -762,6 +818,7 @@ where
                     Err(SessionError::Scheduler(SchedulerError::Backend(error))) => {
                         self.engine.stop_after_backend_crash(error.to_string())?;
                         self.publish_live_snapshot();
+                        self.complete_pending_gdb_run_control()?;
                         return Ok(());
                     }
                     Err(error) => return Err(error),
@@ -781,18 +838,20 @@ where
                     .control_acknowledgements
                     .saturating_add(pending_control);
                 self.publish_live_snapshot();
+                self.complete_pending_gdb_run_control()?;
                 self.yielded_after_quanta = self.yielded_after_quanta.saturating_add(1);
                 tokio::task::yield_now().await;
                 Ok(())
             }
             EngineState::Loaded | EngineState::Paused { .. } => {
-                let command = self
-                    .mailbox
-                    .recv()
-                    .await
-                    .ok_or(SessionError::ChannelClosed)?;
-                self.apply_command_without_spawning_forks_or_recover(command)
-                    .await
+                match tokio::time::timeout(Duration::from_millis(10), self.mailbox.recv()).await {
+                    Ok(Some(command)) => {
+                        self.apply_command_without_spawning_forks_or_recover(command)
+                            .await
+                    }
+                    Ok(None) => Err(SessionError::ChannelClosed),
+                    Err(_) => self.poll_gdb_run_control().await.map(|_| ()),
+                }
             }
             EngineState::Stopped { .. } => {
                 self.drain_terminal_commands_without_spawning_forks()
@@ -807,6 +866,51 @@ where
             Ok(command) => Ok(Some(command)),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => Err(SessionError::ChannelClosed),
+        }
+    }
+
+    async fn poll_gdb_run_control(&mut self) -> Result<bool, SessionError> {
+        let Some(packet) = self.engine.quantum_loop.poll_gdb_run_control()? else {
+            return Ok(false);
+        };
+        let command = match gdb_run_control_command(&packet) {
+            Some(command) => command,
+            None => {
+                self.engine.quantum_loop.complete_gdb_run_control(b"E01")?;
+                return Ok(true);
+            }
+        };
+        let stop = if packet == [0x03] { b"T02" } else { b"T05" };
+        match self.apply_command_without_spawning_forks(command).await {
+            Ok(()) => {
+                self.gdb_run_control_stop = Some(stop.to_vec());
+                Ok(true)
+            }
+            Err(error @ SessionError::DebugNonCanonicalBranchRequired { .. }) => {
+                self.engine.quantum_loop.complete_gdb_run_control(b"E31")?;
+                let _ = error;
+                Ok(true)
+            }
+            Err(error) => {
+                self.engine.quantum_loop.complete_gdb_run_control(b"E31")?;
+                Err(error)
+            }
+        }
+    }
+
+    fn complete_pending_gdb_run_control(&mut self) -> Result<(), SessionError> {
+        if !matches!(self.engine.state(), EngineState::Running)
+            && let Some(stop) = self.gdb_run_control_stop.as_ref()
+        {
+            self.engine.quantum_loop.complete_gdb_run_control(stop)?;
+            self.gdb_run_control_stop = None;
+        }
+        Ok(())
+    }
+
+    fn fail_pending_gdb_run_control(&mut self) {
+        if self.gdb_run_control_stop.take().is_some() {
+            let _ = self.engine.quantum_loop.complete_gdb_run_control(b"E31");
         }
     }
 
@@ -1031,5 +1135,31 @@ where
                 Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gdb_run_control_tests {
+    use super::*;
+
+    #[test]
+    fn parser_accepts_only_exact_scheduler_semantics() {
+        assert!(matches!(
+            gdb_run_control_command(b"c"),
+            Some(SessionCommand::Continue)
+        ));
+        assert!(matches!(
+            gdb_run_control_command(b"vCont;s;s"),
+            Some(SessionCommand::Step {
+                mode: StepMode::Quantum
+            })
+        ));
+        assert!(matches!(
+            gdb_run_control_command(&[0x03]),
+            Some(SessionCommand::Pause)
+        ));
+        assert!(gdb_run_control_command(b"vCont;s:1").is_none());
+        assert!(gdb_run_control_command(b"vCont;s;c").is_none());
+        assert!(gdb_run_control_command(b"vCont;c;bogus").is_none());
     }
 }

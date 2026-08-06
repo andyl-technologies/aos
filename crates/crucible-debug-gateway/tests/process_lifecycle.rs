@@ -89,6 +89,42 @@ fn stable_gdb_connection_survives_backend_replacement() {
     assert_eq!(read_rsp_payload(&mut gdb), b"O6869");
     assert_eq!(read_rsp_payload(&mut gdb), b"ff");
 
+    gdb.write_all(&encode_rsp_packet(b"s"))
+        .unwrap_or_else(|error| panic!("scheduler step should write: {error}"));
+    let mut routed = None;
+    for _attempt in 0..100 {
+        routed = process
+            .poll_run_control()
+            .unwrap_or_else(|error| panic!("run control should poll: {error}"));
+        if routed.is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(routed.as_deref(), Some(b"s".as_slice()));
+    process
+        .complete_run_control(b"T05")
+        .unwrap_or_else(|error| panic!("scheduler stop should complete: {error}"));
+    assert_eq!(read_rsp_payload(&mut gdb), b"T05");
+    gdb.write_all(b"-")
+        .unwrap_or_else(|error| panic!("scheduler stop should nack: {error}"));
+    assert_eq!(read_rsp_payload(&mut gdb), b"T05");
+    gdb.write_all(b"+")
+        .unwrap_or_else(|error| panic!("scheduler stop should acknowledge: {error}"));
+
+    gdb.write_all(&encode_rsp_packet(b"c"))
+        .unwrap_or_else(|error| panic!("scheduler continue should write: {error}"));
+    assert_eq!(poll_run_control(&mut process), b"c");
+    gdb.write_all(&[0x03])
+        .unwrap_or_else(|error| panic!("scheduler interrupt should write: {error}"));
+    assert_eq!(poll_run_control(&mut process), [0x03]);
+    process
+        .complete_run_control(b"T02")
+        .unwrap_or_else(|error| panic!("scheduler interrupt should complete: {error}"));
+    assert_eq!(read_rsp_payload(&mut gdb), b"T02");
+    gdb.write_all(b"+")
+        .unwrap_or_else(|error| panic!("scheduler interrupt should acknowledge: {error}"));
+
     drop(gdb);
     process
         .shutdown()
@@ -99,6 +135,19 @@ fn stable_gdb_connection_survives_backend_replacement() {
     second_backend
         .join()
         .unwrap_or_else(|_| panic!("second fake backend should not panic"));
+}
+
+fn poll_run_control(process: &mut DebugGatewayProcess) -> Vec<u8> {
+    for _attempt in 0..100 {
+        let routed = process
+            .poll_run_control()
+            .unwrap_or_else(|error| panic!("run control should poll: {error}"));
+        if let Some(packet) = routed {
+            return packet;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("run control should arrive within the bounded poll budget")
 }
 
 fn spawn_fake_qemu_backend(
