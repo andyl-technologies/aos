@@ -267,6 +267,15 @@ pub enum NetworkOversizeDisposition {
     TypedError,
 }
 
+/// Protocol-aware fragmentation performed for an oversized Ethernet frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkFragmentationProtocol {
+    /// Fragments an Ethernet-carried IPv4 datagram and repairs its header checksum.
+    EthernetIpv4,
+}
+
 /// A forwarder lifecycle transition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -511,6 +520,12 @@ pub enum NetworkEffectSpecification {
         kind: DetectedFrameErrorKind,
         /// Receiver action.
         receiver_action: DetectedFrameErrorAction,
+        /// Retry delay, present only for `retry`.
+        retry_delay_nanos: Option<PositiveU64>,
+        /// Maximum retries, present only for `retry`.
+        retry_limit: Option<BoundedCount>,
+        /// Link-reset/retraining duration, present only for `link_reset`.
+        reset_nanos: Option<PositiveU64>,
     },
     /// Effective MTU.
     Mtu {
@@ -518,6 +533,10 @@ pub enum NetworkEffectSpecification {
         mtu_bytes: PositiveU64,
         /// Oversize disposition.
         oversize: NetworkOversizeDisposition,
+        /// Protocol parser/encoder used only for `fragment`.
+        fragmentation_protocol: Option<NetworkFragmentationProtocol>,
+        /// Typed reverse-path response artifact used only for `typed_error`.
+        typed_error: Option<FaultObjectId>,
     },
     /// Class-scoped pause or resume.
     PauseBackpressure {
@@ -536,6 +555,8 @@ pub enum NetworkEffectSpecification {
         drop_members: Option<ObjectIdSet>,
         /// Keyed selection rule, mutually exclusive with explicit members.
         selection: Option<NetworkSelection>,
+        /// Number of recipients retained by a keyed selection.
+        retain_count: Option<BoundedCount>,
     },
     /// Forwarder restart, reset, or power loss.
     ForwarderLifecycle {
@@ -758,6 +779,26 @@ impl NetworkEffectSpecification {
                     effect: self.kind(),
                 })
             }
+            Self::QueuePolicy {
+                discipline,
+                discipline_parameters,
+                ..
+            } => {
+                let valid = match discipline {
+                    NetworkQueueDiscipline::Fifo => discipline_parameters.is_none(),
+                    NetworkQueueDiscipline::StrictPriority
+                    | NetworkQueueDiscipline::WeightedRoundRobin
+                    | NetworkQueueDiscipline::DeficitRoundRobin
+                    | NetworkQueueDiscipline::Red => discipline_parameters.is_some(),
+                };
+                if valid {
+                    Ok(())
+                } else {
+                    Err(FaultContractError::InvalidEffectParameters {
+                        effect: self.kind(),
+                    })
+                }
+            }
             Self::FrameLoss {
                 probability,
                 outcome,
@@ -785,13 +826,80 @@ impl NetworkEffectSpecification {
             Self::RecipientSubset {
                 drop_members,
                 selection,
+                retain_count,
                 ..
-            } => exactly_one(
-                drop_members.is_some(),
-                selection.is_some(),
-                "drop_members",
-                "selection",
-            ),
+            } => {
+                exactly_one(
+                    drop_members.is_some(),
+                    selection.is_some(),
+                    "drop_members",
+                    "selection",
+                )?;
+                if selection.is_some() == retain_count.is_some() {
+                    Ok(())
+                } else {
+                    Err(FaultContractError::InvalidEffectParameters {
+                        effect: self.kind(),
+                    })
+                }
+            }
+            Self::DetectedFrameError {
+                receiver_action,
+                retry_delay_nanos,
+                retry_limit,
+                reset_nanos,
+                ..
+            } => {
+                let valid = match receiver_action {
+                    DetectedFrameErrorAction::Retry => {
+                        retry_delay_nanos.is_some()
+                            && retry_limit.is_some()
+                            && reset_nanos.is_none()
+                    }
+                    DetectedFrameErrorAction::LinkReset => {
+                        retry_delay_nanos.is_none()
+                            && retry_limit.is_none()
+                            && reset_nanos.is_some()
+                    }
+                    DetectedFrameErrorAction::Corrected | DetectedFrameErrorAction::Drop => {
+                        retry_delay_nanos.is_none()
+                            && retry_limit.is_none()
+                            && reset_nanos.is_none()
+                    }
+                };
+                if valid {
+                    Ok(())
+                } else {
+                    Err(FaultContractError::InvalidEffectParameters {
+                        effect: self.kind(),
+                    })
+                }
+            }
+            Self::Mtu {
+                oversize,
+                fragmentation_protocol,
+                typed_error,
+                ..
+            } => {
+                let valid = match oversize {
+                    NetworkOversizeDisposition::Drop => {
+                        fragmentation_protocol.is_none() && typed_error.is_none()
+                    }
+                    NetworkOversizeDisposition::Fragment => {
+                        fragmentation_protocol.is_some() && typed_error.is_none()
+                    }
+                    NetworkOversizeDisposition::TypedError => {
+                        fragmentation_protocol.is_none() && typed_error.is_some()
+                    }
+                };
+                if valid {
+                    Ok(())
+                } else {
+                    Err(FaultContractError::InvalidEffectParameters {
+                        effect: self.kind(),
+                    })
+                }
+            }
             _ => Ok(()),
         }
     }

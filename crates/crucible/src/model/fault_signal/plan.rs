@@ -11,7 +11,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io;
 
-use crate::model::{NetworkPolicyArtifactClass, World};
+use crate::model::{NetworkPolicyArtifactClass, NetworkPolicyArtifactKind, World};
 
 use super::*;
 
@@ -341,20 +341,101 @@ fn validate_network_effect_policy_references(
             ..
         } => require(reference, integer, "distribution_lookup")?,
         NetworkEffectSpecification::QueuePolicy {
+            discipline,
             discipline_parameters: Some(reference),
             ..
-        } => require(
-            reference,
-            &[NetworkPolicyArtifactClass::QueueDiscipline],
-            "discipline_parameters",
-        )?,
+        } => {
+            require(
+                reference,
+                &[NetworkPolicyArtifactClass::QueueDiscipline],
+                "discipline_parameters",
+            )?;
+            let declaration = topology.network_policy_artifact(reference).ok_or_else(|| {
+                FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                    binding: binding.id().as_str().to_owned(),
+                    reference: reference.as_str().to_owned(),
+                    field: "discipline_parameters",
+                    expected: String::from("queue_discipline"),
+                    actual: None,
+                }
+            })?;
+            if let NetworkPolicyArtifactKind::QueueDiscipline(parameters) = &declaration.artifact {
+                let class_discipline = matches!(
+                    discipline,
+                    NetworkQueueDiscipline::StrictPriority
+                        | NetworkQueueDiscipline::WeightedRoundRobin
+                        | NetworkQueueDiscipline::DeficitRoundRobin
+                );
+                if class_discipline == parameters.classes.is_empty()
+                    || matches!(discipline, NetworkQueueDiscipline::Red)
+                        && !parameters.classes.is_empty()
+                {
+                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: reference.as_str().to_owned(),
+                        field: "discipline_parameters.classes",
+                        expected: if class_discipline {
+                            String::from("nonempty queue classes")
+                        } else {
+                            String::from("no queue classes")
+                        },
+                        actual: Some(if parameters.classes.is_empty() {
+                            "empty"
+                        } else {
+                            "nonempty"
+                        }),
+                    });
+                }
+                for class in &parameters.classes {
+                    require(
+                        &class.selector,
+                        &[NetworkPolicyArtifactClass::PacketSelector],
+                        "queue_class.selector",
+                    )?;
+                }
+            }
+        }
         NetworkEffectSpecification::BurstErrorState {
             state_parameters, ..
-        } => require(
-            state_parameters,
-            &[NetworkPolicyArtifactClass::ErrorStateTable],
-            "state_parameters",
-        )?,
+        } => {
+            require(
+                state_parameters,
+                &[NetworkPolicyArtifactClass::ErrorStateTable],
+                "state_parameters",
+            )?;
+            let declaration = topology
+                .network_policy_artifact(state_parameters)
+                .ok_or_else(
+                    || FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: state_parameters.as_str().to_owned(),
+                        field: "state_parameters",
+                        expected: String::from("error_state_table"),
+                        actual: None,
+                    },
+                )?;
+            if let NetworkPolicyArtifactKind::ErrorStateTable { states, .. } = &declaration.artifact
+            {
+                if states.len() != 2 {
+                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: state_parameters.as_str().to_owned(),
+                        field: "state_parameters",
+                        expected: String::from("two-state error_state_table"),
+                        actual: Some("error_state_table"),
+                    });
+                }
+                for state in states {
+                    if let Some(transform) = &state.corruption_transform {
+                        require(
+                            transform,
+                            &[NetworkPolicyArtifactClass::ByteTemplate],
+                            "error_state.corruption_transform",
+                        )?;
+                    }
+                }
+            }
+        }
         NetworkEffectSpecification::PayloadTransform { mutation } => match mutation {
             NetworkPayloadMutation::FieldMutation { field, replacement } => {
                 require(
@@ -379,6 +460,14 @@ fn validate_network_effect_policy_references(
             resume_event: Some(reference),
             ..
         } => require(reference, state_machine, "resume_event")?,
+        NetworkEffectSpecification::Mtu {
+            typed_error: Some(reference),
+            ..
+        } => require(
+            reference,
+            &[NetworkPolicyArtifactClass::ControlResult],
+            "typed_error",
+        )?,
         NetworkEffectSpecification::ForwardingMutation { selector, .. } => require(
             selector,
             &[NetworkPolicyArtifactClass::PacketSelector],
@@ -468,6 +557,7 @@ fn validate_network_effect_policy_references(
             }
         }
         NetworkEffectSpecification::Association {
+            candidates,
             selection_policy,
             timer_policy,
             authentication_policy,
@@ -482,6 +572,35 @@ fn validate_network_effect_policy_references(
             ] {
                 require(reference, &[NetworkPolicyArtifactClass::Association], field)?;
             }
+            let declaration = topology
+                .network_policy_artifact(selection_policy)
+                .ok_or_else(
+                    || FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: selection_policy.as_str().to_owned(),
+                        field: "selection_policy",
+                        expected: String::from("association"),
+                        actual: None,
+                    },
+                )?;
+            if let NetworkPolicyArtifactKind::Association(policy) = &declaration.artifact {
+                let mut declared = policy
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.candidate.clone())
+                    .collect::<Vec<_>>();
+                declared.sort();
+                declared.dedup();
+                if declared.as_slice() != candidates.as_slice() {
+                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: selection_policy.as_str().to_owned(),
+                        field: "selection_policy.candidates",
+                        expected: String::from("exact effect candidate set"),
+                        actual: Some("different candidate set"),
+                    });
+                }
+            }
         }
         NetworkEffectSpecification::ControlResultTransform { result, .. } => require(
             result,
@@ -489,18 +608,35 @@ fn validate_network_effect_policy_references(
             "result",
         )?,
         NetworkEffectSpecification::Contact {
+            intervals,
             transition_policy,
             range_delay_lookup,
             ..
         } => {
+            require(
+                intervals,
+                &[NetworkPolicyArtifactClass::ContactPlan],
+                "intervals",
+            )?;
             require(transition_policy, state_machine, "transition_policy")?;
             require(range_delay_lookup, integer, "range_delay_lookup")?;
         }
-        NetworkEffectSpecification::CustodyQueue { custody_policy, .. } => require(
+        NetworkEffectSpecification::CustodyQueue {
             custody_policy,
-            &[NetworkPolicyArtifactClass::Overflow],
-            "custody_policy",
-        )?,
+            route_contact_plan,
+            ..
+        } => {
+            require(
+                custody_policy,
+                &[NetworkPolicyArtifactClass::Overflow],
+                "custody_policy",
+            )?;
+            require(
+                route_contact_plan,
+                &[NetworkPolicyArtifactClass::ContactPlan],
+                "route_contact_plan",
+            )?;
+        }
         NetworkEffectSpecification::Availability { .. }
         | NetworkEffectSpecification::Flap { .. }
         | NetworkEffectSpecification::NegotiatedMode { .. }

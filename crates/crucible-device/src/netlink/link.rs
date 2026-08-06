@@ -118,6 +118,8 @@ pub struct ResolvedNetworkFrameEffects {
     additional_delay_nanos: u64,
     /// Minimum effective bit-rate cap after adapter-side composition.
     serialization_rate_cap_bps: Option<u64>,
+    /// Whether adapter-owned queue service already consumed serialization time.
+    serialization_accounted: bool,
     /// Whether the adapter resolved this frame to no delivery.
     drop: bool,
     /// Added-copy gaps from the primary delivery, in canonical copy order.
@@ -197,6 +199,11 @@ impl ResolvedNetworkFrameEffects {
         self.drop = true;
     }
 
+    /// Marks serialization as fully consumed by the adapter-owned service queue.
+    pub const fn mark_serialization_accounted(&mut self) {
+        self.serialization_accounted = true;
+    }
+
     /// Adds one bounded copy gap and preserves canonical gap ordering.
     ///
     /// # Errors
@@ -233,6 +240,12 @@ impl ResolvedNetworkFrameEffects {
     #[must_use]
     pub const fn serialization_rate_cap_bps(&self) -> Option<u64> {
         self.serialization_rate_cap_bps
+    }
+
+    /// Returns whether the adapter already consumed serialization service.
+    #[must_use]
+    pub const fn serialization_is_accounted(&self) -> bool {
+        self.serialization_accounted
     }
 
     /// Returns whether the frame resolves to no delivery.
@@ -636,8 +649,13 @@ impl NetLink {
                 }
             })?;
         let len = frame.payload.len() as u64;
-        let base_serialization = self.faults.serialization_delay_ns(len);
+        let base_serialization = if frame.resolved_effects.serialization_is_accounted() {
+            0
+        } else {
+            self.faults.serialization_delay_ns(len)
+        };
         let serialization = match frame.resolved_effects.serialization_rate_cap_bps() {
+            _ if frame.resolved_effects.serialization_is_accounted() => 0,
             Some(rate) => {
                 base_serialization.max(checked_serialization_delay_bits_per_sec(len, rate).ok_or(
                     DeviceError::CompletionOverflow {

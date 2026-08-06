@@ -330,12 +330,14 @@ impl SingleScheduler {
     /// The wakeup is folded into every live node's effective exact horizon so
     /// the shared frontier reaches the evaluation coordinate without polling.
     /// `None` disarms the wakeup when no cadence or residence transition is due.
+    /// A nanosecond coordinate between representable icounts is rounded upward,
+    /// so a modeled delay is never shortened by the machine time scale.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError::BoundaryViolation`] when the requested wakeup
-    /// is not strictly after the current shared frontier or is not representable
-    /// at the scenario's fixed icount shift.
+    /// is not strictly after the current shared frontier or upward alignment
+    /// overflows the virtual-time representation.
     pub fn set_signal_fault_wakeup(
         &mut self,
         wakeup_nanos: Option<u64>,
@@ -350,17 +352,25 @@ impl SingleScheduler {
                 ),
             });
         }
-        if let Some(wakeup_nanos) = wakeup_nanos {
+        let wakeup_nanos = if let Some(wakeup_nanos) = wakeup_nanos {
             let scale = 1_u64 << self.timeline.shift().bits;
-            if wakeup_nanos % scale != 0 {
-                return Err(SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "signal fault wakeup {wakeup_nanos} is not aligned to icount shift {}",
-                        self.timeline.shift().bits
-                    ),
-                });
-            }
-        }
+            let remainder = wakeup_nanos % scale;
+            let aligned = if remainder == 0 {
+                wakeup_nanos
+            } else {
+                wakeup_nanos
+                    .checked_add(scale - remainder)
+                    .ok_or_else(|| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "signal fault wakeup {wakeup_nanos} overflows while aligning to icount shift {}",
+                            self.timeline.shift().bits
+                        ),
+                    })?
+            };
+            Some(aligned)
+        } else {
+            None
+        };
         self.signal_fault_wakeup = wakeup_nanos.map(|nanos| SimInstant { nanos });
         Ok(())
     }
