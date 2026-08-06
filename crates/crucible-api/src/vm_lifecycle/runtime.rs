@@ -1083,86 +1083,6 @@ impl ProductionVmDebugRuntimeEvidence {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hash(domain: &str) -> ContentHash {
-        ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
-    }
-
-    fn node() -> NodeId {
-        NodeId {
-            name: String::from("vm-a"),
-        }
-    }
-
-    fn graph_runtime(configuration: ContentHash, reduced_state: ContentHash) -> RuntimeState {
-        RuntimeState {
-            id: reduced_state,
-            configuration,
-            node_blobs: BTreeMap::new(),
-            node_icounts: BTreeMap::new(),
-            scheduler: SchedulerState::default(),
-            event_log: EventLogOffset::default(),
-        }
-    }
-
-    fn evidence(configuration: ContentHash) -> ProductionVmDebugRuntimeEvidence {
-        ProductionVmDebugRuntimeEvidence {
-            configuration,
-            event_log: EventLogOffset::new(hash("event-log"), 3, 7),
-            scheduler: SchedulerState::default(),
-            node_icounts: BTreeMap::from([(node(), Icount { retired: 41 })]),
-            fingerprints: BTreeMap::new(),
-            graph_runtimes: Vec::new(),
-            runtime: None,
-        }
-    }
-
-    #[test]
-    fn production_debug_evidence_hydrates_only_backend_owned_runtime_fields() {
-        let configuration = hash("configuration");
-        let reduced_state = hash("reduced-state");
-        let mut graph = graph_runtime(configuration, reduced_state);
-        graph
-            .node_blobs
-            .insert(node(), crucible::NodeBlobRef::baked(hash("blob")));
-        graph.node_icounts.insert(node(), Icount { retired: 5 });
-        let evidence = evidence(configuration);
-
-        if let Err(error) = evidence.validate_graph_runtime(configuration, reduced_state, &graph) {
-            panic!("complete graph identity should validate: {error}");
-        }
-        let bound = evidence.bind_graph_runtime(&graph);
-        assert_eq!(bound.id, graph.id);
-        assert_eq!(bound.node_blobs, graph.node_blobs);
-        assert_eq!(bound.event_log, evidence.event_log);
-        assert_eq!(bound.node_icounts, evidence.node_icounts);
-    }
-
-    #[test]
-    fn production_debug_evidence_rejects_forged_or_partial_graph_identity() {
-        let configuration = hash("configuration");
-        let reduced_state = hash("reduced-state");
-        let evidence = evidence(configuration);
-        let mut forged = graph_runtime(configuration, hash("forged-state"));
-        assert!(
-            evidence
-                .validate_graph_runtime(configuration, reduced_state, &forged)
-                .is_err()
-        );
-
-        forged.id = reduced_state;
-        forged.node_icounts.insert(node(), Icount { retired: 5 });
-        assert!(
-            evidence
-                .validate_graph_runtime(configuration, reduced_state, &forged)
-                .is_err()
-        );
-    }
-}
-
 fn debug_candidate_matches_target_runtime(
     candidate: &ProductionVmLifecycleLoop,
     request: &DebugRuntimeRepositionRequest,
@@ -1271,4 +1191,84 @@ fn assertion_state_event_from_outcome(outcome: &HostAssertionOutcome) -> Option<
         outcome.assertion.clone(),
         state,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hash(domain: &str) -> ContentHash {
+        ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
+    }
+
+    fn node() -> NodeId {
+        NodeId {
+            name: String::from("vm-a"),
+        }
+    }
+
+    fn graph_runtime(configuration: ContentHash, reduced_state: ContentHash) -> RuntimeState {
+        RuntimeState {
+            id: reduced_state,
+            configuration,
+            node_blobs: BTreeMap::new(),
+            node_icounts: BTreeMap::new(),
+            scheduler: SchedulerState::default(),
+            event_log: EventLogOffset::default(),
+        }
+    }
+
+    fn evidence(configuration: ContentHash) -> ProductionVmDebugRuntimeEvidence {
+        ProductionVmDebugRuntimeEvidence {
+            configuration,
+            event_log: EventLogOffset::new(hash("event-log"), 3, 7),
+            scheduler: SchedulerState::default(),
+            node_icounts: BTreeMap::from([(node(), Icount { retired: 41 })]),
+            fingerprints: BTreeMap::new(),
+            graph_runtimes: Vec::new(),
+            runtime: None,
+        }
+    }
+
+    #[test]
+    fn production_debug_evidence_hydrates_only_backend_owned_runtime_fields() {
+        let configuration = hash("configuration");
+        let reduced_state = hash("reduced-state");
+        let mut graph = graph_runtime(configuration, reduced_state);
+        graph
+            .node_blobs
+            .insert(node(), crucible::NodeBlobRef::baked(hash("blob")));
+        graph.node_icounts.insert(node(), Icount { retired: 5 });
+        let evidence = evidence(configuration);
+
+        if let Err(error) = evidence.validate_graph_runtime(configuration, reduced_state, &graph) {
+            panic!("complete graph identity should validate: {error}");
+        }
+        let bound = evidence.bind_graph_runtime(&graph);
+        assert_eq!(bound.id, graph.id);
+        assert_eq!(bound.node_blobs, graph.node_blobs);
+        assert_eq!(bound.event_log, evidence.event_log);
+        assert_eq!(bound.node_icounts, evidence.node_icounts);
+    }
+
+    #[test]
+    fn production_debug_evidence_rejects_forged_or_partial_graph_identity() {
+        let configuration = hash("configuration");
+        let reduced_state = hash("reduced-state");
+        let evidence = evidence(configuration);
+        let mut forged = graph_runtime(configuration, hash("forged-state"));
+        assert!(
+            evidence
+                .validate_graph_runtime(configuration, reduced_state, &forged)
+                .is_err()
+        );
+
+        forged.id = reduced_state;
+        forged.node_icounts.insert(node(), Icount { retired: 5 });
+        assert!(
+            evidence
+                .validate_graph_runtime(configuration, reduced_state, &forged)
+                .is_err()
+        );
+    }
 }
