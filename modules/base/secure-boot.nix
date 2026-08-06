@@ -78,24 +78,11 @@
 
   # The PCR-policy public key must live inside the initrd: first-boot
   # sealing of /var reads it pre-switch-root. The initrd copies a fixed
-  # package set, not the whole toplevel closure, so wrap the key in a
-  # minimal derivation and add it via aos.boot.initrd.extraPackages.
-  # Lazy: only forced (and thus only requires a non-null key) when the
-  # measuredBoot config branch below is active.
-  pcrKeyForInitrd = pkgs.mkDerivation {
-    pname = "aos-pcr-pubkey";
-    version = "1";
-    src = null;
-    phases = [
-      {
-        name = "install";
-        script = ''
-          mkdir -p $out
-          cp ${toString cfg.measuredBoot.pcrPublicKey} $out/pcr.pem
-        '';
-      }
-    ];
-  };
+  # package set, not the whole toplevel closure, so the measured-boot branch
+  # registers a minimal image-fixed artifact and adds it via
+  # aos.boot.initrd.extraPackages. The frozen artifact path keeps this module
+  # evaluable on-host without exposing a derivation builder.
+  pcrKeyForInitrd = config.aos.config.artifacts.pcr-public-key;
 in {
   options.aos.boot.secureBoot = {
     enable = lib.mkOption {
@@ -299,6 +286,28 @@ in {
     })
 
     (lib.mkIf cfg.measuredBoot.enable {
+      # This is an image-fixed input, not a host-config build. Capture its
+      # stage-1 store path in the base library so the on-host evaluator can
+      # reuse it without requiring mkDerivation in the frozen package set.
+      aos.config._artifactSources.pcr-public-key =
+        if config.aos.config.frozenArtifacts ? "pcr-public-key"
+        then null
+        else
+          pkgs.mkDerivation {
+            pname = "aos-pcr-pubkey";
+            version = "1";
+            src = null;
+            phases = [
+              {
+                name = "install";
+                script = ''
+                  mkdir -p $out
+                  cp ${toString cfg.measuredBoot.pcrPublicKey} $out/pcr.pem
+                '';
+              }
+            ];
+          };
+
       assertions = [
         {
           assertion = cfg.enable;

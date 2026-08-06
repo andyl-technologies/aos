@@ -14,6 +14,15 @@ the deterministic, renderable outputs of `system.build.toplevel`:
   systemd-units.tree  the unit directory structure (.wants/.requires + unit files)
 ```
 
+Concrete store references are normalized by replacing their 32-character Nix
+store hash with the literal token `<hash>`. Package and output names, versions,
+subpaths, unit contents, and scripts remain exact; only the content-addressed
+store identity is excluded from the fixture. `AOS_BASELIB_DIGEST`, which is an
+opaque measured identity derived from the realized base-lib store path, is
+similarly represented as `sha256:<base-lib-digest>`. The snapshot still pins
+the field's presence and algorithm label without turning a Nix store identity
+into a source-controlled golden value.
+
 An unexpected diff in any of these is a **caught regression** (the barrier
 pattern). The single intentional change permitted during the P0 render/assemble
 refactor is the documented job-script-text normalization, which the comparator

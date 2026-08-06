@@ -383,6 +383,7 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
                 version: "1.0.0".to_string(),
                 platform: "x86_64-linux".to_string(),
                 registry: "aos-core".to_string(),
+                origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
                 closure: vec![RuntimeClosurePin {
                     store_path_hash: "0000000000000000000000000000000a".to_string(),
@@ -476,6 +477,7 @@ fn runtime_enrichment_projects_authenticated_units_and_enablement() {
                 version: "1.0.0".to_string(),
                 platform: "x86_64-linux".to_string(),
                 registry: "aos-core".to_string(),
+                origin: super::runtime::RuntimePackageOrigin::Registry,
                 store_path: output.to_string(),
                 closure: vec![
                     RuntimeClosurePin {

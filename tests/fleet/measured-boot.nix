@@ -23,12 +23,21 @@
 #      policy still unseals, and PCR 7 is unchanged.
 #
 # Single image-boot machine with a vTPM (server-verity: server + dm-verity +
-# SB-signed + PCR-policy-signed image + the bundled aos-test-agent package).
+# SB-signed + PCR-policy-signed image + the bundled test-agent payload).
 {
   lib,
   pkgs,
   systems,
-}: {
+}: let
+  measuredSystem = systems.server-verity.extendModules {
+    modules = [
+      {
+        aos.packages.test-http-server.bundle = true;
+        environment.systemPackages = [pkgs.binutils pkgs.diffutils pkgs.jq];
+      }
+    ];
+  };
+in {
   name = "measured-boot";
   # Image boot + enroll + three reboots (enforcing seal, then unattended
   # unlock). Budget like secure-boot plus an extra reboot.
@@ -44,19 +53,36 @@
     # omits Format= under measured boot) — aos-var-crypt owns its filesystem:
     # plain ext4 on the Setup boot, LUKS2 once enforcing.
     target = {
-      system = systems.server-verity;
+      system = measuredSystem;
       bootMode = "image";
       imageDiskMiB = 16384;
       tpm = true;
+      # Keep the control-plane unit in every evaluated /etc generation. The
+      # package payload is image-bundled test infrastructure, not a runtime
+      # package selection, so verified-boot assertions do not depend on a
+      # registry publishing the harness itself.
+      metadata."host.nix" = ''
+        { config, pkgs, ... }: {
+          aos.apm.desiredPackages = [ "test-http-server" ];
+          systemd.services.aos-test-agent = {
+            description = "AOS VM Test Guest Agent";
+            wantedBy = [ "multi-user.target" ];
+            restartIfChanged = false;
+            stopIfChanged = false;
+            serviceConfig = {
+              Type = "simple";
+              ExecStart = "''${config.aos.packages.aos-test-agent.package}/share/aos-test-agent/aos-test-agent";
+              Restart = "on-failure";
+              RestartSec = 1;
+              Environment = "PATH=''${pkgs.coreutils}/bin:''${pkgs.bash}/bin:''${pkgs.systemd}/bin:''${pkgs.systemd}/sbin";
+            };
+          };
+        }
+      '';
       # binutils extracts the measured UKI sections; jq validates the signed
       # policy and the evaluator manifest. Both are AOS-built packages and are
       # themselves inside the verified root exercised below.
-      packages = ["aos-test-agent"];
-      extraModules = [
-        {
-          environment.systemPackages = [pkgs.binutils pkgs.jq];
-        }
-      ];
+      packages = ["test-http-server"];
     };
   };
 
@@ -73,11 +99,44 @@
       VS = "${pkgs.cryptsetup}/sbin/veritysetup"
       OBJCOPY = "${pkgs.binutils}/bin/objcopy"
       JQ = "${pkgs.jq}/bin/jq"
+      CMP = "${pkgs.diffutils}/bin/cmp"
       MEASURE = "${pkgs.systemd}/lib/systemd/systemd-measure"
       APM = "${pkgs.aos}/bin/apm"
       TPM2_CHECKQUOTE = "${pkgs.tpm2-tools}/bin/tpm2_checkquote"
       TPM2_PCRREAD = "${pkgs.tpm2-tools}/bin/tpm2_pcrread"
       VARDEV = "/dev/disk/by-partlabel/var"
+
+      def canonical_json(value):
+          """Encode RFC-11 canonical JSON independently of the AOS CLI."""
+          if value is None:
+              return "null"
+          if value is True:
+              return "true"
+          if value is False:
+              return "false"
+          if isinstance(value, int):
+              return str(value)
+          if isinstance(value, str):
+              encoded = ['"']
+              for char in value:
+                  if char == '"':
+                      encoded.append('\\"')
+                  elif char == "\\":
+                      encoded.append("\\\\")
+                  elif ord(char) < 0x20:
+                      encoded.append(f"\\u{ord(char):04x}")
+                  else:
+                      encoded.append(char)
+              encoded.append('"')
+              return "".join(encoded)
+          if isinstance(value, list):
+              return "[" + ",".join(canonical_json(item) for item in value) + "]"
+          if isinstance(value, dict):
+              return "{" + ",".join(
+                  canonical_json(key) + ":" + canonical_json(value[key])
+                  for key in sorted(value)
+              ) + "}"
+          raise TypeError(f"unsupported canonical JSON value: {type(value)!r}")
 
       def efivar_byte(name):
           path = f"/sys/firmware/efi/efivars/{name}-{SB_GUID}"
@@ -103,7 +162,7 @@
           repart_log = target.succeed(
               "journalctl -b -k --no-pager 2>&1"
           )
-          assert "durable fallback provisioning marker present" in repart_log, (
+          assert "durable operator provisioning marker present" in repart_log, (
               f"{label}: repart did not perform its committed-layout pass:\n{repart_log}"
           )
           target.succeed("systemctl is-active systemd-tmpfiles-setup.service")
@@ -168,18 +227,26 @@
           )
 
           status = target.succeed(f"{VS} status root")
-          status_lower = status.lower()
-          assert "type: verity" in status_lower, f"root mapper is not verity:\n{status}"
-          assert "status: verified" in status_lower, f"root mapper is not verified:\n{status}"
-          assert f"root hash: {root_hash}" in status_lower, (
+          status_fields = {
+              match.group(1).strip().lower(): match.group(2).strip()
+              for line in status.splitlines()
+              if (match := re.match(r"^\s*([^:]+):\s*(.*?)\s*$", line))
+          }
+          assert status_fields.get("type", "").lower() == "verity", (
+              f"root mapper is not verity:\n{status}"
+          )
+          assert status_fields.get("status", "").lower() == "verified", (
+              f"root mapper is not verified:\n{status}"
+          )
+          assert status_fields.get("root hash", "").lower() == root_hash, (
               f"live verity root hash does not match cmdline {root_hash}:\n{status}"
           )
           expected_data = target.succeed(f"readlink -f {data_devices[0]}").strip()
           expected_hash = target.succeed(f"readlink -f {hash_devices[0]}").strip()
-          assert f"data device: {expected_data}" in status, (
+          assert status_fields.get("data device") == expected_data, (
               f"live verity data device does not match slot: {status}"
           )
-          assert f"hash device: {expected_hash}" in status, (
+          assert status_fields.get("hash device") == expected_hash, (
               f"live verity hash device does not match slot: {status}"
           )
 
@@ -251,14 +318,16 @@
                 /var/lib/profiles/image/state.json
           """).strip().removeprefix("sha256:").lower()
           calculated = target.succeed("cat /tmp/aos-pcr11-check/calculated").splitlines()
-          calculated_enter_initrd = next(
+          calculated_phases = [
               line.split("=", 1)[1]
               for line in calculated
               if line.startswith("11:sha256=")
-          )
+          ]
+          calculated_enter_initrd = calculated_phases[0]
+          calculated_ready = calculated_phases[-1]
           assert expected_pcr11 == calculated_enter_initrd, (
-              "registry expected_pcr11 does not match the booted UKI's "
-              f"enter-initrd measurement: catalog={expected_pcr11!r}, "
+              "early boot image index does not match the booted UKI's "
+              f"enter-initrd measurement: index={expected_pcr11!r}, "
               f"calculated={calculated_enter_initrd!r}"
           )
 
@@ -274,7 +343,7 @@
               {JQ} -e '.sha256 | type == "array" and length > 0' /tmp/uki.pcrsig.json
               {JQ} -S . /tmp/uki.pcrsig.json > /tmp/uki.pcrsig.canonical
               {JQ} -S . /run/systemd/tpm2-pcr-signature.json > /tmp/runtime.pcrsig.canonical
-              cmp /tmp/uki.pcrsig.canonical /tmp/runtime.pcrsig.canonical
+              {CMP} /tmp/uki.pcrsig.canonical /tmp/runtime.pcrsig.canonical
           """)
 
           # The manifest's base library and evaluator paths must both have
@@ -283,7 +352,7 @@
           manifest = "/run/aos/manifest.json"
           base_lib = target.succeed(f"{JQ} -er '.inputs.base_lib.store_path' {manifest}").strip()
           evaluator = target.succeed(f"{JQ} -er '.inputs.evaluator.store_path' {manifest}").strip()
-          linked_base = target.succeed("readlink -f /run/current-system/base-lib").strip()
+          linked_base = target.succeed("readlink -f /aos-toplevel/base-lib").strip()
           assert base_lib == linked_base, (
               f"manifest base-lib {base_lib!r} != running base-lib {linked_base!r}"
           )
@@ -303,7 +372,7 @@
               f"test -s /nix.lower/store/{base_lib.removeprefix('/nix/store/')}/system-roots.json"
           )
 
-          return root_hash, data_devices[0], hash_devices[0]
+          return root_hash, data_devices[0], hash_devices[0], calculated_ready
 
       def assert_tamper_rejected(root_hash, data_device, hash_device):
           # Exercise the same root hash/tree against a private copy. Altering
@@ -330,10 +399,24 @@
       def assert_generation_attestation(root_hash, expected_pcr11):
           # Force a post-enrollment generation so the quote records the
           # enforcing PCR-7 state rather than the Setup-Mode first boot. This
-          # host uses the canonical empty config-module release case; signed
-          # release/store verification is covered by registry fixtures.
-          attested_host = """{
+          # host consumes one image-local config module; signed registry
+          # release/store verification remains covered by registry fixtures.
+          attested_host = """{ config, pkgs, ... }: {
+            aos.apm.desiredPackages = [ \"test-http-server\" ];
             environment.etc.\"rfc0011-attested\".text = \"enforcing\\n\";
+            systemd.services.aos-test-agent = {
+              description = \"AOS VM Test Guest Agent\";
+              wantedBy = [ \"multi-user.target\" ];
+              restartIfChanged = false;
+              stopIfChanged = false;
+              serviceConfig = {
+                Type = \"simple\";
+                ExecStart = \"''${config.aos.packages.aos-test-agent.package}/share/aos-test-agent/aos-test-agent\";
+                Restart = \"on-failure\";
+                RestartSec = 1;
+                Environment = \"PATH=''${pkgs.coreutils}/bin:''${pkgs.bash}/bin:''${pkgs.systemd}/bin:''${pkgs.systemd}/sbin\";
+              };
+            };
           }
           """
           encoded = base64.b64encode(attested_host.encode()).decode()
@@ -364,9 +447,7 @@
           assert re.fullmatch(r"sha256:[0-9a-f]{64}", record["activation_id"]), record
           assert record["eval_mode"] == "pure-eval", record
           assert record["quote_status"] == "quoted", record
-          canonical_manifest = json.dumps(
-              manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-          ).encode()
+          canonical_manifest = canonical_json(manifest).encode()
           manifest_hash = "sha256:" + hashlib.sha256(canonical_manifest).hexdigest()
           assert record["manifest_hash"] == manifest_hash, (
               record["manifest_hash"], manifest_hash
@@ -378,22 +459,25 @@
           assert inputs["base_lib"]["abi_hash"] == manifest["inputs"]["base_lib"]["abi_hash"]
           assert inputs["base_lib"]["module_abi"] == manifest["inputs"]["base_lib"]["module_abi"]
           assert inputs["base_lib"]["root_verity_roothash"] == root_hash
-          assert inputs["base_lib"]["pcr11_expected"].removeprefix("sha256:") == expected_pcr11
+          recorded_pcr11 = inputs["base_lib"]["pcr11_expected"].removeprefix("sha256:")
+          assert recorded_pcr11 == expected_pcr11, (recorded_pcr11, expected_pcr11)
           assert inputs["evaluator"] == manifest["inputs"]["evaluator"]
           config_inputs = manifest["inputs"]["config_modules"]
           attested_modules = inputs["config_modules"]
           assert attested_modules["closure_hash"] == config_inputs["closure_hash"]
           assert attested_modules["count"] == config_inputs["count"]
-          assert attested_modules["count"] == 0, attested_modules
+          assert attested_modules["count"] == 1, attested_modules
           assert attested_modules["store_paths"] == config_inputs["store_paths"]
           assert attested_modules["nar_hashes"] == config_inputs["nar_hashes"]
           assert attested_modules["package_names"] == config_inputs["package_names"]
+          assert config_inputs["origins"] == ["image"], config_inputs
           for field in ("registry", "release_tag", "tag_signer_key", "realization"):
               assert attested_modules.get(field) is None, (field, attested_modules)
               assert config_inputs.get(field) is None, (field, config_inputs)
           assert attested_modules["provenance"] == {
               "module_abi_compat": config_inputs["module_abi_compat"],
               "authorizations": config_inputs["authorizations"],
+              "origins": config_inputs["origins"],
           }
           assert inputs["host_nix"] == {
               key: value
@@ -410,9 +494,7 @@
           assert embedded["pcr_selection"] == "sha256:7,11,12,15", embedded
           bare = dict(record)
           bare.pop("quote")
-          canonical_bare = json.dumps(
-              bare, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-          ).encode()
+          canonical_bare = canonical_json(bare).encode()
           record_digest = hashlib.sha256(canonical_bare).hexdigest()
           assert embedded["nonce"] == record_digest, embedded
           for field, filename in (
@@ -433,12 +515,12 @@
                 -l sha256:7,11,12,15 \
                 -g sha256 -q {record_digest}
               {TPM2_PCRREAD} -o /tmp/rfc0011-current-pcrs sha256:7,11,12,15
-              cmp {quote_dir}/quote.pcrs /tmp/rfc0011-current-pcrs
+              {CMP} {quote_dir}/quote.pcrs /tmp/rfc0011-current-pcrs
           """)
           pcrs = target.succeed(f"{TPM2_PCRREAD} sha256:7,11")
           parsed = {
               int(index): value.lower()
-              for index, value in re.findall(r"^\\s*(7|11)\\s*:\\s*0x([0-9A-Fa-f]+)\\s*$", pcrs, re.M)
+              for index, value in re.findall(r"^\s*(7|11)\s*:\s*0x([0-9A-Fa-f]+)\s*$", pcrs, re.M)
           }
           assert set(parsed) == {7, 11}, pcrs
           assert parsed[11] == expected_pcr11, (parsed, expected_pcr11)
@@ -453,10 +535,14 @@
               if line.strip()
           ]
           pcr15 = bytes(32)
+          baseline_pcr15 = None
           saw_generation = False
           for event in records:
               if event["event_type"] == "aos-pcr-baseline":
-                  pcr15 = bytes.fromhex(event["pcr_value"])
+                  baseline_pcr15 = event["pcr_value"]
+                  baseline = event["pcr_value"].removeprefix("sha256:")
+                  assert re.fullmatch(r"[0-9a-f]{64}", baseline), event
+                  pcr15 = bytes.fromhex(baseline)
                   continue
               digest = event["digest"].removeprefix("sha256:")
               assert digest == hashlib.sha256(event["event"].encode()).hexdigest(), event
@@ -470,13 +556,16 @@
                   saw_generation = True
                   break
           assert saw_generation, records
+          assert baseline_pcr15 is not None, records
           assert pcr15.hex() == embedded["quoted_pcr15"], (
               pcr15.hex(), embedded["quoted_pcr15"]
           )
 
           # Re-run the production evaluator from the attested input bytes and
-          # require byte-identical output. This is stronger than accepting a
-          # self-reported manifest hash: it demonstrates full re-derivation.
+          # require byte-identical canonical output. This is stronger than
+          # accepting a self-reported manifest hash: it demonstrates full
+          # re-derivation while ignoring JSON object insertion order, which is
+          # deliberately outside the RFC-11 canonical identity.
           target.succeed(f"""
               rm -rf /run/rfc0011-attestation-rederive
               mkdir -p /run/rfc0011-attestation-rederive
@@ -487,9 +576,40 @@
                 --module-abi {inputs['base_lib']['module_abi']} \
                 --out /run/rfc0011-attestation-rederive/manifest.json \
                 --eval-root /run/rfc0011-attestation-rederive
-              cmp {generation_dir}/manifest.json \
-                /run/rfc0011-attestation-rederive/manifest.json
           """, timeout=300)
+          rederived_text = target.succeed(
+              "cat /run/rfc0011-attestation-rederive/manifest.json"
+          )
+          rederived = json.loads(rederived_text)
+          if manifest != rederived:
+              differences = []
+
+              def collect_differences(left, right, path="$", limit=32):
+                  if len(differences) >= limit:
+                      return
+                  if type(left) is not type(right):
+                      differences.append((path, left, right))
+                  elif isinstance(left, dict):
+                      for key in sorted(set(left) | set(right)):
+                          if key not in left or key not in right:
+                              differences.append((f"{path}.{key}", left.get(key), right.get(key)))
+                          else:
+                              collect_differences(left[key], right[key], f"{path}.{key}", limit)
+                  elif isinstance(left, list):
+                      if len(left) != len(right):
+                          differences.append((f"{path}.length", len(left), len(right)))
+                      for index, (left_item, right_item) in enumerate(zip(left, right)):
+                          collect_differences(
+                              left_item, right_item, f"{path}[{index}]", limit
+                          )
+                  elif left != right:
+                      differences.append((path, left, right))
+
+              collect_differences(manifest, rederived)
+              raise AssertionError(f"re-derived manifest differs: {differences!r}")
+          assert canonical_json(manifest) == canonical_json(rederived), (
+              "canonical manifest JSON is not byte-reproducible"
+          )
 
           # Exercise the public, identity-pinned generation verifier. The
           # verifier policy is a separate file even in this single-node test;
@@ -519,18 +639,22 @@
                 --method out-of-band \
                 --evidence-file /run/rfc0011-attestation-enrollment.txt \
                 --catalog-file /run/rfc0011-attestation-identities.json
-              {APM} attest verify --system \
+          """, timeout=300)
+          verification = json.loads(target.succeed(f"""
+              {APM} --json attest verify --system \
                 --event-log /run/log/aos-packages.cel \
+                --pcr15-baseline {baseline_pcr15} \
                 --quote-dir {quote_dir} \
                 --nonce {record_digest} \
                 --quote-identity-file /run/rfc0011-attestation-identities.json \
                 --generation-attestation {record_path} \
                 --generation-policy-file /run/rfc0011-attestation-policy.json \
-                --rederived-manifest /run/rfc0011-attestation-rederive/manifest.json \
-                > /run/rfc0011-attestation-verify.out
-              grep -F 'passed the full trust policy' \
-                /run/rfc0011-attestation-verify.out
-          """, timeout=300)
+                --rederived-manifest /run/rfc0011-attestation-rederive/manifest.json
+          """, timeout=300))
+          assert verification["generation_verified"] is True, verification
+          assert verification["quote_bundle_verified"] is True, verification
+          assert verification["quote_identity_pinned"] is True, verification
+          assert verification["generation"]["rederived"] is True, verification
 
       def wait_multi_user(label):
           # The swtpm-backed enforcing/seal boot is slow (argon2 luksFormat
@@ -576,18 +700,49 @@
       # /var is up (plain) so the system is healthy pre-enrollment.
       assert var_source() != "", "/var not mounted on first boot"
       target.succeed(
-          "test -e /dev/disk/by-partlabel/aos-provenance-fallback-v1"
+          "test -e /dev/disk/by-partlabel/aos-provenance-operator-v1"
       )
       target.succeed("test -s /var/lib/aos-provisioning/audit.json")
-      # A no-metadata measured host uses the image-authored empty module. Its
-      # attestation is permitted only as explicit `image` evidence; reaching
-      # multi-user also proves the mandatory quote was published successfully.
+      for unit in (
+          "aos-seed-baked-packages.service",
+          "aos-eval.service",
+          "aos-graph-compile.service",
+          "aos-activate.service",
+      ):
+          state = target.succeed(
+              f"systemctl show {unit} -p ActiveState --value"
+          ).strip()
+          if state != "active":
+              print(target.succeed(f"systemctl status {unit} --no-pager 2>&1 || true"))
+              print(target.succeed(f"journalctl -b -u {unit} --no-pager 2>&1 || true"))
+              if unit == "aos-graph-compile.service":
+                  print("--- PCR 15 and AOS CEL ---")
+                  print(target.succeed(
+                      f"{TPM2_PCRREAD} sha256:15 2>&1 || true; "
+                      "cat /run/log/aos-packages.cel 2>&1 || true"
+                  ))
+                  print(target.succeed(
+                      "systemctl status 'aos-pkg-*' aos-fetch.target "
+                      "aos-config-render.target aos-activate.service "
+                      "aos-config.target --no-pager 2>&1 || true"
+                  ))
+                  print(target.succeed(
+                      "journalctl -b -u 'aos-pkg-*' -u aos-fetch.target "
+                      "-u aos-config-render.target -u aos-activate.service "
+                      "-u aos-config.target --no-pager 2>&1 || true"
+                  ))
+              raise AssertionError(f"{unit} is {state}, expected active")
+      # The retained operator module must be attested under the exact platform
+      # identity recorded by initrd authorization. Reaching multi-user also
+      # proves the mandatory quote was published successfully.
       target.succeed(f"""
+          platform=$({JQ} -er '.platform_id' \
+            /run/aos-metadata/.provisioning-result.json)
           current=$({JQ} -er '.current' /var/lib/profiles/system/state.json)
-          {JQ} -e \
+          {JQ} -e --arg platform "$platform" \
             '.quote_status == "quoted"
-             and .inputs.host_nix.trust_mode == "image"
-             and .inputs.host_nix.platform == "image"' \
+             and .inputs.host_nix.trust_mode == "platform"
+             and .inputs.host_nix.platform == $platform' \
             /var/lib/profiles/system/gen-$current/gen-attestation.json
       """)
       target.succeed("""
@@ -632,15 +787,7 @@
       assert "unlocking /var via TPM2" not in seal_log, seal_log
       assert_recurrent_substrate("boot2")
 
-      root_hash, root_data, root_hash_device = assert_verified_root()
-      expected_pcr11 = target.succeed(f"""
-          {JQ} -er \
-            '.running as $running
-             | .generations[]
-             | select(.number == $running)
-             | .expected_pcr11' \
-            /var/lib/profiles/image/state.json
-      """).strip().removeprefix("sha256:").lower()
+      root_hash, root_data, root_hash_device, expected_pcr11 = assert_verified_root()
       assert_generation_attestation(root_hash, expected_pcr11)
 
       # ════ 4. Reboot — /var must unlock UNATTENDED via the TPM2 token ══

@@ -1891,7 +1891,8 @@ concrete.
   Format `sha256:<hex>` (`verify.rs:55`).
 - `base_lib.pcr11_expected` — read from the **booted UKI's published
   attestation** (`apr publish --image`, RFC-0006 phase 4): the ukify-predicted
-  PCR-11. Not recomputed on-host; it is the registry's recorded
+  stable `ready`-phase PCR-11 quoted during activation. Not recomputed on-host;
+  it is the registry's recorded
   `expected_pcr11`/`base_lib.pcr11_expected` (`registry-catalog.md:42-52`),
   reused verbatim — never a parallel value.
 - `base_lib.abi_hash` — `sha256` over the canonicalized base-lib module option
@@ -1909,7 +1910,11 @@ concrete.
 - `evaluator.store_path` — the resolved store path of the `aos-eval` binary
   consumed by `aos-eval.service`; this path is ⊂ the measured UKI's covered
   closure only transitively via the root (F1) — recorded for re-derivation.
-- `config_modules.*` — from the resolver's `TrustContext`: `registry`,
+- `config_modules.origins` — one `registry` or `image` origin aligned with each
+  module path. `image` means the exact config companion came from the active
+  image-seeded package profile; its NAR is verified locally and its trust is
+  bound by the quoted dm-verity image root and PCR 11.
+- Registry-origin `config_modules.*` — from the resolver's `TrustContext`: `registry`,
   `release_tag` (the `verify_tag_chain` target, `registry/verify.rs:99`),
   `tag_signer_key` (`security.rs::key_fingerprint`), `realization` (sha256 of the
   signed `store/` graph subset consumed, the blessed set `verify.rs::verify_nar_blessed`
@@ -1918,7 +1923,11 @@ concrete.
   registry data. The receipt is transport evidence, not a trust anchor: remote
   verification independently checks the tag, signer roster, realization, and
   exact module catalog. Branch/commit/default or otherwise unsigned syncs do
-  not produce a receipt and therefore cannot attest a non-empty module set.
+  not produce a receipt and therefore cannot attest a non-empty
+  registry-origin module subset. A generation may mix this one authenticated
+  registry release with measured image-local modules; the release identity and
+  realization cover only the registry-origin subset while `closure_hash`
+  covers the complete ordered input set.
 - `host_nix.content_hash` — `sha256` of the exact `host.nix` bytes that were fed
   to the evaluator (the store-path-pinned content; §3, §F1-Q5).
 - `host_nix.trust_mode` plus `platform` or `signer_key` — evidence for the
@@ -1976,7 +1985,8 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
        AND activation_id is canonical and unique in the CEL     else FAIL(schema)
   2. quote signature valid under ak_pubkey over (PCR{7,11,12,15}, nonce)  else FAIL(quote)
   3. validate the CEL prefix preceding this generation event;
-     replay its ordered SHA-256 event digests from the all-zero PCR baseline,
+     replay its ordered SHA-256 event digests from the validated CEL PCR
+     baseline (or the all-zero reset value when no baseline event exists),
      then extend sha256(record\quote);
      PCR15 in quote == the replayed result                       else FAIL(record-binding)
   4. PCR7  in quote == catalog.expected_pcr7  (SB-state pin)     else FAIL(sb-state)

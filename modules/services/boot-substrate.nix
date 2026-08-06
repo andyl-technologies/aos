@@ -387,7 +387,11 @@
         }
 
         read_pcr11() {
-          output=$(tpm2_pcrread sha256:11 2>/dev/null) || return 1
+          # cryptsetup may leave the swtpm resource manager busy briefly after
+          # an unattended unlock. Never let an informational PCR read wedge
+          # switch-root indefinitely.
+          output=$(${pkgs.coreutils}/bin/timeout -k 5 15 \
+            tpm2_pcrread sha256:11 2>/dev/null) || return 1
           for word in $output; do
             case "$word" in
               0x*)
@@ -464,11 +468,6 @@
             fi
             ;;
         esac
-        pcr11=
-        if measured=$(read_pcr11); then
-          pcr11=$measured
-        fi
-
         # `/aos-toplevel` is baked into the booted immutable root. Reconcile
         # the userspace image index to that identity before stage 2; the
         # currently selected config generation is never used as authority.
@@ -479,6 +478,42 @@
           mv "$source" "$image_dir/state.json"
           ${pkgs.coreutils}/bin/sync -f "$image_dir"
         }
+
+        existing=0
+        if [ -e "$image_dir/state.json" ]; then
+          existing=$(${pkgs.jq}/bin/jq --arg top "$toplevel" \
+            '[.generations[] | select(.toplevel == $top) | .number][0] // 0' \
+            "$image_dir/state.json")
+        fi
+        pcr11=
+        steady_recurrent=false
+        if [ "$existing" -eq 0 ]; then
+          # Indexing a genuinely new immutable image requires a live reading.
+          # An unavailable TPM preserves the historical unmeasured-record
+          # representation rather than inventing an expected PCR value.
+          if measured=$(read_pcr11); then
+            pcr11=$measured
+          fi
+        else
+          # On a recurrent boot, /var has just been unsealed and the immutable
+          # image record is checked field-by-field below. Reuse its indexed
+          # expectation here instead of contending with cryptsetup for the TPM;
+          # stage 2 independently quotes the live PCR bank for attestation.
+          pcr11=$(${pkgs.jq}/bin/jq -er --argjson existing "$existing" \
+            '[.generations[] | select(.number == $existing) | .expected_pcr11][0] // ""' \
+            "$image_dir/state.json")
+          case "$pcr11" in
+            "") ;;
+            *[!0-9A-Fa-f]*)
+              fail_image_identity "persisted image record has malformed expected PCR 11"
+              ;;
+            *)
+              [ "''${#pcr11}" -eq 64 ] \
+                || fail_image_identity "persisted image record has malformed expected PCR 11"
+              ;;
+          esac
+          pcr11=$(printf '%s' "$pcr11" | tr '[:upper:]' '[:lower:]')
+        fi
 
         if [ ! -e "$image_dir/state.json" ]; then
           ${pkgs.jq}/bin/jq -n \
@@ -506,9 +541,6 @@
           publish_image_state "$image_dir/.state.json.new"
           existing=1
         else
-          existing=$(${pkgs.jq}/bin/jq --arg top "$toplevel" \
-            '[.generations[] | select(.toplevel == $top) | .number][0] // 0' \
-            "$image_dir/state.json")
           if [ "$existing" -eq 0 ]; then
             next=$(${pkgs.jq}/bin/jq '[.generations[].number] | max + 1' "$image_dir/state.json")
             ${pkgs.jq}/bin/jq \
@@ -553,12 +585,40 @@
                )] | length' "$image_dir/state.json")
             [ "$top_count" -eq 1 ] && [ "$matching" -eq 1 ] \
               || fail_image_identity "persisted image record disagrees with the booted immutable image"
-            ${pkgs.jq}/bin/jq --argjson running "$existing" \
-              '.running = $running' \
-              "$image_dir/state.json" > "$image_dir/.state.json.new"
-            publish_image_state "$image_dir/.state.json.new"
+            recorded_running=$(${pkgs.jq}/bin/jq -er '.running' \
+              "$image_dir/state.json")
+            if [ "$recorded_running" -ne "$existing" ]; then
+              ${pkgs.jq}/bin/jq --argjson running "$existing" \
+                '.running = $running' \
+                "$image_dir/state.json" > "$image_dir/.state.json.new"
+              publish_image_state "$image_dir/.state.json.new"
+            else
+              steady_recurrent=true
+            fi
           fi
         fi
+
+        # A fully reconciled recurrent boot is read-only. Avoid refreshing
+        # durable roots and copying state immediately after TPM-unlocking
+        # /var; those mutations are repair operations, not boot requirements.
+        # Any missing root or legacy state falls through to the repair path.
+        if [ "$steady_recurrent" = true ]; then
+          retained_base=$(readlink \
+            "$image_dir/image-gen-$existing/baselib/$abi" 2>/dev/null || true)
+          if [ "$retained_base" = "$base_lib" ] && [ -e "$profile_dir/state.json" ]; then
+            has_legacy=$(${pkgs.jq}/bin/jq \
+              '[.generations[] | has("toplevel")] | any' \
+              "$profile_dir/state.json")
+            if [ "$has_legacy" = false ]; then
+              link=$(readlink "$profile_dir/current" 2>/dev/null || true)
+              GEN=''${link#gen-}
+              [ -n "$GEN" ] || GEN=0
+              printf 'AOS_PROFILE_GEN=%s\n' "$GEN" > /run/aos-profile-gen.env
+              exit 0
+            fi
+          fi
+        fi
+
         mkdir -p "$image_dir/image-gen-$existing/baselib"
         ln -sfn "$base_lib" "$image_dir/image-gen-$existing/baselib/$abi"
         mkdir -p "$profile_dir"

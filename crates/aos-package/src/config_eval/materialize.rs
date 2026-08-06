@@ -185,6 +185,44 @@ impl ConfigManifest {
         if self.inputs.config_modules.count != self.inputs.config_modules.package_names.len() {
             bail!("config_modules count does not match package_names");
         }
+        if !self.inputs.config_modules.origins.is_empty()
+            && self.inputs.config_modules.count != self.inputs.config_modules.origins.len()
+        {
+            bail!("config_modules count does not match origins");
+        }
+        if self
+            .inputs
+            .config_modules
+            .origins
+            .iter()
+            .any(|origin| origin != "registry" && origin != "image")
+        {
+            bail!("config_modules contains an unsupported trust origin");
+        }
+        // Manifests written before origin tracking had neither an origin list
+        // nor signed-release identity. Preserve their read/migration path, but
+        // require complete identity for every newly explicit registry origin.
+        let has_registry_modules = self
+            .inputs
+            .config_modules
+            .origins
+            .iter()
+            .any(|origin| origin == "registry");
+        let release_identity = [
+            self.inputs.config_modules.registry.as_ref(),
+            self.inputs.config_modules.release_tag.as_ref(),
+            self.inputs.config_modules.tag_signer_key.as_ref(),
+            self.inputs.config_modules.realization.as_ref(),
+        ];
+        if has_registry_modules && release_identity.iter().any(|field| field.is_none()) {
+            bail!("registry config modules require complete signed-release identity");
+        }
+        if !self.inputs.config_modules.origins.is_empty()
+            && !has_registry_modules
+            && release_identity.iter().any(|field| field.is_some())
+        {
+            bail!("image-only config modules must not claim signed-release identity");
+        }
         if self.inputs.config_modules.count != self.inputs.config_modules.module_abi_compat.len() {
             bail!("config_modules count does not match module_abi_compat");
         }
@@ -1111,6 +1149,9 @@ pub struct ConfigModulesInput {
     pub nar_hashes: Vec<String>,
     /// Authenticated package identity corresponding to each ordered module.
     pub package_names: Vec<String>,
+    /// Trust origin aligned with each config output (`registry` or `image`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origins: Vec<String>,
     /// ABI compatibility band corresponding to each ordered module path.
     pub module_abi_compat: Vec<ModuleAbiCompat>,
     /// Exact authenticated write authorization corresponding to each module.

@@ -2,9 +2,9 @@
 Description=Generate SSH Host Keys
 
 [Service]
-Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/sbin"
+Environment="PATH=/nix/store/<hash>-coreutils-9.5/bin:/nix/store/<hash>-findutils-4.10.0/bin:/nix/store/<hash>-grep-3.11/bin:/nix/store/<hash>-sed-4.9/bin:/nix/store/<hash>-systemd-259.1/bin:/nix/store/<hash>-coreutils-9.5/sbin:/nix/store/<hash>-findutils-4.10.0/sbin:/nix/store/<hash>-grep-3.11/sbin:/nix/store/<hash>-sed-4.9/sbin:/nix/store/<hash>-systemd-259.1/sbin"
 ExecStart=<<aos-job-script>>
-#!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
+#!/nix/store/<hash>-bash-5.2.37/bin/bash
 set -e
 
 set -euo pipefail
@@ -13,7 +13,7 @@ install -d -m 0755 -o root -g root /var/etc/ssh
 key=/var/etc/ssh/ssh_host_ed25519_key
 if [ ! -s "$key" ]; then
   echo "sshd-keygen: generating ed25519 host key at $key"
-  /nix/store/gz8drfqqh2l8rz2ysmlw0nz6zxp8nqqw-openssh-10.3p1/bin/ssh-keygen -q -t ed25519 -N "" -f "$key" </dev/null
+  /nix/store/<hash>-openssh-10.3p1/bin/ssh-keygen -q -t ed25519 -N "" -f "$key" </dev/null
 fi
 <<aos-job-script-end>>
 RemainAfterExit=true

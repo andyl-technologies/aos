@@ -5,16 +5,16 @@ Description=Detect a running-image change requiring host re-evaluation
 Requires=local-fs.target
 
 [Service]
-Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/sbin"
+Environment="PATH=/nix/store/<hash>-coreutils-9.5/bin:/nix/store/<hash>-findutils-4.10.0/bin:/nix/store/<hash>-grep-3.11/bin:/nix/store/<hash>-sed-4.9/bin:/nix/store/<hash>-systemd-259.1/bin:/nix/store/<hash>-coreutils-9.5/sbin:/nix/store/<hash>-findutils-4.10.0/sbin:/nix/store/<hash>-grep-3.11/sbin:/nix/store/<hash>-sed-4.9/sbin:/nix/store/<hash>-systemd-259.1/sbin"
 ExecStart=<<aos-job-script>>
-#!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
+#!/nix/store/<hash>-bash-5.2.37/bin/bash
 set -e
 
 set -eu
 image_state=/var/lib/profiles/image/state.json
 config_state=/var/lib/profiles/system/state.json
 [ -s "$image_state" ] && [ -s "$config_state" ] || exit 1
-running=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.running' "$image_state")
+running=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er '.running' "$image_state")
 
 # Reconcile the userspace-to-firmware selection journal before the
 # evaluation graph can fail. A crash can leave this intent after the
@@ -47,9 +47,9 @@ stable_entry_id() {
 }
 transition_intent=/var/lib/profiles/image/.transition-intent.json
 if [ -s "$transition_intent" ]; then
-  target=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.target | select(type == "number" and . >= 0 and floor == .)' "$transition_intent")
-  intent_entry=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.entry_id | select(type == "string" and length > 0)' "$transition_intent")
-  recorded_entry=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er \
+  target=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er '.target | select(type == "number" and . >= 0 and floor == .)' "$transition_intent")
+  intent_entry=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er '.entry_id | select(type == "string" and length > 0)' "$transition_intent")
+  recorded_entry=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er \
     --argjson target "$target" \
     '.generations[] | select(.number == $target) | .uki_path' \
     "$image_state")
@@ -65,19 +65,19 @@ if [ -s "$transition_intent" ]; then
   else
     state_update='.default = $running | .pending = null'
   fi
-  /nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq --argjson running "$running" "$state_update" \
+  /nix/store/<hash>-jq-1.8.1/bin/jq --argjson running "$running" "$state_update" \
     "$image_state" > "${image_state}.new"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f "${image_state}.new"
+  /nix/store/<hash>-coreutils-9.5/bin/sync -f "${image_state}.new"
   mv "${image_state}.new" "$image_state"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f /var/lib/profiles/image
+  /nix/store/<hash>-coreutils-9.5/bin/sync -f /var/lib/profiles/image
   rm -f "$transition_intent"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f /var/lib/profiles/image
+  /nix/store/<hash>-coreutils-9.5/bin/sync -f /var/lib/profiles/image
 fi
 
-parent=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er \
+parent=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er \
   '.current as $current | [.generations[] | select(.number == $current) | .image_gen_parent][0] // 0' \
   "$config_state")
-pending=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.pending // 0' "$image_state")
+pending=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er '.pending // 0' "$image_state")
 if [ "$running" != "$parent" ] || [ "$pending" -ne 0 ]; then
   printf '%s\n' "$running" > /run/aos/image-reeval-required
 else

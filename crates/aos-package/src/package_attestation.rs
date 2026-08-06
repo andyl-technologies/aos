@@ -183,7 +183,7 @@ fn generation_measurement_recovery(
     };
     let mut pcr = [0_u8; 32];
     let mut found = false;
-    let mut before = hex::encode(pcr);
+    let mut before = format!("sha256:{}", hex::encode(pcr));
     let mut after = before.clone();
     let mut has_later_extends = false;
     for (index, line) in log.lines().enumerate() {
@@ -222,13 +222,13 @@ fn generation_measurement_recovery(
                 bail!("retained generation attestation CEL event disagrees with the transaction");
             }
             found = true;
-            before = hex::encode(pcr);
+            before = format!("sha256:{}", hex::encode(pcr));
         } else if found {
             has_later_extends = true;
         }
         extend_replayed_pcr(&mut pcr, &recorded_digest)?;
         if is_expected {
-            after = hex::encode(pcr);
+            after = format!("sha256:{}", hex::encode(pcr));
         }
     }
     Ok(GenerationMeasurementRecovery {
@@ -236,7 +236,7 @@ fn generation_measurement_recovery(
         before,
         after,
         has_later_extends,
-        replayed: hex::encode(pcr),
+        replayed: format!("sha256:{}", hex::encode(pcr)),
     })
 }
 
@@ -405,6 +405,9 @@ struct OwnedEventLogRecord {
 pub(crate) struct PackageEventLogVerification {
     /// Replayed PCR 15 value as lowercase SHA-256 hex.
     pub pcr15: String,
+    /// Validated PCR 15 value that preceded the first AOS event, when the CEL
+    /// records a live-TPM baseline.
+    pub pcr15_baseline: Option<String>,
     /// Number of package tuple events validated against the registry catalog.
     pub package_count: usize,
     /// Package tuples in the latest completed package-set measurement.
@@ -952,6 +955,7 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
 
     Ok(PackageEventLogVerification {
         pcr15,
+        pcr15_baseline: expected_baseline_pcr15,
         package_count,
         current_packages,
         generation_attestations,
@@ -1246,6 +1250,35 @@ fn read_current_pcr15() -> Result<String> {
     parse_tpm2_pcrread_pcr15(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Reads the live SHA-256 PCR 11 value used by a generation quote.
+///
+/// # Errors
+///
+/// Returns an error when the trusted TPM reader cannot run or its output does
+/// not contain a canonical PCR 11 value.
+pub(crate) fn current_pcr11() -> Result<String> {
+    let pcrread = trusted_tpm2_tool_path(TPM2_PCRREAD_ENV, "tpm2_pcrread")?;
+    let tcti = tpm2_tcti()?;
+    let mut command = Command::new(&pcrread);
+    command.arg(format!("{PCR_BANK}:11"));
+    if let Some(tcti) = tcti {
+        command.env("TPM2TOOLS_TCTI", tcti);
+    }
+    let output = command
+        .output()
+        .with_context(|| format!("running {}", pcrread.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} failed: {}\nstdout:\n{}\nstderr:\n{}",
+            pcrread.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    parse_tpm2_pcrread_value(&String::from_utf8_lossy(&output.stdout), 11)
+}
+
 /// Replays only the PCR 15 digest for a package event log.
 ///
 /// This is useful for tests and for quote integrations that need to compare a
@@ -1493,18 +1526,22 @@ fn package_measurement_catalog(
 }
 
 fn parse_tpm2_pcrread_pcr15(output: &str) -> Result<String> {
+    parse_tpm2_pcrread_value(output, PCR_INDEX)
+}
+
+fn parse_tpm2_pcrread_value(output: &str, index: u8) -> Result<String> {
     for line in output.lines() {
         let line = line.trim();
-        let Some(value) = line.strip_prefix(&format!("{PCR_INDEX}:")) else {
+        let Some(value) = line.strip_prefix(&format!("{index}:")) else {
             continue;
         };
         let value = value.trim().strip_prefix("0x").unwrap_or(value.trim());
         return Ok(format!(
             "sha256:{}",
-            parse_sha256_hex("PCR 15 value", value)?
+            parse_sha256_hex(&format!("PCR {index} value"), value)?
         ));
     }
-    bail!("tpm2_pcrread output did not contain PCR 15");
+    bail!("tpm2_pcrread output did not contain PCR {index}");
 }
 
 fn quoted_pcr15_from_values_file(path: &Path) -> Result<String> {
@@ -3207,6 +3244,22 @@ mod tests {
             1,
             "retry must not duplicate the PCR event"
         );
+        let recovery_event = MeasurementEvent {
+            event_type: GENERATION_EVENT_TYPE,
+            digest: format!("sha256:{}", digest_for_word(&canonical)),
+            word: canonical.clone(),
+            extends_pcr: true,
+            pcr_value: None,
+            package: None,
+            package_count: None,
+            generation_id: Some("sha256:generation".to_string()),
+            activation_id: Some(activation_a.clone()),
+        };
+        let recovery = generation_measurement_recovery(tmp.path(), &recovery_event)
+            .expect("recover generation measurement");
+        assert!(recovery.before.starts_with("sha256:"));
+        assert!(recovery.after.starts_with("sha256:"));
+        assert!(recovery.replayed.starts_with("sha256:"));
         let digest = Sha256::digest(canonical.as_bytes());
         let mut pcr_hasher = Sha256::new();
         pcr_hasher.update([0_u8; 32]);

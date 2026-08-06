@@ -6,25 +6,25 @@ Description=Commit a successful RFC-0011 image transition
 Requires=aos-graph-compile.service
 
 [Service]
-Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/sbin"
+Environment="PATH=/nix/store/<hash>-coreutils-9.5/bin:/nix/store/<hash>-findutils-4.10.0/bin:/nix/store/<hash>-grep-3.11/bin:/nix/store/<hash>-sed-4.9/bin:/nix/store/<hash>-systemd-259.1/bin:/nix/store/<hash>-coreutils-9.5/sbin:/nix/store/<hash>-findutils-4.10.0/sbin:/nix/store/<hash>-grep-3.11/sbin:/nix/store/<hash>-sed-4.9/sbin:/nix/store/<hash>-systemd-259.1/sbin"
 ExecStart=<<aos-job-script>>
-#!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
+#!/nix/store/<hash>-bash-5.2.37/bin/bash
 set -e
 
 set -euo pipefail
 boot_writable=false
 restore_boot_read_only() {
   if [ "$boot_writable" = true ]; then
-    /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -o remount,ro /boot
+    /nix/store/<hash>-util-linux-2.42.1/bin/mount -o remount,ro /boot
   fi
 }
 trap restore_boot_read_only EXIT
 
-expected_esp=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlink -f '/dev/disk/by-partlabel/ESP')
-mounted_esp=$(/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/findmnt -n -o SOURCE --target /boot)
-mounted_esp=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlink -f "$mounted_esp")
-mounted_fstype=$(/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/findmnt -n -o FSTYPE --target /boot)
-mounted_root=$(/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/findmnt -n -o FSROOT --target /boot)
+expected_esp=$(/nix/store/<hash>-coreutils-9.5/bin/readlink -f '/dev/disk/by-partlabel/ESP')
+mounted_esp=$(/nix/store/<hash>-util-linux-2.42.1/bin/findmnt -n -o SOURCE --target /boot)
+mounted_esp=$(/nix/store/<hash>-coreutils-9.5/bin/readlink -f "$mounted_esp")
+mounted_fstype=$(/nix/store/<hash>-util-linux-2.42.1/bin/findmnt -n -o FSTYPE --target /boot)
+mounted_root=$(/nix/store/<hash>-util-linux-2.42.1/bin/findmnt -n -o FSROOT --target /boot)
 if [ "$mounted_fstype" != vfat ] || [ "$mounted_root" != / ]; then
   echo "aos-image-boot-commit: /boot must be the root of a vfat ESP" >&2
   exit 1
@@ -39,22 +39,22 @@ if [ "$mounted_esp" != "$expected_esp" ]; then
 fi
 
 state=/var/lib/profiles/image/state.json
-running=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.running' "$state")
-pending=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.pending // 0' "$state")
-current=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er '.current' /var/lib/profiles/system/state.json)
-parent=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er \
+running=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er '.running' "$state")
+pending=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er '.pending // 0' "$state")
+current=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er '.current' /var/lib/profiles/system/state.json)
+parent=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er \
   '.current as $current | .generations[] | select(.number == $current) | .image_gen_parent // 0' \
   /var/lib/profiles/system/state.json)
 if [ ! -s "/var/lib/profiles/system/gen-$current/manifest.json" ]; then
   echo "aos-image-boot-commit: running config generation has no committed manifest" >&2
   exit 1
 fi
-manifest_hash=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er \
+manifest_hash=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er \
   '.current as $current | .generations[] | select(.number == $current) | .manifest_hash' \
   /var/lib/profiles/system/state.json)
 proof="/var/lib/profiles/system/gen-$current/activation.json"
 attestation="/var/lib/profiles/system/gen-$current/gen-attestation.json"
-if ! /nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -e \
+if ! /nix/store/<hash>-jq-1.8.1/bin/jq -e \
   --argjson current "$current" --arg hash "$manifest_hash" \
   '.schema == "aos.config-activation/v1"
    and .generation == $current
@@ -65,7 +65,7 @@ if ! /nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -e \
   echo "aos-image-boot-commit: configuration activation proof is incomplete" >&2
   exit 1
 fi
-if ! /nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -e \
+if ! /nix/store/<hash>-jq-1.8.1/bin/jq -e \
   --arg hash "$manifest_hash" \
   '.schema == "aos.gen-attestation/v1"
    and .generation_id == $hash
@@ -80,7 +80,7 @@ if [ "$parent" != "$running" ]; then
   echo "aos-image-boot-commit: configuration has not rebound to running image $running" >&2
   exit 1
 fi
-entry=$(/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq -er \
+entry=$(/nix/store/<hash>-jq-1.8.1/bin/jq -er \
   --argjson running "$running" \
   '.generations[] | select(.number == $running) | .uki_path' "$state")
 case "$entry" in
@@ -133,7 +133,7 @@ stable_path="/boot/$stable"
 # also means an earlier attempt already completed the rename, making
 # this step idempotent across a crash before state publication.
 if [ "$pending" -eq "$running" ]; then
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -o remount,rw /boot
+  /nix/store/<hash>-util-linux-2.42.1/bin/mount -o remount,rw /boot
   boot_writable=true
   live_counted=false
   for candidate in "/boot/EFI/Linux/${stable_stem}"+*.efi; do
@@ -159,7 +159,7 @@ if [ "$pending" -eq "$running" ]; then
     fi
   done
   if [ "$live_counted" = true ]; then
-    /nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin/bootctl set-successful
+    /nix/store/<hash>-systemd-259.1/bin/bootctl set-successful
   elif [ ! -e "$stable_path" ]; then
     echo "aos-image-boot-commit: neither a live counted nor stable UKI exists for $entry" >&2
     exit 1
@@ -169,29 +169,29 @@ fi
 # A failed pending candidate may already have fallen back to `running`.
 # Resolve the successful entry's stable name after boot-count renaming.
 if [ "$boot_writable" != true ]; then
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -o remount,rw /boot
+  /nix/store/<hash>-util-linux-2.42.1/bin/mount -o remount,rw /boot
   boot_writable=true
 fi
-/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin/bootctl set-default "${stable##*/}"
+/nix/store/<hash>-systemd-259.1/bin/bootctl set-default "${stable##*/}"
 
 # Restore the ESP's steady-state protection before publishing the
 # transition as complete. If this remount fails, the durable pending
 # state and runtime marker remain and the next boot retries the
 # idempotent blessing/reconciliation path.
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -o remount,ro /boot
+/nix/store/<hash>-util-linux-2.42.1/bin/mount -o remount,ro /boot
 boot_writable=false
 
-/nix/store/i1dx1y98kj227w25kdhil47c64z6acn7-jq-1.8.1/bin/jq --argjson running "$running" \
+/nix/store/<hash>-jq-1.8.1/bin/jq --argjson running "$running" \
   '.default = $running | .pending = null' "$state" > "${state}.new"
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f "${state}.new"
+/nix/store/<hash>-coreutils-9.5/bin/sync -f "${state}.new"
 mv "${state}.new" "$state"
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f "$(dirname "$state")"
+/nix/store/<hash>-coreutils-9.5/bin/sync -f "$(dirname "$state")"
 # A power loss can leave the pre-selection intent after firmware and
 # state already agree. Successful boot assessment is the authoritative
 # reconciliation point, so clear it durably here as well as in the
 # normal userspace selection path.
 rm -f /var/lib/profiles/image/.transition-intent.json
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f /var/lib/profiles/image
+/nix/store/<hash>-coreutils-9.5/bin/sync -f /var/lib/profiles/image
 rm -f /run/aos/image-reeval-required
 trap - EXIT
 <<aos-job-script-end>>

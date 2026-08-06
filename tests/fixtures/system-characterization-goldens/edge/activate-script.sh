@@ -1,4 +1,4 @@
-#!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
+#!/nix/store/<hash>-bash-5.2.37/bin/bash
 # SPDX-License-Identifier: MIT
 #
 # modules/base/activate.sh.in — live install/upgrade/rollback driver.
@@ -64,10 +64,10 @@ cleanup_partial_gen() {
   # destroy the runtime /etc writes preserved from N's earlier life this boot.
   # A leftover fresh-empty upper from a never-completed new gen is harmless;
   # upper lifetime is owned by generation GC and reboot (tmpfs), not this trap.
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "${ign:-/nonexistent}/etc"      2>/dev/null || true
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -rf "/run/etc/system-${N:-_}" \
+  /nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/metadata" 2>/dev/null || true
+  /nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "${sys:-/nonexistent}/content"  2>/dev/null || true
+  /nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "${ign:-/nonexistent}/etc"      2>/dev/null || true
+  /nix/store/<hash>-coreutils-9.5/bin/rm -rf "/run/etc/system-${N:-_}" \
                          "/run/etc/config-${N:-_}" 2>/dev/null || true
 }
 
@@ -103,7 +103,7 @@ if [ $# -ne 1 ]; then
   exit "$EX_PREFLIGHT"
 fi
 N=$1
-new_top=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlink /aos-toplevel)
+new_top=$(/nix/store/<hash>-coreutils-9.5/bin/readlink /aos-toplevel)
 
 # Each activation intent carries a one-shot nonce. Recovery accepts only the
 # marker for that exact transaction, so a marker left by an earlier activation
@@ -132,7 +132,7 @@ upper_root=/run/etc/upper-${N}
 # manifest remain an empty configuration lower.
 
 parent_holds_switch_lock() {
-  lock_inode=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/stat -Lc '%i' /run/apm/switch.lock 2>/dev/null) || return 1
+  lock_inode=$(/nix/store/<hash>-coreutils-9.5/bin/stat -Lc '%i' /run/apm/switch.lock 2>/dev/null) || return 1
   while read -r _lock_id lock_type _advisory lock_mode lock_pid lock_device _range; do
     case "$lock_device" in
       *:"$lock_inode")
@@ -151,10 +151,10 @@ if [ "${AOS_SWITCH_LOCK_HELD:-0}" = 1 ]; then
     exit "$EX_PREFLIGHT"
   fi
 else
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p /run/apm
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/chmod 0700 /run/apm
+  /nix/store/<hash>-coreutils-9.5/bin/mkdir -p /run/apm
+  /nix/store/<hash>-coreutils-9.5/bin/chmod 0700 /run/apm
   exec {LOCK_FD}>/run/apm/switch.lock
-  if ! /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/flock -n "$LOCK_FD"; then
+  if ! /nix/store/<hash>-util-linux-2.42.1/bin/flock -n "$LOCK_FD"; then
     echo "activate: another system switch holds /run/apm/switch.lock" >&2
     exit "$EX_PREFLIGHT"
   fi
@@ -170,7 +170,7 @@ fi
 # ephemeral upper. Detection uses bash globbing (nullglob+dotglob) so it
 # needs no external tool; any immediate child of dir/ — file, subdir, or
 # overlay whiteout — counts as dirty.
-cur_upper=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlink -f /run/etc/upper 2>/dev/null || true)
+cur_upper=$(/nix/store/<hash>-coreutils-9.5/bin/readlink -f /run/etc/upper 2>/dev/null || true)
 if [ -n "$cur_upper" ] && [ -d "$cur_upper/dir" ]; then
   shopt -s nullglob dotglob
   cur_writes=("$cur_upper"/dir/*)
@@ -194,14 +194,14 @@ STAGE="$STAGE_PREPARE"
 # same-generation reactivation. A live overlay holds its own lower-mount
 # references, so lazy-detaching these names cannot perturb the current /etc;
 # it only prevents mount stacking at the reusable /run inspection paths.
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "$sys/metadata" 2>/dev/null || true
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "$sys/content"  2>/dev/null || true
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "$ign/etc"      2>/dev/null || true
+/nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "$sys/metadata" 2>/dev/null || true
+/nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "$sys/content"  2>/dev/null || true
+/nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "$ign/etc"      2>/dev/null || true
 
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p "$sys/metadata" "$sys/content" "$ign/etc"
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount --bind \
+/nix/store/<hash>-coreutils-9.5/bin/mkdir -p "$sys/metadata" "$sys/content" "$ign/etc"
+/nix/store/<hash>-util-linux-2.42.1/bin/mount --bind \
   "$new_top/etc-basedir" "$sys/content"
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
+/nix/store/<hash>-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
   "$new_top/etc-metadata.erofs" "$sys/metadata"
 
 # Materialize the retained manifest into the generation directory before any
@@ -212,12 +212,12 @@ STAGE="$STAGE_PREPARE"
 generation_dir="/var/lib/profiles/system/gen-${N}"
 generation_manifest="/var/lib/profiles/system/gen-${N}/manifest.json"
 if [ -f "$generation_manifest" ]; then
-  /nix/store/3bf77b4mzmg3plqbwky36vi05j7l25vf-aos-0.1.0/bin/.apm-unwrapped __materialize \
+  /nix/store/<hash>-aos-0.1.0/bin/.apm-unwrapped __materialize \
     --manifest "$generation_manifest" \
     --generation-dir "$generation_dir" \
-    --mkfs-erofs /nix/store/645rfyrr4rax1ymsrgkw7anvrqyg00yk-erofs-utils-1.8.10/bin/mkfs.erofs \
-    --fsck-erofs /nix/store/645rfyrr4rax1ymsrgkw7anvrqyg00yk-erofs-utils-1.8.10/bin/fsck.erofs
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
+    --mkfs-erofs /nix/store/<hash>-erofs-utils-1.8.10/bin/mkfs.erofs \
+    --fsck-erofs /nix/store/<hash>-erofs-utils-1.8.10/bin/fsck.erofs
+  /nix/store/<hash>-util-linux-2.42.1/bin/mount -t erofs -o ro,nodev,nosuid \
     "$generation_dir/config-lower/etc.erofs" "$ign/etc"
 fi
 
@@ -242,15 +242,15 @@ STAGE="$STAGE_COMPOSE"
 # /var/etc (a shared lower in every generation's overlay); the upper holds
 # only writes that escaped that allowlist, and it is wiped on reboot
 # (tmpfs) regardless.
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p "$upper_root/dir" "$upper_root/work"
+/nix/store/<hash>-coreutils-9.5/bin/mkdir -p "$upper_root/dir" "$upper_root/work"
 
-tmpEtc=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mktemp -d -p /run aos-etc-final.XXXXXX)
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount --bind --make-private "$tmpEtc" "$tmpEtc"
+tmpEtc=$(/nix/store/<hash>-coreutils-9.5/bin/mktemp -d -p /run aos-etc-final.XXXXXX)
+/nix/store/<hash>-util-linux-2.42.1/bin/mount --bind --make-private "$tmpEtc" "$tmpEtc"
 
 # The overlay option string must contain no spaces; the continuation
 # lines below are intentionally NOT indented so the `\`-joined value
 # stays comma-separated with no embedded whitespace.
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -t overlay overlay -o \
+/nix/store/<hash>-util-linux-2.42.1/bin/mount -t overlay overlay -o \
 nodev,nosuid,metacopy=on,redirect_dir=on,\
 lowerdir+=/var/etc,\
 lowerdir+="$ign/etc",\
@@ -278,13 +278,13 @@ fi
 # command's only stdout; diagnostics go to stderr via Printer.
 STAGE="$STAGE_PRESWAP"
 set +e
-# Invoke the UNWRAPPED binary directly, not /nix/store/3bf77b4mzmg3plqbwky36vi05j7l25vf-aos-0.1.0/bin/apm. The `apm` wrapper
+# Invoke the UNWRAPPED binary directly, not /nix/store/<hash>-aos-0.1.0/bin/apm. The `apm` wrapper
 # runs `exec "$(dirname "$0")/.apm-unwrapped"`, which needs `dirname` on PATH —
 # but this script runs with `PATH=` (empty), so the wrapper would die with
 # "dirname: command not found". The activate subcommands do pure filesystem +
 # D-Bus work and shell out to neither git nor nix-store, so they need none of
 # the git/nix PATH the wrapper sets up.
-plan=$(/nix/store/3bf77b4mzmg3plqbwky36vi05j7l25vf-aos-0.1.0/bin/.apm-unwrapped activate-pre-etc-swap \
+plan=$(/nix/store/<hash>-aos-0.1.0/bin/.apm-unwrapped activate-pre-etc-swap \
   --gen="$N" \
   --candidate-etc="$tmpEtc")
 pre_rc=$?
@@ -294,7 +294,7 @@ case "$pre_rc" in
   0) ;;                                              # proceed; $plan is the plan path
   *) cleanup_partial_gen; exit "$EX_RECONCILE" ;;    # catastrophic → abort before swap
 esac
-trap '[ -n "${plan:-}" ] && /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -f "$plan" 2>/dev/null || true' EXIT
+trap '[ -n "${plan:-}" ] && /nix/store/<hash>-coreutils-9.5/bin/rm -f "$plan" 2>/dev/null || true' EXIT
 
 # --- swap ---
 # From here a failure maps to activate exit 4 (EX_SWAP): the swap is in
@@ -306,14 +306,14 @@ STAGE="$STAGE_SWAP"
 # Carry any existing submounts under /etc into the new mount. (Operators
 # may have manually mounted things under /etc — e.g. a /etc/secrets
 # bind-mount from an encrypted volume. We preserve those.)
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/findmnt /etc --submounts --list \
+/nix/store/<hash>-util-linux-2.42.1/bin/findmnt /etc --submounts --list \
   --noheading --kernel --output TARGET |
 while read -r mountPoint; do
   [ "$mountPoint" = /etc ] && continue
   tmp="$tmpEtc/${mountPoint#/etc/}"
-  [ -d "$mountPoint" ] && /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p "$tmp"
-  [ -f "$mountPoint" ] && /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/touch  "$tmp"
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount --bind "$mountPoint" "$tmp"
+  [ -d "$mountPoint" ] && /nix/store/<hash>-coreutils-9.5/bin/mkdir -p "$tmp"
+  [ -f "$mountPoint" ] && /nix/store/<hash>-coreutils-9.5/bin/touch  "$tmp"
+  /nix/store/<hash>-util-linux-2.42.1/bin/mount --bind "$mountPoint" "$tmp"
 done
 
 # `mount --move --beneath` requires util-linux 2.42.1+ (pinned in
@@ -321,25 +321,25 @@ done
 # old, then the recursive lazy-umount drops the old; open fds on the old
 # layer survive until their holders close them, so daemons that
 # reconcile land on the new view and the rest drain naturally.
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount --move --beneath "$tmpEtc" /etc
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy --recursive /etc
-/nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "$tmpEtc"
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rmdir "$tmpEtc"
+/nix/store/<hash>-util-linux-2.42.1/bin/mount --move --beneath "$tmpEtc" /etc
+/nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy --recursive /etc
+/nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "$tmpEtc"
+/nix/store/<hash>-coreutils-9.5/bin/rmdir "$tmpEtc"
 
 # Durable evidence for Rust's activation-intent recovery. The intent is
 # published before this script runs; this marker is written immediately after
 # the atomic mount swap, closing the crash window before pointer publication.
 live_marker="/var/lib/profiles/system/gen-${N}/.etc-live-${AOS_ACTIVATION_NONCE}"
 printf '%s %s\n' "$N" "$AOS_ACTIVATION_NONCE" > "$live_marker"
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f "$live_marker"
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/sync -f /var/lib/profiles/system/gen-${N}
+/nix/store/<hash>-coreutils-9.5/bin/sync -f "$live_marker"
+/nix/store/<hash>-coreutils-9.5/bin/sync -f /var/lib/profiles/system/gen-${N}
 
 # Retarget inspection symlinks.
-prev_gen=$(/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/readlink /run/etc/system \
-           | /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cut -d- -f2-)
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn system-${N}   /run/etc/system
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn config-${N} /run/etc/config
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn upper-${N}    /run/etc/upper
+prev_gen=$(/nix/store/<hash>-coreutils-9.5/bin/readlink /run/etc/system \
+           | /nix/store/<hash>-coreutils-9.5/bin/cut -d- -f2-)
+/nix/store/<hash>-coreutils-9.5/bin/ln -sfn system-${N}   /run/etc/system
+/nix/store/<hash>-coreutils-9.5/bin/ln -sfn config-${N} /run/etc/config
+/nix/store/<hash>-coreutils-9.5/bin/ln -sfn upper-${N}    /run/etc/upper
 
 # When apm owns the switch, pause after the atomic /etc swap and before any
 # new unit can start. The parent publishes all resolved credential files as a
@@ -376,12 +376,12 @@ target_seed_archive=/var/lib/profiles/system/gen-${N}/metadata-network-seed.netw
 network_seed_changed=0
 if [ -f "/var/lib/profiles/system/gen-${N}/host-network-authoritative" ]; then
   if [ -f "$network_seed" ]; then
-    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/install -D -m 0600 "$network_seed" "$network_seed_fallback"
+    /nix/store/<hash>-coreutils-9.5/bin/install -D -m 0600 "$network_seed" "$network_seed_fallback"
     if [ -n "${prev_gen:-}" ] && [ -d "/var/lib/profiles/system/gen-${prev_gen}" ]; then
-      /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/install -D -m 0600 "$network_seed" \
+      /nix/store/<hash>-coreutils-9.5/bin/install -D -m 0600 "$network_seed" \
         "/var/lib/profiles/system/gen-${prev_gen}/metadata-network-seed.network"
     fi
-    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -f "$network_seed"
+    /nix/store/<hash>-coreutils-9.5/bin/rm -f "$network_seed"
     network_seed_changed=1
   fi
 else
@@ -390,20 +390,20 @@ else
     seed_source=$target_seed_archive
   elif [ -f "$network_seed_fallback" ]; then
     seed_source=$network_seed_fallback
-    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/install -D -m 0600 "$seed_source" "$target_seed_archive"
+    /nix/store/<hash>-coreutils-9.5/bin/install -D -m 0600 "$seed_source" "$target_seed_archive"
     seed_source=$target_seed_archive
   fi
   if [ -n "$seed_source" ]; then
-    /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/install -D -m 0644 "$seed_source" "$network_seed"
+    /nix/store/<hash>-coreutils-9.5/bin/install -D -m 0644 "$seed_source" "$network_seed"
     network_seed_changed=1
   fi
 fi
 if [ "$network_seed_changed" = 1 ]; then
-  /nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin/networkctl reload
-  /nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin/networkctl reconfigure --all
+  /nix/store/<hash>-systemd-259.1/bin/networkctl reload
+  /nix/store/<hash>-systemd-259.1/bin/networkctl reconfigure --all
 fi
 set +e
-/nix/store/3bf77b4mzmg3plqbwky36vi05j7l25vf-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
+/nix/store/<hash>-aos-0.1.0/bin/.apm-unwrapped activate-post-etc-swap --plan="$plan"
 post_rc=$?
 set -e
 
@@ -432,10 +432,10 @@ STAGE="$STAGE_CLEANUP"
 # tmpfs now, not its own mount. Stale uppers are reclaimed by generation GC
 # (when apm prunes the generation) and by reboot (tmpfs), never here.
 if [ -n "${prev_gen:-}" ] && [ "$prev_gen" != "$N" ]; then
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/metadata" || true
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/content"  || true
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/umount --lazy "/run/etc/config-${prev_gen}/etc"      || true
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -rf "/run/etc/system-${prev_gen}" \
+  /nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/metadata" || true
+  /nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "/run/etc/system-${prev_gen}/content"  || true
+  /nix/store/<hash>-util-linux-2.42.1/bin/umount --lazy "/run/etc/config-${prev_gen}/etc"      || true
+  /nix/store/<hash>-coreutils-9.5/bin/rm -rf "/run/etc/system-${prev_gen}" \
                          "/run/etc/config-${prev_gen}"
 fi
 

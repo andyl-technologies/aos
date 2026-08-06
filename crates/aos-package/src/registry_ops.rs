@@ -3184,8 +3184,8 @@ struct SbFacts {
     /// SBAT component/generation pairs from the PE `.sbat` section.
     sbat: Vec<SbatEntry>,
     /// `systemd-measure`-predicted PCR-11 over this UKI's measured sections at
-    /// the `enter-initrd` boot phase (where `/var` is unsealed; see
-    /// [`extract_expected_pcr11`]).
+    /// the `ready` boot phase (the stable value quoted during activation;
+    /// see [`extract_expected_pcr11`]).
     expected_pcr11: Option<String>,
     /// Deterministically identified per-slot facts for an A/B image payload.
     ukis: Vec<SysrootUkiEntry>,
@@ -3778,18 +3778,13 @@ fn dump_pe_section(uki: &Path, section: &str) -> Result<Option<tempfile::NamedTe
 ///
 /// `systemd-measure calculate` emits one `11:sha256=` line per boot phase
 /// (`enter-initrd` → `enter-initrd:leave-initrd:sysinit:ready`); this records
-/// the **first** — the `enter-initrd` phase, which is where
-/// `systemd-cryptsetup` unseals `/var` against the signed policy, so it is the
-/// load-bearing value for TPM-sealed unlock.
-///
-/// # Scope caveat
-///
-/// PCR 11 on a *running* machine continues to advance as `systemd-pcrextend`
-/// records later phases (`leave-initrd`, `sysinit`, `ready`, …). An
-/// attestation verifier comparing a live `systemd-analyze pcrs` reading must
-/// account for the phase the quote was taken at; the TPM-sealed-unlock path
-/// itself uses the signed policy rather than a raw equality check. See
-/// RFC-0006 `registry-catalog.md` / `measured-boot.md`.
+/// the **last** — the stable `ready` phase at which RFC-0011 activation takes
+/// its generation quote. `aos-eval.service` is explicitly ordered after
+/// `systemd-pcrphase.service`, and later operator-driven switches necessarily
+/// run in this same phase.
+/// TPM-sealed `/var` unlock remains valid because systemd consumes
+/// the signed multi-phase `.pcrsig` policy at `enter-initrd`; it does not use
+/// this catalog scalar as its unlock policy.
 ///
 /// # Errors
 ///
@@ -3851,8 +3846,9 @@ pub(crate) fn extract_expected_pcr11(uki: &Path) -> Result<Option<String>> {
 /// Extract the PCR-11 digest from `systemd-measure calculate` output.
 ///
 /// The tool prints lines such as `11:sha256=<hex>`; this returns the hex of
-/// the first PCR-11/sha256 line, or `None` when none is present.
+/// the last PCR-11/sha256 line (`ready`), or `None` when no line is present.
 fn parse_pcr11(text: &str) -> Option<String> {
+    let mut parsed = None;
     for line in text.lines() {
         let line = line.trim();
         // Accept `11:sha256=<hex>` and `11:<hex>` shapes.
@@ -3861,10 +3857,10 @@ fn parse_pcr11(text: &str) -> Option<String> {
         };
         let value = rest.rsplit('=').next().unwrap_or(rest).trim();
         if !value.is_empty() && value.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return Some(value.to_ascii_lowercase());
+            parsed = Some(value.to_ascii_lowercase());
         }
     }
-    None
+    parsed
 }
 
 /// Verify a UKI's embedded Authenticode signature against a db certificate.
@@ -13761,15 +13757,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_pcr11_takes_first_phase_line() {
+    fn parse_pcr11_takes_ready_phase_line() {
         // `systemd-measure calculate` prints one 11: line per boot phase
-        // (enter-initrd first). We record the enter-initrd value, so the
-        // parser must return the FIRST 11: line, not the last.
+        // (enter-initrd first and ready last). Runtime activation happens after
+        // the ready barrier, so the catalog pins the final line.
         let out = "# PCR[11] Phase <enter-initrd>\n\
                    # PCR[11] Phase <enter-initrd:leave-initrd>\n\
                    11:sha256=aaaa\n\
                    11:sha256=bbbb\n";
-        assert_eq!(parse_pcr11(out).as_deref(), Some("aaaa"));
+        assert_eq!(parse_pcr11(out).as_deref(), Some("bbbb"));
     }
 
     #[test]

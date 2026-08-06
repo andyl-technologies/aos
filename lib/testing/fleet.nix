@@ -55,14 +55,13 @@
   # interpolation only) and keeping it as a stable per-machine field
   # avoids parameterising downstream helpers on the mode.
   #
-  # The guest agent reaches every fleet machine one of two ways: baked
-  # into the /var seed (kernel boot + `varProvisioning = "baked"`, the
-  # default), or delivered through the bundled `aos-test-agent` package
-  # for image/repart boots that ship no seed. The driver waits on every
-  # machine's agent, so a
-  # machine that bakes no seed always needs that package. Inject it here
-  # rather than making each test name it: agent delivery is a harness
-  # concern, not a property of the machine under test.
+  # The guest agent reaches every fleet machine one of two ways: baked into
+  # the /var seed (kernel boot + `varProvisioning = "baked"`, the default), or
+  # through a test-only unit baked into the effective system for image/repart
+  # boots that ship no seed. The latter references the bundled agent payload
+  # directly; it is intentionally not placed in the runtime package seed,
+  # because host evaluation would otherwise need a registry entry for test
+  # infrastructure before the harness could establish its control channel.
   mkMachinesWithIndex = machines: let
     machineNames = builtins.attrNames machines;
   in
@@ -71,28 +70,26 @@
       bootMode = m.bootMode or "kernel";
       varProvisioning = m.varProvisioning or "baked";
       packages = m.packages or [];
-      # `baked` /var seeds the agent at build time; every other shape
-      # relies on a baked `systemd.services.aos-test-agent` unit.
+      # `baked` /var seeds the agent at build time; every other shape uses
+      # the test-only unit added by `mkNewpathModule` below.
       bakesAgent = bootMode == "kernel" && varProvisioning == "baked";
       agentBundled = m.system.config.aos.packages.aos-test-agent.bundle or false;
-      packagesWithAgent =
-        if bakesAgent || builtins.elem "aos-test-agent" packages
-        then packages
-        else if agentBundled
-        then packages ++ ["aos-test-agent"]
+      seedPackages = builtins.filter (package: package != "aos-test-agent") packages;
+      checkedPackages =
+        if bakesAgent || agentBundled
+        then seedPackages
         else
           throw ''
             fleet: machine "${mname}" boots without a baked /var seed
             (bootMode = "${bootMode}", varProvisioning = "${varProvisioning}"),
-            so the test guest agent must arrive via the aos-test-agent package
-            — but that package is not bundled on its system. Set
+            so the test guest agent payload must be bundled on its system. Set
             `aos.packages.aos-test-agent.bundle = true` on the machine's system
-            (the server profile already does).
+            (the fleet test system profiles already do).
           '';
     in {
       inherit (m) system;
       inherit bootMode varProvisioning bakesAgent;
-      packages = packagesWithAgent;
+      packages = checkedPackages;
       # `extraClosures` / `varSizeMiB` / `imageDiskMiB` default on the
       # fleet machine type, so the `or` fallbacks only matter for callers
       # bypassing fleet-spec validation.
@@ -130,12 +127,10 @@
   # so all of `/etc` comes from this baked EROFS — exactly what these entries
   # populate. The same module uses the production systemd-repart substrate.
   #
-  #   `bakeAgentUnit` — emit `systemd.services.aos-test-agent` here. False for
-  #   `baked`-var kernel machines, whose /var seed already carries the unit
-  #   (avoids a duplicate unit definition); true for image / repart machines
-  #   that ship no baked seed.
   #   `sshAuthorizedKey` — non-null only in the interactive launcher; adds the
   #   root pubkey (mode 0600) and a DHCP .network for the debug NIC.
+  #   `bakeAgentUnit` — emit the test-only unit for image/repart machines. The
+  #   direct-kernel baked-/var path already carries the same agent.
   mkNewpathModule = {
     m,
     hostsEntries,
@@ -227,8 +222,7 @@
         [
           (mkNewpathModule {
             inherit m hostsEntries sshAuthorizedKey;
-            bakeAgentUnit =
-              (!m.bakesAgent) && builtins.elem "aos-test-agent" m.packages;
+            bakeAgentUnit = !m.bakesAgent;
           })
         ]
         ++ m.extraModules;

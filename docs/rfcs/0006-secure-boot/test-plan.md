@@ -81,12 +81,10 @@ Extends the two-node shape of `install-from-image` (registry peer + target):
   `expected_pcr11` derived from the actual UKI (compare against `sbverify
   --list` / `.sbat` dump / `systemd-measure` run independently in the test).
 - **Download-time accept:** `apm upgrade --system` to a component whose
-  recorded signer is in the active set and SBAT ≥ floor → succeeds. If the
-  predicted-PCR-11 method is settled (see
-  [`registry-catalog.md`](registry-catalog.md) caveat), also assert the
-  recorded `expected_pcr11` matches what the machine measures after reboot;
-  until then this sub-assertion is gated on resolving the
-  UKI-alone-vs-full-phase-sequence prediction gap.
+  recorded signer is in the active set and SBAT ≥ floor → succeeds. Assert
+  the recorded `expected_pcr11` matches the final ready-phase prediction; the
+  measured-boot test independently compares that catalog value with the live
+  PCR 11 carried by a generation quote.
 - **Download-time refuse (the headline):** raise the registry's SBAT
   revocation floor above the published component (signed metadata change),
   `apm update`, then assert `apm upgrade --system` **refuses before reboot**
@@ -99,10 +97,9 @@ server-secureboot sysroot + its UKI, asserts the derived facts, and drives
 `apm` through refuse-on-unknown-signer → refuse-on-SBAT-floor → accept. The
 `expected_pcr11` prediction gap above is resolved by measuring the UKI's PE
 *sections* (not the UKI-as-kernel); the test cross-checks the recorded value
-against an independent `objcopy` + `systemd-measure` recompute rather than a
-post-reboot machine reading (that equality remains attestation-side future
-work — the recorded value is the `enter-initrd`-phase digest, where `/var`
-unseals).
+against an independent `objcopy` + `systemd-measure` recompute. The recorded
+value is the stable `ready`-phase digest used by generation attestation; `/var`
+unlock separately consumes the signed multi-phase policy at `enter-initrd`.
 
 ## Cost / sequencing notes
 

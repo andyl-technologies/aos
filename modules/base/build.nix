@@ -916,6 +916,7 @@ in {
           store_paths = [];
           nar_hashes = [];
           package_names = [];
+          origins = [];
           module_abi_compat = [];
         };
         host_nix = {

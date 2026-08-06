@@ -4,35 +4,35 @@ Before=aos-eval.service multi-user.target
 Description=Seed Nix store database and AOS GC roots
 
 [Service]
-Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/sbin"
+Environment="PATH=/nix/store/<hash>-coreutils-9.5/bin:/nix/store/<hash>-findutils-4.10.0/bin:/nix/store/<hash>-grep-3.11/bin:/nix/store/<hash>-sed-4.9/bin:/nix/store/<hash>-systemd-259.1/bin:/nix/store/<hash>-coreutils-9.5/sbin:/nix/store/<hash>-findutils-4.10.0/sbin:/nix/store/<hash>-grep-3.11/sbin:/nix/store/<hash>-sed-4.9/sbin:/nix/store/<hash>-systemd-259.1/sbin"
 ExecStart=<<aos-job-script>>
-#!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
+#!/nix/store/<hash>-bash-5.2.37/bin/bash
 set -e
 
 set -euo pipefail
 
 # Initialise the store layout/schema if absent. Loading the registration
 # stream is idempotent and does not canonicalise/chown store contents.
-/nix/store/s06fk05p64jrww40ncam4kncidjbnblv-nix-2.24.12/bin/nix-store --init || true
+/nix/store/<hash>-nix-2.24.12/bin/nix-store --init || true
 if [ -r /aos-registration ]; then
-  /nix/store/s06fk05p64jrww40ncam4kncidjbnblv-nix-2.24.12/bin/nix-store --load-db < /aos-registration
+  /nix/store/<hash>-nix-2.24.12/bin/nix-store --load-db < /aos-registration
 fi
 
 # Nix recursively scans directories below gcroots, but does not follow
 # a symlink whose target is an external directory. Bind the durable APM
 # profile tree into a real gcroots directory so every generation root
 # is visible to collection without duplicating profile state.
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p \
+/nix/store/<hash>-coreutils-9.5/bin/mkdir -p \
   /var/lib/profiles \
   /nix/var/nix/gcroots
 if [ -L /nix/var/nix/gcroots/aos-profiles ]; then
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/rm -f /nix/var/nix/gcroots/aos-profiles
+  /nix/store/<hash>-coreutils-9.5/bin/rm -f /nix/var/nix/gcroots/aos-profiles
 fi
-/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/mkdir -p \
+/nix/store/<hash>-coreutils-9.5/bin/mkdir -p \
   /nix/var/nix/gcroots/aos-profiles
-if ! /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mountpoint -q \
+if ! /nix/store/<hash>-util-linux-2.42.1/bin/mountpoint -q \
   /nix/var/nix/gcroots/aos-profiles; then
-  /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount --bind \
+  /nix/store/<hash>-util-linux-2.42.1/bin/mount --bind \
     /var/lib/profiles \
     /nix/var/nix/gcroots/aos-profiles
 fi

@@ -214,10 +214,10 @@
           partition inside the disk image. `repart` ships no /var partition:
           the driver grows the per-run copy by `varSizeMiB`, and
           systemd-repart carves /var (and swap) in the trailing free space at
-          first boot. With no baked /var seed the guest agent arrives via a
-          baked `systemd.services.aos-test-agent` unit — the harness adds that
-          package automatically (lib/testing/fleet.nix), so tests need not
-          list it.
+          first boot. With no baked /var seed the guest agent arrives through a
+          test-only unit in the effective machine system. Its payload is the
+          bundled `aos-test-agent` package, but it is kept out of runtime package
+          selection so the control channel does not depend on registry access.
         '';
       };
     };

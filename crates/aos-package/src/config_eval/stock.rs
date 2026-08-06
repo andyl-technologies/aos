@@ -30,7 +30,7 @@
 //! operator module seam) and each provider's config-only module
 //! imported by store path.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -459,6 +459,7 @@ impl ConfigOutputFetcher for SubstituterFetcher {
 pub struct RegistryConfigModules {
     registries: RegistrySet,
     installed: Vec<InstalledModulePin>,
+    image_packages: BTreeMap<String, super::runtime::LocalRuntimePackage>,
 }
 
 #[derive(Debug, Clone)]
@@ -475,6 +476,7 @@ impl RegistryConfigModules {
         Self {
             registries,
             installed: Vec::new(),
+            image_packages: BTreeMap::new(),
         }
     }
 
@@ -484,6 +486,11 @@ impl RegistryConfigModules {
     /// update cannot split module evaluation from package activation.
     pub fn registries(&self) -> &RegistrySet {
         &self.registries
+    }
+
+    /// Returns packages authenticated by, and seeded from, the running image.
+    pub fn image_packages(&self) -> &BTreeMap<String, super::runtime::LocalRuntimePackage> {
+        &self.image_packages
     }
 
     /// Loads the on-host system-scope registry snapshot.
@@ -498,22 +505,46 @@ impl RegistryConfigModules {
         let config = crate::config::ApmConfig::load(scope)?;
         let registries = crate::install::load_registries(&config)?;
         let profile = crate::profile::Profile::open_readonly(scope);
-        let installed = crate::profile::meta::list_meta(&profile)?
-            .into_iter()
-            .filter_map(|record| {
-                let apm = record.apm?;
-                let module = apm.config_module?;
-                Some(InstalledModulePin {
-                    package: apm.name,
-                    version: apm.version,
-                    runtime_output: record.store_path,
+        let mut installed = Vec::new();
+        let mut image_packages = BTreeMap::new();
+        for record in crate::profile::meta::list_meta(&profile)? {
+            let Some(apm) = record.apm else {
+                continue;
+            };
+            let is_image = record.pushed_by == "aos-image" && apm.registry == "seed";
+            let mut config_module = apm.config_module;
+            if is_image && let Some(module) = config_module.as_mut() {
+                let (nar_hash, nar_size) =
+                    super::runtime::local_store_identity(&module.config_output.store_path)?;
+                module.config_output.nar_hash = nar_hash;
+                module.config_output.nar_size = nar_size;
+            }
+            if let Some(module) = config_module.clone() {
+                installed.push(InstalledModulePin {
+                    package: apm.name.clone(),
+                    version: apm.version.clone(),
+                    runtime_output: record.store_path.clone(),
                     module,
-                })
-            })
-            .collect();
+                });
+            }
+            if is_image {
+                image_packages.insert(
+                    apm.name,
+                    super::runtime::LocalRuntimePackage {
+                        version: apm.version,
+                        store_path: record.store_path,
+                        expose: apm.expose,
+                        expose_artifact: apm.expose_artifact,
+                        config_module,
+                        closure: std::cell::RefCell::new(None),
+                    },
+                );
+            }
+        }
         Ok(Self {
             registries,
             installed,
+            image_packages,
         })
     }
 
@@ -556,21 +587,33 @@ impl RegistryConfigModules {
 
 impl ConfigModuleResolver for RegistryConfigModules {
     fn config_module(&self, package: &str) -> Option<ResolvedConfigModule<'_>> {
-        let (registry, meta) = self.registries.resolve(package)?;
-        let module = meta.config_module.as_ref()?;
-        let root = crate::registry::store_path_hash(&module.config_output.store_path);
+        if let Some((registry, meta)) = self.registries.resolve(package) {
+            let module = meta.config_module.as_ref()?;
+            let root = crate::registry::store_path_hash(&module.config_output.store_path);
+            return Some(ResolvedConfigModule {
+                registry: &registry.config.name,
+                release_trust: registry.release_trust(),
+                config_realization: registry
+                    .store_map()
+                    .realization_subset_hash(&[root.to_string()])
+                    .ok(),
+                package: &meta.name,
+                version: &meta.version,
+                platform: &meta.platform,
+                runtime_output: &meta.store_path,
+                module,
+            });
+        }
+        let (local_name, local) = self.image_packages.get_key_value(package)?;
         Some(ResolvedConfigModule {
-            registry: &registry.config.name,
-            release_trust: registry.release_trust(),
-            config_realization: registry
-                .store_map()
-                .realization_subset_hash(&[root.to_string()])
-                .ok(),
-            package: &meta.name,
-            version: &meta.version,
-            platform: &meta.platform,
-            runtime_output: &meta.store_path,
-            module,
+            registry: "",
+            release_trust: None,
+            config_realization: None,
+            package: local_name,
+            version: &local.version,
+            platform: "image",
+            runtime_output: &local.store_path,
+            module: local.config_module.as_ref()?,
         })
     }
 
@@ -580,7 +623,26 @@ impl ConfigModuleResolver for RegistryConfigModules {
         version: Option<&str>,
         runtime_output: Option<&str>,
     ) -> Option<ResolvedConfigModule<'_>> {
-        self.exact_in_registry(None, package, version, runtime_output)
+        if self.registries.resolve(package).is_some() {
+            self.exact_in_registry(None, package, version, runtime_output)
+        } else {
+            let (local_name, local) = self.image_packages.get_key_value(package)?;
+            if version.is_some_and(|want| want != local.version)
+                || runtime_output.is_some_and(|want| want != local.store_path)
+            {
+                return None;
+            }
+            Some(ResolvedConfigModule {
+                registry: "",
+                release_trust: None,
+                config_realization: None,
+                package: local_name,
+                version: &local.version,
+                platform: "image",
+                runtime_output: &local.store_path,
+                module: local.config_module.as_ref()?,
+            })
+        }
     }
 
     fn installed_config_modules(&self) -> Vec<ResolvedConfigModule<'_>> {
@@ -592,7 +654,7 @@ impl ConfigModuleResolver for RegistryConfigModules {
                 config_realization: None,
                 package: &pin.package,
                 version: &pin.version,
-                platform: "installed-profile",
+                platform: "image",
                 runtime_output: &pin.runtime_output,
                 module: &pin.module,
             })
@@ -600,13 +662,21 @@ impl ConfigModuleResolver for RegistryConfigModules {
     }
 
     fn known_shared_roots(&self) -> BTreeSet<String> {
-        self.registries
+        let mut roots = self
+            .registries
             .registries()
             .iter()
             .flat_map(|registry| registry.package_versions())
             .filter_map(|meta| meta.config_module.as_ref())
             .flat_map(|module| module.owns_roots.iter().map(|owned| owned.root.clone()))
-            .collect()
+            .collect::<BTreeSet<_>>();
+        roots.extend(
+            self.image_packages
+                .values()
+                .filter_map(|package| package.config_module.as_ref())
+                .flat_map(|module| module.owns_roots.iter().map(|owned| owned.root.clone())),
+        );
+        roots
     }
 }
 

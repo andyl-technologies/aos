@@ -55,7 +55,7 @@
 //! isolated behind [`TpmQuoter`] / [`QuoteChecker`] so the record logic is
 //! unit-testable off-host with a mock TPM.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -147,9 +147,9 @@ pub struct AttestationInputs {
 pub struct BaseLibAttInput {
     /// Exact base-library store path consumed by evaluation.
     pub store_path: String,
-    /// `sha256:<hex>` ukify-predicted PCR-11 of the booted UKI (ties to measured
-    /// boot). Read from the registry catalog's recorded `expected_pcr11`, not
-    /// recomputed (build-spec §1.3).
+    /// `sha256:<hex>` predicted sysinit-phase PCR-11 of the booted UKI
+    /// (ties to measured boot). Read from the registry catalog's recorded
+    /// `expected_pcr11`, not recomputed (build-spec §1.3).
     pub pcr11_expected: Option<String>,
     /// `sha256:<hex>` over the base-lib module API schema concatenated with
     /// `module_abi`.
@@ -175,11 +175,11 @@ pub struct EvaluatorAttInput {
     pub store_hash: String,
 }
 
-/// The signed-tag-blessed config-module set the resolver consumed.
+/// The measured-image and/or signed-release config-module set consumed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigModulesAttInput {
-    /// Registry whose signed release selected the complete module set.
+    /// Registry whose signed release selected the registry-origin subset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry: Option<String>,
     /// Semver release tag whose verified tag chain authenticates the set.
@@ -191,7 +191,7 @@ pub struct ConfigModulesAttInput {
     /// `sha256:<hex>` identity of the consumed signed `store/` subset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realization: Option<String>,
-    /// Set hash over the authenticated module paths and NAR hashes.
+    /// Set hash over every authenticated module path and NAR hash.
     pub closure_hash: String,
     /// Number of authenticated config-only outputs.
     pub count: usize,
@@ -201,7 +201,7 @@ pub struct ConfigModulesAttInput {
     pub nar_hashes: Vec<String>,
     /// Authenticated package identities corresponding to `store_paths`.
     pub package_names: Vec<String>,
-    /// Authenticated ABI bands and root-write grants, retained verbatim from
+    /// Authenticated origins, ABI bands, and root-write grants retained from
     /// the manifest so a verifier can reconstruct the complete eval input.
     pub provenance: Value,
 }
@@ -474,7 +474,7 @@ pub(crate) fn persist_generation_attestation(
 ) -> Result<GenAttestation> {
     let record_path = generation_dir.join("gen-attestation.json");
     let transaction_path = generation_dir.join(".gen-attestation-transaction.json");
-    let inputs = inputs_from_manifest(manifest, running_image)?;
+    let mut inputs = inputs_from_manifest(manifest, running_image)?;
     let retained_transaction = read_attestation_transaction(&transaction_path)?;
     let activation_id = retained_transaction
         .as_ref()
@@ -513,6 +513,12 @@ pub(crate) fn persist_generation_attestation(
     if running_image.expected_pcr11.is_none() || running_image.root_verity_roothash.is_none() {
         bail!("TPM-backed generation attestation requires image PCR 11 and root verity metadata");
     }
+    // The image index proves that the booted UKI has published measured-boot
+    // metadata, but its early-boot snapshot may precede systemd's sysinit PCR
+    // phase. Bind the record to the exact live PCR 11 that the immediately
+    // following quote will carry. Remote verification still pins this value
+    // independently to the UKI catalog's predicted sysinit measurement.
+    inputs.base_lib.pcr11_expected = Some(crate::package_attestation::current_pcr11()?);
     let mut record = build_unquoted_gen_attestation(
         generation_id.to_string(),
         manifest_hash.to_string(),
@@ -644,7 +650,10 @@ fn inputs_from_manifest(
     image: &ImageGeneration,
 ) -> Result<AttestationInputs> {
     let config = &manifest.inputs.config_modules;
+    let has_registry_modules =
+        config.origins.is_empty() || config.origins.iter().any(|origin| origin == "registry");
     if config.count > 0
+        && has_registry_modules
         && (config.registry.is_none()
             || config.release_tag.is_none()
             || config.tag_signer_key.is_none()
@@ -652,10 +661,13 @@ fn inputs_from_manifest(
     {
         bail!("cannot attest config modules without signed-release provenance");
     }
-    let provenance = serde_json::json!({
+    let mut provenance = serde_json::json!({
         "module_abi_compat": config.module_abi_compat,
         "authorizations": config.authorizations,
     });
+    if !config.origins.is_empty() {
+        provenance["origins"] = serde_json::json!(config.origins);
+    }
     let host = &manifest.inputs.host_nix;
     let (platform, signer_key) = match host.trust_mode.as_str() {
         "platform" => (Some(host.platform.clone()), None),
@@ -772,6 +784,9 @@ pub struct VerifierPolicy {
     pub expected_root_roothash: String,
     /// Optional verifier-known canonical instance-facts hash.
     pub expected_facts_hash: Option<String>,
+    /// Validated PCR 15 value preceding the first AOS CEL event. When absent,
+    /// replay begins at the all-zero reset value.
+    pub pcr15_baseline: Option<String>,
     /// Ordered SHA-256 event digests already extended into the shared AOS
     /// application PCR before this generation record. A verifier obtains this
     /// history by validating and replaying the CEL prefix.
@@ -920,8 +935,12 @@ pub fn verify_gen_attestation(
 
     // 3. PCR15 == replay(validated CEL prefix) then extend(record\quote).
     let record_digest = record_hash(record).map_err(|_| GenAttestationFailure::RecordBinding)?;
-    let expected_pcr15 = expected_app_pcr_after(&policy.prior_pcr15_event_digests, &record_digest)
-        .map_err(|_| GenAttestationFailure::RecordBinding)?;
+    let expected_pcr15 = expected_app_pcr_after(
+        policy.pcr15_baseline.as_deref(),
+        &policy.prior_pcr15_event_digests,
+        &record_digest,
+    )
+    .map_err(|_| GenAttestationFailure::RecordBinding)?;
     if !ct_eq(&pcrs.pcr15, &expected_pcr15) {
         return Err(GenAttestationFailure::RecordBinding);
     }
@@ -1026,6 +1045,10 @@ fn config_module_release_is_trusted(
     modules: &ConfigModulesAttInput,
     policy: &VerifierPolicy,
 ) -> bool {
+    let Some((abi_compat, authorizations, mut origins)) = provenance_entries(&modules.provenance)
+    else {
+        return false;
+    };
     if modules.count == 0 {
         return modules.registry.is_none()
             && modules.release_tag.is_none()
@@ -1034,68 +1057,30 @@ fn config_module_release_is_trusted(
             && modules.store_paths.is_empty()
             && modules.nar_hashes.is_empty()
             && modules.package_names.is_empty()
-            && provenance_entries(&modules.provenance).is_some_and(|(compat, authorization)| {
-                compat.is_empty() && authorization.is_empty()
-            })
+            && abi_compat.is_empty()
+            && authorizations.is_empty()
+            && origins.is_empty()
             && ct_eq(
                 &modules.closure_hash,
                 &hash_cjson(&Value::Array(Vec::new())),
             );
     }
-    let (Some(registry), Some(release_tag), Some(signer), Some(realization)) = (
-        modules.registry.as_deref(),
-        modules.release_tag.as_deref(),
-        modules.tag_signer_key.as_deref(),
-        modules.realization.as_deref(),
-    ) else {
-        return false;
-    };
-
-    if crate::types::validate_registry_name(registry).is_err()
-        || semver::Version::parse(release_tag).is_err()
-        || !is_short_fingerprint(signer)
-        || !is_sha256_identity(realization)
-        || !policy
-            .roster_fingerprints
-            .iter()
-            .any(|fingerprint| is_short_fingerprint(fingerprint) && fingerprint == signer)
-        || policy
-            .revoked_roster_fingerprints
-            .iter()
-            .any(|fingerprint| fingerprint.eq_ignore_ascii_case(signer))
-    {
-        return false;
-    }
-
-    let matching_releases = policy
-        .valid_release_tags
-        .iter()
-        .filter(|release| release.registry == registry && release.release_tag == release_tag)
-        .collect::<Vec<_>>();
-    let [release] = matching_releases.as_slice() else {
-        // A catalog with no matching release has not authenticated the tag;
-        // multiple matching records are ambiguous and fail closed as well.
-        return false;
-    };
-    let catalog_signers = release
-        .signer_fingerprints
-        .iter()
-        .filter(|fingerprint| is_short_fingerprint(fingerprint))
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    if catalog_signers.len() != release.signer_fingerprints.len()
-        || !catalog_signers.contains(signer)
-        || !ct_eq(&release.realization, realization)
-        || !is_sha256_identity(&release.realization)
-    {
-        return false;
-    }
-
     let count = modules.count;
     if count != modules.store_paths.len()
         || count != modules.nar_hashes.len()
         || count != modules.package_names.len()
-        || count != release.config_modules.len()
+        || count != abi_compat.len()
+        || count != authorizations.len()
+    {
+        return false;
+    }
+    if origins.is_empty() {
+        origins = vec!["registry".to_string(); count];
+    }
+    if origins.len() != count
+        || origins
+            .iter()
+            .any(|origin| origin != "registry" && origin != "image")
     {
         return false;
     }
@@ -1130,51 +1115,111 @@ fn config_module_release_is_trusted(
         return false;
     }
 
-    let mut catalog_members = BTreeSet::new();
+    let registry_indexes = origins
+        .iter()
+        .enumerate()
+        .filter_map(|(index, origin)| (origin == "registry").then_some(index))
+        .collect::<Vec<_>>();
+    if registry_indexes.is_empty() {
+        return modules.registry.is_none()
+            && modules.release_tag.is_none()
+            && modules.tag_signer_key.is_none()
+            && modules.realization.is_none();
+    }
+
+    let (Some(registry), Some(release_tag), Some(signer), Some(realization)) = (
+        modules.registry.as_deref(),
+        modules.release_tag.as_deref(),
+        modules.tag_signer_key.as_deref(),
+        modules.realization.as_deref(),
+    ) else {
+        return false;
+    };
+    if crate::types::validate_registry_name(registry).is_err()
+        || semver::Version::parse(release_tag).is_err()
+        || !is_short_fingerprint(signer)
+        || !is_sha256_identity(realization)
+        || !policy
+            .roster_fingerprints
+            .iter()
+            .any(|fingerprint| is_short_fingerprint(fingerprint) && fingerprint == signer)
+        || policy
+            .revoked_roster_fingerprints
+            .iter()
+            .any(|fingerprint| fingerprint.eq_ignore_ascii_case(signer))
+    {
+        return false;
+    }
+    let matching_releases = policy
+        .valid_release_tags
+        .iter()
+        .filter(|release| release.registry == registry && release.release_tag == release_tag)
+        .collect::<Vec<_>>();
+    let [release] = matching_releases.as_slice() else {
+        return false;
+    };
+    let catalog_signers = release
+        .signer_fingerprints
+        .iter()
+        .filter(|fingerprint| is_short_fingerprint(fingerprint))
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if catalog_signers.len() != release.signer_fingerprints.len()
+        || !catalog_signers.contains(signer)
+        || !ct_eq(&release.realization, realization)
+        || !is_sha256_identity(&release.realization)
+        || release.config_modules.len() != registry_indexes.len()
+    {
+        return false;
+    }
+
+    let mut catalog_members = BTreeMap::new();
     for member in &release.config_modules {
         if !is_canonical_store_path(&member.store_path)
             || crate::types::validate_package_name(&member.package_name).is_err()
             || crate::registry::store::NarBytes::from_hash(&member.nar_hash, 0)
                 .map(|nar| nar.nar_hash() != member.nar_hash)
                 .unwrap_or(true)
-            || !catalog_members.insert((&member.package_name, &member.store_path, &member.nar_hash))
+            || catalog_members
+                .insert(
+                    (&member.package_name, &member.store_path, &member.nar_hash),
+                    member,
+                )
+                .is_some()
         {
             return false;
         }
     }
 
-    if quoted_members != catalog_members {
-        return false;
-    }
-
-    let Some((abi_compat, authorizations)) = provenance_entries(&modules.provenance) else {
-        return false;
-    };
-    if abi_compat.len() != count || authorizations.len() != count {
-        return false;
-    }
-    release
-        .config_modules
-        .iter()
-        .zip(abi_compat)
-        .zip(authorizations)
-        .all(|((member, compat), authorization)| {
-            member.module_abi_compat == compat && member.authorization == authorization
+    registry_indexes.into_iter().all(|index| {
+        let key = (
+            &modules.package_names[index],
+            &modules.store_paths[index],
+            &modules.nar_hashes[index],
+        );
+        catalog_members.get(&key).is_some_and(|member| {
+            member.module_abi_compat == abi_compat[index]
+                && member.authorization == authorizations[index]
         })
+    })
 }
 
 fn provenance_entries(
     provenance: &Value,
-) -> Option<(Vec<ModuleAbiCompat>, Vec<PackageAuthorization>)> {
+) -> Option<(Vec<ModuleAbiCompat>, Vec<PackageAuthorization>, Vec<String>)> {
     let Some(object) = provenance.as_object() else {
         return None;
     };
-    if object.len() != 2 {
+    if object.len() < 2 || object.len() > 3 {
         return None;
     }
     let compat = serde_json::from_value(object.get("module_abi_compat")?.clone()).ok()?;
     let authorization = serde_json::from_value(object.get("authorizations")?.clone()).ok()?;
-    Some((compat, authorization))
+    let origins = object
+        .get("origins")
+        .map(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_else(|| Some(Vec::new()))?;
+    Some((compat, authorization, origins))
 }
 
 fn is_short_fingerprint(value: &str) -> bool {
@@ -1212,8 +1257,18 @@ fn is_canonical_store_path(value: &str) -> bool {
 }
 
 /// Returns the PCR value after replaying `prior` and extending `digest`.
-fn expected_app_pcr_after(prior: &[String], digest: &[u8; 32]) -> Result<String> {
-    let mut pcr = [0_u8; 32];
+fn expected_app_pcr_after(
+    baseline: Option<&str>,
+    prior: &[String],
+    digest: &[u8; 32],
+) -> Result<String> {
+    let mut pcr = match baseline {
+        Some(value) => hex::decode(strip_sha256(value))
+            .with_context(|| format!("decoding PCR 15 baseline {value:?}"))?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("PCR 15 baseline is not SHA-256"))?,
+        None => [0_u8; 32],
+    };
     for event in prior {
         let decoded = hex::decode(strip_sha256(event))
             .with_context(|| format!("decoding prior PCR 15 event digest {event:?}"))?;
@@ -1371,6 +1426,7 @@ mod tests {
             expected_pcr11: format!("sha256:{PCR11_HEX}"),
             expected_root_roothash: ROOTHASH.to_string(),
             expected_facts_hash: None,
+            pcr15_baseline: None,
             prior_pcr15_event_digests: Vec::new(),
             trusted_config_keys: vec!["0badf00d".to_string()],
             trusted_platforms: vec!["aws".to_string()],
@@ -1487,6 +1543,32 @@ mod tests {
         let res =
             verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
         assert!(res.is_ok(), "got {res:?}");
+    }
+
+    #[test]
+    fn verifier_accepts_measured_image_config_module_origin() {
+        let mut inputs = sample_inputs();
+        let modules = &mut inputs.config_modules;
+        modules.registry = None;
+        modules.release_tag = None;
+        modules.tag_signer_key = None;
+        modules.realization = None;
+        modules.provenance["origins"] = serde_json::json!(["image"]);
+        let record = computed_with_inputs(inputs);
+        let result =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None);
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[test]
+    fn verifier_rejects_unknown_config_module_origin() {
+        let mut inputs = sample_inputs();
+        inputs.config_modules.provenance["origins"] = serde_json::json!(["unsigned-local"]);
+        let record = computed_with_inputs(inputs);
+        let error =
+            verify_gen_attestation(&record, &MockChecker, &sample_policy(), b"nonce-xyz", None)
+                .unwrap_err();
+        assert_eq!(error, GenAttestationFailure::Tag);
     }
 
     #[test]
@@ -1690,8 +1772,8 @@ mod tests {
         let record = computed();
         let prior = format!("sha256:{}", "22".repeat(32));
         let digest = record_hash(&record).expect("record hashes");
-        let expected =
-            expected_app_pcr_after(std::slice::from_ref(&prior), &digest).expect("history replays");
+        let expected = expected_app_pcr_after(None, std::slice::from_ref(&prior), &digest)
+            .expect("history replays");
         let checker = HistoryChecker { pcr15: expected };
         let mut policy = sample_policy();
         policy.prior_pcr15_event_digests.push(prior);
@@ -1702,6 +1784,31 @@ mod tests {
         assert_eq!(
             verify_gen_attestation(&record, &checker, &policy, b"nonce-xyz", None)
                 .expect_err("wrong CEL prefix must fail"),
+            GenAttestationFailure::RecordBinding
+        );
+    }
+
+    #[test]
+    fn verifies_record_after_replaying_from_validated_pcr15_baseline() {
+        let record = computed();
+        let baseline = format!("sha256:{}", "44".repeat(32));
+        let prior = format!("sha256:{}", "22".repeat(32));
+        let digest = record_hash(&record).expect("record hashes");
+        let expected =
+            expected_app_pcr_after(Some(&baseline), std::slice::from_ref(&prior), &digest)
+                .expect("baseline history replays");
+        let checker = HistoryChecker { pcr15: expected };
+        let mut policy = sample_policy();
+        policy.pcr15_baseline = Some(baseline);
+        policy.prior_pcr15_event_digests.push(prior);
+
+        let result = verify_gen_attestation(&record, &checker, &policy, b"nonce-xyz", None);
+        assert!(result.is_ok(), "got {result:?}");
+
+        policy.pcr15_baseline = Some(format!("sha256:{}", "55".repeat(32)));
+        assert_eq!(
+            verify_gen_attestation(&record, &checker, &policy, b"nonce-xyz", None)
+                .expect_err("wrong PCR baseline must fail"),
             GenAttestationFailure::RecordBinding
         );
     }

@@ -16,6 +16,14 @@
 #   - systemd-units.tree — the unit directory structure (.wants/.requires install
 #                          symlinks + which entries are store-backed unit files).
 #
+# Store-path normalization replaces only the 32-character content-addressed
+# component with `<hash>` while retaining the derivation/output name and any
+# subpath. The snapshots therefore pin semantic references such as package
+# names and versions without changing whenever equivalent source edits produce
+# a new store identity. Opaque identities derived from those paths, currently
+# `AOS_BASELIB_DIGEST`, are normalized to a field-specific token for the same
+# reason; their presence and wire format remain characterized.
+#
 # Job-script normalization (test-plan.md review C2): the C2/F2-A change moves
 # shell-snippet options (`script=`/`preStart=`/…) out of a `writeShellScriptBin`
 # store path and into manifest *text* written to a generation-local path, so the
@@ -85,6 +93,12 @@
       JOB_SCRIPT_MARKERS = ("-unit-script-", "/aos-job-scripts/")
 
       EXEC_RE = re.compile(r"^(Exec[A-Za-z]*)=(.*)$")
+      STORE_PATH_RE = re.compile(
+          r"/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-([^/\s\"'\\]+)"
+      )
+      BASELIB_DIGEST_RE = re.compile(
+          r"(?m)^(AOS_BASELIB_DIGEST=)sha256:[0-9a-f]{64}$"
+      )
       # systemd Exec line special prefixes that precede the executable path.
       EXEC_PREFIX_CHARS = set("@-:+!~")
 
@@ -97,6 +111,12 @@
           os.makedirs(os.path.dirname(path), exist_ok=True)
           with open(path, "w", encoding="utf-8", errors="surrogateescape") as handle:
               handle.write(text)
+
+
+      def normalize_store_identities(text):
+          """Replace volatile Nix identities while retaining semantic names."""
+          text = STORE_PATH_RE.sub(r"/nix/store/<hash>-\1", text)
+          return BASELIB_DIGEST_RE.sub(r"\1sha256:<base-lib-digest>", text)
 
 
       def split_exec_value(value):
@@ -144,7 +164,7 @@
                   out_lines.append("<<aos-job-script-end>>")
               else:
                   out_lines.append(line)
-          return "\n".join(out_lines)
+          return normalize_store_identities("\n".join(out_lines))
 
 
       def snapshot_units(units_dir, out_dir):
@@ -192,9 +212,18 @@
 
       def build_snapshot(args, out_dir):
           snapshot_units(args.units, out_dir)
-          write_text(os.path.join(out_dir, "etcDump.txt"), read_text(args.etc_dump))
-          write_text(os.path.join(out_dir, "os-release"), read_text(args.os_release))
-          write_text(os.path.join(out_dir, "activate-script.sh"), read_text(args.activate))
+          write_text(
+              os.path.join(out_dir, "etcDump.txt"),
+              normalize_store_identities(read_text(args.etc_dump)),
+          )
+          write_text(
+              os.path.join(out_dir, "os-release"),
+              normalize_store_identities(read_text(args.os_release)),
+          )
+          write_text(
+              os.path.join(out_dir, "activate-script.sh"),
+              normalize_store_identities(read_text(args.activate)),
+          )
 
 
       def assert_manifest_unit_paths(args):
@@ -213,11 +242,13 @@
 
 
       def self_test():
-          """Prove the comparator collapses both job-script path forms.
+          """Prove the comparator collapses only volatile identities.
 
           Two unit bodies whose `ExecStart=` points at the same script via the
           two recognized path forms (store `-unit-script-` and gen-local
-          `/aos-job-scripts/`) must normalize to identical text.
+          `/aos-job-scripts/`) must normalize to identical text. Store paths
+          retain output names and versions, while the measured base-lib digest
+          retains its field and algorithm label.
           """
           root = tempfile.mkdtemp(prefix="system-characterization-selftest-")
           body = "#!/bin/sh\nset -e\n\necho hello from the job script\n"
@@ -235,6 +266,28 @@
               sys.exit(1)
           if "<<aos-job-script" not in norm_a or "echo hello from the job script" not in norm_a:
               sys.stderr.write("job-script normalization self-test did not inline the script body\n")
+              sys.exit(1)
+
+          same_name_a = "/nix/store/%s-demo-1.2/bin/demo" % ("a" * 32)
+          same_name_b = "/nix/store/%s-demo-1.2/bin/demo" % ("b" * 32)
+          different_version = "/nix/store/%s-demo-1.3/bin/demo" % ("c" * 32)
+          normalized_a = normalize_store_identities(same_name_a)
+          normalized_b = normalize_store_identities(same_name_b)
+          if normalized_a != normalized_b or "<hash>-demo-1.2" not in normalized_a:
+              sys.stderr.write("store-path hash normalization self-test FAILED\n")
+              sys.exit(1)
+          if normalized_a == normalize_store_identities(different_version):
+              sys.stderr.write("store-path normalization erased a semantic version change\n")
+              sys.exit(1)
+
+          digest_a = "AOS_BASELIB_DIGEST=sha256:%s\n" % ("1" * 64)
+          digest_b = "AOS_BASELIB_DIGEST=sha256:%s\n" % ("2" * 64)
+          normalized_digest = normalize_store_identities(digest_a)
+          if normalized_digest != normalize_store_identities(digest_b):
+              sys.stderr.write("base-lib identity normalization self-test FAILED\n")
+              sys.exit(1)
+          if normalized_digest != "AOS_BASELIB_DIGEST=sha256:<base-lib-digest>\n":
+              sys.stderr.write("base-lib identity normalization erased its wire shape\n")
               sys.exit(1)
 
 
