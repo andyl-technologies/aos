@@ -298,6 +298,23 @@ fn validate_network_effect_policy_references(
     };
     let integer = &[NetworkPolicyArtifactClass::IntegerLookup];
     let state_machine = &[NetworkPolicyArtifactClass::StateMachine];
+    let require_path =
+        |reference: &FaultObjectId, field: &'static str| -> Result<(), FaultSignalAuthoringError> {
+            if topology
+                .network_paths
+                .iter()
+                .any(|path| path.id.as_str() == reference.as_str())
+            {
+                return Ok(());
+            }
+            Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                binding: binding.id().as_str().to_owned(),
+                reference: reference.as_str().to_owned(),
+                field,
+                expected: String::from("world network path"),
+                actual: None,
+            })
+        };
     match specification {
         NetworkEffectSpecification::ProfileDelta {
             loss_hazard,
@@ -368,8 +385,15 @@ fn validate_network_effect_policy_references(
             "selector",
         )?,
         NetworkEffectSpecification::RouteTransition {
-            convergence_events, ..
-        } => require(convergence_events, state_machine, "convergence_events")?,
+            old_route,
+            new_route,
+            convergence_events,
+            ..
+        } => {
+            require_path(old_route, "old_route")?;
+            require_path(new_route, "new_route")?;
+            require(convergence_events, state_machine, "convergence_events")?;
+        }
         NetworkEffectSpecification::ControlPlaneService {
             service_curve,
             overflow_policy,

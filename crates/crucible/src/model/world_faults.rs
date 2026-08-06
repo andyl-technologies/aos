@@ -151,6 +151,7 @@ impl WorldFaultTopology {
         hard_count(&self.network_media, "network media", 16_384)?;
         hard_count(&self.network_forwarders, "network forwarders", 32_768)?;
         hard_count(&self.network_queues, "network queues", 262_144)?;
+        expand_direct_segment_paths(&mut self, world)?;
         hard_count(&self.network_paths, "network paths", 262_144)?;
         hard_count(&self.network_attachments, "network attachments", 65_536)?;
         hard_count(&self.network_contact_plans, "network contact plans", 65_536)?;
@@ -275,7 +276,8 @@ impl WorldFaultTopology {
 
         for interface in &self.network_interfaces {
             require(
-                vm_nodes.contains(interface.endpoint.as_str()),
+                vm_nodes.contains(interface.endpoint.as_str())
+                    || forwarders.contains(&interface.endpoint),
                 "network interface endpoint",
             )?;
         }
@@ -301,6 +303,7 @@ impl WorldFaultTopology {
                 segment.minimum_latency_nanos > 0,
                 "network segment minimum latency",
             )?;
+            require(segment.mtu_bytes > 0, "network segment MTU")?;
             if let Some(reference) = &segment.medium {
                 require(media.contains(reference), "network segment medium")?;
             }
@@ -308,43 +311,6 @@ impl WorldFaultTopology {
                 &segment.forwarders,
                 &forwarders,
                 "network segment forwarder",
-            )?;
-        }
-        if !self.network_interfaces.is_empty() || !self.network_segments.is_empty() {
-            let interface_endpoints = self
-                .network_interfaces
-                .iter()
-                .map(|interface| (&interface.id, &interface.endpoint))
-                .collect::<BTreeMap<_, _>>();
-            let declared_pairs = self
-                .network_segments
-                .iter()
-                .map(|segment| {
-                    let endpoint_a = interface_endpoints
-                        .get(&segment.interface_a)
-                        .ok_or_else(|| invalid("network segment interface_a"))?;
-                    let endpoint_b = interface_endpoints
-                        .get(&segment.interface_b)
-                        .ok_or_else(|| invalid("network segment interface_b"))?;
-                    Ok(canonical_name_pair(
-                        endpoint_a.as_str(),
-                        endpoint_b.as_str(),
-                    ))
-                })
-                .collect::<Result<BTreeSet<_>, WorldFaultTopologyError>>()?;
-            let world_pairs = world
-                .links()
-                .iter()
-                .map(|link| {
-                    let (endpoint_a, endpoint_b) = link.endpoints();
-                    canonical_name_pair(&endpoint_a.name, &endpoint_b.name)
-                })
-                .collect::<BTreeSet<_>>();
-            require(
-                declared_pairs.len() == self.network_segments.len()
-                    && world_pairs.len() == world.links().len()
-                    && declared_pairs == world_pairs,
-                "network segment and world link correspondence",
             )?;
         }
         for medium in &self.network_media {
@@ -386,8 +352,13 @@ impl WorldFaultTopology {
         for path in &self.network_paths {
             require(!path.hops.is_empty(), "network path hops")?;
             require(path.mtu_bytes > 0, "network path MTU")?;
+            require(
+                matches!(path.direction, FaultDirection::AToB | FaultDirection::BToA),
+                "network path direction",
+            )?;
             hard_count(&path.hops, "network path hops", 1_024)?;
             let mut previous_exit: Option<&SignalId> = None;
+            let mut first_entry: Option<&SignalId> = None;
             let mut forwarding_ports: Option<&[SignalId]> = None;
             for hop in &path.hops {
                 match hop {
@@ -406,6 +377,7 @@ impl WorldFaultTopology {
                             }
                             _ => return Err(invalid("network path direction")),
                         };
+                        first_entry.get_or_insert(entry);
                         if let Some(ports) = forwarding_ports.take() {
                             require(ports.contains(entry), "network path forwarder egress")?;
                         } else if let Some(previous) = previous_exit {
@@ -439,6 +411,82 @@ impl WorldFaultTopology {
             require(
                 forwarding_ports.is_none(),
                 "network path trailing forwarder",
+            )?;
+            let entry = first_entry.ok_or_else(|| invalid("network path entry"))?;
+            let exit = previous_exit.ok_or_else(|| invalid("network path exit"))?;
+            let entry_owner = self
+                .network_interfaces
+                .iter()
+                .find(|interface| &interface.id == entry)
+                .map(|interface| &interface.endpoint)
+                .ok_or_else(|| invalid("network path entry interface"))?;
+            let exit_owner = self
+                .network_interfaces
+                .iter()
+                .find(|interface| &interface.id == exit)
+                .map(|interface| &interface.endpoint)
+                .ok_or_else(|| invalid("network path exit interface"))?;
+            require(
+                vm_nodes.contains(entry_owner.as_str()) && vm_nodes.contains(exit_owner.as_str()),
+                "network path endpoint owner",
+            )?;
+            require(entry_owner != exit_owner, "network path endpoint self-loop")?;
+            let expected_direction = if entry_owner < exit_owner {
+                FaultDirection::AToB
+            } else {
+                FaultDirection::BToA
+            };
+            require(
+                path.direction == expected_direction,
+                "network path declared direction",
+            )?;
+        }
+        if !self.network_interfaces.is_empty() || !self.network_segments.is_empty() {
+            let interface_endpoints = self
+                .network_interfaces
+                .iter()
+                .map(|interface| (&interface.id, &interface.endpoint))
+                .collect::<BTreeMap<_, _>>();
+            let mut declared_pairs = BTreeSet::new();
+            for segment in &self.network_segments {
+                let endpoint_a = interface_endpoints
+                    .get(&segment.interface_a)
+                    .ok_or_else(|| invalid("network segment interface_a"))?;
+                let endpoint_b = interface_endpoints
+                    .get(&segment.interface_b)
+                    .ok_or_else(|| invalid("network segment interface_b"))?;
+                if vm_nodes.contains(endpoint_a.as_str()) && vm_nodes.contains(endpoint_b.as_str())
+                {
+                    declared_pairs.insert(canonical_name_pair(
+                        endpoint_a.as_str(),
+                        endpoint_b.as_str(),
+                    ));
+                }
+            }
+            for path in &self.network_paths {
+                let (entry, exit) = network_path_endpoint_interfaces(&self, path)?;
+                let endpoint_a = interface_endpoints
+                    .get(entry)
+                    .ok_or_else(|| invalid("network path entry interface"))?;
+                let endpoint_b = interface_endpoints
+                    .get(exit)
+                    .ok_or_else(|| invalid("network path exit interface"))?;
+                declared_pairs.insert(canonical_name_pair(
+                    endpoint_a.as_str(),
+                    endpoint_b.as_str(),
+                ));
+            }
+            let world_pairs = world
+                .links()
+                .iter()
+                .map(|link| {
+                    let (endpoint_a, endpoint_b) = link.endpoints();
+                    canonical_name_pair(&endpoint_a.name, &endpoint_b.name)
+                })
+                .collect::<BTreeSet<_>>();
+            require(
+                world_pairs.is_subset(&declared_pairs),
+                "network path and world link correspondence",
             )?;
         }
         for attachment in &self.network_attachments {
@@ -671,6 +719,40 @@ impl WorldFaultTopology {
         self.network_paths.iter().find(|path| &path.id == id)
     }
 
+    /// Returns the directed endpoint pair traversed by a declared path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorldFaultTopologyError::Invalid`] when the path is absent or
+    /// does not contain validated endpoint interfaces.
+    pub fn network_path_endpoints(
+        &self,
+        path_version: &FaultObjectId,
+        direction: FaultDirection,
+    ) -> Result<(SignalId, SignalId), WorldFaultTopologyError> {
+        let path = self
+            .network_paths
+            .iter()
+            .find(|path| path.id.as_str() == path_version.as_str())
+            .ok_or_else(|| invalid("network path endpoint path"))?;
+        require(
+            path.direction == direction,
+            "network path endpoint direction",
+        )?;
+        let (entry, exit) = network_path_endpoint_interfaces(self, path)?;
+        let entry = self
+            .network_interfaces
+            .iter()
+            .find(|interface| &interface.id == entry)
+            .ok_or_else(|| invalid("network path endpoint interface"))?;
+        let exit = self
+            .network_interfaces
+            .iter()
+            .find(|interface| &interface.id == exit)
+            .ok_or_else(|| invalid("network path endpoint interface"))?;
+        Ok((entry.endpoint.clone(), exit.endpoint.clone()))
+    }
+
     /// Resolves every fault-addressable stage on one directed World link.
     ///
     /// The returned order is the physical traversal order: source interface,
@@ -692,6 +774,27 @@ impl WorldFaultTopology {
         destination: &str,
         virtual_nanos: u64,
     ) -> Result<Vec<WorldNetworkRouteFaultTarget>, WorldFaultTopologyError> {
+        self.network_route_fault_targets_with_path(source, destination, virtual_nanos, None)
+    }
+
+    /// Resolves a directed World link through one explicitly selected path.
+    ///
+    /// A `None` override preserves canonical lowest-ID path selection. This is
+    /// the only route-resolution entry point used by a committed dynamic route
+    /// transition; the selected path must still describe the same directed
+    /// segment as the scheduler-validated endpoint route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorldFaultTopologyError::Invalid`] under the ordinary route
+    /// errors or when `path_version` does not name a compatible declared path.
+    pub fn network_route_fault_targets_with_path(
+        &self,
+        source: &str,
+        destination: &str,
+        virtual_nanos: u64,
+        path_version: Option<&FaultObjectId>,
+    ) -> Result<Vec<WorldNetworkRouteFaultTarget>, WorldFaultTopologyError> {
         if self.network_interfaces.is_empty() && self.network_segments.is_empty() {
             return Ok(Vec::new());
         }
@@ -700,30 +803,35 @@ impl WorldFaultTopology {
             .iter()
             .map(|interface| (&interface.id, &interface.endpoint))
             .collect::<BTreeMap<_, _>>();
-        let matching = self
-            .network_segments
-            .iter()
-            .filter_map(|segment| {
-                let endpoint_a = interfaces.get(&segment.interface_a)?;
-                let endpoint_b = interfaces.get(&segment.interface_b)?;
-                ((endpoint_a.as_str() == source && endpoint_b.as_str() == destination)
-                    || (endpoint_a.as_str() == destination && endpoint_b.as_str() == source))
-                    .then_some((segment, endpoint_a.as_str() == source))
-            })
-            .collect::<Vec<_>>();
-        let [(segment, source_is_a)] = matching.as_slice() else {
-            return Err(invalid("network route segment"));
+        let path_matches_endpoints = |path: &WorldNetworkPath| {
+            let Ok((entry, exit)) = network_path_endpoint_interfaces(self, path) else {
+                return false;
+            };
+            interfaces
+                .get(entry)
+                .is_some_and(|owner| owner.as_str() == source)
+                && interfaces
+                    .get(exit)
+                    .is_some_and(|owner| owner.as_str() == destination)
         };
-        let direction = if *source_is_a {
-            FaultDirection::AToB
-        } else {
-            FaultDirection::BToA
+        let selected_path = match path_version {
+            Some(path_version) => self
+                .network_paths
+                .iter()
+                .find(|path| {
+                    path.id.as_str() == path_version.as_str() && path_matches_endpoints(path)
+                })
+                .ok_or_else(|| invalid("network route path override"))?,
+            None => self
+                .network_paths
+                .iter()
+                .filter(|path| path_matches_endpoints(path))
+                .min_by(|left, right| left.id.cmp(&right.id))
+                .ok_or_else(|| invalid("network route path"))?,
         };
-        let (source_interface, destination_interface) = if *source_is_a {
-            (&segment.interface_a, &segment.interface_b)
-        } else {
-            (&segment.interface_b, &segment.interface_a)
-        };
+        let (source_interface, destination_interface) =
+            network_path_endpoint_interfaces(self, selected_path)?;
+        let direction = selected_path.direction;
         let source_endpoint = fault_object_id_from_signal(
             interfaces
                 .get(source_interface)
@@ -734,76 +842,70 @@ impl WorldFaultTopology {
                 .get(destination_interface)
                 .ok_or_else(|| invalid("network route destination interface"))?,
         )?;
-        let mut route = Vec::new();
-        route.push(WorldNetworkRouteFaultTarget {
+        let mut route = vec![WorldNetworkRouteFaultTarget {
             target: ResolvedFaultTarget::NetworkInterface {
                 endpoint: source_endpoint.clone(),
                 interface: fault_object_id_from_signal(source_interface)?,
             },
             operation: FaultOperation::NetworkTransmit,
             direction: FaultDirection::Egress,
-        });
-        let selected_path = self
-            .network_paths
-            .iter()
-            .filter(|path| direct_path_matches(path, &segment.id, direction))
-            .min_by(|left, right| left.id.cmp(&right.id));
-        if let Some(path) = selected_path {
-            route.push(WorldNetworkRouteFaultTarget {
-                target: ResolvedFaultTarget::NetworkPath {
-                    path_version: fault_object_id_from_signal(&path.id)?,
-                    direction,
-                },
-                operation: FaultOperation::NetworkTraverse,
+        }];
+        route.push(WorldNetworkRouteFaultTarget {
+            target: ResolvedFaultTarget::NetworkPath {
+                path_version: fault_object_id_from_signal(&selected_path.id)?,
                 direction,
-            });
-            for hop in &path.hops {
-                match hop {
-                    WorldNetworkPathHop::Segment { segment, direction } => {
-                        push_network_segment_route_stages(self, &mut route, segment, *direction)?;
-                    }
-                    WorldNetworkPathHop::Forwarder { forwarder } => {
-                        route.push(WorldNetworkRouteFaultTarget {
-                            target: ResolvedFaultTarget::NetworkForwarder {
-                                forwarder: fault_object_id_from_signal(forwarder)?,
-                            },
-                            operation: FaultOperation::NetworkLookup,
-                            direction,
-                        });
-                    }
-                    WorldNetworkPathHop::Queue { queue } => {
-                        let queue = self
-                            .network_queues
-                            .iter()
-                            .find(|candidate| &candidate.id == queue)
-                            .ok_or_else(|| invalid("selected network path queue"))?;
-                        route.push(WorldNetworkRouteFaultTarget {
-                            target: ResolvedFaultTarget::NetworkQueue {
-                                owner: fault_object_id_from_signal(&queue.owner)?,
-                                queue: fault_object_id_from_signal(&queue.id)?,
-                            },
-                            operation: FaultOperation::NetworkEnqueue,
-                            direction,
-                        });
-                    }
+            },
+            operation: FaultOperation::NetworkTraverse,
+            direction,
+        });
+        let mut selected_segments = BTreeSet::new();
+        for hop in &selected_path.hops {
+            match hop {
+                WorldNetworkPathHop::Segment {
+                    segment,
+                    direction: segment_direction,
+                } => {
+                    selected_segments.insert(segment);
+                    push_network_segment_route_stages(
+                        self,
+                        &mut route,
+                        segment,
+                        *segment_direction,
+                    )?;
                 }
-            }
-        } else {
-            push_network_segment_route_stages(self, &mut route, &segment.id, direction)?;
-            for forwarder in &segment.forwarders {
-                route.push(WorldNetworkRouteFaultTarget {
-                    target: ResolvedFaultTarget::NetworkForwarder {
-                        forwarder: fault_object_id_from_signal(forwarder)?,
-                    },
-                    operation: FaultOperation::NetworkLookup,
-                    direction,
-                });
+                WorldNetworkPathHop::Forwarder { forwarder } => {
+                    route.push(WorldNetworkRouteFaultTarget {
+                        target: ResolvedFaultTarget::NetworkForwarder {
+                            forwarder: fault_object_id_from_signal(forwarder)?,
+                        },
+                        operation: FaultOperation::NetworkLookup,
+                        direction,
+                    });
+                }
+                WorldNetworkPathHop::Queue { queue } => {
+                    let queue = self
+                        .network_queues
+                        .iter()
+                        .find(|candidate| &candidate.id == queue)
+                        .ok_or_else(|| invalid("selected network path queue"))?;
+                    route.push(WorldNetworkRouteFaultTarget {
+                        target: ResolvedFaultTarget::NetworkQueue {
+                            owner: fault_object_id_from_signal(&queue.owner)?,
+                            queue: fault_object_id_from_signal(&queue.id)?,
+                        },
+                        operation: FaultOperation::NetworkEnqueue,
+                        direction,
+                    });
+                }
             }
         }
         for attachment in &self.network_attachments {
             if (attachment.interface == *source_interface
                 || attachment.interface == *destination_interface)
-                && attachment.candidates.contains(&segment.id)
+                && attachment
+                    .candidates
+                    .iter()
+                    .any(|candidate| selected_segments.contains(candidate))
             {
                 let (endpoint, interface_direction) = if attachment.interface == *source_interface {
                     (source_endpoint.clone(), FaultDirection::Egress)
@@ -1226,6 +1328,8 @@ pub struct WorldNetworkSegment {
         serialize_with = "super::toml::serialize_u64_toml_number_or_string"
     )]
     pub minimum_latency_nanos: u64,
+    /// Positive maximum frame size before a dynamic MTU effect applies.
+    pub mtu_bytes: u32,
     /// Optional shared medium ID.
     pub medium: Option<SignalId>,
     /// Forwarding elements traversed by this segment.
@@ -1419,6 +1523,8 @@ pub enum WorldNetworkPathHop {
 pub struct WorldNetworkPath {
     /// Stable path ID.
     pub id: SignalId,
+    /// Direction of the complete authored endpoint-to-endpoint path.
+    pub direction: FaultDirection,
     /// Ordered path hops.
     pub hops: Vec<WorldNetworkPathHop>,
     /// Effective path MTU.
@@ -2233,18 +2339,115 @@ pub(super) fn require(condition: bool, field: &'static str) -> Result<(), WorldF
         Err(invalid(field))
     }
 }
-fn direct_path_matches(
-    path: &WorldNetworkPath,
-    segment: &SignalId,
-    direction: FaultDirection,
-) -> bool {
-    let mut segments = path.hops.iter().filter_map(|hop| match hop {
-        WorldNetworkPathHop::Segment { segment, direction } => Some((segment, *direction)),
-        WorldNetworkPathHop::Forwarder { .. } | WorldNetworkPathHop::Queue { .. } => None,
-    });
-    matches!(segments.next(), Some((candidate, candidate_direction))
-        if candidate == segment && candidate_direction == direction)
-        && segments.next().is_none()
+fn expand_direct_segment_paths(
+    topology: &mut WorldFaultTopology,
+    world: &World,
+) -> Result<(), WorldFaultTopologyError> {
+    let interface_owners = topology
+        .network_interfaces
+        .iter()
+        .map(|interface| (interface.id.clone(), interface.endpoint.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let world_pairs = world
+        .links()
+        .iter()
+        .map(|link| {
+            let (left, right) = link.endpoints();
+            canonical_name_pair(&left.name, &right.name)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut generated = Vec::new();
+    for segment in &topology.network_segments {
+        let Some(owner_a) = interface_owners.get(&segment.interface_a) else {
+            return Err(invalid("network direct path interface_a"));
+        };
+        let Some(owner_b) = interface_owners.get(&segment.interface_b) else {
+            return Err(invalid("network direct path interface_b"));
+        };
+        if !world_pairs.contains(&canonical_name_pair(owner_a.as_str(), owner_b.as_str())) {
+            continue;
+        }
+        for (hop_direction, source, destination) in [
+            (FaultDirection::AToB, owner_a, owner_b),
+            (FaultDirection::BToA, owner_b, owner_a),
+        ] {
+            let direction = if source < destination {
+                FaultDirection::AToB
+            } else {
+                FaultDirection::BToA
+            };
+            let already_declared = topology.network_paths.iter().any(|path| {
+                path.direction == direction
+                    && network_path_endpoint_interfaces(topology, path)
+                        .ok()
+                        .and_then(|(entry, exit)| {
+                            Some((interface_owners.get(entry)?, interface_owners.get(exit)?))
+                        })
+                        .is_some_and(|(entry, exit)| entry == source && exit == destination)
+            });
+            if already_declared {
+                continue;
+            }
+            let material = format!(
+                "segment={};direction={}",
+                segment.id,
+                hop_direction.as_str()
+            );
+            let digest = ContentHash::from_canonical_material(
+                "crucible.world-network-direct-path.v1",
+                &material,
+            );
+            let id = SignalId::parse(format!("direct-path-{}", digest.to_hex()))
+                .map_err(|_error| invalid("network direct path identity"))?;
+            generated.push(WorldNetworkPath {
+                id,
+                direction,
+                hops: vec![WorldNetworkPathHop::Segment {
+                    segment: segment.id.clone(),
+                    direction: hop_direction,
+                }],
+                mtu_bytes: segment.mtu_bytes,
+            });
+        }
+    }
+    topology.network_paths.extend(generated);
+    Ok(())
+}
+
+fn network_path_endpoint_interfaces<'a>(
+    topology: &'a WorldFaultTopology,
+    path: &'a WorldNetworkPath,
+) -> Result<(&'a SignalId, &'a SignalId), WorldFaultTopologyError> {
+    let mut first = None;
+    let mut last = None;
+    for hop in &path.hops {
+        let WorldNetworkPathHop::Segment { segment, direction } = hop else {
+            continue;
+        };
+        let segment = topology
+            .network_segments
+            .iter()
+            .find(|candidate| &candidate.id == segment)
+            .ok_or_else(|| invalid("network path endpoint segment"))?;
+        let (entry, exit) = match direction {
+            FaultDirection::AToB => (&segment.interface_a, &segment.interface_b),
+            FaultDirection::BToA => (&segment.interface_b, &segment.interface_a),
+            FaultDirection::Ingress
+            | FaultDirection::Egress
+            | FaultDirection::Read
+            | FaultDirection::Write => {
+                return Err(invalid("network path endpoint direction"));
+            }
+        };
+        first.get_or_insert(entry);
+        last = Some(exit);
+    }
+    let first = first.ok_or_else(|| invalid("network path endpoint segment"))?;
+    let last = last.ok_or_else(|| invalid("network path endpoint segment"))?;
+    if first == last {
+        return Err(invalid("network path endpoint direction"));
+    }
+    Ok((first, last))
 }
 fn push_network_segment_route_stages(
     topology: &WorldFaultTopology,
@@ -2427,10 +2630,31 @@ mod tests {
                 interface_a: id("if-a"),
                 interface_b: id("if-b"),
                 minimum_latency_nanos: 1,
+                mtu_bytes: 1500,
                 medium: None,
                 forwarders: Vec::new(),
                 fault_domains: Vec::new(),
             }],
+            network_paths: vec![
+                WorldNetworkPath {
+                    id: id("path-ab"),
+                    direction: FaultDirection::AToB,
+                    hops: vec![WorldNetworkPathHop::Segment {
+                        segment: id("segment-ab"),
+                        direction: FaultDirection::AToB,
+                    }],
+                    mtu_bytes: 1500,
+                },
+                WorldNetworkPath {
+                    id: id("path-ba"),
+                    direction: FaultDirection::BToA,
+                    hops: vec![WorldNetworkPathHop::Segment {
+                        segment: id("segment-ab"),
+                        direction: FaultDirection::BToA,
+                    }],
+                    mtu_bytes: 1500,
+                },
+            ],
             ..WorldFaultTopology::default()
         }
     }
@@ -2441,7 +2665,7 @@ mod tests {
         let forward = topology
             .network_route_fault_targets("vm-a", "vm-b", 0)
             .unwrap_or_else(|error| panic!("forward route should resolve: {error}"));
-        assert_eq!(forward.len(), 3);
+        assert_eq!(forward.len(), 4);
         assert!(matches!(
             &forward[0].target,
             ResolvedFaultTarget::NetworkInterface { endpoint, interface }
@@ -2449,13 +2673,13 @@ mod tests {
         ));
         assert_eq!(forward[0].direction, FaultDirection::Egress);
         assert!(matches!(
-            &forward[1].target,
+            &forward[2].target,
             ResolvedFaultTarget::NetworkSegment { segment, direction }
                 if segment.as_str() == "segment-ab" && *direction == FaultDirection::AToB
         ));
-        assert_eq!(forward[2].direction, FaultDirection::Ingress);
+        assert_eq!(forward[3].direction, FaultDirection::Ingress);
         assert_eq!(
-            forward[1].phases(),
+            forward[2].phases(),
             &[
                 FaultPhase::Admit,
                 FaultPhase::Queue,
@@ -2468,22 +2692,22 @@ mod tests {
             .network_route_fault_targets("vm-b", "vm-a", 0)
             .unwrap_or_else(|error| panic!("reverse route should resolve: {error}"));
         assert!(matches!(
-            &reverse[1].target,
+            &reverse[2].target,
             ResolvedFaultTarget::NetworkSegment { direction, .. }
                 if *direction == FaultDirection::BToA
         ));
     }
 
     #[test]
-    fn route_fault_targets_fail_closed_on_ambiguous_segments() {
-        let mut topology = two_endpoint_topology();
-        let mut duplicate = topology.network_segments[0].clone();
-        duplicate.id = id("segment-ab-second");
-        topology.network_segments.push(duplicate);
-
+    fn route_fault_targets_require_a_declared_path() {
+        let topology = two_endpoint_topology();
+        let missing = FaultObjectId::parse("missing-path")
+            .unwrap_or_else(|error| panic!("test path should be valid: {error}"));
         assert!(matches!(
-            topology.network_route_fault_targets("vm-a", "vm-b", 0),
-            Err(WorldFaultTopologyError::Invalid("network route segment"))
+            topology.network_route_fault_targets_with_path("vm-a", "vm-b", 0, Some(&missing)),
+            Err(WorldFaultTopologyError::Invalid(
+                "network route path override"
+            ))
         ));
         assert!(
             WorldFaultTopology::default()
@@ -2510,6 +2734,7 @@ mod tests {
         topology.network_paths.extend([
             WorldNetworkPath {
                 id: id("path-a"),
+                direction: FaultDirection::AToB,
                 hops: vec![
                     WorldNetworkPathHop::Segment {
                         segment: id("segment-ab"),
@@ -2523,6 +2748,7 @@ mod tests {
             },
             WorldNetworkPath {
                 id: id("path-z"),
+                direction: FaultDirection::AToB,
                 hops: vec![WorldNetworkPathHop::Segment {
                     segment: id("segment-ab"),
                     direction: FaultDirection::AToB,
