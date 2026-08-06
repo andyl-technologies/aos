@@ -13,8 +13,9 @@ fn contributor_authorization_policy_is_explicit_and_fail_closed() -> Result<(), 
         .map(Path::to_path_buf)
         .ok_or("crates/ must be inside the repository")?;
     let contributing = fs::read_to_string(root.join("CONTRIBUTING.md"))?;
-    let agreement = fs::read_to_string(root.join("CONTRIBUTOR_LICENSE_AGREEMENT.md"))?;
-    let licensing = fs::read_to_string(root.join("LICENSING.md"))?;
+    let agreement =
+        fs::read_to_string(root.join("docs/legal/external-contributor-license-agreement.md"))?;
+    let licensing = fs::read_to_string(root.join("docs/legal/licensing.md"))?;
     let agents = fs::read_to_string(root.join("AGENTS.md"))?;
     let maintainer = fs::read_to_string(root.join("docs/maintainers/contributor-licensing.md"))?;
     let maintainer_index = fs::read_to_string(root.join("docs/maintainers/README.md"))?;
@@ -38,7 +39,10 @@ fn contributor_authorization_policy_is_explicit_and_fail_closed() -> Result<(), 
     }
 
     for (name, document) in [
-        ("CONTRIBUTOR_LICENSE_AGREEMENT.md", agreement.as_str()),
+        (
+            "docs/legal/external-contributor-license-agreement.md",
+            agreement.as_str(),
+        ),
         ("CONTRIBUTING.md", contributing.as_str()),
         (
             "docs/maintainers/contributor-licensing.md",
@@ -84,7 +88,7 @@ fn contributor_authorization_policy_is_explicit_and_fail_closed() -> Result<(), 
             ],
         ),
         (
-            "LICENSING.md",
+            "docs/legal/licensing.md",
             licensing.as_str(),
             [
                 "External AOS",
@@ -119,8 +123,11 @@ fn contributor_authorization_policy_is_explicit_and_fail_closed() -> Result<(), 
     let public_policy_documents = [
         ("AGENTS.md", agents.as_str()),
         ("CONTRIBUTING.md", contributing.as_str()),
-        ("CONTRIBUTOR_LICENSE_AGREEMENT.md", agreement.as_str()),
-        ("LICENSING.md", licensing.as_str()),
+        (
+            "docs/legal/external-contributor-license-agreement.md",
+            agreement.as_str(),
+        ),
+        ("docs/legal/licensing.md", licensing.as_str()),
         ("README.md", readme.as_str()),
         ("docs/maintainers/README.md", maintainer_index.as_str()),
         (
