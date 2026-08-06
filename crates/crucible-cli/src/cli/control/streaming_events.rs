@@ -18,7 +18,7 @@ pub(crate) async fn observe_next_event(
             }
             *streamed_event_cursor = frame.next_cursor.next_sequence;
             streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
-            streamed_events.push(frame.event.payload.kind);
+            streamed_events.push(streaming_event_summary(&frame));
             Ok(false)
         }
         Ok(Ok(None)) => Ok(true),
@@ -62,9 +62,61 @@ pub(crate) async fn drain_terminal_event_log(
         }
         *streamed_event_cursor = frame.next_cursor.next_sequence;
         streamed_event_frames.push(canonical_streaming_event_frame_bytes(&frame));
-        streamed_events.push(frame.event.payload.kind);
+        streamed_events.push(streaming_event_summary(&frame));
     }
     Ok(())
+}
+
+fn streaming_event_summary(frame: &crucible_api::StreamingEventFrame) -> String {
+    use crucible_api::OpenSetAttributeValue;
+
+    const DIAGNOSTIC_ATTRIBUTES: &[&str] = &[
+        "id",
+        "new_state",
+        "message",
+        "reason",
+        "action",
+        "condition",
+        "event",
+        "node",
+        "state",
+    ];
+
+    let mut summary = frame.event.payload.kind.clone();
+    for name in DIAGNOSTIC_ATTRIBUTES {
+        let Some(value) = frame.event.payload.attribute(name) else {
+            continue;
+        };
+        let value = match value {
+            OpenSetAttributeValue::Bool(value) => value.to_string(),
+            OpenSetAttributeValue::Int(value) => value.to_string(),
+            OpenSetAttributeValue::Uint(value) => value.to_string(),
+            OpenSetAttributeValue::Uint128(value) => value.to_string(),
+            OpenSetAttributeValue::Float64Bits(value) => format!("bits:{value}"),
+            OpenSetAttributeValue::String(value) => escape_event_summary_field(value),
+            OpenSetAttributeValue::Bytes(value) => format!("<{} bytes>", value.len()),
+        };
+        summary.push(' ');
+        summary.push_str(name);
+        summary.push('=');
+        summary.push_str(&value);
+    }
+    if let Some(OpenSetAttributeValue::Bytes(bytes)) = frame.event.payload.attribute("bytes") {
+        summary.push_str(" bytes_len=");
+        summary.push_str(&bytes.len().to_string());
+        summary.push_str(" bytes_content=redacted");
+    }
+    summary
+}
+
+fn escape_event_summary_field(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+        .replace(' ', "\\s")
+        .replace('=', "\\=")
 }
 
 pub(crate) fn coverage_event_from_streaming_frame(
@@ -120,6 +172,92 @@ pub(crate) fn coverage_event_from_streaming_frame(
             "coverage event {} has unsupported coverage kind `{kind}`",
             frame.event.sequence
         ))),
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    #[test]
+    fn assertion_summary_preserves_agent_diagnostic_fields() {
+        let frame = crucible_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_api::EventLogCursor::new(3),
+            next_cursor: crucible_api::EventLogCursor::new(4),
+            event: crucible_api::OpenSetEventEnvelope {
+                sequence: 3,
+                at: crucible_api::OpenSetEventTime {
+                    virtual_time_ticks: 40,
+                    icount_retired: 40,
+                    icount_node: None,
+                },
+                source: crucible_api::OpenSetEventSource::Engine,
+                level: crucible::EventLevel::Info,
+                observational: false,
+                payload: crucible_api::OpenSetPayload::new(
+                    "crucible.event.assertion_state_changed",
+                    [
+                        (
+                            String::from("id"),
+                            crucible_api::OpenSetAttributeValue::String(String::from(
+                                "suspect-must-crash",
+                            )),
+                        ),
+                        (
+                            String::from("new_state"),
+                            crucible_api::OpenSetAttributeValue::String(String::from("Violated")),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+
+        assert_eq!(
+            streaming_event_summary(&frame),
+            "crucible.event.assertion_state_changed id=suspect-must-crash new_state=Violated"
+        );
+    }
+
+    #[test]
+    fn console_summary_redacts_guest_bytes() {
+        let secret = b"token=super-secret".to_vec();
+        let frame = crucible_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_api::EventLogCursor::new(1),
+            next_cursor: crucible_api::EventLogCursor::new(2),
+            event: crucible_api::OpenSetEventEnvelope {
+                sequence: 1,
+                at: crucible_api::OpenSetEventTime {
+                    virtual_time_ticks: 1,
+                    icount_retired: 1,
+                    icount_node: Some(String::from("suspect")),
+                },
+                source: crucible_api::OpenSetEventSource::Node {
+                    node: String::from("suspect"),
+                },
+                level: crucible::EventLevel::Info,
+                observational: true,
+                payload: crucible_api::OpenSetPayload::new(
+                    "crucible.event.console_output",
+                    [(
+                        String::from("bytes"),
+                        crucible_api::OpenSetAttributeValue::Bytes(secret),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+
+        let summary = streaming_event_summary(&frame);
+        assert_eq!(
+            summary,
+            "crucible.event.console_output bytes_len=18 bytes_content=redacted"
+        );
+        assert!(!summary.contains("super-secret"));
     }
 }
 

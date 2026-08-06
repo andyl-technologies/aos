@@ -136,6 +136,37 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     }
     if let Some(backend_plan) = plan_backend_selection(cli)? {
         execute_backend_selection_plan(&backend_plan, cli.quiet, &mut NullBackendRouteRecorder)?;
+        if let Commands::Debug(args) = &cli.command {
+            let plan = plan_debug_invocation(cli, args)?;
+            if cli.daemon.is_some() {
+                return run_remote_debug_relay(cli, &plan);
+            }
+            let backend = require_selftest_qemu_backend(cli)?;
+            let lines = run_local_qemu_debug_workflow(&backend, &plan)?;
+            let mut outcome = execute_backend_routed_command(
+                &thin_plan,
+                &backend_plan,
+                ergonomics_plan.as_ref(),
+                None,
+                None,
+                None,
+                &mut NullBackendCommandRunner,
+            )?;
+            for line in &lines {
+                let (kind, summary) = line.split_once('\t').unwrap_or(("debug", line));
+                outcome.canonical_log.push(CanonicalLogEntry {
+                    sequence: outcome.canonical_log.len() as u64,
+                    virtual_time_ticks: outcome.canonical_log.len() as u64,
+                    node: String::from("debugger"),
+                    kind: kind.to_string(),
+                    summary: summary.to_string(),
+                });
+            }
+            outcome.stdout.extend(lines);
+            outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
+            emit_backend_command_output(cli, &outcome)?;
+            return Ok(());
+        }
         if let Some(resume_plan) = &resume_plan {
             if backend_plan.target == BackendExecutionTarget::Local {
                 let outcome = match backend_plan.resolved_backend.as_ref() {
@@ -388,6 +419,7 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         | Commands::Fork(_)
         | Commands::Search(_)
         | Commands::Fuzz(_)
+        | Commands::Debug(_)
         | Commands::Serve(_) => Ok(()),
         Commands::Completions(args) => {
             write_completions(args.shell, &mut io::stdout());
@@ -419,17 +451,6 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 if let Some(diff) = &report.compare {
                     println!("{}", diff.content_diff());
                 }
-            }
-            Ok(())
-        }
-        Commands::Debug(args) => {
-            let plan = plan_debug_invocation(cli, args)?;
-            if cli.daemon.is_some() {
-                return run_remote_debug_relay(cli, &plan);
-            }
-            let backend = require_selftest_qemu_backend(cli)?;
-            for line in run_local_qemu_debug_workflow(&backend, &plan)? {
-                println!("{line}");
             }
             Ok(())
         }

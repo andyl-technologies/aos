@@ -58,34 +58,58 @@ pub(crate) fn run_local_qemu_debug_workflow_with_probe(
     plan: &DebugInvocationPlan,
     probe: &mut impl LiveQemuProbeRunner,
 ) -> Result<Vec<String>, CliError> {
+    let artifact_context = artifact_debug_context(plan)?;
     let evidence = probe.run_probe(backend)?;
     validate_live_qemu_probe_evidence(backend, &evidence)?;
     let target = match &plan.target {
-        DebugPlanTarget::Artifact(path) => format!("artifact:{}", path.display()),
+        DebugPlanTarget::Artifact(path) => {
+            format!(
+                "artifact:{}",
+                escape_debug_plan_field(&path.display().to_string())
+            )
+        }
         DebugPlanTarget::Savepoint(hash) => {
             format!("savepoint:{}", format_content_hash_ref(*hash))
         }
-        DebugPlanTarget::Session(address) => format!("session:{address}"),
+        DebugPlanTarget::Session(address) => {
+            format!("session:{}", escape_debug_plan_field(address))
+        }
     };
     let coordinate = match &plan.coordinate {
         DebugPlanCoordinate::Current => String::from("current"),
-        DebugPlanCoordinate::At(coordinate) => format!("{coordinate:?}"),
+        DebugPlanCoordinate::At(coordinate) => debug_coordinate_label(coordinate),
         DebugPlanCoordinate::AtEvent(sequence) => format!("event:{sequence}"),
-        DebugPlanCoordinate::AtFailure => String::from("failure"),
+        DebugPlanCoordinate::AtFailure => {
+            let context = artifact_context.as_ref().ok_or_else(|| {
+                artifact_error("failure coordinate requires a reproduction artifact")
+            })?;
+            format!(
+                "failure:vtime:{}:quanta:{}",
+                context.frontier_ticks, context.quanta
+            )
+        }
         DebugPlanCoordinate::AtCheckpoint(hash) => {
             format!("checkpoint:{}", format_content_hash_ref(*hash))
         }
     };
     let requested_operation = match &plan.verb {
-        DebugInteractiveVerbPlan::AttachGdb => "attach-gdb",
-        DebugInteractiveVerbPlan::ForkDebug => "fork-debug",
-        DebugInteractiveVerbPlan::Goto(_) => "goto",
-        DebugInteractiveVerbPlan::ReverseStep { .. } => "reverse-step",
-        DebugInteractiveVerbPlan::ReverseContinue { .. } => "reverse-continue",
-        DebugInteractiveVerbPlan::Exec { .. } => "exec",
-        DebugInteractiveVerbPlan::Pty { .. } => "pty",
-        DebugInteractiveVerbPlan::Ssh => "ssh",
+        DebugInteractiveVerbPlan::AttachGdb => String::from("attach-gdb"),
+        DebugInteractiveVerbPlan::ForkDebug => String::from("fork-debug"),
+        DebugInteractiveVerbPlan::Goto(coordinate) => {
+            format!("goto:{}", debug_coordinate_label(coordinate))
+        }
+        DebugInteractiveVerbPlan::ReverseStep { grain } => {
+            format!("reverse-step:{}", reverse_step_grain_label(*grain))
+        }
+        DebugInteractiveVerbPlan::ReverseContinue { condition } => {
+            format!("reverse-continue:{}", escape_debug_plan_field(condition))
+        }
+        DebugInteractiveVerbPlan::Exec { .. } => String::from("exec"),
+        DebugInteractiveVerbPlan::Pty { .. } => String::from("pty"),
+        DebugInteractiveVerbPlan::Ssh => String::from("ssh"),
     };
+    let node = escape_debug_plan_field(plan.node.as_deref().unwrap_or("auto"));
+    let gdb_listen = escape_debug_plan_field(&plan.gdb_listen);
     Ok(vec![
         format!(
             "qemu-live\toperation=debug-admission\tqemu_build_id={}\tplugin_abi={}\ticount={}\tfingerprint={}",
@@ -96,13 +120,90 @@ pub(crate) fn run_local_qemu_debug_workflow_with_probe(
         ),
         format!(
             "debug-plan\texecution=planned-only\trequested_operation={requested_operation}\ttarget={target}\tcoordinate={coordinate}\tnode={}\tgdb_listen={}\tread_only={}\tallow_mutate={}\tdelegated_session_commands={}\traw_gdb_single_step=false",
-            plan.node.as_deref().unwrap_or("first-vm"),
-            plan.gdb_listen,
+            node,
+            gdb_listen,
             plan.read_only,
             plan.allow_mutate,
             plan.session_commands.len(),
         ),
     ])
+}
+
+struct ArtifactFailureContext {
+    frontier_ticks: u64,
+    quanta: u64,
+}
+
+fn artifact_debug_context(
+    plan: &DebugInvocationPlan,
+) -> Result<Option<ArtifactFailureContext>, CliError> {
+    let DebugPlanTarget::Artifact(path) = &plan.target else {
+        return Ok(None);
+    };
+    let bytes = std::fs::read(path).map_err(|error| {
+        artifact_error(format!(
+            "debug artifact `{}` could not be read: {error}",
+            path.display()
+        ))
+    })?;
+    let artifact = decode_reproduction_artifact(&bytes)?;
+    if !matches!(plan.coordinate, DebugPlanCoordinate::AtFailure) {
+        return Ok(None);
+    }
+    let component = artifact
+        .components
+        .iter()
+        .find(|component| component.media_type == LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE)
+        .ok_or_else(|| artifact_error("debug artifact has no live-QEMU replay contract"))?;
+    let payload = artifact
+        .payloads
+        .iter()
+        .find(|payload| payload.digest == component.digest)
+        .ok_or_else(|| artifact_error("debug artifact has no embedded live-QEMU contract"))?;
+    let contract = LiveQemuReplayContract::decode(&payload.bytes)?;
+    Ok(Some(ArtifactFailureContext {
+        frontier_ticks: contract.final_frontier_ticks,
+        quanta: contract.final_quanta,
+    }))
+}
+
+fn reverse_step_grain_label(grain: crucible::DebugReverseStepGrain) -> &'static str {
+    match grain {
+        crucible::DebugReverseStepGrain::Instruction => "instruction",
+        crucible::DebugReverseStepGrain::Quantum => "quantum",
+        crucible::DebugReverseStepGrain::Event => "event",
+        crucible::DebugReverseStepGrain::Assertion => "assertion",
+        crucible::DebugReverseStepGrain::Timer => "timer",
+    }
+}
+
+fn debug_coordinate_label(coordinate: &crucible::DebugCoordinate) -> String {
+    match coordinate {
+        crucible::DebugCoordinate::Configuration(configuration) => {
+            format!(
+                "configuration:{}",
+                format_content_hash_ref(configuration.id())
+            )
+        }
+        crucible::DebugCoordinate::Checkpoint(checkpoint) => {
+            format!("checkpoint:{}", format_content_hash_ref(*checkpoint))
+        }
+        crucible::DebugCoordinate::EventSequence(sequence) => format!("event:{sequence}"),
+        crucible::DebugCoordinate::VirtualTime(at) => format!("vtime:{}", at.ticks),
+        crucible::DebugCoordinate::NodeIcount { node, icount } => format!(
+            "icount:{}:{}",
+            escape_debug_plan_field(&node.name),
+            icount.retired
+        ),
+    }
+}
+
+fn escape_debug_plan_field(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
 }
 
 /// Boots one bounded live QEMU/plugin probe and returns its observed proof.
