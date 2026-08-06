@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use super::*;
 
@@ -239,6 +240,175 @@ impl<'a> FaultExecutionRuntime<'a> {
     #[must_use]
     pub fn bindings(&self) -> &[FaultBinding] {
         &self.bindings
+    }
+}
+
+/// An owned, cloneable fault continuation suitable for scheduler state.
+///
+/// The evaluator itself borrows its immutable program and artifact provider.
+/// This owner avoids a self-referential scheduler field by restoring that
+/// evaluator from the authenticated checkpoint for each exact boundary, then
+/// replacing the checkpoint only after the complete adapter transaction commits.
+#[derive(Clone)]
+pub struct OwnedFaultExecutionRuntime {
+    plan: FaultSignalPlan,
+    artifacts: Arc<dyn SignalArtifactProvider>,
+    scenario_seed: ContentHash,
+    manifests: FaultAdapterManifests,
+    checkpoint: FaultRuntimeCheckpoint,
+}
+
+impl OwnedFaultExecutionRuntime {
+    /// Creates an owned continuation from one admitted nonempty plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when the plan, evaluator state, or live
+    /// adapter capabilities cannot be admitted.
+    pub fn new(
+        plan: FaultSignalPlan,
+        artifacts: Arc<dyn SignalArtifactProvider>,
+        boundary: SignalBoundarySnapshot,
+        scenario_seed: ContentHash,
+        manifests: FaultAdapterManifests,
+    ) -> Result<Self, FaultExecutionError> {
+        let runtime = FaultExecutionRuntime::new(
+            &plan,
+            artifacts.as_ref(),
+            boundary,
+            scenario_seed,
+            manifests.clone(),
+        )?;
+        let checkpoint = runtime.checkpoint()?;
+        drop(runtime);
+        Ok(Self {
+            plan,
+            artifacts,
+            scenario_seed,
+            manifests,
+            checkpoint,
+        })
+    }
+
+    /// Restores an owned continuation from authenticated runtime state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when the checkpoint does not match the
+    /// plan, seed, evaluator, or admitted adapter capabilities.
+    pub fn restore(
+        plan: FaultSignalPlan,
+        artifacts: Arc<dyn SignalArtifactProvider>,
+        scenario_seed: ContentHash,
+        manifests: FaultAdapterManifests,
+        checkpoint: FaultRuntimeCheckpoint,
+    ) -> Result<Self, FaultExecutionError> {
+        let runtime = FaultExecutionRuntime::restore(
+            &plan,
+            artifacts.as_ref(),
+            scenario_seed,
+            manifests.clone(),
+            &checkpoint,
+        )?;
+        drop(runtime);
+        Ok(Self {
+            plan,
+            artifacts,
+            scenario_seed,
+            manifests,
+            checkpoint,
+        })
+    }
+
+    /// Evaluates and commits every due boundary binding through a live backend.
+    ///
+    /// The stored continuation changes only after both the canonical adapter
+    /// ledger and `backend` have committed the same ordered action batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] for restore, evaluation, adapter, or
+    /// checkpoint failure. A failure leaves the prior continuation intact.
+    pub fn evaluate_boundary_with_backend<B>(
+        &mut self,
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+        backend: &mut B,
+    ) -> Result<BindingEvaluation, FaultExecutionError>
+    where
+        B: FaultActionSink,
+    {
+        let mut runtime = FaultExecutionRuntime::restore(
+            &self.plan,
+            self.artifacts.as_ref(),
+            self.scenario_seed,
+            self.manifests.clone(),
+            &self.checkpoint,
+        )?;
+        let evaluation = runtime.evaluate_boundary_with_backend(
+            coordinate,
+            same_coordinate_sequence,
+            backend,
+        )?;
+        let checkpoint = runtime.checkpoint()?;
+        self.checkpoint = checkpoint;
+        Ok(evaluation)
+    }
+
+    /// Evaluates and commits one exact opportunity through a live backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] under the same transactional rules as
+    /// [`Self::evaluate_boundary_with_backend`].
+    pub fn evaluate_opportunity_with_backend<B>(
+        &mut self,
+        opportunity: &FaultOpportunity,
+        same_coordinate_sequence: u64,
+        backend: &mut B,
+    ) -> Result<BindingEvaluation, FaultExecutionError>
+    where
+        B: FaultActionSink,
+    {
+        let mut runtime = FaultExecutionRuntime::restore(
+            &self.plan,
+            self.artifacts.as_ref(),
+            self.scenario_seed,
+            self.manifests.clone(),
+            &self.checkpoint,
+        )?;
+        let evaluation = runtime.evaluate_opportunity_with_backend(
+            opportunity,
+            same_coordinate_sequence,
+            backend,
+        )?;
+        let checkpoint = runtime.checkpoint()?;
+        self.checkpoint = checkpoint;
+        Ok(evaluation)
+    }
+
+    /// Returns the current authenticated continuation.
+    #[must_use]
+    pub const fn checkpoint(&self) -> &FaultRuntimeCheckpoint {
+        &self.checkpoint
+    }
+
+    /// Returns the admitted signal and binding plan.
+    #[must_use]
+    pub const fn plan(&self) -> &FaultSignalPlan {
+        &self.plan
+    }
+}
+
+impl fmt::Debug for OwnedFaultExecutionRuntime {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OwnedFaultExecutionRuntime")
+            .field("plan", &self.plan.id())
+            .field("scenario_seed", &self.scenario_seed)
+            .field("manifests", &self.manifests)
+            .field("checkpoint", &self.checkpoint)
+            .finish_non_exhaustive()
     }
 }
 

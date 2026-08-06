@@ -436,7 +436,7 @@ fn world_resolves_fault_domains_and_dynamic_paths_without_authored_caches() {
 }
 
 #[test]
-fn world_fault_topology_round_trips_through_only_v3_codecs() {
+fn world_fault_topology_round_trips_through_only_v4_codecs() {
     let world = test_world();
     let toml = world
         .to_canonical_toml()
@@ -448,14 +448,14 @@ fn world_fault_topology_round_trips_through_only_v3_codecs() {
     assert!(toml.contains("[[fault_domain]]"));
 
     let binary = world.to_compact_binary();
-    assert!(binary.starts_with(b"crucible.world.v3\0"));
+    assert!(binary.starts_with(b"crucible.world.v4\0"));
     assert_eq!(
         World::from_compact_binary(&binary)
             .unwrap_or_else(|error| panic!("decode world binary: {error}")),
         world
     );
     let mut old_magic = binary.clone();
-    old_magic[..b"crucible.world.v2\0".len()].copy_from_slice(b"crucible.world.v2\0");
+    old_magic[..b"crucible.world.v3\0".len()].copy_from_slice(b"crucible.world.v3\0");
     assert!(World::from_compact_binary(&old_magic).is_err());
 }
 
@@ -625,9 +625,9 @@ fn plan_binary_round_trips_a_complete_binding_contract() {
         .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
 
     assert_eq!(decoded, plan);
-    assert!(encoded.starts_with(b"crucible.plan.v3\0"));
+    assert!(encoded.starts_with(b"crucible.plan.v4\0"));
     let mut old_magic = encoded.clone();
-    old_magic[..b"crucible.plan.v3\0".len()].copy_from_slice(b"crucible.plan.v2\0");
+    old_magic[..b"crucible.plan.v3\0".len()].copy_from_slice(b"crucible.plan.v3\0");
     assert!(Plan::from_compact_binary_for_world(&test_world(), &old_magic,).is_err());
 }
 

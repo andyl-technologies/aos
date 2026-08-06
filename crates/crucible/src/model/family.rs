@@ -1125,7 +1125,7 @@ impl ReproductionArtifact {
     /// Returns [`EngineError::ScenarioSerialization`] for malformed artifact,
     /// scenario, or schedule bytes.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V3)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, REPRODUCTION_ARTIFACT_BINARY_MAGIC_V4)?;
         let scenario_bytes = reader.read_binary_blob_bounded(
             "reproduction-artifact.scenario",
             MAX_REPRODUCTION_SCENARIO_BLOB_BYTES,
