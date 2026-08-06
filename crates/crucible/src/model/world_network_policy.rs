@@ -313,6 +313,102 @@ pub enum NetworkPolicyOverflow {
     Timeout,
 }
 
+/// Header fields and modeled delay for one generated reverse-path response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicyResponseHeaders {
+    /// Optional source MAC; absence uses the rejected frame's destination MAC.
+    pub source_mac: Option<[u8; 6]>,
+    /// Optional IPv4 source; absence uses the rejected packet's destination.
+    pub source_ipv4: Option<[u8; 4]>,
+    /// Optional IPv6 source; absence uses the rejected packet's destination.
+    pub source_ipv6: Option<[u8; 16]>,
+    /// Positive IPv4 TTL or IPv6 hop limit.
+    pub hop_limit: u8,
+    /// Deterministic identification used by generated IPv4 packets.
+    pub ipv4_identification: u16,
+    /// Additional virtual delay before the response enters its reverse route.
+    pub delay_nanos: Option<PositiveU64>,
+}
+
+/// Closed protocol response generated for a modeled network rejection.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
+pub enum NetworkPolicyTypedResponseKind {
+    /// ICMPv4 Destination Unreachable, excluding Packet Too Big code 4.
+    Icmpv4DestinationUnreachable {
+        /// ICMP code in `0..=15`, other than 4.
+        code: u8,
+        /// Maximum request payload bytes quoted after its complete IPv4 header.
+        quote_payload_bytes: u16,
+    },
+    /// ICMPv4 Packet Too Big.
+    Icmpv4PacketTooBig {
+        /// Maximum request payload bytes quoted after its complete IPv4 header.
+        quote_payload_bytes: u16,
+        /// Next-hop IPv4 MTU placed in the ICMP header.
+        next_hop_mtu: u16,
+    },
+    /// ICMPv4 Time Exceeded.
+    Icmpv4TimeExceeded {
+        /// ICMP code, 0 for TTL or 1 for fragment reassembly.
+        code: u8,
+        /// Maximum request payload bytes quoted after its complete IPv4 header.
+        quote_payload_bytes: u16,
+    },
+    /// ICMPv6 Destination Unreachable.
+    Icmpv6DestinationUnreachable {
+        /// ICMPv6 code in `0..=7`.
+        code: u8,
+        /// Maximum request payload bytes quoted after its base IPv6 header.
+        quote_payload_bytes: u16,
+    },
+    /// ICMPv6 Packet Too Big.
+    Icmpv6PacketTooBig {
+        /// Maximum request payload bytes quoted after its base IPv6 header.
+        quote_payload_bytes: u16,
+        /// Next-hop IPv6 MTU, at least 1280 bytes.
+        next_hop_mtu: u32,
+    },
+    /// TCP reset for an unfragmented IPv4 or IPv6 TCP segment.
+    TcpReset,
+    /// Exact complete Ethernet response frame.
+    OpaqueEthernet {
+        /// Complete frame bytes bounded at world admission.
+        bytes: Vec<u8>,
+    },
+}
+
+/// Complete response artifact referenced by MTU, firewall, or queue effects.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicyTypedResponse {
+    /// Packet family and family-specific parameters.
+    pub response: NetworkPolicyTypedResponseKind,
+    /// Source addressing, IP header values, and virtual delay.
+    pub headers: NetworkPolicyResponseHeaders,
+}
+
+/// Disposition when no response variant matches the rejected frame protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPolicyUnmatchedResponse {
+    /// Suppresses the response while preserving the modeled forward rejection.
+    Suppress,
+    /// Fails the scheduler closed with a typed boundary error.
+    FailClosed,
+}
+
+/// Ordered dual-stack response alternatives with explicit unmatched behavior.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicyTypedResponseSet {
+    /// Nonempty alternatives evaluated in declaration order.
+    pub responses: Vec<NetworkPolicyTypedResponse>,
+    /// Disposition when every alternative reports a protocol mismatch.
+    pub unmatched: NetworkPolicyUnmatchedResponse,
+}
+
 /// Coarse artifact class used to validate effect references before execution.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NetworkPolicyArtifactClass {
@@ -340,6 +436,8 @@ pub enum NetworkPolicyArtifactClass {
     Association,
     /// Typed control result.
     ControlResult,
+    /// Generated reverse-path packet response.
+    TypedResponse,
     /// Overflow/expiry configuration.
     Overflow,
     /// Ordered intermittent-contact plan.
@@ -365,6 +463,7 @@ impl NetworkPolicyArtifactClass {
             Self::RfTransfer => "rf_transfer",
             Self::Association => "association",
             Self::ControlResult => "control_result",
+            Self::TypedResponse => "typed_response",
             Self::Overflow => "overflow",
             Self::ContactPlan => "contact_plan",
             Self::RecipientMembership => "recipient_membership",
@@ -430,6 +529,8 @@ pub enum NetworkPolicyArtifactKind {
         /// Canonical encoded result bytes.
         bytes: Vec<u8>,
     },
+    /// Generated reverse-path packet response.
+    TypedResponse(NetworkPolicyTypedResponseSet),
     /// Queue-overflow or expiry policy.
     Overflow {
         /// Overflow disposition.
@@ -466,6 +567,7 @@ impl NetworkPolicyArtifactKind {
             Self::RfTransfer(_) => NetworkPolicyArtifactClass::RfTransfer,
             Self::Association(_) => NetworkPolicyArtifactClass::Association,
             Self::ControlResult { .. } => NetworkPolicyArtifactClass::ControlResult,
+            Self::TypedResponse(_) => NetworkPolicyArtifactClass::TypedResponse,
             Self::Overflow { .. } => NetworkPolicyArtifactClass::Overflow,
             Self::ContactPlan { .. } => NetworkPolicyArtifactClass::ContactPlan,
             Self::RecipientMembership { .. } => NetworkPolicyArtifactClass::RecipientMembership,
@@ -559,6 +661,23 @@ impl WorldNetworkPolicyArtifact {
                 bytes.len() <= HARD_NETWORK_POLICY_BYTES,
                 "network policy bytes",
             ),
+            NetworkPolicyArtifactKind::TypedResponse(responses) => {
+                hard_policy_count(responses.responses.len(), "typed network responses")?;
+                require(!responses.responses.is_empty(), "typed network responses")?;
+                for (index, response) in responses.responses.iter().enumerate() {
+                    validate_typed_response(response)?;
+                    if matches!(
+                        response.response,
+                        NetworkPolicyTypedResponseKind::OpaqueEthernet { .. }
+                    ) {
+                        require(
+                            index + 1 == responses.responses.len(),
+                            "opaque network response ordering",
+                        )?;
+                    }
+                }
+                Ok(())
+            }
             NetworkPolicyArtifactKind::PacketSelector { matches } => {
                 hard_policy_count(matches.len(), "network packet selector")?;
                 require(!matches.is_empty(), "network packet selector")?;
@@ -693,6 +812,64 @@ impl WorldNetworkPolicyArtifact {
                     "network recipient membership order",
                 )
             }
+        }
+    }
+}
+
+fn validate_typed_response(
+    response: &NetworkPolicyTypedResponse,
+) -> Result<(), WorldFaultTopologyError> {
+    let headers = &response.headers;
+    match &response.response {
+        NetworkPolicyTypedResponseKind::Icmpv4DestinationUnreachable { code, .. } => {
+            require(headers.hop_limit > 0, "network response hop limit")?;
+            require(headers.source_ipv6.is_none(), "IPv4 response IPv6 source")?;
+            require(*code <= 15 && *code != 4, "ICMPv4 unreachable code")
+        }
+        NetworkPolicyTypedResponseKind::Icmpv4PacketTooBig { next_hop_mtu, .. } => {
+            require(headers.hop_limit > 0, "network response hop limit")?;
+            require(headers.source_ipv6.is_none(), "IPv4 response IPv6 source")?;
+            require(*next_hop_mtu >= 68, "ICMPv4 next-hop MTU")
+        }
+        NetworkPolicyTypedResponseKind::Icmpv4TimeExceeded { code, .. } => {
+            require(headers.hop_limit > 0, "network response hop limit")?;
+            require(headers.source_ipv6.is_none(), "IPv4 response IPv6 source")?;
+            require(*code <= 1, "ICMPv4 time-exceeded code")
+        }
+        NetworkPolicyTypedResponseKind::Icmpv6DestinationUnreachable { code, .. } => {
+            require(headers.hop_limit > 0, "network response hop limit")?;
+            require(headers.source_ipv4.is_none(), "IPv6 response IPv4 source")?;
+            require(
+                headers.ipv4_identification == 0,
+                "IPv6 response IPv4 identification",
+            )?;
+            require(*code <= 7, "ICMPv6 unreachable code")
+        }
+        NetworkPolicyTypedResponseKind::Icmpv6PacketTooBig { next_hop_mtu, .. } => {
+            require(headers.hop_limit > 0, "network response hop limit")?;
+            require(headers.source_ipv4.is_none(), "IPv6 response IPv4 source")?;
+            require(
+                headers.ipv4_identification == 0,
+                "IPv6 response IPv4 identification",
+            )?;
+            require(*next_hop_mtu >= 1_280, "ICMPv6 next-hop MTU")
+        }
+        NetworkPolicyTypedResponseKind::TcpReset => {
+            require(headers.hop_limit > 0, "network response hop limit")
+        }
+        NetworkPolicyTypedResponseKind::OpaqueEthernet { bytes } => {
+            require(
+                (14..=HARD_NETWORK_POLICY_BYTES).contains(&bytes.len()),
+                "opaque network response bytes",
+            )?;
+            require(
+                headers.source_mac.is_none()
+                    && headers.source_ipv4.is_none()
+                    && headers.source_ipv6.is_none()
+                    && headers.hop_limit == 0
+                    && headers.ipv4_identification == 0,
+                "opaque network response unused headers",
+            )
         }
     }
 }
@@ -927,6 +1104,61 @@ mod tests {
         {
             members.swap(0, 1);
         }
+        assert!(declaration.validate().is_err());
+    }
+
+    #[test]
+    fn typed_responses_admit_dual_stack_and_reject_ambiguous_fallbacks() {
+        let headers = |ipv4| NetworkPolicyResponseHeaders {
+            source_mac: None,
+            source_ipv4: None,
+            source_ipv6: None,
+            hop_limit: 64,
+            ipv4_identification: if ipv4 { 7 } else { 0 },
+            delay_nanos: Some(positive(10)),
+        };
+        let ipv4 = NetworkPolicyTypedResponse {
+            response: NetworkPolicyTypedResponseKind::Icmpv4PacketTooBig {
+                quote_payload_bytes: 64,
+                next_hop_mtu: 1_400,
+            },
+            headers: headers(true),
+        };
+        let ipv6 = NetworkPolicyTypedResponse {
+            response: NetworkPolicyTypedResponseKind::Icmpv6PacketTooBig {
+                quote_payload_bytes: 64,
+                next_hop_mtu: 1_280,
+            },
+            headers: headers(false),
+        };
+        let mut declaration = WorldNetworkPolicyArtifact {
+            id: id("dual-stack-too-big"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::TypedResponse(NetworkPolicyTypedResponseSet {
+                responses: vec![ipv4.clone(), ipv6],
+                unmatched: NetworkPolicyUnmatchedResponse::Suppress,
+            }),
+        };
+        declaration
+            .validate()
+            .unwrap_or_else(|error| panic!("dual-stack response: {error}"));
+
+        let opaque = NetworkPolicyTypedResponse {
+            response: NetworkPolicyTypedResponseKind::OpaqueEthernet { bytes: vec![0; 14] },
+            headers: NetworkPolicyResponseHeaders {
+                source_mac: None,
+                source_ipv4: None,
+                source_ipv6: None,
+                hop_limit: 0,
+                ipv4_identification: 0,
+                delay_nanos: None,
+            },
+        };
+        declaration.artifact =
+            NetworkPolicyArtifactKind::TypedResponse(NetworkPolicyTypedResponseSet {
+                responses: vec![opaque, ipv4],
+                unmatched: NetworkPolicyUnmatchedResponse::FailClosed,
+            });
         assert!(declaration.validate().is_err());
     }
 }

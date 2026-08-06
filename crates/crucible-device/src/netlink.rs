@@ -8,6 +8,8 @@
 //!   shifts, Bernoulli [`Probability`], and payload corruption ([IO-20]).
 //! - [`ipv4`]: the bounded Ethernet/IPv4 parser and exact fragmentation and
 //!   later-hop re-fragmentation encoder.
+//! - [`response`]: portable ICMPv4, ICMPv6, TCP-reset, and exact opaque
+//!   Ethernet response generation with protocol suppression rules and checksums.
 //! - [`link`]: the [`NetLink`] sub-node — the directed `A -> B` edge that
 //!   schedules each [`Frame`] over the
 //!   [`SLOT_NET_ROUTER`](crucible_shmem::SLOT_NET_ROUTER) slot, enforces the
@@ -46,6 +48,7 @@
 pub mod fault;
 pub mod ipv4;
 pub mod link;
+pub mod response;
 
 pub use fault::{
     LinkCorruptionStrategy, LinkFaults, Probability, corrupt_payload, jitter_shift_ns,
@@ -55,6 +58,10 @@ pub use ipv4::{Ipv4FragmentationError, Ipv4FragmentationOutcome, fragment_ethern
 pub use link::{
     Delivery, Frame, FrameDraws, LINK_SLOT, LinkSnapshot, NetLink, PastDeliveryPolicy,
     ResolveOutcome, ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError,
+};
+pub use response::{
+    NetworkResponseError, NetworkResponseHeaders, NetworkResponseKind, NetworkResponseOutcome,
+    NetworkResponseSpecification, generate_network_response,
 };
 
 #[cfg(test)]

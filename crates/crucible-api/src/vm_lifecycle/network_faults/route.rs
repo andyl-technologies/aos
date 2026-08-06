@@ -147,6 +147,12 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     .fault_continuation
                                     .protocol_expansion_path()
                                     .to_vec(),
+                                generated_response_depth: output
+                                    .fault_continuation
+                                    .generated_response_depth(),
+                                generated_response_cause: output
+                                    .fault_continuation
+                                    .generated_response_cause(),
                                 length_bytes,
                                 payload_digest: ContentHash::from_bytes(&output.payload),
                             };
@@ -280,6 +286,28 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 })?;
                             next_wakeup_nanos =
                                 earliest_wakeup(next_wakeup_nanos, application.next_wakeup_nanos);
+                            if let Some(response) = application.typed_response.as_ref() {
+                                if !resolved_effects.is_dropped() {
+                                    return Err(SchedulerError::BoundaryViolation {
+                                        message: String::from(
+                                            "typed network response did not reject its forward frame",
+                                        ),
+                                    });
+                                }
+                                let response_wakeup = stage_typed_network_response(
+                                    &staged_scheduler,
+                                    &mut staged_pending,
+                                    &self.topology,
+                                    &output,
+                                    &route,
+                                    response,
+                                    opportunity.id(),
+                                    frontier,
+                                )?;
+                                next_wakeup_nanos =
+                                    earliest_wakeup(next_wakeup_nanos, response_wakeup);
+                                continue 'route;
+                            }
                             if !application.expanded_payloads.is_empty() {
                                 if admitted && !resolved_effects.is_dropped() {
                                     resolved_effects.require_serialization();
@@ -422,6 +450,7 @@ fn apply_network_frame_actions(
     let mut queue_policy = None;
     let mut service_curves = Vec::new();
     let mut mtu_policy: Option<(&ResolvedBindingAction, &NetworkEffectSpecification)> = None;
+    let mut typed_response = None;
     let backpressure_wakeup = apply_network_backpressure_transitions(
         state,
         pending_outputs,
@@ -534,6 +563,14 @@ fn apply_network_frame_actions(
                 }
             }
             NetworkEffectSpecification::QueuePolicy { .. } => {}
+            NetworkEffectSpecification::FirewallDisposition {
+                action: crucible::model::NetworkFirewallAction::Reject,
+                typed_reject: Some(response),
+                ..
+            } => {
+                request_typed_response(&mut typed_response, response, action)?;
+                effects.mark_drop();
+            }
             _ => apply_network_frame_action(
                 payload,
                 effects,
@@ -546,13 +583,14 @@ fn apply_network_frame_actions(
         }
     }
     let expanded_payloads = if let Some((action, specification)) = mtu_policy {
-        apply_network_mtu(payload, effects, action, specification)?
+        apply_network_mtu(payload, effects, action, specification, &mut typed_response)?
     } else {
         None
     };
     if let Some(expanded_payloads) = expanded_payloads {
         return Ok(NetworkFrameApplication {
             expanded_payloads,
+            typed_response,
             next_wakeup_nanos: earliest_wakeup(
                 state
                     .boundary
@@ -570,6 +608,7 @@ fn apply_network_frame_actions(
             discipline,
             discipline_parameters,
             overflow,
+            typed_error,
         },
     )) = queue_policy
     {
@@ -588,6 +627,8 @@ fn apply_network_frame_actions(
             *discipline,
             discipline_parameters.as_ref(),
             *overflow,
+            typed_error.as_ref(),
+            &mut typed_response,
             service_rate,
             &service_curves,
             deferred_until,
@@ -622,7 +663,9 @@ fn apply_network_frame_actions(
             })?,
             crucible::model::NetworkQueueDiscipline::Fifo,
             None,
-            crucible::model::NetworkQueueOverflow::TypedError,
+            crucible::model::NetworkQueueOverflow::TailDrop,
+            None,
+            &mut typed_response,
             effects.serialization_rate_cap_bps().or(base_rate_bps),
             &service_curves,
             deferred_until,
@@ -643,6 +686,7 @@ fn apply_network_frame_actions(
             ),
         ),
         expanded_payloads: Vec::new(),
+        typed_response,
     })
 }
 
@@ -651,6 +695,172 @@ struct NetworkFrameApplication {
     defer_until: Option<u64>,
     next_wakeup_nanos: Option<u64>,
     expanded_payloads: Vec<Vec<u8>>,
+    typed_response: Option<FaultObjectId>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_typed_network_response(
+    scheduler: &SingleScheduler,
+    pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
+    topology: &crucible::model::WorldFaultTopology,
+    rejected: &crucible::BackendNetworkOutput,
+    route: &crucible::BackendNetworkRoute,
+    response_id: &FaultObjectId,
+    cause: ContentHash,
+    frontier: VirtualTime,
+) -> Result<Option<u64>, SchedulerError> {
+    let declaration = topology
+        .network_policy_artifact(response_id)
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: format!("typed network response `{response_id}` disappeared after admission"),
+        })?;
+    let crucible::model::NetworkPolicyArtifactKind::TypedResponse(responses) =
+        &declaration.artifact
+    else {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!("network response `{response_id}` changed type after admission"),
+        });
+    };
+    let mut selected = None;
+    for response in &responses.responses {
+        let specification = device_response_specification(response);
+        match crucible_device::generate_network_response(&rejected.payload, &specification) {
+            Ok(crucible_device::NetworkResponseOutcome::Frame(payload)) => {
+                selected = Some((payload, response.headers.delay_nanos));
+                break;
+            }
+            Ok(crucible_device::NetworkResponseOutcome::Suppressed) => return Ok(None),
+            Err(crucible_device::NetworkResponseError::ProtocolMismatch) => {}
+            Err(error) => {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("generate typed network response `{response_id}`: {error}"),
+                });
+            }
+        }
+    }
+    let Some((payload, delay)) = selected else {
+        return match responses.unmatched {
+            crucible::model::NetworkPolicyUnmatchedResponse::Suppress => Ok(None),
+            crucible::model::NetworkPolicyUnmatchedResponse::FailClosed => {
+                Err(SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "typed network response `{response_id}` has no variant for the rejected frame"
+                    ),
+                })
+            }
+        };
+    };
+    let mut fault_continuation = rejected
+        .fault_continuation
+        .generated_response(cause)
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: format!(
+                "typed network response `{response_id}` exceeds response-depth bound {}",
+                crucible::model::HARD_NETWORK_RESPONSE_DEPTH
+            ),
+        })?;
+    let delay = delay.map_or(0, |delay| delay.get());
+    let release =
+        frontier
+            .ticks
+            .checked_add(delay)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!("typed network response `{response_id}` delay overflowed"),
+            })?;
+    if release > frontier.ticks {
+        fault_continuation.cursor_mut().defer_until(release, cause);
+    }
+    let emit_icount = scheduler.backend_effect_time(&route.destination, frontier)?;
+    stage_pending_network_output(
+        pending_outputs,
+        crucible::BackendNetworkOutput {
+            source: route.destination.clone(),
+            destination: rejected.source.clone(),
+            emit_icount: crucible::Icount {
+                retired: emit_icount.ticks,
+            },
+            sequence: rejected.sequence,
+            payload,
+            route: None,
+            fault_continuation,
+        },
+    )?;
+    Ok((release > frontier.ticks).then_some(release))
+}
+
+fn device_response_specification(
+    response: &crucible::model::NetworkPolicyTypedResponse,
+) -> crucible_device::NetworkResponseSpecification {
+    use crucible::model::NetworkPolicyTypedResponseKind as Model;
+    let kind = match &response.response {
+        Model::Icmpv4DestinationUnreachable {
+            code,
+            quote_payload_bytes,
+        } => crucible_device::NetworkResponseKind::Icmpv4DestinationUnreachable {
+            code: *code,
+            quote_payload_bytes: *quote_payload_bytes,
+        },
+        Model::Icmpv4PacketTooBig {
+            quote_payload_bytes,
+            next_hop_mtu,
+        } => crucible_device::NetworkResponseKind::Icmpv4PacketTooBig {
+            quote_payload_bytes: *quote_payload_bytes,
+            next_hop_mtu: *next_hop_mtu,
+        },
+        Model::Icmpv4TimeExceeded {
+            code,
+            quote_payload_bytes,
+        } => crucible_device::NetworkResponseKind::Icmpv4TimeExceeded {
+            code: *code,
+            quote_payload_bytes: *quote_payload_bytes,
+        },
+        Model::Icmpv6DestinationUnreachable {
+            code,
+            quote_payload_bytes,
+        } => crucible_device::NetworkResponseKind::Icmpv6DestinationUnreachable {
+            code: *code,
+            quote_payload_bytes: *quote_payload_bytes,
+        },
+        Model::Icmpv6PacketTooBig {
+            quote_payload_bytes,
+            next_hop_mtu,
+        } => crucible_device::NetworkResponseKind::Icmpv6PacketTooBig {
+            quote_payload_bytes: *quote_payload_bytes,
+            next_hop_mtu: *next_hop_mtu,
+        },
+        Model::TcpReset => crucible_device::NetworkResponseKind::TcpReset,
+        Model::OpaqueEthernet { bytes } => crucible_device::NetworkResponseKind::OpaqueEthernet {
+            bytes: bytes.clone(),
+        },
+    };
+    crucible_device::NetworkResponseSpecification {
+        kind,
+        headers: crucible_device::NetworkResponseHeaders {
+            source_mac: response.headers.source_mac,
+            source_ipv4: response.headers.source_ipv4,
+            source_ipv6: response.headers.source_ipv6,
+            hop_limit: response.headers.hop_limit,
+            ipv4_identification: response.headers.ipv4_identification,
+        },
+    }
+}
+
+fn request_typed_response(
+    selected: &mut Option<FaultObjectId>,
+    response: &FaultObjectId,
+    action: &ResolvedBindingAction,
+) -> Result<(), SchedulerError> {
+    if selected
+        .as_ref()
+        .is_some_and(|existing| existing != response)
+    {
+        return Err(network_effect_application_error(
+            action,
+            "simultaneous network rejections selected different typed responses",
+        ));
+    }
+    *selected = Some(response.clone());
+    Ok(())
 }
 
 fn apply_network_mtu(
@@ -658,12 +868,13 @@ fn apply_network_mtu(
     effects: &mut crucible::ResolvedNetworkFrameEffects,
     action: &ResolvedBindingAction,
     specification: &NetworkEffectSpecification,
+    typed_response: &mut Option<FaultObjectId>,
 ) -> Result<Option<Vec<Vec<u8>>>, SchedulerError> {
     let NetworkEffectSpecification::Mtu {
         mtu_bytes,
         oversize,
         fragmentation_protocol,
-        ..
+        typed_error,
     } = specification
     else {
         return Err(network_effect_application_error(
@@ -702,10 +913,12 @@ fn apply_network_mtu(
             }
         }
         crucible::model::NetworkOversizeDisposition::TypedError => {
-            Err(network_effect_application_error(
-                action,
-                "typed MTU response requires the generated-response scheduler phase",
-            ))
+            let response = typed_error.as_ref().ok_or_else(|| {
+                network_effect_application_error(action, "typed MTU response omitted its artifact")
+            })?;
+            request_typed_response(typed_response, response, action)?;
+            effects.mark_drop();
+            Ok(None)
         }
     }
 }
@@ -863,6 +1076,8 @@ fn apply_network_queue_policy(
     discipline: crucible::model::NetworkQueueDiscipline,
     discipline_parameters: Option<&FaultObjectId>,
     overflow: crucible::model::NetworkQueueOverflow,
+    overflow_response: Option<&FaultObjectId>,
+    typed_response: &mut Option<FaultObjectId>,
     base_rate_bps: Option<u64>,
     service_curves: &[NetworkServiceCurveState],
     prerequisite_release: Option<u64>,
@@ -984,10 +1199,15 @@ fn apply_network_queue_policy(
         match overflow {
             crucible::model::NetworkQueueOverflow::TailDrop => effects.mark_drop(),
             crucible::model::NetworkQueueOverflow::TypedError => {
-                return Err(network_effect_application_error(
-                    action,
-                    "queue admission returned its configured typed overflow error",
-                ));
+                let response = overflow_response.ok_or_else(|| {
+                    network_effect_application_error(
+                        action,
+                        "typed queue overflow omitted its response artifact",
+                    )
+                })?;
+                request_typed_response(typed_response, response, action)?;
+                effects.mark_drop();
+                return Ok(None);
             }
             crucible::model::NetworkQueueOverflow::HeadDrop
             | crucible::model::NetworkQueueOverflow::KeyedDrop => {
@@ -3056,6 +3276,8 @@ mod tests {
                     destination,
                     producer_sequence: 7,
                     protocol_expansion_path: Vec::new(),
+                    generated_response_depth: 0,
+                    generated_response_cause: None,
                     length_bytes: 64,
                     payload_digest: ContentHash::from_bytes(b"multicast-frame"),
                 },
@@ -3099,6 +3321,8 @@ mod tests {
                 destination: id("receiver"),
                 producer_sequence: sequence,
                 protocol_expansion_path: Vec::new(),
+                generated_response_depth: 0,
+                generated_response_cause: None,
                 length_bytes: 1,
                 payload_digest: ContentHash::from_bytes(&sequence.to_be_bytes()),
             },
@@ -3179,6 +3403,8 @@ mod tests {
                 destination: id("receiver"),
                 producer_sequence: 1,
                 protocol_expansion_path: Vec::new(),
+                generated_response_depth: 0,
+                generated_response_cause: None,
                 length_bytes: u64::try_from(payload.len())
                     .unwrap_or_else(|error| panic!("test frame length: {error}")),
                 payload_digest: ContentHash::from_bytes(&payload),
@@ -3405,6 +3631,8 @@ mod tests {
                 destination: id("receiver"),
                 producer_sequence: 1,
                 protocol_expansion_path: Vec::new(),
+                generated_response_depth: 0,
+                generated_response_cause: None,
                 length_bytes: 1,
                 payload_digest: ContentHash::from_bytes(b"frame"),
             },
