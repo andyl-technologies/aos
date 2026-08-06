@@ -1306,6 +1306,13 @@ complete from model-double evidence.
   implement whole-world-forked argv exec, PTY, resize, exit/close, and SSH-compatible
   byte bridging; close all streams on reposition and keep recording opt-in. —
   satisfies [DBG-45], [DBG-46]; spec §36.9.3.
+  The independently implementable `crucible-protocol::guest_introspection`
+  codec now freezes the owned `CRGI` v1 record header and closed feature, argv
+  exec, PTY, SSH bridge, input, resize, close, output, and exit vocabulary. It
+  rejects zero channel identities, unknown flags/features, unbounded argv and
+  chunks, malformed UTF-8, invalid terminal sizes, and trailing bytes. Completion
+  remains open for the ABI-v6 request/response rings, QEMU/guest-agent transport,
+  fork-gated daemon/CLI surface, reposition teardown, and live evidence.
 - [ ] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.

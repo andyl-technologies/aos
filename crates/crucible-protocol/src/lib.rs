@@ -39,6 +39,7 @@ mod doorbell_abi;
 mod doorbell_frame;
 mod doorbell_marker;
 mod golden_vectors;
+pub mod guest_introspection;
 mod preemption;
 
 use std::io::{ErrorKind, Read, Write};
