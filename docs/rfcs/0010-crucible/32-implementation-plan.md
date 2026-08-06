@@ -732,7 +732,8 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   packaged QEMU/plugin backend before reporting the delegated debug plan. The
   remote path additionally exposes controller-leased GDB relay plus explicit
   whole-world guest-introspection fork, argv exec, PTY, and configured in-guest
-  SSH byte bridging through the bounded public protocol. Controller-leased
+  SSH byte bridging through the bounded public protocol, with opt-in bounded
+  branch-local transcript files. Controller-leased
   `goto`, `reverse-step`, and `reverse-continue` carry operator intent only;
   the actor binds that intent to its authoritative configuration, event-log
   prefix, and schedule-prefix event index before restore/replay and gateway
@@ -740,8 +741,8 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   until replacement completes, and checkpoint-resumed actors reject event
   history before their explicit resume floor.
   `T-DBG-9 … T-DBG-12` remain open for the production gateway/live replacement
-  gates, complete authorization and peer-credential enforcement, guest-channel
-  reposition teardown/resize/transcript completion, and live acceptance.
+  gates, complete authorization and peer-credential enforcement, and live
+  guest-channel acceptance.
 - Failure triage: `T-TRI-1` is green through `checks.crucible.phase6.failureSignature`,
   which implements the recorded-run-only `FailureSignature` tuple for property
   violations and divergence bisection points, binds checked event-log projection

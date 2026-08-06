@@ -826,6 +826,11 @@ pub(super) fn plan_debug_invocation(
             | DebugInteractiveVerbPlan::Pty { .. }
             | DebugInteractiveVerbPlan::Ssh
     );
+    if args.record_transcript.is_some() && !guest_shell {
+        return Err(usage_error(
+            "--record-transcript is available only with debug exec, pty, or ssh",
+        ));
+    }
     if (explicit_fork || guest_shell) && !args.allow_mutate {
         return Err(usage_error(
             "the selected fork-debug or guest exec/PTY/SSH operation requires --allow-mutate authorization",
@@ -885,6 +890,7 @@ pub(super) fn plan_debug_invocation(
         read_only,
         allow_mutate: args.allow_mutate,
         checkpoint_stride,
+        record_transcript: args.record_transcript.clone(),
         verb,
         session_commands,
         engine_operations,
@@ -958,9 +964,10 @@ pub(super) fn run_remote_debug_relay(
             node,
             crucible_api::GuestIntrospectionMessage::Exec {
                 argv: argv.clone(),
-                record_transcript: false,
+                record_transcript: plan.record_transcript.is_some(),
             },
             false,
+            plan.record_transcript.as_deref(),
         )),
         DebugInteractiveVerbPlan::Pty {
             argv,
@@ -975,9 +982,10 @@ pub(super) fn run_remote_debug_relay(
                 argv: argv.clone(),
                 columns: *columns,
                 rows: *rows,
-                record_transcript: false,
+                record_transcript: plan.record_transcript.is_some(),
             },
             true,
+            plan.record_transcript.as_deref(),
         )),
         DebugInteractiveVerbPlan::Ssh => runtime.block_on(run_remote_guest_channel(
             daemon,
@@ -985,9 +993,10 @@ pub(super) fn run_remote_debug_relay(
             session,
             node,
             crucible_api::GuestIntrospectionMessage::Ssh {
-                record_transcript: false,
+                record_transcript: plan.record_transcript.is_some(),
             },
             true,
+            plan.record_transcript.as_deref(),
         )),
         DebugInteractiveVerbPlan::ForkDebug => {
             runtime.block_on(run_remote_guest_fork(daemon, &backend_plan, session, node))
@@ -1247,6 +1256,114 @@ async fn run_remote_debug_relay_async(
     Ok(())
 }
 
+pub(super) const GUEST_TRANSCRIPT_HEADER: &[u8; 8] = b"CRGT\x01\0\0\0";
+const GUEST_TRANSCRIPT_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+pub(super) enum GuestTranscriptDirection {
+    HostToGuest = 1,
+    GuestToHost = 2,
+}
+
+pub(super) struct GuestTranscriptWriter {
+    file: tokio::fs::File,
+    bytes_written: u64,
+}
+
+impl GuestTranscriptWriter {
+    pub(super) async fn create(path: &Path) -> Result<Self, CliError> {
+        use tokio::io::AsyncWriteExt as _;
+
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await
+            .map_err(|error| {
+                backend_error(format!(
+                    "cannot create guest transcript {}: {error}",
+                    path.display()
+                ))
+            })?;
+        file.write_all(GUEST_TRANSCRIPT_HEADER)
+            .await
+            .map_err(|error| backend_error(format!("cannot write guest transcript: {error}")))?;
+        Ok(Self {
+            file,
+            bytes_written: GUEST_TRANSCRIPT_HEADER.len() as u64,
+        })
+    }
+
+    pub(super) async fn record(
+        &mut self,
+        direction: GuestTranscriptDirection,
+        record: &crucible_api::GuestIntrospectionRecord,
+    ) -> Result<(), CliError> {
+        use tokio::io::AsyncWriteExt as _;
+
+        let encoded = record
+            .encode()
+            .map_err(|error| backend_error(format!("cannot encode guest transcript: {error}")))?;
+        let length = u32::try_from(encoded.len())
+            .map_err(|_| backend_error("guest transcript record exceeds u32 length"))?;
+        let frame_len = 8_u64.saturating_add(u64::from(length));
+        if self.bytes_written.saturating_add(frame_len) > GUEST_TRANSCRIPT_MAX_BYTES {
+            return Err(backend_error(format!(
+                "guest transcript exceeds the {}-byte recording limit",
+                GUEST_TRANSCRIPT_MAX_BYTES
+            )));
+        }
+        let mut header = [0_u8; 8];
+        header[0] = direction as u8;
+        header[4..].copy_from_slice(&length.to_le_bytes());
+        self.file
+            .write_all(&header)
+            .await
+            .map_err(|error| backend_error(format!("cannot write guest transcript: {error}")))?;
+        self.file
+            .write_all(&encoded)
+            .await
+            .map_err(|error| backend_error(format!("cannot write guest transcript: {error}")))?;
+        self.bytes_written += frame_len;
+        Ok(())
+    }
+
+    pub(super) async fn finish(&mut self) -> Result<(), CliError> {
+        use tokio::io::AsyncWriteExt as _;
+
+        self.file
+            .flush()
+            .await
+            .map_err(|error| backend_error(format!("cannot flush guest transcript: {error}")))
+    }
+}
+
+async fn exchange_guest_record(
+    client: &RpcControlClient,
+    session: SessionRef,
+    lease: &crucible_session::DebugControllerLease,
+    node: &crucible::NodeId,
+    channel_id: u64,
+    request: Option<&crucible_api::GuestIntrospectionRecord>,
+    transcript: &mut Option<GuestTranscriptWriter>,
+) -> Result<Option<crucible_api::GuestIntrospectionRecord>, CliError> {
+    let response = client
+        .exchange_guest_introspection(session, lease, node, channel_id, request)
+        .await
+        .map_err(control_client_error)?;
+    if let (Some(writer), Some(record)) = (transcript.as_mut(), request) {
+        writer
+            .record(GuestTranscriptDirection::HostToGuest, record)
+            .await?;
+    }
+    if let (Some(writer), Some(record)) = (transcript.as_mut(), response.as_ref()) {
+        writer
+            .record(GuestTranscriptDirection::GuestToHost, record)
+            .await?;
+    }
+    Ok(response)
+}
+
 async fn run_remote_guest_channel(
     daemon: &str,
     backend_plan: &BackendSelectionPlan,
@@ -1254,6 +1371,7 @@ async fn run_remote_guest_channel(
     node: crucible::NodeId,
     open: crucible_api::GuestIntrospectionMessage,
     interactive: bool,
+    transcript_path: Option<&Path>,
 ) -> Result<(), CliError> {
     use crucible_api::{GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1261,6 +1379,10 @@ async fn run_remote_guest_channel(
     const CHANNEL_ID: u64 = 1;
     let _terminal_mode = LocalTerminalMode::enter_raw(interactive)?;
     let mut resize_signal = local_resize_signal(interactive)?;
+    let mut transcript = match transcript_path {
+        Some(path) => Some(GuestTranscriptWriter::create(path).await?),
+        None => None,
+    };
     let client = remote_rpc_client(daemon, backend_plan)?;
     let lease = client
         .acquire_debug_controller(session)
@@ -1274,26 +1396,32 @@ async fn run_remote_guest_channel(
     let mut input_closed = !interactive;
     let mut terminal_observed = false;
     let channel_result: Result<(), CliError> = async {
-        client
-            .exchange_guest_introspection(session, &lease, &node, CHANNEL_ID, Some(&open))
-            .await
-            .map_err(control_client_error)?;
+        exchange_guest_record(
+            &client,
+            session,
+            &lease,
+            &node,
+            CHANNEL_ID,
+            Some(&open),
+            &mut transcript,
+        )
+        .await?;
         if !interactive {
             let close = GuestIntrospectionRecord::new(
                 CHANNEL_ID,
                 GuestIntrospectionMessage::Close,
             )
             .map_err(|error| backend_error(error.to_string()))?;
-            client
-                .exchange_guest_introspection(
-                    session,
-                    &lease,
-                    &node,
-                    CHANNEL_ID,
-                    Some(&close),
-                )
-                .await
-                .map_err(control_client_error)?;
+            exchange_guest_record(
+                &client,
+                session,
+                &lease,
+                &node,
+                CHANNEL_ID,
+                Some(&close),
+                &mut transcript,
+            )
+            .await?;
         }
         let mut input = vec![0_u8; 4096];
         let mut poll = tokio::time::interval(Duration::from_millis(5));
@@ -1309,25 +1437,31 @@ async fn run_remote_guest_channel(
                     };
                     let record = GuestIntrospectionRecord::new(CHANNEL_ID, message)
                         .map_err(|error| backend_error(error.to_string()))?;
-                    client
-                        .exchange_guest_introspection(
-                            session,
-                            &lease,
-                            &node,
-                            CHANNEL_ID,
-                            Some(&record),
-                        )
-                        .await
-                        .map_err(control_client_error)?;
+                    exchange_guest_record(
+                        &client,
+                        session,
+                        &lease,
+                        &node,
+                        CHANNEL_ID,
+                        Some(&record),
+                        &mut transcript,
+                    )
+                    .await?;
                     if length == 0 {
                         input_closed = true;
                     }
                 }
                 _ = poll.tick() => {
-                    let Some(record) = client
-                        .exchange_guest_introspection(session, &lease, &node, CHANNEL_ID, None)
-                        .await
-                        .map_err(control_client_error)?
+                    let Some(record) = exchange_guest_record(
+                        &client,
+                        session,
+                        &lease,
+                        &node,
+                        CHANNEL_ID,
+                        None,
+                        &mut transcript,
+                    )
+                    .await?
                     else {
                         continue;
                     };
@@ -1380,16 +1514,16 @@ async fn run_remote_guest_channel(
                             GuestIntrospectionMessage::Resize { columns, rows },
                         )
                         .map_err(|error| backend_error(error.to_string()))?;
-                        client
-                            .exchange_guest_introspection(
-                                session,
-                                &lease,
-                                &node,
-                                CHANNEL_ID,
-                                Some(&record),
-                            )
-                            .await
-                            .map_err(control_client_error)?;
+                        exchange_guest_record(
+                            &client,
+                            session,
+                            &lease,
+                            &node,
+                            CHANNEL_ID,
+                            Some(&record),
+                            &mut transcript,
+                        )
+                        .await?;
                     }
                 }
                 signal = tokio::signal::ctrl_c() => {
@@ -1399,16 +1533,16 @@ async fn run_remote_guest_channel(
                         GuestIntrospectionMessage::Close,
                     )
                     .map_err(|error| backend_error(error.to_string()))?;
-                    client
-                        .exchange_guest_introspection(
-                            session,
-                            &lease,
-                            &node,
-                            CHANNEL_ID,
-                            Some(&close),
-                        )
-                        .await
-                        .map_err(control_client_error)?;
+                    exchange_guest_record(
+                        &client,
+                        session,
+                        &lease,
+                        &node,
+                        CHANNEL_ID,
+                        Some(&close),
+                        &mut transcript,
+                    )
+                    .await?;
                     break Ok(());
                 }
             }
@@ -1421,15 +1555,28 @@ async fn run_remote_guest_channel(
         }
         let close = GuestIntrospectionRecord::new(CHANNEL_ID, GuestIntrospectionMessage::Close)
             .map_err(|error| backend_error(error.to_string()))?;
-        let _response = client
-            .exchange_guest_introspection(session, &lease, &node, CHANNEL_ID, Some(&close))
-            .await;
+        let _response = exchange_guest_record(
+            &client,
+            session,
+            &lease,
+            &node,
+            CHANNEL_ID,
+            Some(&close),
+            &mut transcript,
+        )
+        .await;
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                let response = client
-                    .exchange_guest_introspection(session, &lease, &node, CHANNEL_ID, None)
-                    .await
-                    .map_err(control_client_error)?;
+                let response = exchange_guest_record(
+                    &client,
+                    session,
+                    &lease,
+                    &node,
+                    CHANNEL_ID,
+                    None,
+                    &mut transcript,
+                )
+                .await?;
                 match response.as_ref().map(GuestIntrospectionRecord::message) {
                     Some(GuestIntrospectionMessage::Output { stream, bytes }) => {
                         match stream {
@@ -1452,13 +1599,19 @@ async fn run_remote_guest_channel(
         .map_err(|_| backend_error("timed out closing guest-introspection channel"))?
     }
     .await;
+    let transcript_result = match transcript.as_mut() {
+        Some(transcript) => transcript.finish().await,
+        None => Ok(()),
+    };
     let release_result = client.release_debug_controller(session, &lease).await;
     if let Err(error) = channel_result {
         let _cleanup = cleanup_result;
+        let _transcript = transcript_result;
         let _release = release_result;
         return Err(error);
     }
     cleanup_result?;
+    transcript_result?;
     release_result.map_err(control_client_error)?;
     Ok(())
 }

@@ -335,6 +335,7 @@ pub(super) struct DebugInvocationPlan {
     pub(super) read_only: bool,
     pub(super) allow_mutate: bool,
     pub(super) checkpoint_stride: Option<u64>,
+    pub(super) record_transcript: Option<PathBuf>,
     pub(super) verb: DebugInteractiveVerbPlan,
     pub(super) session_commands: Vec<SessionCommand>,
     pub(super) engine_operations: Vec<DebugEngineOperation>,

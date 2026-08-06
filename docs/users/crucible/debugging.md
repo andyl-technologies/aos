@@ -171,6 +171,16 @@ controller lease:
   pty --columns 120 --rows 40 -- /bin/bash
 ```
 
+Add `--record-transcript <path>` before `exec`, `pty`, or `ssh` to retain the
+exact bounded guest-agent exchange. The CLI creates the path exclusively and
+refuses to overwrite an existing file. A transcript starts with the eight-byte
+`CRGT` version-1 header. Each following frame contains a one-byte direction
+(`1` host-to-guest or `2` guest-to-host), three zero bytes, a little-endian
+32-bit record length, and one complete `CRGI` record. Recording stops with an
+error at 64 MiB. The file is branch-local diagnostic evidence: it is available
+only for an explicitly authorized non-canonical guest channel and is never
+included in canonical replay artifacts.
+
 `exec` uses direct argv execution and does not invoke a shell. `pty` bridges the
 local standard streams to a guest controlling terminal. When standard input is
 a terminal, the client enters raw mode, restores the original mode on every
@@ -217,7 +227,9 @@ For example:
   bounded local probe exits.
 - A successful debugger runtime reposition invalidates every active guest
   channel and the next channel poll returns a typed `ClosedChannel` error.
-- Guest transcript persistence is reserved but not yet exposed by the CLI.
+- Guest transcripts are operator-owned files. Runtime reposition closes the
+  recorded channel; reopen a new channel and choose a new transcript path after
+  repositioning.
 
 Until these seams converge, use `verify --bisect`, `replay --check`, and explicit
 savepoints as the primary failure-analysis tools.
