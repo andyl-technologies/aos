@@ -6,8 +6,9 @@
 //! network world registry.
 
 use super::{
-    BoundedCount, EffectKind, FaultContractError, FaultObjectId, ObjectIdSet, OperationSet,
-    PositiveU64, ProbabilityMillionths,
+    BoundedCount, EffectKind, FaultContractError, FaultObjectId,
+    HARD_NETWORK_FORWARDING_MUTATION_DEPTH, ObjectIdSet, OperationSet, PositiveU64,
+    ProbabilityMillionths,
 };
 
 /// Availability visible in one or both network directions.
@@ -309,8 +310,8 @@ pub enum NetworkStatePolicy {
 pub enum NetworkForwardingMutationKind {
     /// Replaces the selected output port.
     WrongPort {
-        /// Replacement port identity.
-        replacement_port: FaultObjectId,
+        /// World VM recipient reached through the wrong output port.
+        recipient: FaultObjectId,
     },
     /// Floods to the declared recipient set.
     Flood {
@@ -323,11 +324,32 @@ pub enum NetworkForwardingMutationKind {
     Loop {
         /// Replacement prior-hop identity.
         next_hop: FaultObjectId,
+        /// Positive maximum forwarding mutations in this frame ancestry.
+        hop_limit: PositiveU64,
     },
     /// Changes the entry age to a declared value.
     StaleAge {
         /// Replacement age in virtual nanoseconds.
         age_nanos: u64,
+        /// Entry expiration age in virtual nanoseconds.
+        expiration_nanos: PositiveU64,
+        /// Exact forwarding consequence once the replacement age is expired.
+        expired: NetworkStaleEntryDisposition,
+    },
+}
+
+/// Forwarding consequence of an explicitly expired stale entry.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
+pub enum NetworkStaleEntryDisposition {
+    /// Preserves the stale forwarding entry despite its expired age.
+    Preserve,
+    /// Produces no next hop.
+    Blackhole,
+    /// Floods the frame to the declared canonical recipient set.
+    Flood {
+        /// Replacement recipient set.
+        recipients: ObjectIdSet,
     },
 }
 
@@ -911,6 +933,14 @@ impl NetworkEffectSpecification {
                     })
                 }
             }
+            Self::ForwardingMutation {
+                mutation: NetworkForwardingMutationKind::Loop { hop_limit, .. },
+                ..
+            } if hop_limit.get() > u64::from(HARD_NETWORK_FORWARDING_MUTATION_DEPTH) => {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
+            }
             Self::FirewallDisposition {
                 action,
                 typed_reject,
@@ -1039,5 +1069,26 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn forwarding_loops_have_a_compiled_ancestry_bound() {
+        let selector = FaultObjectId::parse("selector")
+            .unwrap_or_else(|error| panic!("test selector ID: {error}"));
+        let next_hop = FaultObjectId::parse("next-hop")
+            .unwrap_or_else(|error| panic!("test next-hop ID: {error}"));
+        let limit = |value| {
+            PositiveU64::new("hop_limit", value)
+                .unwrap_or_else(|error| panic!("test hop limit: {error}"))
+        };
+        let effect = |hop_limit| NetworkEffectSpecification::ForwardingMutation {
+            selector: selector.clone(),
+            mutation: NetworkForwardingMutationKind::Loop {
+                next_hop: next_hop.clone(),
+                hop_limit,
+            },
+        };
+        assert!(effect(limit(64)).validate().is_ok());
+        assert!(effect(limit(65)).validate().is_err());
     }
 }

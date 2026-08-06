@@ -3,14 +3,14 @@
 use crucible::{
     BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
     BackendNetworkOutputInterceptor, BackendNetworkRoute, BackendQuantumLoop, BackendSnapshot,
-    Configuration, Decision, EventLogOffset, ExactLocalEvent, FingerprintSample, Icount, LinkDef,
-    LinkId, LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection, NetworkLookahead,
-    NodeCounter, NodeId, NodeTemplate, OverrideDecision, Plan, Properties, QuantumLoop,
-    QuantumOutcome, QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm, ScheduledEvent,
-    ScheduledEventKey, ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, Seed, Shift, SimDuration,
-    SimInstant, SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode,
+    Configuration, ContentHash, Decision, EventLogOffset, ExactLocalEvent, FingerprintSample,
+    Icount, LinkDef, LinkId, LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection,
+    NetworkLookahead, NodeCounter, NodeId, NodeTemplate, OverrideDecision, Plan, Properties,
+    QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm,
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
+    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, Seed,
+    Shift, SimDuration, SimInstant, SimulationBackend, SingleScheduler, StepObservation,
+    VirtualTime, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn world_node(name: &str) -> WorldNode {
@@ -486,8 +486,21 @@ fn backend_network_route_resolution_expands_and_locks_flood_routes() {
             .iter()
             .map(|route| route.destination.clone())
             .collect::<Vec<_>>(),
-        vec![destination_b, destination_c]
+        vec![destination_b.clone(), destination_c]
     );
+    let mut forced = output.clone();
+    forced.fault_continuation = forced
+        .fault_continuation
+        .forwarding_mutation(
+            ContentHash::from_bytes(b"wrong-port"),
+            destination_b.clone(),
+        )
+        .unwrap_or_else(|| panic!("first forwarding mutation must fit"));
+    let forced_routes = scheduler
+        .resolve_backend_network_routes(&forced)
+        .unwrap_or_else(|error| panic!("forced route should resolve: {error}"));
+    assert_eq!(forced_routes.len(), 1);
+    assert_eq!(forced_routes[0].destination, destination_b);
     for route in routes {
         let mut locked = output.clone();
         locked.route = Some(route.clone());
