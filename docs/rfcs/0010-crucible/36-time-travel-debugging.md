@@ -1412,8 +1412,10 @@ complete from model-double evidence.
   broker demultiplexes bounded records by `(node, channel)` and synthesizes typed
   closure on successful runtime replacement. The CLI enters and restores local
   raw-terminal mode and forwards `SIGWINCH` dimensions as typed resize records.
-  Completion remains open for transcript persistence and live x86_64/aarch64
-  evidence.
+  Transcript recording is explicitly opt-in at the CLI, uses an exclusively
+  created bounded `CRGT` v1 file containing direction-tagged complete `CRGI`
+  records, and remains outside canonical artifacts. Completion remains open for
+  live x86_64/aarch64 evidence.
 - [x] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.

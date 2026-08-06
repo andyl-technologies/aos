@@ -2849,6 +2849,8 @@ pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preser
         "--node",
         "node-a",
         "--allow-mutate",
+        "--record-transcript",
+        "guest.crgt",
         "exec",
         "--",
         "/bin/echo",
@@ -2859,6 +2861,10 @@ pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preser
     };
     let plan = plan_debug_invocation(&allowed, args)?;
     assert!(!plan.read_only);
+    assert_eq!(
+        plan.record_transcript.as_deref(),
+        Some(Path::new("guest.crgt"))
+    );
     assert!(matches!(
         plan.verb,
         DebugInteractiveVerbPlan::Exec { ref argv }
@@ -2868,6 +2874,50 @@ pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preser
         plan.engine_operations
             .contains(&DebugEngineOperation::GuestIntrospection)
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn cli_guest_transcript_is_versioned_directional_and_exclusive()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let path = temp.path().join("guest.crgt");
+    let request = crucible_api::GuestIntrospectionRecord::new(
+        7,
+        crucible_api::GuestIntrospectionMessage::Input(vec![0, 1, 2]),
+    )?;
+    let response = crucible_api::GuestIntrospectionRecord::new(
+        7,
+        crucible_api::GuestIntrospectionMessage::Output {
+            stream: crucible_api::GuestOutputStream::Stdout,
+            bytes: vec![3, 4],
+        },
+    )?;
+    let mut writer = GuestTranscriptWriter::create(&path).await?;
+    writer
+        .record(GuestTranscriptDirection::HostToGuest, &request)
+        .await?;
+    writer
+        .record(GuestTranscriptDirection::GuestToHost, &response)
+        .await?;
+    writer.finish().await?;
+
+    let bytes = fs::read(&path)?;
+    assert_eq!(&bytes[..8], GUEST_TRANSCRIPT_HEADER);
+    let mut offset = 8;
+    for (direction, expected) in [(1_u8, request), (2_u8, response)] {
+        assert_eq!(bytes[offset], direction);
+        assert_eq!(&bytes[offset + 1..offset + 4], &[0, 0, 0]);
+        let length = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into()?) as usize;
+        offset += 8;
+        let decoded = crucible_api::GuestIntrospectionRecord::decode(
+            &bytes[offset..offset.saturating_add(length)],
+        )?;
+        assert_eq!(decoded, expected);
+        offset += length;
+    }
+    assert_eq!(offset, bytes.len());
+    assert!(GuestTranscriptWriter::create(&path).await.is_err());
     Ok(())
 }
 
@@ -3020,6 +3070,21 @@ pub(super) fn cli_debug_surface_rejects_conflicts_and_backend_without_gdbstub() 
     assert!(matches!(error, CliError::Usage(_)));
     assert_eq!(error.exit_code(), 64);
     assert!(error.to_string().contains("--node"));
+
+    let cli = Cli::parse_from([
+        "crucible",
+        "debug",
+        "case.crucible",
+        "--record-transcript",
+        "guest.crgt",
+        "attach-gdb",
+    ]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("expected debug command");
+    };
+    let error = plan_debug_invocation(&cli, args)
+        .expect_err("transcript recording must be limited to guest channels");
+    assert!(error.to_string().contains("exec, pty, or ssh"));
 }
 
 #[test]

@@ -735,6 +735,9 @@ struct DebugArgs {
     /// Bound reverse-step replay distance.
     #[arg(long, value_name = "N")]
     checkpoint_stride: Option<u64>,
+    /// Record the non-canonical guest channel to a new transcript file.
+    #[arg(long, value_name = "PATH")]
+    record_transcript: Option<PathBuf>,
     #[command(subcommand)]
     verb: Option<DebugVerbArgs>,
 }
