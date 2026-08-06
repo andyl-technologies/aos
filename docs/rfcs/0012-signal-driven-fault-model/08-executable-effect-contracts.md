@@ -120,7 +120,7 @@ the effect record.
 | `network.rf_channel` | persistent/opportunity; resolve | carrier/bandwidth, power, noise, gain, attenuation, SINR transfer table, fading field IDs | power/interference sum in exact linear unit then transfer lookup | `network.rf-channel.v1`; sampled geometry/field/power and resulting profile |
 | `network.association` | state-machine; boundary/resolve | technology, candidates, selection, hysteresis, timers, auth, buffering/address policy | one machine per interface; inputs combine before selection | technology capability; candidates, timers, old/new attachment and traffic policy |
 | `network.control_result_transform` | opportunity; resolve/deliver | technology, operation, kind `drop/stale/bias/replace/error`, typed result fields | ordered-transform or severity for errors | technology capability; request/result schema and before/after evidence |
-| `network.contact` | state-machine; boundary/resolve | intervals, acquisition/teardown, range-delay lookup, beam/gateway IDs | contact availability AND other outages | `network.contact.v1`; contact interval, range, selected beam/gateway |
+| `network.contact` | state-machine; boundary/resolve | contact-plan intervals with acquisition/teardown, range-delay lookup, beam/gateway IDs | contact availability AND other outages | `network.contact.v1`; contact interval, range, selected beam/gateway |
 | `network.custody_queue` | persistent state; queue | capacity, expiry, custody policy, route/contact plan | one bounded queue policy | `network.custody.v1`; bundle identity, custody transitions, drops and next contact |
 
 ## 8.4 Storage and 9p effect registry

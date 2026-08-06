@@ -157,6 +157,14 @@ Bindings use a closed mapping vocabulary:
 | `state_transition` | Input event/state requests an adapter state transition. |
 | `service_profile` | Signal controls a time-varying capacity/service model. |
 
+Every `service_profile` declaration pairs each canonical signal input with an
+effect-specific role and an exact `SignalShape`. Roles are stable identifiers,
+not inferred from signal names or vector position. For example, the RF channel
+contract uses `distance`, `orientation`, aggregate `interference`, and `fading`;
+the contact contract uses `range`. The ordered role/shape vector crosses the adapter seam,
+participates in action identity, and is revalidated during checkpoint restore.
+Unknown, duplicate, missing, or wrong-shaped roles fail admission.
+
 Mappings may clamp only when the clamp is explicit. A loss probability above
 one, negative bandwidth, nonexistent error code, or invalid target address is a
 validation/runtime error according to whether it can be detected before

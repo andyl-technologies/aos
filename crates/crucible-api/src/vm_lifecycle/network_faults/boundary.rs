@@ -32,12 +32,45 @@ struct RouteTransitionState {
     transition_sequence: u64,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ContactPlanState {
+    intervals: Vec<crucible::model::NetworkPolicyContactInterval>,
+    transition_sequence: u64,
+}
+
+impl ContactPlanState {
+    fn carries_traffic(&self, now: u64) -> bool {
+        self.intervals.iter().any(|interval| {
+            let open = interval.start_nanos.checked_add(interval.acquisition_nanos);
+            let teardown = interval.end_nanos.checked_sub(interval.teardown_nanos);
+            open.is_some_and(|open| teardown.is_some_and(|teardown| open <= now && now < teardown))
+        })
+    }
+
+    fn next_boundary(&self, now: u64) -> Option<u64> {
+        self.intervals
+            .iter()
+            .flat_map(|interval| {
+                [
+                    Some(interval.start_nanos),
+                    interval.start_nanos.checked_add(interval.acquisition_nanos),
+                    interval.end_nanos.checked_sub(interval.teardown_nanos),
+                    Some(interval.end_nanos),
+                ]
+            })
+            .flatten()
+            .filter(|boundary| *boundary > now)
+            .min()
+    }
+}
+
 /// Exact mutable state for all network effects admitted at `boundary`.
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct BoundaryNetworkState {
     outages: BTreeMap<NetworkEffectStateKey, TimedOutage>,
     negotiated_modes: BTreeMap<NetworkEffectStateKey, NegotiatedModeState>,
     route_transitions: BTreeMap<NetworkEffectStateKey, RouteTransitionState>,
+    contact_plans: BTreeMap<NetworkEffectStateKey, ContactPlanState>,
 }
 
 /// Nonlocal mutations requested by a boundary action batch.
@@ -64,6 +97,7 @@ impl BoundaryNetworkState {
         if self.outages.len() > 65_536
             || self.negotiated_modes.len() > 65_536
             || self.route_transitions.len() > 65_536
+            || self.contact_plans.len() > 65_536
         {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("network boundary checkpoint exceeds hard state bounds"),
@@ -87,6 +121,7 @@ impl BoundaryNetworkState {
                 self.outages.remove(&key);
                 self.negotiated_modes.remove(&key);
                 self.route_transitions.remove(&key);
+                self.contact_plans.remove(&key);
                 continue;
             }
             let EffectSpecification::Network(specification) = action.effect.specification() else {
@@ -256,6 +291,32 @@ impl BoundaryNetworkState {
                     application.next_wakeup_nanos =
                         earliest_wakeup(application.next_wakeup_nanos, Some(unavailable_until));
                 }
+                NetworkEffectSpecification::Contact { intervals, .. } => {
+                    let declaration =
+                        topology.network_policy_artifact(intervals).ok_or_else(|| {
+                            network_effect_application_error(
+                                &action,
+                                "contact plan disappeared after admission",
+                            )
+                        })?;
+                    let crucible::model::NetworkPolicyArtifactKind::ContactPlan { intervals } =
+                        &declaration.artifact
+                    else {
+                        return Err(network_effect_application_error(
+                            &action,
+                            "contact plan changed type after admission",
+                        ));
+                    };
+                    let state = ContactPlanState {
+                        intervals: intervals.clone(),
+                        transition_sequence: action.transition_sequence,
+                    };
+                    application.next_wakeup_nanos = earliest_wakeup(
+                        application.next_wakeup_nanos,
+                        state.next_boundary(coordinate.virtual_nanos),
+                    );
+                    self.contact_plans.insert(key, state);
+                }
                 NetworkEffectSpecification::Availability { .. }
                 | NetworkEffectSpecification::ProfileDelta { .. }
                 | NetworkEffectSpecification::PropagationDelay { .. }
@@ -280,7 +341,6 @@ impl BoundaryNetworkState {
                 | NetworkEffectSpecification::SharedMedium { .. }
                 | NetworkEffectSpecification::RfChannel { .. }
                 | NetworkEffectSpecification::ControlResultTransform { .. }
-                | NetworkEffectSpecification::Contact { .. }
                 | NetworkEffectSpecification::CustodyQueue { .. } => {
                     return Err(network_effect_application_error(
                         &action,
@@ -333,6 +393,13 @@ impl BoundaryNetworkState {
             {
                 effects.mark_drop();
             }
+        }
+        if self
+            .contact_plans
+            .iter()
+            .any(|(key, contact)| &key.target == target && !contact.carries_traffic(now))
+        {
+            effects.mark_drop();
         }
         Ok(())
     }
@@ -389,6 +456,27 @@ impl BoundaryNetworkState {
             material.push(in_flight_policy_tag(transition.in_flight_policy));
             material.extend_from_slice(&transition.transition_sequence.to_be_bytes());
         }
+        append_evidence_count(material, self.contact_plans.len())?;
+        for (key, contact) in &self.contact_plans {
+            append_network_effect_state_key(material, key)?;
+            material.extend_from_slice(&contact.transition_sequence.to_be_bytes());
+            append_evidence_count(material, contact.intervals.len())?;
+            for interval in &contact.intervals {
+                material.extend_from_slice(&interval.start_nanos.to_be_bytes());
+                material.extend_from_slice(&interval.end_nanos.to_be_bytes());
+                append_evidence_bytes(material, interval.source.as_str().as_bytes())?;
+                append_evidence_bytes(material, interval.destination.as_str().as_bytes())?;
+                append_evidence_bytes(material, interval.beam.as_str().as_bytes())?;
+                append_evidence_bytes(material, interval.gateway.as_str().as_bytes())?;
+                material.extend_from_slice(&interval.minimum_range_mm.to_be_bytes());
+                material.extend_from_slice(&interval.maximum_range_mm.to_be_bytes());
+                append_evidence_bytes(material, interval.capacity_profile.as_str().as_bytes())?;
+                material.extend_from_slice(&interval.acquisition_nanos.to_be_bytes());
+                material.extend_from_slice(&interval.teardown_nanos.to_be_bytes());
+                material.extend_from_slice(&interval.confidence.get().to_be_bytes());
+                append_evidence_bytes(material, interval.provenance.as_str().as_bytes())?;
+            }
+        }
         Ok(())
     }
 
@@ -406,6 +494,11 @@ impl BoundaryNetworkState {
                 self.route_transitions
                     .values()
                     .map(|transition| transition.converged_after),
+            )
+            .chain(
+                self.contact_plans
+                    .values()
+                    .filter_map(|contact| contact.next_boundary(now)),
             )
             .filter(|coordinate| *coordinate > now)
             .min()
@@ -539,5 +632,35 @@ mod tests {
             .apply_frame(&target(), 160, &mut recovered)
             .unwrap_or_else(|error| panic!("test frame should resolve: {error}"));
         assert!(!recovered.is_dropped());
+    }
+
+    #[test]
+    fn contact_plan_exposes_acquisition_open_and_teardown_boundaries() {
+        let contact = ContactPlanState {
+            intervals: vec![crucible::model::NetworkPolicyContactInterval {
+                start_nanos: 100,
+                end_nanos: 200,
+                source: id("satellite"),
+                destination: id("ground-station"),
+                beam: id("beam-a"),
+                gateway: id("gateway-a"),
+                minimum_range_mm: 1,
+                maximum_range_mm: 2,
+                capacity_profile: id("capacity"),
+                acquisition_nanos: 10,
+                teardown_nanos: 20,
+                confidence: crucible::model::ProbabilityMillionths::new(1_000_000)
+                    .unwrap_or_else(|error| panic!("test confidence should be valid: {error}")),
+                provenance: id("trace"),
+            }],
+            transition_sequence: 1,
+        };
+        assert_eq!(contact.next_boundary(99), Some(100));
+        assert!(!contact.carries_traffic(109));
+        assert_eq!(contact.next_boundary(100), Some(110));
+        assert!(contact.carries_traffic(110));
+        assert!(contact.carries_traffic(179));
+        assert!(!contact.carries_traffic(180));
+        assert_eq!(contact.next_boundary(180), Some(200));
     }
 }

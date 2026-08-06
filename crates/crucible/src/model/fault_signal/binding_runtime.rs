@@ -2201,8 +2201,12 @@ fn resolved_mapping_output(
             })
         }
         BindingMapping::ServiceProfile { service_profile } => {
+            let declaration = binding
+                .service_declaration()
+                .ok_or(BindingRuntimeError::MappingDeclaration)?;
             Ok(ResolvedMappingOutput::ServiceProfile {
                 service_profile: service_profile.clone(),
+                input_contracts: declaration.inputs.clone(),
                 inputs: values.to_vec(),
             })
         }
@@ -2336,10 +2340,12 @@ fn resolved_mapping_output_digest(
         ),
         ResolvedMappingOutput::ServiceProfile {
             service_profile,
+            input_contracts,
             inputs,
         } => format!(
-            "service_profile={};inputs={}",
+            "service_profile={};contracts={};inputs={}",
             service_profile.as_str(),
+            mapped_service_inputs_digest(input_contracts)?.to_hex(),
             mapped_values_digest(inputs)?.to_hex(),
         ),
     };
@@ -2347,6 +2353,25 @@ fn resolved_mapping_output_digest(
         "crucible.resolved-binding-output.v1",
         &material,
     ))
+}
+
+fn mapped_service_inputs_digest(
+    inputs: &[ServiceProfileInput],
+) -> Result<ContentHash, BindingRuntimeError> {
+    let mut material = b"crucible.resolved-binding-service-inputs.v1\0".to_vec();
+    for input in inputs {
+        let role = input.role.as_str().as_bytes();
+        let role_length =
+            u64::try_from(role.len()).map_err(|_| BindingRuntimeError::MappedValueLimit)?;
+        material.extend_from_slice(&role_length.to_be_bytes());
+        material.extend_from_slice(role);
+        let encoded = encode_signal_shape(&input.shape).map_err(BindingRuntimeError::Trace)?;
+        let length =
+            u64::try_from(encoded.len()).map_err(|_| BindingRuntimeError::MappedValueLimit)?;
+        material.extend_from_slice(&length.to_be_bytes());
+        material.extend_from_slice(&encoded);
+    }
+    Ok(ContentHash::from_bytes(&material))
 }
 
 fn encoded_value_material(value: &SignalValue) -> Result<String, BindingRuntimeError> {
@@ -2663,12 +2688,16 @@ fn validate_checkpoint_mapping_values(
             BindingMapping::ServiceProfile { service_profile },
             Some(ResolvedMappingOutput::ServiceProfile {
                 service_profile: actual,
+                input_contracts,
                 inputs,
             }),
         ) => {
             actual == service_profile
                 && inputs == &state.mapped_values
                 && binding.signals().len() == inputs.len()
+                && binding
+                    .service_declaration()
+                    .is_some_and(|declaration| declaration.inputs == *input_contracts)
                 && binding.signals().iter().zip(inputs).all(|(signal, value)| {
                     program
                         .exported_shape(signal)

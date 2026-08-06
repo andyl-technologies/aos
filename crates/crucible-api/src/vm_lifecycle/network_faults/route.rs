@@ -1290,13 +1290,29 @@ fn apply_network_frame_action(
                     .constrain_rate(rate_cap_bps.get())
                     .map_err(map_effect_error)?;
             }
-            let input = mapped_network_integer(action)?;
+            let input = if loss_hazard.is_some()
+                || corruption_hazard.is_some()
+                || technology_metrics.is_some()
+            {
+                Some(mapped_network_integer(action)?)
+            } else {
+                None
+            };
             for (reference, axis) in [
                 (loss_hazard.as_ref(), "profile-loss"),
                 (corruption_hazard.as_ref(), "profile-corruption"),
             ] {
                 if let Some(reference) = reference {
-                    let probability = network_policy_lookup(topology, reference, input)?;
+                    let probability = network_policy_lookup(
+                        topology,
+                        reference,
+                        input.ok_or_else(|| {
+                            network_effect_application_error(
+                                action,
+                                "profile lookup omitted its mapped input",
+                            )
+                        })?,
+                    )?;
                     let probability = u32::try_from(probability)
                         .ok()
                         .and_then(|value| crucible::model::ProbabilityMillionths::new(value).ok())
@@ -1315,7 +1331,16 @@ fn apply_network_frame_action(
                 }
             }
             if let Some(reference) = technology_metrics {
-                let latency = network_policy_lookup(topology, reference, input)?;
+                let latency = network_policy_lookup(
+                    topology,
+                    reference,
+                    input.ok_or_else(|| {
+                        network_effect_application_error(
+                            action,
+                            "technology metric lookup omitted its mapped input",
+                        )
+                    })?,
+                )?;
                 effects
                     .add_latency_delta(latency)
                     .map_err(map_effect_error)?;
@@ -1483,6 +1508,39 @@ fn apply_network_frame_action(
             receiver_action: crucible::model::DetectedFrameErrorAction::Drop,
             ..
         } => effects.mark_drop(),
+        NetworkEffectSpecification::DetectedFrameError {
+            receiver_action: crucible::model::DetectedFrameErrorAction::Retry,
+            retry_delay_nanos: Some(retry_delay_nanos),
+            retry_limit: Some(retry_limit),
+            ..
+        } => {
+            let exhausted_delay = retry_delay_nanos
+                .get()
+                .checked_mul(u64::from(retry_limit.get()))
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "detected-error retries overflowed")
+                })?;
+            effects
+                .add_delay(exhausted_delay)
+                .map_err(map_effect_error)?;
+            effects.mark_drop();
+        }
+        NetworkEffectSpecification::DetectedFrameError {
+            receiver_action: crucible::model::DetectedFrameErrorAction::LinkReset,
+            reset_nanos: Some(reset_nanos),
+            ..
+        } => {
+            effects
+                .add_delay(reset_nanos.get())
+                .map_err(map_effect_error)?;
+            effects.mark_drop();
+        }
+        NetworkEffectSpecification::DetectedFrameError { .. } => {
+            return Err(network_effect_application_error(
+                action,
+                "detected-frame-error parameters contradicted admission",
+            ));
+        }
         NetworkEffectSpecification::Mtu {
             mtu_bytes,
             oversize: crucible::model::NetworkOversizeDisposition::Drop,
@@ -1491,6 +1549,24 @@ fn apply_network_frame_action(
             effects.mark_drop();
         }
         NetworkEffectSpecification::Mtu { .. } => {}
+        NetworkEffectSpecification::RecipientSubset {
+            membership_version,
+            drop_members,
+            selection,
+            retain_count,
+        } => {
+            apply_network_recipient_subset(
+                effects,
+                action,
+                opportunity,
+                scenario_seed,
+                topology,
+                membership_version,
+                drop_members.as_ref(),
+                selection.as_ref(),
+                retain_count.as_ref(),
+            )?;
+        }
         NetworkEffectSpecification::FirewallDisposition {
             action: crucible::model::NetworkFirewallAction::Accept,
             ..
@@ -1503,6 +1579,259 @@ fn apply_network_frame_action(
             mutation: crucible::model::NetworkForwardingMutationKind::Blackhole,
             ..
         } => effects.mark_drop(),
+        NetworkEffectSpecification::Contact {
+            intervals,
+            range_delay_lookup,
+            ..
+        } => {
+            let declaration = topology.network_policy_artifact(intervals).ok_or_else(|| {
+                network_effect_application_error(action, "contact plan disappeared")
+            })?;
+            let crucible::model::NetworkPolicyArtifactKind::ContactPlan { intervals } =
+                &declaration.artifact
+            else {
+                return Err(network_effect_application_error(
+                    action,
+                    "contact plan changed type after admission",
+                ));
+            };
+            let now = opportunity.coordinate().virtual_nanos;
+            let OpportunityPayload::NetworkFrame {
+                producer,
+                destination,
+                ..
+            } = opportunity.payload()
+            else {
+                return Err(network_effect_application_error(
+                    action,
+                    "contact effect received a non-frame opportunity",
+                ));
+            };
+            let interval = intervals.iter().find(|interval| {
+                let open = interval.start_nanos.checked_add(interval.acquisition_nanos);
+                let teardown = interval.end_nanos.checked_sub(interval.teardown_nanos);
+                &interval.source == producer
+                    && &interval.destination == destination
+                    && open.is_some_and(|open| {
+                        teardown.is_some_and(|teardown| open <= now && now < teardown)
+                    })
+            });
+            let Some(interval) = interval else {
+                effects.mark_drop();
+                return Ok(());
+            };
+            let range = u64::try_from(mapped_network_service_input(
+                action,
+                "range",
+                &crucible::model::SignalShape {
+                    value_type: crucible::model::SignalValueType::U64,
+                    unit: crucible::model::SignalUnit::Millimetres,
+                    scale_decimal_exponent: 0,
+                },
+            )?)
+            .map_err(|_error| {
+                network_effect_application_error(action, "contact range is negative")
+            })?;
+            if range < interval.minimum_range_mm || range > interval.maximum_range_mm {
+                return Err(network_effect_application_error(
+                    action,
+                    "contact range lies outside the admitted interval bounds",
+                ));
+            }
+            let delay = network_policy_lookup(
+                topology,
+                range_delay_lookup,
+                i64::try_from(range).map_err(|_error| {
+                    network_effect_application_error(action, "contact range exceeds i64")
+                })?,
+            )?;
+            effects
+                .add_delay(u64::try_from(delay).map_err(|_error| {
+                    network_effect_application_error(action, "contact delay is negative")
+                })?)
+                .map_err(map_effect_error)?;
+            let capacity = topology
+                .network_policy_artifact(&interval.capacity_profile)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "contact capacity disappeared")
+                })?;
+            let crucible::model::NetworkPolicyArtifactKind::ServiceCurve { segments } =
+                &capacity.artifact
+            else {
+                return Err(network_effect_application_error(
+                    action,
+                    "contact capacity changed type after admission",
+                ));
+            };
+            let bits = u64::try_from(payload.len())
+                .ok()
+                .and_then(|bytes| bytes.checked_mul(8))
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "contact frame size overflowed")
+                })?;
+            let finish = network_service_finish(
+                now,
+                bits,
+                None,
+                &[NetworkServiceCurveState {
+                    activation_nanos: interval.start_nanos,
+                    segments: segments.as_slice().to_vec(),
+                }],
+                action,
+            )?;
+            let traffic_end = interval
+                .end_nanos
+                .checked_sub(interval.teardown_nanos)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "contact teardown underflowed")
+                })?;
+            if finish > traffic_end {
+                effects.mark_drop();
+                return Ok(());
+            }
+            effects
+                .add_delay(finish.checked_sub(now).ok_or_else(|| {
+                    network_effect_application_error(action, "contact service regressed")
+                })?)
+                .map_err(map_effect_error)?;
+            effects.mark_serialization_accounted();
+        }
+        NetworkEffectSpecification::RfChannel {
+            transmit_power_femtowatts,
+            receiver_noise_femtowatts,
+            propagation_fields,
+            sinr_transfer,
+            ..
+        } => {
+            let distance = mapped_network_service_u64(
+                action,
+                "distance",
+                &crucible::model::SignalShape {
+                    value_type: crucible::model::SignalValueType::U64,
+                    unit: crucible::model::SignalUnit::Millimetres,
+                    scale_decimal_exponent: 0,
+                },
+            )?;
+            let orientation = mapped_network_service_input(
+                action,
+                "orientation",
+                &crucible::model::SignalShape {
+                    value_type: crucible::model::SignalValueType::I64,
+                    unit: crucible::model::SignalUnit::Millidegrees,
+                    scale_decimal_exponent: 0,
+                },
+            )?;
+            let propagation = topology
+                .network_policy_artifact(propagation_fields)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "RF propagation policy disappeared")
+                })?;
+            let crucible::model::NetworkPolicyArtifactKind::RfPropagation(propagation) =
+                &propagation.artifact
+            else {
+                return Err(network_effect_application_error(
+                    action,
+                    "RF propagation policy changed type after admission",
+                ));
+            };
+            let path_gain = lookup_network_integer_table(
+                &propagation.path_gain_ratio,
+                i64::try_from(distance).map_err(|_error| {
+                    network_effect_application_error(action, "RF distance exceeds lookup width")
+                })?,
+                "rf.path_gain_ratio",
+            )?;
+            let antenna_gain = lookup_network_integer_table(
+                &propagation.antenna_gain_ratio,
+                orientation,
+                "rf.antenna_gain_ratio",
+            )?;
+            let fading = mapped_network_service_u64(
+                action,
+                "fading",
+                &crucible::model::SignalShape {
+                    value_type: crucible::model::SignalValueType::U64,
+                    unit: crucible::model::SignalUnit::PartsPerMillion,
+                    scale_decimal_exponent: 0,
+                },
+            )?;
+            let path_gain = u64::try_from(path_gain).map_err(|_error| {
+                network_effect_application_error(action, "RF path gain ratio is negative")
+            })?;
+            let antenna_gain = u64::try_from(antenna_gain).map_err(|_error| {
+                network_effect_application_error(action, "RF antenna gain ratio is negative")
+            })?;
+            let signal = multiply_ratio_millionths(*transmit_power_femtowatts, path_gain, action)?;
+            let signal = multiply_ratio_millionths(signal, antenna_gain, action)?;
+            let signal = multiply_ratio_millionths(signal, fading, action)?;
+            let interference = mapped_network_service_u64(
+                action,
+                "interference",
+                &crucible::model::SignalShape {
+                    value_type: crucible::model::SignalValueType::U64,
+                    unit: crucible::model::SignalUnit::Femtowatts,
+                    scale_decimal_exponent: 0,
+                },
+            )?;
+            let denominator = interference
+                .checked_add(*receiver_noise_femtowatts)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "RF noise power overflowed")
+                })?;
+            if denominator == 0 {
+                return Err(network_effect_application_error(
+                    action,
+                    "RF interference plus receiver noise must be positive",
+                ));
+            }
+            let sinr = divide_ties_to_even(
+                u128::from(signal).checked_mul(1_000_000).ok_or_else(|| {
+                    network_effect_application_error(action, "RF SINR numerator overflowed")
+                })?,
+                u128::from(denominator),
+            );
+            let sinr = i64::try_from(sinr).map_err(|_error| {
+                network_effect_application_error(action, "RF SINR exceeds transfer-table width")
+            })?;
+            let transfer = topology
+                .network_policy_artifact(sinr_transfer)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "RF transfer policy disappeared")
+                })?;
+            let crucible::model::NetworkPolicyArtifactKind::RfTransfer(transfer) =
+                &transfer.artifact
+            else {
+                return Err(network_effect_application_error(
+                    action,
+                    "RF transfer policy changed type after admission",
+                ));
+            };
+            let profile_index = transfer
+                .profiles
+                .partition_point(|profile| profile.minimum_sinr <= sinr)
+                .checked_sub(1)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "RF SINR precedes every profile")
+                })?;
+            let profile = &transfer.profiles[profile_index];
+            effects
+                .constrain_rate(profile.rate_bps.get())
+                .map_err(map_effect_error)?;
+            let lost = probability_fires(
+                profile.loss,
+                network_effect_draw(scenario_seed, opportunity, action, "rf-loss", 0),
+            );
+            let detected_error = probability_fires(
+                profile.corruption,
+                network_effect_draw(scenario_seed, opportunity, action, "rf-error", 0),
+            );
+            if lost || detected_error {
+                effects
+                    .add_delay(profile.retry_delay_nanos)
+                    .map_err(map_effect_error)?;
+                effects.mark_drop();
+            }
+        }
         NetworkEffectSpecification::Flap { .. }
         | NetworkEffectSpecification::NegotiatedMode { .. }
         | NetworkEffectSpecification::PropagationDelay { .. }
@@ -1511,9 +1840,7 @@ fn apply_network_frame_action(
         | NetworkEffectSpecification::TokenBucket { .. }
         | NetworkEffectSpecification::QueuePolicy { .. }
         | NetworkEffectSpecification::BurstErrorState { .. }
-        | NetworkEffectSpecification::DetectedFrameError { .. }
         | NetworkEffectSpecification::PauseBackpressure { .. }
-        | NetworkEffectSpecification::RecipientSubset { .. }
         | NetworkEffectSpecification::ForwarderLifecycle { .. }
         | NetworkEffectSpecification::ForwardingMutation { .. }
         | NetworkEffectSpecification::RouteTransition { .. }
@@ -1521,10 +1848,8 @@ fn apply_network_frame_action(
         | NetworkEffectSpecification::FirewallDisposition { .. }
         | NetworkEffectSpecification::ConnectionState { .. }
         | NetworkEffectSpecification::SharedMedium { .. }
-        | NetworkEffectSpecification::RfChannel { .. }
         | NetworkEffectSpecification::Association { .. }
         | NetworkEffectSpecification::ControlResultTransform { .. }
-        | NetworkEffectSpecification::Contact { .. }
         | NetworkEffectSpecification::CustodyQueue { .. } => {
             return Err(network_effect_application_error(
                 action,
@@ -1576,7 +1901,252 @@ fn uniform_inclusive(draw: u64, maximum: u64) -> u64 {
     ((u128::from(draw) * range) >> 64) as u64
 }
 
+#[allow(clippy::too_many_arguments)]
+fn apply_network_recipient_subset(
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    scenario_seed: ContentHash,
+    topology: &crucible::model::WorldFaultTopology,
+    membership_version: &FaultObjectId,
+    drop_members: Option<&crucible::model::ObjectIdSet>,
+    selection: Option<&crucible::model::NetworkSelection>,
+    retain_count: Option<&crucible::model::BoundedCount>,
+) -> Result<(), SchedulerError> {
+    let declaration = topology
+        .network_policy_artifact(membership_version)
+        .ok_or_else(|| {
+            network_effect_application_error(action, "recipient membership disappeared")
+        })?;
+    let crucible::model::NetworkPolicyArtifactKind::RecipientMembership { members } =
+        &declaration.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "recipient membership changed type after admission",
+        ));
+    };
+    let OpportunityPayload::NetworkFrame {
+        producer,
+        destination,
+        producer_sequence,
+        ..
+    } = opportunity.payload()
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "recipient subset received a non-frame opportunity",
+        ));
+    };
+    if members
+        .binary_search_by(|candidate| candidate.member.cmp(destination))
+        .is_err()
+    {
+        return Err(network_effect_application_error(
+            action,
+            "frame destination is absent from the admitted membership version",
+        ));
+    }
+    if let Some(drop_members) = drop_members {
+        if drop_members.as_slice().binary_search(destination).is_ok() {
+            effects.mark_drop();
+        }
+        return Ok(());
+    }
+    let selection = selection
+        .ok_or_else(|| network_effect_application_error(action, "recipient selection is absent"))?;
+    let retain = retain_count
+        .and_then(|count| usize::try_from(count.get()).ok())
+        .ok_or_else(|| {
+            network_effect_application_error(action, "recipient retain count exceeds host width")
+        })?;
+    let mut selected = members.iter().collect::<Vec<_>>();
+    match selection {
+        crucible::model::NetworkSelection::Oldest => selected.sort_by(|left, right| {
+            left.joined_sequence
+                .cmp(&right.joined_sequence)
+                .then_with(|| left.member.cmp(&right.member))
+        }),
+        crucible::model::NetworkSelection::Newest => selected.sort_by(|left, right| {
+            right
+                .joined_sequence
+                .cmp(&left.joined_sequence)
+                .then_with(|| left.member.cmp(&right.member))
+        }),
+        crucible::model::NetworkSelection::CanonicalOrder => {}
+        crucible::model::NetworkSelection::KeyedUniform => {
+            selected.sort_by(|left, right| {
+                network_recipient_rank(
+                    scenario_seed,
+                    action,
+                    membership_version,
+                    producer,
+                    *producer_sequence,
+                    &left.member,
+                )
+                .bytes
+                .cmp(
+                    &network_recipient_rank(
+                        scenario_seed,
+                        action,
+                        membership_version,
+                        producer,
+                        *producer_sequence,
+                        &right.member,
+                    )
+                    .bytes,
+                )
+                .then_with(|| left.member.cmp(&right.member))
+            });
+        }
+    }
+    if !selected
+        .iter()
+        .take(retain)
+        .any(|candidate| &candidate.member == destination)
+    {
+        effects.mark_drop();
+    }
+    Ok(())
+}
+
+fn network_recipient_rank(
+    scenario_seed: ContentHash,
+    action: &ResolvedBindingAction,
+    membership_version: &FaultObjectId,
+    producer: &FaultObjectId,
+    producer_sequence: u64,
+    recipient: &FaultObjectId,
+) -> ContentHash {
+    let mut material = b"crucible.network-recipient-rank.v1\0".to_vec();
+    material.extend_from_slice(&scenario_seed.bytes);
+    material.extend_from_slice(action.binding.as_str().as_bytes());
+    material.push(0);
+    material.extend_from_slice(membership_version.as_str().as_bytes());
+    material.push(0);
+    material.extend_from_slice(producer.as_str().as_bytes());
+    material.push(0);
+    material.extend_from_slice(&producer_sequence.to_be_bytes());
+    material.extend_from_slice(recipient.as_str().as_bytes());
+    ContentHash::from_bytes(&material)
+}
+
 fn mapped_network_integer(action: &ResolvedBindingAction) -> Result<i64, SchedulerError> {
+    mapped_network_integers(action)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| network_effect_application_error(action, "network lookup has no input"))
+}
+
+fn mapped_network_service_input(
+    action: &ResolvedBindingAction,
+    role: &str,
+    expected: &crucible::model::SignalShape,
+) -> Result<i64, SchedulerError> {
+    let crucible::model::ResolvedMappingOutput::ServiceProfile {
+        input_contracts,
+        inputs,
+        ..
+    } = action.mapping_output.as_ref()
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "network service effect requires a service-profile mapping",
+        ));
+    };
+    if input_contracts.len() != inputs.len() {
+        return Err(network_effect_application_error(
+            action,
+            "network service input shapes and values differ in length",
+        ));
+    }
+    let mut matches = input_contracts
+        .iter()
+        .zip(inputs)
+        .filter(|(contract, _value)| contract.role.as_str() == role && &contract.shape == expected);
+    let (_contract, value) = matches.next().ok_or_else(|| {
+        network_effect_application_error(action, "network service omitted a physical input")
+    })?;
+    if matches.next().is_some() {
+        return Err(network_effect_application_error(
+            action,
+            "network service repeated a physical input shape",
+        ));
+    }
+    mapped_network_scalar(action, value)
+}
+
+fn mapped_network_service_u64(
+    action: &ResolvedBindingAction,
+    role: &str,
+    expected: &crucible::model::SignalShape,
+) -> Result<u64, SchedulerError> {
+    let crucible::model::ResolvedMappingOutput::ServiceProfile {
+        input_contracts,
+        inputs,
+        ..
+    } = action.mapping_output.as_ref()
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "network service effect requires a service-profile mapping",
+        ));
+    };
+    if input_contracts.len() != inputs.len() {
+        return Err(network_effect_application_error(
+            action,
+            "network service input shapes and values differ in length",
+        ));
+    }
+    let mut matches = input_contracts
+        .iter()
+        .zip(inputs)
+        .filter(|(contract, _value)| contract.role.as_str() == role && &contract.shape == expected);
+    let (_contract, value) = matches.next().ok_or_else(|| {
+        network_effect_application_error(action, "network service omitted a physical input")
+    })?;
+    if matches.next().is_some() {
+        return Err(network_effect_application_error(
+            action,
+            "network service repeated a physical input shape",
+        ));
+    }
+    let crucible::model::SignalValue::U64(value) = value else {
+        return Err(network_effect_application_error(
+            action,
+            "network service input is not an unsigned integer",
+        ));
+    };
+    Ok(*value)
+}
+
+fn multiply_ratio_millionths(
+    value: u64,
+    ratio_millionths: u64,
+    action: &ResolvedBindingAction,
+) -> Result<u64, SchedulerError> {
+    let product = u128::from(value)
+        .checked_mul(u128::from(ratio_millionths))
+        .ok_or_else(|| network_effect_application_error(action, "RF power product overflowed"))?;
+    u64::try_from(divide_ties_to_even(product, 1_000_000)).map_err(|_error| {
+        network_effect_application_error(action, "RF scaled power exceeds femtowatt width")
+    })
+}
+
+fn divide_ties_to_even(numerator: u128, denominator: u128) -> u128 {
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    let half = denominator / 2;
+    let above_half = remainder > half;
+    let exactly_half = denominator % 2 == 0 && remainder == half;
+    if above_half || exactly_half && quotient % 2 == 1 {
+        quotient + 1
+    } else {
+        quotient
+    }
+}
+
+fn mapped_network_integers(action: &ResolvedBindingAction) -> Result<Vec<i64>, SchedulerError> {
     let values = match action.mapping_output.as_ref() {
         crucible::model::ResolvedMappingOutput::Parameter { value, .. } => {
             std::slice::from_ref(value)
@@ -1592,9 +2162,22 @@ fn mapped_network_integer(action: &ResolvedBindingAction) -> Result<i64, Schedul
             ));
         }
     };
-    let value = values.first().ok_or_else(|| {
-        network_effect_application_error(action, "network lookup has no numeric input")
-    })?;
+    if values.is_empty() {
+        return Err(network_effect_application_error(
+            action,
+            "network lookup has no numeric input",
+        ));
+    }
+    values
+        .iter()
+        .map(|value| mapped_network_scalar(action, value))
+        .collect()
+}
+
+fn mapped_network_scalar(
+    action: &ResolvedBindingAction,
+    value: &crucible::model::SignalValue,
+) -> Result<i64, SchedulerError> {
     match value {
         crucible::model::SignalValue::I64(value) => Ok(*value),
         crucible::model::SignalValue::U64(value)
@@ -1636,6 +2219,14 @@ fn network_policy_lookup(
             ),
         });
     };
+    lookup_network_integer_table(table, input, reference.as_str())
+}
+
+fn lookup_network_integer_table(
+    table: &crucible::model::NetworkPolicyIntegerTable,
+    input: i64,
+    context: &str,
+) -> Result<i64, SchedulerError> {
     let insertion = table.points.partition_point(|point| point.input <= input);
     if insertion == 0 {
         return match table.outside {
@@ -1643,7 +2234,7 @@ fn network_policy_lookup(
             crucible::model::NetworkPolicyOutsideRange::TypedError => {
                 Err(SchedulerError::BoundaryViolation {
                     message: format!(
-                        "network policy `{reference}` input {input} precedes its domain"
+                        "network policy `{context}` input {input} precedes its domain"
                     ),
                 })
             }
@@ -1657,7 +2248,7 @@ fn network_policy_lookup(
             return Ok(lower.output);
         }
         return Err(SchedulerError::BoundaryViolation {
-            message: format!("network policy `{reference}` input {input} follows its domain"),
+            message: format!("network policy `{context}` input {input} follows its domain"),
         });
     };
     match table.interpolation {
@@ -1665,7 +2256,7 @@ fn network_policy_lookup(
         crucible::model::NetworkPolicyInterpolation::LinearTiesToEven => {
             interpolate_network_policy(lower, upper, input).ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
-                    message: format!("network policy `{reference}` interpolation overflowed"),
+                    message: format!("network policy `{context}` interpolation overflowed"),
                 }
             })
         }
@@ -1815,7 +2406,7 @@ mod tests {
 
     use super::*;
     use crucible::model::{
-        BindingActionCause, BindingActionKind, EFFECT_SEMANTIC_VERSION, EffectLifetime,
+        BindingActionCause, BindingActionKind, CountLimit, EFFECT_SEMANTIC_VERSION, EffectLifetime,
         EffectRequest, NetworkInFlightPolicy, PositiveU64, ResolvedFaultTarget,
         ResolvedMappingOutput,
     };
@@ -1862,6 +2453,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn multicast_recipient_selection_is_shared_across_route_copies() {
+        let action = action();
+        let membership = id("multicast-members-v1");
+        let mut topology = crucible::model::WorldFaultTopology::default();
+        topology
+            .network_policy_artifacts
+            .push(crucible::model::WorldNetworkPolicyArtifact {
+                id: membership.clone(),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::RecipientMembership {
+                    members: vec![
+                        crucible::model::NetworkPolicyRecipient {
+                            member: id("receiver-a"),
+                            joined_sequence: 1,
+                        },
+                        crucible::model::NetworkPolicyRecipient {
+                            member: id("receiver-b"),
+                            joined_sequence: 2,
+                        },
+                    ],
+                },
+            });
+        let retain =
+            crucible::model::BoundedCount::new(CountLimit::DuplicatesOrInstructionReplay, 1)
+                .unwrap_or_else(|error| panic!("recipient count: {error}"));
+        let mut outcomes = Vec::new();
+        for destination in [id("receiver-a"), id("receiver-b")] {
+            let opportunity = FaultOpportunity::new(
+                action.target.clone(),
+                crucible::model::FaultOperation::NetworkTraverse,
+                FaultPhase::Deliver,
+                FaultCoordinate {
+                    virtual_nanos: 10,
+                    retired_instructions: Some(1),
+                },
+                7,
+                Some(crucible::model::FaultDirection::AToB),
+                OpportunityPayload::NetworkFrame {
+                    producer: id("sender"),
+                    destination,
+                    producer_sequence: 7,
+                    length_bytes: 64,
+                    payload_digest: ContentHash::from_bytes(b"multicast-frame"),
+                },
+            )
+            .unwrap_or_else(|error| panic!("recipient opportunity: {error}"));
+            let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+            apply_network_recipient_subset(
+                &mut effects,
+                &action,
+                &opportunity,
+                ContentHash::from_bytes(b"recipient-seed"),
+                &topology,
+                &membership,
+                None,
+                Some(&crucible::model::NetworkSelection::KeyedUniform),
+                Some(&retain),
+            )
+            .unwrap_or_else(|error| panic!("recipient selection: {error}"));
+            outcomes.push(effects.is_dropped());
+        }
+
+        assert_eq!(outcomes.iter().filter(|dropped| !**dropped).count(), 1);
+    }
+
     fn opportunity(sequence: u64) -> FaultOpportunity {
         FaultOpportunity::new(
             ResolvedFaultTarget::NetworkSegment {
@@ -1885,6 +2542,153 @@ mod tests {
             },
         )
         .unwrap_or_else(|error| panic!("test opportunity should be valid: {error}"))
+    }
+
+    #[test]
+    fn rf_channel_uses_geometry_tables_and_exact_sinr_profile() {
+        let probability = crucible::model::ProbabilityMillionths::new(0)
+            .unwrap_or_else(|error| panic!("zero probability should be valid: {error}"));
+        let integer_table = |input_unit: &str, output| crucible::model::NetworkPolicyIntegerTable {
+            input_unit: id(input_unit),
+            output_unit: id("ratio-millionths"),
+            interpolation: crucible::model::NetworkPolicyInterpolation::Step,
+            outside: crucible::model::NetworkPolicyOutsideRange::Clamp,
+            points: vec![crucible::model::NetworkPolicyIntegerPoint { input: 0, output }],
+        };
+        let profile = crucible::model::NetworkPolicyRfProfile {
+            minimum_sinr: 0,
+            rate_bps: positive(8_000),
+            loss: probability,
+            corruption: probability,
+            retry_delay_nanos: 0,
+        };
+        let mut topology = crucible::model::WorldFaultTopology::default();
+        topology.network_policy_artifacts = vec![
+            crucible::model::WorldNetworkPolicyArtifact {
+                id: id("propagation"),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::RfPropagation(
+                    crucible::model::NetworkPolicyRfPropagation {
+                        path_gain_ratio: integer_table("millimetres", 500_000),
+                        antenna_gain_ratio: integer_table("millidegrees", 1_000_000),
+                        spatial_cell_mm: positive(1),
+                        fading_bucket_nanos: positive(1),
+                    },
+                ),
+            },
+            crucible::model::WorldNetworkPolicyArtifact {
+                id: id("transfer"),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::RfTransfer(
+                    crucible::model::NetworkPolicyRfTransfer {
+                        profiles: vec![profile],
+                    },
+                ),
+            },
+        ];
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Opportunity,
+            EffectSpecification::Network(NetworkEffectSpecification::RfChannel {
+                carrier_hz: positive(2_400_000_000),
+                bandwidth_hz: positive(20_000_000),
+                transmit_power_femtowatts: 100,
+                receiver_noise_femtowatts: 10,
+                propagation_fields: id("propagation"),
+                sinr_transfer: id("transfer"),
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test RF effect should be valid: {error}"));
+        let action = ResolvedBindingAction {
+            kind: BindingActionKind::Apply,
+            binding: id("rf-binding"),
+            target: ResolvedFaultTarget::NetworkSegment {
+                segment: id("network-test-segment"),
+                direction: crucible::model::FaultDirection::AToB,
+            },
+            phase: FaultPhase::Resolve,
+            effect: Arc::new(effect),
+            mapping_output: Arc::new(ResolvedMappingOutput::ServiceProfile {
+                service_profile: id("rf-inputs"),
+                input_contracts: vec![
+                    crucible::model::ServiceProfileInput {
+                        role: id("distance"),
+                        shape: crucible::model::SignalShape {
+                            value_type: crucible::model::SignalValueType::U64,
+                            unit: crucible::model::SignalUnit::Millimetres,
+                            scale_decimal_exponent: 0,
+                        },
+                    },
+                    crucible::model::ServiceProfileInput {
+                        role: id("orientation"),
+                        shape: crucible::model::SignalShape {
+                            value_type: crucible::model::SignalValueType::I64,
+                            unit: crucible::model::SignalUnit::Millidegrees,
+                            scale_decimal_exponent: 0,
+                        },
+                    },
+                    crucible::model::ServiceProfileInput {
+                        role: id("interference"),
+                        shape: crucible::model::SignalShape {
+                            value_type: crucible::model::SignalValueType::U64,
+                            unit: crucible::model::SignalUnit::Femtowatts,
+                            scale_decimal_exponent: 0,
+                        },
+                    },
+                    crucible::model::ServiceProfileInput {
+                        role: id("fading"),
+                        shape: crucible::model::SignalShape {
+                            value_type: crucible::model::SignalValueType::U64,
+                            unit: crucible::model::SignalUnit::PartsPerMillion,
+                            scale_decimal_exponent: 0,
+                        },
+                    },
+                ],
+                inputs: vec![
+                    crucible::model::SignalValue::U64(10),
+                    crucible::model::SignalValue::I64(0),
+                    crucible::model::SignalValue::U64(5),
+                    crucible::model::SignalValue::U64(1_000_000),
+                ],
+            }),
+            mapped_digest: ContentHash::from_bytes(b"rf-inputs"),
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Signal,
+        };
+        let opportunity = FaultOpportunity::new(
+            action.target.clone(),
+            crucible::model::FaultOperation::NetworkTraverse,
+            FaultPhase::Resolve,
+            action.coordinate,
+            1,
+            Some(crucible::model::FaultDirection::AToB),
+            OpportunityPayload::NetworkFrame {
+                producer: id("sender"),
+                destination: id("receiver"),
+                producer_sequence: 1,
+                length_bytes: 1,
+                payload_digest: ContentHash::from_bytes(b"frame"),
+            },
+        )
+        .unwrap_or_else(|error| panic!("test RF opportunity should be valid: {error}"));
+        let mut payload = vec![0_u8];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        apply_network_frame_action(
+            &mut payload,
+            &mut effects,
+            &action,
+            &opportunity,
+            ContentHash::from_bytes(b"scenario"),
+            &topology,
+        )
+        .unwrap_or_else(|error| panic!("RF effect should execute: {error}"));
+        assert_eq!(effects.serialization_rate_cap_bps(), Some(8_000));
+        assert!(!effects.is_dropped());
     }
 
     fn reservation(class: &str, sequence: u64, bytes: u64) -> NetworkQueueReservation {

@@ -633,16 +633,14 @@ pub enum NetworkEffectSpecification {
         carrier_hz: PositiveU64,
         /// Channel bandwidth in hertz.
         bandwidth_hz: PositiveU64,
-        /// Signed transmit power in the declared fixed-point unit.
-        transmit_power: i64,
-        /// Signed receiver noise in the declared fixed-point unit.
-        receiver_noise: i64,
-        /// Registered gain/attenuation field bundle.
+        /// Transmit power in canonical integer femtowatts.
+        transmit_power_femtowatts: u64,
+        /// Receiver noise power in canonical integer femtowatts.
+        receiver_noise_femtowatts: u64,
+        /// Registered path and antenna gain-ratio bundle.
         propagation_fields: FaultObjectId,
         /// Registered SINR-to-profile transfer table.
         sinr_transfer: FaultObjectId,
-        /// Optional correlated fading field.
-        fading_field: Option<FaultObjectId>,
     },
     /// Authentication, association, and handoff machine.
     Association {
@@ -674,8 +672,6 @@ pub enum NetworkEffectSpecification {
     Contact {
         /// Ordered contact-interval artifact.
         intervals: FaultObjectId,
-        /// Acquisition and teardown policy.
-        transition_policy: FaultObjectId,
         /// Range-to-delay lookup.
         range_delay_lookup: FaultObjectId,
         /// Candidate beam identities.
@@ -899,6 +895,15 @@ impl NetworkEffectSpecification {
                         effect: self.kind(),
                     })
                 }
+            }
+            Self::RfChannel {
+                transmit_power_femtowatts,
+                receiver_noise_femtowatts,
+                ..
+            } if *transmit_power_femtowatts == 0 || *receiver_noise_femtowatts == 0 => {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
             }
             _ => Ok(()),
         }

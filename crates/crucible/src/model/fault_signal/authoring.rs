@@ -2981,6 +2981,17 @@ pub(crate) enum FaultSignalAuthoringError {
         /// Actual class, or none when the declaration is absent.
         actual: Option<&'static str>,
     },
+    /// A network service effect was not bound to its exact physical input schema.
+    InvalidNetworkServiceInputs {
+        /// Binding containing the service mapping.
+        binding: String,
+        /// Network effect requiring the inputs.
+        effect: &'static str,
+        /// Required ordered named physical inputs.
+        expected: Vec<ServiceProfileInput>,
+        /// Admitted inputs, or none for a non-service mapping.
+        actual: Option<Vec<ServiceProfileInput>>,
+    },
     /// A telemetry or coordinate adapter is outside the executable registry.
     UnsupportedAdapter(String),
     /// A telemetry field is absent from the selected adapter registry.
@@ -3086,6 +3097,15 @@ impl fmt::Display for FaultSignalAuthoringError {
                 formatter,
                 "binding `{binding}` field `{field}` references network policy `{reference}` with class {}, expected {expected}",
                 actual.unwrap_or("absent")
+            ),
+            Self::InvalidNetworkServiceInputs {
+                binding,
+                effect,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "binding `{binding}` maps `{effect}` with physical inputs {actual:?}, expected {expected:?}"
             ),
             Self::UnsupportedAdapter(adapter) => {
                 write!(

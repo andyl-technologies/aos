@@ -196,16 +196,26 @@ sinr_ratio = signal_fw / (interference_fw + noise_fw)
 profile = transfer_table(mode, sinr_ratio, load_state)
 ```
 
-All multiplications are checked rational operations with declared rounding;
-power sum overflow fails. The transfer table returns candidate mode/service,
+Gain tables return nonnegative ratios in millionths. Each multiplication and
+the final SINR division use checked `u128` intermediates and round ties to even;
+power sum or result-width overflow fails. Propagation and transfer are distinct
+artifact kinds, so neither declaration carries ignored fields. The transfer table returns candidate mode/service,
 detected/undetected error probabilities, retry distribution table, and quality
 telemetry. Spatial fading keys include field ID, quantized position, frequency
 resource, and time bucket; per-frame fast fading additionally includes frame ID.
 
-RF configuration requires carrier kHz, bandwidth kHz, transmit power, receiver
-noise table, antenna pattern artifact, path-gain artifact, transfer artifact,
+RF configuration requires carrier Hz, bandwidth Hz, transmit power and receiver
+noise in femtowatts, antenna/path gain-ratio artifact, transfer artifact,
 spatial/time correlation scales, channel resources, and outside-table behavior.
 No free-form radio model name is accepted.
+
+The RF service-profile input contract is ordered `distance: u64 millimetres`,
+`orientation: i64 millidegrees`, `interference: u64 femtowatts`, and
+`fading: u64 parts_per_million`, all at decimal scale zero. A constant
+`1_000_000` fading signal represents no fading. `interference` is the exact sum of external interference and other
+received transmitters at the joint medium opportunity. Contact service profiles
+separately require `range: u64 millimetres` at scale zero. These role names and
+shapes are normative; admission rejects aliases and omissions.
 
 ## 10.7 Wireless technology machines
 

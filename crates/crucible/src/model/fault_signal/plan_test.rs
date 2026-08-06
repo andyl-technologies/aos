@@ -95,6 +95,77 @@ fn network_effect_policy_references_are_typed_and_world_owned() {
         .unwrap_or_else(|error| panic!("typed policy reference should validate: {error}"));
 }
 
+#[test]
+fn rf_channel_rejects_ambiguous_service_profile_inputs() {
+    let program = u64_program(10);
+    let profile = object_id("ambiguous-rf-inputs");
+    let registry = BindingMappingRegistry::new(
+        Vec::new(),
+        vec![ServiceProfileDeclaration {
+            id: profile.clone(),
+            semantic_version: 1,
+            effect: EffectKind::NetworkRfChannel,
+            inputs: vec![ServiceProfileInput {
+                role: object_id("unknown-rf-input"),
+                shape: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
+                    .unwrap_or_else(|error| panic!("ambiguous RF shape: {error}")),
+            }],
+            parameters: vec![MappedEffectParameter::BitsPerSecond],
+        }],
+    )
+    .unwrap_or_else(|error| panic!("RF mapping registry: {error}"));
+    let target = ResolvedTargetSet::new(
+        vec![ResolvedFaultTarget::NetworkSegment {
+            segment: test_segment_id(),
+            direction: FaultDirection::AToB,
+        }],
+        false,
+    )
+    .unwrap_or_else(|error| panic!("RF target: {error}"));
+    let effect = EffectRequest::new(
+        EFFECT_SEMANTIC_VERSION,
+        EffectLifetime::Persistent,
+        EffectSpecification::Network(NetworkEffectSpecification::RfChannel {
+            carrier_hz: PositiveU64::new("carrier_hz", 2_400_000_000)
+                .unwrap_or_else(|error| panic!("RF carrier: {error}")),
+            bandwidth_hz: PositiveU64::new("bandwidth_hz", 20_000_000)
+                .unwrap_or_else(|error| panic!("RF bandwidth: {error}")),
+            transmit_power_femtowatts: 100,
+            receiver_noise_femtowatts: 10,
+            propagation_fields: object_id("rf-propagation"),
+            sinr_transfer: object_id("rf-transfer"),
+        }),
+    )
+    .unwrap_or_else(|error| panic!("RF effect: {error}"));
+    let binding = FaultBinding::new_with_registry(
+        object_id("ambiguous-rf-binding"),
+        program.exported_outputs().to_vec(),
+        BindingSampling::AtBoundary,
+        BindingMapping::ServiceProfile {
+            service_profile: profile,
+        },
+        TargetSelector::Exact(target),
+        [FaultPhase::Resolve].into_iter().collect(),
+        effect,
+        None,
+        BindingSearchPolicy::Fixed,
+        BindingObservabilityPolicy::default(),
+        &program,
+        &registry,
+    )
+    .unwrap_or_else(|error| panic!("RF binding: {error}"));
+    let plan = FaultSignalPlan::new(vec![program], vec![binding])
+        .unwrap_or_else(|error| panic!("RF plan: {error}"));
+
+    assert!(matches!(
+        plan.validate_for_world(&test_world()),
+        Err(FaultSignalAuthoringError::InvalidNetworkServiceInputs {
+            effect: "rf_channel",
+            ..
+        })
+    ));
+}
+
 fn test_segment_id() -> FaultObjectId {
     test_link()
         .fault_segment_id()
@@ -770,10 +841,11 @@ fn wire_admission_rejects_versions_missing_programs_and_duplicate_contracts() {
         id: object_id("unused-service"),
         semantic_version: 1,
         effect: EffectKind::NetworkAvailability,
-        inputs: vec![
-            SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
+        inputs: vec![ServiceProfileInput {
+            role: object_id("unused-input"),
+            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
                 .unwrap_or_else(|error| panic!("service input shape: {error}")),
-        ],
+        }],
         parameters: vec![MappedEffectParameter::UnsignedCount],
     });
     assert!(matches!(
