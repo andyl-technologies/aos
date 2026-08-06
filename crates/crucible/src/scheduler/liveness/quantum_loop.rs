@@ -56,6 +56,19 @@ impl QuantumLoop for SingleScheduler {
         })
     }
 
+    fn backend_observation_time(
+        &self,
+        node: &NodeId,
+        at: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let index = self.vm_node_index(node)?;
+        Ok(VirtualTime {
+            ticks: self
+                .node_time_for_counter(&self.nodes[index], NodeCounter { ticks: at.ticks })?
+                .nanos,
+        })
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,

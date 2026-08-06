@@ -1,6 +1,7 @@
 //! Terminal event-stream draining and canonical coverage reconstruction.
 
 use super::*;
+use crucible_session::{EngineState, Outcome};
 
 pub(crate) async fn observe_next_event(
     control: &mut crucible_api::ClientControlStream,
@@ -171,7 +172,15 @@ pub(crate) async fn query_run_terminal_configuration(
         }
     }
     match response.query_result {
-        Some(QueryResult::Snapshot(snapshot)) => Ok(snapshot.configuration),
+        Some(QueryResult::Snapshot(snapshot)) => {
+            if let EngineState::Stopped {
+                outcome: Outcome::Crashed { detail },
+            } = &snapshot.state
+            {
+                eprintln!("crucible: terminal backend crash: {detail}");
+            }
+            Ok(snapshot.configuration)
+        }
         Some(other) => Err(backend_error(format!(
             "terminal configuration snapshot returned unexpected payload: {other:?}"
         ))),

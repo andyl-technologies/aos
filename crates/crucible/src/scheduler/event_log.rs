@@ -88,6 +88,25 @@ pub trait QuantumLoop {
         Ok(VirtualTime { ticks: at.retired })
     }
 
+    /// Projects a backend observation's physical counter onto scheduler time.
+    ///
+    /// Backends whose counters share the scheduler origin use the identity
+    /// projection. Production VM schedulers override this for ready-point and
+    /// restart counter origins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node is unknown or the physical
+    /// counter cannot be projected onto the scheduler timeline.
+    fn backend_observation_time(
+        &self,
+        node: &NodeId,
+        at: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let _ = node;
+        Ok(at)
+    }
+
     /// Samples a deterministic execution fingerprint for `node`.
     ///
     /// Backends that do not own concrete VM state use the default unsupported
