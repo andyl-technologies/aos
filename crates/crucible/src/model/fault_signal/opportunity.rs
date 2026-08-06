@@ -794,6 +794,8 @@ pub struct FaultCoordinate {
 
 /// Maximum nested scheduler-owned protocol expansions for one network frame.
 pub const HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH: usize = 256;
+/// Maximum nested scheduler-generated reverse-path responses.
+pub const HARD_NETWORK_RESPONSE_DEPTH: u8 = 8;
 
 /// Bounded immutable metadata needed to distinguish and validate an operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -812,6 +814,10 @@ pub enum OpportunityPayload {
         producer_sequence: u64,
         /// Nested scheduler-owned protocol-expansion ordinals.
         protocol_expansion_path: Vec<u16>,
+        /// Number of scheduler-generated responses in this frame's ancestry.
+        generated_response_depth: u8,
+        /// Opportunity that generated this frame, absent for guest frames.
+        generated_response_cause: Option<ContentHash>,
         /// Frame length in bytes.
         length_bytes: u64,
         /// Digest of immutable frame bytes or normalized fields.
@@ -867,8 +873,11 @@ impl OpportunityPayload {
         match self {
             Self::NetworkFrame {
                 protocol_expansion_path,
+                generated_response_depth,
                 ..
-            } if protocol_expansion_path.len() > HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH => {
+            } if protocol_expansion_path.len() > HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+                || *generated_response_depth > HARD_NETWORK_RESPONSE_DEPTH =>
+            {
                 return Err(FaultContractError::InvalidPayload);
             }
             Self::StorageRequest {
@@ -897,6 +906,8 @@ impl OpportunityPayload {
                 destination,
                 producer_sequence,
                 protocol_expansion_path,
+                generated_response_depth,
+                generated_response_cause,
                 length_bytes,
                 payload_digest,
             } => {
@@ -910,6 +921,11 @@ impl OpportunityPayload {
                 );
                 for ordinal in protocol_expansion_path {
                     push_u64(material, u64::from(*ordinal));
+                }
+                push_u64(material, u64::from(*generated_response_depth));
+                match generated_response_cause {
+                    Some(cause) => push_text(material, &cause.to_hex()),
+                    None => material.push_str("none;"),
                 }
                 push_u64(material, *length_bytes);
                 push_text(material, &payload_digest.to_hex());
@@ -1373,6 +1389,8 @@ mod tests {
                     destination: id("receiver"),
                     producer_sequence: 7,
                     protocol_expansion_path,
+                    generated_response_depth: 0,
+                    generated_response_cause: None,
                     length_bytes: 1_500,
                     payload_digest: ContentHash::from_bytes(b"frame"),
                 },

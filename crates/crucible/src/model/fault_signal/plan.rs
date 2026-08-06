@@ -358,24 +358,35 @@ fn validate_network_effect_policy_references(
         } => require(reference, integer, "distribution_lookup")?,
         NetworkEffectSpecification::QueuePolicy {
             discipline,
-            discipline_parameters: Some(reference),
+            discipline_parameters,
+            typed_error,
             ..
         } => {
-            require(
-                reference,
-                &[NetworkPolicyArtifactClass::QueueDiscipline],
-                "discipline_parameters",
-            )?;
-            let declaration = topology.network_policy_artifact(reference).ok_or_else(|| {
-                FaultSignalAuthoringError::InvalidNetworkPolicyReference {
-                    binding: binding.id().as_str().to_owned(),
-                    reference: reference.as_str().to_owned(),
-                    field: "discipline_parameters",
-                    expected: String::from("queue_discipline"),
-                    actual: None,
-                }
-            })?;
-            if let NetworkPolicyArtifactKind::QueueDiscipline(parameters) = &declaration.artifact {
+            if let Some(reference) = discipline_parameters {
+                require(
+                    reference,
+                    &[NetworkPolicyArtifactClass::QueueDiscipline],
+                    "discipline_parameters",
+                )?;
+                let declaration = topology.network_policy_artifact(reference).ok_or_else(|| {
+                    FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: reference.as_str().to_owned(),
+                        field: "discipline_parameters",
+                        expected: String::from("queue_discipline"),
+                        actual: None,
+                    }
+                })?;
+                let NetworkPolicyArtifactKind::QueueDiscipline(parameters) = &declaration.artifact
+                else {
+                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: reference.as_str().to_owned(),
+                        field: "discipline_parameters",
+                        expected: String::from("queue_discipline"),
+                        actual: Some(declaration.artifact.class().as_str()),
+                    });
+                };
                 let class_discipline = matches!(
                     discipline,
                     NetworkQueueDiscipline::StrictPriority
@@ -409,6 +420,13 @@ fn validate_network_effect_policy_references(
                         "queue_class.selector",
                     )?;
                 }
+            }
+            if let Some(reference) = typed_error {
+                require(
+                    reference,
+                    &[NetworkPolicyArtifactClass::TypedResponse],
+                    "typed_error",
+                )?;
             }
         }
         NetworkEffectSpecification::BurstErrorState {
@@ -477,7 +495,7 @@ fn validate_network_effect_policy_references(
             ..
         } => require(
             reference,
-            &[NetworkPolicyArtifactClass::ControlResult],
+            &[NetworkPolicyArtifactClass::TypedResponse],
             "typed_error",
         )?,
         NetworkEffectSpecification::ForwardingMutation { selector, .. } => require(
@@ -522,7 +540,7 @@ fn validate_network_effect_policy_references(
             if let Some(reference) = typed_reject {
                 require(
                     reference,
-                    &[NetworkPolicyArtifactClass::ControlResult],
+                    &[NetworkPolicyArtifactClass::TypedResponse],
                     "typed_reject",
                 )?;
             }
@@ -781,7 +799,6 @@ fn validate_network_effect_policy_references(
         | NetworkEffectSpecification::Jitter { .. }
         | NetworkEffectSpecification::ServiceCurve { .. }
         | NetworkEffectSpecification::TokenBucket { .. }
-        | NetworkEffectSpecification::QueuePolicy { .. }
         | NetworkEffectSpecification::FrameLoss { .. }
         | NetworkEffectSpecification::Duplicate { .. }
         | NetworkEffectSpecification::Reorder { .. }

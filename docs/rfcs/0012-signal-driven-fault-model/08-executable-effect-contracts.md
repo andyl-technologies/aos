@@ -100,21 +100,21 @@ the effect record.
 | `network.jitter` | opportunity; resolve | `maximum_nanos`, `distribution` | checked-sum keyed draws | `network.jitter.v1`; draw key/value |
 | `network.service_curve` | persistent; queue | ordered `segments = [{at_nanos, rate_bps}]` | minimum simultaneous service constraints | `network.service-curve.v1`; service interval integration ledger |
 | `network.token_bucket` | persistent state; queue | `rate_bps`, `burst_bits`, `initial_bits` | all buckets constrain service | `network.token-bucket.v1`; before/after tokens and refill coordinate |
-| `network.queue_policy` | persistent state; admit/queue | `capacity_bytes`, `capacity_frames`, `discipline`, discipline parameters, `overflow` | conflict per queue | `network.queue.v1`; occupancy, selected class, overflow decision |
+| `network.queue_policy` | persistent state; admit/queue | `capacity_bytes`, `capacity_frames`, `discipline`, discipline parameters, `overflow`; `typed_error` response artifact iff overflow is `typed_error` | conflict per queue | `network.queue.v1`; occupancy, selected class, overflow decision and response ID |
 | `network.frame_loss` | opportunity; resolve/deliver | `probability_millionths` or explicit outcome | independent-hazards | `network.frame-loss.v1`; frame ID, decisions, loss cause |
 | `network.burst_error_state` | state-machine; resolve | good/bad transition probabilities and per-state loss/corruption parameters | conflict per named burst process | `network.burst-errors.v1`; prior/new burst state and decision keys |
 | `network.duplicate` | opportunity; deliver | `probability_millionths`, `gap_nanos`, `copies` | checked sum of bounded copies then canonical delivery order | `network.duplicate.v1`; copy IDs and delivery coordinates |
 | `network.reorder` | opportunity; deliver | `window_nanos`, `selection` | maximum window; keyed shift per contributor | `network.reorder.v1`; original/resolved order and shifts |
 | `network.payload_transform` | opportunity; resolve | `kind = bit_flip/field_mutation/truncate/undetected_corruption`, kind fields | ordered-transform | `network.payload-transform.v1`; byte/field selectors and before/after digests |
 | `network.detected_frame_error` | opportunity; resolve | `kind = crc/fcs/framing/fec_uncorrectable`, `receiver_action`; retry declares delay, limit, actual attempts, and final success; reset declares retraining duration | severity `corrected < retry < drop < link_reset` | `network.detected-error.v1`; syndrome/class, attempts, final outcome, and action |
-| `network.mtu` | persistent; admit | `mtu_bytes`, `oversize = drop/fragment/typed_error` | minimum MTU; conflict on oversize rule | `network.mtu.v1`; original size and disposition |
+| `network.mtu` | persistent; admit | `mtu_bytes`, `oversize = drop/fragment/typed_error`; fragmentation protocol iff fragment; response artifact iff typed error | minimum MTU; conflict on oversize rule | `network.mtu.v1`; original size, disposition, expansion path or response ID |
 | `network.pause_backpressure` | persistent/state; queue | `class`, optional `pause_nanos`; omission pauses until contribution removal | maximum pause boundary per class | `network.backpressure.v1`; queue/service suspension ledger |
 | `network.recipient_subset` | opportunity; deliver | `membership_version`, `drop_members` or keyed selection | ordered set intersection | `network.recipient-subset.v1`; candidate and delivered IDs |
 | `network.forwarder_lifecycle` | impulse/state; boundary | `transition = restart/reset/power_loss`, `downtime_nanos`, queue/table policies | severity | `network.forwarder-lifecycle.v1`; state and lost/preserved data |
 | `network.forwarding_mutation` | impulse/persistent; resolve | `kind = wrong_port/flood/blackhole/loop/stale_age`, selector and replacement | ordered-transform by rule identity | `network.forwarding-mutation.v1`; lookup inputs, before/after entries, chosen hop |
 | `network.route_transition` | state-machine; boundary/resolve | old/new route IDs, convergence events, in-flight policy | state-machine | `network.route-transition.v1`; paths, cause, convergence and traffic treatment |
 | `network.control_plane_service` | persistent state; queue/resolve | service curve, queue bound, drop/timeout policy | minimum service and shared queue | `network.control-plane.v1`; queued events and applied transitions |
-| `network.firewall_disposition` | opportunity/state; admit | `action = accept/reject/drop`, typed reject, rule/state IDs | most restrictive unless explicit ordered chain | `network.firewall.v1`; rule trace and state transition |
+| `network.firewall_disposition` | opportunity/state; admit | `action = accept/reject/drop`, response artifact iff reject, rule/state IDs | most restrictive unless explicit ordered chain | `network.firewall.v1`; rule trace, state transition and response ID |
 | `network.connection_state` | state-machine; resolve | `kind = nat/conntrack/load_balancer/tunnel/dns`, table bounds and transition event | state-machine | domain capability; entry before/after, mapping/backend/answer/path result |
 | `network.shared_medium` | persistent state; admit/queue/resolve | channel resources, arbitration, collision, capture, backoff and duty-cycle parameters | one conflict-free policy per medium; signals combine as inputs | `network.shared-medium.v1`; contenders, allocation, collision/capture, service |
 | `network.rf_channel` | persistent/opportunity; resolve | carrier/bandwidth, power, noise, gain, attenuation, SINR transfer table, fading field IDs | power/interference sum in exact linear unit then transfer lookup | `network.rf-channel.v1`; sampled geometry/field/power and resulting profile |
@@ -158,6 +158,63 @@ ordinals. The path enters pending-frame ordering, checkpoint identity, and
 every downstream opportunity ID; two byte-identical child frames therefore
 cannot alias. Nested expansion depth is bounded at 256 and fails atomically
 before staging child frames.
+
+### 8.3.2 Typed reverse-path responses
+
+MTU `typed_error`, firewall `reject`, and queue `typed_error` all reference the
+same `typed_response` world artifact class. They never return host errors or
+inject packets directly into a guest. The forward frame is rejected, and the
+scheduler either suppresses the protocol response or stages a complete Ethernet
+response from the selected route endpoint to the original producer. That frame
+has no locked route and traverses ordinary reverse route resolution, fault
+targets, phases, queues, service constraints, serialization, loss, corruption,
+and later generated-response effects.
+
+A typed-response artifact contains a nonempty ordered list of response variants
+and `unmatched = suppress/fail_closed`. Variants are tried in declaration order.
+Only `protocol_mismatch` advances to the next variant. A matching protocol's
+suppression rule ends response processing without a packet; a malformed matching
+packet or encoder failure fails the scheduler closed. `opaque_ethernet` matches
+every request and therefore may appear only as the final variant. These rules
+let one MTU or firewall policy carry IPv4 and IPv6 responses without treating
+normal dual-stack traffic as malformed.
+
+The closed response variants are:
+
+| Variant | Required fields | Generated result and restrictions |
+| --- | --- | --- |
+| `icmpv4_destination_unreachable` | code `0..=15` except 4; quoted payload byte limit | Ethernet + IPv4 + ICMP type 3; quotes the complete variable-length IPv4 header plus the bounded payload prefix |
+| `icmpv4_packet_too_big` | quoted payload byte limit; next-hop MTU at least 68 | Ethernet + IPv4 + ICMP type 3 code 4 with the MTU in the low 16 bits of the unused field |
+| `icmpv4_time_exceeded` | code 0 or 1; quoted payload byte limit | Ethernet + IPv4 + ICMP type 11 |
+| `icmpv6_destination_unreachable` | code `0..=7`; quoted payload byte limit | Ethernet + IPv6 + ICMPv6 type 1; quotes the base header plus the bounded original payload prefix |
+| `icmpv6_packet_too_big` | quoted payload byte limit; next-hop MTU at least 1280 | Ethernet + IPv6 + ICMPv6 type 2 with the 32-bit MTU |
+| `tcp_reset` | no kind-specific fields | IPv4 or IPv6 TCP reset with ports reversed and standard sequence/acknowledgement rules; IPv6 extension headers are walked; incoming resets and non-initial fragments are suppressed |
+| `opaque_ethernet` | complete 14-byte-or-larger bounded frame | Emits the exact declared bytes; no generated header field may be configured |
+
+Each generated-protocol variant declares a positive TTL/hop limit, optional
+source MAC, optional family-appropriate source IP, an IPv4 identification where
+applicable, and optional positive virtual response delay. Absent source values
+reverse the request addresses. IPv4 and IPv6 transport and ICMP checksums are
+recomputed. IPv6 extension walking is bounded at 16 headers; malformed or
+overlong chains fail closed. Opaque responses use only their exact bytes and
+optional delay, so every generated-header field must be its zero/absent value.
+
+ICMPv4 errors are suppressed for link/IP multicast or broadcast destinations,
+unspecified, broadcast, or multicast sources, non-initial fragments, and ICMP
+errors in response to ICMP errors. ICMPv6 errors are suppressed for unspecified
+or multicast sources and ICMPv6 errors in response to ICMPv6 errors. Multicast
+destinations suppress ICMPv6 errors except Packet Too Big. TCP reset generation
+suppresses a reset in response to a reset.
+
+The configured response delay is measured from the rejecting opportunity. A
+delayed response is a checkpointed pending frame and installs an exact scheduler
+wakeup. Every response continuation records the cause opportunity and an
+ancestry depth. Both enter ordering and downstream opportunity identity. Forward
+cursor completions, protocol-expansion paths, availability preservation, and
+resolved frame effects are reset because they belong to the rejected frame.
+Response ancestry is bounded at eight; exceeding the bound fails atomically and
+prevents response loops from growing without limit. Simultaneous rejecting
+effects must select the same response artifact or the opportunity fails closed.
 
 ## 8.4 Storage and 9p effect registry
 

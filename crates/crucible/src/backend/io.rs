@@ -228,6 +228,30 @@ mod tests {
         assert!(first < second);
         assert_eq!(first.protocol_expansion_path(), &[0, 7]);
     }
+
+    #[test]
+    fn generated_response_resets_forward_state_and_enforces_depth() {
+        let cause = ContentHash::from_bytes(b"reject");
+        let mut parent = BackendNetworkFaultContinuation::default();
+        parent.append_protocol_expansion_ordinal(3);
+        parent
+            .cursor_mut()
+            .complete(target(), FaultPhase::Resolve)
+            .unwrap_or_else(|error| panic!("parent cursor: {error}"));
+        let mut child = parent
+            .generated_response(cause)
+            .unwrap_or_else(|| panic!("first response must fit"));
+        assert_eq!(child.generated_response_depth(), 1);
+        assert_eq!(child.generated_response_cause(), Some(cause));
+        assert!(child.protocol_expansion_path().is_empty());
+        assert!(child.cursor().completed_phases().is_empty());
+        for ordinal in 1..crate::model::HARD_NETWORK_RESPONSE_DEPTH {
+            child = child
+                .generated_response(ContentHash::from_bytes(&[ordinal]))
+                .unwrap_or_else(|| panic!("bounded response {ordinal} must fit"));
+        }
+        assert!(child.generated_response(cause).is_none());
+    }
 }
 
 /// Fault-policy continuation retained with one scheduler-queued frame.
@@ -239,6 +263,10 @@ pub struct BackendNetworkFaultContinuation {
     resolved_frame_effects: crucible_device::ResolvedNetworkFrameEffects,
     /// Nested protocol-expansion ordinals from the guest frame to this child.
     protocol_expansion_path: Vec<u16>,
+    /// Number of scheduler-generated responses in this frame's ancestry.
+    generated_response_depth: u8,
+    /// Opportunity that generated this frame, absent for guest frames.
+    generated_response_cause: Option<ContentHash>,
     /// Resumable ordered route/phase position.
     cursor: BackendNetworkFaultCursor,
 }
@@ -312,6 +340,49 @@ impl BackendNetworkFaultContinuation {
     #[must_use]
     pub fn protocol_expansion_path(&self) -> &[u16] {
         &self.protocol_expansion_path
+    }
+
+    /// Records one scheduler-generated response and its exact cause.
+    ///
+    /// Returns `false` without mutation when the hard response-depth bound has
+    /// already been reached.
+    pub fn begin_generated_response(&mut self, cause: ContentHash) -> bool {
+        if self.generated_response_depth >= crate::model::HARD_NETWORK_RESPONSE_DEPTH {
+            return false;
+        }
+        self.generated_response_depth += 1;
+        self.generated_response_cause = Some(cause);
+        true
+    }
+
+    /// Creates a fresh route continuation for a generated child response.
+    ///
+    /// The child retains only bounded response ancestry. Route cursor state,
+    /// resolved frame effects, availability preservation, and protocol
+    /// expansion belong to the rejected forward frame and are reset.
+    #[must_use]
+    pub fn generated_response(&self, cause: ContentHash) -> Option<Self> {
+        let depth = self.generated_response_depth.checked_add(1)?;
+        if depth > crate::model::HARD_NETWORK_RESPONSE_DEPTH {
+            return None;
+        }
+        Some(Self {
+            generated_response_depth: depth,
+            generated_response_cause: Some(cause),
+            ..Self::default()
+        })
+    }
+
+    /// Returns the number of generated responses in this frame's ancestry.
+    #[must_use]
+    pub const fn generated_response_depth(&self) -> u8 {
+        self.generated_response_depth
+    }
+
+    /// Returns the opportunity that generated this frame, when applicable.
+    #[must_use]
+    pub const fn generated_response_cause(&self) -> Option<ContentHash> {
+        self.generated_response_cause
     }
 
     /// Returns the resumable ordered route/phase position.

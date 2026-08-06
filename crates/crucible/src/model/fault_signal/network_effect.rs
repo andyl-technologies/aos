@@ -476,6 +476,8 @@ pub enum NetworkEffectSpecification {
         discipline_parameters: Option<FaultObjectId>,
         /// Overflow disposition.
         overflow: NetworkQueueOverflow,
+        /// Reverse-path response artifact, present only for `typed_error`.
+        typed_error: Option<FaultObjectId>,
     },
     /// Per-frame loss decision.
     FrameLoss {
@@ -780,16 +782,20 @@ impl NetworkEffectSpecification {
             Self::QueuePolicy {
                 discipline,
                 discipline_parameters,
+                overflow,
+                typed_error,
                 ..
             } => {
-                let valid = match discipline {
+                let discipline_valid = match discipline {
                     NetworkQueueDiscipline::Fifo => discipline_parameters.is_none(),
                     NetworkQueueDiscipline::StrictPriority
                     | NetworkQueueDiscipline::WeightedRoundRobin
                     | NetworkQueueDiscipline::DeficitRoundRobin
                     | NetworkQueueDiscipline::Red => discipline_parameters.is_some(),
                 };
-                if valid {
+                let overflow_valid =
+                    matches!(overflow, NetworkQueueOverflow::TypedError) == typed_error.is_some();
+                if discipline_valid && overflow_valid {
                     Ok(())
                 } else {
                     Err(FaultContractError::InvalidEffectParameters {
@@ -905,6 +911,21 @@ impl NetworkEffectSpecification {
                     })
                 }
             }
+            Self::FirewallDisposition {
+                action,
+                typed_reject,
+                ..
+            } => {
+                let valid =
+                    matches!(action, NetworkFirewallAction::Reject) == typed_reject.is_some();
+                if valid {
+                    Ok(())
+                } else {
+                    Err(FaultContractError::InvalidEffectParameters {
+                        effect: self.kind(),
+                    })
+                }
+            }
             Self::RfChannel {
                 transmit_power_femtowatts,
                 receiver_noise_femtowatts,
@@ -987,5 +1008,36 @@ mod tests {
         assert!(retry(3, false).validate().is_ok());
         assert!(retry(2, false).validate().is_err());
         assert!(retry(4, true).validate().is_err());
+    }
+
+    #[test]
+    fn packet_rejections_require_and_only_accept_response_artifacts() {
+        let response = FaultObjectId::parse("response")
+            .unwrap_or_else(|error| panic!("test response ID: {error}"));
+        let rule =
+            FaultObjectId::parse("rule").unwrap_or_else(|error| panic!("test rule ID: {error}"));
+        let state =
+            FaultObjectId::parse("state").unwrap_or_else(|error| panic!("test state ID: {error}"));
+        let firewall = |action, typed_reject| NetworkEffectSpecification::FirewallDisposition {
+            action,
+            typed_reject,
+            rule: rule.clone(),
+            state: state.clone(),
+        };
+        assert!(
+            firewall(NetworkFirewallAction::Reject, Some(response.clone()))
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            firewall(NetworkFirewallAction::Reject, None)
+                .validate()
+                .is_err()
+        );
+        assert!(
+            firewall(NetworkFirewallAction::Drop, Some(response))
+                .validate()
+                .is_err()
+        );
     }
 }
