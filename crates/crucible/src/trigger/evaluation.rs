@@ -416,6 +416,7 @@ pub(super) fn push_observed_state_facts(
         )
         | SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
+        | SchedulerEventLogPayload::FaultObservation(_)
         | SchedulerEventLogPayload::Diagnostic(_) => {}
     }
     Ok(())
@@ -452,6 +453,7 @@ pub(super) fn push_condition_runtime_facts(
         | SchedulerEventLogPayload::Decision(_)
         | SchedulerEventLogPayload::Observable(_)
         | SchedulerEventLogPayload::EvaluationBoundary(_)
+        | SchedulerEventLogPayload::FaultObservation(_)
         | SchedulerEventLogPayload::Diagnostic(_) => {}
     }
 }

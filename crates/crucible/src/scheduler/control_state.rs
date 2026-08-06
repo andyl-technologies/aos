@@ -67,6 +67,8 @@ pub enum SchedulerEventLogPayload {
     TriggerFired(EventFiring),
     /// A deterministic trigger action effect applied at the firing boundary.
     TriggerActionApplied(TriggerActionApplication),
+    /// Typed evidence from signal-driven fault evaluation and application.
+    FaultObservation(crate::model::FaultObservation),
     /// An observational diagnostic escape-hatch entry.
     Diagnostic(EventDiagnosticPayload),
 }

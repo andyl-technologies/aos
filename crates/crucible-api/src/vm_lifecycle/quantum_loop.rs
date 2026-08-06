@@ -5,8 +5,12 @@ use super::*;
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.reconcile_backend_membership()?;
-        self.evaluate_signal_fault_boundary()?;
-        let pre_quantum_trigger_appends = self.settle_trigger_graph()?;
+        let mut pre_quantum_appends = Vec::new();
+        let fault_append = self.evaluate_signal_fault_boundary()?;
+        if !fault_append.entries.is_empty() {
+            pre_quantum_appends.push(fault_append);
+        }
+        pre_quantum_appends.extend(self.settle_trigger_graph()?);
         self.reconcile_backend_membership()?;
         if self.branch.as_ref().is_some_and(|branch| {
             branch.base == request.configuration && !request.control.is_empty()
@@ -110,7 +114,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     event_log_offset: append.offset,
                     scheduler_quiescence,
                 };
-                prepend_event_log_appends(&mut outcome, pre_quantum_trigger_appends);
+                prepend_event_log_appends(&mut outcome, pre_quantum_appends);
                 return Ok(outcome);
             }
             if request.configuration.schedule.len() > branch.base.schedule.len()
@@ -126,7 +130,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             }
         }
         let mut outcome = crucible_session::drive_engine_quantum(&mut self.inner, request)?;
-        prepend_event_log_appends(&mut outcome, pre_quantum_trigger_appends);
+        prepend_event_log_appends(&mut outcome, pre_quantum_appends);
         for append in self.settle_trigger_graph()? {
             merge_event_log_append(&mut outcome, append);
         }
@@ -226,7 +230,9 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
 impl ProductionVmLifecycleLoop {
     /// Evaluates the signal program exactly once in the ordered sequence of
     /// scheduler visits to the current virtual-time coordinate.
-    fn evaluate_signal_fault_boundary(&mut self) -> Result<(), SchedulerError> {
+    fn evaluate_signal_fault_boundary(
+        &mut self,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let coordinate = self.inner.loop_impl().frontier().ticks;
         if self.fault_coordinate == Some(coordinate) {
             self.fault_coordinate_sequence = self
@@ -254,7 +260,8 @@ impl ProductionVmLifecycleLoop {
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("signal fault boundary failed closed: {error}"),
             })?;
-        self.fault_observations.extend(evaluation.observations);
-        Ok(())
+        self.inner
+            .loop_impl_mut()
+            .append_fault_observations(evaluation.observations)
     }
 }

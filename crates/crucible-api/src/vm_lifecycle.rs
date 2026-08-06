@@ -18,9 +18,7 @@ use crate::vm_resume::{
     ProductionLiveNode, ProductionLiveNodeStepGateConfig, ProductionNodeSet,
     ProductionPluginSwitch, ProductionRootImageFormat, launch_production_live_node,
 };
-use crucible::model::{
-    FaultCoordinate, FaultObservation, SignalArtifactProvider, SignalBoundarySnapshot,
-};
+use crucible::model::{FaultCoordinate, SignalArtifactProvider, SignalBoundarySnapshot};
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, ConditionEvaluationPass,
     ConditionLeaf, Configuration, ControlOperation, Decision, EventFirings, EventGraph,
@@ -314,7 +312,6 @@ pub struct ProductionVmLifecycleLoop {
     fault_runtime: ProductionFaultRuntime,
     fault_coordinate: Option<u64>,
     fault_coordinate_sequence: u64,
-    fault_observations: Vec<FaultObservation>,
     trigger_graph: EventGraph,
     trigger_state: EventGraphState,
     trigger_world: World,
@@ -633,7 +630,6 @@ pub fn build_production_vm_lifecycle_loop(
         fault_runtime,
         fault_coordinate: None,
         fault_coordinate_sequence: 0,
-        fault_observations: Vec::new(),
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),

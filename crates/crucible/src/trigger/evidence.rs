@@ -186,6 +186,7 @@ pub(super) fn scheduler_decisions(recorded_log: &RecordedAssertionLog) -> Vec<De
             | SchedulerEventLogPayload::EvaluationBoundary(_)
             | SchedulerEventLogPayload::TriggerFired(_)
             | SchedulerEventLogPayload::TriggerActionApplied(_)
+            | SchedulerEventLogPayload::FaultObservation(_)
             | SchedulerEventLogPayload::Diagnostic(_) => None,
         })
         .collect()
@@ -883,6 +884,10 @@ pub(super) fn external_scheduler_event_log_payload_material(
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
             lines.push(String::from("payload=trigger-action-applied"));
             lines.push(external_trigger_action_application_material(application));
+        }
+        SchedulerEventLogPayload::FaultObservation(observation) => {
+            lines.push(String::from("payload=fault-observation"));
+            lines.push(observation.canonical_material());
         }
         SchedulerEventLogPayload::Diagnostic(diagnostic) => {
             lines.push(String::from("payload=diagnostic"));

@@ -1000,6 +1000,19 @@ impl SingleScheduler {
         self.event_log.append_observable_events(events)
     }
 
+    /// Appends typed signal-driven fault evidence to the unified event log.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when assigning dense event-log sequences or
+    /// appending the canonical segment would overflow scheduler offsets.
+    pub fn append_fault_observations(
+        &mut self,
+        observations: impl IntoIterator<Item = crate::model::FaultObservation>,
+    ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        self.event_log.append_fault_observations(observations)
+    }
+
     /// Appends assertion-proximity steering feedback to the scheduler event log.
     ///
     /// `report` remains a transient assertion-layer view. The persisted steering
