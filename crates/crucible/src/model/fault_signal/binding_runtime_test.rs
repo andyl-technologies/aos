@@ -2,7 +2,10 @@ use super::*;
 
 struct NoArtifacts;
 
-struct AcceptActions;
+#[derive(Default)]
+struct AcceptActions {
+    prepared: Option<PreparedActionBatch>,
+}
 
 struct RejectActions;
 
@@ -16,6 +19,7 @@ struct MismatchedActions {
 struct CountingActions {
     prepares: u64,
     commits: u64,
+    prepared: Option<PreparedActionBatch>,
 }
 
 fn prepared_actions(actions: &[ResolvedBindingAction]) -> PreparedActionBatch {
@@ -52,11 +56,21 @@ impl FaultActionSink for AcceptActions {
         &mut self,
         actions: &[ResolvedBindingAction],
     ) -> Result<PreparedActionBatch, Box<RejectedActionBatch>> {
-        Ok(prepared_actions(actions))
+        let prepared = prepared_actions(actions);
+        self.prepared = Some(prepared.clone());
+        Ok(prepared)
     }
 
-    fn commit_batch(&mut self, _transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>> {
-        Ok(())
+    fn commit_batch(
+        &mut self,
+        transaction: ContentHash,
+    ) -> Result<PreparedActionBatch, FaultActionCommitError> {
+        self.prepared
+            .take()
+            .filter(|prepared| prepared.transaction == transaction)
+            .ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::UnknownAdapterTransaction,
+            ))
     }
 
     fn abort_batch(&mut self, _transaction: ContentHash) -> Result<(), FaultRuntimeError> {
@@ -70,12 +84,22 @@ impl FaultActionSink for CountingActions {
         actions: &[ResolvedBindingAction],
     ) -> Result<PreparedActionBatch, Box<RejectedActionBatch>> {
         self.prepares += 1;
-        Ok(prepared_actions(actions))
+        let prepared = prepared_actions(actions);
+        self.prepared = Some(prepared.clone());
+        Ok(prepared)
     }
 
-    fn commit_batch(&mut self, _transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>> {
+    fn commit_batch(
+        &mut self,
+        transaction: ContentHash,
+    ) -> Result<PreparedActionBatch, FaultActionCommitError> {
         self.commits += 1;
-        Ok(())
+        self.prepared
+            .take()
+            .filter(|prepared| prepared.transaction == transaction)
+            .ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::UnknownAdapterTransaction,
+            ))
     }
 
     fn abort_batch(&mut self, _transaction: ContentHash) -> Result<(), FaultRuntimeError> {
@@ -106,8 +130,13 @@ impl FaultActionSink for RejectActions {
         }))
     }
 
-    fn commit_batch(&mut self, _transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>> {
-        Ok(())
+    fn commit_batch(
+        &mut self,
+        _transaction: ContentHash,
+    ) -> Result<PreparedActionBatch, FaultActionCommitError> {
+        Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::UnknownAdapterTransaction,
+        ))
     }
 
     fn abort_batch(&mut self, _transaction: ContentHash) -> Result<(), FaultRuntimeError> {
@@ -127,8 +156,15 @@ impl FaultActionSink for MismatchedActions {
         })
     }
 
-    fn commit_batch(&mut self, _transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>> {
-        panic!("malformed preparation must never be committed")
+    fn commit_batch(
+        &mut self,
+        transaction: ContentHash,
+    ) -> Result<PreparedActionBatch, FaultActionCommitError> {
+        self.prepared = false;
+        Ok(PreparedActionBatch {
+            transaction,
+            results: Vec::new(),
+        })
     }
 
     fn abort_batch(&mut self, _transaction: ContentHash) -> Result<(), FaultRuntimeError> {
@@ -335,7 +371,7 @@ fn persistent_activation_is_installed_once_and_retains_values() {
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
     let first = runtime
-        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("first evaluation failed: {error}"));
     assert!(!first.actions.is_empty());
     assert!(
@@ -347,7 +383,7 @@ fn persistent_activation_is_installed_once_and_retains_values() {
     assert_eq!(first.actions.len(), 1);
     assert_eq!(first.actions[0].phase, FaultPhase::Admit);
     let second = runtime
-        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("second evaluation failed: {error}"));
     assert!(second.actions.is_empty());
     assert!(
@@ -417,7 +453,7 @@ fn piecewise_parameter_actions_carry_the_transferred_value() {
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
     let evaluation = runtime
-        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("evaluation failed: {error}"));
     assert_eq!(
         evaluation.actions[0].mapping_output.as_ref(),
@@ -459,7 +495,7 @@ fn initially_inactive_binding_does_not_emit_removal_actions() {
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
     let evaluation = runtime
-        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("evaluation failed: {error}"));
     assert!(evaluation.actions.is_empty());
     assert!(runtime.active().entries().is_empty());
@@ -500,7 +536,7 @@ fn dynamic_membership_reconciles_active_adapter_contributions() {
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
     runtime
-        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("activation failed: {error}"));
 
     let evaluation = runtime
@@ -515,7 +551,7 @@ fn dynamic_membership_reconciles_active_adapter_contributions() {
             },
             coordinate(1),
             0,
-            &mut AcceptActions,
+            &mut AcceptActions::default(),
         )
         .unwrap_or_else(|error| panic!("membership update failed: {error}"));
     assert!(
@@ -589,7 +625,7 @@ fn dynamic_membership_computes_wakeup_before_adapter_prepare() {
     )
     .unwrap_or_else(|error| panic!("invalid terminal runtime: {error}"));
     runtime
-        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("activation failed: {error}"));
     let mut sink = CountingActions::default();
 
@@ -655,7 +691,7 @@ fn adapter_rejection_rolls_back_the_entire_boundary() {
     assert!(runtime.active().entries().is_empty());
     assert!(runtime.states().values().all(|state| !state.active));
     let accepted = runtime
-        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("retry after rollback failed: {error}"));
     assert!(!accepted.actions.is_empty());
 }
@@ -691,11 +727,18 @@ fn malformed_adapter_success_rolls_back_the_entire_boundary() {
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
 
     let mut sink = MismatchedActions::default();
+    let result = runtime.evaluate_boundary(coordinate(0), 0, &mut sink);
+    assert!(!sink.aborted);
     assert!(matches!(
-        runtime.evaluate_boundary(coordinate(0), 0, &mut sink),
-        Err(BindingRuntimeError::AdapterResult)
+        result,
+        Err(BindingRuntimeError::AdapterCommit(
+            FaultRuntimeError::IncompleteAdapterState
+        ))
     ));
-    assert!(sink.aborted);
+    assert!(matches!(
+        runtime.evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default()),
+        Err(BindingRuntimeError::Poisoned)
+    ));
     assert!(!sink.prepared);
     assert!(runtime.active().entries().is_empty());
     assert!(runtime.states().values().all(|state| !state.active));
@@ -728,7 +771,7 @@ fn event_parent_drives_exactly_one_impulse() {
     .unwrap_or_else(|error| panic!("invalid event runtime: {error}"));
 
     let evaluation = runtime
-        .evaluate_boundary(coordinate(7), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(7), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("event evaluation failed: {error}"));
     assert_eq!(evaluation.actions.len(), 1);
     assert_eq!(evaluation.actions[0].kind, BindingActionKind::Apply);
@@ -737,7 +780,7 @@ fn event_parent_drives_exactly_one_impulse() {
         ResolvedMappingOutput::Impulse { .. }
     ));
     let duplicate = runtime
-        .evaluate_boundary(coordinate(7), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(7), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("duplicate event evaluation failed: {error}"));
     assert!(duplicate.actions.is_empty());
 }
@@ -796,7 +839,7 @@ fn state_transition_uses_the_exhaustive_default_for_an_unknown_request() {
     .unwrap_or_else(|error| panic!("invalid transition runtime: {error}"));
 
     let evaluation = runtime
-        .evaluate_boundary(coordinate(4), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(4), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("transition evaluation failed: {error}"));
     assert_eq!(evaluation.actions.len(), 1);
     assert_eq!(
@@ -839,10 +882,10 @@ fn scheduler_rejects_a_backward_boundary() {
     )
     .unwrap_or_else(|error| panic!("invalid monotone runtime: {error}"));
     runtime
-        .evaluate_boundary(coordinate(2), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(2), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("first boundary failed: {error}"));
     assert!(matches!(
-        runtime.evaluate_boundary(coordinate(1), 0, &mut AcceptActions),
+        runtime.evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default()),
         Err(BindingRuntimeError::NonMonotoneBoundary)
     ));
 }
@@ -888,16 +931,16 @@ fn opportunity_before_boundary_is_rejected() {
     .unwrap_or_else(|error| panic!("invalid test opportunity: {error}"));
 
     assert!(matches!(
-        runtime.evaluate_opportunity(&opportunity, 0, &mut AcceptActions),
+        runtime.evaluate_opportunity(&opportunity, 0, &mut AcceptActions::default()),
         Err(BindingRuntimeError::OpportunityBeforeBoundary)
     ));
     let boundary_evaluation = runtime
-        .evaluate_boundary(coordinate(3), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(3), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("boundary evaluation failed: {error}"));
     assert_eq!(boundary_evaluation.actions.len(), 1);
     assert!(runtime.states().values().all(|state| state.active));
     let opportunity_evaluation = runtime
-        .evaluate_opportunity(&opportunity, 0, &mut AcceptActions)
+        .evaluate_opportunity(&opportunity, 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("ordered opportunity evaluation failed: {error}"));
     assert!(opportunity_evaluation.actions.is_empty());
 }
@@ -1013,7 +1056,7 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
     )
     .unwrap_or_else(|error| panic!("invalid test runtime: {error}"));
     uninterrupted
-        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("activation failed: {error}"));
     let checkpoint = uninterrupted
         .checkpoint()
@@ -1070,10 +1113,10 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
     .unwrap_or_else(|error| panic!("restore failed: {error}"));
 
     let expected = uninterrupted
-        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("uninterrupted continuation failed: {error}"));
     let actual = restored
-        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions)
+        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("restored continuation failed: {error}"));
     assert_eq!(actual, expected);
     assert_eq!(restored.states(), uninterrupted.states());

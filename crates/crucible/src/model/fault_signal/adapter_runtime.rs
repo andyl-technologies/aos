@@ -53,6 +53,7 @@ pub struct TransactionalFaultAdapters {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PreparedAdapterSet {
     transaction: ContentHash,
+    actions: Vec<ContentHash>,
     network: Option<ContentHash>,
     storage: Option<ContentHash>,
     node: Option<ContentHash>,
@@ -192,39 +193,54 @@ where
         self.abort_prepared(&prepared)
     }
 
-    fn commit_batch(&mut self, transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>> {
+    fn commit_batch(
+        &mut self,
+        transaction: ContentHash,
+    ) -> Result<PreparedActionBatch, FaultActionCommitError> {
         let prepared = self.prepared.take().ok_or_else(|| {
-            Box::new(RejectedActionBatch {
+            FaultActionCommitError::Rejected(Box::new(RejectedActionBatch {
                 error: FaultRuntimeError::UnknownAdapterTransaction,
                 observations: Vec::new(),
                 rejected_action: None,
-            })
+            }))
         })?;
         if prepared.transaction != transaction {
             self.prepared = Some(prepared);
-            return Err(Box::new(RejectedActionBatch {
-                error: FaultRuntimeError::UnknownAdapterTransaction,
-                observations: Vec::new(),
-                rejected_action: None,
-            }));
+            return Err(FaultActionCommitError::Rejected(Box::new(
+                RejectedActionBatch {
+                    error: FaultRuntimeError::UnknownAdapterTransaction,
+                    observations: Vec::new(),
+                    rejected_action: None,
+                },
+            )));
         }
-        if let Err(error) = self.state.commit_batch(prepared.state_transaction) {
-            let backend_abort = self.backend.abort_batch(prepared.backend_transaction);
-            *self.state = prepared.state_before;
-            if backend_abort.is_err() {
-                return Err(Box::new(RejectedActionBatch {
-                    error: FaultRuntimeError::AdapterTransactionRollback,
-                    observations: error.observations,
-                    rejected_action: error.rejected_action,
-                }));
+        let backend = match self.backend.commit_batch(prepared.backend_transaction) {
+            Ok(committed) => committed,
+            Err(FaultActionCommitError::Rejected(error)) => {
+                let state_abort = self.state.abort_batch(prepared.state_transaction);
+                *self.state = prepared.state_before;
+                if state_abort.is_err() {
+                    return Err(FaultActionCommitError::Fatal(
+                        FaultRuntimeError::AdapterTransactionRollback,
+                    ));
+                }
+                return Err(FaultActionCommitError::Rejected(error));
             }
-            return Err(error);
-        }
-        if let Err(error) = self.backend.commit_batch(prepared.backend_transaction) {
+            Err(FaultActionCommitError::Fatal(error)) => {
+                *self.state = prepared.state_before;
+                return Err(FaultActionCommitError::Fatal(error));
+            }
+        };
+        if self.state.commit_batch(prepared.state_transaction).is_err() {
             *self.state = prepared.state_before;
-            return Err(error);
+            return Err(FaultActionCommitError::Fatal(
+                FaultRuntimeError::AdapterTransactionRollback,
+            ));
         }
-        Ok(())
+        Ok(PreparedActionBatch {
+            transaction,
+            results: backend.results,
+        })
     }
 }
 
@@ -346,6 +362,7 @@ impl FaultActionSink for TransactionalFaultAdapters {
         }
         let mut prepared = PreparedAdapterSet {
             transaction: ContentHash::default(),
+            actions: actions.iter().map(ResolvedBindingAction::id).collect(),
             network: None,
             storage: None,
             node: None,
@@ -438,32 +455,57 @@ impl FaultActionSink for TransactionalFaultAdapters {
         self.abort_prepared(&prepared)
     }
 
-    fn commit_batch(&mut self, transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>> {
+    fn commit_batch(
+        &mut self,
+        transaction: ContentHash,
+    ) -> Result<PreparedActionBatch, FaultActionCommitError> {
         let prepared = self.prepared.take().ok_or_else(|| {
-            Box::new(RejectedActionBatch {
+            FaultActionCommitError::Rejected(Box::new(RejectedActionBatch {
                 error: FaultRuntimeError::UnknownAdapterTransaction,
                 observations: Vec::new(),
                 rejected_action: None,
-            })
+            }))
         })?;
         if prepared.transaction != transaction {
             self.prepared = Some(prepared);
-            return Err(Box::new(RejectedActionBatch {
-                error: FaultRuntimeError::UnknownAdapterTransaction,
-                observations: Vec::new(),
-                rejected_action: None,
-            }));
+            return Err(FaultActionCommitError::Rejected(Box::new(
+                RejectedActionBatch {
+                    error: FaultRuntimeError::UnknownAdapterTransaction,
+                    observations: Vec::new(),
+                    rejected_action: None,
+                },
+            )));
         }
+        let mut by_action = BTreeMap::new();
         for (adapter, transaction) in [
             (FaultAdapter::Network, prepared.network),
             (FaultAdapter::Storage, prepared.storage),
             (FaultAdapter::Node, prepared.node),
         ] {
             if let Some(transaction) = transaction {
-                self.adapter_mut(adapter).commit_batch(transaction)?;
+                let committed = self.adapter_mut(adapter).commit_batch(transaction)?;
+                for result in committed.results {
+                    by_action.insert(result.action, result);
+                }
             }
         }
-        Ok(())
+        let results = prepared
+            .actions
+            .iter()
+            .map(|action| by_action.remove(action))
+            .collect::<Option<Vec<_>>>()
+            .ok_or(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ))?;
+        if !by_action.is_empty() {
+            return Err(FaultActionCommitError::Fatal(
+                FaultRuntimeError::IncompleteAdapterState,
+            ));
+        }
+        Ok(PreparedActionBatch {
+            transaction,
+            results,
+        })
     }
 }
 
@@ -484,6 +526,7 @@ struct PreparedAdapterState {
     active: ActiveContributionTable,
     impulse_sequence: u64,
     digest: ContentHash,
+    results: Vec<PreparedActionResult>,
 }
 
 impl TransactionalAdapterRuntime {
@@ -718,7 +761,7 @@ impl FaultActionSink for TransactionalAdapterRuntime {
         }
         let digest = state_digest(self.adapter, impulse_sequence, &active);
         let transaction = transaction_digest(self.digest, digest, &action_ids);
-        let results = actions
+        let results: Vec<PreparedActionResult> = actions
             .iter()
             .zip(action_ids)
             .map(|(action, id)| PreparedActionResult {
@@ -747,6 +790,7 @@ impl FaultActionSink for TransactionalAdapterRuntime {
             active,
             impulse_sequence,
             digest,
+            results: results.clone(),
         });
         Ok(PreparedActionBatch {
             transaction,
@@ -766,19 +810,28 @@ impl FaultActionSink for TransactionalAdapterRuntime {
         Ok(())
     }
 
-    fn commit_batch(&mut self, transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>> {
-        let prepared = self
-            .prepared
-            .take()
-            .ok_or_else(|| self.rejection(None, FaultRuntimeError::UnknownAdapterTransaction))?;
+    fn commit_batch(
+        &mut self,
+        transaction: ContentHash,
+    ) -> Result<PreparedActionBatch, FaultActionCommitError> {
+        let prepared = self.prepared.take().ok_or_else(|| {
+            FaultActionCommitError::Rejected(
+                self.rejection(None, FaultRuntimeError::UnknownAdapterTransaction),
+            )
+        })?;
         if prepared.transaction != transaction {
             self.prepared = Some(prepared);
-            return Err(self.rejection(None, FaultRuntimeError::UnknownAdapterTransaction));
+            return Err(FaultActionCommitError::Rejected(
+                self.rejection(None, FaultRuntimeError::UnknownAdapterTransaction),
+            ));
         }
         self.active = prepared.active;
         self.impulse_sequence = prepared.impulse_sequence;
         self.digest = prepared.digest;
-        Ok(())
+        Ok(PreparedActionBatch {
+            transaction,
+            results: prepared.results,
+        })
     }
 }
 
@@ -922,11 +975,7 @@ mod tests {
             &mut self,
             actions: &[ResolvedBindingAction],
         ) -> Result<PreparedActionBatch, Box<RejectedActionBatch>> {
-            let mut batch = self.ledger.prepare_batch(actions)?;
-            for result in &mut batch.results {
-                result.observation.evidence = self.evidence;
-            }
-            Ok(batch)
+            self.ledger.prepare_batch(actions)
         }
 
         fn abort_batch(&mut self, transaction: ContentHash) -> Result<(), FaultRuntimeError> {
@@ -936,22 +985,24 @@ mod tests {
         fn commit_batch(
             &mut self,
             transaction: ContentHash,
-        ) -> Result<(), Box<RejectedActionBatch>> {
+        ) -> Result<PreparedActionBatch, FaultActionCommitError> {
             if self.reject_commit {
-                self.ledger.abort_batch(transaction).map_err(|error| {
-                    Box::new(RejectedActionBatch {
-                        error,
+                self.ledger
+                    .abort_batch(transaction)
+                    .map_err(FaultActionCommitError::Fatal)?;
+                return Err(FaultActionCommitError::Rejected(Box::new(
+                    RejectedActionBatch {
+                        error: FaultRuntimeError::AdapterActionMismatch,
                         observations: Vec::new(),
                         rejected_action: None,
-                    })
-                })?;
-                return Err(Box::new(RejectedActionBatch {
-                    error: FaultRuntimeError::AdapterActionMismatch,
-                    observations: Vec::new(),
-                    rejected_action: None,
-                }));
+                    },
+                )));
             }
-            self.ledger.commit_batch(transaction)
+            let mut committed = self.ledger.commit_batch(transaction)?;
+            for result in &mut committed.results {
+                result.observation.evidence = self.evidence;
+            }
+            Ok(committed)
         }
     }
 
@@ -979,7 +1030,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("prepare again: {}", error.error));
         runtime
             .commit_batch(prepared.transaction)
-            .unwrap_or_else(|error| panic!("commit: {}", error.error));
+            .unwrap_or_else(|error| panic!("commit: {error}"));
         assert_ne!(runtime.state_digest(), initial);
         assert_eq!(runtime.composition_groups().len(), 1);
     }
@@ -1015,7 +1066,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("prepare: {}", error.error));
         runtime
             .commit_batch(prepared.transaction)
-            .unwrap_or_else(|error| panic!("commit: {}", error.error));
+            .unwrap_or_else(|error| panic!("commit: {error}"));
 
         let checkpoint = runtime
             .checkpoint()
@@ -1058,9 +1109,10 @@ mod tests {
         let prepared = sink
             .prepare_batch(&[action])
             .unwrap_or_else(|error| panic!("prepare: {}", error.error));
-        assert_eq!(prepared.results[0].observation.evidence, expected_evidence);
-        sink.commit_batch(prepared.transaction)
-            .unwrap_or_else(|error| panic!("commit: {}", error.error));
+        let committed = sink
+            .commit_batch(prepared.transaction)
+            .unwrap_or_else(|error| panic!("commit: {error}"));
+        assert_eq!(committed.results[0].observation.evidence, expected_evidence);
         assert_eq!(
             state
                 .adapter(FaultAdapter::Network)
@@ -1090,8 +1142,11 @@ mod tests {
             .prepare_batch(&[action])
             .unwrap_or_else(|error| panic!("prepare: {}", error.error));
         let rejection = match sink.commit_batch(prepared.transaction) {
-            Ok(()) => panic!("backend commit must reject"),
-            Err(rejection) => rejection,
+            Ok(_) => panic!("backend commit must reject"),
+            Err(FaultActionCommitError::Rejected(rejection)) => rejection,
+            Err(FaultActionCommitError::Fatal(error)) => {
+                panic!("backend rejection must not be fatal: {error}")
+            }
         };
         assert_eq!(rejection.error, FaultRuntimeError::AdapterActionMismatch);
         assert_eq!(state, before);
