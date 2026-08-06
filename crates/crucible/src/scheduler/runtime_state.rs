@@ -252,6 +252,19 @@ pub struct WorldNetworkLinkRuntime {
     pub(super) link: crucible_device::NetLink,
 }
 
+/// Authenticated result of removing frames during a directed link transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkInFlightDropEvidence {
+    /// Canonical scheduler link identity.
+    pub link: LinkId,
+    /// Directed runtime edge whose frames were removed.
+    pub direction: NetworkLinkDirection,
+    /// Number of removed frames.
+    pub frame_count: u64,
+    /// Digest of every removed delivery key, frame identity, and payload.
+    pub evidence: ContentHash,
+}
+
 impl WorldNetworkLinkRuntime {
     pub(super) fn matches(&self, link: &LinkId, direction: NetworkLinkDirection) -> bool {
         self.direction == direction && &self.canonical_id == link

@@ -7,8 +7,9 @@
 
 use super::*;
 use crucible::model::{
-    ContentHash, EffectSpecification, FaultObjectId, FaultOpportunity, FaultPhase,
-    NetworkAvailabilityState, NetworkEffectSpecification, OpportunityPayload,
+    ContentHash, EffectSpecification, FAULT_RUNTIME_STATE_VERSION, FaultObjectId, FaultObservation,
+    FaultObservationKind, FaultOpportunity, FaultPhase, NetworkAvailabilityState,
+    NetworkEffectSpecification, OpportunityPayload, ResolvedBindingAction,
 };
 use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
@@ -16,6 +17,7 @@ use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 pub(super) struct ProductionFaultNetworkInterceptor {
     runtime: ProductionFaultRuntime,
     topology: crucible::model::WorldFaultTopology,
+    links: Vec<crucible::LinkDef>,
     coordinate: Option<u64>,
     coordinate_sequence: u64,
 }
@@ -26,10 +28,12 @@ impl ProductionFaultNetworkInterceptor {
     pub(super) const fn new(
         runtime: ProductionFaultRuntime,
         topology: crucible::model::WorldFaultTopology,
+        links: Vec<crucible::LinkDef>,
     ) -> Self {
         Self {
             runtime,
             topology,
+            links,
             coordinate: None,
             coordinate_sequence: 0,
         }
@@ -50,14 +54,28 @@ impl ProductionFaultNetworkInterceptor {
     pub(super) fn evaluate_boundary(
         &mut self,
         coordinate: FaultCoordinate,
+        scheduler: &mut SingleScheduler,
         backend: &mut ProductionNodeSet,
     ) -> Result<crucible::model::BindingEvaluation, SchedulerError> {
         let sequence = self.next_sequence(coordinate.virtual_nanos)?;
-        self.runtime
+        let mut evaluation = self
+            .runtime
             .evaluate_boundary(coordinate, sequence, backend)
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("signal fault boundary failed closed: {error}"),
-            })
+            })?;
+        let impulses = self.runtime.drain_host_impulses();
+        if !impulses.is_empty() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network availability produced an invalid boundary impulse action",
+                ),
+            });
+        }
+        evaluation
+            .observations
+            .extend(self.drop_unavailable_inflight(coordinate, scheduler)?);
+        Ok(evaluation)
     }
 
     fn next_sequence(&mut self, coordinate: u64) -> Result<u64, SchedulerError> {
@@ -75,6 +93,81 @@ impl ProductionFaultNetworkInterceptor {
             self.coordinate_sequence = 0;
         }
         Ok(self.coordinate_sequence)
+    }
+
+    fn drop_unavailable_inflight(
+        &self,
+        coordinate: FaultCoordinate,
+        scheduler: &mut SingleScheduler,
+    ) -> Result<Vec<FaultObservation>, SchedulerError> {
+        let mut observations = Vec::new();
+        for link in &self.links {
+            let (endpoint_a, endpoint_b) = link.endpoints();
+            for (source, destination) in [(endpoint_a, endpoint_b), (endpoint_b, endpoint_a)] {
+                let stages = self
+                    .topology
+                    .network_route_fault_targets(
+                        &source.name,
+                        &destination.name,
+                        coordinate.virtual_nanos,
+                    )
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "cannot resolve in-flight availability route `{}` to `{}`: {error}",
+                            source.name, destination.name
+                        ),
+                    })?;
+                let mut blockers = BTreeMap::<ContentHash, ResolvedBindingAction>::new();
+                for stage in stages
+                    .iter()
+                    .filter(|stage| stage.phases().contains(&FaultPhase::Admit))
+                {
+                    for action in self
+                        .runtime
+                        .host_state()
+                        .matching(&stage.target, FaultPhase::Admit)
+                    {
+                        let EffectSpecification::Network(
+                            NetworkEffectSpecification::Availability { state, .. },
+                        ) = action.effect.specification()
+                        else {
+                            continue;
+                        };
+                        if !availability_allows(*state, stage.direction) {
+                            blockers.insert(action.id(), action.clone());
+                        }
+                    }
+                }
+                if blockers.is_empty() {
+                    continue;
+                }
+                let dropped = scheduler.drop_network_inflight_for_route(source, destination)?;
+                if dropped.frame_count == 0 {
+                    continue;
+                }
+                for action in blockers.values() {
+                    let evidence = ContentHash::from_canonical_material(
+                        "crucible.network-availability-inflight-drop.v1",
+                        &format!(
+                            "action={}\nroute-evidence={}\nframes={}",
+                            action.id().to_hex(),
+                            dropped.evidence.to_hex(),
+                            dropped.frame_count
+                        ),
+                    );
+                    observations.push(FaultObservation {
+                        semantic_version: FAULT_RUNTIME_STATE_VERSION,
+                        kind: FaultObservationKind::NetworkProfile,
+                        coordinate,
+                        binding: Some(action.binding.clone()),
+                        target: Some(action.target.clone()),
+                        opportunity: None,
+                        evidence,
+                    });
+                }
+            }
+        }
+        Ok(observations)
     }
 }
 

@@ -274,6 +274,7 @@ impl ProductionVmLifecycleLoop {
                 virtual_nanos: coordinate,
                 retired_instructions: None,
             },
+            scheduler,
             backend,
         )?;
         scheduler.set_signal_fault_wakeup(evaluation.next_wakeup_nanos)?;

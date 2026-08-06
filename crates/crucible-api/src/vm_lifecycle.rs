@@ -633,6 +633,7 @@ pub fn build_production_vm_lifecycle_loop(
             ProductionFaultNetworkInterceptor::new(
                 fault_runtime,
                 source.world().fault_topology().clone(),
+                source.world().links().to_vec(),
             ),
         ),
         trigger_graph,
