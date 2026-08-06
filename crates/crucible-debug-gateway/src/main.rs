@@ -11,8 +11,8 @@
 //! A malformed or disconnected control client is isolated to its connection;
 //! the process and active backend remain available for the next client. The
 //! stable operator listener relays allowlisted read-only RSP traffic across
-//! backend replacement. Scheduler run control and guest channels intentionally
-//! fail closed until their dedicated host and shared-memory routes are active.
+//! backend replacement. Scheduler run control is queued for the host session;
+//! guest channels fail closed until their shared-memory routes are active.
 
 #![forbid(unsafe_code)]
 
@@ -44,6 +44,12 @@ struct GatewayProcess {
     rsp_responses_pending: usize,
     rsp_state_epoch: u64,
     replacement_epoch: u64,
+    operator_epoch: u32,
+    next_run_control_stream: u32,
+    run_control_requests: VecDeque<(u32, u32, Vec<u8>)>,
+    run_control_inflight: Option<(u32, u32, Vec<u8>)>,
+    run_control_completed: Option<(u32, Vec<u8>, Vec<u8>)>,
+    scheduler_response_pending: Option<Vec<u8>>,
 }
 
 const QEMU_RSP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -60,6 +66,12 @@ impl GatewayProcess {
             rsp_responses_pending: 0,
             rsp_state_epoch: 0,
             replacement_epoch: 0,
+            operator_epoch: 0,
+            next_run_control_stream: 0,
+            run_control_requests: VecDeque::new(),
+            run_control_inflight: None,
+            run_control_completed: None,
+            scheduler_response_pending: None,
         }
     }
 
@@ -142,9 +154,31 @@ impl GatewayProcess {
                         .unwrap_or_default(),
                 )
             }
-            DebugGatewayMessageKind::RspData => Err(String::from(
-                "RSP relay is disabled until the persistent asynchronous stream pump is active",
-            )),
+            DebugGatewayMessageKind::RspData => {
+                Err(String::from("RSP data must use the scheduler dispatcher"))
+            }
+            DebugGatewayMessageKind::RunControl => {
+                if !frame.payload.is_empty() {
+                    return Err(String::from("run-control poll payload must be empty"));
+                }
+                let stream_id = frame.stream_id;
+                match self.run_control_requests.pop_front() {
+                    Some((stream_id, operator_epoch, packet)) => {
+                        self.run_control_inflight =
+                            Some((stream_id, operator_epoch, packet.clone()));
+                        response(DebugGatewayMessageKind::RunControl, stream_id, packet)
+                    }
+                    None if self.run_control_inflight.is_some() => {
+                        let (stream_id, _operator_epoch, packet) = self
+                            .run_control_inflight
+                            .as_ref()
+                            .cloned()
+                            .ok_or_else(|| String::from("run-control request disappeared"))?;
+                        response(DebugGatewayMessageKind::RunControl, stream_id, packet)
+                    }
+                    None => response(DebugGatewayMessageKind::RunControl, stream_id, Vec::new()),
+                }
+            }
             DebugGatewayMessageKind::ExecOpen
             | DebugGatewayMessageKind::PtyOpen
             | DebugGatewayMessageKind::SshOpen
@@ -156,7 +190,6 @@ impl GatewayProcess {
             | DebugGatewayMessageKind::Ack
             | DebugGatewayMessageKind::BackendStatusAck
             | DebugGatewayMessageKind::OperatorStatusAck
-            | DebugGatewayMessageKind::RunControl
             | DebugGatewayMessageKind::Error => {
                 Err(String::from("message kind is not a host request"))
             }
@@ -328,7 +361,53 @@ fn dispatch_request(
     process: &SharedGatewayProcess,
     frame: DebugGatewayFrame,
 ) -> Result<DebugGatewayFrame, String> {
-    if frame.kind == DebugGatewayMessageKind::BackendPrepare {
+    if frame.kind == DebugGatewayMessageKind::RspData {
+        if frame.payload.is_empty() {
+            return Err(String::from("scheduler RSP response must not be empty"));
+        }
+        with_gateway(process, |gateway| {
+            if gateway
+                .run_control_completed
+                .as_ref()
+                .is_some_and(|(epoch, _, response)| {
+                    *epoch == frame.stream_id && response == &frame.payload
+                })
+            {
+                return Ok(());
+            }
+            if gateway
+                .run_control_inflight
+                .as_ref()
+                .map(|(stream_id, _, _)| *stream_id)
+                != Some(frame.stream_id)
+                || gateway
+                    .run_control_inflight
+                    .as_ref()
+                    .map(|(_, operator_epoch, _)| *operator_epoch)
+                    != Some(gateway.operator_epoch)
+            {
+                return Ok(());
+            }
+            let request = gateway
+                .run_control_inflight
+                .as_ref()
+                .map(|(_, _, request)| request.clone())
+                .ok_or_else(|| String::from("scheduler run-control request disappeared"))?;
+            let operator = gateway
+                .operator_writer
+                .as_mut()
+                .ok_or_else(|| String::from("operator gdb connection is not active"))?;
+            let encoded_response = encode_rsp_packet(&frame.payload);
+            operator.write_all(&encoded_response).map_err(|error| {
+                format!("write scheduler RSP response to operator gdb: {error}")
+            })?;
+            gateway.run_control_inflight = None;
+            gateway.run_control_completed = Some((frame.stream_id, request, frame.payload.clone()));
+            gateway.scheduler_response_pending = Some(encoded_response);
+            Ok(())
+        })?;
+        response(DebugGatewayMessageKind::Ack, 0, Vec::new())
+    } else if frame.kind == DebugGatewayMessageKind::BackendPrepare {
         prepare_backend(process, frame.payload)
     } else {
         with_gateway(process, |process| process.handle(frame))
@@ -430,6 +509,9 @@ fn deactivate_unrecoverable_backend(process: &SharedGatewayProcess) -> Result<()
         gateway.active = None;
         gateway.operator_writer = None;
         gateway.rsp_responses_pending = 0;
+        gateway.run_control_requests.clear();
+        gateway.run_control_inflight = None;
+        gateway.scheduler_response_pending = None;
         Ok(())
     })
 }
@@ -453,6 +535,10 @@ fn serve_operator_connection(
                 return Err(String::from("an operator gdb connection is already active"));
             }
             let active = gateway.active.is_some();
+            gateway.operator_epoch = gateway
+                .operator_epoch
+                .checked_add(1)
+                .ok_or_else(|| String::from("operator connection generation exhausted"))?;
             gateway.operator_writer = Some(operator_writer);
             if active {
                 let writer = gateway
@@ -560,13 +646,23 @@ fn handle_operator_rsp_unit(
     synthetic_stop_ack_pending: &mut bool,
 ) -> Result<(), String> {
     match unit {
-        RspUnit::Ack if *synthetic_stop_ack_pending => {
-            *synthetic_stop_ack_pending = false;
-            Ok(())
+        RspUnit::Ack => {
+            if acknowledge_scheduler_response(process, false)? {
+                return Ok(());
+            }
+            if *synthetic_stop_ack_pending {
+                *synthetic_stop_ack_pending = false;
+                return Ok(());
+            }
+            write_active_backend(process, b"+").map(|_| ())
         }
-        RspUnit::Ack => write_active_backend(process, b"+").map(|_| ()),
-        RspUnit::Nack => write_active_backend(process, b"-").map(|_| ()),
-        RspUnit::Interrupt => write_rsp_rejection(process, b"E31", false),
+        RspUnit::Nack => {
+            if acknowledge_scheduler_response(process, true)? {
+                return Ok(());
+            }
+            write_active_backend(process, b"-").map(|_| ())
+        }
+        RspUnit::Interrupt => queue_scheduler_run_control(process, vec![0x03], false),
         RspUnit::Packet(packet) => match classify_rsp_packet(&packet) {
             RspDisposition::ForwardToQemu => {
                 if !admit_operator_request(process, &packet)? {
@@ -575,11 +671,91 @@ fn handle_operator_rsp_unit(
                 pending_state.push_back(packet);
                 Ok(())
             }
-            RspDisposition::SchedulerRunControl => write_rsp_rejection(process, b"E31", true),
+            RspDisposition::SchedulerRunControl => {
+                queue_scheduler_run_control(process, rsp_payload(&packet).to_vec(), true)
+            }
             RspDisposition::RejectReadOnly => write_rsp_rejection(process, b"E22", true),
             RspDisposition::RejectUnsupported => write_rsp_rejection(process, b"E01", true),
         },
     }
+}
+
+fn acknowledge_scheduler_response(
+    process: &SharedGatewayProcess,
+    retransmit: bool,
+) -> Result<bool, String> {
+    with_gateway(process, |gateway| {
+        let Some(response) = gateway.scheduler_response_pending.as_ref() else {
+            return Ok(false);
+        };
+        if retransmit {
+            gateway
+                .operator_writer
+                .as_mut()
+                .ok_or_else(|| String::from("operator gdb connection is not active"))?
+                .write_all(response)
+                .map_err(|error| format!("retransmit scheduler RSP response: {error}"))?;
+        } else {
+            gateway.scheduler_response_pending = None;
+        }
+        Ok(true)
+    })
+}
+
+fn queue_scheduler_run_control(
+    process: &SharedGatewayProcess,
+    packet: Vec<u8>,
+    acknowledge: bool,
+) -> Result<(), String> {
+    with_gateway(process, |gateway| {
+        let is_interrupt = packet == [0x03];
+        let duplicate = gateway
+            .run_control_requests
+            .front()
+            .or(gateway.run_control_inflight.as_ref())
+            .is_some_and(|(_, epoch, pending)| {
+                *epoch == gateway.operator_epoch && pending == &packet
+            });
+        let completed_duplicate = gateway.scheduler_response_pending.is_some()
+            && gateway
+                .run_control_completed
+                .as_ref()
+                .is_some_and(|(_, completed, _)| completed == &packet);
+        let request_pending = !gateway.run_control_requests.is_empty()
+            || gateway.run_control_inflight.is_some()
+            || gateway.scheduler_response_pending.is_some();
+        let interrupt_can_supersede = is_interrupt && gateway.scheduler_response_pending.is_none();
+        let admission_conflict =
+            request_pending && !(duplicate || completed_duplicate || interrupt_can_supersede);
+        if admission_conflict {
+            return Err(String::from(
+                "operator issued run control while a scheduler request is pending",
+            ));
+        }
+        if acknowledge {
+            gateway
+                .operator_writer
+                .as_mut()
+                .ok_or_else(|| String::from("operator gdb connection is not active"))?
+                .write_all(b"+")
+                .map_err(|error| format!("acknowledge scheduler RSP request: {error}"))?;
+        }
+        if !duplicate && !completed_duplicate {
+            if is_interrupt {
+                gateway.run_control_requests.clear();
+            }
+            gateway.next_run_control_stream = gateway
+                .next_run_control_stream
+                .checked_add(1)
+                .ok_or_else(|| String::from("run-control stream generation exhausted"))?;
+            gateway.run_control_requests.push_back((
+                gateway.next_run_control_stream,
+                gateway.operator_epoch,
+                packet,
+            ));
+        }
+        Ok(())
+    })
 }
 
 fn admit_operator_request(process: &SharedGatewayProcess, packet: &[u8]) -> Result<bool, String> {
@@ -712,8 +888,7 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
         | DebugGatewayMessageKind::BackendAbort
         | DebugGatewayMessageKind::BackendStatus => DebugGatewayErrorCode::BackendUnavailable,
         DebugGatewayMessageKind::OperatorStatus => DebugGatewayErrorCode::InvalidRequest,
-        DebugGatewayMessageKind::RspData
-        | DebugGatewayMessageKind::ExecOpen
+        DebugGatewayMessageKind::ExecOpen
         | DebugGatewayMessageKind::PtyOpen
         | DebugGatewayMessageKind::SshOpen
         | DebugGatewayMessageKind::ChannelData
@@ -723,8 +898,10 @@ fn request_error_code(kind: DebugGatewayMessageKind) -> DebugGatewayErrorCode {
         | DebugGatewayMessageKind::Ack
         | DebugGatewayMessageKind::BackendStatusAck
         | DebugGatewayMessageKind::OperatorStatusAck
-        | DebugGatewayMessageKind::RunControl
         | DebugGatewayMessageKind::Error => DebugGatewayErrorCode::InvalidRequest,
+        DebugGatewayMessageKind::RspData | DebugGatewayMessageKind::RunControl => {
+            DebugGatewayErrorCode::InvalidRequest
+        }
     }
 }
 

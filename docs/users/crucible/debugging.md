@@ -106,6 +106,11 @@ reverse-continue <condition>
 fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.
 
+After that fork, GDB `continue`, `step`, and `vCont` requests are mediated by the
+gateway and admitted as ordinary scheduler-owned session commands. They are
+never forwarded directly to QEMU. GDB `step` currently means one deterministic
+scheduler quantum; raw QEMU single-instruction stepping remains disabled.
+
 For example:
 
 ```sh
