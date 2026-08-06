@@ -1310,9 +1310,12 @@ complete from model-double evidence.
   codec now freezes the owned `CRGI` v1 record header and closed feature, argv
   exec, PTY, SSH bridge, input, resize, close, output, and exit vocabulary. It
   rejects zero channel identities, unknown flags/features, unbounded argv and
-  chunks, malformed UTF-8, invalid terminal sizes, and trailing bytes. Completion
-  remains open for the ABI-v6 request/response rings, QEMU/guest-agent transport,
-  fork-gated daemon/CLI surface, reposition teardown, and live evidence.
+  chunks, malformed UTF-8, invalid terminal sizes, and trailing bytes. ABI v6
+  appends one bounded request ring and one bounded response ring per VM, with
+  checked C and Rust geometry, role-specific host/plugin accessors, full-record
+  validation before publication and consumption, and fail-loud backpressure.
+  Completion remains open for the QEMU/guest-agent transport, fork-gated
+  daemon/CLI surface, reposition teardown, and live evidence.
 - [ ] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.

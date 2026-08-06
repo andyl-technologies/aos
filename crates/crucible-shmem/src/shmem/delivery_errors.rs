@@ -363,6 +363,13 @@ pub enum SpscRingError {
         /// The ring capacity in frame entries.
         capacity: u64,
     },
+    /// A guest-introspection entry failed its fixed-layout validation.
+    #[error("SPSC guest-introspection entry is malformed")]
+    InvalidGuestIntrospectionEntry {
+        /// Entry validation failure.
+        #[source]
+        source: GuestIntrospectionEntryError,
+    },
     /// A quiescent snapshot cannot fit in the target ring.
     #[error("SPSC snapshot length {len} exceeds ring capacity {capacity}")]
     SnapshotTooLarge {
