@@ -1451,7 +1451,7 @@
       }
       {
         label = "baseline count field";
-        needle = "\tResult<_, String>\t\t32";
+        needle = "\tResult<_, String>\t\t41";
       }
     ];
     phaseWiringFailures =
