@@ -1091,7 +1091,7 @@ pub enum DequeuedFaultCommand {
     /// The envelope and copied payload passed every ABI check.
     Valid {
         /// Decoded command envelope.
-        header: FaultCommandHeaderV1,
+        header: Box<FaultCommandHeaderV1>,
         /// Owned payload bytes, no longer borrowed from shared memory.
         payload: Vec<u8>,
     },
@@ -1210,7 +1210,10 @@ pub fn dequeue_fault_command(
     ring.read_idx.store(head.wrapping_add(1), Ordering::Release);
 
     Ok(Some(match decoded {
-        Ok(header) => DequeuedFaultCommand::Valid { header, payload },
+        Ok(header) => DequeuedFaultCommand::Valid {
+            header: Box::new(header),
+            payload,
+        },
         Err(error) => DequeuedFaultCommand::Rejected {
             raw_command_kind,
             command_sequence,

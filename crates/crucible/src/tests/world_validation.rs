@@ -1083,9 +1083,10 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
     let parsed_toml = ScenarioDefForm::from_canonical_toml(&toml)
         .unwrap_or_else(|error| panic!("scenario form TOML should parse: {error}"));
     let legacy_toml = toml.replace("crucible.scenario.v3", "crucible.scenario.v2");
-    let legacy_error = ScenarioDefForm::from_canonical_toml(&legacy_toml)
-        .expect_err("legacy scenario schema must fail admission")
-        .to_string();
+    let legacy_error = match ScenarioDefForm::from_canonical_toml(&legacy_toml) {
+        Ok(_) => panic!("legacy scenario schema must fail admission"),
+        Err(error) => error.to_string(),
+    };
     let parsed_binary = ScenarioDefForm::from_compact_binary(&binary)
         .unwrap_or_else(|error| panic!("scenario form binary should parse: {error}"));
     let world_toml = world

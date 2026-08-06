@@ -718,8 +718,10 @@ fn wire_encoding_is_bounded_and_empty_encoding_is_canonical() {
         .unwrap_or_else(|error| panic!("decode empty plan: {error}"));
     assert_eq!(decoded, empty);
 
-    let error = encode_wire_bounded(&vec![0_u8; 32], 8)
-        .expect_err("bounded encoder must reject oversized output");
+    let error = match encode_wire_bounded(&vec![0_u8; 32], 8) {
+        Ok(_) => panic!("bounded encoder must reject oversized output"),
+        Err(error) => error,
+    };
     assert!(error.is_io());
 }
 
@@ -737,16 +739,20 @@ fn reproduction_scenario_envelope_contains_a_maximum_fault_wire_layer() {
 
     let mut ordinary = ScenarioBinaryReader::new(&bytes, magic)
         .unwrap_or_else(|error| panic!("ordinary reader: {error}"));
-    let ordinary_error = ordinary
-        .read_binary_blob("ordinary")
-        .expect_err("ordinary blobs stop at their original limit");
+    let ordinary_error = match ordinary.read_binary_blob("ordinary") {
+        Ok(_) => panic!("ordinary blobs stop at their original limit"),
+        Err(error) => error,
+    };
     assert!(ordinary_error.to_string().contains("blob limit"));
 
     let mut enclosing = ScenarioBinaryReader::new(&bytes, magic)
         .unwrap_or_else(|error| panic!("enclosing reader: {error}"));
-    let enclosing_error = enclosing
+    let enclosing_error = match enclosing
         .read_binary_blob_bounded("scenario", MAX_REPRODUCTION_SCENARIO_BLOB_BYTES)
-        .expect_err("the synthetic blob has no payload");
+    {
+        Ok(_) => panic!("the synthetic blob has no payload"),
+        Err(error) => error,
+    };
     assert!(!enclosing_error.to_string().contains("blob limit"));
 }
 

@@ -117,6 +117,33 @@ impl<'a> FaultExecutionRuntime<'a> {
         )?)
     }
 
+    /// Evaluates due bindings and atomically mirrors them into a live backend.
+    ///
+    /// The canonical adapter ledger and `backend` prepare the same ordered
+    /// action batch. Successful observations come from `backend`; a rejection
+    /// restores the canonical ledger to its exact before-state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] if evaluation fails, either participant
+    /// rejects the batch, their action identities differ, or rollback fails.
+    pub fn evaluate_boundary_with_backend<B>(
+        &mut self,
+        coordinate: FaultCoordinate,
+        same_coordinate_sequence: u64,
+        backend: &mut B,
+    ) -> Result<BindingEvaluation, FaultExecutionError>
+    where
+        B: FaultActionSink,
+    {
+        let mut sink = MirroredFaultActionSink::new(&mut self.adapters, backend);
+        Ok(self.binding_runtime.evaluate_boundary(
+            coordinate,
+            same_coordinate_sequence,
+            &mut sink,
+        )?)
+    }
+
     /// Evaluates every binding matching one exact production opportunity.
     ///
     /// # Errors
@@ -132,6 +159,30 @@ impl<'a> FaultExecutionRuntime<'a> {
             opportunity,
             same_coordinate_sequence,
             &mut self.adapters,
+        )?)
+    }
+
+    /// Evaluates one opportunity and mirrors it into a live backend atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] under the same conditions as
+    /// [`Self::evaluate_boundary_with_backend`], plus invalid opportunity
+    /// identity, target, or phase.
+    pub fn evaluate_opportunity_with_backend<B>(
+        &mut self,
+        opportunity: &FaultOpportunity,
+        same_coordinate_sequence: u64,
+        backend: &mut B,
+    ) -> Result<BindingEvaluation, FaultExecutionError>
+    where
+        B: FaultActionSink,
+    {
+        let mut sink = MirroredFaultActionSink::new(&mut self.adapters, backend);
+        Ok(self.binding_runtime.evaluate_opportunity(
+            opportunity,
+            same_coordinate_sequence,
+            &mut sink,
         )?)
     }
 

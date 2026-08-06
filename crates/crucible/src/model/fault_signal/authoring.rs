@@ -1579,15 +1579,14 @@ fn decode_mapping(
                 .or_insert(toml::Value::Boolean(false));
         }
         "threshold" => {
-            if let Some(residence) = value.remove("minimum_active_nanos") {
-                if value
+            if let Some(residence) = value.remove("minimum_active_nanos")
+                && value
                     .insert(String::from("residence_nanos"), residence)
                     .is_some()
-                {
-                    return Err(FaultSignalAuthoringError::DuplicateProjectedField(
-                        String::from("residence_nanos"),
-                    ));
-                }
+            {
+                return Err(FaultSignalAuthoringError::DuplicateProjectedField(
+                    String::from("residence_nanos"),
+                ));
             }
             value
                 .entry(String::from("residence_nanos"))
