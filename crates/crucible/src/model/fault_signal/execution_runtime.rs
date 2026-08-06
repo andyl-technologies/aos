@@ -77,6 +77,9 @@ impl<'a> FaultExecutionRuntime<'a> {
     ) -> Result<Self, FaultExecutionError> {
         let program = sole_program(plan)?;
         checkpoint.validate(program, plan.bindings(), scenario_seed)?;
+        if checkpoint.poisoned {
+            return Err(FaultExecutionError::Poisoned);
+        }
         admit_manifests(plan.bindings(), &manifests)?;
         let bindings = plan.bindings().to_vec();
         let binding_runtime = FaultBindingRuntime::restore(
@@ -221,6 +224,7 @@ impl<'a> FaultExecutionRuntime<'a> {
             replay: self.replay.clone(),
             retained_effects: self.retained_effects.clone(),
             branch_parent: self.branch_parent,
+            poisoned: false,
         })
     }
 
@@ -303,6 +307,18 @@ impl OwnedFaultExecutionRuntime {
         manifests: FaultAdapterManifests,
         checkpoint: FaultRuntimeCheckpoint,
     ) -> Result<Self, FaultExecutionError> {
+        if checkpoint.poisoned {
+            let program = sole_program(&plan)?;
+            checkpoint.validate(program, plan.bindings(), scenario_seed)?;
+            admit_manifests(plan.bindings(), &manifests)?;
+            return Ok(Self {
+                plan,
+                artifacts,
+                scenario_seed,
+                manifests,
+                checkpoint,
+            });
+        }
         let runtime = FaultExecutionRuntime::restore(
             &plan,
             artifacts.as_ref(),
@@ -345,14 +361,51 @@ impl OwnedFaultExecutionRuntime {
             self.manifests.clone(),
             &self.checkpoint,
         )?;
-        let evaluation = runtime.evaluate_boundary_with_backend(
+        let evaluation = match runtime.evaluate_boundary_with_backend(
             coordinate,
             same_coordinate_sequence,
             backend,
-        )?;
-        let checkpoint = runtime.checkpoint()?;
+        ) {
+            Ok(evaluation) => evaluation,
+            Err(error) => {
+                if terminal_execution_error(&error) {
+                    self.checkpoint.poisoned = true;
+                }
+                return Err(error);
+            }
+        };
+        let checkpoint = match runtime.checkpoint() {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                self.checkpoint.poisoned = true;
+                return Err(error);
+            }
+        };
         self.checkpoint = checkpoint;
         Ok(evaluation)
+    }
+
+    /// Replaces the one-boundary-delayed production telemetry snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultExecutionError`] when the current continuation cannot be
+    /// restored, the snapshot exceeds admitted bounds, or the updated state
+    /// cannot be checkpointed.
+    pub fn set_boundary_snapshot(
+        &mut self,
+        boundary: SignalBoundarySnapshot,
+    ) -> Result<(), FaultExecutionError> {
+        let mut runtime = FaultExecutionRuntime::restore(
+            &self.plan,
+            self.artifacts.as_ref(),
+            self.scenario_seed,
+            self.manifests.clone(),
+            &self.checkpoint,
+        )?;
+        runtime.set_boundary_snapshot(boundary)?;
+        self.checkpoint = runtime.checkpoint()?;
+        Ok(())
     }
 
     /// Evaluates and commits one exact opportunity through a live backend.
@@ -377,12 +430,26 @@ impl OwnedFaultExecutionRuntime {
             self.manifests.clone(),
             &self.checkpoint,
         )?;
-        let evaluation = runtime.evaluate_opportunity_with_backend(
+        let evaluation = match runtime.evaluate_opportunity_with_backend(
             opportunity,
             same_coordinate_sequence,
             backend,
-        )?;
-        let checkpoint = runtime.checkpoint()?;
+        ) {
+            Ok(evaluation) => evaluation,
+            Err(error) => {
+                if terminal_execution_error(&error) {
+                    self.checkpoint.poisoned = true;
+                }
+                return Err(error);
+            }
+        };
+        let checkpoint = match runtime.checkpoint() {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                self.checkpoint.poisoned = true;
+                return Err(error);
+            }
+        };
         self.checkpoint = checkpoint;
         Ok(evaluation)
     }
@@ -391,6 +458,12 @@ impl OwnedFaultExecutionRuntime {
     #[must_use]
     pub const fn checkpoint(&self) -> &FaultRuntimeCheckpoint {
         &self.checkpoint
+    }
+
+    /// Returns whether backend visibility became ambiguous and execution ended.
+    #[must_use]
+    pub const fn is_poisoned(&self) -> bool {
+        self.checkpoint.poisoned
     }
 
     /// Returns the admitted signal and binding plan.
@@ -473,6 +546,10 @@ pub enum FaultExecutionError {
     Runtime(FaultRuntimeError),
     /// Binding and adapter checkpoints disagree about committed contributions.
     ContributionMirror,
+    /// Empty-plan state and checkpoint runtime presence disagree.
+    CheckpointPresence,
+    /// A prior backend transaction had ambiguous or partial visibility.
+    Poisoned,
 }
 
 impl From<BindingRuntimeError> for FaultExecutionError {
@@ -498,9 +575,26 @@ impl Error for FaultExecutionError {
         match self {
             Self::Binding(error) => Some(error),
             Self::Runtime(error) => Some(error),
-            Self::EmptyPlan | Self::ProgramCardinality | Self::ContributionMirror => None,
+            Self::EmptyPlan
+            | Self::ProgramCardinality
+            | Self::ContributionMirror
+            | Self::CheckpointPresence
+            | Self::Poisoned => None,
         }
     }
+}
+
+fn terminal_execution_error(error: &FaultExecutionError) -> bool {
+    matches!(
+        error,
+        FaultExecutionError::Poisoned
+            | FaultExecutionError::Binding(
+                BindingRuntimeError::AdapterAbort(_)
+                    | BindingRuntimeError::AdapterCommit(_)
+                    | BindingRuntimeError::Rollback(_)
+                    | BindingRuntimeError::Poisoned
+            )
+    )
 }
 
 #[cfg(test)]

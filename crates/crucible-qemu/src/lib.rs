@@ -65,6 +65,8 @@ mod node;
 mod node_factory;
 mod node_set;
 mod plugin_control;
+mod production_fault_runtime;
+mod production_fault_sink;
 mod qmp;
 mod quantum;
 mod quantum_boundary;
@@ -178,6 +180,10 @@ pub use node_factory::{
     spawn_setup_and_restore_qemu_node,
 };
 pub use node_set::QemuNodeSet;
+pub use production_fault_runtime::{
+    ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError,
+};
+pub use production_fault_sink::ProductionFaultActionSink;
 pub use qmp::{
     QMP_CAPABILITIES_COMMAND, QMP_COMMAND_TIMEOUT, QMP_GREETING_TIMEOUT, QMP_JOB_QUERY_INTERVAL,
     QMP_JOB_QUERY_LIMIT, QMP_QUERY_CPUS_FAST_COMMAND, QMP_QUERY_JOBS_COMMAND,

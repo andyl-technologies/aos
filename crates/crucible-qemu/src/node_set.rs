@@ -164,6 +164,60 @@ impl QemuNodeSet {
             .map_err(BackendError::from)
     }
 
+    /// Reads the current execution fingerprint of every live node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when any live node cannot supply an
+    /// authenticated shared-memory execution fingerprint.
+    pub fn execution_fingerprints(
+        &mut self,
+    ) -> Result<BTreeMap<NodeId, crucible::ContentHash>, BackendError> {
+        self.nodes
+            .iter_mut()
+            .map(|(node, backend)| {
+                backend
+                    .execution_fingerprint()
+                    .map(|fingerprint| (node.clone(), fingerprint.hash))
+                    .map_err(BackendError::from)
+            })
+            .collect()
+    }
+
+    /// Returns the next fault-command sequence of every live node.
+    #[must_use]
+    pub fn fault_command_sequences(&self) -> BTreeMap<NodeId, u64> {
+        self.nodes
+            .iter()
+            .map(|(node, backend)| (node.clone(), backend.next_fault_command_sequence()))
+            .collect()
+    }
+
+    /// Restores the per-node command continuation paired with VM snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when node membership differs or a sequence is
+    /// invalid for the fault-command ABI.
+    pub fn restore_fault_command_sequences(
+        &mut self,
+        sequences: &BTreeMap<NodeId, u64>,
+    ) -> Result<(), BackendError> {
+        if self.nodes.keys().ne(sequences.keys()) {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "QEMU fault-command checkpoint node membership differs from live nodes",
+                ),
+            });
+        }
+        for (node, sequence) in sequences {
+            self.node_mut(node)?
+                .restore_fault_command_sequence(*sequence)
+                .map_err(BackendError::from)?;
+        }
+        Ok(())
+    }
+
     fn node_mut(&mut self, node: &NodeId) -> Result<&mut QemuNode, BackendError> {
         self.nodes
             .get_mut(node)

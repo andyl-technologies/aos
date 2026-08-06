@@ -571,6 +571,28 @@ impl QemuNode {
         Ok(sequence)
     }
 
+    /// Returns the next fault-command sequence without reserving it.
+    #[must_use]
+    pub const fn next_fault_command_sequence(&self) -> u64 {
+        self.next_fault_command_sequence
+    }
+
+    /// Restores the next fault-command sequence paired with a VM checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when `sequence` would reuse setup-time or
+    /// already-reserved command identities.
+    pub fn restore_fault_command_sequence(&mut self, sequence: u64) -> Result<(), QemuNodeError> {
+        if sequence < 2 {
+            return Err(QemuNodeError::fault_command(
+                "restored fault command sequence precedes capability admission",
+            ));
+        }
+        self.next_fault_command_sequence = sequence;
+        Ok(())
+    }
+
     /// Publishes one fault command through this node's mapped data plane.
     ///
     /// # Errors
