@@ -186,6 +186,20 @@ impl WorldFaultTopology {
         for artifact in &self.network_policy_artifacts {
             artifact.validate()?;
         }
+        for artifact in &self.network_policy_artifacts {
+            let NetworkPolicyArtifactKind::ContactPlan { intervals } = &artifact.artifact else {
+                continue;
+            };
+            for interval in intervals {
+                require(
+                    self.network_policy_artifact(&interval.capacity_profile)
+                        .is_some_and(|capacity| {
+                            capacity.artifact.class() == NetworkPolicyArtifactClass::ServiceCurve
+                        }),
+                    "network contact capacity profile",
+                )?;
+            }
+        }
         canonicalize_by_id(&mut self.mobile_endpoints, WorldMobileEndpoint::id)?;
         canonicalize_by_id(&mut self.storage_devices, WorldStorageFaultDevice::id)?;
         canonicalize_by_id(&mut self.storage_controllers, WorldStorageController::id)?;

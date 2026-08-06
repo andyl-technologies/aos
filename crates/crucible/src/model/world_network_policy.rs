@@ -203,20 +203,26 @@ pub struct NetworkPolicyRfProfile {
     pub retry_delay_nanos: u64,
 }
 
-/// Integer-only RF propagation and transfer policy.
+/// Integer-only RF propagation policy.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NetworkPolicyRfChannel {
-    /// Distance-to-path-gain table.
-    pub path_gain: NetworkPolicyIntegerTable,
-    /// Orientation-to-antenna-gain table.
-    pub antenna_gain: NetworkPolicyIntegerTable,
-    /// Ordered SINR-to-link-profile table.
-    pub profiles: Vec<NetworkPolicyRfProfile>,
+pub struct NetworkPolicyRfPropagation {
+    /// Distance-to-path-gain ratio in millionths.
+    pub path_gain_ratio: NetworkPolicyIntegerTable,
+    /// Orientation-to-antenna-gain ratio in millionths.
+    pub antenna_gain_ratio: NetworkPolicyIntegerTable,
     /// Spatial quantization cell in millimetres.
     pub spatial_cell_mm: PositiveU64,
     /// Fading time bucket in virtual nanoseconds.
     pub fading_bucket_nanos: PositiveU64,
+}
+
+/// Integer-only SINR transfer policy.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicyRfTransfer {
+    /// Ordered SINR-millionths-to-link-profile table.
+    pub profiles: Vec<NetworkPolicyRfProfile>,
 }
 
 /// Closed association and handoff timing policy.
@@ -259,10 +265,38 @@ pub struct NetworkPolicyContactInterval {
     pub start_nanos: u64,
     /// Exclusive contact end in virtual nanoseconds.
     pub end_nanos: u64,
+    /// Source endpoint for the directed contact.
+    pub source: FaultObjectId,
+    /// Destination endpoint for the directed contact.
+    pub destination: FaultObjectId,
     /// Beam used during this interval.
     pub beam: FaultObjectId,
     /// Gateway used during this interval.
     pub gateway: FaultObjectId,
+    /// Minimum modeled range in millimetres during the interval.
+    pub minimum_range_mm: u64,
+    /// Maximum modeled range in millimetres during the interval.
+    pub maximum_range_mm: u64,
+    /// Piecewise service curve available during the contact.
+    pub capacity_profile: FaultObjectId,
+    /// Acquisition duration beginning at `start_nanos`.
+    pub acquisition_nanos: u64,
+    /// Teardown duration ending at `end_nanos`.
+    pub teardown_nanos: u64,
+    /// Confidence assigned to this normalized contact record.
+    pub confidence: ProbabilityMillionths,
+    /// Stable provenance identity for the imported or authored record.
+    pub provenance: FaultObjectId,
+}
+
+/// One recipient in a versioned broadcast or multicast membership.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicyRecipient {
+    /// Stable recipient identity.
+    pub member: FaultObjectId,
+    /// Membership-owned monotone join sequence used by oldest/newest selection.
+    pub joined_sequence: u64,
 }
 
 /// Disposition when a bounded control or custody queue overflows.
@@ -298,8 +332,10 @@ pub enum NetworkPolicyArtifactClass {
     ServiceCurve,
     /// Shared-medium access configuration.
     MediumAccess,
-    /// RF channel configuration.
-    RfChannel,
+    /// RF propagation and antenna-gain configuration.
+    RfPropagation,
+    /// RF SINR transfer configuration.
+    RfTransfer,
     /// Association/handoff configuration.
     Association,
     /// Typed control result.
@@ -308,6 +344,8 @@ pub enum NetworkPolicyArtifactClass {
     Overflow,
     /// Ordered intermittent-contact plan.
     ContactPlan,
+    /// Versioned broadcast or multicast recipient membership.
+    RecipientMembership,
 }
 
 impl NetworkPolicyArtifactClass {
@@ -323,11 +361,13 @@ impl NetworkPolicyArtifactClass {
             Self::StateMachine => "state_machine",
             Self::ServiceCurve => "service_curve",
             Self::MediumAccess => "medium_access",
-            Self::RfChannel => "rf_channel",
+            Self::RfPropagation => "rf_propagation",
+            Self::RfTransfer => "rf_transfer",
             Self::Association => "association",
             Self::ControlResult => "control_result",
             Self::Overflow => "overflow",
             Self::ContactPlan => "contact_plan",
+            Self::RecipientMembership => "recipient_membership",
         }
     }
 }
@@ -377,8 +417,10 @@ pub enum NetworkPolicyArtifactKind {
     },
     /// Shared-medium arbitration, collision, backoff, and duty-cycle policy.
     MediumAccess(NetworkPolicyMediumAccess),
-    /// Integer RF propagation and transfer tables.
-    RfChannel(NetworkPolicyRfChannel),
+    /// Integer RF propagation and antenna-gain tables.
+    RfPropagation(NetworkPolicyRfPropagation),
+    /// Integer RF SINR transfer table.
+    RfTransfer(NetworkPolicyRfTransfer),
     /// Association, authentication, and handoff policy.
     Association(NetworkPolicyAssociation),
     /// Typed operation-result replacement.
@@ -400,6 +442,11 @@ pub enum NetworkPolicyArtifactKind {
         /// Strictly ordered, non-overlapping contact intervals.
         intervals: Vec<NetworkPolicyContactInterval>,
     },
+    /// Canonical candidate set for one broadcast or multicast membership version.
+    RecipientMembership {
+        /// Nonempty records in canonical recipient-identity order.
+        members: Vec<NetworkPolicyRecipient>,
+    },
 }
 
 impl NetworkPolicyArtifactKind {
@@ -415,11 +462,13 @@ impl NetworkPolicyArtifactKind {
             Self::StateMachine { .. } => NetworkPolicyArtifactClass::StateMachine,
             Self::ServiceCurve { .. } => NetworkPolicyArtifactClass::ServiceCurve,
             Self::MediumAccess(_) => NetworkPolicyArtifactClass::MediumAccess,
-            Self::RfChannel(_) => NetworkPolicyArtifactClass::RfChannel,
+            Self::RfPropagation(_) => NetworkPolicyArtifactClass::RfPropagation,
+            Self::RfTransfer(_) => NetworkPolicyArtifactClass::RfTransfer,
             Self::Association(_) => NetworkPolicyArtifactClass::Association,
             Self::ControlResult { .. } => NetworkPolicyArtifactClass::ControlResult,
             Self::Overflow { .. } => NetworkPolicyArtifactClass::Overflow,
             Self::ContactPlan { .. } => NetworkPolicyArtifactClass::ContactPlan,
+            Self::RecipientMembership { .. } => NetworkPolicyArtifactClass::RecipientMembership,
         }
     }
 }
@@ -557,13 +606,32 @@ impl WorldNetworkPolicyArtifact {
                     && policy.duty_cycle_numerator.get() <= policy.duty_cycle_denominator.get(),
                 "network medium access policy",
             ),
-            NetworkPolicyArtifactKind::RfChannel(channel) => {
-                validate_integer_table(&channel.path_gain)?;
-                validate_integer_table(&channel.antenna_gain)?;
-                hard_policy_count(channel.profiles.len(), "network RF profiles")?;
-                require(!channel.profiles.is_empty(), "network RF profiles")?;
+            NetworkPolicyArtifactKind::RfPropagation(channel) => {
+                validate_integer_table(&channel.path_gain_ratio)?;
+                validate_integer_table(&channel.antenna_gain_ratio)?;
                 require(
-                    channel
+                    channel.path_gain_ratio.input_unit.as_str() == "millimetres"
+                        && channel.antenna_gain_ratio.input_unit.as_str() == "millidegrees"
+                        && channel.path_gain_ratio.output_unit.as_str() == "ratio-millionths"
+                        && channel.antenna_gain_ratio.output_unit.as_str() == "ratio-millionths"
+                        && channel
+                            .path_gain_ratio
+                            .points
+                            .iter()
+                            .all(|point| point.output >= 0)
+                        && channel
+                            .antenna_gain_ratio
+                            .points
+                            .iter()
+                            .all(|point| point.output >= 0),
+                    "network RF propagation units and ratios",
+                )
+            }
+            NetworkPolicyArtifactKind::RfTransfer(transfer) => {
+                hard_policy_count(transfer.profiles.len(), "network RF profiles")?;
+                require(!transfer.profiles.is_empty(), "network RF profiles")?;
+                require(
+                    transfer
                         .profiles
                         .windows(2)
                         .all(|pair| pair[0].minimum_sinr < pair[1].minimum_sinr),
@@ -599,13 +667,30 @@ impl WorldNetworkPolicyArtifact {
                 hard_policy_count(intervals.len(), "network contact intervals")?;
                 require(!intervals.is_empty(), "network contact intervals")?;
                 require(
-                    intervals
-                        .iter()
-                        .all(|interval| interval.start_nanos < interval.end_nanos)
-                        && intervals
-                            .windows(2)
-                            .all(|pair| pair[0].end_nanos <= pair[1].start_nanos),
+                    intervals.iter().all(|interval| {
+                        interval.start_nanos < interval.end_nanos
+                            && interval.source != interval.destination
+                            && interval.minimum_range_mm <= interval.maximum_range_mm
+                            && interval
+                                .acquisition_nanos
+                                .checked_add(interval.teardown_nanos)
+                                .is_some_and(|transition| {
+                                    transition <= interval.end_nanos - interval.start_nanos
+                                })
+                    }) && intervals
+                        .windows(2)
+                        .all(|pair| pair[0].end_nanos <= pair[1].start_nanos),
                     "network contact interval order",
+                )
+            }
+            NetworkPolicyArtifactKind::RecipientMembership { members } => {
+                hard_policy_count(members.len(), "network recipient membership")?;
+                require(!members.is_empty(), "network recipient membership")?;
+                require(
+                    members
+                        .windows(2)
+                        .all(|pair| pair[0].member < pair[1].member),
+                    "network recipient membership order",
                 )
             }
         }
@@ -715,6 +800,133 @@ mod tests {
                 duty_cycle_denominator: positive(1),
             }),
         };
+        assert!(declaration.validate().is_err());
+    }
+
+    #[test]
+    fn rf_propagation_requires_canonical_linear_ratio_units() {
+        let table = |input_unit: &str, output: i64| NetworkPolicyIntegerTable {
+            input_unit: id(input_unit),
+            output_unit: id("ratio-millionths"),
+            interpolation: NetworkPolicyInterpolation::Step,
+            outside: NetworkPolicyOutsideRange::Clamp,
+            points: vec![NetworkPolicyIntegerPoint { input: 0, output }],
+        };
+        let valid = WorldNetworkPolicyArtifact {
+            id: id("rf-propagation"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::RfPropagation(NetworkPolicyRfPropagation {
+                path_gain_ratio: table("millimetres", 500_000),
+                antenna_gain_ratio: table("millidegrees", 1_000_000),
+                spatial_cell_mm: positive(1),
+                fading_bucket_nanos: positive(1),
+            }),
+        };
+        valid
+            .validate()
+            .unwrap_or_else(|error| panic!("canonical RF propagation: {error}"));
+
+        let invalid = WorldNetworkPolicyArtifact {
+            id: id("rf-logarithmic-propagation"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::RfPropagation(NetworkPolicyRfPropagation {
+                path_gain_ratio: table("millimetres", -3_000),
+                antenna_gain_ratio: table("millidegrees", 1_000_000),
+                spatial_cell_mm: positive(1),
+                fading_bucket_nanos: positive(1),
+            }),
+        };
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn rf_transfer_requires_strictly_ordered_sinr_thresholds() {
+        let probability = ProbabilityMillionths::new(0)
+            .unwrap_or_else(|error| panic!("zero probability: {error}"));
+        let profile = |minimum_sinr| NetworkPolicyRfProfile {
+            minimum_sinr,
+            rate_bps: positive(1),
+            loss: probability,
+            corruption: probability,
+            retry_delay_nanos: 0,
+        };
+        let declaration = WorldNetworkPolicyArtifact {
+            id: id("rf-transfer"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::RfTransfer(NetworkPolicyRfTransfer {
+                profiles: vec![profile(10), profile(10)],
+            }),
+        };
+        assert!(declaration.validate().is_err());
+    }
+
+    #[test]
+    fn contact_intervals_validate_complete_directed_records() {
+        let interval = NetworkPolicyContactInterval {
+            start_nanos: 100,
+            end_nanos: 200,
+            source: id("satellite"),
+            destination: id("ground-station"),
+            beam: id("beam-a"),
+            gateway: id("gateway-a"),
+            minimum_range_mm: 10_000,
+            maximum_range_mm: 20_000,
+            capacity_profile: id("contact-capacity"),
+            acquisition_nanos: 10,
+            teardown_nanos: 20,
+            confidence: ProbabilityMillionths::new(900_000)
+                .unwrap_or_else(|error| panic!("test confidence should be valid: {error}")),
+            provenance: id("normalized-contact-trace"),
+        };
+        let valid = WorldNetworkPolicyArtifact {
+            id: id("contact-plan"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::ContactPlan {
+                intervals: vec![interval.clone()],
+            },
+        };
+        assert!(valid.validate().is_ok());
+
+        let mut invalid_interval = interval;
+        invalid_interval.acquisition_nanos = 90;
+        invalid_interval.teardown_nanos = 20;
+        let invalid = WorldNetworkPolicyArtifact {
+            id: id("invalid-contact-plan"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::ContactPlan {
+                intervals: vec![invalid_interval],
+            },
+        };
+        assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn recipient_membership_requires_canonical_unique_identity_order() {
+        let mut declaration = WorldNetworkPolicyArtifact {
+            id: id("multicast-members-v1"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::RecipientMembership {
+                members: vec![
+                    NetworkPolicyRecipient {
+                        member: id("receiver-a"),
+                        joined_sequence: 2,
+                    },
+                    NetworkPolicyRecipient {
+                        member: id("receiver-b"),
+                        joined_sequence: 1,
+                    },
+                ],
+            },
+        };
+        declaration
+            .validate()
+            .unwrap_or_else(|error| panic!("canonical membership: {error}"));
+
+        if let NetworkPolicyArtifactKind::RecipientMembership { members } =
+            &mut declaration.artifact
+        {
+            members.swap(0, 1);
+        }
         assert!(declaration.validate().is_err());
     }
 }

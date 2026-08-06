@@ -522,9 +522,21 @@ pub enum ResolvedMappingOutput {
     ServiceProfile {
         /// Closed service-profile identity.
         service_profile: FaultObjectId,
+        /// Exact named physical contract paired with every canonical input value.
+        input_contracts: Vec<ServiceProfileInput>,
         /// Canonically signal-ID-ordered numeric inputs.
         inputs: Vec<SignalValue>,
     },
+}
+
+/// One named physical input to a service-profile mapping.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceProfileInput {
+    /// Stable effect-specific role such as `distance` or `orientation`.
+    pub role: FaultObjectId,
+    /// Exact physical representation accepted for the role.
+    pub shape: SignalShape,
 }
 
 /// One versioned exhaustive adapter state-transition table declaration.
@@ -571,8 +583,8 @@ pub struct ServiceProfileDeclaration {
     pub semantic_version: u16,
     /// Exact owning effect family.
     pub effect: EffectKind,
-    /// Canonical signal-ID-ordered input contracts.
-    pub inputs: Vec<SignalShape>,
+    /// Canonical signal-ID-ordered named input contracts.
+    pub inputs: Vec<ServiceProfileInput>,
     /// Dynamic effect fields produced by the profile.
     pub parameters: Vec<MappedEffectParameter>,
 }
@@ -644,7 +656,14 @@ impl BindingMappingRegistry {
                 || declaration
                     .inputs
                     .iter()
-                    .any(|shape| !shape.value_type.is_numeric())
+                    .any(|input| !input.shape.value_type.is_numeric())
+                || declaration
+                    .inputs
+                    .iter()
+                    .map(|input| &input.role)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != declaration.inputs.len()
                 || declaration
                     .parameters
                     .iter()
@@ -691,7 +710,7 @@ impl BindingMappingRegistry {
                     || shapes
                         .iter()
                         .zip(&declaration.inputs)
-                        .any(|(actual, expected)| *actual != expected)
+                        .any(|(actual, expected)| *actual != &expected.shape)
                 {
                     return Err(BindingError::InvalidMappingRegistry);
                 }
@@ -1732,10 +1751,11 @@ mod tests {
             id: object_id("service-profile"),
             semantic_version: 1,
             effect: EffectKind::NetworkAvailability,
-            inputs: vec![
-                SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
+            inputs: vec![ServiceProfileInput {
+                role: object_id("service-input"),
+                shape: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
                     .unwrap_or_else(|error| panic!("service input must be valid: {error}")),
-            ],
+            }],
             parameters: vec![MappedEffectParameter::UnsignedCount],
         });
         mutations.push(changed);

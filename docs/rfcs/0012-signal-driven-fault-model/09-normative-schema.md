@@ -312,7 +312,11 @@ Mapping schemas:
 | `hazard` | probability signal or `probability_millionths`, opportunity filter | Keyed opportunity outcome. |
 | `impulse_on_event` | typed event, optional payload-field mapping | One impulse per event identity. |
 | `state_transition` | event/enum signal, exact request overrides, mandatory default transition | Exhaustive adapter transition request; unknown requests take the typed default and never fail during execution. |
-| `service_profile` | rate/capacity signals, service kind and exact parameters | Service-curve contribution. |
+| `service_profile` | numeric signals; ordered `{ role, shape }` input contracts; service kind and exact parameters | Named typed service contribution; roles, shapes, and values cross the adapter seam and enter action identity. |
+
+Service-profile roles are closed by the selected effect contract. Adapters
+select inputs by role and verify the accompanying shape; they never assign
+meaning by authored signal name or by an untyped positional convention.
 
 An opportunity-filter table contains adapter, operation, phase, and optional
 typed target/operation-field predicates. Fields and values come from §8.2; the
@@ -342,7 +346,21 @@ registry expands each effect into a distinct closed field table; generic
 | `world.network_path` | `id`, ordered segments/forwarders, direction | route policy and MTU/encapsulation policy |
 | `world.network_attachment` | endpoint/interface, candidates, technology machine | authentication and address continuity policy |
 | `world.network_contact_plan` | `id`, endpoints, ordered contacts, routing/custody policy | range/profile artifacts |
+
+A contact interval's acquisition and teardown durations are its complete
+transition policy. `network.contact` therefore references the interval set,
+range-to-delay lookup, and admitted beam and gateway sets directly; it does not
+accept a second state-machine artifact with ambiguous event names.
+| `world.network_recipient_membership` | version `id`; nonempty recipient records in identity order; each record has `member` and monotone `joined_sequence` | none |
 | `world.mobile_endpoint` | `id`, node, truth trajectory | observed-position sensor ID is specification-only and rejected in v2 |
+
+`network.recipient_subset` names one exact recipient-membership version.
+Explicit drops must be a subset of that version and a retained count cannot
+exceed it. `oldest` and `newest` use `joined_sequence` with recipient identity
+as the tie-break; `canonical_order` uses identity order; `keyed_uniform` ranks
+the complete membership from the scenario seed, binding, source-frame identity,
+membership version, and recipient. All route-expanded copies of one multicast
+frame therefore make one shared selection rather than independent draws.
 
 Every `kind` resolves to a technology contract in §10. A technology table that
 lacks its required parameters or state-machine semantic version is rejected.

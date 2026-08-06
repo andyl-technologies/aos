@@ -298,6 +298,22 @@ fn validate_network_effect_policy_references(
     };
     let integer = &[NetworkPolicyArtifactClass::IntegerLookup];
     let state_machine = &[NetworkPolicyArtifactClass::StateMachine];
+    let require_service_inputs = |effect: &'static str,
+                                  expected: Vec<ServiceProfileInput>|
+     -> Result<(), FaultSignalAuthoringError> {
+        let actual = binding
+            .service_declaration()
+            .map(|declaration| declaration.inputs.clone());
+        if actual.as_ref() == Some(&expected) {
+            return Ok(());
+        }
+        Err(FaultSignalAuthoringError::InvalidNetworkServiceInputs {
+            binding: binding.id().as_str().to_owned(),
+            effect,
+            expected,
+            actual,
+        })
+    };
     let require_path =
         |reference: &FaultObjectId, field: &'static str| -> Result<(), FaultSignalAuthoringError> {
             if topology
@@ -539,22 +555,61 @@ fn validate_network_effect_policy_references(
         NetworkEffectSpecification::RfChannel {
             propagation_fields,
             sinr_transfer,
-            fading_field,
             ..
         } => {
+            let inputs = vec![
+                ServiceProfileInput {
+                    role: FaultObjectId::parse("distance").map_err(|_error| {
+                        FaultSignalAuthoringError::InvalidField("service_profile.inputs.role")
+                    })?,
+                    shape: SignalShape {
+                        value_type: SignalValueType::U64,
+                        unit: SignalUnit::Millimetres,
+                        scale_decimal_exponent: 0,
+                    },
+                },
+                ServiceProfileInput {
+                    role: FaultObjectId::parse("orientation").map_err(|_error| {
+                        FaultSignalAuthoringError::InvalidField("service_profile.inputs.role")
+                    })?,
+                    shape: SignalShape {
+                        value_type: SignalValueType::I64,
+                        unit: SignalUnit::Millidegrees,
+                        scale_decimal_exponent: 0,
+                    },
+                },
+                ServiceProfileInput {
+                    role: FaultObjectId::parse("interference").map_err(|_error| {
+                        FaultSignalAuthoringError::InvalidField("service_profile.inputs.role")
+                    })?,
+                    shape: SignalShape {
+                        value_type: SignalValueType::U64,
+                        unit: SignalUnit::Femtowatts,
+                        scale_decimal_exponent: 0,
+                    },
+                },
+                ServiceProfileInput {
+                    role: FaultObjectId::parse("fading").map_err(|_error| {
+                        FaultSignalAuthoringError::InvalidField("service_profile.inputs.role")
+                    })?,
+                    shape: SignalShape {
+                        value_type: SignalValueType::U64,
+                        unit: SignalUnit::PartsPerMillion,
+                        scale_decimal_exponent: 0,
+                    },
+                },
+            ];
+            require_service_inputs("rf_channel", inputs)?;
             require(
                 propagation_fields,
-                &[NetworkPolicyArtifactClass::RfChannel],
+                &[NetworkPolicyArtifactClass::RfPropagation],
                 "propagation_fields",
             )?;
             require(
                 sinr_transfer,
-                &[NetworkPolicyArtifactClass::RfChannel],
+                &[NetworkPolicyArtifactClass::RfTransfer],
                 "sinr_transfer",
             )?;
-            if let Some(reference) = fading_field {
-                require(reference, integer, "fading_field")?;
-            }
         }
         NetworkEffectSpecification::Association {
             candidates,
@@ -607,19 +662,104 @@ fn validate_network_effect_policy_references(
             &[NetworkPolicyArtifactClass::ControlResult],
             "result",
         )?,
-        NetworkEffectSpecification::Contact {
-            intervals,
-            transition_policy,
-            range_delay_lookup,
+        NetworkEffectSpecification::RecipientSubset {
+            membership_version,
+            drop_members,
+            retain_count,
             ..
         } => {
+            require(
+                membership_version,
+                &[NetworkPolicyArtifactClass::RecipientMembership],
+                "membership_version",
+            )?;
+            let declaration = topology
+                .network_policy_artifact(membership_version)
+                .ok_or_else(
+                    || FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: membership_version.as_str().to_owned(),
+                        field: "membership_version",
+                        expected: String::from("recipient_membership"),
+                        actual: None,
+                    },
+                )?;
+            if let NetworkPolicyArtifactKind::RecipientMembership { members } =
+                &declaration.artifact
+            {
+                let invalid_drop = drop_members.as_ref().is_some_and(|dropped| {
+                    dropped.as_slice().iter().any(|member| {
+                        members
+                            .binary_search_by(|candidate| candidate.member.cmp(member))
+                            .is_err()
+                    })
+                });
+                let invalid_retain = retain_count.as_ref().is_some_and(|count| {
+                    usize::try_from(count.get())
+                        .map_or(true, |count| count > members.as_slice().len())
+                });
+                if invalid_drop || invalid_retain {
+                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: declaration.id.as_str().to_owned(),
+                        field: "recipient_subset",
+                        expected: String::from("drop subset and retain count within membership"),
+                        actual: Some("out-of-membership selection"),
+                    });
+                }
+            }
+        }
+        NetworkEffectSpecification::Contact {
+            intervals,
+            range_delay_lookup,
+            beams,
+            gateways,
+        } => {
+            require_service_inputs(
+                "contact",
+                vec![ServiceProfileInput {
+                    role: FaultObjectId::parse("range").map_err(|_error| {
+                        FaultSignalAuthoringError::InvalidField("service_profile.inputs.role")
+                    })?,
+                    shape: SignalShape {
+                        value_type: SignalValueType::U64,
+                        unit: SignalUnit::Millimetres,
+                        scale_decimal_exponent: 0,
+                    },
+                }],
+            )?;
             require(
                 intervals,
                 &[NetworkPolicyArtifactClass::ContactPlan],
                 "intervals",
             )?;
-            require(transition_policy, state_machine, "transition_policy")?;
             require(range_delay_lookup, integer, "range_delay_lookup")?;
+            let declaration = topology.network_policy_artifact(intervals).ok_or_else(|| {
+                FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                    binding: binding.id().as_str().to_owned(),
+                    reference: intervals.as_str().to_owned(),
+                    field: "intervals",
+                    expected: String::from("contact_plan"),
+                    actual: None,
+                }
+            })?;
+            if let NetworkPolicyArtifactKind::ContactPlan { intervals } = &declaration.artifact {
+                if intervals.iter().any(|interval| {
+                    beams.as_slice().binary_search(&interval.beam).is_err()
+                        || gateways
+                            .as_slice()
+                            .binary_search(&interval.gateway)
+                            .is_err()
+                }) {
+                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: declaration.id.as_str().to_owned(),
+                        field: "intervals.beam/gateway",
+                        expected: String::from("members of the effect beam and gateway sets"),
+                        actual: Some("undeclared contact member"),
+                    });
+                }
+            }
         }
         NetworkEffectSpecification::CustodyQueue {
             custody_policy,
@@ -652,7 +792,6 @@ fn validate_network_effect_policy_references(
         | NetworkEffectSpecification::DetectedFrameError { .. }
         | NetworkEffectSpecification::Mtu { .. }
         | NetworkEffectSpecification::PauseBackpressure { .. }
-        | NetworkEffectSpecification::RecipientSubset { .. }
         | NetworkEffectSpecification::ForwarderLifecycle { .. } => {}
     }
     Ok(())
