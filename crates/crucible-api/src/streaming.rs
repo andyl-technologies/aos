@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crucible::{
     BackendError, DebugAttachReport, DebugGotoReport, DebugNonCanonicalBranchReport,
-    DebugReverseContinueReport, DebugReverseStepReport, EngineError, FaultTag, SchedulerError,
+    DebugReverseContinueReport, DebugReverseStepReport, EngineError, SchedulerError,
 };
 use crucible_session::{
     BreakpointId, CommandReply, LifecycleStateKind, LifecycleTransition, LiveQueryKind,
@@ -412,7 +412,6 @@ pub struct SendResponse {
 }
 
 enum CommandReplyObserver {
-    FaultTag(oneshot::Receiver<Result<FaultTag, SessionError>>),
     Unit(oneshot::Receiver<Result<(), SessionError>>),
     BreakpointId(oneshot::Receiver<Result<BreakpointId, SessionError>>),
     BreakpointRemoval(oneshot::Receiver<Result<bool, SessionError>>),
@@ -440,7 +439,6 @@ impl CommandReplyObserver {
         StreamingApiError,
     > {
         let rejected = match self {
-            Self::FaultTag(receiver) => rejected_from_reply(receiver, command).await?,
             Self::Unit(receiver) => rejected_from_reply(receiver, command).await?,
             Self::BreakpointId(receiver) => match await_reply(receiver, command).await? {
                 Ok(id) => return Ok((CommandResultStatus::Accepted, None, Some(id), None)),
@@ -863,20 +861,6 @@ fn command_with_reply_observer(
     command: SessionCommand,
 ) -> (SessionCommand, Option<CommandReplyObserver>) {
     let (command, observer) = match command {
-        SessionCommand::InjectFault { spec, .. } => {
-            let (reply, receiver) = CommandReply::channel();
-            (
-                SessionCommand::InjectFault { spec, reply },
-                Some(CommandReplyObserver::FaultTag(receiver)),
-            )
-        }
-        SessionCommand::HealFault { tag, .. } => {
-            let (reply, receiver) = CommandReply::channel();
-            (
-                SessionCommand::HealFault { tag, reply },
-                Some(CommandReplyObserver::Unit(receiver)),
-            )
-        }
         SessionCommand::SetBreakpoint { spec, .. } => {
             let (reply, receiver) = CommandReply::channel();
             (

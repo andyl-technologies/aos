@@ -341,7 +341,6 @@ pub fn open_set_breakpoint_kind(condition: &Condition) -> &'static str {
         Predicate::NodeState { .. } => "crucible.bp.node-state",
         Predicate::AssertionState { .. } => "crucible.bp.assertion-state",
         Predicate::Quiescent => "crucible.bp.quiescent",
-        Predicate::FaultActive { .. } => "crucible.bp.fault-active",
         Predicate::Named { .. } => "crucible.bp.named",
         Predicate::GuestMarker { .. } => "crucible.bp.guest-marker",
         Predicate::AllOf { .. } => "crucible.bp.all-of",

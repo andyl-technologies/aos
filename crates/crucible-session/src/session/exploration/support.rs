@@ -26,8 +26,6 @@ pub(super) fn fork_session_handle_id(parent: ContentHash, checkpoint: ContentHas
 
 pub(super) fn breakpoint_action_kind(action: &Action) -> &'static str {
     match action {
-        Action::InjectFault { .. } => "inject-fault",
-        Action::HealFault { .. } => "heal-fault",
         Action::ArmTimer { .. } => "arm-timer",
         Action::CancelTimer { .. } => "cancel-timer",
         Action::StartNode { .. } => "start-node",
@@ -45,8 +43,6 @@ pub(super) fn control_operation_command_kind(
     control: &ControlOperationKind,
 ) -> Option<SessionCommandKind> {
     match control {
-        ControlOperationKind::InjectFault { .. } => Some(SessionCommandKind::InjectFault),
-        ControlOperationKind::HealFault { .. } => Some(SessionCommandKind::HealFault),
         ControlOperationKind::Inject
         | ControlOperationKind::Pause
         | ControlOperationKind::Resume

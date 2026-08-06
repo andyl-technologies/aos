@@ -858,21 +858,6 @@ impl<L> Engine<L> {
         scheduler_controls: &mut Vec<ControlOperationKind>,
     ) -> Result<(), SessionError> {
         match action {
-            Action::InjectFault { tag, fault } => {
-                let Some(fault) = fault.table_fault() else {
-                    return Err(SessionError::UnsupportedBreakpointFault {
-                        action: "inject-fault",
-                        reason: "fault has no scheduler-control representation",
-                    });
-                };
-                scheduler_controls.push(ControlOperationKind::InjectFault {
-                    tag: tag.clone(),
-                    fault,
-                });
-            }
-            Action::HealFault { tag } => {
-                scheduler_controls.push(ControlOperationKind::HealFault { tag: tag.clone() });
-            }
             Action::Group(actions) => {
                 for action in actions {
                     Self::plan_breakpoint_action_into(action, scheduler_controls)?;
@@ -1154,8 +1139,6 @@ impl<L: QuantumLoop> Engine<L> {
             | SessionCommandKind::StepTimer
             | SessionCommandKind::StepDuration
             | SessionCommandKind::Inject
-            | SessionCommandKind::InjectFault
-            | SessionCommandKind::HealFault
             | SessionCommandKind::SetBreakpoint
             | SessionCommandKind::RemoveBreakpoint
             | SessionCommandKind::CreateSavepoint
@@ -1287,45 +1270,6 @@ impl<L: QuantumLoop> Engine<L> {
                         Some(control),
                         event_log_sequence_before,
                     );
-                    Ok(self.snapshot())
-                }
-                EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
-                }
-            },
-            SessionCommand::InjectFault { spec, reply } => match self.state {
-                EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
-                    let control = ControlOperationKind::InjectFault {
-                        tag: spec.tag.clone(),
-                        fault: spec.fault.clone(),
-                    };
-                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
-                    self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control_at(
-                        &command,
-                        Some(control),
-                        event_log_sequence_before,
-                    );
-                    reply.complete(Ok(spec.tag.clone()));
-                    Ok(self.snapshot())
-                }
-                EngineState::Loaded | EngineState::Stopped { .. } => {
-                    Err(self.invalid_transition(command.clone()))
-                }
-            },
-            SessionCommand::HealFault { tag, reply } => match self.state {
-                EngineState::Running | EngineState::Paused { .. } => {
-                    self.reject_debug_forward_without_branch(&command)?;
-                    let control = ControlOperationKind::HealFault { tag: tag.clone() };
-                    let event_log_sequence_before = usize_to_u64(self.event_log_len());
-                    self.apply_control_operation_at_boundary(control.clone())?;
-                    self.record_boundary_control_at(
-                        &command,
-                        Some(control),
-                        event_log_sequence_before,
-                    );
-                    reply.complete(Ok(()));
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {

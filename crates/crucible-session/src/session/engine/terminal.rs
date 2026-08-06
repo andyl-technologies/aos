@@ -91,9 +91,7 @@ pub(super) fn breakpoint_terminal_verdict(action: &Action) -> (bool, Vec<String>
             violations.dedup();
             (passed, violations)
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }
