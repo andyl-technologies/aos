@@ -803,6 +803,12 @@ pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
                 &error.to_string(),
             )
         }
+        LifecycleApiError::SessionCommandRejected { .. } => typed_rpc_status_response(
+            axum::http::StatusCode::CONFLICT,
+            crucible_api::RpcStatusCode::InvalidState,
+            "session-command-rejected",
+            &error.to_string(),
+        ),
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::CommandChannelClosed { .. }

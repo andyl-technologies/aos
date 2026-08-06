@@ -45,6 +45,108 @@ pub const LIFECYCLE_SESSION_MAILBOX_CAPACITY: usize = 16;
 /// Default actor-yield budget for lifecycle startup commands.
 pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
 
+/// Authorized actor dispatch handle captured without retaining the global registry lock.
+#[derive(Clone)]
+pub struct GuestIntrospectionDispatch {
+    sender: mpsc::Sender<SessionCommand>,
+    session_id: SessionId,
+}
+
+impl GuestIntrospectionDispatch {
+    /// Exchanges one channel-addressed record with the session actor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the actor is unavailable or rejects
+    /// the fork gate, channel envelope, or backend operation.
+    pub async fn exchange(
+        &self,
+        node: NodeId,
+        channel_id: u64,
+        request: Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+    ) -> Result<
+        Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+        LifecycleApiError,
+    > {
+        let (reply, receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::GuestIntrospection {
+                node,
+                channel_id,
+                request,
+                reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("guest-introspection reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)
+    }
+
+    /// Forks the attached debugger for a guest-introspection action.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when actor communication, attachment, or
+    /// non-canonical branch admission fails.
+    pub async fn fork(
+        &self,
+        node: NodeId,
+    ) -> Result<crucible::DebugNonCanonicalBranchReport, LifecycleApiError> {
+        let (query_reply, query_receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::Query {
+                kind: QueryKind::Snapshot,
+                reply: query_reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        let snapshot = query_receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug fork snapshot reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)?;
+        let QueryResult::Snapshot(snapshot) = snapshot else {
+            return Err(LifecycleApiError::ActorFailed {
+                message: String::from("debug fork snapshot query returned an unexpected result"),
+            });
+        };
+        let request = crucible::DebugNonCanonicalBranchRequest::new(
+            snapshot.configuration.clone(),
+            snapshot.frontier,
+            crucible::DebugNonCanonicalBranchTrigger::GuestIntrospection,
+        )
+        .with_action(crucible::DebugNonCanonicalBranchAction::guest_introspection(node));
+        let (reply, receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::DebugForkNonCanonical { request, reply })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug guest fork reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)
+    }
+}
+
+fn session_command_rejection(error: SessionError) -> LifecycleApiError {
+    LifecycleApiError::SessionCommandRejected {
+        message: error.to_string(),
+    }
+}
+
 /// Minimal delegated quantum loop used by the in-process CLI double.
 ///
 /// The loop owns the scheduler boundary below the CLI/API layer. It advances a
@@ -919,6 +1021,12 @@ pub enum LifecycleApiError {
         /// Session error text.
         message: String,
     },
+    /// A live actor rejected an otherwise well-formed debugger operation.
+    #[error("session command rejected: {message}")]
+    SessionCommandRejected {
+        /// Stable actor rejection detail.
+        message: String,
+    },
     /// A debugger identity, capability, or controller lease was rejected.
     #[error("debug access rejected: {source}")]
     DebugAccess {
@@ -1580,6 +1688,26 @@ where
             .map_err(|error| LifecycleApiError::ActorFailed {
                 message: error.to_string(),
             })
+    }
+
+    /// Captures a guest-introspection actor dispatch handle.
+    ///
+    /// The returned handle owns the mailbox sender needed for later asynchronous
+    /// exchange, so callers can release the lifecycle registry lock first.
+    /// Authorization must be completed before capturing this handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale.
+    pub fn guest_introspection_dispatch(
+        &self,
+        session: SessionRef,
+    ) -> Result<GuestIntrospectionDispatch, LifecycleApiError> {
+        let runtime = self.checked_runtime(session, None)?;
+        Ok(GuestIntrospectionDispatch {
+            sender: runtime.sender.clone(),
+            session_id: runtime.session.id,
+        })
     }
 
     /// Builds an in-process streaming handle for a live session.

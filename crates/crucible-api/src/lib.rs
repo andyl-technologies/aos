@@ -70,7 +70,7 @@ pub use event_log_stream::{
 pub use lifecycle::{
     CreateSessionRequest, CreateSessionResponse, CreateSessionSource, DestroySessionRequest,
     DestroySessionResponse, GetReproductionRequest, GetReproductionResponse,
-    InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
+    GuestIntrospectionDispatch, InProcessLifecycleClient, LIFECYCLE_SESSION_MAILBOX_CAPACITY,
     LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS, LifecycleApiError, LifecycleControlPlane,
     LifecycleLoopFactory, ListScenariosResponse, ListSessionsResponse, QuiescentLifecycleLoop,
     ReproductionCommandPayload, ReproductionCommandRecord, ReproductionCommandResult,

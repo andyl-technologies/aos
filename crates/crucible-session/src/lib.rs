@@ -79,6 +79,9 @@ use crucible::{
     SchedulerLivenessScenario, SchedulerQuiescence, SchedulerWorldInstantiationError, SimDuration,
     SingleScheduler, TemporalGraph, VirtualTime, WhiteBoxPolicy, World, WorldIoLayoutPolicy,
 };
+use crucible_protocol::guest_introspection::{
+    GuestIntrospectionFailureCode, GuestIntrospectionMessage, GuestIntrospectionRecord,
+};
 use thiserror::Error;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;

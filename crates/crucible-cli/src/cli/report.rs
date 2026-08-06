@@ -383,6 +383,21 @@ impl DebugInvocationPlan {
                 && self
                     .engine_operations
                     .contains(&DebugEngineOperation::NonCanonicalBranchFork)
+        } else if matches!(
+            self.verb,
+            DebugInteractiveVerbPlan::Exec { .. }
+                | DebugInteractiveVerbPlan::Pty { .. }
+                | DebugInteractiveVerbPlan::Ssh
+        ) {
+            self.allow_mutate
+                && !self.read_only
+                && self.non_canonical_branch_label.as_deref() == Some("NON-CANONICAL debug branch")
+                && !self
+                    .session_commands
+                    .contains(&SessionCommand::fork_current())
+                && self
+                    .engine_operations
+                    .contains(&DebugEngineOperation::GuestIntrospection)
         } else {
             self.read_only
                 && self.non_canonical_branch_label.is_none()
@@ -433,6 +448,15 @@ pub(super) enum DebugInteractiveVerbPlan {
     ReverseContinue {
         condition: String,
     },
+    Exec {
+        argv: Vec<String>,
+    },
+    Pty {
+        argv: Vec<String>,
+        columns: u16,
+        rows: u16,
+    },
+    Ssh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -451,6 +475,7 @@ pub(super) enum DebugEngineOperation {
     NoSymbolServer,
     MultiVcpuThreadEnumeration,
     DisableRawGdbSingleStep,
+    GuestIntrospection,
 }
 
 #[derive(Debug)]

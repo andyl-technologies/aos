@@ -1557,6 +1557,7 @@ pub(super) fn session_command_name(command: SessionCommandKind) -> &'static str 
         SessionCommandKind::DebugReverseStep => "debug-reverse-step",
         SessionCommandKind::DebugReverseContinue => "debug-reverse-continue",
         SessionCommandKind::DebugForkNonCanonical => "debug-fork-non-canonical",
+        SessionCommandKind::GuestIntrospection => "guest-introspection",
     }
 }
 

@@ -1301,7 +1301,12 @@ mod tests {
             .unwrap_or_else(|error| panic!("new backend should receive packet: {error}"));
         assert_eq!(&packet, b"$g#67");
         let mut old_byte = [0_u8; 1];
-        assert!(old_peer.read(&mut old_byte).is_err());
+        match old_peer.read(&mut old_byte) {
+            Ok(0) | Err(_) => {}
+            Ok(length) => {
+                panic!("retired backend unexpectedly received {length} post-commit byte(s)")
+            }
+        }
         drop(operator_peer);
     }
 

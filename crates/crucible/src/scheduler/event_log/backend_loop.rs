@@ -207,6 +207,28 @@ where
         self.backend.open_gdbstub(node, listen).map_err(Into::into)
     }
 
+    fn send_guest_introspection(
+        &mut self,
+        node: NodeId,
+        record: crucible_protocol::guest_introspection::GuestIntrospectionRecord,
+    ) -> Result<(), SchedulerError> {
+        self.backend
+            .send_guest_introspection(&node, record)
+            .map_err(Into::into)
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        node: NodeId,
+    ) -> Result<
+        Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+        SchedulerError,
+    > {
+        self.backend
+            .receive_guest_introspection(&node)
+            .map_err(Into::into)
+    }
+
     fn append_backend_observable_events(
         &mut self,
         events: Vec<ObservableEvent>,

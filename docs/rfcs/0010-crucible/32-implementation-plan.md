@@ -729,10 +729,13 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   gdbstub proxy, read-only default inspection, explicit non-canonical mutation
   branches, no-symbol-server ownership, coherent multi-vCPU gdb threads, and
   disabled raw gdb single-step. The command resolves and boots the hermetic
-  packaged QEMU/plugin backend before reporting the delegated debug plan.
+  packaged QEMU/plugin backend before reporting the delegated debug plan. The
+  remote path additionally exposes controller-leased GDB relay plus explicit
+  whole-world guest-introspection fork, argv exec, PTY, and configured in-guest
+  SSH byte bridging through the bounded public protocol.
   `T-DBG-9 … T-DBG-12` remain open for the production gateway/live replacement
-  gates, complete authorization and peer-credential enforcement, and the
-  fork-gated guest-introspection daemon/CLI surface.
+  gates, complete authorization and peer-credential enforcement, guest-channel
+  reposition teardown/resize/transcript completion, and live acceptance.
 - Failure triage: `T-TRI-1` is green through `checks.crucible.phase6.failureSignature`,
   which implements the recorded-run-only `FailureSignature` tuple for property
   violations and divergence bisection points, binds checked event-log projection

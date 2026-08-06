@@ -2,6 +2,101 @@
 
 use super::*;
 
+struct GuestBrokerLoop {
+    responses: VecDeque<GuestIntrospectionRecord>,
+}
+
+impl QuantumLoop for GuestBrokerLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        StubLoop.drive_quantum(request)
+    }
+
+    fn send_guest_introspection(
+        &mut self,
+        _node: NodeId,
+        _record: GuestIntrospectionRecord,
+    ) -> Result<(), SchedulerError> {
+        Ok(())
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        _node: NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, SchedulerError> {
+        Ok(self.responses.pop_front())
+    }
+}
+
+#[tokio::test]
+async fn guest_response_broker_does_not_lose_other_channel_records() {
+    let scenario = generated_scenario(221);
+    let config = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+    let response = |channel_id, byte| {
+        GuestIntrospectionRecord::new(
+            channel_id,
+            GuestIntrospectionMessage::Output {
+                stream: crucible_protocol::guest_introspection::GuestOutputStream::Stdout,
+                bytes: vec![byte],
+            },
+        )
+        .unwrap_or_else(|error| panic!("guest response fixture must be valid: {error}"))
+    };
+    let mut engine = Engine::new(
+        config.clone(),
+        graph,
+        GuestBrokerLoop {
+            responses: VecDeque::from([response(2, b'b'), response(1, b'a')]),
+        },
+    );
+    engine
+        .apply_command(SessionCommand::Start)
+        .unwrap_or_else(|error| panic!("engine must start: {error}"));
+    engine.debug_coordinator.forked_non_canonical(config.id());
+
+    let poll = |channel_id, reply| SessionCommand::GuestIntrospection {
+        node: NodeId {
+            name: String::from("node-a"),
+        },
+        channel_id,
+        request: None,
+        reply,
+    };
+    let (first_reply, first_receiver) = CommandReply::channel();
+    engine
+        .apply_command(poll(1, first_reply))
+        .unwrap_or_else(|error| panic!("channel one poll must succeed: {error}"));
+    assert_eq!(receive_reply(first_receiver).await, Some(response(1, b'a')));
+
+    let (second_reply, second_receiver) = CommandReply::channel();
+    engine
+        .apply_command(poll(2, second_reply))
+        .unwrap_or_else(|error| panic!("buffered channel two poll must succeed: {error}"));
+    assert_eq!(
+        receive_reply(second_receiver).await,
+        Some(response(2, b'b'))
+    );
+
+    let node = NodeId {
+        name: String::from("node-a"),
+    };
+    engine.guest_channels.insert((node.clone(), 3));
+    engine.close_guest_channels_for_reposition();
+    engine.debug_coordinator.repositioned_canonical(config.id());
+    let (closed_reply, closed_receiver) = CommandReply::channel();
+    engine
+        .apply_command(poll(3, closed_reply))
+        .unwrap_or_else(|error| panic!("typed reposition closure must remain pollable: {error}"));
+    let closed = receive_reply(closed_receiver).await;
+    assert!(matches!(
+        closed.as_ref().map(GuestIntrospectionRecord::message),
+        Some(GuestIntrospectionMessage::Error {
+            code: GuestIntrospectionFailureCode::ClosedChannel,
+            ..
+        })
+    ));
+}
+
 #[test]
 fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
     assert_eq!(
@@ -213,6 +308,7 @@ fn lifecycle_state_reason_outcome_and_command_sets_are_closed() {
             SessionCommandKind::DebugReverseStep,
             SessionCommandKind::DebugReverseContinue,
             SessionCommandKind::DebugForkNonCanonical,
+            SessionCommandKind::GuestIntrospection,
         ]
     );
     assert_eq!(
@@ -582,6 +678,29 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
             operation: "continue"
         }
     ));
+    let canonical_guest = match GuestIntrospectionRecord::new(
+        1,
+        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+    ) {
+        Ok(record) => record,
+        Err(error) => panic!("guest-introspection fixture must be valid: {error}"),
+    };
+    let canonical_guest_error = engine
+        .apply_command(SessionCommand::GuestIntrospection {
+            node: NodeId {
+                name: String::from("node-a"),
+            },
+            channel_id: 1,
+            request: Some(canonical_guest),
+            reply: CommandReply::discard(),
+        })
+        .expect_err("canonical guest introspection must require an explicit debug fork");
+    assert!(matches!(
+        canonical_guest_error,
+        SessionError::DebugNonCanonicalBranchRequired {
+            operation: "guest-introspection"
+        }
+    ));
 
     let branch_request = DebugNonCanonicalBranchRequest::new(
         first.clone(),
@@ -660,6 +779,32 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
         branch_count,
         "malformed same-length prefix must not mutate graph branch metadata"
     );
+    let guest_record = match GuestIntrospectionRecord::new(
+        1,
+        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+    ) {
+        Ok(record) => record,
+        Err(error) => panic!("guest-introspection fixture must be valid: {error}"),
+    };
+    let guest_error = engine
+        .apply_command_with_event_log(
+            SessionCommand::GuestIntrospection {
+                node: NodeId {
+                    name: String::from("node-a"),
+                },
+                channel_id: 1,
+                request: Some(guest_record),
+                reply: CommandReply::discard(),
+            },
+            &branch_entries,
+        )
+        .expect_err("stub backend must reject guest introspection after the fork gate opens");
+    assert!(matches!(
+        guest_error,
+        SessionError::Scheduler(SchedulerError::Backend(BackendError::Unsupported {
+            capability: "send_guest_introspection"
+        }))
+    ));
     if let Err(error) = engine.apply_command(SessionCommand::Continue) {
         panic!("continue after non-canonical branch marker should be accepted: {error}");
     }

@@ -272,7 +272,7 @@ pub const API_METHOD_MAPPINGS: [ApiMethodMapping; 9] = [
 ];
 
 /// API command mapping table covering the complete session command vocabulary.
-pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 24] = [
+pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 25] = [
     ApiCommandMapping {
         command_name: "start",
         command_kind: SessionCommandKind::Start,
@@ -368,6 +368,10 @@ pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 24] = [
     ApiCommandMapping {
         command_name: "debug-fork-non-canonical",
         command_kind: SessionCommandKind::DebugForkNonCanonical,
+    },
+    ApiCommandMapping {
+        command_name: "guest-introspection",
+        command_kind: SessionCommandKind::GuestIntrospection,
     },
 ];
 

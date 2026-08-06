@@ -551,6 +551,10 @@ pub(super) fn push_debug_non_canonical_action_lines(
             lines.push(format!("{prefix}.kind=operator-control"));
             lines.push(format!("{prefix}.operator_control={}", kind.label()));
         }
+        DebugNonCanonicalBranchAction::GuestIntrospection { node } => {
+            lines.push(format!("{prefix}.kind=guest-introspection"));
+            lines.push(format!("{prefix}.node={}", node.name));
+        }
     }
 }
 
@@ -743,7 +747,8 @@ pub(super) fn debug_non_canonical_schedule_delta(
         DebugNonCanonicalBranchAction::Decision(decision) => Some(decision.clone()),
         DebugNonCanonicalBranchAction::ControlOperation(_)
         | DebugNonCanonicalBranchAction::GuestEdit(_)
-        | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+        | DebugNonCanonicalBranchAction::OperatorControl(_)
+        | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
     }))
 }
 
@@ -975,6 +980,8 @@ pub enum DebugNonCanonicalBranchTrigger {
     OperatorStep,
     /// The operator supplied a model-expressible decision or control operation.
     ScheduleExpressibleEdit,
+    /// The operator opened an exec, PTY, or SSH-compatible guest channel.
+    GuestIntrospection,
 }
 
 impl DebugNonCanonicalBranchTrigger {
@@ -988,6 +995,7 @@ impl DebugNonCanonicalBranchTrigger {
             Self::OperatorContinue => "operator-continue",
             Self::OperatorStep => "operator-step",
             Self::ScheduleExpressibleEdit => "schedule-expressible-edit",
+            Self::GuestIntrospection => "guest-introspection",
         }
     }
 }
@@ -1081,6 +1089,11 @@ pub enum DebugNonCanonicalBranchAction {
     GuestEdit(DebugGuestEdit),
     /// Free operator execution control outside the canonical schedule.
     OperatorControl(DebugOperatorControlKind),
+    /// Opens an out-of-band debug guest-agent channel on one node.
+    GuestIntrospection {
+        /// Node whose guest agent receives the request.
+        node: NodeId,
+    },
 }
 
 impl DebugNonCanonicalBranchAction {
@@ -1106,6 +1119,12 @@ impl DebugNonCanonicalBranchAction {
     #[must_use]
     pub const fn operator_control(kind: DebugOperatorControlKind) -> Self {
         Self::OperatorControl(kind)
+    }
+
+    /// Builds a guest-introspection channel action.
+    #[must_use]
+    pub const fn guest_introspection(node: NodeId) -> Self {
+        Self::GuestIntrospection { node }
     }
 }
 
@@ -1180,6 +1199,12 @@ impl DebugNonCanonicalBranchTrigger {
                 DebugNonCanonicalBranchAction::Decision(_)
                     | DebugNonCanonicalBranchAction::ControlOperation(_)
             ),
+            Self::GuestIntrospection => {
+                matches!(
+                    action,
+                    DebugNonCanonicalBranchAction::GuestIntrospection { .. }
+                )
+            }
         }
     }
 }
@@ -1212,7 +1237,8 @@ impl DebugEditScript {
                 DebugNonCanonicalBranchAction::GuestEdit(edit) => Some(edit.clone()),
                 DebugNonCanonicalBranchAction::Decision(_)
                 | DebugNonCanonicalBranchAction::ControlOperation(_)
-                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+                | DebugNonCanonicalBranchAction::OperatorControl(_)
+                | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
             })
             .enumerate()
             .map(|(sequence, edit)| DebugEditScriptEntry {
@@ -1357,7 +1383,8 @@ impl DebugNonCanonicalBranch {
                 DebugNonCanonicalBranchAction::Decision(decision) => Some(decision.clone()),
                 DebugNonCanonicalBranchAction::ControlOperation(_)
                 | DebugNonCanonicalBranchAction::GuestEdit(_)
-                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+                | DebugNonCanonicalBranchAction::OperatorControl(_)
+                | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
             })
             .collect();
         let control_log_entries = request
@@ -1369,7 +1396,8 @@ impl DebugNonCanonicalBranch {
                 }
                 DebugNonCanonicalBranchAction::Decision(_)
                 | DebugNonCanonicalBranchAction::GuestEdit(_)
-                | DebugNonCanonicalBranchAction::OperatorControl(_) => None,
+                | DebugNonCanonicalBranchAction::OperatorControl(_)
+                | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
             })
             .collect();
         let operator_controls = request
@@ -1379,7 +1407,8 @@ impl DebugNonCanonicalBranch {
                 DebugNonCanonicalBranchAction::OperatorControl(kind) => Some(*kind),
                 DebugNonCanonicalBranchAction::Decision(_)
                 | DebugNonCanonicalBranchAction::ControlOperation(_)
-                | DebugNonCanonicalBranchAction::GuestEdit(_) => None,
+                | DebugNonCanonicalBranchAction::GuestEdit(_)
+                | DebugNonCanonicalBranchAction::GuestIntrospection { .. } => None,
             })
             .collect();
         let fork_marker = debug_non_canonical_fork_marker(
@@ -2005,7 +2034,16 @@ impl DebugCliSurfaceContract {
                 "--allow-mutate",
                 "--checkpoint-stride",
             ],
-            interactive_verbs: vec!["attach-gdb", "goto", "reverse-step", "reverse-continue"],
+            interactive_verbs: vec![
+                "attach-gdb",
+                "fork-debug",
+                "goto",
+                "reverse-step",
+                "reverse-continue",
+                "exec",
+                "pty",
+                "ssh",
+            ],
             cli_holds_debug_state: false,
             delegates_to_session_commands: true,
             delegates_to_gdbstub_proxy: true,
@@ -2047,7 +2085,16 @@ impl DebugCliSurfaceContract {
     pub fn has_required_interactive_verbs(&self) -> bool {
         debug_labels_contain_all(
             &self.interactive_verbs,
-            &["attach-gdb", "goto", "reverse-step", "reverse-continue"],
+            &[
+                "attach-gdb",
+                "fork-debug",
+                "goto",
+                "reverse-step",
+                "reverse-continue",
+                "exec",
+                "pty",
+                "ssh",
+            ],
         )
     }
 
