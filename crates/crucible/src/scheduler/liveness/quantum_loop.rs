@@ -276,8 +276,11 @@ impl QuantumLoop for SingleScheduler {
                     ),
                 })?;
             for route in routes {
-                let emit_time =
-                    self.vm_delivery_time_for_icount(&output.source, output.emit_icount)?;
+                let emit_time = self
+                    .vm_delivery_time_for_icount(&output.source, output.emit_icount)?
+                    .max(SimInstant {
+                        nanos: output.fault_continuation.cursor().release_nanos(),
+                    });
                 let logical_emit_icount = self.network_icount_for_time_ceil(emit_time)?;
                 let frame = crucible_device::Frame::new(
                     logical_emit_icount,

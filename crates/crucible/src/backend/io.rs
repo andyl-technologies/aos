@@ -28,6 +28,133 @@ pub struct BackendNetworkPreservedAvailability {
     pub transition_sequence: u64,
 }
 
+/// Resumable signal-adapter position for one routed network frame.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkFaultCursor {
+    /// Next ordered route stage to evaluate.
+    stage_index: u32,
+    /// Next phase within that stage's declared phase list.
+    phase_index: u8,
+    /// Earliest virtual coordinate at which evaluation may resume.
+    not_before_nanos: u64,
+    /// Latest adapter release coordinate already committed for delivery timing.
+    release_nanos: u64,
+    /// Queue opportunity that owns the current reservation, when deferred.
+    queue_opportunity: Option<ContentHash>,
+}
+
+/// Failure to advance a bounded network fault continuation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BackendNetworkFaultCursorError {
+    /// The route stage exposed no phases.
+    #[error("network fault route stage has no phases")]
+    EmptyStage,
+    /// The route stage has more phases than the continuation ABI can encode.
+    #[error("network fault route stage phase count exceeds u8")]
+    PhaseCountOverflow,
+    /// The within-stage phase cursor overflowed.
+    #[error("network fault route phase cursor overflowed")]
+    PhaseOverflow,
+    /// The route-stage cursor overflowed.
+    #[error("network fault route stage cursor overflowed")]
+    StageOverflow,
+}
+
+impl BackendNetworkFaultCursor {
+    /// Returns the next route-stage index.
+    #[must_use]
+    pub const fn stage_index(&self) -> u32 {
+        self.stage_index
+    }
+
+    /// Returns the next within-stage phase index.
+    #[must_use]
+    pub const fn phase_index(&self) -> u8 {
+        self.phase_index
+    }
+
+    /// Returns the earliest virtual coordinate at which the frame may resume.
+    #[must_use]
+    pub const fn not_before_nanos(&self) -> u64 {
+        self.not_before_nanos
+    }
+
+    /// Returns the latest committed adapter release coordinate.
+    #[must_use]
+    pub const fn release_nanos(&self) -> u64 {
+        self.release_nanos
+    }
+
+    /// Returns the active queue-reservation opportunity, when present.
+    #[must_use]
+    pub const fn queue_opportunity(&self) -> Option<ContentHash> {
+        self.queue_opportunity
+    }
+
+    /// Advances to the following phase or route stage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendNetworkFaultCursorError`] when the phase count is empty
+    /// or an index exceeds its fixed ABI width.
+    pub fn advance(&mut self, phase_count: usize) -> Result<(), BackendNetworkFaultCursorError> {
+        let phase_count = u8::try_from(phase_count)
+            .map_err(|_error| BackendNetworkFaultCursorError::PhaseCountOverflow)?;
+        if phase_count == 0 {
+            return Err(BackendNetworkFaultCursorError::EmptyStage);
+        }
+        self.phase_index = self
+            .phase_index
+            .checked_add(1)
+            .ok_or(BackendNetworkFaultCursorError::PhaseOverflow)?;
+        if self.phase_index == phase_count {
+            self.stage_index = self
+                .stage_index
+                .checked_add(1)
+                .ok_or(BackendNetworkFaultCursorError::StageOverflow)?;
+            self.phase_index = 0;
+        }
+        self.not_before_nanos = 0;
+        self.queue_opportunity = None;
+        Ok(())
+    }
+
+    /// Defers the already-resolved phase until an exact future coordinate.
+    pub fn defer_until(&mut self, not_before_nanos: u64, opportunity: ContentHash) {
+        self.not_before_nanos = not_before_nanos;
+        self.release_nanos = self.release_nanos.max(not_before_nanos);
+        self.queue_opportunity = Some(opportunity);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_fault_cursor_retains_release_after_resuming() {
+        let mut cursor = BackendNetworkFaultCursor::default();
+        cursor.defer_until(41, ContentHash::from_bytes(b"queue"));
+        assert_eq!(cursor.not_before_nanos(), 41);
+        assert_eq!(cursor.release_nanos(), 41);
+        cursor
+            .advance(2)
+            .unwrap_or_else(|error| panic!("cursor should advance: {error}"));
+        assert_eq!(cursor.not_before_nanos(), 0);
+        assert_eq!(cursor.release_nanos(), 41);
+        assert_eq!(cursor.phase_index(), 1);
+    }
+
+    #[test]
+    fn network_fault_cursor_rejects_an_empty_stage() {
+        let mut cursor = BackendNetworkFaultCursor::default();
+        assert_eq!(
+            cursor.advance(0),
+            Err(BackendNetworkFaultCursorError::EmptyStage)
+        );
+    }
+}
+
 /// Fault-policy continuation retained with one scheduler-queued frame.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BackendNetworkFaultContinuation {
@@ -35,6 +162,8 @@ pub struct BackendNetworkFaultContinuation {
     preserved_availability: Vec<BackendNetworkPreservedAvailability>,
     /// Exact signal-adapter outcomes resolved before link scheduling.
     resolved_frame_effects: crucible_device::ResolvedNetworkFrameEffects,
+    /// Resumable ordered route/phase position.
+    cursor: BackendNetworkFaultCursor,
 }
 
 impl BackendNetworkFaultContinuation {
@@ -95,6 +224,18 @@ impl BackendNetworkFaultContinuation {
     #[must_use]
     pub const fn resolved_frame_effects(&self) -> &crucible_device::ResolvedNetworkFrameEffects {
         &self.resolved_frame_effects
+    }
+
+    /// Returns the resumable ordered route/phase position.
+    #[must_use]
+    pub const fn cursor(&self) -> &BackendNetworkFaultCursor {
+        &self.cursor
+    }
+
+    /// Returns mutable access to the adapter-owned route/phase position.
+    #[must_use]
+    pub const fn cursor_mut(&mut self) -> &mut BackendNetworkFaultCursor {
+        &mut self.cursor
     }
 }
 
