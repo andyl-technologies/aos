@@ -1148,9 +1148,10 @@ clearly-marked branch rather than touching the canonical run.
 > [PLAN-4]).
 
 The completed entries among T-DBG-1 through T-DBG-8 record graph-model, session
-command, existing one-runtime attach, and CLI planning gates that were present
-before the production-completion work. T-DBG-6 and T-DBG-8 were reopened when the
-explicit `fork-debug` policy replaced implicit forking. These entries do **not** by themselves claim stable
+command, existing one-runtime attach, and the implemented CLI surface. T-DBG-6
+and T-DBG-8 were reopened when the explicit `fork-debug` policy replaced implicit
+forking and were closed after that transition was enforced end to end. These
+entries do **not** by themselves claim stable
 GDB across runtime replacement, authenticated remote access, scheduler-mediated RSP
 run control, guest exec/PTY/SSH, a hermetic GDB client, or live aarch64 parity. Those
 end-to-end claims remain open in T-DBG-9 through T-DBG-14 and MUST NOT be reported
@@ -1249,7 +1250,7 @@ complete from model-double evidence.
   `thin_replay_until_full_s3` hedge records thin replay checkpoints only and may evict
   existing fat cache entries, while a verified hedge may cache fat checkpoints, with
   eviction falling back to bit-identical replay.
-- [ ] **T-DBG-6** Implement the **non-canonical debug branch**: expose an explicit
+- [x] **T-DBG-6** Implement the **non-canonical debug branch**: expose an explicit
   whole-world `fork-debug` operation and reject guest-state mutation or
   operator-controlled continue until it succeeds, leaving the canonical run
   bit-identical; exclude it from the replay oracle and from
@@ -1258,8 +1259,7 @@ complete from model-double evidence.
   path (distinct from [ADV-33], which still stands); record Decision-expressible edits
   per 20 §8 and arbitrary guest edits as a never-model-reproducible debug-edit script.
   — satisfies [DBG-21], [DBG-22], [DBG-23], [DBG-24], [DBG-25], [DBG-26]; spec §36.5.
-  The branch data model is covered by
-  `checks.crucible.phase6.debugNonCanonicalBranch`:
+  Completed by `checks.crucible.phase6.debugNonCanonicalBranch`:
   `TemporalGraph::debug_non_canonical_branch` requires the first recorded
   mutating/operator-controlled action to match the declared branch trigger and records
   it as non-canonical branch metadata sourced from the already-instantiated attach
@@ -1298,7 +1298,7 @@ complete from model-double evidence.
   read/mutate boundary. — satisfies [DBG-7], [DBG-30], [DBG-31], [DBG-32], [DBG-33],
   [DBG-34], [DBG-35], [DBG-36], [DBG-37], [DBG-38], [DBG-39], [DBG-40]; spec §36.7,
   §36.8, §36.9, §36.10.
-  Most of the surface is covered by `checks.crucible.phase6.debugCliSurface`:
+  Completed under `checks.crucible.phase6.debugCliSurface`:
   `crucible debug` now parses artifact/savepoint and `--session` targets plus
   `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, `--node`,
   `--gdb-listen`, `--read-only`, `--allow-mutate`, `--checkpoint-stride`, and the

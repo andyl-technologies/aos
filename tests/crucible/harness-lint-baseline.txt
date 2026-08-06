@@ -160,7 +160,7 @@ confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterm
 confinement	crates/crucible-qemu/src/realization/node_executor.rs	host nondeterminism reaching State	RuntimeState		13
 confinement	crates/crucible-qemu/src/shutdown.rs	host nondeterminism reaches API/session route	step		3
 confinement	crates/crucible-qemu/src/shutdown.rs	host nondeterminism reaching State	step		3
-error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>		39
+error-logging	crates/crucible-api/src/server.rs	stringly error	Result<_, String>		32
 error-logging	crates/crucible-api/src/server/query_wire.rs	stringly error	Result<_, String>		1
 error-logging	crates/crucible-harness/src/replay_oracle.rs	erased error	dyn Error		3
 error-logging	crates/crucible/src/example_corpus.rs	erased error	dyn Error		1

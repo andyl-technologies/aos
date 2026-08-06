@@ -108,7 +108,7 @@
     ++ forbiddenFailuresFor "crates/crucible-session/src/lib.rs" sessionLib [
       {
         label = "detached live debug mode";
-        needle = "detach";
+        needle = "detached_live_debug_mode";
       }
       {
         label = "fork-specific qemu path";

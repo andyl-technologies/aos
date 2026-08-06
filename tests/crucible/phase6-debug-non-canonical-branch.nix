@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugNonCanonicalBranch",
-  taskIds ? [],
-  openTaskIds ? ["T-DBG-6"],
+  taskIds ? ["T-DBG-6"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
