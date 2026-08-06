@@ -293,7 +293,7 @@ struct RunArgs {
     /// Stop with Timeout past this virtual time (20 §2).
     #[arg(long, value_name = "dur", required_if_eq("until", "virtual-time"))]
     max_virtual_time: Option<String>,
-    /// Stop with Timeout past this many scheduler quanta.
+    /// Stop with Timeout at this scheduler-quantum boundary.
     #[arg(long, value_name = "n")]
     max_quanta: Option<u64>,
     /// Pause at genesis and drive the session interactively.

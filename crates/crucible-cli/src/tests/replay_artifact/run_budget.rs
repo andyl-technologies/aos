@@ -107,6 +107,8 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
         String::from("virtual-time"),
         String::from("--max-virtual-time"),
         String::from("1ticks"),
+        String::from("--max-quanta"),
+        String::from("3"),
         String::from("--save-on"),
         String::from("fail"),
     ]);
@@ -137,6 +139,8 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
         &timeout_run,
         &[],
     ))?;
+    assert_eq!(timeout_report.final_quanta, 1);
+    assert!(timeout_report.budget_timed_out);
     let timeout_outcome = finish_run_workflow_outcome(
         &timeout_thin_plan,
         &timeout_backend_plan,
@@ -154,6 +158,31 @@ pub(super) fn cli_run_workflow_executes_local_double_session_and_timeout_budget(
             .iter()
             .any(|line| line.starts_with("run-savepoint\tpolicy=fail\tcheckpoint=blake3:"))
     );
+
+    let quantum_timeout_cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("double"),
+        String::from("--seed"),
+        String::from("3"),
+        String::from("run"),
+        scenario.display().to_string(),
+        String::from("--max-quanta"),
+        String::from("3"),
+    ]);
+    let Commands::Run(quantum_timeout_args) = &quantum_timeout_cli.command else {
+        panic!("expected run command");
+    };
+    let quantum_timeout_run = plan_run_invocation(quantum_timeout_args, temp.path())?;
+    let quantum_timeout_report = runtime.block_on(run_control_client_workflow_async(
+        &client,
+        &quantum_timeout_run,
+        &[],
+    ))?;
+
+    assert_eq!(quantum_timeout_report.status, BackendCommandStatus::Timeout);
+    assert_eq!(quantum_timeout_report.final_quanta, 3);
+    assert!(quantum_timeout_report.budget_timed_out);
 
     let property_cli = Cli::parse_from([
         String::from("crucible"),

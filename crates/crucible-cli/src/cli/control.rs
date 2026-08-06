@@ -898,15 +898,28 @@ where
 
     match run_plan.execution_mode {
         RunExecutionMode::ToCompletion => {
-            let probe_boundary = current_remote_resume_summary(client, created.session).await?;
-            if should_continue_after_probe(probe_boundary.state) {
-                acknowledge_stream_command(
+            if let Some(quantum_budget) = run_plan.max_quanta {
+                drive_run_to_exact_quantum_budget(
+                    client,
                     &control,
+                    created.session,
+                    run_plan.max_virtual_time_ticks,
+                    quantum_budget,
                     &mut command_id,
-                    SessionCommandKind::Continue,
                     &mut acknowledged_commands,
                 )
                 .await?;
+            } else {
+                let probe_boundary = current_remote_resume_summary(client, created.session).await?;
+                if should_continue_after_probe(probe_boundary.state) {
+                    acknowledge_stream_command(
+                        &control,
+                        &mut command_id,
+                        SessionCommandKind::Continue,
+                        &mut acknowledged_commands,
+                    )
+                    .await?;
+                }
             }
         }
         RunExecutionMode::Interactive => match interactive_driver {
@@ -978,6 +991,65 @@ where
 
 fn should_continue_after_probe(state: LiveStateKind) -> bool {
     state != LiveStateKind::Stopped
+}
+
+async fn drive_run_to_exact_quantum_budget<C>(
+    client: &C,
+    control: &crucible_api::ClientControlStream,
+    session: crucible_api::SessionRef,
+    virtual_time_budget: Option<u64>,
+    quantum_budget: u64,
+    command_id: &mut u64,
+    acknowledged_commands: &mut Vec<SessionCommandKind>,
+) -> Result<(), CliError>
+where
+    C: ControlClient + Sync,
+{
+    let mut boundary = current_remote_resume_summary(client, session).await?;
+    while boundary.state != LiveStateKind::Stopped
+        && boundary.quanta_stepped < quantum_budget
+        && !virtual_time_budget.is_some_and(|budget| boundary.frontier.ticks >= budget)
+    {
+        if boundary.state != LiveStateKind::Paused {
+            boundary = wait_for_save_workflow_summary(
+                client,
+                session,
+                |summary| {
+                    matches!(
+                        summary.state,
+                        LiveStateKind::Paused | LiveStateKind::Stopped
+                    )
+                },
+                "paused bounded-run quantum boundary",
+                RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+            )
+            .await?;
+            continue;
+        }
+
+        let before = boundary;
+        acknowledge_stream_command(
+            control,
+            command_id,
+            SessionCommandKind::StepQuantum,
+            acknowledged_commands,
+        )
+        .await?;
+        boundary = wait_for_save_workflow_summary(
+            client,
+            session,
+            |summary| {
+                matches!(
+                    summary.state,
+                    LiveStateKind::Paused | LiveStateKind::Stopped
+                ) && summary.quanta_stepped > before.quanta_stepped
+            },
+            "completed bounded-run quantum boundary",
+            RUN_INTERACTIVE_ACK_QUANTA_BOUND,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub(super) async fn drive_interactive_stdin_commands(
@@ -1215,7 +1287,7 @@ where
                 terminal_configuration,
                 frontier_ticks: session.frontier.ticks,
                 quanta: session.quanta_stepped,
-                budget_timed_out: false,
+                budget_timed_out: session.outcome == Some(OutcomeKind::Timeout),
                 watch_statuses,
             });
         }

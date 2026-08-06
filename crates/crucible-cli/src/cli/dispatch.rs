@@ -124,6 +124,11 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         _ => None,
     };
+    if let Some(plan) = &fuzz_plan
+        && !plan.family.is_builtin_fault_campaign()
+    {
+        load_fuzz_family(plan)?;
+    }
     let debug_plan = match &cli.command {
         Commands::Debug(args) => Some(plan_debug_invocation(cli, args)?),
         _ => None,
@@ -340,42 +345,55 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 None => return Err(unsupported_fuzz_backend_error(fuzz_plan)),
             }
         }
-        let mut outcome = execute_backend_routed_command(
-            &thin_plan,
-            &backend_plan,
-            ergonomics_plan.as_ref(),
-            run_plan
-                .as_ref()
-                .or_else(|| save_plan.as_ref().map(|plan| &plan.run_plan)),
-            verify_plan.as_ref(),
-            save_plan.as_ref(),
-            &mut NullBackendCommandRunner,
-        )?;
-        #[cfg(any(test, feature = "test-double"))]
-        if matches!(
-            &cli.command,
-            Commands::Run(RunArgs {
-                emit_mock_failure_artifact: true,
-                ..
-            })
-        ) {
-            mark_mock_failure_outcome(cli, &backend_plan, &mut outcome, ergonomics_plan.as_ref())?;
-        }
-        if emit_human && backend_plan.should_announce(cli.quiet) {
-            println!("{}", backend_plan.announcement());
-        }
-        if let Some(save_plan) = &save_plan {
-            export_savepoint_handle(save_plan, &mut outcome)?;
-        }
-        emit_backend_command_output(cli, &outcome)?;
-        if outcome.status.is_non_passing() {
-            return Err(CliError::Outcome(outcome.status));
+        if !matches!(&cli.command, Commands::Replay(_)) {
+            let mut outcome = execute_backend_routed_command(
+                &thin_plan,
+                &backend_plan,
+                ergonomics_plan.as_ref(),
+                run_plan
+                    .as_ref()
+                    .or_else(|| save_plan.as_ref().map(|plan| &plan.run_plan)),
+                verify_plan.as_ref(),
+                save_plan.as_ref(),
+                &mut NullBackendCommandRunner,
+            )?;
+            #[cfg(any(test, feature = "test-double"))]
+            if matches!(
+                &cli.command,
+                Commands::Run(RunArgs {
+                    emit_mock_failure_artifact: true,
+                    ..
+                })
+            ) {
+                mark_mock_failure_outcome(
+                    cli,
+                    &backend_plan,
+                    &mut outcome,
+                    ergonomics_plan.as_ref(),
+                )?;
+            }
+            if emit_human && backend_plan.should_announce(cli.quiet) {
+                println!("{}", backend_plan.announcement());
+            }
+            if let Some(save_plan) = &save_plan {
+                export_savepoint_handle(save_plan, &mut outcome)?;
+            }
+            emit_backend_command_output(cli, &outcome)?;
+            if outcome.status.is_non_passing() {
+                return Err(CliError::Outcome(outcome.status));
+            }
         }
     }
 
     match &cli.command {
         Commands::Replay(args) => {
-            let report = replay_reproduction_artifact(cli, args)?;
+            let report = match replay_reproduction_artifact(cli, args) {
+                Ok(report) => report,
+                Err(error) => {
+                    emit_replay_error_output(cli, args, &error)?;
+                    return Err(error);
+                }
+            };
             emit_replay_report_output(cli, &report)?;
             if let Some(check) = &report.check
                 && let Some(mismatch) = &check.mismatch
