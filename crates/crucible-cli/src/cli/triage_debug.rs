@@ -820,12 +820,18 @@ pub(super) fn plan_debug_invocation(
 
     let verb = debug_verb(args)?;
     let explicit_fork = matches!(verb, DebugInteractiveVerbPlan::ForkDebug);
-    if explicit_fork && !args.allow_mutate {
+    let guest_shell = matches!(
+        verb,
+        DebugInteractiveVerbPlan::Exec { .. }
+            | DebugInteractiveVerbPlan::Pty { .. }
+            | DebugInteractiveVerbPlan::Ssh
+    );
+    if (explicit_fork || guest_shell) && !args.allow_mutate {
         return Err(usage_error(
-            "fork-debug requires --allow-mutate authorization",
+            "the selected fork-debug or guest exec/PTY/SSH operation requires --allow-mutate authorization",
         ));
     }
-    let read_only = !explicit_fork;
+    let read_only = !(explicit_fork || guest_shell);
     let mut session_commands = vec![SessionCommand::query_snapshot(), SessionCommand::Snapshot];
     let mut engine_operations = vec![
         DebugEngineOperation::ResolveTarget,
@@ -860,6 +866,11 @@ pub(super) fn plan_debug_invocation(
             session_commands.push(SessionCommand::query_snapshot());
             engine_operations.push(DebugEngineOperation::ReverseContinue);
         }
+        DebugInteractiveVerbPlan::Exec { .. }
+        | DebugInteractiveVerbPlan::Pty { .. }
+        | DebugInteractiveVerbPlan::Ssh => {
+            engine_operations.push(DebugEngineOperation::GuestIntrospection);
+        }
     }
 
     if checkpoint_stride.is_some() {
@@ -880,7 +891,8 @@ pub(super) fn plan_debug_invocation(
         surface_contract: crucible::DebugCliSurfaceContract::rfc0010(),
         owns_debug_state: false,
         raw_gdb_single_step_allowed: false,
-        non_canonical_branch_label: explicit_fork.then(|| "NON-CANONICAL debug branch".to_string()),
+        non_canonical_branch_label: (explicit_fork || guest_shell)
+            .then(|| "NON-CANONICAL debug branch".to_string()),
     };
     if !plan.proves_t_dbg_8() {
         return Err(CliError::Backend(
@@ -903,11 +915,6 @@ pub(super) fn run_remote_debug_relay(
             "remote debugger relay requires --session id:epoch:seed",
         ));
     };
-    if !matches!(plan.verb, DebugInteractiveVerbPlan::AttachGdb) {
-        return Err(usage_error(
-            "remote debugger relay currently accepts only attach-gdb",
-        ));
-    }
     let backend_plan = plan_backend_selection(cli)?
         .ok_or_else(|| backend_error("remote debugger relay has no backend route"))?;
     if backend_plan.daemon_security.is_none() && !cli.trusted_unauthenticated_daemon {
@@ -933,15 +940,93 @@ pub(super) fn run_remote_debug_relay(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(run_remote_debug_relay_async(
-        daemon,
-        &backend_plan,
-        session,
-        crucible::NodeId {
-            name: node.to_owned(),
-        },
-        gdb_listen,
-    ))
+    let node = crucible::NodeId {
+        name: node.to_owned(),
+    };
+    match &plan.verb {
+        DebugInteractiveVerbPlan::AttachGdb => runtime.block_on(run_remote_debug_relay_async(
+            daemon,
+            &backend_plan,
+            session,
+            node,
+            gdb_listen,
+        )),
+        DebugInteractiveVerbPlan::Exec { argv } => runtime.block_on(run_remote_guest_channel(
+            daemon,
+            &backend_plan,
+            session,
+            node,
+            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Exec {
+                argv: argv.clone(),
+                record_transcript: false,
+            },
+            false,
+        )),
+        DebugInteractiveVerbPlan::Pty {
+            argv,
+            columns,
+            rows,
+        } => runtime.block_on(run_remote_guest_channel(
+            daemon,
+            &backend_plan,
+            session,
+            node,
+            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Pty {
+                argv: argv.clone(),
+                columns: *columns,
+                rows: *rows,
+                record_transcript: false,
+            },
+            true,
+        )),
+        DebugInteractiveVerbPlan::Ssh => runtime.block_on(run_remote_guest_channel(
+            daemon,
+            &backend_plan,
+            session,
+            node,
+            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Ssh {
+                record_transcript: false,
+            },
+            true,
+        )),
+        DebugInteractiveVerbPlan::ForkDebug => {
+            runtime.block_on(run_remote_guest_fork(daemon, &backend_plan, session, node))
+        }
+        DebugInteractiveVerbPlan::Goto(_)
+        | DebugInteractiveVerbPlan::ReverseStep { .. }
+        | DebugInteractiveVerbPlan::ReverseContinue { .. } => Err(usage_error(
+            "this remote debug operation is not yet implemented by the unary debugger client",
+        )),
+    }
+}
+
+async fn run_remote_guest_fork(
+    daemon: &str,
+    backend_plan: &BackendSelectionPlan,
+    session: SessionRef,
+    node: crucible::NodeId,
+) -> Result<(), CliError> {
+    let client = remote_rpc_client(daemon, backend_plan)?;
+    let lease = client
+        .acquire_debug_controller(session)
+        .await
+        .map_err(control_client_error)?;
+    let fork_result: Result<(), CliError> = async {
+        client
+            .attach_debugger(session, &lease, &node)
+            .await
+            .map_err(control_client_error)?;
+        client
+            .fork_debug_guest_introspection(session, &lease, &node)
+            .await
+            .map_err(control_client_error)
+    }
+    .await;
+    let release_result = client.release_debug_controller(session, &lease).await;
+    fork_result?;
+    release_result.map_err(control_client_error)?;
+    println!("crucible: forked non-canonical guest-introspection branch");
+    Ok(())
 }
 
 async fn run_remote_debug_relay_async(
@@ -1070,6 +1155,202 @@ async fn run_remote_debug_relay_async(
     let release_result = client.release_debug_controller(session, &lease).await;
     relay_result?;
     close_result.map_err(control_client_error)?;
+    release_result.map_err(control_client_error)?;
+    Ok(())
+}
+
+async fn run_remote_guest_channel(
+    daemon: &str,
+    backend_plan: &BackendSelectionPlan,
+    session: SessionRef,
+    node: crucible::NodeId,
+    open: crucible_protocol::guest_introspection::GuestIntrospectionMessage,
+    interactive: bool,
+) -> Result<(), CliError> {
+    use crucible_protocol::guest_introspection::{
+        GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const CHANNEL_ID: u64 = 1;
+    let client = remote_rpc_client(daemon, backend_plan)?;
+    let lease = client
+        .acquire_debug_controller(session)
+        .await
+        .map_err(control_client_error)?;
+    let open = GuestIntrospectionRecord::new(CHANNEL_ID, open)
+        .map_err(|error| backend_error(error.to_string()))?;
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let mut stderr = tokio::io::stderr();
+    let mut input_closed = !interactive;
+    let mut terminal_observed = false;
+    let channel_result: Result<(), CliError> = async {
+        client
+            .exchange_guest_introspection(session, &lease, &node, CHANNEL_ID, Some(&open))
+            .await
+            .map_err(control_client_error)?;
+        if !interactive {
+            let close = GuestIntrospectionRecord::new(
+                CHANNEL_ID,
+                GuestIntrospectionMessage::Close,
+            )
+            .map_err(|error| backend_error(error.to_string()))?;
+            client
+                .exchange_guest_introspection(
+                    session,
+                    &lease,
+                    &node,
+                    CHANNEL_ID,
+                    Some(&close),
+                )
+                .await
+                .map_err(control_client_error)?;
+        }
+        let mut input = vec![0_u8; 4096];
+        let mut poll = tokio::time::interval(Duration::from_millis(5));
+        loop {
+            tokio::select! {
+                biased;
+                read = stdin.read(&mut input), if !input_closed => {
+                    let length = read.map_err(|error| backend_error(format!("terminal input failed: {error}")))?;
+                    let message = if length == 0 {
+                        GuestIntrospectionMessage::Close
+                    } else {
+                        GuestIntrospectionMessage::Input(input[..length].to_vec())
+                    };
+                    let record = GuestIntrospectionRecord::new(CHANNEL_ID, message)
+                        .map_err(|error| backend_error(error.to_string()))?;
+                    client
+                        .exchange_guest_introspection(
+                            session,
+                            &lease,
+                            &node,
+                            CHANNEL_ID,
+                            Some(&record),
+                        )
+                        .await
+                        .map_err(control_client_error)?;
+                    if length == 0 {
+                        input_closed = true;
+                    }
+                }
+                _ = poll.tick() => {
+                    let Some(record) = client
+                        .exchange_guest_introspection(session, &lease, &node, CHANNEL_ID, None)
+                        .await
+                        .map_err(control_client_error)?
+                    else {
+                        continue;
+                    };
+                    if record.channel_id() != CHANNEL_ID {
+                        continue;
+                    }
+                    match record.message() {
+                        GuestIntrospectionMessage::Output { stream, bytes } => {
+                            match stream {
+                                GuestOutputStream::Stdout => stdout.write_all(bytes).await,
+                                GuestOutputStream::Stderr => stderr.write_all(bytes).await,
+                            }
+                            .map_err(|error| backend_error(format!("terminal output failed: {error}")))?;
+                        }
+                        GuestIntrospectionMessage::Exit { status, signal } => {
+                            terminal_observed = true;
+                            stdout.flush().await.map_err(|error| backend_error(error.to_string()))?;
+                            stderr.flush().await.map_err(|error| backend_error(error.to_string()))?;
+                            if *status == 0 {
+                                break Ok(());
+                            }
+                            break Err(backend_error(format!(
+                                "guest command exited with status {status} signal {signal:?}"
+                            )));
+                        }
+                        GuestIntrospectionMessage::Error { code, message } => {
+                            terminal_observed = true;
+                            break Err(backend_error(format!(
+                                "guest introspection failed ({code:?}): {message}"
+                            )));
+                        }
+                        GuestIntrospectionMessage::Features(_)
+                        | GuestIntrospectionMessage::Exec { .. }
+                        | GuestIntrospectionMessage::Pty { .. }
+                        | GuestIntrospectionMessage::Ssh { .. }
+                        | GuestIntrospectionMessage::Input(_)
+                        | GuestIntrospectionMessage::Resize { .. }
+                        | GuestIntrospectionMessage::Close => {
+                            break Err(backend_error(
+                                "guest agent returned an unexpected protocol record",
+                            ));
+                        }
+                    }
+                }
+                signal = tokio::signal::ctrl_c() => {
+                    signal.map_err(|error| backend_error(format!("guest channel signal error: {error}")))?;
+                    let close = GuestIntrospectionRecord::new(
+                        CHANNEL_ID,
+                        GuestIntrospectionMessage::Close,
+                    )
+                    .map_err(|error| backend_error(error.to_string()))?;
+                    client
+                        .exchange_guest_introspection(
+                            session,
+                            &lease,
+                            &node,
+                            CHANNEL_ID,
+                            Some(&close),
+                        )
+                        .await
+                        .map_err(control_client_error)?;
+                    break Ok(());
+                }
+            }
+        }
+    }
+    .await;
+    let cleanup_result: Result<(), CliError> = async {
+        if terminal_observed {
+            return Ok(());
+        }
+        let close = GuestIntrospectionRecord::new(CHANNEL_ID, GuestIntrospectionMessage::Close)
+            .map_err(|error| backend_error(error.to_string()))?;
+        let _response = client
+            .exchange_guest_introspection(session, &lease, &node, CHANNEL_ID, Some(&close))
+            .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let response = client
+                    .exchange_guest_introspection(session, &lease, &node, CHANNEL_ID, None)
+                    .await
+                    .map_err(control_client_error)?;
+                match response.as_ref().map(GuestIntrospectionRecord::message) {
+                    Some(GuestIntrospectionMessage::Output { stream, bytes }) => {
+                        match stream {
+                            GuestOutputStream::Stdout => stdout.write_all(bytes).await,
+                            GuestOutputStream::Stderr => stderr.write_all(bytes).await,
+                        }
+                        .map_err(|error| {
+                            backend_error(format!("terminal cleanup output failed: {error}"))
+                        })?;
+                    }
+                    Some(
+                        GuestIntrospectionMessage::Exit { .. }
+                        | GuestIntrospectionMessage::Error { .. },
+                    ) => break Ok(()),
+                    Some(_) | None => tokio::time::sleep(Duration::from_millis(5)).await,
+                }
+            }
+        })
+        .await
+        .map_err(|_| backend_error("timed out closing guest-introspection channel"))?
+    }
+    .await;
+    let release_result = client.release_debug_controller(session, &lease).await;
+    if let Err(error) = channel_result {
+        let _cleanup = cleanup_result;
+        let _release = release_result;
+        return Err(error);
+    }
+    cleanup_result?;
     release_result.map_err(control_client_error)?;
     Ok(())
 }
@@ -1250,6 +1531,19 @@ pub(super) fn debug_verb(args: &DebugArgs) -> Result<DebugInteractiveVerbPlan, C
                 condition: condition.clone(),
             })
         }
+        Some(DebugVerbArgs::Exec { argv }) => {
+            Ok(DebugInteractiveVerbPlan::Exec { argv: argv.clone() })
+        }
+        Some(DebugVerbArgs::Pty {
+            columns,
+            rows,
+            argv,
+        }) => Ok(DebugInteractiveVerbPlan::Pty {
+            argv: argv.clone(),
+            columns: *columns,
+            rows: *rows,
+        }),
+        Some(DebugVerbArgs::Ssh) => Ok(DebugInteractiveVerbPlan::Ssh),
     }
 }
 

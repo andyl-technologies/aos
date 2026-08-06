@@ -444,6 +444,17 @@ pub enum SessionCommand {
         /// Completion route returning the branch report.
         reply: CommandReply<DebugNonCanonicalBranchReport>,
     },
+    /// Exchanges one bounded record with a node's debug guest agent.
+    GuestIntrospection {
+        /// Node whose guest agent owns the channel.
+        node: NodeId,
+        /// Opaque channel whose response is requested.
+        channel_id: u64,
+        /// Host request to send, or `None` to poll one available response.
+        request: Option<GuestIntrospectionRecord>,
+        /// Completion route returning one available guest response.
+        reply: CommandReply<Option<GuestIntrospectionRecord>>,
+    },
     /// Apply an inner command and acknowledge actor-level completion.
     Acknowledge {
         /// Inner command whose command kind, payload, and side effects are preserved.
@@ -543,6 +554,7 @@ impl SessionCommand {
             | Self::Stop
             | Self::ExhaustBudget
             | Self::DebugForkNonCanonical { .. } => false,
+            Self::GuestIntrospection { .. } => false,
         }
     }
 
@@ -567,6 +579,7 @@ impl SessionCommand {
             | Self::DebugReverseStep { .. }
             | Self::DebugReverseContinue { .. }
             | Self::DebugForkNonCanonical { .. } => false,
+            Self::GuestIntrospection { .. } => false,
         }
     }
 
@@ -588,6 +601,7 @@ impl SessionCommand {
             | Self::DebugReverseStep { .. }
             | Self::DebugReverseContinue { .. }
             | Self::DebugForkNonCanonical { .. } => true,
+            Self::GuestIntrospection { .. } => true,
             Self::Start | Self::Continue | Self::Step { .. } | Self::Stop | Self::ExhaustBudget => {
                 false
             }
@@ -616,6 +630,7 @@ impl SessionCommand {
             | Self::DebugReverseStep { .. }
             | Self::DebugReverseContinue { .. }
             | Self::DebugForkNonCanonical { .. } => false,
+            Self::GuestIntrospection { .. } => false,
         }
     }
 
@@ -628,7 +643,8 @@ impl SessionCommand {
             | Self::InjectFault { .. }
             | Self::HealFault { .. }
             | Self::SetBreakpoint { .. }
-            | Self::RemoveBreakpoint { .. } => true,
+            | Self::RemoveBreakpoint { .. }
+            | Self::GuestIntrospection { .. } => true,
             Self::Start
             | Self::Pause
             | Self::Snapshot
@@ -659,6 +675,7 @@ impl SessionCommand {
             Self::DebugReverseStep { reply, .. } => reply.complete(Err(error)),
             Self::DebugReverseContinue { reply, .. } => reply.complete(Err(error)),
             Self::DebugForkNonCanonical { reply, .. } => reply.complete(Err(error)),
+            Self::GuestIntrospection { reply, .. } => reply.complete(Err(error)),
             Self::Acknowledge { command, reply } => {
                 command.complete_error(error.clone());
                 reply.complete(Err(error));
@@ -725,6 +742,8 @@ pub enum SessionCommandKind {
     DebugReverseContinue,
     /// Mark a non-canonical debug branch before forward or mutating debug use.
     DebugForkNonCanonical,
+    /// Exchange a bounded request or response with a debug guest agent.
+    GuestIntrospection,
 }
 
 impl SessionCommandKind {
@@ -733,7 +752,7 @@ impl SessionCommandKind {
     /// This covers the RFC §4 command surface plus the current implementation's
     /// legacy `Inject` and boundary `Snapshot` shims. T-SESS-4 replaces those
     /// shims with the reply-carrying command payloads.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Start,
         Self::Continue,
         Self::Pause,
@@ -758,6 +777,7 @@ impl SessionCommandKind {
         Self::DebugReverseStep,
         Self::DebugReverseContinue,
         Self::DebugForkNonCanonical,
+        Self::GuestIntrospection,
     ];
 
     pub(super) const fn operation_name(self) -> &'static str {
@@ -786,6 +806,7 @@ impl SessionCommandKind {
             Self::DebugReverseStep => "debug-reverse-step",
             Self::DebugReverseContinue => "debug-reverse-continue",
             Self::DebugForkNonCanonical => "debug-fork-non-canonical",
+            Self::GuestIntrospection => "guest-introspection",
         }
     }
 
@@ -852,6 +873,7 @@ impl SessionCommandKind {
             | Self::DebugReverseStep
             | Self::DebugReverseContinue
             | Self::DebugForkNonCanonical => return None,
+            Self::GuestIntrospection => return None,
         };
         Some(command)
     }
@@ -904,7 +926,8 @@ pub const fn lifecycle_transition(
             | Command::DebugGoto
             | Command::DebugReverseStep
             | Command::DebugReverseContinue
-            | Command::DebugForkNonCanonical,
+            | Command::DebugForkNonCanonical
+            | Command::GuestIntrospection,
         ) => Rejected,
 
         (
@@ -941,8 +964,10 @@ pub const fn lifecycle_transition(
             | Command::DebugGoto
             | Command::DebugReverseStep
             | Command::DebugReverseContinue
-            | Command::DebugForkNonCanonical,
+            | Command::DebugForkNonCanonical
+            | Command::GuestIntrospection,
         ) => Accepted { to: State::Paused },
+        (State::Running, Command::GuestIntrospection) => Accepted { to: State::Running },
         (State::Running, Command::Stop | Command::ExhaustBudget) => Accepted { to: State::Stopped },
         (
             State::Running,
@@ -994,7 +1019,8 @@ pub const fn lifecycle_transition(
             | Command::DebugGoto
             | Command::DebugReverseStep
             | Command::DebugReverseContinue
-            | Command::DebugForkNonCanonical,
+            | Command::DebugForkNonCanonical
+            | Command::GuestIntrospection,
         ) => Rejected,
     }
 }

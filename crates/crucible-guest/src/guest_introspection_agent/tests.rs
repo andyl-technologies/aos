@@ -333,3 +333,41 @@ fn exec_completion_terminates_descendants_holding_output_open() {
         .join_readers()
         .unwrap_or_else(|error| panic!("exec reader join failed: {error}"));
 }
+
+#[test]
+fn repeated_close_terminates_exec_process_group() {
+    let executable = std::env::current_exe()
+        .unwrap_or_else(|error| panic!("test executable path unavailable: {error}"));
+    let argv = vec![
+        executable.to_string_lossy().into_owned(),
+        String::from("--exact"),
+        String::from("guest_introspection_agent::tests::inherited_output_descendant_probe"),
+        String::from("--nocapture"),
+    ];
+    let mut channel = ActiveChannel::spawn(13, &argv, ChannelMode::Exec)
+        .unwrap_or_else(|error| panic!("exec child spawn failed: {error}"));
+    channel
+        .close_input()
+        .unwrap_or_else(|error| panic!("first close failed: {error}"));
+    channel
+        .close_input()
+        .unwrap_or_else(|error| panic!("second close failed: {error}"));
+    for _ in 0..200 {
+        channel
+            .poll_status()
+            .unwrap_or_else(|error| panic!("exec child poll failed: {error}"));
+        let mut pending = VecDeque::new();
+        let mut budget = GUEST_INTROSPECTION_PENDING_CAPACITY;
+        channel
+            .drain_one_output(&mut pending, &mut budget)
+            .unwrap_or_else(|error| panic!("exec output drain failed: {error}"));
+        if channel.is_complete() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        channel.is_complete(),
+        "repeated close did not terminate exec"
+    );
+}

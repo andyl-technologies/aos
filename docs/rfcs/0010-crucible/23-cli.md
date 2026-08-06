@@ -837,13 +837,17 @@ reverse verbs. It introduces no determinism mechanism of its own ([CLI-1]).
 (`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`; default `--at-failure` for
 a failing artifact), opens the gdbstub on `--node` at `--gdb-listen`
 ([SESS-33], [SESS-32]), and then reads interactive verbs — `attach-gdb`,
-`fork-debug`, `goto`, `reverse-step`, `reverse-continue` — mapping each to the session's
+`fork-debug`, `goto`, `reverse-step`, `reverse-continue`, `exec`, `pty`, `ssh` — mapping each to the session's
 read-only debugging command (20 §4.4). It is **read-only by default**
 ([SESS-33]): the run stays fully canonical and the gdbstub is observation-only.
 `--allow-mutate` authorizes the explicit `fork-debug` verb; it does not fork by
 itself. Continuing or mutating is rejected until `fork-debug` has created a
 **clearly-marked whole-world NON-CANONICAL debug branch** (excluded from the replay
 oracle, not artifact-reproducible, [SESS-33]); the CLI MUST label this prominently.
+Guest `exec`, `pty`, and `ssh` additionally require the authenticated role's
+closed `shell` capability and the exclusive controller lease. Arguments are sent
+as argv values without host-shell parsing. PTY and SSH bytes use the public,
+bounded guest-introspection protocol; they never expose a host shell.
 `--checkpoint-stride` tunes checkpoint density so reverse stepping stays cheap
 (bounded replay suffix, 36, [HARN-9]).
 
@@ -859,7 +863,7 @@ artifact/savepoint; `64` = usage error (e.g. conflicting `--at*` flags).
   `--at-failure` / `--at-checkpoint` via restore-nearest-checkpoint + deterministic
   replay ([SESS-33]), open the gdbstub on `--node` at `--gdb-listen` ([SESS-32]),
   and accept the interactive verbs `attach-gdb`/`fork-debug`/`goto`/`reverse-step`/
-  `reverse-continue`. It MUST be **read-only by default** (`--read-only`,
+  `reverse-continue`/`exec`/`pty`/`ssh`. It MUST be **read-only by default** (`--read-only`,
   canonical); `--allow-mutate` MUST only authorize an explicit `fork-debug`, and
   mutation/free run control MUST be rejected before that verb creates a clearly-marked
   whole-world NON-CANONICAL debug branch (excluded from the replay oracle, not

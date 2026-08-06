@@ -20,6 +20,7 @@ use crucible::{
     Checkpoint, ContentHash, EventLevel, GdbListen, NodeId, QuantumLoop, ScenarioDef,
     ScenarioDefForm, Schedule, Seed,
 };
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, BreakpointSpec, DebugCapability, DebugClientId,
     DebugControllerLease, DebugRole, EngineState, LifecycleStateKind, LiveStateKind, Outcome,
@@ -405,7 +406,136 @@ where
             "/crucible.rpc/debug/relay/close",
             post(handle_debug_relay_close::<L, F>),
         )
+        .route(
+            "/crucible.rpc/debug/guest/exchange",
+            post(handle_debug_guest_exchange::<L, F>),
+        )
+        .route(
+            "/crucible.rpc/debug/guest/fork",
+            post(handle_debug_guest_fork::<L, F>),
+        )
         .with_state(state)
+}
+
+async fn handle_debug_guest_fork<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("debug-guest-fork");
+    }
+    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let (session, generation, node) = match parse_debug_guest_fork_request(&body) {
+        Ok(request) => request,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
+    let lease = DebugControllerLease {
+        client: client.clone(),
+        generation,
+    };
+    let dispatch = {
+        let control_plane = state.control_plane.lock().await;
+        for capability in [
+            DebugCapability::Control,
+            DebugCapability::Mutate,
+            DebugCapability::Shell,
+        ] {
+            if let Err(error) = control_plane
+                .authorize_debug_controller_operation(session, &lease, &role, capability)
+            {
+                return lifecycle_error_response(error);
+            }
+        }
+        match control_plane.guest_introspection_dispatch(session) {
+            Ok(dispatch) => dispatch,
+            Err(error) => return lifecycle_error_response(error),
+        }
+    };
+    let result = dispatch.fork(node).await;
+    match result {
+        Ok(_) => http2_response(StatusCode::OK, "crucible.rpc/debug-guest-fork-response\n"),
+        Err(error) => lifecycle_error_response(error),
+    }
+}
+
+async fn handle_debug_guest_exchange<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("debug-guest-exchange");
+    }
+    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let (session, generation, node, channel_id, record) =
+        match parse_debug_guest_exchange_request(&body) {
+            Ok(request) => request,
+            Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+        };
+    let lease = DebugControllerLease {
+        client: client.clone(),
+        generation,
+    };
+    let dispatch = {
+        let control_plane = state.control_plane.lock().await;
+        if let Err(error) = control_plane.authorize_debug_controller_operation(
+            session,
+            &lease,
+            &role,
+            DebugCapability::Shell,
+        ) {
+            return lifecycle_error_response(error);
+        }
+        match control_plane.guest_introspection_dispatch(session) {
+            Ok(dispatch) => dispatch,
+            Err(error) => return lifecycle_error_response(error),
+        }
+    };
+    let response = dispatch.exchange(node, channel_id, record).await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => return lifecycle_error_response(error),
+    };
+    let mut output = String::from("crucible.rpc/debug-guest-exchange-response\n");
+    match response {
+        Some(record) => match record.encode() {
+            Ok(bytes) => push_wire_line(&mut output, "record", &hex_encode(&bytes)),
+            Err(error) => {
+                return http2_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+            }
+        },
+        None => push_wire_line(&mut output, "record", ""),
+    }
+    http2_response(StatusCode::OK, output)
 }
 
 async fn handle_debug_controller_acquire<L, F>(
@@ -1461,6 +1591,70 @@ fn parse_debug_relay_close_request(body: &[u8]) -> Result<(SessionRef, u64, Debu
     Ok((session, generation, id))
 }
 
+fn parse_debug_guest_exchange_request(
+    body: &[u8],
+) -> Result<
+    (
+        SessionRef,
+        u64,
+        NodeId,
+        u64,
+        Option<GuestIntrospectionRecord>,
+    ),
+    String,
+> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/debug-guest-exchange-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    let node = parse_hex_string_field(
+        Some(parse_wire_line(lines.next(), "node=")?),
+        "debug guest node",
+    )?;
+    if node.is_empty() {
+        return Err(String::from("debug guest node must not be empty"));
+    }
+    let channel_id = parse_u64_line(lines.next(), "channel-id=")?;
+    if channel_id == 0 {
+        return Err(String::from("debug guest channel id must not be zero"));
+    }
+    let encoded = parse_wire_line(lines.next(), "record=")?;
+    let record = if encoded.is_empty() {
+        None
+    } else {
+        Some(
+            GuestIntrospectionRecord::decode(&parse_hex_bytes(encoded)?)
+                .map_err(|error| error.to_string())?,
+        )
+    };
+    reject_extra_line(lines.next())?;
+    Ok((
+        session,
+        generation,
+        NodeId { name: node },
+        channel_id,
+        record,
+    ))
+}
+
+fn parse_debug_guest_fork_request(body: &[u8]) -> Result<(SessionRef, u64, NodeId), String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/debug-guest-fork-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    let node = parse_hex_string_field(
+        Some(parse_wire_line(lines.next(), "node=")?),
+        "debug guest fork node",
+    )?;
+    if node.is_empty() {
+        return Err(String::from("debug guest fork node must not be empty"));
+    }
+    reject_extra_line(lines.next())?;
+    Ok((session, generation, NodeId { name: node }))
+}
+
 fn parse_get_reproduction_request(body: &[u8]) -> Result<GetReproductionRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
@@ -2386,6 +2580,12 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
                 &error.to_string(),
             )
         }
+        LifecycleApiError::SessionCommandRejected { .. } => typed_rpc_status_response(
+            StatusCode::CONFLICT,
+            RpcStatusCode::InvalidState,
+            "session-command-rejected",
+            &error.to_string(),
+        ),
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::LoopFactory { .. }
@@ -2817,6 +3017,49 @@ mod tests {
         format!(
             "crucible.rpc/attach-request\nsession-id=42\nepoch=7\nseed={TEST_SEED}\nexpected-epoch=none\nfrom-seq=0\nclient-name=read-only-test\n"
         )
+    }
+
+    #[test]
+    fn debug_guest_wire_parsers_preserve_node_and_bounded_record() {
+        let record = GuestIntrospectionRecord::new(
+            9,
+            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+        )
+        .expect("guest record fixture must be valid");
+        let encoded = hex_encode(&record.encode().expect("guest record fixture must encode"));
+        let request = format!(
+            "crucible.rpc/debug-guest-exchange-request\nsession-id=7\nepoch=12\nseed={TEST_SEED}\ngeneration=3\nnode={}\nchannel-id=9\nrecord={encoded}\n",
+            hex_encode(b"node-a")
+        );
+        let (_session, generation, node, channel_id, parsed) =
+            parse_debug_guest_exchange_request(request.as_bytes())
+                .expect("guest exchange request must parse");
+        assert_eq!(generation, 3);
+        assert_eq!(node.name, "node-a");
+        assert_eq!(channel_id, 9);
+        assert_eq!(parsed, Some(record));
+
+        let fork = format!(
+            "crucible.rpc/debug-guest-fork-request\nsession-id=7\nepoch=12\nseed={TEST_SEED}\ngeneration=3\nnode={}\n",
+            hex_encode(b"node-a")
+        );
+        let (_session, generation, node) =
+            parse_debug_guest_fork_request(fork.as_bytes()).expect("guest fork request must parse");
+        assert_eq!(generation, 3);
+        assert_eq!(node.name, "node-a");
+    }
+
+    #[tokio::test]
+    async fn debugger_session_rejection_is_a_typed_conflict_not_internal_error() {
+        let response = lifecycle_error_response(LifecycleApiError::SessionCommandRejected {
+            message: String::from("non-canonical debug branch required"),
+        });
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = response_text(response)
+            .await
+            .expect("typed conflict response must decode");
+        assert!(body.contains("status=invalid-state"));
+        assert!(body.contains("reason=session-command-rejected"));
     }
 
     fn send_request(command: &str, query: Option<&str>) -> String {

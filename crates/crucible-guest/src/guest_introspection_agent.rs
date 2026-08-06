@@ -463,6 +463,8 @@ struct ActiveChannel {
     owns_process_group: bool,
     reaped: bool,
     reader_cursor: usize,
+    exit_drain_polls: u16,
+    descendants_killed: bool,
 }
 
 impl ActiveChannel {
@@ -520,6 +522,8 @@ impl ActiveChannel {
                     owns_process_group: true,
                     reaped: false,
                     reader_cursor: 0,
+                    exit_drain_polls: 0,
+                    descendants_killed: false,
                 })
             }
             ChannelMode::Pty { columns, rows } => {
@@ -571,6 +575,8 @@ impl ActiveChannel {
                     owns_process_group: true,
                     reaped: false,
                     reader_cursor: 0,
+                    exit_drain_polls: 0,
+                    descendants_killed: false,
                 })
             }
         }
@@ -610,6 +616,13 @@ impl ActiveChannel {
     }
 
     fn close_input(&mut self) -> Result<(), GuestIntrospectionAgentError> {
+        if self.input.is_none() {
+            return signal_process_group(
+                &self.child,
+                libc::SIGTERM,
+                "terminate guest process after repeated close",
+            );
+        }
         let was_pty = matches!(self.input, Some(ChannelInput::Pty(_)));
         self.input = None;
         if was_pty {
@@ -650,6 +663,17 @@ impl ActiveChannel {
                         "hang up remaining guest process descendants",
                     )?;
                 }
+            }
+        } else if !self.descendants_killed && self.readers.iter().any(|reader| !reader.disconnected)
+        {
+            self.exit_drain_polls = self.exit_drain_polls.saturating_add(1);
+            if self.exit_drain_polls >= 64 {
+                signal_process_group(
+                    &self.child,
+                    libc::SIGKILL,
+                    "kill guest descendants retaining channel output",
+                )?;
+                self.descendants_killed = true;
             }
         }
         Ok(())

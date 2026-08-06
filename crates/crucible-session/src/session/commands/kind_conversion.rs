@@ -39,6 +39,7 @@ impl From<&SessionCommand> for SessionCommandKind {
             SessionCommand::DebugReverseStep { .. } => Self::DebugReverseStep,
             SessionCommand::DebugReverseContinue { .. } => Self::DebugReverseContinue,
             SessionCommand::DebugForkNonCanonical { .. } => Self::DebugForkNonCanonical,
+            SessionCommand::GuestIntrospection { .. } => Self::GuestIntrospection,
             SessionCommand::Acknowledge { command, .. } => Self::from(command.as_ref()),
         }
     }

@@ -1253,6 +1253,21 @@ impl SimulationBackend for QemuNode {
         Ok(info)
     }
 
+    fn send_guest_introspection(
+        &mut self,
+        _node: &NodeId,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), BackendError> {
+        QemuNode::send_guest_introspection(self, record).map_err(BackendError::from)
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        _node: &NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, BackendError> {
+        QemuNode::receive_guest_introspection(self).map_err(BackendError::from)
+    }
+
     fn shutdown(&mut self) -> Result<(), BackendError> {
         // `BackendQuantumLoop` owns the simulation-backend path and drains
         // every observation into the unified log before invoking this hook.

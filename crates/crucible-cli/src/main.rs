@@ -761,6 +761,26 @@ enum DebugVerbArgs {
         /// Condition expression.
         condition: String,
     },
+    /// Execute an argv-based command through the guest debug agent.
+    Exec {
+        /// Program and arguments, without shell parsing.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Open an interactive command on a guest PTY.
+    Pty {
+        /// Initial terminal columns.
+        #[arg(long, default_value_t = 80)]
+        columns: u16,
+        /// Initial terminal rows.
+        #[arg(long, default_value_t = 24)]
+        rows: u16,
+        /// Program and arguments, without shell parsing.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Bridge stdin/stdout to the guest agent's configured SSH server.
+    Ssh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

@@ -383,6 +383,7 @@ const fn command_index(command: SessionCommandKind) -> u64 {
         SessionCommandKind::DebugReverseContinue => 22,
         SessionCommandKind::DebugForkNonCanonical => 23,
         SessionCommandKind::ExhaustBudget => 24,
+        SessionCommandKind::GuestIntrospection => 25,
     }
 }
 

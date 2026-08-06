@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::RuntimeState;
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
 mod observation_append;
 pub use backend_loop::BackendQuantumLoop;
@@ -183,6 +184,42 @@ pub trait QuantumLoop {
         let _ = listen;
         Err(BackendError::Unsupported {
             capability: "open_gdbstub",
+        }
+        .into())
+    }
+
+    /// Sends one request to a node's out-of-band debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not support guest
+    /// introspection or rejects the bounded request.
+    fn send_guest_introspection(
+        &mut self,
+        node: NodeId,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), SchedulerError> {
+        let _ = node;
+        let _ = record;
+        Err(BackendError::Unsupported {
+            capability: "send_guest_introspection",
+        }
+        .into())
+    }
+
+    /// Receives one available response from a node's out-of-band debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not support guest
+    /// introspection or the bounded response is malformed.
+    fn receive_guest_introspection(
+        &mut self,
+        node: NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, SchedulerError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "receive_guest_introspection",
         }
         .into())
     }

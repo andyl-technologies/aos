@@ -9,6 +9,8 @@ const DEBUG_RELAY_OPEN_RPC_PATH: &str = "/crucible.rpc/debug/relay/open";
 const DEBUG_RELAY_WRITE_RPC_PATH: &str = "/crucible.rpc/debug/relay/write";
 const DEBUG_RELAY_READ_RPC_PATH: &str = "/crucible.rpc/debug/relay/read";
 const DEBUG_RELAY_CLOSE_RPC_PATH: &str = "/crucible.rpc/debug/relay/close";
+const DEBUG_GUEST_EXCHANGE_RPC_PATH: &str = "/crucible.rpc/debug/guest/exchange";
+const DEBUG_GUEST_FORK_RPC_PATH: &str = "/crucible.rpc/debug/guest/fork";
 
 impl RpcControlClient {
     /// Acquires the session's exclusive debugger controller lease.
@@ -218,6 +220,83 @@ impl RpcControlClient {
         reject_trailing(lines.next())?;
         Ok(())
     }
+
+    /// Exchanges one bounded record with a node's debug guest agent.
+    ///
+    /// Passing `Some` sends a host request. Passing `None` polls one available
+    /// response without blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the lease is stale, the authenticated
+    /// role lacks shell capability, the session has not been explicitly forked,
+    /// or the protocol/backend rejects the record.
+    pub async fn exchange_guest_introspection(
+        &self,
+        session: SessionRef,
+        lease: &DebugControllerLease,
+        node: &NodeId,
+        channel_id: u64,
+        request: Option<&crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+    ) -> Result<
+        Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+        ControlClientError,
+    > {
+        let body = self
+            .post_rpc_body(
+                DEBUG_GUEST_EXCHANGE_RPC_PATH,
+                encode_debug_guest_exchange_request(
+                    session,
+                    lease.generation,
+                    node,
+                    channel_id,
+                    request,
+                )?,
+            )
+            .await?;
+        let text = response_text(&body)?;
+        let mut lines = text.lines();
+        expect_header(lines.next(), "crucible.rpc/debug-guest-exchange-response")?;
+        let encoded = parse_prefixed_line(lines.next(), "record=")?;
+        let record = if encoded.is_empty() {
+            None
+        } else {
+            Some(
+                crucible_protocol::guest_introspection::GuestIntrospectionRecord::decode(
+                    &parse_hex_bytes(encoded)?,
+                )
+                .map_err(|error| rpc_decode(error.to_string()))?,
+            )
+        };
+        reject_trailing(lines.next())?;
+        Ok(record)
+    }
+
+    /// Forks an attached session for guest exec, PTY, or SSH introspection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the lease is stale, the role lacks
+    /// control/mutate/shell capability, no debugger is attached, or the actor
+    /// rejects the non-canonical branch marker.
+    pub async fn fork_debug_guest_introspection(
+        &self,
+        session: SessionRef,
+        lease: &DebugControllerLease,
+        node: &NodeId,
+    ) -> Result<(), ControlClientError> {
+        let body = self
+            .post_rpc_body(
+                DEBUG_GUEST_FORK_RPC_PATH,
+                encode_debug_guest_fork_request(session, lease.generation, node),
+            )
+            .await?;
+        let text = response_text(&body)?;
+        let mut lines = text.lines();
+        expect_header(lines.next(), "crucible.rpc/debug-guest-fork-response")?;
+        reject_trailing(lines.next())?;
+        Ok(())
+    }
 }
 
 fn encode_debug_session_request(header: &'static str, session: SessionRef) -> Vec<u8> {
@@ -260,5 +339,37 @@ fn encode_debug_relay_request(
             push_line(&mut output, field, &value);
         }
     }
+    output.into_bytes()
+}
+
+fn encode_debug_guest_exchange_request(
+    session: SessionRef,
+    generation: u64,
+    node: &NodeId,
+    channel_id: u64,
+    record: Option<&crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+) -> Result<Vec<u8>, ControlClientError> {
+    let mut output = String::from("crucible.rpc/debug-guest-exchange-request\n");
+    push_session_ref(&mut output, session);
+    push_line(&mut output, "generation", &generation.to_string());
+    push_line(&mut output, "node", &hex_encode(node.name.as_bytes()));
+    push_line(&mut output, "channel-id", &channel_id.to_string());
+    let encoded = match record {
+        Some(record) => hex_encode(
+            &record
+                .encode()
+                .map_err(|error| rpc_decode(error.to_string()))?,
+        ),
+        None => String::new(),
+    };
+    push_line(&mut output, "record", &encoded);
+    Ok(output.into_bytes())
+}
+
+fn encode_debug_guest_fork_request(session: SessionRef, generation: u64, node: &NodeId) -> Vec<u8> {
+    let mut output = String::from("crucible.rpc/debug-guest-fork-request\n");
+    push_session_ref(&mut output, session);
+    push_line(&mut output, "generation", &generation.to_string());
+    push_line(&mut output, "node", &hex_encode(node.name.as_bytes()));
     output.into_bytes()
 }

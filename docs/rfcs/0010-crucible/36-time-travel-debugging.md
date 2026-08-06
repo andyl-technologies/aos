@@ -735,12 +735,18 @@ the CLI catalogue in [`23-cli.md`](23-cli.md)**.
     goto <coord>          restore-nearest-then-replay to a coordinate (§36.4.1)
     reverse-step <grain>  reverse instruction|quantum|event|assertion|timer (§36.4.2)
     reverse-continue <Condition>  to the latest coord ≤ now where the predicate held (§36.4.2)
+    exec -- <argv...>     run a noninteractive command through the guest agent (§36.9.3)
+    pty [--columns N --rows N] -- <argv...>  bridge a guest PTY (§36.9.3)
+    ssh                   bridge bytes to the agent's configured in-guest SSH server (§36.9.3)
 ```
 
 `--read-only` is the **default**: an attach inspects and time-travels without ever
 mutating the canonical run. `--allow-mutate` only authorizes the operator to invoke
 `fork-debug`; it neither mutates nor forks by itself. Mutation and free run control
-remain rejected until that explicit whole-world fork completes. Each interactive verb
+remain rejected until that explicit whole-world fork completes. Guest exec, PTY,
+resize, and SSH-compatible channels additionally require the closed `shell`
+capability and the current controller lease; `--allow-mutate` is never itself an
+authorization credential. Each interactive verb
 decomposes into existing session operations plus the gdbstub proxy: `attach-gdb` is
 the channel of §36.2; `goto`/`reverse-step`/`reverse-continue` are `instantiate` of a
 resolved coordinate (§36.4) driven through the session as ordinary, boundary-deferred
@@ -750,7 +756,8 @@ commands (20 §5); the CLI holds **no debug state**.
   with the coordinate flags (`--at`, `--at-event`, `--at-failure`, `--at-checkpoint`,
   §36.6), the debug-control flags (`--node`, `--gdb-listen`, `--read-only` *(the
   default)*, `--allow-mutate`, `--checkpoint-stride`), and the interactive verbs
-  `attach-gdb`, `fork-debug`, `goto`, `reverse-step`, and `reverse-continue`. These MUST also be
+  `attach-gdb`, `fork-debug`, `goto`, `reverse-step`, `reverse-continue`, `exec`,
+  `pty`, and `ssh`. These MUST also be
   reflected in the CLI catalogue of [`23-cli.md`](23-cli.md). *Gate:*
   `gate:control-responsive`. *Spec:* §36.9; cross-ref 23, §36.6.
 
@@ -1301,8 +1308,13 @@ complete from model-double evidence.
   single-step disabled. Executing the command also resolves the hermetic
   production backend, boots the packaged QEMU/plugin under TCG, and reports the
   negotiated protocol/ABI plus terminal icount/fingerprint before presenting
-  the thin delegated debug plan. Completion remains open until `fork-debug` is an
-  explicit delegated verb and mutation/run-control attempts are rejected before it.
+  the thin delegated debug plan. The remote unary client now implements an
+  explicit `fork-debug` plus argv `exec`, interactive `pty`, and configured
+  in-guest `ssh` byte bridging. The fork RPC requires the transport-derived
+  controller to hold `control`, `mutate`, and `shell`, records a typed
+  guest-introspection trigger/action on the whole-world branch, and every guest
+  record is rejected while the session remains canonical. Completion remains
+  open for the remaining remote goto/reverse dispatch and live gates.
 - [ ] **T-DBG-9** Replace the Apache-side one-QEMU proxy with the standalone GPL
   debugger gateway, a stable asynchronous GDB listener, bounded fail-closed RSP
   parsing, and scheduler-routed `continue`/`step`/`vCont`. Prove split/coalesced
@@ -1374,9 +1386,15 @@ complete from model-double evidence.
   diagnostics, resizes PTYs through owned descriptors, reports typed channel
   errors and exit status/signal, and optionally bridges to a configured in-guest
   SSH stdio server. Direction and sequence validation, retry acknowledgement,
-  post-write request commit, and child cleanup are implemented. Completion
-  remains open for the fork-gated daemon/CLI surface, reposition teardown, and
-  live x86_64/aarch64 evidence.
+  post-write request commit, and child cleanup are implemented. The
+  scheduler/backend/session boundary now routes node-addressed records, and the
+  authenticated HTTP/2 daemon carries encoded `CRGI` records only after the
+  typed whole-world guest-introspection fork. The CLI exposes argv exec, PTY
+  stdin/stdout, and SSH-compatible byte bridging. The session-owned response
+  broker demultiplexes bounded records by `(node, channel)` and synthesizes typed
+  closure on successful runtime replacement. Completion remains open for local
+  raw-terminal handling and live resize propagation, transcript persistence,
+  and live x86_64/aarch64 evidence.
 - [ ] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.

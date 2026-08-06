@@ -7,6 +7,8 @@ mod terminal;
 
 use terminal::*;
 
+const GUEST_RESPONSE_BROKER_CAPACITY: usize = 64;
+
 /// Host-side engine state machine owned by the session actor.
 ///
 /// The engine owns the source-of-truth [`Configuration`], a rebuildable runtime
@@ -35,6 +37,8 @@ pub struct Engine<L> {
     pub(super) debug_attach: Option<DebugAttachReport>,
     pub(super) debug_coordinator: DebugCoordinator,
     pub(super) debug_branch_required: bool,
+    pub(super) guest_responses: BTreeMap<(NodeId, u64), VecDeque<GuestIntrospectionRecord>>,
+    pub(super) guest_channels: BTreeSet<(NodeId, u64)>,
     pub(super) next_control_sequence: u64,
     pub(super) boundary_control_log: Vec<SessionControlLogEntry>,
     pub(super) next_boundary_control_sequence: u64,
@@ -68,6 +72,8 @@ impl<L> Engine<L> {
             debug_attach: None,
             debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
+            guest_responses: BTreeMap::new(),
+            guest_channels: BTreeSet::new(),
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -128,6 +134,8 @@ impl<L> Engine<L> {
             debug_attach: None,
             debug_coordinator: DebugCoordinator::new(),
             debug_branch_required: false,
+            guest_responses: BTreeMap::new(),
+            guest_channels: BTreeSet::new(),
             next_control_sequence: 0,
             boundary_control_log: Vec::new(),
             next_boundary_control_sequence: 0,
@@ -487,6 +495,83 @@ impl<L> Engine<L> {
         Ok(())
     }
 
+    fn receive_guest_channel_response(
+        &mut self,
+        node: &NodeId,
+        channel_id: u64,
+    ) -> Result<Option<GuestIntrospectionRecord>, SessionError>
+    where
+        L: QuantumLoop,
+    {
+        let key = (node.clone(), channel_id);
+        if let Some(record) = self
+            .guest_responses
+            .get_mut(&key)
+            .and_then(VecDeque::pop_front)
+        {
+            return Ok(Some(record));
+        }
+        for _ in 0..GUEST_RESPONSE_BROKER_CAPACITY {
+            let Some(record) = self
+                .quantum_loop
+                .receive_guest_introspection(node.clone())?
+            else {
+                return Ok(None);
+            };
+            record.validate_guest_response().map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!("invalid guest-introspection response: {error}"),
+                }
+            })?;
+            let record_key = (node.clone(), record.channel_id());
+            let terminal = matches!(
+                record.message(),
+                GuestIntrospectionMessage::Exit { .. } | GuestIntrospectionMessage::Error { .. }
+            );
+            if terminal {
+                self.guest_channels.remove(&record_key);
+            }
+            if record_key == key {
+                return Ok(Some(record));
+            }
+            let buffered = self
+                .guest_responses
+                .values()
+                .map(VecDeque::len)
+                .sum::<usize>();
+            if buffered >= GUEST_RESPONSE_BROKER_CAPACITY {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from("guest-introspection response broker is full"),
+                }
+                .into());
+            }
+            self.guest_responses
+                .entry(record_key)
+                .or_default()
+                .push_back(record);
+        }
+        Ok(None)
+    }
+
+    pub(super) fn close_guest_channels_for_reposition(&mut self) {
+        self.guest_responses.clear();
+        for (node, channel_id) in std::mem::take(&mut self.guest_channels) {
+            let record = GuestIntrospectionRecord::new(
+                channel_id,
+                GuestIntrospectionMessage::Error {
+                    code: GuestIntrospectionFailureCode::ClosedChannel,
+                    message: String::from("debug runtime reposition closed the guest channel"),
+                },
+            );
+            if let Ok(record) = record {
+                self.guest_responses
+                    .entry((node, channel_id))
+                    .or_default()
+                    .push_back(record);
+            }
+        }
+    }
+
     fn reposition_debug_runtime(
         &mut self,
         previous_attach: &DebugAttachReport,
@@ -583,6 +668,7 @@ impl<L> Engine<L> {
             };
         }
         self.debug_branch_required = true;
+        self.close_guest_channels_for_reposition();
         self.debug_attach = Some(refreshed.clone());
         self.debug_coordinator
             .repositioned_canonical(configuration.id());
@@ -1222,7 +1308,8 @@ impl<L: QuantumLoop> Engine<L> {
             | SessionCommandKind::DebugGoto
             | SessionCommandKind::DebugReverseStep
             | SessionCommandKind::DebugReverseContinue
-            | SessionCommandKind::DebugForkNonCanonical => {}
+            | SessionCommandKind::DebugForkNonCanonical
+            | SessionCommandKind::GuestIntrospection => {}
         }
         Ok(())
     }
@@ -1629,6 +1716,78 @@ impl<L: QuantumLoop> Engine<L> {
                         };
                     }
                     reply.complete(Ok(report));
+                    Ok(self.snapshot())
+                }
+                EngineState::Loaded | EngineState::Stopped { .. } => {
+                    Err(self.invalid_transition(command.clone()))
+                }
+            },
+            SessionCommand::GuestIntrospection {
+                node,
+                channel_id,
+                request,
+                reply,
+            } => match self.state {
+                EngineState::Running | EngineState::Paused { .. } => {
+                    if !matches!(
+                        self.debug_coordinator.state(),
+                        DebugCoordinatorState::NonCanonical { .. }
+                    ) {
+                        if request.is_none()
+                            && let Some(record) = self
+                                .guest_responses
+                                .get_mut(&(node.clone(), *channel_id))
+                                .and_then(VecDeque::pop_front)
+                        {
+                            reply.complete(Ok(Some(record)));
+                            return Ok(self.snapshot());
+                        }
+                        return Err(SessionError::DebugNonCanonicalBranchRequired {
+                            operation: "guest-introspection",
+                        });
+                    }
+                    let response = if let Some(record) = request {
+                        if record.channel_id() != *channel_id {
+                            return Err(SchedulerError::BoundaryViolation {
+                                message: String::from(
+                                    "guest-introspection request channel does not match envelope",
+                                ),
+                            }
+                            .into());
+                        }
+                        record.validate_host_request().map_err(|error| {
+                            SchedulerError::BoundaryViolation {
+                                message: format!("invalid guest-introspection request: {error}"),
+                            }
+                        })?;
+                        self.quantum_loop
+                            .send_guest_introspection(node.clone(), record.clone())?;
+                        match record.message() {
+                            GuestIntrospectionMessage::Exec { .. }
+                            | GuestIntrospectionMessage::Pty { .. }
+                            | GuestIntrospectionMessage::Ssh { .. } => {
+                                self.guest_channels.insert((node.clone(), *channel_id));
+                            }
+                            GuestIntrospectionMessage::Input(_)
+                            | GuestIntrospectionMessage::Resize { .. }
+                            | GuestIntrospectionMessage::Close => {}
+                            GuestIntrospectionMessage::Features(_)
+                            | GuestIntrospectionMessage::Output { .. }
+                            | GuestIntrospectionMessage::Exit { .. }
+                            | GuestIntrospectionMessage::Error { .. } => {
+                                return Err(SchedulerError::BoundaryViolation {
+                                    message: String::from(
+                                        "guest response message passed host-request validation",
+                                    ),
+                                }
+                                .into());
+                            }
+                        }
+                        None
+                    } else {
+                        self.receive_guest_channel_response(node, *channel_id)?
+                    };
+                    reply.complete(Ok(response));
                     Ok(self.snapshot())
                 }
                 EngineState::Loaded | EngineState::Stopped { .. } => {

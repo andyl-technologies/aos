@@ -2796,6 +2796,56 @@ pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<
 }
 
 #[test]
+pub(super) fn cli_debug_guest_channels_require_mutation_authorization_and_preserve_argv()
+-> Result<(), Box<dyn Error>> {
+    let denied = Cli::try_parse_from([
+        "crucible",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "exec",
+        "--",
+        "/bin/echo",
+        "hello world",
+    ])?;
+    let Commands::Debug(denied_args) = &denied.command else {
+        panic!("expected debug command");
+    };
+    assert!(plan_debug_invocation(&denied, denied_args).is_err());
+
+    let allowed = Cli::parse_from([
+        "crucible",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "--allow-mutate",
+        "exec",
+        "--",
+        "/bin/echo",
+        "hello world",
+    ]);
+    let Commands::Debug(args) = &allowed.command else {
+        panic!("expected debug command");
+    };
+    let plan = plan_debug_invocation(&allowed, args)?;
+    assert!(!plan.read_only);
+    assert!(matches!(
+        plan.verb,
+        DebugInteractiveVerbPlan::Exec { ref argv }
+            if argv == &[String::from("/bin/echo"), String::from("hello world")]
+    ));
+    assert!(
+        plan.engine_operations
+            .contains(&DebugEngineOperation::GuestIntrospection)
+    );
+    Ok(())
+}
+
+#[test]
 pub(super) fn cli_debug_surface_requires_explicit_fork_for_allow_mutate()
 -> Result<(), Box<dyn Error>> {
     let checkpoint = "blake3:0000000000000000000000000000000000000000000000000000000000000000";

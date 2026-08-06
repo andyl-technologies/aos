@@ -44,7 +44,7 @@ const FEATURE_RESIZE: u32 = 1 << 2;
 const FEATURE_SSH_BRIDGE: u32 = 1 << 3;
 
 /// Closed feature advertisement for one guest agent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GuestIntrospectionFeatures {
     bits: u32,
     max_channels: u16,
@@ -108,7 +108,7 @@ impl GuestIntrospectionFeatures {
 }
 
 /// Origin stream for one guest output chunk.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GuestOutputStream {
     /// Standard output or the combined PTY/SSH stream.
     Stdout,
@@ -117,7 +117,7 @@ pub enum GuestOutputStream {
 }
 
 /// Stable class of one channel-local guest-agent failure.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GuestIntrospectionFailureCode {
     /// A child process or PTY could not be opened.
     OpenFailed,
@@ -167,7 +167,7 @@ impl GuestIntrospectionFailureCode {
 }
 
 /// One owned guest-introspection protocol message.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum GuestIntrospectionMessage {
     /// Advertises the guest agent's supported protocol features.
     Features(GuestIntrospectionFeatures),
@@ -203,7 +203,7 @@ pub enum GuestIntrospectionMessage {
         /// New terminal rows.
         rows: u16,
     },
-    /// Requests orderly channel closure.
+    /// Closes process input; repeating it requests channel termination.
     Close,
     /// Carries guest process or terminal output bytes.
     Output {
@@ -232,7 +232,7 @@ pub enum GuestIntrospectionMessage {
 }
 
 /// One channel-scoped guest-introspection record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GuestIntrospectionRecord {
     channel_id: u64,
     message: GuestIntrospectionMessage,

@@ -100,11 +100,50 @@ fork-debug
 goto <coordinate>
 reverse-step <instruction|quantum|event|assertion|timer>
 reverse-continue <condition>
+exec -- <program> [args...]
+pty [--columns N --rows N] -- <program> [args...]
+ssh
 ```
 
 `--allow-mutate` only authorizes the explicit `fork-debug` verb. It does not
 fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.
+
+For remote guest introspection, first create the explicit branch, then open a
+channel in a second invocation. Both commands acquire and release the exclusive
+controller lease:
+
+```sh
+./result/bin/crucible [daemon TLS flags] \
+  debug --session <id:epoch:seed> --node node-a --allow-mutate fork-debug
+
+./result/bin/crucible [daemon TLS flags] \
+  debug --session <id:epoch:seed> --node node-a --allow-mutate \
+  exec -- /bin/uname -a
+
+./result/bin/crucible [daemon TLS flags] \
+  debug --session <id:epoch:seed> --node node-a --allow-mutate \
+  pty --columns 120 --rows 40 -- /bin/bash
+```
+
+`exec` uses direct argv execution and does not invoke a shell. `pty` bridges the
+local standard streams to a guest controlling terminal. The current client does
+not put the local terminal into raw mode, so the PTY verb is suitable for line-
+oriented diagnosis but is not yet a transparent full-screen terminal.
+
+`ssh` is a transport byte bridge to the SSH server configured in the guest
+agent; it is intended as an SSH `ProxyCommand`, not as an interactive SSH client
+by itself. For example, wrap the Crucible invocation in a script and configure:
+
+```text
+Host crucible-guest
+  ProxyCommand /path/to/crucible-guest-proxy
+```
+
+The bridge does not grant access to the daemon host. The daemon role must grant
+`observe,control,mutate,shell` for the
+fork workflow. Guest channels are bounded and fail closed on malformed records,
+backpressure, stale controller leases, or canonical sessions.
 
 After that fork, GDB `continue`, `step`, and `vCont` requests are mediated by the
 gateway and admitted as ordinary scheduler-owned session commands. They are
@@ -131,7 +170,13 @@ For example:
   replay-oracle artifact.
 - Artifact-targeted `attach-gdb` does not keep a GDB session open after the
   bounded local probe exits.
-- Guest exec, PTY, and SSH-compatible introspection are not implemented yet.
+- Automatic propagation of local terminal resize events is not implemented yet;
+  pass the initial PTY dimensions explicitly.
+- The PTY client does not yet switch the local terminal to raw mode or restore
+  it after exit; use line-oriented commands rather than full-screen programs.
+- A successful debugger runtime reposition invalidates every active guest
+  channel and the next channel poll returns a typed `ClosedChannel` error.
+- Guest transcript persistence is reserved but not yet exposed by the CLI.
 
 Until these seams converge, use `verify --bisect`, `replay --check`, and explicit
 savepoints as the primary failure-analysis tools.
