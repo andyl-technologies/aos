@@ -52,6 +52,7 @@ use crate::fault::DeviceRng;
 
 use super::fault::{
     LinkCorruptionStrategy, LinkFaults, corrupt_payload, jitter_shift_ns, reorder_shift_ns,
+    serialization_delay_bits_per_sec,
 };
 
 /// The shmem slot the link carries frames over (`SLOT_NET_ROUTER`).
@@ -74,6 +75,8 @@ pub struct Frame {
     pub frame_id: u32,
     /// The opaque frame payload.
     pub payload: Vec<u8>,
+    /// Exact signal-adapter outcomes already resolved for this frame.
+    resolved_effects: ResolvedNetworkFrameEffects,
 }
 
 impl Frame {
@@ -84,8 +87,41 @@ impl Frame {
             emit_icount,
             frame_id,
             payload,
+            resolved_effects: ResolvedNetworkFrameEffects::default(),
         }
     }
+
+    /// Replaces the exact signal-adapter outcomes carried by this frame.
+    #[must_use]
+    pub fn with_resolved_effects(mut self, effects: ResolvedNetworkFrameEffects) -> Self {
+        self.resolved_effects = effects;
+        self
+    }
+
+    /// Returns the exact signal-adapter outcomes carried by this frame.
+    #[must_use]
+    pub const fn resolved_effects(&self) -> &ResolvedNetworkFrameEffects {
+        &self.resolved_effects
+    }
+}
+
+/// Exact per-frame outcomes resolved by the signal adapter before link scheduling.
+///
+/// This is an outcome contract rather than another fault program: the link
+/// never evaluates signals, probabilities, technology lookups, or composition
+/// rules. It only applies these already-resolved integer results.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ResolvedNetworkFrameEffects {
+    /// Signed adjustment to immutable link latency before floor clamping.
+    pub latency_delta_nanos: i64,
+    /// Nonnegative propagation, access, jitter, and reorder delay.
+    pub additional_delay_nanos: u64,
+    /// Minimum effective bit-rate cap after adapter-side composition.
+    pub serialization_rate_cap_bps: Option<u64>,
+    /// Whether the adapter resolved this frame to no delivery.
+    pub drop: bool,
+    /// Added-copy gaps from the primary delivery, in canonical copy order.
+    pub duplicate_gaps_nanos: Vec<u64>,
 }
 
 /// A frame delivered to the destination at an exact icount, in delivery order.
@@ -458,9 +494,28 @@ impl NetLink {
 
         // --- delivery-time computation (deterministic shifts) ---
         let base_ns = self.clock.virtual_ns(frame.emit_icount)?;
-        let eff_latency = self.effective_latency_ns();
+        let base_latency = self.effective_latency_ns();
+        let adjusted_latency = i128::from(base_latency)
+            .checked_add(i128::from(frame.resolved_effects.latency_delta_nanos))
+            .ok_or(DeviceError::CompletionOverflow {
+                request_icount: frame.emit_icount,
+                latency_ns: base_latency,
+            })?;
+        let eff_latency =
+            u64::try_from(adjusted_latency.max(i128::from(self.floor_ns))).map_err(|_| {
+                DeviceError::CompletionOverflow {
+                    request_icount: frame.emit_icount,
+                    latency_ns: base_latency,
+                }
+            })?;
         let len = frame.payload.len() as u64;
-        let serialization = self.faults.serialization_delay_ns(len);
+        let serialization = frame
+            .resolved_effects
+            .serialization_rate_cap_bps
+            .map_or_else(
+                || self.faults.serialization_delay_ns(len),
+                |rate| serialization_delay_bits_per_sec(len, rate),
+            );
         let jitter = jitter_shift_ns(draws.jitter, self.faults.jitter_window_ns);
         let reorder = reorder_shift_ns(draws.reorder, self.faults.reorder_window_ns);
 
@@ -469,6 +524,7 @@ impl NetLink {
             .and_then(|v| v.checked_add(serialization))
             .and_then(|v| v.checked_add(jitter))
             .and_then(|v| v.checked_add(reorder))
+            .and_then(|v| v.checked_add(frame.resolved_effects.additional_delay_nanos))
             .ok_or(DeviceError::CompletionOverflow {
                 request_icount: frame.emit_icount,
                 latency_ns: eff_latency,
@@ -481,7 +537,8 @@ impl NetLink {
         let delivery_icount = self.guard_future(delivery_icount_raw, policy)?;
 
         // --- loss (IO-20): drop the frame, no delivery ---
-        if self.faults.loss_fires(draws.loss, &draws.additional_loss) {
+        if frame.resolved_effects.drop || self.faults.loss_fires(draws.loss, &draws.additional_loss)
+        {
             return Ok(outcome);
         }
 
@@ -519,8 +576,28 @@ impl NetLink {
                 .saturating_add(gap_icount)
                 .max(delivery_icount.saturating_add(1));
             let dup_icount = dup_icount_guarded.max(dup_floor);
-            let dup = self.enqueue_delivery(dup_icount, frame.frame_id, payload);
+            let dup = self.enqueue_delivery(dup_icount, frame.frame_id, payload.clone());
             outcome.deliveries.push(dup);
+        }
+
+        for gap_nanos in &frame.resolved_effects.duplicate_gaps_nanos {
+            let duplicate_ns =
+                delivery_ns
+                    .checked_add(*gap_nanos)
+                    .ok_or(DeviceError::CompletionOverflow {
+                        request_icount: frame.emit_icount,
+                        latency_ns: *gap_nanos,
+                    })?;
+            let duplicate_icount_raw = self.clock.ceil_ns_to_icount(duplicate_ns)?;
+            let duplicate_icount_guarded = self.guard_future(duplicate_icount_raw, policy)?;
+            let gap_icount = duplicate_icount_raw.saturating_sub(delivery_icount_raw);
+            let duplicate_floor = delivery_icount
+                .saturating_add(gap_icount)
+                .max(delivery_icount.saturating_add(1));
+            let duplicate_icount = duplicate_icount_guarded.max(duplicate_floor);
+            let duplicate =
+                self.enqueue_delivery(duplicate_icount, frame.frame_id, payload.clone());
+            outcome.deliveries.push(duplicate);
         }
 
         Ok(outcome)
