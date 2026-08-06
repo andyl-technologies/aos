@@ -1534,7 +1534,6 @@ impl QuantumLoop for ControlEventLoop {
 #[derive(Default)]
 pub(super) struct ControlSensitiveLoop {
     quanta: u64,
-    active_faults: std::collections::BTreeSet<FaultTag>,
     legacy_injects: u64,
     control_batches: u64,
 }
@@ -1550,12 +1549,6 @@ impl ControlSensitiveLoop {
                 ControlOperationKind::Inject => {
                     self.legacy_injects = self.legacy_injects.saturating_add(1);
                 }
-                ControlOperationKind::InjectFault { tag, .. } => {
-                    self.active_faults.insert(tag.clone());
-                }
-                ControlOperationKind::HealFault { tag } => {
-                    self.active_faults.remove(tag);
-                }
                 ControlOperationKind::Pause
                 | ControlOperationKind::Resume
                 | ControlOperationKind::Step
@@ -1568,7 +1561,6 @@ impl ControlSensitiveLoop {
 
     fn decision_seed(&self) -> u64 {
         self.quanta
-            .saturating_add((self.active_faults.len() as u64).saturating_mul(1_000))
             .saturating_add(self.legacy_injects.saturating_mul(10_000))
             .saturating_add(self.control_batches.saturating_mul(100_000))
     }
