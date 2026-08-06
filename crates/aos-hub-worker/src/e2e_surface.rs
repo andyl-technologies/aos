@@ -307,6 +307,10 @@ impl SurfaceFetch for DoE2eSurface {
         }
     }
 
+    fn describe(&self) -> String {
+        format!("do-e2e://{}", self.prefix)
+    }
+
     async fn fetch_stream(
         &self,
         path: &str,
