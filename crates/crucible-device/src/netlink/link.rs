@@ -684,6 +684,20 @@ impl NetLink {
         }
     }
 
+    /// Removes every resolved frame that has not yet reached the receiver.
+    ///
+    /// The returned deliveries retain their exact scheduled keys and payloads
+    /// so the owning adapter can record complete transition evidence. This is
+    /// an explicit modeled link-state transition; ordinary delivery continues
+    /// to use [`Self::advance_to`] or [`Self::next_delivery`].
+    pub fn drop_inflight(&mut self) -> Vec<Delivery> {
+        self.inflight
+            .drain_all()
+            .into_iter()
+            .map(Self::pending_to_delivery)
+            .collect()
+    }
+
     /// Converts a reused [`PendingResponse`] back into a [`Delivery`].
     fn pending_to_delivery(pending: PendingResponse) -> Delivery {
         Delivery {

@@ -1058,6 +1058,87 @@ fn test_scheduler(
     .unwrap_or_else(|error| panic!("test scheduler should build: {error}"))
 }
 
+#[test]
+fn network_transition_drop_clears_inflight_and_authenticates_frames() {
+    let source = NodeId {
+        name: String::from("a"),
+    };
+    let destination = NodeId {
+        name: String::from("b"),
+    };
+    let mut scheduler = test_scheduler(
+        vec![
+            test_scenario_node(
+                "a",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            ),
+            test_scenario_node(
+                "b",
+                0,
+                SchedulerNodeActivity::Runnable,
+                NetworkLookahead::Infinite,
+                ExactLocalEvent::NoArmedTimer,
+            ),
+        ],
+        Vec::new(),
+    );
+    let link_id = scheduler_link_id_for_nodes(&source, &destination);
+    let direction = NetworkLinkDirection::EndpointAToEndpointB;
+    let mut link = crucible_device::NetLink::new(0, 0, 10, 1, crucible_device::LinkFaults::none())
+        .unwrap_or_else(|error| panic!("test link should build: {error}"));
+    link.emit(
+        &crucible_device::Frame::new(0, 7, vec![1, 2, 3]),
+        &crucible_device::FrameDraws::default(),
+        crucible_device::PastDeliveryPolicy::FailLoud,
+    )
+    .unwrap_or_else(|error| panic!("test frame should enter flight: {error}"));
+    scheduler.world_network_links.insert(
+        (link_id.clone(), direction),
+        WorldNetworkLinkRuntime {
+            canonical_id: link_id.clone(),
+            endpoint_a: source.clone(),
+            endpoint_b: destination.clone(),
+            direction,
+            scheduler_node: scheduler_node("link-a-b", SchedulingNodeKind::Network),
+            rng_stream: RngStreamId::for_link(link_id.name.clone()),
+            fault_id: crate::DeviceId::from_name("link-a-b"),
+            link,
+        },
+    );
+    scheduler
+        .refresh_device_horizons()
+        .unwrap_or_else(|error| panic!("network horizon should refresh: {error}"));
+    assert_eq!(
+        scheduler.world_network_links[&(link_id.clone(), direction)]
+            .link
+            .inflight_len(),
+        1
+    );
+
+    let first = scheduler
+        .drop_network_inflight_for_route(&source, &destination)
+        .unwrap_or_else(|error| panic!("network transition should drop the frame: {error}"));
+    let second = scheduler
+        .drop_network_inflight_for_route(&source, &destination)
+        .unwrap_or_else(|error| panic!("repeated transition should be idempotent: {error}"));
+
+    assert_eq!(first.link, link_id);
+    assert_eq!(first.direction, direction);
+    assert_eq!(first.frame_count, 1);
+    assert_ne!(first.evidence, second.evidence);
+    assert_eq!(second.frame_count, 0);
+    assert_eq!(
+        scheduler.world_network_links[&(first.link, direction)]
+            .link
+            .inflight_len(),
+        0
+    );
+    assert!(!scheduler.device_horizons.contains_key(&destination));
+}
+
 fn test_scenario_node(
     name: &str,
     counter: u64,

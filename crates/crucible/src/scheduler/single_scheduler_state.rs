@@ -583,6 +583,79 @@ impl SingleScheduler {
         Ok(())
     }
 
+    /// Drops every resolved network frame on one exact directed World route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] when the endpoint pair is
+    /// not exactly one admitted directed World link, a frame count overflows,
+    /// or recomputing exact device horizons fails.
+    pub fn drop_network_inflight_for_route(
+        &mut self,
+        source: &NodeId,
+        destination: &NodeId,
+    ) -> Result<NetworkInFlightDropEvidence, SchedulerError> {
+        let keys = self
+            .world_network_links
+            .iter()
+            .filter(|(_key, runtime)| runtime.source() == source && runtime.target() == destination)
+            .map(|(key, _runtime)| key.clone())
+            .collect::<Vec<_>>();
+        let [key] = keys.as_slice() else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "network transition route `{}` to `{}` resolves to {} directed World links",
+                    source.name,
+                    destination.name,
+                    keys.len()
+                ),
+            });
+        };
+        let runtime = self.world_network_links.get_mut(key).ok_or_else(|| {
+            SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "network transition route disappeared after exact resolution",
+                ),
+            }
+        })?;
+        let dropped = runtime.link.drop_inflight();
+        let frame_count =
+            u64::try_from(dropped.len()).map_err(|_error| SchedulerError::BoundaryViolation {
+                message: String::from("dropped network frame count exceeds the evidence width"),
+            })?;
+        let direction = match runtime.direction {
+            NetworkLinkDirection::EndpointAToEndpointB => "a-to-b",
+            NetworkLinkDirection::EndpointBToEndpointA => "b-to-a",
+        };
+        let mut material = format!(
+            "link={}\ndirection={direction}\nframes={frame_count}",
+            runtime.canonical_id.name
+        );
+        for delivery in dropped {
+            material.push_str(&format!(
+                "\ndelivery={}:{}:{}:{}",
+                delivery.key.delivery_icount,
+                delivery.key.src_node,
+                delivery.key.seq,
+                delivery.frame_id
+            ));
+            material.push(':');
+            material.push_str(&ContentHash::from_bytes(&delivery.payload).to_hex());
+        }
+        let evidence = ContentHash::from_canonical_material(
+            "crucible.network-inflight-drop-evidence.v1",
+            &material,
+        );
+        let result = NetworkInFlightDropEvidence {
+            link: runtime.canonical_id.clone(),
+            direction: runtime.direction,
+            frame_count,
+            evidence,
+        };
+        self.refresh_device_horizons()?;
+        Ok(result)
+    }
+
     /// RESOLVEs every device completion for `node` due at or before
     /// `consumer_icount` (RFC-0010 [SCHED-29], [SCHED-30], §8.9.4).
     ///

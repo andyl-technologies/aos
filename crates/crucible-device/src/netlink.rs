@@ -695,6 +695,36 @@ mod tests {
     }
 
     #[test]
+    fn drop_inflight_returns_complete_delivery_evidence() {
+        let mut l = link(LinkFaults::none());
+        ok(l.emit(
+            &Frame::new(0, 11, vec![1, 2, 3]),
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+        ok(l.emit(
+            &Frame::new(1, 12, vec![4, 5]),
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+
+        let dropped = l.drop_inflight();
+
+        assert_eq!(
+            dropped
+                .iter()
+                .map(|delivery| delivery.frame_id)
+                .collect::<Vec<_>>(),
+            vec![11, 12]
+        );
+        assert_eq!(dropped[0].payload, vec![1, 2, 3]);
+        assert_eq!(dropped[1].payload, vec![4, 5]);
+        assert_eq!(l.inflight_len(), 0);
+        assert!(l.next_exact_local_event().is_none());
+        assert!(l.drop_inflight().is_empty());
+    }
+
+    #[test]
     fn link_slot_references_router_constant() {
         assert_eq!(LINK_SLOT, crucible_shmem::SLOT_NET_ROUTER);
     }
