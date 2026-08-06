@@ -599,15 +599,15 @@ in
               --to "$checkpoint" \
               > "$TMPDIR/crucible-live-replay-to.out"
 
-            grep -q '"kind":"replay_reduction".*"status=reexecuted' \
+            grep -q '"kind":"replay_reduction".*status=reexecuted' \
               "$TMPDIR/crucible-live-replay.out"
-            grep -q '"kind":"replay_live_qemu".*"status=validated.*producer=run' \
+            grep -q '"kind":"replay_live_qemu".*status=validated.*producer=run' \
               "$TMPDIR/crucible-live-replay.out"
-            grep -q '"kind":"replay_check".*"status=byte-identical' \
+            grep -q '"kind":"replay_check".*status=byte-identical' \
               "$TMPDIR/crucible-live-replay-check.out"
-            grep -q '"kind":"replay_bisect".*"status=byte-identical' \
+            grep -q '"kind":"replay_bisect".*status=byte-identical' \
               "$TMPDIR/crucible-live-replay-bisect.out"
-            grep -q '"kind":"replay_to_savepoint".*"status=target-validated' \
+            grep -q '"kind":"replay_to_savepoint".*status=target-validated' \
               "$TMPDIR/crucible-live-replay-to.out"
           '';
         }
