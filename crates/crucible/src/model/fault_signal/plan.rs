@@ -348,6 +348,57 @@ fn validate_network_effect_policy_references(
                 actual: None,
             })
         };
+    let require_exhaustive_event = |machine: &FaultObjectId,
+                                    event: &FaultObjectId,
+                                    field: &'static str|
+     -> Result<(), FaultSignalAuthoringError> {
+        require(machine, state_machine, field)?;
+        let declaration = topology.network_policy_artifact(machine).ok_or_else(|| {
+            FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                binding: binding.id().as_str().to_owned(),
+                reference: machine.as_str().to_owned(),
+                field,
+                expected: String::from("state_machine"),
+                actual: None,
+            }
+        })?;
+        let NetworkPolicyArtifactKind::StateMachine {
+            states,
+            transitions,
+            ..
+        } = &declaration.artifact
+        else {
+            return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                binding: binding.id().as_str().to_owned(),
+                reference: machine.as_str().to_owned(),
+                field,
+                expected: String::from("state_machine"),
+                actual: Some(declaration.artifact.class().as_str()),
+            });
+        };
+        if states.iter().all(|state| {
+            transitions
+                .iter()
+                .filter(|edge| {
+                    &edge.from == state
+                        && &edge.event == event
+                        && edge.traffic_policy == NetworkInFlightPolicy::Preserve
+                })
+                .count()
+                == 1
+        }) {
+            return Ok(());
+        }
+        Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+            binding: binding.id().as_str().to_owned(),
+            reference: machine.as_str().to_owned(),
+            field,
+            expected: format!(
+                "one `{event}` transition with preserve traffic policy from every state"
+            ),
+            actual: Some("non-exhaustive state machine"),
+        })
+    };
     match specification {
         NetworkEffectSpecification::ProfileDelta {
             loss_hazard,
@@ -575,11 +626,12 @@ fn validate_network_effect_policy_references(
         NetworkEffectSpecification::FirewallDisposition {
             typed_reject,
             rule,
-            state,
+            state_machine: machine,
+            transition_event,
             ..
         } => {
             require(rule, &[NetworkPolicyArtifactClass::PacketSelector], "rule")?;
-            require(state, state_machine, "state")?;
+            require_exhaustive_event(machine, transition_event, "state_machine")?;
             if let Some(reference) = typed_reject {
                 require(
                     reference,
@@ -588,8 +640,26 @@ fn validate_network_effect_policy_references(
                 )?;
             }
         }
-        NetworkEffectSpecification::ConnectionState { transition, .. } => {
-            require(transition, state_machine, "transition")?;
+        NetworkEffectSpecification::ConnectionState {
+            flow_key,
+            state_machine: machine,
+            transition_event,
+            overflow,
+            ..
+        } => {
+            require(
+                flow_key,
+                &[NetworkPolicyArtifactClass::PacketKey],
+                "flow_key",
+            )?;
+            require_exhaustive_event(machine, transition_event, "state_machine")?;
+            if let NetworkConnectionOverflow::TypedError { response } = overflow {
+                require(
+                    response,
+                    &[NetworkPolicyArtifactClass::TypedResponse],
+                    "overflow.response",
+                )?;
+            }
         }
         NetworkEffectSpecification::SharedMedium {
             arbitration,
