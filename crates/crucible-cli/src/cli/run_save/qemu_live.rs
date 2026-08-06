@@ -136,6 +136,7 @@ fn validate_live_qemu_probe_evidence(
         resolved_backend: Some(backend.clone()),
         reason: BackendSelectionReason::ExplicitQemu,
         daemon: None,
+        daemon_security: None,
         remote_uses_control_api: false,
         local_uses_simulation_backend: true,
         local_remote_equivalence_contract: true,

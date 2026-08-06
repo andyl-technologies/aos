@@ -914,6 +914,28 @@ pub struct RpcEndpoint {
     protocol: RpcTransportProtocol,
 }
 
+/// PEM material used by an authenticated remote RPC client.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RpcMutualTlsConfig {
+    server_ca_pem: Vec<u8>,
+    client_identity_pem: Vec<u8>,
+}
+
+impl RpcMutualTlsConfig {
+    /// Builds client mutual-TLS material from a server CA and a combined client
+    /// certificate/private-key PEM document.
+    #[must_use]
+    pub fn from_pem(
+        server_ca_pem: impl Into<Vec<u8>>,
+        client_identity_pem: impl Into<Vec<u8>>,
+    ) -> Self {
+        Self {
+            server_ca_pem: server_ca_pem.into(),
+            client_identity_pem: client_identity_pem.into(),
+        }
+    }
+}
+
 impl RpcEndpoint {
     /// Builds an HTTP/2 RPC endpoint.
     #[must_use]
@@ -963,6 +985,47 @@ impl RpcControlClient {
     pub fn new(endpoint: RpcEndpoint) -> Result<Self, ControlClientError> {
         let http = reqwest::Client::builder()
             .http2_prior_knowledge()
+            .build()
+            .map_err(|error| ControlClientError::HttpClientBuild {
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            endpoint,
+            http,
+            wire_model: ControlWireModel::current(),
+        })
+    }
+
+    /// Builds an authenticated HTTPS/2 RPC client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError::HttpClientBuild`] when `endpoint` is not
+    /// HTTPS, either PEM document is invalid, or the HTTP client cannot be
+    /// initialized.
+    pub fn new_mtls(
+        endpoint: RpcEndpoint,
+        tls: RpcMutualTlsConfig,
+    ) -> Result<Self, ControlClientError> {
+        if !endpoint.uri().starts_with("https://") {
+            return Err(ControlClientError::HttpClientBuild {
+                message: String::from("mutual-TLS control endpoints must use https://"),
+            });
+        }
+        let server_ca = reqwest::Certificate::from_pem(&tls.server_ca_pem).map_err(|error| {
+            ControlClientError::HttpClientBuild {
+                message: format!("invalid daemon CA certificate: {error}"),
+            }
+        })?;
+        let identity = reqwest::Identity::from_pem(&tls.client_identity_pem).map_err(|error| {
+            ControlClientError::HttpClientBuild {
+                message: format!("invalid daemon client identity: {error}"),
+            }
+        })?;
+        let http = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .add_root_certificate(server_ca)
+            .identity(identity)
             .build()
             .map_err(|error| ControlClientError::HttpClientBuild {
                 message: error.to_string(),

@@ -19,6 +19,7 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 #[cfg(any(test, feature = "test-double"))]
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +31,9 @@ use crucible_api::{
     CreateSessionRequest, DestroySessionRequest, InProcessLifecycleClient, LifecycleControlPlane,
     LifecycleServerMode, QuiescentLifecycleLoop, RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,
     RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH, ResumeSessionRequest, RpcControlClient, RpcEndpoint,
-    SendRequest, SessionRef, serve_lifecycle_http2_with_mode_until_shutdown,
+    RpcMutualTlsConfig, SendRequest, SessionRef, mutual_tls_acceptor_from_pem,
+    serve_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_lifecycle_http2_with_mode_until_shutdown,
 };
 use crucible_session::engine as crucible_model;
 #[cfg(test)]
@@ -147,6 +150,18 @@ struct Cli {
     /// Talk to a daemon (21) instead of running in-process.
     #[arg(long, value_name = "addr", global = true)]
     daemon: Option<String>,
+    /// CA certificate used to authenticate an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true)]
+    daemon_ca: Option<PathBuf>,
+    /// Client certificate chain presented to an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true)]
+    daemon_cert: Option<PathBuf>,
+    /// Client private key presented to an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true)]
+    daemon_key: Option<PathBuf>,
+    /// Permit an unauthenticated daemon endpoint on a trusted network.
+    #[arg(long, action = ArgAction::SetTrue, global = true)]
+    trusted_unauthenticated_daemon: bool,
     /// Patched QEMU system binary (26). Else discovered.
     #[arg(long, value_name = "path", global = true)]
     qemu: Option<PathBuf>,
@@ -785,6 +800,18 @@ struct ServeArgs {
     /// Accept only read-only API calls (query/watch); no mutate.
     #[arg(long, action = ArgAction::SetTrue)]
     read_only: bool,
+    /// Server certificate chain for authenticated remote access.
+    #[arg(long, value_name = "path")]
+    tls_cert: Option<PathBuf>,
+    /// Server private key for authenticated remote access.
+    #[arg(long, value_name = "path")]
+    tls_key: Option<PathBuf>,
+    /// CA certificate used to authenticate remote clients.
+    #[arg(long, value_name = "path")]
+    client_ca: Option<PathBuf>,
+    /// Permit cleartext access on this explicitly trusted bind address.
+    #[arg(long, action = ArgAction::SetTrue)]
+    trusted_unauthenticated_bind: bool,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

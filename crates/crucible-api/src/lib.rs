@@ -18,7 +18,8 @@
 //! typed-attribute payload model; [`vm_lifecycle`] owns production local-VM
 //! loop construction; [`vm_resume`] owns the process-local VM resume realization
 //! bridge used by thin CLI callers; [`debug_gateway`] owns the Apache-side Unix
-//! control client for the separate GPL debugger gateway process.
+//! control client for the separate GPL debugger gateway process;
+//! [`transport_security`] owns remote mutual-TLS authentication.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -34,6 +35,7 @@ pub mod rpc_abi;
 pub mod server;
 pub mod session_mapping;
 pub mod streaming;
+pub mod transport_security;
 pub mod vm_lifecycle;
 #[path = "vm_resume.rs"]
 pub mod vm_resume;
@@ -42,7 +44,7 @@ pub use client::{
     ClientControlStream, ClientWatchStream, ControlClient, ControlClientError, ControlClientFuture,
     ControlTransportKind, ControlWireModel, HelloRequest, HelloResponse, InProcessControlClient,
     InProcessLifecycleControlStream, RpcControlClient, RpcControlStream, RpcEndpoint,
-    RpcTransportProtocol, RpcWatchStream, assert_shared_wire_model,
+    RpcMutualTlsConfig, RpcTransportProtocol, RpcWatchStream, assert_shared_wire_model,
 };
 pub use control_responsive::{
     CONTROL_RESPONSIVE_QUANTUM_BOUND, CONTROL_RESPONSIVE_REQUIRED_OPERATIONS,
@@ -102,7 +104,8 @@ pub use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 // launch and attest the production backend without depending on its
 // implementation crate directly.
 pub use server::{
-    LifecycleServerMode, serve_lifecycle_http2, serve_lifecycle_http2_with_mode,
+    LifecycleServerMode, serve_lifecycle_http2,
+    serve_lifecycle_http2_mtls_with_mode_until_shutdown, serve_lifecycle_http2_with_mode,
     serve_lifecycle_http2_with_mode_until_shutdown,
 };
 pub use session_mapping::{
@@ -118,6 +121,9 @@ pub use streaming::{
     StreamingCapabilitySet, StreamingCommandCapability, StreamingEquivalenceError,
     StreamingEquivalenceReport, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame,
     WatchStream, validate_control_watch_send_equivalence,
+};
+pub use transport_security::{
+    DebugTransportIdentity, MutualTlsServerConfigError, mutual_tls_acceptor_from_pem,
 };
 pub use vm_resume::{
     ModelCheckpointVmResumeRealizationProof, VmResumeRealizationError,

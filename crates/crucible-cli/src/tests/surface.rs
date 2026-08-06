@@ -1582,8 +1582,16 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         ),
         (
             "serve",
-            &["listen", "max_sessions", "read_only"][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nread_only=Accept only read-only API calls (query/watch); no mutate\n",
+            &[
+                "listen",
+                "max_sessions",
+                "read_only",
+                "tls_cert",
+                "tls_key",
+                "client_ca",
+                "trusted_unauthenticated_bind",
+            ][..],
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\n",
         ),
         (
             "debug",
@@ -1887,6 +1895,7 @@ pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
         "127.0.0.1:0",
         "--max-sessions",
         "1",
+        "--trusted-unauthenticated-bind",
     ]);
     let Commands::Serve(args) = &clean_shutdown.command else {
         panic!("expected serve command");
@@ -1899,8 +1908,14 @@ pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
         ))
         .unwrap_or_else(|error| panic!("injected serve shutdown should exit cleanly: {error}"));
 
-    let shutdown_error_cli =
-        Cli::parse_from(["crucible", "--quiet", "serve", "--listen", "127.0.0.1:0"]);
+    let shutdown_error_cli = Cli::parse_from([
+        "crucible",
+        "--quiet",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+    ]);
     let Commands::Serve(args) = &shutdown_error_cli.command else {
         panic!("expected serve command");
     };
@@ -1916,7 +1931,13 @@ pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
     assert_eq!(error.exit_code(), 3);
     assert!(error.to_string().contains("serve shutdown signal error"));
 
-    let bind_error = Cli::parse_from(["crucible", "serve", "--listen", "127.0.0.1:70000"]);
+    let bind_error = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:70000",
+        "--trusted-unauthenticated-bind",
+    ]);
     let Commands::Serve(args) = &bind_error.command else {
         panic!("expected serve command");
     };
