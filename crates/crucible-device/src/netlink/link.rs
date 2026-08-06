@@ -51,8 +51,8 @@ use crate::request::{Response, ResponseStatus};
 use crate::fault::DeviceRng;
 
 use super::fault::{
-    LinkCorruptionStrategy, LinkFaults, corrupt_payload, jitter_shift_ns, reorder_shift_ns,
-    serialization_delay_bits_per_sec,
+    LinkCorruptionStrategy, LinkFaults, checked_serialization_delay_bits_per_sec, corrupt_payload,
+    jitter_shift_ns, reorder_shift_ns,
 };
 
 /// The shmem slot the link carries frames over (`SLOT_NET_ROUTER`).
@@ -113,15 +113,139 @@ impl Frame {
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResolvedNetworkFrameEffects {
     /// Signed adjustment to immutable link latency before floor clamping.
-    pub latency_delta_nanos: i64,
+    latency_delta_nanos: i64,
     /// Nonnegative propagation, access, jitter, and reorder delay.
-    pub additional_delay_nanos: u64,
+    additional_delay_nanos: u64,
     /// Minimum effective bit-rate cap after adapter-side composition.
-    pub serialization_rate_cap_bps: Option<u64>,
+    serialization_rate_cap_bps: Option<u64>,
     /// Whether the adapter resolved this frame to no delivery.
-    pub drop: bool,
+    drop: bool,
     /// Added-copy gaps from the primary delivery, in canonical copy order.
-    pub duplicate_gaps_nanos: Vec<u64>,
+    duplicate_gaps_nanos: Vec<u64>,
+}
+
+/// Failure to compose a bounded exact per-frame network outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ResolvedNetworkFrameEffectsError {
+    /// Signed latency composition exceeded its exact integer representation.
+    #[error("resolved network latency adjustment overflowed")]
+    LatencyOverflow,
+    /// Nonnegative delay composition exceeded its exact integer representation.
+    #[error("resolved network delay overflowed")]
+    DelayOverflow,
+    /// A bit-rate cap must be positive.
+    #[error("resolved network bit-rate cap must be positive")]
+    ZeroRate,
+    /// The bounded per-frame copy count was exceeded.
+    #[error("resolved network duplicate count exceeds 256")]
+    DuplicateLimit,
+}
+
+impl ResolvedNetworkFrameEffects {
+    /// Adds one signed latency contribution exactly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolvedNetworkFrameEffectsError::LatencyOverflow`] when the
+    /// composed signed adjustment cannot be represented by `i64`.
+    pub fn add_latency_delta(
+        &mut self,
+        delta_nanos: i64,
+    ) -> Result<(), ResolvedNetworkFrameEffectsError> {
+        self.latency_delta_nanos = self
+            .latency_delta_nanos
+            .checked_add(delta_nanos)
+            .ok_or(ResolvedNetworkFrameEffectsError::LatencyOverflow)?;
+        Ok(())
+    }
+
+    /// Adds one nonnegative delay contribution exactly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolvedNetworkFrameEffectsError::DelayOverflow`] when the
+    /// composed delay cannot be represented by `u64`.
+    pub fn add_delay(&mut self, delay_nanos: u64) -> Result<(), ResolvedNetworkFrameEffectsError> {
+        self.additional_delay_nanos = self
+            .additional_delay_nanos
+            .checked_add(delay_nanos)
+            .ok_or(ResolvedNetworkFrameEffectsError::DelayOverflow)?;
+        Ok(())
+    }
+
+    /// Applies a positive simultaneous rate constraint using minimum composition.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolvedNetworkFrameEffectsError::ZeroRate`] for a zero cap.
+    pub fn constrain_rate(
+        &mut self,
+        bits_per_second: u64,
+    ) -> Result<(), ResolvedNetworkFrameEffectsError> {
+        if bits_per_second == 0 {
+            return Err(ResolvedNetworkFrameEffectsError::ZeroRate);
+        }
+        self.serialization_rate_cap_bps = Some(
+            self.serialization_rate_cap_bps
+                .map_or(bits_per_second, |current| current.min(bits_per_second)),
+        );
+        Ok(())
+    }
+
+    /// Resolves this frame to no delivery.
+    pub const fn mark_drop(&mut self) {
+        self.drop = true;
+    }
+
+    /// Adds one bounded copy gap and preserves canonical gap ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ResolvedNetworkFrameEffectsError::DuplicateLimit`] after 256
+    /// added copies have already been composed.
+    pub fn add_duplicate_gap(
+        &mut self,
+        gap_nanos: u64,
+    ) -> Result<(), ResolvedNetworkFrameEffectsError> {
+        if self.duplicate_gaps_nanos.len() == 256 {
+            return Err(ResolvedNetworkFrameEffectsError::DuplicateLimit);
+        }
+        let index = self
+            .duplicate_gaps_nanos
+            .partition_point(|gap| *gap <= gap_nanos);
+        self.duplicate_gaps_nanos.insert(index, gap_nanos);
+        Ok(())
+    }
+
+    /// Returns the composed signed latency adjustment.
+    #[must_use]
+    pub const fn latency_delta_nanos(&self) -> i64 {
+        self.latency_delta_nanos
+    }
+
+    /// Returns the composed nonnegative delay.
+    #[must_use]
+    pub const fn additional_delay_nanos(&self) -> u64 {
+        self.additional_delay_nanos
+    }
+
+    /// Returns the composed minimum rate constraint.
+    #[must_use]
+    pub const fn serialization_rate_cap_bps(&self) -> Option<u64> {
+        self.serialization_rate_cap_bps
+    }
+
+    /// Returns whether the frame resolves to no delivery.
+    #[must_use]
+    pub const fn is_dropped(&self) -> bool {
+        self.drop
+    }
+
+    /// Returns added-copy gaps in canonical delivery order.
+    #[must_use]
+    pub fn duplicate_gaps_nanos(&self) -> &[u64] {
+        &self.duplicate_gaps_nanos
+    }
 }
 
 /// A frame delivered to the destination at an exact icount, in delivery order.
@@ -491,12 +615,15 @@ impl NetLink {
         if self.faults.partitioned {
             return Ok(outcome);
         }
+        if frame.resolved_effects.is_dropped() {
+            return Ok(outcome);
+        }
 
         // --- delivery-time computation (deterministic shifts) ---
         let base_ns = self.clock.virtual_ns(frame.emit_icount)?;
         let base_latency = self.effective_latency_ns();
         let adjusted_latency = i128::from(base_latency)
-            .checked_add(i128::from(frame.resolved_effects.latency_delta_nanos))
+            .checked_add(i128::from(frame.resolved_effects.latency_delta_nanos()))
             .ok_or(DeviceError::CompletionOverflow {
                 request_icount: frame.emit_icount,
                 latency_ns: base_latency,
@@ -509,13 +636,18 @@ impl NetLink {
                 }
             })?;
         let len = frame.payload.len() as u64;
-        let serialization = frame
-            .resolved_effects
-            .serialization_rate_cap_bps
-            .map_or_else(
-                || self.faults.serialization_delay_ns(len),
-                |rate| serialization_delay_bits_per_sec(len, rate),
-            );
+        let base_serialization = self.faults.serialization_delay_ns(len);
+        let serialization = match frame.resolved_effects.serialization_rate_cap_bps() {
+            Some(rate) => {
+                base_serialization.max(checked_serialization_delay_bits_per_sec(len, rate).ok_or(
+                    DeviceError::CompletionOverflow {
+                        request_icount: frame.emit_icount,
+                        latency_ns: eff_latency,
+                    },
+                )?)
+            }
+            None => base_serialization,
+        };
         let jitter = jitter_shift_ns(draws.jitter, self.faults.jitter_window_ns);
         let reorder = reorder_shift_ns(draws.reorder, self.faults.reorder_window_ns);
 
@@ -524,7 +656,7 @@ impl NetLink {
             .and_then(|v| v.checked_add(serialization))
             .and_then(|v| v.checked_add(jitter))
             .and_then(|v| v.checked_add(reorder))
-            .and_then(|v| v.checked_add(frame.resolved_effects.additional_delay_nanos))
+            .and_then(|v| v.checked_add(frame.resolved_effects.additional_delay_nanos()))
             .ok_or(DeviceError::CompletionOverflow {
                 request_icount: frame.emit_icount,
                 latency_ns: eff_latency,
@@ -537,8 +669,7 @@ impl NetLink {
         let delivery_icount = self.guard_future(delivery_icount_raw, policy)?;
 
         // --- loss (IO-20): drop the frame, no delivery ---
-        if frame.resolved_effects.drop || self.faults.loss_fires(draws.loss, &draws.additional_loss)
-        {
+        if self.faults.loss_fires(draws.loss, &draws.additional_loss) {
             return Ok(outcome);
         }
 
@@ -548,10 +679,7 @@ impl NetLink {
             corrupt_link_payload(&self.faults, &mut payload, &draws.corrupt_bits);
         }
 
-        // --- the primary delivery ---
-        // `delivery_icount` is the guarded (possibly clamped) primary icount.
-        let primary = self.enqueue_delivery(delivery_icount, frame.frame_id, payload.clone());
-        outcome.deliveries.push(primary);
+        let mut planned = vec![(delivery_icount, payload.clone())];
 
         // --- duplicate (IO-20): emit a second delivery at a later icount ---
         if self.faults.duplicate.fires(draws.duplicate) {
@@ -571,16 +699,25 @@ impl NetLink {
             // *unguarded* raw values and keep the duplicate at least that far past
             // the guarded primary (and always strictly after it). This is a no-op
             // on the normal path where neither was clamped.
-            let gap_icount = dup_icount_raw.saturating_sub(delivery_icount_raw);
-            let dup_floor = delivery_icount
-                .saturating_add(gap_icount)
-                .max(delivery_icount.saturating_add(1));
+            let gap_icount = dup_icount_raw
+                .checked_sub(delivery_icount_raw)
+                .ok_or(DeviceError::CompletionOverflow {
+                    request_icount: frame.emit_icount,
+                    latency_ns: self.faults.duplicate_gap_ns,
+                })?
+                .max(1);
+            let dup_floor =
+                delivery_icount
+                    .checked_add(gap_icount)
+                    .ok_or(DeviceError::CompletionOverflow {
+                        request_icount: frame.emit_icount,
+                        latency_ns: self.faults.duplicate_gap_ns,
+                    })?;
             let dup_icount = dup_icount_guarded.max(dup_floor);
-            let dup = self.enqueue_delivery(dup_icount, frame.frame_id, payload.clone());
-            outcome.deliveries.push(dup);
+            planned.push((dup_icount, payload.clone()));
         }
 
-        for gap_nanos in &frame.resolved_effects.duplicate_gaps_nanos {
+        for gap_nanos in frame.resolved_effects.duplicate_gaps_nanos() {
             let duplicate_ns =
                 delivery_ns
                     .checked_add(*gap_nanos)
@@ -590,14 +727,41 @@ impl NetLink {
                     })?;
             let duplicate_icount_raw = self.clock.ceil_ns_to_icount(duplicate_ns)?;
             let duplicate_icount_guarded = self.guard_future(duplicate_icount_raw, policy)?;
-            let gap_icount = duplicate_icount_raw.saturating_sub(delivery_icount_raw);
-            let duplicate_floor = delivery_icount
-                .saturating_add(gap_icount)
-                .max(delivery_icount.saturating_add(1));
+            let gap_icount = duplicate_icount_raw
+                .checked_sub(delivery_icount_raw)
+                .ok_or(DeviceError::CompletionOverflow {
+                    request_icount: frame.emit_icount,
+                    latency_ns: *gap_nanos,
+                })?
+                .max(1);
+            let duplicate_floor =
+                delivery_icount
+                    .checked_add(gap_icount)
+                    .ok_or(DeviceError::CompletionOverflow {
+                        request_icount: frame.emit_icount,
+                        latency_ns: *gap_nanos,
+                    })?;
             let duplicate_icount = duplicate_icount_guarded.max(duplicate_floor);
-            let duplicate =
-                self.enqueue_delivery(duplicate_icount, frame.frame_id, payload.clone());
-            outcome.deliveries.push(duplicate);
+            planned.push((duplicate_icount, payload.clone()));
+        }
+
+        let planned_count =
+            u32::try_from(planned.len()).map_err(|_| DeviceError::CompletionOverflow {
+                request_icount: frame.emit_icount,
+                latency_ns: eff_latency,
+            })?;
+        self.next_seq
+            .checked_add(planned_count)
+            .ok_or(DeviceError::CompletionOverflow {
+                request_icount: frame.emit_icount,
+                latency_ns: eff_latency,
+            })?;
+        for (delivery_icount, delivery_payload) in planned {
+            outcome.deliveries.push(self.enqueue_delivery(
+                delivery_icount,
+                frame.frame_id,
+                delivery_payload,
+            ));
         }
 
         Ok(outcome)
