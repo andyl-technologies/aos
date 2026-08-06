@@ -2172,7 +2172,14 @@ pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
         qemu_source: QemuDiscoverySource::Flag,
         plugin_source: QemuDiscoverySource::Flag,
     };
-    let cli = Cli::parse_from(["crucible", "--backend", "qemu", "debug", "failure.crucible"]);
+    let cli = Cli::parse_from([
+        "crucible",
+        "--backend",
+        "qemu",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    ]);
     let Commands::Debug(args) = &cli.command else {
         panic!("debug command should parse");
     };
@@ -2186,11 +2193,56 @@ pub(super) fn cli_qemu_debug_executes_live_admission_before_delegating()
     let lines = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut probe)?;
     assert!(lines[0].contains("operation=debug-admission"));
     assert!(lines[0].contains("icount=42"));
-    assert!(lines[1].contains("target=artifact:failure.crucible"));
+    assert!(lines[1].contains("target=session:7:12:"));
     assert!(lines[1].contains("execution=planned-only"));
     assert!(lines[1].contains("requested_operation=attach-gdb"));
+    assert!(lines[1].contains("coordinate=current"));
+    assert!(lines[1].contains("node=auto"));
     assert!(lines[1].contains("read_only=true"));
     assert!(lines[1].contains("raw_gdb_single_step=false"));
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_qemu_debug_rejects_missing_artifact_before_live_probe()
+-> Result<(), Box<dyn Error>> {
+    struct ForbiddenProbe;
+
+    impl LiveQemuProbeRunner for ForbiddenProbe {
+        fn run_probe(
+            &mut self,
+            _backend: &ResolvedLocalBackend,
+        ) -> Result<LiveQemuProbeEvidence, CliError> {
+            panic!("artifact validation must precede the live QEMU probe");
+        }
+    }
+
+    let backend = ResolvedLocalBackend::Qemu {
+        qemu: PathBuf::from("/test/qemu"),
+        plugin: PathBuf::from("/test/plugin"),
+        qemu_build_id: String::from("test-build"),
+        qemu_patch_series_hash: String::from("test-patches"),
+        plugin_abi: String::from("test-plugin-abi"),
+        shmem_abi_version: String::from("test-shmem-abi"),
+        qemu_source: QemuDiscoverySource::Flag,
+        plugin_source: QemuDiscoverySource::Flag,
+    };
+    let missing = TempDir::new()?.path().join("missing.crucible");
+    let cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("qemu"),
+        String::from("debug"),
+        missing.display().to_string(),
+    ]);
+    let Commands::Debug(args) = &cli.command else {
+        panic!("debug command should parse");
+    };
+    let plan = plan_debug_invocation(&cli, args)?;
+    let error = run_local_qemu_debug_workflow_with_probe(&backend, &plan, &mut ForbiddenProbe)
+        .expect_err("a missing artifact must fail before live probing");
+
+    assert!(matches!(error, CliError::Artifact(_)));
     Ok(())
 }
 
