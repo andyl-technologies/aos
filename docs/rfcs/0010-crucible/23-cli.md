@@ -1381,7 +1381,7 @@ branch on the verdict without parsing output:
   `--recompute-signatures`, and `--compare`, rejects live daemon routing,
   rejects CLI-local `finding.*` signature sidecars, and fails artifact-only
   ledgers instead of fabricating missing discovery-time signature evidence.
-- [ ] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
+- [x] **T-CLI-18** Implement `debug` as a thin wrapper over the debugger (36) and
   the session read-only debugging commands (20 §4.4): instantiate +
   restore-nearest-checkpoint-replay to the coordinate
   (`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`), open the gdbstub
@@ -1397,9 +1397,10 @@ branch on the verdict without parsing output:
   reverse verbs routed through the debug reverse-step/goto path instead of
   unsupported forward session step modes, read-only default, explicit
   `--allow-mutate` non-canonical branch planning, checkpoint-stride latency tuning,
-  and the at-failure footer shared with failure artifact emission. Completion was
-  reopened until `fork-debug` is exposed and mutation/free control are rejected
-  before that explicit transition.
+  and the at-failure footer shared with failure artifact emission. The completed
+  remote surface exposes explicit `fork-debug`, authenticated stable GDB relay,
+  actor-owned goto/reverse operations, and fork-gated guest exec/PTY/SSH without
+  admitting mutation or free control before the explicit transition.
 - [x] **T-CLI-19** Validate a discovered QEMU plugin by reading its ELF dynamic
   symbol table, not by scanning the file for symbol-name bytes, so a file that
   merely contains the string cannot impersonate a plugin.

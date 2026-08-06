@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugCliSurface",
-  taskIds ? [],
-  openTaskIds ? ["T-DBG-8" "T-CLI-18"],
+  taskIds ? ["T-DBG-8" "T-CLI-18"],
+  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -251,7 +251,7 @@
       }
       {
         label = "allow mutate test";
-        needle = "cli_debug_surface_supports_session_checkpoint_and_allow_mutate";
+        needle = "cli_debug_surface_requires_explicit_fork_for_allow_mutate";
       }
       {
         label = "conflict test";

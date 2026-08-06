@@ -2455,8 +2455,8 @@ in rec {
       gate = import ./phase6-debug-non-canonical-branch.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.debugNonCanonicalBranch";
-        taskIds = [];
-        openTaskIds = ["T-DBG-6"];
+        taskIds = ["T-DBG-6"];
+        openTaskIds = [];
         dependencies = [
           phase4.gates.replayOracle.rawGate
           phase4.gates.e2eDeterminism.rawGate
@@ -2494,8 +2494,8 @@ in rec {
       gate = import ./phase6-debug-cli-surface.nix {
         inherit pkgs lib;
         attrPath = "checks.crucible.phase6.debugCliSurface";
-        taskIds = [];
-        openTaskIds = ["T-DBG-8" "T-CLI-18"];
+        taskIds = ["T-DBG-8" "T-CLI-18"];
+        openTaskIds = [];
         dependencies = [
           phase1.gates.layer0Determinism.rawGate
           phase4.gates.replayOracle.rawGate
