@@ -27,16 +27,16 @@ use crate::trigger::{
 };
 use crate::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
-    BackendNetworkOutput, ChoiceTag, CombinedNodeFaults, Configuration, ContentHash, Decision,
-    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EffectOutcomeDecision, EventId,
-    EventKey, EventLogOffset, EventSequenceState, FaultId, FaultRateBasisPoints, FingerprintSample,
-    GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY, MarkerId,
-    NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle, OverrideDecision, PendingFrame,
-    PreemptionDecision, PreemptionKind, RestartPolicy, RngDecision, RngStreamId, RngStreamPosition,
-    ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint,
-    SearchFrontierChoices, SearchRuntimeFrontier, Seed, Shift, SimDuration, SimInstant,
-    SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime, World,
-    WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
+    BackendNetworkOutput, BackendNetworkRoute, ChoiceTag, CombinedNodeFaults, Configuration,
+    ContentHash, Decision, DecisionRecorder, DecisionRngState, DeliveryOrderDecision,
+    EffectOutcomeDecision, EventId, EventKey, EventLogOffset, EventSequenceState, FaultId,
+    FaultRateBasisPoints, FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId,
+    MIN_LINK_LATENCY, MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle,
+    OverrideDecision, PendingFrame, PreemptionDecision, PreemptionKind, RestartPolicy, RngDecision,
+    RngStreamId, RngStreamPosition, ScenarioDef, SchedulerNodeId, SchedulerState,
+    SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices, SearchRuntimeFrontier, Seed, Shift,
+    SimDuration, SimInstant, SimulationBackend, TimeConversionError, TimerId, VcpuId, VirtualTime,
+    World, WorldIoInstantiationError, WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology,
     instantiate_world_io_sub_nodes, step,
 };
 

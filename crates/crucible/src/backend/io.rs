@@ -1,6 +1,18 @@
 //! Backend input and guest-originated network-output values.
 
 use super::*;
+use crate::LinkId;
+
+/// One scheduler-validated directed route for a guest-originated frame.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkRoute {
+    /// Canonical World link identity.
+    pub link: LinkId,
+    /// Direction through the canonical link.
+    pub direction: crate::device::NetworkLinkDirection,
+    /// Destination VM endpoint selected on the directed route.
+    pub destination: NodeId,
+}
 
 /// Deterministic input delivered to a backend.
 ///
@@ -31,6 +43,13 @@ pub struct BackendNetworkOutput {
     pub sequence: u64,
     /// The opaque guest Ethernet frame bytes.
     pub payload: Vec<u8>,
+    /// Scheduler-validated route selected by a pre-routing interceptor.
+    ///
+    /// Live backends always publish `None`. The authoritative scheduler or an
+    /// in-loop interceptor may expand one multicast frame into route-locked
+    /// copies before modeled link mutation. A supplied route is revalidated
+    /// against the World and frame destination before use.
+    pub route: Option<BackendNetworkRoute>,
 }
 
 /// Derives the stable locally administered unicast MAC for a World VM.

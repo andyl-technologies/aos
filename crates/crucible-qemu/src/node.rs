@@ -1271,6 +1271,7 @@ impl SimulationBackend for QemuNode {
                 emit_icount: frame.emit_icount,
                 sequence: frame.sequence,
                 payload: frame.payload,
+                route: None,
             });
         }
         while let Some(frame) = self.emit_frame().map_err(BackendError::from)? {
@@ -1280,6 +1281,7 @@ impl SimulationBackend for QemuNode {
                 emit_icount: frame.emit_icount,
                 sequence: frame.sequence,
                 payload: frame.payload,
+                route: None,
             });
         }
         Ok(outputs)
