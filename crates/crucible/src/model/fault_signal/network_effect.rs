@@ -524,6 +524,10 @@ pub enum NetworkEffectSpecification {
         retry_delay_nanos: Option<PositiveU64>,
         /// Maximum retries, present only for `retry`.
         retry_limit: Option<BoundedCount>,
+        /// Retries actually consumed, present only for `retry`.
+        retry_attempts: Option<BoundedCount>,
+        /// Whether the last declared retry succeeds, present only for `retry`.
+        retry_succeeds: Option<bool>,
         /// Link-reset/retraining duration, present only for `link_reset`.
         reset_nanos: Option<PositiveU64>,
     },
@@ -542,10 +546,8 @@ pub enum NetworkEffectSpecification {
     PauseBackpressure {
         /// Traffic-class identity.
         class: FaultObjectId,
-        /// Pause duration, mutually exclusive with `resume_event`.
+        /// Pause duration, or absent to pause until the contribution is removed.
         pause_nanos: Option<PositiveU64>,
-        /// Resume-event identity, mutually exclusive with duration.
-        resume_event: Option<FaultObjectId>,
     },
     /// Broadcast or multicast recipient subset.
     RecipientSubset {
@@ -809,16 +811,6 @@ impl NetworkEffectSpecification {
             } => Err(FaultContractError::InvalidEffectParameters {
                 effect: self.kind(),
             }),
-            Self::PauseBackpressure {
-                pause_nanos,
-                resume_event,
-                ..
-            } => exactly_one(
-                pause_nanos.is_some(),
-                resume_event.is_some(),
-                "pause_nanos",
-                "resume_event",
-            ),
             Self::RecipientSubset {
                 drop_members,
                 selection,
@@ -843,23 +835,40 @@ impl NetworkEffectSpecification {
                 receiver_action,
                 retry_delay_nanos,
                 retry_limit,
+                retry_attempts,
+                retry_succeeds,
                 reset_nanos,
                 ..
             } => {
                 let valid = match receiver_action {
                     DetectedFrameErrorAction::Retry => {
-                        retry_delay_nanos.is_some()
-                            && retry_limit.is_some()
-                            && reset_nanos.is_none()
+                        match (
+                            retry_delay_nanos,
+                            retry_limit,
+                            retry_attempts,
+                            retry_succeeds,
+                        ) {
+                            (Some(_delay), Some(limit), Some(attempts), Some(succeeds)) => {
+                                attempts.get() > 0
+                                    && attempts.get() <= limit.get()
+                                    && (*succeeds || attempts.get() == limit.get())
+                                    && reset_nanos.is_none()
+                            }
+                            _ => false,
+                        }
                     }
                     DetectedFrameErrorAction::LinkReset => {
                         retry_delay_nanos.is_none()
                             && retry_limit.is_none()
+                            && retry_attempts.is_none()
+                            && retry_succeeds.is_none()
                             && reset_nanos.is_some()
                     }
                     DetectedFrameErrorAction::Corrected | DetectedFrameErrorAction::Drop => {
                         retry_delay_nanos.is_none()
                             && retry_limit.is_none()
+                            && retry_attempts.is_none()
+                            && retry_succeeds.is_none()
                             && reset_nanos.is_none()
                     }
                 };
@@ -925,6 +934,7 @@ fn exactly_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::CountLimit;
 
     #[test]
     fn every_network_variant_maps_to_a_network_registry_key() {
@@ -953,5 +963,29 @@ mod tests {
                 right: "outcome",
             })
         );
+    }
+
+    #[test]
+    fn detected_retry_declares_exact_attempts_and_final_outcome() {
+        let count = |value| {
+            BoundedCount::new(CountLimit::DuplicatesOrInstructionReplay, value)
+                .unwrap_or_else(|error| panic!("test retry count: {error}"))
+        };
+        let delay = PositiveU64::new("retry_delay_nanos", 10)
+            .unwrap_or_else(|error| panic!("test retry delay: {error}"));
+        let retry = |attempts, succeeds| NetworkEffectSpecification::DetectedFrameError {
+            kind: DetectedFrameErrorKind::Crc,
+            receiver_action: DetectedFrameErrorAction::Retry,
+            retry_delay_nanos: Some(delay),
+            retry_limit: Some(count(3)),
+            retry_attempts: Some(count(attempts)),
+            retry_succeeds: Some(succeeds),
+            reset_nanos: None,
+        };
+
+        assert!(retry(2, true).validate().is_ok());
+        assert!(retry(3, false).validate().is_ok());
+        assert!(retry(2, false).validate().is_err());
+        assert!(retry(4, true).validate().is_err());
     }
 }

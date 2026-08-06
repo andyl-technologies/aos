@@ -472,10 +472,6 @@ fn validate_network_effect_policy_references(
             )?,
             NetworkPayloadMutation::BitFlip { .. } | NetworkPayloadMutation::Truncate { .. } => {}
         },
-        NetworkEffectSpecification::PauseBackpressure {
-            resume_event: Some(reference),
-            ..
-        } => require(reference, state_machine, "resume_event")?,
         NetworkEffectSpecification::Mtu {
             typed_error: Some(reference),
             ..
