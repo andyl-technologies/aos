@@ -14,13 +14,14 @@ over the defaults below. Third-party files retain their existing licenses.
 | `crucible-qemu-trace-plugin` | GPL-2.0-only |
 | QEMU emulator as a combined work | GPL-2.0-only |
 | Individual QEMU source files | The file's notice; unmarked files default to GPL-2.0-or-later under QEMU 10.0's `LICENSE` |
-| AOS QEMU patch series | Modified files retain their upstream license; every created file and its license is listed in the [patch inventory](pkgs/emulation/qemu-patches/LICENSES.md) |
+| AOS QEMU patch series | Modified files retain their upstream license; every created file and its license is listed in the [patch inventory](../../pkgs/emulation/qemu-patches/LICENSES.md) |
 
-The complete license texts are in [`LICENSES/`](LICENSES/). The root
-[`LICENSE`](LICENSE) remains the Apache License 2.0 default for original AOS
-code. The repository and AOS distributions are multi-license aggregates: the
-presence of Apache-licensed code does not relicense QEMU, and this project does
-not claim that all bundled software is Apache-2.0.
+The complete license texts are in [`LICENSES/`](../../LICENSES/). The root
+[`LICENSE`](../../LICENSE) remains the Apache License 2.0 default for original
+AOS code and allows GitHub to identify that default accurately. The repository
+and AOS distributions are multi-license aggregates: the presence of
+Apache-licensed code does not relicense QEMU, and this project does not claim
+that all bundled software is Apache-2.0.
 
 ## Crucible/QEMU process boundary
 
@@ -28,18 +29,6 @@ The Apache-licensed Crucible host and QEMU are separate processes. They
 communicate through a public, versioned protocol: a Unix-domain socket is the
 setup and control plane, and shared memory is the high-throughput data plane.
 The protocol is an interoperability contract, not a shared implementation.
-The data plane avoids per-event socket round trips and payload copies. It does
-not currently avoid every kernel entry: scheduler ceiling publication performs
-a non-private futex wake unconditionally, and the host writes the plugin eventfd
-at least once per quantum. Frame delivery and service/backpressure producer
-release add futex wakes; repeated plugin wait calls can follow non-actionable
-wake returns; pending host polling can sleep. Unchanged-icount retries and
-serviced host I/O may add eventfd writes. QEMU-side eventfd reads and event-loop
-poll entries are not included in the arithmetic performance model. These wake
-counter writes carry no timing decision or
-payload; the shared region remains the data and synchronization-state contract.
-A future waiter-armed optimization may skip unnecessary futex wakes, but it
-must preserve the documented wake protocol and ABI.
 
 `crucible-protocol` and `crucible-shmem` contain protocol and transport
 definitions used on both sides of that process boundary. Their permissive
@@ -63,7 +52,7 @@ atomics, offsets, ring entries, sequence numbers, feature bits, and serialized
 payloads specified by the public ABI. It must not contain native pointers,
 function or callback tables, QEMU private structures, Rust-native layouts, or
 other process-private objects. See the normative
-[licensing and process boundary](docs/rfcs/0010-crucible/37-licensing-process-boundary.md).
+[licensing and process boundary](../rfcs/0010-crucible/37-licensing-process-boundary.md).
 
 ## Distribution and corresponding source
 
@@ -101,5 +90,5 @@ Inc. employees contributing within the scope of their employment are covered by
 Andyl's standard CIAA and internal contribution authorization instead. Commits
 to QEMU, its patch series, or in-QEMU code additionally require a Developer
 Certificate of Origin `Signed-off-by` line for both contribution paths. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) and the
-[`External Contributor License Agreement`](CONTRIBUTOR_LICENSE_AGREEMENT.md).
+[`CONTRIBUTING.md`](../../CONTRIBUTING.md) and the
+[`External Contributor License Agreement`](external-contributor-license-agreement.md).
