@@ -93,16 +93,6 @@ pub fn card(key: &str) -> Option<HelpCard> {
                 ("Default 40", "leave at 40 unless you are deliberately ordering this cache ahead of or behind another."),
             ],
         ),
-        // -- cache <-> registry link ----------------------------------------
-        "link.roots_packages" => c(
-            "Pin GC roots from packages",
-            "link",
-            "Keep this cache from evicting paths the registry still ships.",
-            &[
-                ("On", "the registry's live package store-paths are treated as GC roots in this cache, so garbage collection never deletes a binary the catalog still references."),
-                ("Off", "GC ignores the registry; only the cache's own roots/policy protect objects."),
-            ],
-        ),
         // -- storage bindings ------------------------------------------------
         "binding.kind" => c(
             "Backend kind",
@@ -256,60 +246,6 @@ pub fn card(key: &str) -> Option<HelpCard> {
                 ("Empty", "no banner is shown."),
             ],
         ),
-        // -- serving frontends ----------------------------------------------
-        "frontend.serves_git" => c(
-            "Serves git",
-            "frontend",
-            "Serve the git index surface (apm fetches) on this domain.",
-            &[
-                ("On", "apm's dumb-HTTP git reads (info/refs, packs) for this registry are served here."),
-                ("Off", "git reads are not served on this domain."),
-            ],
-        ),
-        "frontend.serves_cache" => c(
-            "Serves cache",
-            "frontend",
-            "Serve the Nix binary-cache surface (narinfo / .nar) on this domain.",
-            &[
-                ("On", "consumers substitute store paths (narinfo and .nar objects) from this domain."),
-                ("Off", "the binary-cache surface is not served on this domain."),
-            ],
-        ),
-        "frontend.serves_web" => c(
-            "Serves web",
-            "frontend",
-            "Serve the human browse UI on this domain.",
-            &[
-                ("On", "the web pages (registry/package browse) render on this domain."),
-                ("Off", "browser requests are not served on this domain."),
-            ],
-        ),
-        "frontend.mode" => c(
-            "Mode",
-            "frontend",
-            "Whether consumers fetch straight from the bucket or through the hub.",
-            &[
-                ("direct", "consumers fetch straight from the bucket/CDN; the hub is not in the request path. Requires a public binding."),
-                ("proxied", "the hub's facade serves the surface on this domain (it stays in the path)."),
-            ],
-        ),
-        "frontend.advertised" => c(
-            "Advertise to consumers",
-            "frontend",
-            "Hand consumers this frontend's URL at serve time.",
-            &[
-                ("On", "the served setup snippets and advertised cache stack point consumers at this frontend (a direct frontend offloads the hub). Computed at serve time — it does not rewrite any registry's committed config."),
-                ("Off", "the frontend still serves, but consumers are not steered to it automatically."),
-            ],
-        ),
-        "frontend.priority" => c(
-            "Consumer priority",
-            "frontend",
-            "Ordering among advertised frontends — lower is preferred.",
-            &[
-                ("Lower = preferred", "when several frontends are advertised, the lowest number is offered first."),
-            ],
-        ),
         "binding.endpoint" => c(
             "Endpoint",
             "storage",
@@ -365,13 +301,13 @@ pub fn card(key: &str) -> Option<HelpCard> {
             ],
         ),
         // -- webhooks / SSO --------------------------------------------------
-        "webhook.secret" => c(
-            "Signing secret",
+        "webhook.secret_version_ref" => c(
+            "Signing secret version",
             "webhook",
-            "HMAC key used to sign webhook payloads.",
+            "Immutable provider reference resolved only while signing a delivery.",
             &[
-                ("Set", "deliveries carry an HMAC signature computed with this secret so the receiver can verify authenticity."),
-                ("Empty", "a secret is generated for you."),
+                ("Reference", "identifies one exact operator-managed secret version; never put plaintext signing material in this field."),
+                ("Fingerprint", "optionally pins the SHA-256 digest of the resolved value so provider drift fails closed."),
             ],
         ),
         "sso.endpoints" => c(

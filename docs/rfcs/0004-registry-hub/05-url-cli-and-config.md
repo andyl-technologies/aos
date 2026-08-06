@@ -60,12 +60,11 @@ The magic is protocol reuse, not new glue:
   `apr add` command, the `aos.apm.registries.<name>` module stanza with
   trust keys filled in (`modules/base/apm-registries.nix`), and the
   plain-Nix `substituters` + `trusted-public-keys` lines.
-- **Signing stays client-side by default.** Maintainers' Ed25519 keys
-  sign locally; the hub orchestrates but is not in the TCB. Optionally,
-  an org enrolls a **hosted signing key** (encrypted at rest, every use
-  audited) so the hub itself can advance channels, re-sign tags, and
-  apply web-edited config directly. Both modes are explicit in the UI
-  ("signed by alice@ locally" vs "signed by hosted key acme-release").
+- **Signing custody is explicit per immutable generation.** An external
+  generation accepts signed artifacts produced outside the Hub. A
+  provider-custodied generation resolves one immutable secret version and
+  proves that it matches the declared public key before use. Both modes are
+  visible in the UI and every retained-control operation is audited.
 
 ### Configuration management
 
@@ -75,21 +74,20 @@ Half the configuration is already a git repo, so the unifying model is:
 
 **Git-backed config** (`registry.toml`, `keys.toml`, `packages/`): the
 change *is* a commit, but consumers only trust roster-signed state, so
-web edits have exactly two honest paths, mapping onto the hosted-key
-stance above:
+web edits have exactly two honest paths, mapping onto the custody model above:
 
 1. **Default (BYO-key orgs): web edits are change requests.** The hub
    commits the edit to `refs/hub/changes/<change_id>`, signed by a
    per-instance **draft-signing key** that is *not* in the roster (and
-   is deliberately named to be unconfusable with *hosted* keys — the
+   is deliberately outside the consumer signing-key lifecycle — the
    draft-signing key carries no consumer trust at all; clients follow
    only signed tags/partitions, never branches). Promotion happens when
    a maintainer reviews and signs locally: `apr change merge
    <change_id>` fetches the draft, shows the diff, signs with a roster
    key, pushes. The web UI is a full authoring/review surface; roster
    keys never leave maintainers' machines.
-2. **Hosted-key orgs**: the hub applies and signs directly; every use
-   audited.
+2. **Provider-custodied generations**: the Hub resolves an immutable provider
+   version and applies only after reviewed possession evidence; every use is audited.
 
 Commit change requests cannot carry **signed-tag operations** (channel
 advances, release tags — tag objects, not commits). For those, BYO-key
@@ -98,10 +96,10 @@ orgs get **prepared operations**: the hub records the exact intent
 maintainer executes `apr channel advance --from-hub <change_id>`, which
 fetches the intent, verifies it matches what was reviewed, signs the
 partition tags locally, and pushes. Same review UX, same audit trail,
-signature still client-side. Direct web-button advances remain a
-hosted-key-org feature.
+signature still client-side. Provider-custodied advances use the same reviewed
+plan/apply contract rather than a direct web mutation.
 
-Consequence: without hosted keys, web editing of registry config is
+Consequence: without provider custody, web editing of registry config is
 change-request-only — which is why a *minimal* change-request feature
 (single-commit change, no threaded review) is promoted into phase 3
 rather than "later".
@@ -155,4 +153,3 @@ possible, visually distinct: "observed on surface" vs "performed via
 hub") for commits without one — the audit feed is complete over managed
 *and* out-of-band changes without pretending the hub mediated the
 latter.
-

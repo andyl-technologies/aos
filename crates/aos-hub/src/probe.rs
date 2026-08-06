@@ -1,21 +1,12 @@
-//! Cache-freshness and frontend-freshness probes (RFC-0004 phase 1).
+//! Signed consumer-cache endpoint freshness probes.
 //!
-//! After indexing, the hub probes two kinds of endpoint and records what it
-//! observes; both probes are deliberately lightweight — one request per
-//! endpoint — and never fatal: an unreachable endpoint is *recorded*, not
-//! raised.
+//! After indexing, the hub probes each projected consumer-cache URL. Probes are
+//! deliberately lightweight and never fatal: an unreachable endpoint is
+//! recorded rather than raised.
 //!
-//! - [`probe_caches`] probes each committed `[[caches]]` endpoint for a
-//!   reachable binary-cache `nix-cache-info`, upserting one row per
-//!   `(registry, cache_url)` into `cache_probes`.
-//! - [`probe_frontends`] probes each configured [`Frontend`](crate::db::FrontendRecord)
-//!   domain's machine surface (`info/refs` for the git surface, falling back to
-//!   `nix-cache-info`), records its observed channel frontier and how many
-//!   releases behind the local index it is, and upserts one row per frontend
-//!   into `frontend_probes` (RFC-0004's `FrontendProbe`).
-//!
-//! Both observations are surfaced on the registry health page (the cache
-//! freshness table and the frontend freshness table).
+//! [`probe_caches`] probes each exact URL in
+//! `registry_cache_stack_entries` for `nix-cache-info` and records one
+//! observation per `(registry, committed_url)` in `cache_probes`.
 //!
 //! # Status vocabulary
 //!
@@ -30,9 +21,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
-use crate::db::{Database, FrontendRecord, RegistryRecord};
-use crate::stack::StackNode;
-use crate::surface::refs::parse_info_refs;
+use crate::db::{Database, RegistryRecord};
 
 /// One cache endpoint's freshness observation, as probed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +64,7 @@ impl ProbeStatus {
 /// Probes every committed cache of `registry` and records each observation.
 ///
 /// The cache set is the committed `[cache_stack]` endpoints when present,
-/// otherwise the flat `[[caches]]` list — the same source [`crate::validation`]
+/// from the committed `[caches]` stack — the same source [`crate::validation`]
 /// uses. Each probe result is upserted via
 /// [`Database::upsert_cache_probe`](crate::db::Database::upsert_cache_probe)
 /// and also returned for logging or testing. Unreachable caches are *not*
@@ -108,18 +97,14 @@ pub async fn probe_caches(
     Ok(probes)
 }
 
-/// The committed cache URLs for a registry: stack endpoints, else flat list.
+/// The exact cache URLs projected from the registry's signed consumer stack.
 async fn committed_cache_urls(db: &Database, registry_id: i64) -> Result<Vec<String>> {
-    let stack = db.registry_cache_stack(registry_id).await?;
-    Ok(match stack {
-        Some(node) => StackNode::endpoints(&node),
-        None => db
-            .list_advertised_caches(registry_id)
-            .await?
-            .into_iter()
-            .map(|(url, _)| url)
-            .collect(),
-    })
+    Ok(db
+        .registry_cache_stack_entries(registry_id)
+        .await?
+        .into_iter()
+        .map(|entry| entry.committed_url)
+        .collect())
 }
 
 /// Probes a single cache URL for its `nix-cache-info`, timing the request.
@@ -136,7 +121,7 @@ async fn probe_one(http: &reqwest::Client, cache_url: &str) -> CacheProbe {
         // DNS hostnames — a cache URL whose host is a literal internal/link-
         // local/metadata IP (e.g. http://169.254.169.254/) is never routed
         // through the resolver and would otherwise be fetched. Pre-check the
-        // URL exactly as the frontend probe does and record an unsafe target as
+        // URL exactly and record an unsafe target as
         // unreachable (fail-closed), never issuing the request.
         if crate::fetch::is_safe_remote_url(cache_url).is_err() {
             (ProbeStatus::Unreachable, false)
@@ -203,219 +188,9 @@ async fn probe_http(http: &reqwest::Client, base: &str) -> (ProbeStatus, bool) {
     }
 }
 
-/// One frontend's freshness observation, as probed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrontendProbe {
-    /// The frontend id that was probed.
-    pub frontend_id: i64,
-    /// The base URL probed (`https://{domain}{base_path}`).
-    pub base_url: String,
-    /// Probe outcome: [`ProbeStatus`].
-    pub status: ProbeStatus,
-    /// The newest release the frontend's `info/refs` advertised, when readable.
-    pub observed_frontier: Option<String>,
-    /// How many releases behind the local index frontier the frontend is, when
-    /// both frontiers are known.
-    pub lag_releases: Option<i64>,
-    /// Round-trip latency of the probe, in milliseconds.
-    pub latency_ms: i64,
-    /// Unix time the probe ran.
-    pub checked_at: i64,
-}
-
-/// Probes every configured frontend of `registry` and records each observation.
-///
-/// For each frontend the probe fetches the frontend's `info/refs` over its
-/// `https://{domain}{base_path}` base; a reachable, parseable advertisement
-/// yields `ok` with the newest semver tag as the observed frontier and a
-/// `lag_releases` count against the local index (the number of release tags the
-/// local index has that the frontend does not). When `info/refs` is missing the
-/// probe falls back to `nix-cache-info` so a cache-only frontend still reports
-/// reachability. Each result is upserted via
-/// [`Database::upsert_frontend_probe`](crate::db::Database::upsert_frontend_probe)
-/// and also returned for logging or testing. An unreachable frontend is
-/// recorded, not raised; only a database failure aborts.
-///
-/// # Errors
-///
-/// Returns an error only on a database failure (reading frontends, the local
-/// release set, or upserting a probe row).
-pub async fn probe_frontends(
-    db: &Database,
-    http: &reqwest::Client,
-    registry: &RegistryRecord,
-) -> Result<Vec<FrontendProbe>> {
-    let frontends = db.list_frontends(registry.id).await?;
-    if frontends.is_empty() {
-        return Ok(Vec::new());
-    }
-    // The local index's release set bounds lag: a frontend that advertises
-    // fewer release tags than the local index is behind by the difference.
-    let local_releases = db.list_releases(registry.id).await?.len() as i64;
-
-    let mut probes = Vec::with_capacity(frontends.len());
-    for frontend in &frontends {
-        let probe = probe_one_frontend(http, frontend, local_releases).await;
-        db.upsert_frontend_probe(
-            probe.frontend_id,
-            probe.status.as_str(),
-            probe.observed_frontier.as_deref(),
-            probe.lag_releases,
-            probe.latency_ms,
-            probe.checked_at,
-        )
-        .await?;
-        probes.push(probe);
-    }
-    Ok(probes)
-}
-
-/// The base URL a frontend's surface is served at: `https://{domain}{base_path}`.
-///
-/// The base path is normalized to drop any wrapping slashes so machine paths
-/// append cleanly. The `https://` scheme is the default; a `domain` that
-/// already carries an explicit `http://`/`https://` scheme is honored as-is
-/// (an operator with a plain-HTTP internal frontend, and the test harness).
-fn frontend_base_url(frontend: &FrontendRecord) -> String {
-    let scheme =
-        if frontend.domain.starts_with("http://") || frontend.domain.starts_with("https://") {
-            ""
-        } else {
-            "https://"
-        };
-    let host = frontend.domain.trim_end_matches('/');
-    let base = frontend.base_path.trim_matches('/');
-    if base.is_empty() {
-        format!("{scheme}{host}")
-    } else {
-        format!("{scheme}{host}/{base}")
-    }
-}
-
-/// Probe one frontend's machine surface, timing the request.
-async fn probe_one_frontend(
-    http: &reqwest::Client,
-    frontend: &FrontendRecord,
-    local_releases: i64,
-) -> FrontendProbe {
-    let checked_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let base_url = frontend_base_url(frontend);
-    let started = Instant::now();
-    // Defense in depth: never probe a frontend whose URL resolves to a
-    // local/internal address (SSRF), even if it slipped past creation
-    // validation. An unsafe target is recorded as unreachable, not fetched.
-    let (status, observed_frontier, lag_releases) =
-        if crate::fetch::is_safe_remote_url(&base_url).is_err() {
-            (ProbeStatus::Unreachable, None, None)
-        } else {
-            probe_frontend_surface(http, &base_url, local_releases).await
-        };
-    let latency_ms = i64::try_from(started.elapsed().as_millis()).unwrap_or(i64::MAX);
-    FrontendProbe {
-        frontend_id: frontend.id,
-        base_url,
-        status,
-        observed_frontier,
-        lag_releases,
-        latency_ms,
-        checked_at,
-    }
-}
-
-/// Fetch and classify a frontend surface: `info/refs` (git) first, then
-/// `nix-cache-info` (cache) as a fallback.
-async fn probe_frontend_surface(
-    http: &reqwest::Client,
-    base: &str,
-    local_releases: i64,
-) -> (ProbeStatus, Option<String>, Option<i64>) {
-    let refs_url = format!("{}/info/refs", base.trim_end_matches('/'));
-    match http.get(&refs_url).send().await {
-        Ok(response) if response.status().is_success() => {
-            // `info/refs` is a small advertisement; cap the read so a hostile
-            // or MITM'd frontend cannot stream an unbounded body into memory.
-            if let Ok(body) = crate::fetch::read_text_capped(
-                response,
-                crate::fetch::MAX_FETCH_BYTES,
-                &format!("GET {refs_url}"),
-            )
-            .await
-            {
-                if let Ok(refs) = parse_info_refs(&body) {
-                    let semvers: Vec<semver::Version> = refs
-                        .tags
-                        .keys()
-                        .filter_map(|name| semver::Version::parse(name).ok())
-                        .collect();
-                    let observed = semvers.iter().max().map(|v| v.to_string());
-                    // Lag is how many release tags the local index has beyond
-                    // what the frontend advertises (never negative).
-                    let lag = (local_releases - semvers.len() as i64).max(0);
-                    return (ProbeStatus::Ok, observed, Some(lag));
-                }
-            }
-            // Reachable but unparseable refs: stale.
-            return (ProbeStatus::Stale, None, None);
-        }
-        Ok(_) | Err(_) => {}
-    }
-    // Git surface missing/unreachable: fall back to the cache surface so a
-    // cache-only frontend still reports reachability.
-    let cache_url = format!("{}/nix-cache-info", base.trim_end_matches('/'));
-    match http.get(&cache_url).send().await {
-        // `nix-cache-info` is a tiny pointer file; cap the read against an
-        // unbounded body from a hostile or MITM'd cache.
-        Ok(response) if response.status().is_success() => {
-            match crate::fetch::read_body_capped(
-                response,
-                crate::fetch::MAX_FETCH_BYTES,
-                &format!("GET {cache_url}"),
-            )
-            .await
-            {
-                Ok(body) if !body.is_empty() => (ProbeStatus::Ok, None, None),
-                _ => (ProbeStatus::Stale, None, None),
-            }
-        }
-        _ => (ProbeStatus::Unreachable, None, None),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn frontend_base_url_normalizes_path() {
-        let frontend = |domain: &str, base_path: &str| FrontendRecord {
-            id: 1,
-            registry_id: Some(1),
-            cache_id: None,
-            storage_binding_id: None,
-            domain: domain.to_string(),
-            base_path: base_path.to_string(),
-            mode: "direct".to_string(),
-            serves_git: true,
-            serves_cache: true,
-            serves_web: true,
-            consumer_priority: 100,
-            advertised: true,
-            proxy_config: None,
-            is_primary: false,
-            created_at: 0,
-        };
-        assert_eq!(
-            frontend_base_url(&frontend("cdn.acme.com", "")),
-            "https://cdn.acme.com"
-        );
-        assert_eq!(
-            frontend_base_url(&frontend("hub.acme.com", "/acme/infra/prod/")),
-            "https://hub.acme.com/acme/infra/prod"
-        );
-    }
 
     #[test]
     fn file_probe_ok_when_nix_cache_info_present() {

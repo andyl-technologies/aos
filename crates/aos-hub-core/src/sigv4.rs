@@ -30,6 +30,7 @@
 use anyhow::{bail, Result};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -141,15 +142,15 @@ fn uri_encode(input: &str, encode_slash: bool) -> String {
 /// injection into the signed canonical request, since both inputs are caller-
 /// supplied.
 pub fn presign_get_url(p: &PresignParams<'_>) -> Result<String> {
-    presign_url("GET", p, &[])
+    presign_url("GET", p, &[], None)
 }
 
 /// Build a presigned S3 `ListObjectsV2` URL valid for
 /// [`PresignParams::expires_secs`].
 ///
 /// A `GET` on the bucket (`p.path` = `/{bucket}`) carrying `list-type=2`, the
-/// in-bucket `prefix`, and an optional `continuation-token` — all folded into
-/// the signed canonical query alongside the `X-Amz-*` presign params, so the
+/// in-bucket `prefix`, bounded `max-keys`, and an optional continuation token -
+/// all folded into the signed canonical query alongside the `X-Amz-*` params, so the
 /// returned URL can be fetched directly to page through every key under
 /// `prefix`. This is the enumeration storage migration walks when a surface
 /// lives on an external S3/R2 binding.
@@ -161,21 +162,24 @@ pub fn presign_list_url(
     p: &PresignParams<'_>,
     prefix: &str,
     continuation: Option<&str>,
+    max_keys: usize,
 ) -> Result<String> {
+    anyhow::ensure!(max_keys > 0 && max_keys <= 1_000, "invalid S3 max-keys");
     let mut extra = vec![
         ("list-type", "2".to_string()),
+        ("max-keys", max_keys.to_string()),
         ("prefix", prefix.to_string()),
     ];
     if let Some(token) = continuation {
         extra.push(("continuation-token", token.to_string()));
     }
-    presign_url("GET", p, &extra)
+    presign_url("GET", p, &extra, None)
 }
 
 /// Build a presigned `PUT` URL valid for [`PresignParams::expires_secs`].
 ///
 /// The upload sibling of [`presign_get_url`]: a client may `PUT` the object's
-/// bytes directly to this URL (the `mint` purpose — `MintCacheUploadCredentials`)
+/// bytes directly to this URL (the `presign` mode of `CreateCacheObjectUploads`)
 /// with no further credentials until it expires. Same signing rules; only the
 /// HTTP method in the canonical request differs.
 ///
@@ -183,7 +187,23 @@ pub fn presign_list_url(
 ///
 /// Same as [`presign_get_url`].
 pub fn presign_put_url(p: &PresignParams<'_>) -> Result<String> {
-    presign_url("PUT", p, &[])
+    presign_url("PUT", p, &[], None)
+}
+
+/// Builds a presigned `PUT` whose signature requires one exact Content-Length.
+///
+/// The uploader must send the returned URL with a `Content-Length` header equal
+/// to `content_length`; S3/R2 rejects any under- or over-declared body before it
+/// can consume bytes outside the quota reservation.
+///
+/// # Errors
+///
+/// Same as [`presign_get_url`].
+pub fn presign_put_url_with_content_length(
+    p: &PresignParams<'_>,
+    content_length: u64,
+) -> Result<String> {
+    presign_url("PUT", p, &[], Some(content_length))
 }
 
 /// Build a presigned `HEAD` URL valid for [`PresignParams::expires_secs`].
@@ -197,7 +217,7 @@ pub fn presign_put_url(p: &PresignParams<'_>) -> Result<String> {
 ///
 /// Same as [`presign_get_url`].
 pub fn presign_head_url(p: &PresignParams<'_>) -> Result<String> {
-    presign_url("HEAD", p, &[])
+    presign_url("HEAD", p, &[], None)
 }
 
 /// Build a presigned `DELETE` URL valid for [`PresignParams::expires_secs`].
@@ -209,13 +229,62 @@ pub fn presign_head_url(p: &PresignParams<'_>) -> Result<String> {
 ///
 /// Same as [`presign_get_url`].
 pub fn presign_delete_url(p: &PresignParams<'_>) -> Result<String> {
-    presign_url("DELETE", p, &[])
+    presign_url("DELETE", p, &[], None)
+}
+
+/// Builds a presigned S3 multipart-operation URL.
+///
+/// `method` is restricted to `POST`, `PUT`, or `DELETE`; `query` is the exact
+/// operation query (`uploads`, `uploadId`, and optionally `partNumber`) folded
+/// into the signature.
+///
+/// # Errors
+///
+/// Returns an error for an unsupported method, malformed multipart query, or
+/// any error documented by [`presign_get_url`].
+pub fn presign_multipart_url(
+    p: &PresignParams<'_>,
+    method: &str,
+    query: &[(&str, String)],
+) -> Result<String> {
+    anyhow::ensure!(
+        matches!(method, "POST" | "PUT" | "DELETE"),
+        "invalid S3 multipart method"
+    );
+    let upload_id = query
+        .iter()
+        .find(|(key, _)| *key == "uploadId")
+        .map(|(_, value)| value.as_str());
+    let part_number = query
+        .iter()
+        .find(|(key, _)| *key == "partNumber")
+        .and_then(|(_, value)| value.parse::<u32>().ok());
+    let valid = match method {
+        "POST" => {
+            (query.len() == 1 && query[0].0 == "uploads" && query[0].1.is_empty())
+                || (query.len() == 1 && upload_id.is_some_and(|id| !id.is_empty()))
+        }
+        "PUT" => {
+            query.len() == 2
+                && upload_id.is_some_and(|id| !id.is_empty())
+                && part_number.is_some_and(|number| (1..=10_000).contains(&number))
+        }
+        "DELETE" => query.len() == 1 && upload_id.is_some_and(|id| !id.is_empty()),
+        _ => false,
+    };
+    anyhow::ensure!(valid, "invalid S3 multipart query");
+    presign_url(method, p, query, None)
 }
 
 /// Build a presigned URL for `method` (`GET`/`PUT`/`HEAD`/`DELETE`). The shared
 /// signer behind [`presign_get_url`]/[`presign_put_url`]/[`presign_head_url`]/
 /// [`presign_delete_url`].
-fn presign_url(method: &str, p: &PresignParams<'_>, extra: &[(&str, String)]) -> Result<String> {
+fn presign_url(
+    method: &str,
+    p: &PresignParams<'_>,
+    extra: &[(&str, String)],
+    content_length: Option<u64>,
+) -> Result<String> {
     validate_amz_date(p.amz_date)?;
     validate_host(p.host)?;
     // `amz_date` is `YYYYMMDDTHHMMSSZ` (validated above); the credential-scope
@@ -227,12 +296,17 @@ fn presign_url(method: &str, p: &PresignParams<'_>, extra: &[(&str, String)]) ->
     // Canonical query string: the X-Amz-* params, each key+value URI-encoded
     // (values encode `/`), sorted by encoded key. `X-Amz-Signature` is appended
     // *after* signing and is not part of the canonical request.
+    let signed_headers = if content_length.is_some() {
+        "content-length;host"
+    } else {
+        "host"
+    };
     let params = [
         ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
         ("X-Amz-Credential", credential.clone()),
         ("X-Amz-Date", p.amz_date.to_string()),
         ("X-Amz-Expires", p.expires_secs.to_string()),
-        ("X-Amz-SignedHeaders", "host".to_string()),
+        ("X-Amz-SignedHeaders", signed_headers.to_string()),
     ];
     // The X-Amz-* presign params plus any operation params (e.g. ListObjectsV2's
     // `list-type`/`prefix`/`continuation-token`) all belong in the canonical
@@ -255,8 +329,10 @@ fn presign_url(method: &str, p: &PresignParams<'_>, extra: &[(&str, String)]) ->
         .join("&");
 
     let canonical_uri = uri_encode(p.path, false);
-    let canonical_headers = format!("host:{}\n", p.host);
-    let signed_headers = "host";
+    let canonical_headers = content_length.map_or_else(
+        || format!("host:{}\n", p.host),
+        |length| format!("content-length:{length}\nhost:{}\n", p.host),
+    );
     let canonical_request = format!(
         "{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\nUNSIGNED-PAYLOAD"
     );
@@ -268,14 +344,12 @@ fn presign_url(method: &str, p: &PresignParams<'_>, extra: &[(&str, String)]) ->
     );
 
     // Derive the signing key and sign.
-    let k_date = hmac(
-        format!("AWS4{}", p.secret_key).as_bytes(),
-        date_stamp.as_bytes(),
-    );
-    let k_region = hmac(&k_date, p.region.as_bytes());
-    let k_service = hmac(&k_region, p.service.as_bytes());
-    let k_signing = hmac(&k_service, b"aws4_request");
-    let signature = hex::encode(hmac(&k_signing, string_to_sign.as_bytes()));
+    let seed = Zeroizing::new(format!("AWS4{}", p.secret_key));
+    let k_date = Zeroizing::new(hmac(seed.as_bytes(), date_stamp.as_bytes()));
+    let k_region = Zeroizing::new(hmac(&k_date[..], p.region.as_bytes()));
+    let k_service = Zeroizing::new(hmac(&k_region[..], p.service.as_bytes()));
+    let k_signing = Zeroizing::new(hmac(&k_service[..], b"aws4_request"));
+    let signature = hex::encode(hmac(&k_signing[..], string_to_sign.as_bytes()));
 
     // Emit the *encoded* path (the one that was signed), so the client requests
     // exactly the URI the signature covers.
@@ -386,6 +460,52 @@ mod tests {
     }
 
     #[test]
+    fn exact_length_put_signs_content_length() {
+        let p = PresignParams {
+            access_key: "AKIDEXAMPLE",
+            secret_key: "secret",
+            region: "us-east-1",
+            service: "s3",
+            scheme: "https",
+            host: "bucket.s3.amazonaws.com",
+            path: "/upload.nar",
+            expires_secs: 300,
+            amz_date: "20240101T000000Z",
+        };
+        let exact = presign_put_url_with_content_length(&p, 4096).unwrap();
+        let other = presign_put_url_with_content_length(&p, 4097).unwrap();
+
+        assert!(
+            exact.contains("X-Amz-SignedHeaders=content-length%3Bhost"),
+            "{exact}"
+        );
+        assert_ne!(exact, other, "Content-Length must change the signature");
+        assert_ne!(exact, presign_put_url(&p).unwrap());
+    }
+
+    #[test]
+    fn multipart_operation_and_identifiers_are_signed() {
+        let p = params("bucket.example", "20240101T000000Z");
+        let create = presign_multipart_url(&p, "POST", &[("uploads", String::new())]).unwrap();
+        let part_one = presign_multipart_url(
+            &p,
+            "PUT",
+            &[("partNumber", "1".into()), ("uploadId", "upload-a".into())],
+        )
+        .unwrap();
+        let part_two = presign_multipart_url(
+            &p,
+            "PUT",
+            &[("partNumber", "2".into()), ("uploadId", "upload-a".into())],
+        )
+        .unwrap();
+        assert!(create.contains("uploads="));
+        assert!(part_one.contains("uploadId=upload-a"));
+        assert_ne!(create, part_one);
+        assert_ne!(part_one, part_two);
+    }
+
+    #[test]
     fn uri_encode_follows_sigv4_rules() {
         assert_eq!(uri_encode("a/b c", false), "a/b%20c");
         assert_eq!(uri_encode("a/b c", true), "a%2Fb%20c");
@@ -447,18 +567,19 @@ mod tests {
                 .to_string()
         };
 
-        let url = presign_list_url(&p, "demo/sub/", None).unwrap();
+        let url = presign_list_url(&p, "demo/sub/", None, 256).unwrap();
         // The operation params are present, with `/` encoded in query values.
         assert!(url.contains("list-type=2"), "{url}");
+        assert!(url.contains("max-keys=256"), "{url}");
         assert!(url.contains("prefix=demo%2Fsub%2F"), "{url}");
         assert!(url.contains("&X-Amz-Signature="), "{url}");
         // Deterministic for fixed inputs.
-        assert_eq!(url, presign_list_url(&p, "demo/sub/", None).unwrap());
+        assert_eq!(url, presign_list_url(&p, "demo/sub/", None, 256).unwrap());
         // Because the operation params are part of the signed canonical query,
         // the list signature differs from a plain GET of the same path.
         assert_ne!(sig(&url), sig(&presign_get_url(&p).unwrap()));
         // A continuation token is signed in too.
-        let next = presign_list_url(&p, "demo/sub/", Some("tok123")).unwrap();
+        let next = presign_list_url(&p, "demo/sub/", Some("tok123"), 256).unwrap();
         assert!(next.contains("continuation-token=tok123"), "{next}");
         assert_ne!(sig(&next), sig(&url));
     }

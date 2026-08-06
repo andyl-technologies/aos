@@ -1,0 +1,7 @@
+{
+  "schema_version": "aos.hub.topology-cutover-backup-fixture/v1",
+  "database_stable_id": "database/do/topology",
+  "database_kind": "durable_object_sqlite",
+  "object_count": 1,
+  "row_count": 2
+}

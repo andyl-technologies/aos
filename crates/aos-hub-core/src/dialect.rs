@@ -40,25 +40,57 @@
 //! `ALTER TABLE` text:
 //!
 //! ```text
-//! source                          postgres                  mysql
-//! INTEGER PRIMARY KEY             BIGSERIAL PRIMARY KEY     BIGINT AUTO_INCREMENT PRIMARY KEY
-//! INTEGER (bare column type)      BIGINT                    BIGINT
-//! TEXT                            TEXT                      VARCHAR(255) (see note)
-//! LONGTEXT                        TEXT                      LONGTEXT
-//! IDTEXT                          TEXT                      VARCHAR(255) COLLATE utf8mb4_bin
-//! BLOB                            BYTEA                     LONGBLOB
-//! AUTOINCREMENT (sqlite-only)     (removed)                 (removed)
+//! source                      sqlite / DO SQLite      postgres                  mysql
+//! INTEGER PRIMARY KEY         INTEGER PRIMARY KEY     BIGSERIAL PRIMARY KEY     BIGINT AUTO_INCREMENT PRIMARY KEY
+//! INTEGER                     INTEGER                 BIGINT                    BIGINT
+//! TEXT                        TEXT                    TEXT                      VARCHAR(255) (see note)
+//! LONGTEXT                    LONGTEXT                TEXT                      LONGTEXT
+//! IDTEXT                      TEXT                    TEXT                      VARCHAR(255) COLLATE utf8mb4_0900_bin
+//! KEYTEXT16                   TEXT COLLATE BINARY     VARCHAR(16) COLLATE "C"    VARCHAR(16) + utf8mb4_0900_bin
+//! KEYTEXT32                   TEXT COLLATE BINARY     VARCHAR(32) COLLATE "C"    VARCHAR(32) + utf8mb4_0900_bin
+//! KEYTEXT64                   TEXT COLLATE BINARY     VARCHAR(64) COLLATE "C"    VARCHAR(64) + utf8mb4_0900_bin
+//! KEYTEXT128                  TEXT COLLATE BINARY     VARCHAR(128) COLLATE "C"   VARCHAR(128) + utf8mb4_0900_bin
+//! KEYTEXT255                  TEXT COLLATE BINARY     VARCHAR(255) COLLATE "C"   VARCHAR(255) + utf8mb4_0900_bin
+//! KEYTEXT512                  TEXT COLLATE BINARY     VARCHAR(512) COLLATE "C"   VARCHAR(512) + utf8mb4_0900_bin
+//! BLOB                        BLOB                    BYTEA                     LONGBLOB
+//! AUTOINCREMENT               AUTOINCREMENT           (removed)                 (removed)
 //! ```
 //!
 //! `IDTEXT` marks a **security-identity** string column — an OIDC `iss`/`sub`,
 //! or any value used as an equality auth key. On mysql its default collation is
 //! case-, accent-, and trailing-space-insensitive, which would collapse
 //! case-variant identities onto one row and enable an account-takeover (sec
-//! M-6); the explicit `utf8mb4_bin` collation forces byte-exact matching.
+//! M-6). MySQL support has an explicit 8.0.16 baseline; its
+//! `utf8mb4_0900_bin` collation is binary and `NO PAD`, so trailing spaces
+//! remain significant instead of collapsing onto the unspaced identity.
 //! sqlite and postgres `TEXT` are already case-sensitive, so `IDTEXT` is plain
 //! `TEXT` there. (EMAIL columns are deliberately *not* `IDTEXT`: emails are
 //! conventionally case-insensitive and binary-collating them without
 //! normalization would split one address across rows.)
+//!
+//! `KEYTEXT<N>` marks a bounded, case-sensitive topology key. It is intended
+//! for stable names, normalized paths, hashes, revisions, and other values
+//! whose equality and ordering must not depend on the database's default
+//! collation. The supported capacities are 16, 32, 64, 128, 255, and 512. SQLite
+//! and Durable Object SQLite use bytewise `BINARY` collation, postgres uses its deterministic
+//! `C` collation, and MySQL 8.0.16+ uses its `NO PAD` `utf8mb4_0900_bin`
+//! collation.
+//! The numeric suffix is the maximum accepted UTF-8 byte length in the Hub
+//! contract. Application validators must enforce that byte limit before every
+//! write because SQL `VARCHAR(N)` limits characters, not encoded bytes, and
+//! SQLite does not enforce a declared text length.
+//!
+//! The largest form is safe for a topology index containing one key plus a
+//! `BIGINT`: `VARCHAR(512)` occupies at most 2,048 bytes under `utf8mb4`, below
+//! InnoDB's 3,072-byte index-key limit. Multi-text indexes must use the smallest
+//! appropriate forms so their combined worst-case width remains below that
+//! limit.
+//!
+//! The mysql dialect requires MySQL 8.0.16 or newer. Topology integrity relies
+//! on enforced `CHECK` constraints, which MySQL first enabled in 8.0.16, while
+//! byte-exact identity and key equality relies on the MySQL 8
+//! `utf8mb4_0900_bin` `NO PAD` collation. MariaDB and older MySQL releases are
+//! not compatible substitutes for topology DDL.
 //!
 //! Note: mysql cannot index/PK a `TEXT` column without a prefix length, and
 //! several hub tables use a `TEXT PRIMARY KEY` (`tokens.id`, `sessions.id_hash`,
@@ -103,7 +135,7 @@ use crate::value::Value;
 /// abstraction and is cheap to copy and pass around.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialect {
-    /// SQLite (and its Cloudflare D1 twin) — the source dialect.
+    /// SQLite, including the Cloudflare Durable Object database dialect.
     Sqlite,
     /// PostgreSQL.
     Postgres,
@@ -228,7 +260,18 @@ impl Dialect {
             // marker (see the mysql/postgres branch), and its `TEXT` is already
             // case-sensitive (byte-exact), so map `IDTEXT` to plain `TEXT` for a
             // clean on-disk schema.
-            return sql.replace("IDTEXT", "TEXT");
+            let mut s = sql.to_string();
+            for marker in [
+                "KEYTEXT16",
+                "KEYTEXT32",
+                "KEYTEXT64",
+                "KEYTEXT128",
+                "KEYTEXT255",
+                "KEYTEXT512",
+            ] {
+                s = replace_word(&s, marker, "TEXT COLLATE BINARY");
+            }
+            return replace_word(&s, "IDTEXT", "TEXT");
         }
         // Order matters: the autoincrement PK must be matched before the bare
         // INTEGER rule, and AUTOINCREMENT removed regardless.
@@ -237,13 +280,13 @@ impl Dialect {
             Dialect::Mysql => "BIGINT AUTO_INCREMENT PRIMARY KEY",
             Dialect::Sqlite => unreachable!(),
         };
-        let mut s = sql.replace("INTEGER PRIMARY KEY", pk);
+        let mut s = replace_word_sequence(sql, &["INTEGER", "PRIMARY", "KEY"], pk);
         // Strip the sqlite-only AUTOINCREMENT keyword (the PK rule already
         // supplied the engine's own auto-increment spelling).
-        s = s.replace(" AUTOINCREMENT", "");
+        s = replace_word(&s, "AUTOINCREMENT", "");
         // Bare INTEGER -> BIGINT. After the PK replacement no `INTEGER PRIMARY
         // KEY` remains, so any leftover INTEGER is a plain column/reference.
-        s = s.replace("INTEGER", "BIGINT");
+        s = replace_word(&s, "INTEGER", "BIGINT");
         // `LONGTEXT` is the source marker for an *unbounded* text column — a
         // sealed secret, a public-key line, a JSON array, or a webhook payload —
         // that must never be silently truncated. It is never indexed, so it does
@@ -255,7 +298,7 @@ impl Dialect {
         // would no longer match. Use null-byte delimiters around a `TEXT`-free
         // token (null can never appear in the source DDL).
         const LONGTEXT_SENTINEL: &str = "\u{0}LONG_UNBOUNDED\u{0}";
-        s = s.replace("LONGTEXT", LONGTEXT_SENTINEL);
+        s = replace_word(&s, "LONGTEXT", LONGTEXT_SENTINEL);
         // `IDTEXT` is the source marker for a *security-identity* string column
         // — an OIDC `iss`/`sub`, or any value used as an equality auth key. On
         // mysql the default collation (`utf8mb4_general_ci` / `*_0900_ai_ci`) is
@@ -265,11 +308,14 @@ impl Dialect {
         // is never normalized here, so on mysql an attacker who can assert a
         // case-variant `sub` from the same trusted IdP would resolve to a
         // victim's `user_id` and log in as them (sec M-6). Declaring these
-        // columns with the byte-exact `utf8mb4_bin` collation forces
-        // exact-byte matching, restoring the case-sensitive behavior sqlite and
-        // postgres already have. Stash behind a sentinel (TEXT-free, null
-        // delimited) so the generic `TEXT -> VARCHAR(255)` narrowing below does
-        // not rewrite the `TEXT` *inside* `IDTEXT`.
+        // columns with the supported MySQL 8.0.16+ baseline's binary, NO PAD
+        // `utf8mb4_0900_bin` collation restores the case- and
+        // trailing-space-sensitive behavior sqlite and postgres already have.
+        // MySQL 8.0.16 is also the minimum release that enforces the CHECK
+        // constraints this schema uses for topology integrity. Stash behind a
+        // sentinel (TEXT-free, null delimited) so the generic
+        // `TEXT -> VARCHAR(255)` narrowing below does not rewrite the `TEXT`
+        // *inside* `IDTEXT`.
         //
         // NOTE: do **not** apply binary collation to EMAIL columns — emails are
         // conventionally case-insensitive and are not normalized consistently
@@ -277,9 +323,24 @@ impl Dialect {
         // address across rows. Email collation is tracked separately (M-7) and
         // its takeover arm is gated by verified-domain checks.
         const IDTEXT_SENTINEL: &str = "\u{0}ID_BINARY\u{0}";
-        s = s.replace("IDTEXT", IDTEXT_SENTINEL);
+        s = replace_word(&s, "IDTEXT", IDTEXT_SENTINEL);
+        // `KEYTEXT<N>` is a bounded, byte-exact topology key. Stash every
+        // supported capacity before the generic TEXT rewrite; otherwise a
+        // marker such as KEYTEXT64 would become KEYVARCHAR(255)64 and could no
+        // longer be restored. The sentinels deliberately contain no `TEXT`.
+        const KEYTEXT_SENTINELS: [(&str, &str, usize); 6] = [
+            ("KEYTEXT16", "\u{0}KEY_EXACT_16\u{0}", 16),
+            ("KEYTEXT32", "\u{0}KEY_EXACT_32\u{0}", 32),
+            ("KEYTEXT64", "\u{0}KEY_EXACT_64\u{0}", 64),
+            ("KEYTEXT128", "\u{0}KEY_EXACT_128\u{0}", 128),
+            ("KEYTEXT255", "\u{0}KEY_EXACT_255\u{0}", 255),
+            ("KEYTEXT512", "\u{0}KEY_EXACT_512\u{0}", 512),
+        ];
+        for (marker, sentinel, _) in KEYTEXT_SENTINELS {
+            s = replace_word(&s, marker, sentinel);
+        }
         let mut s = match self {
-            Dialect::Postgres => s.replace("BLOB", "BYTEA"),
+            Dialect::Postgres => replace_word(&s, "BLOB", "BYTEA"),
             // mysql: narrow only the *bounded, indexable* `TEXT` columns (hex
             // hashes, slugs, UUIDs, key ids — all well under 255) to an
             // indexable `VARCHAR(255)`, because mysql cannot PK/index a `TEXT`
@@ -287,9 +348,10 @@ impl Dialect {
             // above) so a long secret/key/payload is stored intact rather than
             // truncated to 255 chars, which would corrupt a sealed secret or a
             // public key and break decryption/verification.
-            Dialect::Mysql => s
-                .replace("BLOB", "LONGBLOB")
-                .replace("TEXT", "VARCHAR(255)"),
+            Dialect::Mysql => {
+                let s = replace_word(&s, "BLOB", "LONGBLOB");
+                replace_word(&s, "TEXT", "VARCHAR(255)")
+            }
             Dialect::Sqlite => unreachable!(),
         };
         // Restore the unbounded text type: `LONGTEXT` on mysql, plain `TEXT` on
@@ -305,11 +367,21 @@ impl Dialect {
         // collation; on postgres a plain (case-sensitive) `TEXT` is already
         // byte-exact for these columns.
         let identity = match self {
-            Dialect::Mysql => "VARCHAR(255) COLLATE utf8mb4_bin",
+            Dialect::Mysql => "VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin",
             Dialect::Postgres => "TEXT",
             Dialect::Sqlite => unreachable!(),
         };
         s = s.replace(IDTEXT_SENTINEL, identity);
+        for (_, sentinel, capacity) in KEYTEXT_SENTINELS {
+            let key_type = match self {
+                Dialect::Mysql => {
+                    format!("VARCHAR({capacity}) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin")
+                }
+                Dialect::Postgres => format!("VARCHAR({capacity}) COLLATE \"C\""),
+                Dialect::Sqlite => unreachable!(),
+            };
+            s = s.replace(sentinel, &key_type);
+        }
         s
     }
 
@@ -357,29 +429,268 @@ impl Dialect {
     }
 }
 
-/// Replaces every whole-word, case-sensitive occurrence of `word` in `sql`
-/// with `repl`.
+/// Replaces every bare whole-word, case-sensitive occurrence of `word` in
+/// executable SQL with `repl`.
 ///
 /// A match is a run of `word` bounded on both sides by a non-identifier
-/// character (or a string boundary), so `release` in `channel_partitions`'
-/// column list is replaced but `releases` (the table) and `release_id` are
-/// not.
+/// character (or a string boundary), outside string literals, line/block
+/// comments, and double-quoted, backtick-quoted, or bracket-quoted identifiers.
+/// Thus `release` in `channel_partitions`' column list is replaced but
+/// `releases`, `release_id`, `'release'`, and `"release"` are not.
 fn replace_word(sql: &str, word: &str, repl: &str) -> String {
-    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    #[derive(Clone, Copy)]
+    enum State {
+        Sql,
+        String,
+        DoubleQuoted,
+        BacktickQuoted,
+        BracketQuoted,
+        LineComment,
+        BlockComment,
+    }
+
+    let is_ident = |c: char| c.is_alphanumeric() || matches!(c, '_' | '$');
     let bytes = sql.as_bytes();
     let mut out = String::with_capacity(sql.len());
     let mut i = 0;
+    let mut state = State::Sql;
     while i < bytes.len() {
-        if sql[i..].starts_with(word) {
-            let before_ok = i == 0 || !is_ident(sql[..i].chars().next_back().unwrap_or(' '));
-            let after = i + word.len();
-            let after_ok =
-                after >= bytes.len() || !is_ident(sql[after..].chars().next().unwrap_or(' '));
-            if before_ok && after_ok {
-                out.push_str(repl);
-                i = after;
+        match state {
+            State::Sql => {
+                let next = bytes.get(i + 1).copied();
+                let delimiter = match (bytes[i], next) {
+                    (b'\'', _) => Some((State::String, 1)),
+                    (b'"', _) => Some((State::DoubleQuoted, 1)),
+                    (b'`', _) => Some((State::BacktickQuoted, 1)),
+                    (b'[', _) => Some((State::BracketQuoted, 1)),
+                    (b'-', Some(b'-')) => Some((State::LineComment, 2)),
+                    (b'/', Some(b'*')) => Some((State::BlockComment, 2)),
+                    _ => None,
+                };
+                if let Some((new_state, width)) = delimiter {
+                    out.push_str(&sql[i..i + width]);
+                    i += width;
+                    state = new_state;
+                    continue;
+                }
+
+                if sql[i..].starts_with(word) {
+                    let before_ok =
+                        i == 0 || !is_ident(sql[..i].chars().next_back().unwrap_or(' '));
+                    let after = i + word.len();
+                    let after_ok = after >= bytes.len()
+                        || !is_ident(sql[after..].chars().next().unwrap_or(' '));
+                    if before_ok && after_ok {
+                        out.push_str(repl);
+                        i = after;
+                        continue;
+                    }
+                }
+            }
+            State::String if bytes[i] == b'\'' => {
+                out.push('\'');
+                i += 1;
+                if bytes.get(i) == Some(&b'\'') {
+                    out.push('\'');
+                    i += 1;
+                } else {
+                    state = State::Sql;
+                }
                 continue;
             }
+            State::DoubleQuoted if bytes[i] == b'"' => {
+                out.push('"');
+                i += 1;
+                if bytes.get(i) == Some(&b'"') {
+                    out.push('"');
+                    i += 1;
+                } else {
+                    state = State::Sql;
+                }
+                continue;
+            }
+            State::BacktickQuoted if bytes[i] == b'`' => {
+                out.push('`');
+                i += 1;
+                if bytes.get(i) == Some(&b'`') {
+                    out.push('`');
+                    i += 1;
+                } else {
+                    state = State::Sql;
+                }
+                continue;
+            }
+            State::BracketQuoted if bytes[i] == b']' => {
+                out.push(']');
+                i += 1;
+                if bytes.get(i) == Some(&b']') {
+                    out.push(']');
+                    i += 1;
+                } else {
+                    state = State::Sql;
+                }
+                continue;
+            }
+            State::LineComment if bytes[i] == b'\n' => {
+                out.push('\n');
+                i += 1;
+                state = State::Sql;
+                continue;
+            }
+            State::BlockComment if bytes[i] == b'*' && bytes.get(i + 1).copied() == Some(b'/') => {
+                out.push_str("*/");
+                i += 2;
+                state = State::Sql;
+                continue;
+            }
+            _ => {}
+        }
+        let ch = sql[i..].chars().next().unwrap_or(' ');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Replaces a whitespace-separated sequence of bare SQL words in executable
+/// text while preserving literals, comments, and quoted identifiers verbatim.
+///
+/// The sequence must be composed of complete identifier tokens. Whitespace may
+/// vary between tokens, but comments and punctuation break the sequence. This
+/// is used for composite DDL types such as `INTEGER PRIMARY KEY`, where a raw
+/// substring replacement could corrupt operator-owned defaults or comments.
+fn replace_word_sequence(sql: &str, words: &[&str], repl: &str) -> String {
+    if words.is_empty() {
+        return sql.to_string();
+    }
+
+    #[derive(Clone, Copy)]
+    enum State {
+        Sql,
+        String,
+        DoubleQuoted,
+        BacktickQuoted,
+        BracketQuoted,
+        LineComment,
+        BlockComment,
+    }
+
+    let is_ident = |c: char| c.is_alphanumeric() || matches!(c, '_' | '$');
+    let bytes = sql.as_bytes();
+    let mut out = String::with_capacity(sql.len());
+    let mut i = 0;
+    let mut state = State::Sql;
+    while i < bytes.len() {
+        match state {
+            State::Sql => {
+                let next = bytes.get(i + 1).copied();
+                let delimiter = match (bytes[i], next) {
+                    (b'\'', _) => Some((State::String, 1)),
+                    (b'"', _) => Some((State::DoubleQuoted, 1)),
+                    (b'`', _) => Some((State::BacktickQuoted, 1)),
+                    (b'[', _) => Some((State::BracketQuoted, 1)),
+                    (b'-', Some(b'-')) => Some((State::LineComment, 2)),
+                    (b'/', Some(b'*')) => Some((State::BlockComment, 2)),
+                    _ => None,
+                };
+                if let Some((new_state, width)) = delimiter {
+                    out.push_str(&sql[i..i + width]);
+                    i += width;
+                    state = new_state;
+                    continue;
+                }
+
+                let before_ok = i == 0 || !is_ident(sql[..i].chars().next_back().unwrap_or(' '));
+                if before_ok {
+                    let mut end = i;
+                    let mut matched = true;
+                    for (index, word) in words.iter().enumerate() {
+                        if !sql[end..].starts_with(word) {
+                            matched = false;
+                            break;
+                        }
+                        end += word.len();
+                        if end < bytes.len() && is_ident(sql[end..].chars().next().unwrap_or(' ')) {
+                            matched = false;
+                            break;
+                        }
+                        if index + 1 < words.len() {
+                            let whitespace_start = end;
+                            while end < bytes.len()
+                                && sql[end..].chars().next().is_some_and(char::is_whitespace)
+                            {
+                                end += sql[end..].chars().next().map_or(0, char::len_utf8);
+                            }
+                            if end == whitespace_start {
+                                matched = false;
+                                break;
+                            }
+                        }
+                    }
+                    if matched {
+                        out.push_str(repl);
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            State::String if bytes[i] == b'\'' => {
+                out.push('\'');
+                i += 1;
+                if bytes.get(i) == Some(&b'\'') {
+                    out.push('\'');
+                    i += 1;
+                } else {
+                    state = State::Sql;
+                }
+                continue;
+            }
+            State::DoubleQuoted if bytes[i] == b'"' => {
+                out.push('"');
+                i += 1;
+                if bytes.get(i) == Some(&b'"') {
+                    out.push('"');
+                    i += 1;
+                } else {
+                    state = State::Sql;
+                }
+                continue;
+            }
+            State::BacktickQuoted if bytes[i] == b'`' => {
+                out.push('`');
+                i += 1;
+                if bytes.get(i) == Some(&b'`') {
+                    out.push('`');
+                    i += 1;
+                } else {
+                    state = State::Sql;
+                }
+                continue;
+            }
+            State::BracketQuoted if bytes[i] == b']' => {
+                out.push(']');
+                i += 1;
+                if bytes.get(i) == Some(&b']') {
+                    out.push(']');
+                    i += 1;
+                } else {
+                    state = State::Sql;
+                }
+                continue;
+            }
+            State::LineComment if bytes[i] == b'\n' => {
+                out.push('\n');
+                i += 1;
+                state = State::Sql;
+                continue;
+            }
+            State::BlockComment if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') => {
+                out.push_str("*/");
+                i += 2;
+                state = State::Sql;
+                continue;
+            }
+            _ => {}
         }
         let ch = sql[i..].chars().next().unwrap_or(' ');
         out.push(ch);

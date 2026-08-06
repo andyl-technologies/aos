@@ -1,0 +1,73 @@
+{
+  "$schema": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json",
+  "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-fixtures-v1.schema.json",
+  "dialect": "aos-cutover-schema/v1",
+  "type": "object",
+  "required": ["schema_version", "base", "cases"],
+  "properties": {
+    "schema_version": { "const": "aos-cutover-fixtures/v1" },
+    "base": {
+      "type": "object",
+      "required": ["plan_payload_node_id", "report_payload_node_id", "verification_payload_node_id"],
+      "properties": {
+        "plan_payload_node_id": { "$ref": "#/$defs/stableId" },
+        "report_payload_node_id": { "$ref": "#/$defs/stableId" },
+        "verification_payload_node_id": { "$ref": "#/$defs/stableId" }
+      },
+      "additionalProperties": false
+    },
+    "cases": { "type": "array", "minItems": 77, "maxItems": 77, "uniqueItems": true, "items": { "$ref": "#/$defs/fixtureCase" } }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "stableId": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "jsonPointer": { "type": "string", "maxLength": 512, "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$" },
+    "addMutation": {
+      "type": "object",
+      "required": ["target", "operation", "pointer", "value"],
+      "properties": { "target": { "$ref": "#/$defs/fixtureTarget" }, "operation": { "const": "add" }, "pointer": { "$ref": "#/$defs/jsonPointer" }, "value": {} },
+      "additionalProperties": false
+    },
+    "removeMutation": {
+      "type": "object",
+      "required": ["target", "operation", "pointer"],
+      "properties": { "target": { "$ref": "#/$defs/fixtureTarget" }, "operation": { "const": "remove" }, "pointer": { "$ref": "#/$defs/jsonPointer" } },
+      "additionalProperties": false
+    },
+    "replaceMutation": {
+      "type": "object",
+      "required": ["target", "operation", "pointer", "value"],
+      "properties": { "target": { "$ref": "#/$defs/fixtureTarget" }, "operation": { "const": "replace" }, "pointer": { "$ref": "#/$defs/jsonPointer" }, "value": {} },
+      "additionalProperties": false
+    },
+    "copyMutation": {
+      "type": "object",
+      "required": ["target", "operation", "from_pointer", "pointer"],
+      "properties": { "target": { "$ref": "#/$defs/fixtureTarget" }, "operation": { "const": "copy" }, "from_pointer": { "$ref": "#/$defs/jsonPointer" }, "pointer": { "$ref": "#/$defs/jsonPointer" } },
+      "additionalProperties": false
+    },
+    "mutation": {
+      "oneOf": [
+        { "$ref": "#/$defs/addMutation" },
+        { "$ref": "#/$defs/removeMutation" },
+        { "$ref": "#/$defs/replaceMutation" },
+        { "$ref": "#/$defs/copyMutation" }
+      ]
+    },
+    "fixtureTarget": { "enum": ["plan", "report", "verification", "bundle_manifest", "signer_key_map", "signature_envelope", "verifier_bytes"] },
+    "fixtureCase": {
+      "type": "object",
+      "required": ["case_id", "mutations", "evaluation_stage", "expected_result", "expected_code"],
+      "properties": {
+        "case_id": { "$ref": "#/$defs/stableId" },
+        "mutations": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/mutation" } },
+        "evaluation_stage": { "enum": ["schema", "semantic", "signature", "bundle"] },
+        "expected_result": { "enum": ["pass", "fail"] },
+        "expected_code": {
+          "enum": [null, "attempt_contract_invalid", "auth_contract_invalid", "blocker_contract_invalid", "bundle_not_closed", "canonical_order_invalid", "database_restore_contract_invalid", "durable_object_aggregate_invalid", "gc_partition_invalid", "mapping_contract_invalid", "reference_contract_invalid", "signature_invalid", "signer_role_not_authorized", "smoke_contract_invalid", "transition_contract_invalid", "type_mismatch", "unknown_property", "verification_contract_invalid", "verifier_identity_mismatch"]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

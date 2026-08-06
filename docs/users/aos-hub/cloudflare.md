@@ -2,8 +2,10 @@
 
 The Cloudflare deployment runs the shared Hub request surface in a Worker. Its
 system of record is SQLite inside a `HubDb` Durable Object; registry and cache
-bytes live in R2, and KV caches session and hot-key state. The schema migrates
-on first use.
+bytes live in R2, and KV caches session and hot-key state. Outbound HTTPS uses
+Cloudflare's Worker Fetch transport, so a complete deployment requires no VM,
+metal host, or separately operated egress service. The schema migrates on first
+use.
 
 Use the packaged installer. It contains the `aos-hub` deployment command,
 Worker artifact, and AOS-built provider tooling.
@@ -26,6 +28,13 @@ running the browser login:
 
 The token must be able to deploy Workers and manage R2 and KV resources in the
 account. A custom domain also requires access to its DNS zone.
+
+The Worker needs a separate scoped token at runtime to observe route-control
+state. Set it before the first install even when Wrangler uses browser login:
+
+```sh
+export HUB_CLOUDFLARE_API_TOKEN='scoped-runtime-token'
+```
 
 For a first deployment with a custom domain:
 
@@ -64,6 +73,11 @@ The default R2 bucket is `<name>-surfaces`; the default KV title is
 `<name>-sessions`. Override them with `--bucket` and `--kv-title` when names
 must fit an existing account convention.
 
+Rate-limit namespace IDs are account-wide. The installer reserves three
+consecutive IDs above `--rate-limit-namespace-base`; its default base of `1000`
+preserves production IDs `1001` through `1003`. Every independent installation
+in the same account must use another non-overlapping base.
+
 ## Record and protect secrets
 
 The first deployment mints `HUB_JWT_SECRET` and `HUB_SEAL_KEY` when you do not
@@ -79,7 +93,10 @@ An ordinary redeploy without secret flags preserves the deployed values. Do
 not pass newly generated values to routine updates.
 
 Provider credentials should come from `CLOUDFLARE_API_TOKEN` or `worker login`;
-do not put an API token on the command line. Feed the root password over stdin.
+do not put an API token on the command line. The Worker also requires its own
+scoped `HUB_CLOUDFLARE_API_TOKEN` described above. Later deploys preserve the
+stored runtime token when the variable is omitted. Feed the root password over
+stdin.
 
 ## Update the deployment
 
@@ -94,6 +111,12 @@ Omitting `--domain` during a routine redeploy preserves the existing domain
 bindings. When you do provide `--domain`, repeat it for every domain that the
 installer should manage; the supplied list becomes the complete managed set.
 The `workers.dev` address remains enabled.
+
+Pass `--deployment-id` with an immutable source or build identifier when an
+external deployment controller needs to verify rollout. The Worker exposes the
+value at `/.well-known/aos-deployment` with `Cache-Control: no-store`; a
+controller should reject redirects and compare the response exactly before
+declaring the deployment healthy.
 
 Worker state is administered through the web console and API. Local
 `aos-hub --root ...` commands do not open the Durable Object database.

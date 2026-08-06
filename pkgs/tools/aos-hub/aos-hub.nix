@@ -1,6 +1,6 @@
 ##! aos-hub — multi-tenant AOS registry management hub (RFC-0004)
 ##!
-##! Builds the `aos-hub` binary from the shared `crates/` cargo
+##! Builds the `aos-hub` and `aos-hub-egress` binaries from the shared `crates/` cargo
 ##! workspace, mirroring `pkgs/tools/aos/aos.nix`. The hub is a self-contained
 ##! axum server: a sqlite database (rusqlite, bundled) plus a `file://`/HTTP
 ##! surface reader, so unlike `aos` it shells out to no external tools at
@@ -12,31 +12,48 @@
 ##! native build inputs are `pkg-config`/`openssl` (the `reqwest` rustls stack
 ##! still links `openssl-sys` transitively through the workspace) and
 ##! `protobuf` (the `aos-proto` build script runs `protoc` to generate the
-##! `aos.registry.v1` ConnectRPC stubs).
+##! `aos.hub.v1` ConnectRPC stubs).
 {
+  lib,
   mkCargoPackage,
   fetchCargoDeps,
   openssl,
   perl,
   pkg-config,
   protobuf,
+  zlib,
 }: let
   version = "0.1.0";
+  repoRoot = ../../..;
+  repoRootString = toString repoRoot;
   src = builtins.path {
-    path = ../../../crates;
-    name = "aos-crates-src";
-    filter = path: type: let
+    path = repoRoot;
+    name = "aos-hub-workspace-src";
+    filter = path: _type: let
+      pathString = toString path;
       base = baseNameOf path;
     in
-      base != "target" && base != ".git";
+      base
+      != "target"
+      && base != ".git"
+      && (
+        pathString
+        == repoRootString
+        || lib.hasPrefix "${repoRootString}/crates" pathString
+        || pathString == "${repoRootString}/docs"
+        || pathString == "${repoRootString}/docs/rfcs"
+        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
+      );
   };
 in
   mkCargoPackage {
     pname = "aos-hub";
     inherit version src;
 
-    # Build only the hub binary out of the workspace.
-    cargoFlags = "-p aos-hub";
+    # Build the hub package's control-plane and fixed egress binaries.
+    # PostgreSQL is the strongly-consistent shared nonce store for replicated
+    # aos-hub-egress deployments. SQLite remains available for a singleton.
+    cargoFlags = "-p aos-hub --features postgres";
 
     # The workspace's vendored dependency set. This hash is the
     # `fetchCargoDeps` fixed-output over the whole workspace Cargo.lock; it is
@@ -45,15 +62,17 @@ in
     # gained `hmac` for the phase-4 webhook HMAC signatures).
     cargoDeps = fetchCargoDeps {
       inherit src;
-      hash = "sha256-FOPwUc3isoWPEWq+/wsR5Jni2ecaW9AUU7EuHSMBq24=";
+      sourceRoot = "source/crates";
+      hash = "sha256-ULD9g6d87886b8O6/sGCMktquGwaUAyf+DLHUrFzod0=";
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
-    # rusqlite is built with the `bundled` feature (its own sqlite amalgamation),
-    # so the only runtime native library is openssl.
-    runtimeDeps = [openssl];
+    # rusqlite is built with the `bundled` feature (its own sqlite amalgamation).
+    # libgit2 still links zlib for compressed Git objects.
+    runtimeDeps = [openssl zlib];
 
     preBuild = ''
+      cd crates
       export OPENSSL_DIR="${openssl}"
       export OPENSSL_LIB_DIR="${openssl}/lib"
       export OPENSSL_INCLUDE_DIR="${openssl}/include"
