@@ -22,11 +22,12 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use crucible_device::block::ResolvedBlockFaultDirective;
+use crucible::model::ContentHash;
+use crucible_device::block::{BlockDurabilityConfig, ResolvedBlockFaultDirective};
 
 use super::block_io_servicer::{
     QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicer,
-    QemuLiveBlockIoServicerError,
+    QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError,
 };
 
 /// Capacity of the owner-to-worker command queue.
@@ -87,6 +88,48 @@ impl QemuLiveBlockHostWorkPool {
         icount_shift: u8,
         size_bytes: u64,
     ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
+        Self::from_shmem_fd_with_optional_storage_config(
+            shmem_fd,
+            region_len,
+            vm_slot,
+            icount_shift,
+            size_bytes,
+            None,
+        )
+    }
+
+    /// Starts a worker with exact admitted storage durability and mandatory directives.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::from_shmem_fd`], including a servicer
+    /// error when `config` is malformed or differs from `size_bytes`.
+    pub fn from_shmem_fd_with_storage_config(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        icount_shift: u8,
+        size_bytes: u64,
+        config: BlockDurabilityConfig,
+    ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
+        Self::from_shmem_fd_with_optional_storage_config(
+            shmem_fd,
+            region_len,
+            vm_slot,
+            icount_shift,
+            size_bytes,
+            Some(config),
+        )
+    }
+
+    fn from_shmem_fd_with_optional_storage_config(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        vm_slot: u32,
+        icount_shift: u8,
+        size_bytes: u64,
+        config: Option<BlockDurabilityConfig>,
+    ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
         let owned_fd = shmem_fd
             .try_clone_to_owned()
             .map_err(|source| QemuLiveBlockHostWorkPoolError::CloneShmemFd { source })?;
@@ -102,6 +145,70 @@ impl QemuLiveBlockHostWorkPool {
                     vm_slot,
                     icount_shift,
                     size_bytes,
+                )
+                .and_then(|mut servicer| {
+                    if let Some(config) = config {
+                        servicer.configure_storage_faults(config, true)?;
+                    }
+                    Ok(servicer)
+                });
+                match servicer {
+                    Ok(servicer) => {
+                        let _ = ready_tx.send(Ok(()));
+                        worker_loop(servicer, &command_rx, &reply_tx);
+                    }
+                    Err(source) => {
+                        let _ = ready_tx.send(Err(source));
+                    }
+                }
+            })
+            .map_err(|source| QemuLiveBlockHostWorkPoolError::SpawnWorker { source })?;
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Self {
+                commands,
+                replies,
+                worker: Some(worker),
+                work_in_flight: false,
+                pinned: None,
+                in_flight_pin: None,
+            }),
+            Ok(Err(source)) => {
+                let _ = worker.join();
+                Err(QemuLiveBlockHostWorkPoolError::Servicer { source })
+            }
+            Err(_) => {
+                let _ = worker.join();
+                Err(QemuLiveBlockHostWorkPoolError::WorkerDisconnected)
+            }
+        }
+    }
+
+    /// Restores a worker-owned device continuation onto its paired region.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same descriptor, thread, and servicer errors as
+    /// [`Self::from_shmem_fd`].
+    pub fn restore_from_shmem_fd(
+        shmem_fd: BorrowedFd<'_>,
+        region_len: u64,
+        expected_execution_binding: ContentHash,
+        checkpoint: QemuLiveBlockIoServicerCheckpoint,
+    ) -> Result<Self, QemuLiveBlockHostWorkPoolError> {
+        let owned_fd = shmem_fd
+            .try_clone_to_owned()
+            .map_err(|source| QemuLiveBlockHostWorkPoolError::CloneShmemFd { source })?;
+        let (commands, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
+        let (reply_tx, replies) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let worker = thread::Builder::new()
+            .name(String::from("crucible-block-host-work"))
+            .spawn(move || {
+                let servicer = QemuLiveBlockIoServicer::restore_from_shmem_fd(
+                    owned_fd.as_fd(),
+                    region_len,
+                    expected_execution_binding,
+                    checkpoint,
                 );
                 match servicer {
                     Ok(servicer) => {
@@ -165,6 +272,9 @@ impl QemuLiveBlockHostWorkPool {
                 Ok(pin)
             }
             WorkerReply::Serviced(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+                expected: "pin reply",
+            }),
+            WorkerReply::Checkpoint(_) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "pin reply",
             }),
         }
@@ -258,6 +368,9 @@ impl QemuLiveBlockHostWorkPool {
             Ok(WorkerReply::Pinned(_)) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
                 expected: "service reply",
             }),
+            Ok(WorkerReply::Checkpoint(_)) => Err(QemuLiveBlockHostWorkPoolError::Protocol {
+                expected: "service reply",
+            }),
             Err(TryRecvError::Empty) => Ok(None),
             Err(TryRecvError::Disconnected) => {
                 Err(QemuLiveBlockHostWorkPoolError::WorkerDisconnected)
@@ -269,6 +382,46 @@ impl QemuLiveBlockHostWorkPool {
     #[must_use]
     pub const fn work_in_flight(&self) -> bool {
         self.work_in_flight
+    }
+
+    /// Captures the complete worker-owned block-device continuation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while work is in flight, when a request pin has not yet
+    /// been dispatched, or when the worker disconnects or violates its protocol.
+    pub fn checkpoint(
+        &mut self,
+        execution_binding: ContentHash,
+    ) -> Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockHostWorkPoolError> {
+        if self.work_in_flight {
+            return Err(QemuLiveBlockHostWorkPoolError::WorkAlreadyInFlight);
+        }
+        if self
+            .pinned
+            .as_ref()
+            .is_some_and(|pin| pin.observed.is_some())
+        {
+            return Err(QemuLiveBlockHostWorkPoolError::CheckpointWithPinnedRequest);
+        }
+        self.pinned = None;
+        self.commands
+            .send(WorkerCommand::Checkpoint { execution_binding })
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?;
+        match self
+            .replies
+            .recv()
+            .map_err(|_| QemuLiveBlockHostWorkPoolError::WorkerDisconnected)?
+        {
+            WorkerReply::Checkpoint(result) => {
+                result.map_err(|source| QemuLiveBlockHostWorkPoolError::Servicer { source })
+            }
+            WorkerReply::Pinned(_) | WorkerReply::Serviced(_) => {
+                Err(QemuLiveBlockHostWorkPoolError::Protocol {
+                    expected: "checkpoint reply",
+                })
+            }
+        }
     }
 }
 
@@ -312,6 +465,9 @@ impl Drop for QemuLiveBlockHostWorkPool {
 
 enum WorkerCommand {
     Pin,
+    Checkpoint {
+        execution_binding: ContentHash,
+    },
     Service {
         guest_icount: u64,
         delay: QemuDeviceHostWorkDelay,
@@ -323,6 +479,7 @@ enum WorkerCommand {
 enum WorkerReply {
     Pinned(Result<QemuLiveBlockIoHostWorkPin, QemuLiveBlockIoServicerError>),
     Serviced(Result<QemuLiveBlockIoServiceStep, QemuLiveBlockIoServicerError>),
+    Checkpoint(Result<QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError>),
 }
 
 fn worker_loop(
@@ -333,6 +490,9 @@ fn worker_loop(
     while let Ok(command) = commands.recv() {
         let reply = match command {
             WorkerCommand::Pin => WorkerReply::Pinned(servicer.pin_next_request_completion()),
+            WorkerCommand::Checkpoint { execution_binding } => {
+                WorkerReply::Checkpoint(servicer.checkpoint(execution_binding))
+            }
             WorkerCommand::Service {
                 guest_icount,
                 delay,
@@ -384,6 +544,9 @@ pub enum QemuLiveBlockHostWorkPoolError {
     /// COMPUTE was dispatched without first pinning the request coordinate.
     #[error("block host work dispatch requires a preceding completion pin")]
     DispatchWithoutPin,
+    /// A checkpoint was requested after pinning but before dispatching the request.
+    #[error("block host work cannot checkpoint with an undispatched pinned request")]
+    CheckpointWithPinnedRequest,
     /// A directive was supplied while the pinned ring head was empty.
     #[error("a storage fault directive requires a pinned block request")]
     DirectiveWithoutRequest,
@@ -421,6 +584,7 @@ mod tests {
         QemuLiveBlockIoHostWorkPin {
             observed: Some(
                 super::super::block_io_servicer::QemuLiveBlockIoObservedRequest {
+                    request_sequence: 0,
                     request_icount: 10,
                     completion_icount: 20,
                     request: Some(request),

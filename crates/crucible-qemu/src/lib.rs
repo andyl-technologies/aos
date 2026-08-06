@@ -281,7 +281,10 @@ pub use spawn::{
     QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
     spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
 };
-pub use storage_fault_resolver::{StorageFaultResolutionError, resolve_block_fault_directive};
+pub use storage_fault_resolver::{
+    StorageFaultResolutionContext, StorageFaultResolutionError, block_durability_config,
+    block_request_fault_opportunity, resolve_block_fault_directive,
+};
 #[cfg(target_os = "linux")]
 pub use supervision::{
     BlockIoAdvanceOutcome, BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, BlockNodeOutcome,
@@ -293,13 +296,14 @@ pub use supervision::{
     QemuLive9pIoServicerError, QemuLiveBlockHostWorkPool, QemuLiveBlockHostWorkPoolError,
     QemuLiveBlockIoGateConfig, QemuLiveBlockIoGateError, QemuLiveBlockIoHostWorkPin,
     QemuLiveBlockIoObservedRequest, QemuLiveBlockIoReport, QemuLiveBlockIoServiceStep,
-    QemuLiveBlockIoServicer, QemuLiveBlockIoServicerError, QemuLiveBlockNodeGateConfig,
-    QemuLiveBlockNodeGateError, QemuLiveBlockNodeReport, QemuLiveHostIoRuntime,
-    QemuLiveHostIoRuntimeError, QemuLiveHostParallelGateError, QemuLiveHostParallelReport,
-    QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError, QemuLiveNetworkIoReport,
-    QemuLiveNetworkIoServicer, QemuLiveNetworkIoServicerError, QemuLiveNodeStepGateConfig,
-    QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum, QemuLiveNodeStepReport,
-    QemuLiveNodeStepSchedule, launch_qemu_live_node, launch_qemu_live_node_restored,
-    run_qemu_live_9p_io_gate, run_qemu_live_block_io_gate, run_qemu_live_block_node_gate,
-    run_qemu_live_host_parallel_gate, run_qemu_live_network_io_gate, run_qemu_live_node_step_gate,
+    QemuLiveBlockIoServicer, QemuLiveBlockIoServicerCheckpoint, QemuLiveBlockIoServicerError,
+    QemuLiveBlockNodeGateConfig, QemuLiveBlockNodeGateError, QemuLiveBlockNodeReport,
+    QemuLiveHostIoRuntime, QemuLiveHostIoRuntimeError, QemuLiveHostParallelGateError,
+    QemuLiveHostParallelReport, QemuLiveNetworkIoGateConfig, QemuLiveNetworkIoGateError,
+    QemuLiveNetworkIoReport, QemuLiveNetworkIoServicer, QemuLiveNetworkIoServicerError,
+    QemuLiveNodeStepGateConfig, QemuLiveNodeStepGateError, QemuLiveNodeStepQuantum,
+    QemuLiveNodeStepReport, QemuLiveNodeStepSchedule, launch_qemu_live_node,
+    launch_qemu_live_node_restored, run_qemu_live_9p_io_gate, run_qemu_live_block_io_gate,
+    run_qemu_live_block_node_gate, run_qemu_live_host_parallel_gate, run_qemu_live_network_io_gate,
+    run_qemu_live_node_step_gate,
 };
