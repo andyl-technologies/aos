@@ -1117,6 +1117,9 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
             .inflight_len(),
         1
     );
+    let before_digest = scheduler
+        .network_continuation_digest()
+        .unwrap_or_else(|error| panic!("network state should encode: {error}"));
 
     let first = scheduler
         .drop_network_inflight_for_route(&source, &destination)
@@ -1128,6 +1131,9 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
     assert_eq!(first.link, link_id);
     assert_eq!(first.direction, direction);
     assert_eq!(first.frame_count, 1);
+    assert_eq!(first.frames.len(), 1);
+    assert_eq!(first.frames[0].frame_id, 7);
+    assert_eq!(first.frames[0].payload, vec![1, 2, 3]);
     assert_ne!(first.evidence, second.evidence);
     assert_eq!(second.frame_count, 0);
     assert_eq!(
@@ -1137,6 +1143,12 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
         0
     );
     assert!(!scheduler.device_horizons.contains_key(&destination));
+    assert_ne!(
+        before_digest,
+        scheduler
+            .network_continuation_digest()
+            .unwrap_or_else(|error| panic!("dropped network state should encode: {error}"))
+    );
 }
 
 fn test_scenario_node(

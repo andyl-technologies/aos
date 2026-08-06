@@ -141,6 +141,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, NodeRecordingBackend>
         _loop_impl: &mut SingleScheduler,
         _backend: &mut NodeRecordingBackend,
         frontier: VirtualTime,
+        _pending_outputs: &mut Vec<BackendNetworkOutput>,
         outputs: &mut Vec<BackendNetworkOutput>,
     ) -> Result<Vec<crucible::SchedulerEventLogAppend>, SchedulerError> {
         let output_count = outputs.len();

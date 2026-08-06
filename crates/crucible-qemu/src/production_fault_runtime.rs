@@ -30,6 +30,8 @@ pub struct ProductionFaultRuntimeCheckpoint {
     qemu_fingerprints: BTreeMap<NodeId, ContentHash>,
     /// Per-node fault-command continuation paired with the QEMU snapshots.
     qemu_fault_sequences: BTreeMap<NodeId, u64>,
+    /// Scheduler-owned network queues, pending outputs, and transition ledger.
+    network_state: ContentHash,
     /// Aggregate identity binding every continuation component to the plan.
     identity: ContentHash,
 }
@@ -130,6 +132,7 @@ impl ProductionFaultRuntime {
                 &checkpoint.host,
                 &checkpoint.qemu_fingerprints,
                 &checkpoint.qemu_fault_sequences,
+                checkpoint.network_state,
             )
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
@@ -264,14 +267,44 @@ impl ProductionFaultRuntime {
             &host,
             &qemu_fingerprints,
             &qemu_fault_sequences,
+            ContentHash::default(),
         );
         Ok(ProductionFaultRuntimeCheckpoint {
             runtime,
             host,
             qemu_fingerprints,
             qemu_fault_sequences,
+            network_state: ContentHash::default(),
             identity,
         })
+    }
+
+    /// Captures the complete continuation with scheduler-owned network state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] under the same conditions as
+    /// [`Self::checkpoint`].
+    pub fn checkpoint_with_network_state(
+        &self,
+        nodes: &mut QemuNodeSet,
+        network_state: ContentHash,
+    ) -> Result<ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError> {
+        let mut checkpoint = self.checkpoint(nodes)?;
+        let plan = self.runtime.as_ref().map_or_else(
+            || FaultSignalPlan::empty().id(),
+            |runtime| runtime.plan().id(),
+        );
+        checkpoint.network_state = network_state;
+        checkpoint.identity = production_checkpoint_identity(
+            plan,
+            checkpoint.runtime.as_ref(),
+            &checkpoint.host,
+            &checkpoint.qemu_fingerprints,
+            &checkpoint.qemu_fault_sequences,
+            network_state,
+        );
+        Ok(checkpoint)
     }
 
     /// Returns committed typed host actions consumed by network and storage.
@@ -288,6 +321,13 @@ impl ProductionFaultRuntime {
     pub fn drain_host_impulses(&mut self) -> Vec<crucible::model::ResolvedBindingAction> {
         self.host.state_mut().drain_impulses()
     }
+
+    /// Permanently poisons a continuation after coupled adapter visibility becomes ambiguous.
+    pub fn poison(&mut self) {
+        if let Some(runtime) = &mut self.runtime {
+            runtime.poison();
+        }
+    }
 }
 
 fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), ProductionFaultRuntimeError> {
@@ -302,6 +342,63 @@ fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), Production
         else {
             continue;
         };
+        if binding.phases().len() != 1
+            || !binding
+                .phases()
+                .contains(&crucible::model::FaultPhase::Admit)
+        {
+            return Err(
+                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
+                    binding: binding.id().clone(),
+                    parameter: "network.availability currently requires the admit phase",
+                },
+            );
+        }
+        if binding
+            .selector()
+            .resolved()
+            .targets()
+            .iter()
+            .any(|target| {
+                matches!(
+                    target.kind(),
+                    crucible::model::FaultTargetKind::NetworkQueue
+                        | crucible::model::FaultTargetKind::NetworkPath
+                        | crucible::model::FaultTargetKind::NetworkAttachment
+                        | crucible::model::FaultTargetKind::NetworkContact
+                )
+            })
+        {
+            return Err(
+                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
+                    binding: binding.id().clone(),
+                    parameter: "network.availability target lacks an exact admitted route stage",
+                },
+            );
+        }
+        if matches!(
+            binding.effect().specification(),
+            crucible::model::EffectSpecification::Network(
+                NetworkEffectSpecification::Availability {
+                    state: crucible::model::NetworkAvailabilityState::ReceiveOnly
+                        | crucible::model::NetworkAvailabilityState::TransmitOnly,
+                    ..
+                }
+            )
+        ) && binding
+            .selector()
+            .resolved()
+            .targets()
+            .iter()
+            .any(|target| target.kind() != crucible::model::FaultTargetKind::NetworkInterface)
+        {
+            return Err(
+                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
+                    binding: binding.id().clone(),
+                    parameter: "receive_only/transmit_only availability requires interface targets",
+                },
+            );
+        }
         if *queued_policy != NetworkInFlightPolicy::Drop {
             return Err(
                 ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
@@ -328,10 +425,12 @@ fn production_checkpoint_identity(
     host: &HostFaultActionState,
     qemu_fingerprints: &BTreeMap<NodeId, ContentHash>,
     qemu_fault_sequences: &BTreeMap<NodeId, u64>,
+    network_state: ContentHash,
 ) -> ContentHash {
     let mut material = Vec::new();
     material.extend_from_slice(&plan.bytes);
     material.extend_from_slice(&host.digest().bytes);
+    material.extend_from_slice(&network_state.bytes);
     if let Some(runtime) = runtime {
         material.extend_from_slice(&runtime.binding_runtime.evaluator.content().bytes);
         material.push(u8::from(runtime.poisoned));

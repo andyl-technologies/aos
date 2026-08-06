@@ -23,6 +23,7 @@ pub trait BackendNetworkOutputInterceptor<L, B> {
         loop_impl: &mut L,
         backend: &mut B,
         frontier: VirtualTime,
+        pending_outputs: &mut Vec<BackendNetworkOutput>,
         outputs: &mut Vec<BackendNetworkOutput>,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError>;
 }
@@ -37,6 +38,7 @@ impl<L, B> BackendNetworkOutputInterceptor<L, B> for NoopBackendNetworkOutputInt
         _loop_impl: &mut L,
         _backend: &mut B,
         _frontier: VirtualTime,
+        _pending_outputs: &mut Vec<BackendNetworkOutput>,
         _outputs: &mut Vec<BackendNetworkOutput>,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
         Ok(Vec::new())
@@ -148,6 +150,23 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         )
     }
 
+    /// Returns every continuation component participating in network transitions.
+    ///
+    /// The pending-output queue is included because an availability transition
+    /// can apply a queued-operation policy before those future-timestamp frames
+    /// reach the ordinary pre-routing interceptor.
+    #[must_use]
+    pub fn network_transaction_parts_mut(
+        &mut self,
+    ) -> (&mut L, &mut B, &mut I, &mut Vec<BackendNetworkOutput>) {
+        (
+            &mut self.loop_impl,
+            &mut self.backend,
+            &mut self.network_output_interceptor,
+            &mut self.pending_network_outputs,
+        )
+    }
+
     /// Consumes the adapter and returns its parts.
     #[must_use]
     pub fn into_parts(self) -> (L, B) {
@@ -246,6 +265,7 @@ where
                 &mut self.loop_impl,
                 &mut self.backend,
                 outcome.frontier,
+                &mut self.pending_network_outputs,
                 &mut network_outputs,
             )?;
             for append in appends {

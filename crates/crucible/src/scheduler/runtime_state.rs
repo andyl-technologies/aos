@@ -261,8 +261,25 @@ pub struct NetworkInFlightDropEvidence {
     pub direction: NetworkLinkDirection,
     /// Number of removed frames.
     pub frame_count: u64,
+    /// Complete removed-frame records in deterministic delivery order.
+    pub frames: Vec<NetworkDroppedFrameEvidence>,
     /// Digest of every removed delivery key, frame identity, and payload.
     pub evidence: ContentHash,
+}
+
+/// One recoverable frame record removed by an availability transition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkDroppedFrameEvidence {
+    /// Consumer icount at which the frame would have become visible.
+    pub delivery_icount: u64,
+    /// Producer slot in the deterministic transport ABI.
+    pub source_slot: u32,
+    /// Per-producer delivery sequence.
+    pub delivery_sequence: u32,
+    /// Correlation identity assigned at guest transmission.
+    pub frame_id: u32,
+    /// Exact modeled payload at the instant it was removed.
+    pub payload: Vec<u8>,
 }
 
 impl WorldNetworkLinkRuntime {
