@@ -389,7 +389,7 @@ impl World {
             fault_topology_id.to_hex()
         );
         Ok(Self {
-            id: ContentHash::from_canonical_material("crucible.model.world.v3", &material),
+            id: ContentHash::from_canonical_material("crucible.model.world.v4", &material),
             topology_nodes,
             nodes,
             links,
@@ -632,7 +632,7 @@ impl World {
     /// Serializes this world component as compact binary.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
-        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC_V3);
+        let mut writer = ScenarioBinaryWriter::new(WORLD_BINARY_MAGIC_V4);
         write_world_binary(self, &mut writer);
         writer.finish()
     }
@@ -645,7 +645,7 @@ impl World {
     /// or an id mismatch, or a world validation error for invalid topology,
     /// launch fields, ready points, or workload scenario-parameter delivery.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC_V3)?;
+        let mut reader = ScenarioBinaryReader::new(bytes, WORLD_BINARY_MAGIC_V4)?;
         let world = read_world_binary(&mut reader)?;
         reader.finish()?;
         Ok(world)

@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
 
 use super::*;
 use crate::model::{DagStore, DagStoreError};
@@ -300,6 +301,51 @@ impl SignalArtifactProvider for DagSignalArtifactProvider<'_> {
                 node.id.clone(),
             )),
         }
+    }
+}
+
+/// Production artifact provider that owns a shared content-addressed store.
+///
+/// This form is suitable for long-lived scheduler continuations, while
+/// [`DagSignalArtifactProvider`] remains convenient for scoped evaluation.
+#[derive(Clone)]
+pub struct OwnedDagSignalArtifactProvider {
+    store: Arc<dyn DagStore>,
+}
+
+impl OwnedDagSignalArtifactProvider {
+    /// Wraps a shared production content-addressed store.
+    #[must_use]
+    pub fn new(store: Arc<dyn DagStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl SignalArtifactProvider for OwnedDagSignalArtifactProvider {
+    fn inverse_cdf_table(
+        &self,
+        content: &ContentHash,
+    ) -> Result<InverseCdfTable, SignalEvaluationError> {
+        DagSignalArtifactProvider::new(self.store.as_ref()).inverse_cdf_table(content)
+    }
+
+    fn evaluate_artifact_source(
+        &self,
+        node: &SignalNode,
+        source: &SignalSourceSpecification,
+        coordinate: &SignalCoordinate,
+        same_coordinate_sequence: u64,
+        choice: &SignalChoiceContext,
+        inputs: &[EvaluatedSignal],
+    ) -> Result<EvaluatedSignal, SignalEvaluationError> {
+        DagSignalArtifactProvider::new(self.store.as_ref()).evaluate_artifact_source(
+            node,
+            source,
+            coordinate,
+            same_coordinate_sequence,
+            choice,
+            inputs,
+        )
     }
 }
 
