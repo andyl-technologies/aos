@@ -86,6 +86,7 @@ struct ProductionVmDebugRuntimeEvidence {
     scheduler: SchedulerState,
     node_icounts: BTreeMap<NodeId, Icount>,
     fingerprints: BTreeMap<NodeId, FingerprintSample>,
+    graph_runtimes: Vec<RuntimeState>,
     runtime: Option<RuntimeState>,
 }
 

@@ -999,6 +999,7 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::InvalidEngineState { .. }
         | SessionError::DebugAttachRequired { .. }
         | SessionError::DebugNonCanonicalBranchRequired { .. }
+        | SessionError::GuestIntrospectionNotAuthorized { .. }
         | SessionError::DebugHistoryUnavailable { .. } => CommandRejectionKind::InvalidState,
         SessionError::BreakpointNotFound { .. } => CommandRejectionKind::NotFound,
         SessionError::BreakpointConditionPrefix { .. } => CommandRejectionKind::InvalidArgument,

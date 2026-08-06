@@ -194,9 +194,17 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
 
     fn bind_debug_runtime_evidence(
         &mut self,
+        configuration: &Configuration,
         runtime: &RuntimeState,
-    ) -> Result<(), SchedulerError> {
-        self.bind_latest_debug_runtime_evidence(runtime)
+    ) -> Result<RuntimeState, SchedulerError> {
+        self.bind_latest_debug_runtime_evidence(configuration, runtime)
+    }
+
+    fn resolve_debug_runtime_evidence(
+        &self,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        self.resolve_recorded_debug_runtime_evidence(runtime)
     }
 
     fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
@@ -228,6 +236,24 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         control: Vec<ControlOperation>,
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         self.inner.apply_control_at_boundary(control)
+    }
+
+    fn send_guest_introspection(
+        &mut self,
+        node: NodeId,
+        record: crucible_protocol::guest_introspection::GuestIntrospectionRecord,
+    ) -> Result<(), SchedulerError> {
+        self.inner.send_guest_introspection(node, record)
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        node: NodeId,
+    ) -> Result<
+        Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+        SchedulerError,
+    > {
+        self.inner.receive_guest_introspection(node)
     }
 
     fn open_gdbstub(

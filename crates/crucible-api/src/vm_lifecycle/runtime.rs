@@ -830,9 +830,14 @@ impl ProductionVmLifecycleLoop {
             scheduler: self.inner.loop_impl().materialized_scheduler_state(),
             node_icounts,
             fingerprints,
+            graph_runtimes: Vec::new(),
             runtime: None,
         };
-        if self.debug_runtime_evidence.last() != Some(&evidence) {
+        if self
+            .debug_runtime_evidence
+            .last()
+            .is_none_or(|last| !last.same_sample(&evidence))
+        {
             self.debug_runtime_evidence.push(evidence);
         }
         Ok(())
@@ -840,31 +845,72 @@ impl ProductionVmLifecycleLoop {
 
     pub(super) fn bind_latest_debug_runtime_evidence(
         &mut self,
+        configuration: &Configuration,
         runtime: &RuntimeState,
-    ) -> Result<(), SchedulerError> {
+    ) -> Result<RuntimeState, SchedulerError> {
         if self.config.debug.is_none() {
-            return Ok(());
+            return Ok(runtime.clone());
         }
-        let evidence = self.debug_runtime_evidence.last_mut().ok_or_else(|| {
-            SchedulerError::BoundaryViolation {
+        let reduced =
+            crucible::reduce(&configuration.def, &configuration.schedule).map_err(|error| {
+                SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "reduce graph runtime before debugger evidence binding: {error}"
+                    ),
+                }
+            })?;
+        let latest_index = self
+            .debug_runtime_evidence
+            .len()
+            .checked_sub(1)
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from(
                     "production debugger runtime has no sampled boundary evidence to bind",
                 ),
+            })?;
+        let evidence = &self.debug_runtime_evidence[latest_index];
+        evidence.validate_graph_runtime(configuration.id(), reduced.id, runtime)?;
+        let bound_runtime = evidence.bind_graph_runtime(runtime);
+        for (index, recorded) in self.debug_runtime_evidence.iter_mut().enumerate() {
+            if index != latest_index {
+                recorded
+                    .graph_runtimes
+                    .retain(|candidate| candidate != runtime);
             }
-        })?;
-        if evidence.configuration != runtime.configuration
-            || evidence.event_log != runtime.event_log
-            || evidence.scheduler != runtime.scheduler
-            || evidence.node_icounts != runtime.node_icounts
-        {
-            return Err(SchedulerError::BoundaryViolation {
-                message: String::from(
-                    "graph runtime identity does not match the latest production debugger boundary",
-                ),
-            });
         }
-        evidence.runtime = Some(runtime.clone());
-        Ok(())
+        let evidence = &mut self.debug_runtime_evidence[latest_index];
+        if !evidence.graph_runtimes.contains(runtime) {
+            evidence.graph_runtimes.push(runtime.clone());
+        }
+        evidence.runtime = Some(bound_runtime.clone());
+        Ok(bound_runtime)
+    }
+
+    pub(super) fn resolve_recorded_debug_runtime_evidence(
+        &self,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        if self.config.debug.is_none() {
+            return Ok(runtime.clone());
+        }
+        let evidence = self
+            .debug_runtime_evidence
+            .iter()
+            .rev()
+            .find(|evidence| evidence.graph_runtimes.contains(runtime))
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "graph debug target has no matching production runtime evidence",
+                ),
+            })?;
+        evidence
+            .runtime
+            .clone()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production runtime evidence was not bound to graph materialization",
+                ),
+            })
     }
 
     fn app_random_continuation_config(
@@ -973,12 +1019,147 @@ impl ProductionVmLifecycleLoop {
 }
 
 impl ProductionVmDebugRuntimeEvidence {
+    fn same_sample(&self, other: &Self) -> bool {
+        self.configuration == other.configuration
+            && self.event_log == other.event_log
+            && self.scheduler == other.scheduler
+            && self.node_icounts == other.node_icounts
+            && self.fingerprints == other.fingerprints
+    }
+
+    fn bind_graph_runtime(&self, runtime: &RuntimeState) -> RuntimeState {
+        let mut bound = runtime.clone();
+        bound.configuration = self.configuration;
+        bound.event_log = self.event_log;
+        bound.scheduler = self.scheduler.clone();
+        bound.node_icounts = self.node_icounts.clone();
+        bound
+    }
+
+    fn validate_graph_runtime(
+        &self,
+        configuration: ContentHash,
+        reduced_state: ContentHash,
+        runtime: &RuntimeState,
+    ) -> Result<(), SchedulerError> {
+        let graph_nodes = runtime
+            .node_icounts
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        let evidence_nodes = self
+            .node_icounts
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        let blob_nodes = runtime
+            .node_blobs
+            .keys()
+            .collect::<std::collections::BTreeSet<_>>();
+        let graph_nodes_valid = (graph_nodes.is_empty() && blob_nodes.is_empty())
+            || (graph_nodes == evidence_nodes && blob_nodes == evidence_nodes);
+        if self.configuration == configuration
+            && runtime.configuration == configuration
+            && runtime.id == reduced_state
+            && graph_nodes_valid
+        {
+            return Ok(());
+        }
+        Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "graph runtime identity does not match the latest production debugger boundary: boundary_configuration_match={} runtime_configuration_match={} reduced_state_match={} node_sets_match={}",
+                self.configuration == configuration,
+                runtime.configuration == configuration,
+                runtime.id == reduced_state,
+                graph_nodes_valid,
+            ),
+        })
+    }
+
     fn matches_target(&self, request: &DebugRuntimeRepositionRequest) -> bool {
         self.configuration == request.target.id()
             && self.event_log == request.target_runtime.event_log
             && self.scheduler == request.target_runtime.scheduler
             && self.node_icounts == request.target_runtime.node_icounts
             && self.runtime.as_ref() == Some(&request.target_runtime)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hash(domain: &str) -> ContentHash {
+        ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
+    }
+
+    fn node() -> NodeId {
+        NodeId {
+            name: String::from("vm-a"),
+        }
+    }
+
+    fn graph_runtime(configuration: ContentHash, reduced_state: ContentHash) -> RuntimeState {
+        RuntimeState {
+            id: reduced_state,
+            configuration,
+            node_blobs: BTreeMap::new(),
+            node_icounts: BTreeMap::new(),
+            scheduler: SchedulerState::default(),
+            event_log: EventLogOffset::default(),
+        }
+    }
+
+    fn evidence(configuration: ContentHash) -> ProductionVmDebugRuntimeEvidence {
+        ProductionVmDebugRuntimeEvidence {
+            configuration,
+            event_log: EventLogOffset::new(hash("event-log"), 3, 7),
+            scheduler: SchedulerState::default(),
+            node_icounts: BTreeMap::from([(node(), Icount { retired: 41 })]),
+            fingerprints: BTreeMap::new(),
+            graph_runtimes: Vec::new(),
+            runtime: None,
+        }
+    }
+
+    #[test]
+    fn production_debug_evidence_hydrates_only_backend_owned_runtime_fields() {
+        let configuration = hash("configuration");
+        let reduced_state = hash("reduced-state");
+        let mut graph = graph_runtime(configuration, reduced_state);
+        graph
+            .node_blobs
+            .insert(node(), crucible::NodeBlobRef::baked(hash("blob")));
+        graph.node_icounts.insert(node(), Icount { retired: 5 });
+        let evidence = evidence(configuration);
+
+        if let Err(error) = evidence.validate_graph_runtime(configuration, reduced_state, &graph) {
+            panic!("complete graph identity should validate: {error}");
+        }
+        let bound = evidence.bind_graph_runtime(&graph);
+        assert_eq!(bound.id, graph.id);
+        assert_eq!(bound.node_blobs, graph.node_blobs);
+        assert_eq!(bound.event_log, evidence.event_log);
+        assert_eq!(bound.node_icounts, evidence.node_icounts);
+    }
+
+    #[test]
+    fn production_debug_evidence_rejects_forged_or_partial_graph_identity() {
+        let configuration = hash("configuration");
+        let reduced_state = hash("reduced-state");
+        let evidence = evidence(configuration);
+        let mut forged = graph_runtime(configuration, hash("forged-state"));
+        assert!(
+            evidence
+                .validate_graph_runtime(configuration, reduced_state, &forged)
+                .is_err()
+        );
+
+        forged.id = reduced_state;
+        forged.node_icounts.insert(node(), Icount { retired: 5 });
+        assert!(
+            evidence
+                .validate_graph_runtime(configuration, reduced_state, &forged)
+                .is_err()
+        );
     }
 }
 

@@ -121,6 +121,12 @@ pub enum SessionError {
         /// Operation blocked until branch metadata is recorded.
         operation: &'static str,
     },
+    /// Guest introspection targeted a node without explicit white-box opt-in.
+    #[error("guest introspection is not authorized for node `{node}`")]
+    GuestIntrospectionNotAuthorized {
+        /// Node whose authored policy did not enable white-box access.
+        node: String,
+    },
     /// A resumed session does not carry event history before its checkpoint boundary.
     #[error(
         "debug operation {operation} reached the resumed event-history floor at sequence {floor}"
@@ -207,6 +213,7 @@ pub(super) fn is_recoverable_command_rejection(
         | SessionError::BreakpointNotFound { .. }
         | SessionError::DebugAttachRequired { .. }
         | SessionError::DebugNonCanonicalBranchRequired { .. }
+        | SessionError::GuestIntrospectionNotAuthorized { .. }
         | SessionError::DebugHistoryUnavailable { .. } => true,
         SessionError::Engine(error) => is_recoverable_engine_rejection(error),
         SessionError::Scheduler(error) => is_recoverable_scheduler_rejection(error),

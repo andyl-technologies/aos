@@ -1131,6 +1131,7 @@ pub(super) fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'sta
         (CliSubcommand::Replay, vec!["replay", "case.crucible"]),
         (CliSubcommand::Search, vec!["search", TEST_SCENARIO]),
         (CliSubcommand::Fuzz, vec!["fuzz", "builtin:fault-campaign"]),
+        (CliSubcommand::Debug, vec!["debug", "case.crucible"]),
         (
             CliSubcommand::Serve,
             vec!["serve", "--listen", "127.0.0.1:9000"],

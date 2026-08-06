@@ -48,7 +48,8 @@ async fn guest_response_broker_does_not_lose_other_channel_records() {
         GuestBrokerLoop {
             responses: VecDeque::from([response(2, b'b'), response(1, b'a')]),
         },
-    );
+    )
+    .with_white_box_policies([(node_id("node-a"), WhiteBoxPolicy::Enabled)]);
     engine
         .apply_command(SessionCommand::Start)
         .unwrap_or_else(|error| panic!("engine must start: {error}"));
@@ -612,7 +613,10 @@ async fn rfc_command_payloads_return_replies_through_engine_boundary() {
 #[tokio::test]
 async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     let (root, first, second, graph) = debug_time_travel_fixture();
-    let mut engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    let mut engine = Engine::new(second.clone(), graph, DebugGdbLoop).with_white_box_policies([
+        (node_id("guest-a"), WhiteBoxPolicy::Enabled),
+        (node_id("node-a"), WhiteBoxPolicy::Enabled),
+    ]);
 
     if let Err(error) = engine.apply_command(SessionCommand::Start) {
         panic!("debug fixture should instantiate: {error}");
@@ -779,6 +783,27 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
         branch_count,
         "malformed same-length prefix must not mutate graph branch metadata"
     );
+    let unauthorized_record = GuestIntrospectionRecord::new(
+        1,
+        crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
+    )
+    .unwrap_or_else(|error| panic!("guest-introspection fixture must be valid: {error}"));
+    let unauthorized_error = engine
+        .apply_command_with_event_log(
+            SessionCommand::GuestIntrospection {
+                node: node_id("guest-disabled"),
+                channel_id: 1,
+                request: Some(unauthorized_record),
+                reply: CommandReply::discard(),
+            },
+            &branch_entries,
+        )
+        .expect_err("guest introspection must require explicit white-box authorization");
+    assert!(matches!(
+        unauthorized_error,
+        SessionError::GuestIntrospectionNotAuthorized { node }
+            if node == "guest-disabled"
+    ));
     let guest_record = match GuestIntrospectionRecord::new(
         1,
         crucible_protocol::guest_introspection::GuestIntrospectionMessage::Close,
