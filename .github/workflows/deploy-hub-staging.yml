@@ -60,9 +60,6 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           HUB_CLOUDFLARE_API_TOKEN: ${{ secrets.HUB_CLOUDFLARE_API_TOKEN }}
-          HUB_DELIVERY_ATTESTATION_KEY: ${{ secrets.HUB_DELIVERY_ATTESTATION_KEY }}
-          HUB_EGRESS_SHARED_KEY: ${{ secrets.HUB_EGRESS_SHARED_KEY }}
-          HUB_HARDENED_EGRESS_URL: ${{ vars.HUB_HARDENED_EGRESS_URL }}
           HUB_JWT_SECRET: ${{ secrets.HUB_JWT_SECRET }}
           HUB_ROUTE_RESERVATION_KEYRING: ${{ secrets.HUB_ROUTE_RESERVATION_KEYRING }}
           HUB_SEAL_KEY: ${{ secrets.HUB_SEAL_KEY }}
@@ -72,9 +69,6 @@ jobs:
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$HUB_CLOUDFLARE_API_TOKEN"
-          test -n "$HUB_DELIVERY_ATTESTATION_KEY"
-          test -n "$HUB_EGRESS_SHARED_KEY"
-          test -n "$HUB_HARDENED_EGRESS_URL"
           test -n "$HUB_JWT_SECRET"
           test -n "$HUB_ROUTE_RESERVATION_KEYRING"
           test -n "$HUB_SEAL_KEY"

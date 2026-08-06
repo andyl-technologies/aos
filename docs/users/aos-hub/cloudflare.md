@@ -2,8 +2,10 @@
 
 The Cloudflare deployment runs the shared Hub request surface in a Worker. Its
 system of record is SQLite inside a `HubDb` Durable Object; registry and cache
-bytes live in R2, and KV caches session and hot-key state. The schema migrates
-on first use.
+bytes live in R2, and KV caches session and hot-key state. Outbound HTTPS uses
+Cloudflare's Worker Fetch transport, so a complete deployment requires no VM,
+metal host, or separately operated egress service. The schema migrates on first
+use.
 
 Use the packaged installer. It contains the `aos-hub` deployment command,
 Worker artifact, and AOS-built provider tooling.

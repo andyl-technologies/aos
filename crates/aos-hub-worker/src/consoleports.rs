@@ -10,16 +10,14 @@
 //!   Cloudflare Email Service binding (`EMAIL`) and a `HUB_EMAIL_FROM` address are
 //!   present it sends through `EMAIL.send({ from, to, subject, html, text })`; else
 //!   when `HUB_EMAIL_API_URL` is configured it `POST`s the structured message to
-//!   that email relay through the fixed authenticated gateway (optional
+//!   that email relay through the configured egress transport (optional
 //!   `HUB_EMAIL_API_TOKEN` bearer);
 //!   otherwise it logs the message via [`worker::console_log!`] (the
 //!   dev/unconfigured path).
 //! - [`WorkerHttpClient`] — the OIDC/domain-probe outbound [`HttpClient`], over
-//!   an explicitly bound hardened-egress service. Worker Fetch has no API for
-//!   connect-time DNS/address pinning, so this shell never directly fetches a
-//!   tenant-controlled URL. The trusted adapter returns the final origin and
-//!   connected peer address as evidence; missing or malformed evidence fails
-//!   closed before any response body is accepted.
+//!   Worker Fetch by default or an optional authenticated native router. Both
+//!   transports enforce a closed request contract; the router additionally
+//!   returns signed connect-time peer evidence.
 //! - [`WorkerReindexer`] — the [`Reindexer`] the shared facade-write handler
 //!   runs when a publish-completing pointer lands after its signed partitions
 //!   are written through the
@@ -61,7 +59,7 @@ use worker::{Bucket, Fetch, Headers, Method, Request, RequestInit, RequestRedire
 /// the native hub's `MAX_OIDC_BODY_BYTES`.
 const MAX_OIDC_BODY_BYTES: usize = 1024 * 1024;
 
-/// Worker storage-credential probe adapter over authenticated hardened egress.
+/// Worker storage-credential probe adapter over the selected egress transport.
 pub struct WorkerStorageCredentialProbeProvider {
     egress: Arc<WorkerEgressClient>,
     secrets: Arc<dyn SecretVersionResolver>,
@@ -506,7 +504,7 @@ impl Mailer for WorkerMailer {
     }
 }
 
-/// The Worker's OIDC outbound [`HttpClient`], over the fixed AOS gateway.
+/// The Worker's OIDC outbound [`HttpClient`].
 ///
 /// Both methods reject literal-IP internal hosts and non-http(s) schemes up
 /// front ([`url_guard::is_safe_remote_url`]) and bound the response at 1 MiB:
@@ -517,37 +515,52 @@ impl Mailer for WorkerMailer {
 /// an unbounded body into the isolate. This matches the native hub's streaming
 /// abort.
 ///
-/// Worker Fetch cannot pin a hostname to the address it validated, so direct
-/// tenant-target Fetch is intentionally impossible through this type. The
-/// repository-owned native gateway validates redirects, pins connect-time DNS,
-/// rejects non-global peers, applies caps, and signs its response evidence.
+/// Worker-direct mode relies on Cloudflare's mediated outbound network. The
+/// optional native router adds connect-time DNS pinning and signed peer evidence
+/// where an installation needs that stronger boundary.
 #[derive(Debug, Clone)]
 pub struct WorkerHttpClient {
     egress: Arc<WorkerEgressClient>,
 }
 
-/// Authenticated Cloudflare control-plane client exposed by hardened egress.
+/// Authenticated Cloudflare control-plane client exposed by Worker egress.
 #[derive(Debug, Clone)]
 pub struct WorkerCloudflareControlPlaneClient {
     egress: Arc<WorkerEgressClient>,
     api_token: String,
 }
 
-/// Authenticated client for the fixed repository-owned native egress gateway.
+/// Closed outbound transport used by the Worker adapters.
 #[derive(Debug, Clone)]
 pub struct WorkerEgressClient {
-    gateway_url: String,
-    key_id: String,
-    key: Arc<Vec<u8>>,
+    transport: WorkerEgressTransport,
+}
+
+#[derive(Debug, Clone)]
+enum WorkerEgressTransport {
+    Direct,
+    Gateway {
+        gateway_url: String,
+        key_id: String,
+        key: Arc<Vec<u8>>,
+    },
 }
 
 impl WorkerEgressClient {
-    /// Builds a client from the fixed gateway endpoint and shared Worker secret.
+    /// Builds a client that uses Cloudflare's native Worker Fetch transport.
+    #[must_use]
+    pub fn direct() -> Self {
+        Self {
+            transport: WorkerEgressTransport::Direct,
+        }
+    }
+
+    /// Builds a client using an authenticated repository-owned native router.
     ///
     /// # Errors
     ///
     /// Returns an error for an unsafe gateway URL or malformed shared key.
-    pub fn new(gateway_url: String, shared_key: &str) -> Result<Self> {
+    pub fn gateway(gateway_url: String, shared_key: &str) -> Result<Self> {
         let parsed =
             url::Url::parse(&gateway_url).context("invalid hardened-egress gateway URL")?;
         anyhow::ensure!(
@@ -572,9 +585,11 @@ impl WorkerEgressClient {
         );
         let key = parse_key(key_text.as_bytes()).context("invalid hardened-egress shared key")?;
         Ok(Self {
-            gateway_url,
-            key_id: key_id.to_string(),
-            key: Arc::new(key),
+            transport: WorkerEgressTransport::Gateway {
+                gateway_url,
+                key_id: key_id.to_string(),
+                key: Arc::new(key),
+            },
         })
     }
 
@@ -648,6 +663,140 @@ impl WorkerEgressClient {
         webhook: Option<(&str, &str, &str)>,
     ) -> Result<worker::Response> {
         url_guard::is_safe_remote_url(target)?;
+        match &self.transport {
+            WorkerEgressTransport::Direct => {
+                self.send_direct(
+                    target,
+                    method,
+                    body,
+                    content_type,
+                    range,
+                    if_match,
+                    authorization,
+                    webhook,
+                )
+                .await
+            }
+            WorkerEgressTransport::Gateway {
+                gateway_url,
+                key_id,
+                key,
+            } => {
+                self.send_gateway(
+                    gateway_url,
+                    key_id,
+                    key,
+                    target,
+                    method,
+                    body,
+                    content_type,
+                    range,
+                    if_match,
+                    authorization,
+                    webhook,
+                )
+                .await
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_direct(
+        &self,
+        target: &str,
+        method: &str,
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+        range: Option<&str>,
+        if_match: Option<&str>,
+        authorization: Option<&str>,
+        webhook: Option<(&str, &str, &str)>,
+    ) -> Result<worker::Response> {
+        let request_method = match method {
+            "GET" => Method::Get,
+            "HEAD" => Method::Head,
+            "POST" => Method::Post,
+            "PUT" => Method::Put,
+            "DELETE" => Method::Delete,
+            _ => bail!("unsupported Worker egress method {method}"),
+        };
+        let redirectable = matches!(&request_method, Method::Get | Method::Head);
+        let headers = Headers::new();
+        for (name, value) in [
+            ("content-type", content_type),
+            ("range", range),
+            ("if-match", if_match),
+            ("authorization", authorization),
+            ("x-aos-event", webhook.map(|value| value.0)),
+            ("x-aos-signature", webhook.map(|value| value.1)),
+            ("x-aos-delivery-id", webhook.map(|value| value.2)),
+        ] {
+            if let Some(value) = value {
+                headers.set(name, value)?;
+            }
+        }
+        let mut current = url::Url::parse(target).context("invalid Worker egress target")?;
+        anyhow::ensure!(
+            current.scheme() == "https",
+            "Worker-direct egress requires HTTPS"
+        );
+        let initial_origin = current.origin().ascii_serialization();
+        for redirects in 0..=5 {
+            url_guard::is_safe_remote_url(current.as_str())?;
+            let mut init = RequestInit::new();
+            init.with_method(request_method.clone())
+                .with_redirect(RequestRedirect::Manual)
+                .with_headers(headers.clone());
+            if let Some(bytes) = body.as_ref().filter(|bytes| !bytes.is_empty()) {
+                let js_body: JsValue = js_sys::Uint8Array::from(bytes.as_slice()).into();
+                init.with_body(Some(js_body));
+            }
+            let request = Request::new_with_init(current.as_str(), &init)?;
+            let response = Fetch::Request(request).send().await?;
+            if !matches!(response.status_code(), 301 | 302 | 303 | 307 | 308) {
+                return Ok(response);
+            }
+            anyhow::ensure!(
+                redirectable,
+                "Worker egress refuses redirects for mutating requests"
+            );
+            anyhow::ensure!(redirects < 5, "Worker egress redirect limit exceeded");
+            let location = response
+                .headers()
+                .get("location")?
+                .context("Worker egress redirect omitted Location")?;
+            let next = current
+                .join(&location)
+                .context("invalid Worker egress redirect Location")?;
+            url_guard::is_safe_remote_url(next.as_str())?;
+            anyhow::ensure!(
+                next.scheme() == "https",
+                "Worker-direct egress refuses an HTTPS downgrade"
+            );
+            anyhow::ensure!(
+                authorization.is_none() || next.origin().ascii_serialization() == initial_origin,
+                "Worker egress refuses an authenticated cross-origin redirect"
+            );
+            current = next;
+        }
+        unreachable!("redirect loop returns or fails within the bounded iteration")
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn send_gateway(
+        &self,
+        gateway_url: &str,
+        key_id: &str,
+        key: &[u8],
+        target: &str,
+        method: &str,
+        body: Option<Vec<u8>>,
+        content_type: Option<&str>,
+        range: Option<&str>,
+        if_match: Option<&str>,
+        authorization: Option<&str>,
+        webhook: Option<(&str, &str, &str)>,
+    ) -> Result<worker::Response> {
         let body = body.unwrap_or_default();
         let body_digest = aos_hub_core::egress_protocol::body_sha256(&body);
         let mut nonce_bytes = [0_u8; 32];
@@ -668,14 +817,14 @@ impl WorkerEgressClient {
             webhook_signature: webhook.map(|value| value.1),
             webhook_delivery_id: webhook.map(|value| value.2),
         };
-        let signature = aos_hub_core::egress_protocol::sign_request(&self.key, &evidence)?;
+        let signature = aos_hub_core::egress_protocol::sign_request(key, &evidence)?;
         let headers = Headers::new();
         for (name, value) in [
             (
                 "x-aos-egress-contract",
                 aos_hub_core::egress_protocol::CONTRACT,
             ),
-            ("x-aos-egress-key-id", self.key_id.as_str()),
+            ("x-aos-egress-key-id", key_id),
             ("x-aos-egress-nonce", nonce.as_str()),
             ("x-aos-egress-target-url", target),
             ("x-aos-egress-upstream-method", method),
@@ -715,13 +864,18 @@ impl WorkerEgressClient {
             let body: JsValue = js_sys::Uint8Array::from(body.as_slice()).into();
             init.with_body(Some(body));
         }
-        let request = Request::new_with_init(&self.gateway_url, &init)?;
+        let request = Request::new_with_init(gateway_url, &init)?;
         let response = Fetch::Request(request).send().await?;
-        self.verify_response(&response, &nonce)?;
+        Self::verify_gateway_response(&response, &nonce, key_id, key)?;
         Ok(response)
     }
 
-    fn verify_response(&self, response: &worker::Response, request_nonce: &str) -> Result<()> {
+    fn verify_gateway_response(
+        response: &worker::Response,
+        request_nonce: &str,
+        key_id: &str,
+        key: &[u8],
+    ) -> Result<()> {
         let headers = response.headers();
         let required = |name: &str| -> Result<String> {
             headers
@@ -733,7 +887,7 @@ impl WorkerEgressClient {
             "hardened-egress response contract mismatch"
         );
         anyhow::ensure!(
-            required("x-aos-egress-key-id")? == self.key_id,
+            required("x-aos-egress-key-id")? == key_id,
             "hardened-egress response key id mismatch"
         );
         let timestamp = required("x-aos-egress-timestamp")?.parse::<i64>()?;
@@ -758,7 +912,7 @@ impl WorkerEgressClient {
         );
         let signature = required("x-aos-egress-signature")?;
         aos_hub_core::egress_protocol::verify_response(
-            &self.key,
+            key,
             &aos_hub_core::egress_protocol::ResponseEvidence {
                 timestamp,
                 nonce: &nonce,
@@ -784,7 +938,7 @@ fn require_fresh_gateway_timestamp(timestamp: i64, now: i64) -> Result<()> {
 }
 
 impl WorkerCloudflareControlPlaneClient {
-    /// Creates the client over the repository-owned hardened-egress binding.
+    /// Creates the client over the selected Worker egress transport.
     #[must_use]
     pub fn new(egress: Arc<WorkerEgressClient>, api_token: String) -> Self {
         Self { egress, api_token }
@@ -828,7 +982,7 @@ impl aos_hub_core::topology_probe::CloudflareControlPlaneClient
 }
 
 impl WorkerHttpClient {
-    /// Creates a fail-closed client over the required fixed gateway.
+    /// Creates a fail-closed client over the selected egress transport.
     #[must_use]
     pub fn new(egress: Arc<WorkerEgressClient>) -> Self {
         Self { egress }
@@ -850,7 +1004,7 @@ impl WorkerHttpClient {
         let method = match method {
             Method::Get => "GET",
             Method::Post => "POST",
-            _ => bail!("{what}: unsupported hardened-egress method"),
+            _ => bail!("{what}: unsupported Worker egress method"),
         };
         let mut response = self
             .egress
@@ -864,7 +1018,7 @@ impl WorkerHttpClient {
                 None,
             )
             .await
-            .map_err(|err| anyhow::anyhow!("{what}: hardened egress: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("{what}: Worker egress: {err}"))?;
         let status = response.status_code();
         if !(200..300).contains(&status) {
             bail!("{what}: endpoint returned HTTP {status}");

@@ -389,14 +389,23 @@ messages, and logs.
 
 ## Worker outbound boundary
 
-The Worker never fetches a tenant-, administrator-, provider-, or
-credential-derived URL with the platform Fetch API. Its only global Fetch
-destination is the exact operator-owned HTTPS `HUB_HARDENED_EGRESS_URL`. The
-target URL, closed method, body digest, narrow optional header set, timestamp,
-and random nonce are authenticated under the `aos-hardened-egress-v3` contract.
-Signed webhook POSTs additionally authenticate the closed `X-AOS-Event`,
-`X-AOS-Signature`, and `X-AOS-Delivery-ID` set; arbitrary forwarded headers
-are not part of the protocol.
+Cloudflare Worker deployments use the platform Fetch API directly by default.
+This is a complete Worker-only deployment: registry and cache placements,
+OIDC, domain probes, mail relay, webhooks, and Cloudflare control-plane
+observation require no VM or metal component. Cloudflare mediates outbound
+connections; AOS additionally requires HTTPS and rejects URL credentials,
+fragments, and literal non-global addresses before Fetch, constructs requests
+from a closed method and header set, bounds redirects, forbids mutating
+redirects, and forbids authenticated cross-origin redirects. Individual
+consumers retain their request and response size limits.
+
+Worker Fetch does not expose the connected peer address or allow AOS to pin a
+validated DNS answer to a connection. An installation that requires those
+stronger guarantees may configure the repository-owned `aos-hub-egress` router
+with `HUB_EGRESS_GATEWAY_URL` and `HUB_EGRESS_GATEWAY_KEY`. The pair is
+optional but atomic: neither may be configured alone. Selecting it routes all
+outbound HTTP through that transport rather than creating inconsistent
+per-feature paths.
 
 The repository packages the gateway as `aos-hub-egress`. It disables
 environment proxies and automatic redirects, resolves all addresses at connect
@@ -422,16 +431,17 @@ Replicated deployments use PostgreSQL; file-backed SQLite is valid only for a
 singleton gateway process. Expired rows may be reclaimed, but a live conflict
 always fails before an upstream side effect.
 
-The deployment interface takes `--hardened-egress-url` and an
-operator-provisioned `HUB_EGRESS_SHARED_KEY` encoded as one atomic
-`KEY_ID:KEY` value. It never mints that key. During rotation every gateway
+The deployment interface takes optional `--egress-gateway-url` and an
+operator-provisioned `HUB_EGRESS_GATEWAY_KEY` encoded as one atomic `KEY_ID:KEY`
+value. It never mints that key. During rotation every router
 replica accepts the bounded current/next key-id overlap before the installer
 challenges and atomically changes the Worker's selected id/key. Only after the
-Worker cutover may the old gateway id be removed. The installer completes a
+Worker cutover may the old router id be removed. The installer completes a
 fresh, mutually authenticated `/v1/challenge` before Worker deployment or
-secret rotation. It installs the scoped provider token separately. The old
-operator-supplied Worker service binding and unsigned evidence-header contract
-do not exist after cutover.
+secret rotation when this optional transport is selected. It installs the
+scoped provider token separately. There is one egress abstraction and one
+selected transport; the former mandatory gateway configuration and unsigned
+evidence-header contract do not exist after cutover.
 
 ## Writes
 

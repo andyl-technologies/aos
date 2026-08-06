@@ -225,11 +225,11 @@ mod entry {
     /// `POST`ed to. Unset → [`WorkerMailer`] logs the link instead.
     const HUB_EMAIL_API_URL: &str = "HUB_EMAIL_API_URL";
     const HUB_DNS_JSON_ENDPOINT: &str = "HUB_DNS_JSON_ENDPOINT";
-    /// Fixed repository-owned native gateway endpoint.
-    const HUB_HARDENED_EGRESS_URL: &str = "HUB_HARDENED_EGRESS_URL";
-    /// Shared authentication key for the fixed egress gateway.
-    const HUB_EGRESS_SHARED_KEY: &str = "HUB_EGRESS_SHARED_KEY";
-    /// Scoped Cloudflare API token routed through the fixed gateway.
+    /// Optional repository-owned native egress-router endpoint.
+    const HUB_EGRESS_GATEWAY_URL: &str = "HUB_EGRESS_GATEWAY_URL";
+    /// Optional shared authentication key for the egress router.
+    const HUB_EGRESS_GATEWAY_KEY: &str = "HUB_EGRESS_GATEWAY_KEY";
+    /// Scoped Cloudflare API token used by the control-plane observer.
     const HUB_CLOUDFLARE_API_TOKEN: &str = "HUB_CLOUDFLARE_API_TOKEN";
     /// Optional secret: a `Bearer` token for the email relay above.
     const HUB_EMAIL_API_TOKEN: &str = "HUB_EMAIL_API_TOKEN";
@@ -244,15 +244,18 @@ mod entry {
     const HUB_EMAIL_FROM: &str = "HUB_EMAIL_FROM";
 
     fn worker_egress(env: &Env) -> worker::Result<Arc<WorkerEgressClient>> {
-        let url = env.var(HUB_HARDENED_EGRESS_URL).map_err(|_| {
-            worker::Error::RustError(format!("{HUB_HARDENED_EGRESS_URL} is required"))
-        })?;
-        let key = env.secret(HUB_EGRESS_SHARED_KEY).map_err(|_| {
-            worker::Error::RustError(format!("{HUB_EGRESS_SHARED_KEY} is required"))
-        })?;
-        WorkerEgressClient::new(url.to_string(), &key.to_string())
-            .map(Arc::new)
-            .map_err(|error| worker::Error::RustError(format!("hardened egress: {error:#}")))
+        match (
+            env.var(HUB_EGRESS_GATEWAY_URL),
+            env.secret(HUB_EGRESS_GATEWAY_KEY),
+        ) {
+            (Err(_), _) => Ok(Arc::new(WorkerEgressClient::direct())),
+            (Ok(url), Ok(key)) => WorkerEgressClient::gateway(url.to_string(), &key.to_string())
+                .map(Arc::new)
+                .map_err(|error| worker::Error::RustError(format!("egress gateway: {error:#}"))),
+            (Ok(_), Err(_)) => Err(worker::Error::RustError(format!(
+                "{HUB_EGRESS_GATEWAY_KEY} is required when {HUB_EGRESS_GATEWAY_URL} is configured"
+            ))),
+        }
     }
 
     #[cfg(feature = "do-e2e")]
@@ -880,26 +883,11 @@ mod entry {
                 return Err(err);
             }
         };
-        let egress = match (
-            env.var(HUB_HARDENED_EGRESS_URL),
-            env.secret(HUB_EGRESS_SHARED_KEY),
-        ) {
-            (Ok(url), Ok(key)) => {
-                match WorkerEgressClient::new(url.to_string(), &key.to_string()) {
-                    Ok(client) => Arc::new(client),
-                    Err(error) => {
-                        worker::console_error!("cron: invalid hardened egress: {error:#}");
-                        return Err(worker::Error::RustError(format!(
-                            "cron: invalid hardened egress: {error:#}"
-                        )));
-                    }
-                }
-            }
-            _ => {
-                worker::console_error!("cron: hardened egress is not configured");
-                return Err(worker::Error::RustError(
-                    "cron: hardened egress is not configured".into(),
-                ));
+        let egress = match worker_egress(env) {
+            Ok(client) => client,
+            Err(error) => {
+                worker::console_error!("cron: invalid egress configuration: {error}");
+                return Err(error);
             }
         };
         if let Ok(bucket) = env.bucket(crate::handlers::bindings::R2) {
@@ -1213,21 +1201,10 @@ mod entry {
         };
         let db = Arc::new(aos_hub_core::db::Database::attach(backend));
         let tls_verifier = aos_hub_core::topology_probe::DomainTlsProbeVerifier::new();
-        let egress = match (
-            env.var(HUB_HARDENED_EGRESS_URL),
-            env.secret(HUB_EGRESS_SHARED_KEY),
-        ) {
-            (Ok(url), Ok(key)) => {
-                match WorkerEgressClient::new(url.to_string(), &key.to_string()) {
-                    Ok(client) => Arc::new(client),
-                    Err(error) => {
-                        worker::console_error!("domain probes: invalid hardened egress: {error:#}");
-                        return;
-                    }
-                }
-            }
-            _ => {
-                worker::console_error!("domain probes: hardened egress is not configured");
+        let egress = match worker_egress(env) {
+            Ok(client) => client,
+            Err(error) => {
+                worker::console_error!("domain probes: invalid egress configuration: {error}");
                 return;
             }
         };

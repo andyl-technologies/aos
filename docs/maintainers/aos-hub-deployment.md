@@ -41,9 +41,11 @@ local binding names. Reusing production IDs in staging would make traffic in one
 environment consume the other's budget. The workflows pass distinct namespace
 ranges to the installer for that reason.
 
-Use separate values for every environment secret. An egress service may be
-shared only when it recognizes distinct staging and production key IDs and key
-material; its staging authorization must not grant production access.
+Use separate values for every environment secret. Worker-direct egress is the
+default and requires no separately deployed service. If an optional egress
+router is selected, it may be shared only when it recognizes distinct staging
+and production key IDs and key material; its staging authorization must not
+grant production access.
 
 Do not point a pull request deployment at either environment. If per-PR previews
 are added later, give each preview a unique Worker name, bucket, KV namespace,
@@ -62,21 +64,16 @@ Set these secrets independently in both environments:
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 - `HUB_CLOUDFLARE_API_TOKEN`
-- `HUB_DELIVERY_ATTESTATION_KEY`
-- `HUB_EGRESS_SHARED_KEY`
-- `HUB_JWT_SECRET`
 - `HUB_ROUTE_RESERVATION_KEYRING`
-- `HUB_SEAL_KEY`
 
-For the existing production Hub, populate `HUB_JWT_SECRET` and `HUB_SEAL_KEY`
-with the exact currently deployed values. Supplying different values is an
-intentional rotation: a JWT change invalidates tokens, while an unplanned seal
-change can make stored credentials and signing material unreadable. Do not run
-the production workflow until those values have been recovered from the
-authoritative secret store.
+Staging additionally supplies its independently generated `HUB_JWT_SECRET` and
+`HUB_SEAL_KEY`. The production workflow deliberately omits both: the installer
+preserves the values already stored on the production Worker. Supplying either
+through a manual deployment is an intentional rotation: a JWT change
+invalidates tokens, while an unplanned seal change can make stored credentials
+and signing material unreadable.
 
-Set `HUB_HARDENED_EGRESS_URL` as an environment variable. In the production
-environment, also set `HUB_MANAGED_DOMAINS` to the complete newline-delimited
+In the production environment, set `HUB_MANAGED_DOMAINS` to the complete newline-delimited
 set of custom domains owned by the production Worker. The list must include
 `aos.andyl.org`; making the complete set explicit lets a first deployment bind
 the canonical hostname without dropping typed delivery domains during an
@@ -99,8 +96,27 @@ the installer. Do not commit any of these values.
 
 Before enabling automatic deployment, ensure that the `andyl.org` zone belongs
 to the deployment account and that the account can create the
-`aos.staging.andyl.org` custom domain. Configure the staging egress authorization
-and all GitHub environment values above.
+`aos.staging.andyl.org` custom domain. Configure all GitHub environment values
+above.
+
+## Optional outbound router and ingress attestation
+
+No outbound gateway, VM, metal host, or VPC connector is required for the
+normal Worker deployment. The Worker directly reaches public HTTPS endpoints
+through Cloudflare's mediated Fetch implementation.
+
+For a deployment that requires connect-time DNS pinning and signed connected-
+peer evidence, deploy the packaged `aos-hub-egress` router independently, then
+pass both `--egress-gateway-url https://router.example/v1/fetch` and
+`HUB_EGRESS_GATEWAY_KEY=KEY_ID:KEY` to a manual installer run. The installer
+authenticates the router contract before changing the Worker. Removing both
+values returns the generated Worker configuration to direct mode. Routers are
+an optional strengthening layer and may also provide reachability to private
+networks; they are not part of the Worker-only availability path.
+
+`HUB_DELIVERY_ATTESTATION_KEY` is also optional. Configure it only when a
+trusted upstream TLS, VPN, or layer-7 adapter sends authenticated delivery
+assertions. The standard Cloudflare edge path does not need it.
 
 The deployment workflow provisions and updates the Worker resources but does not
 create the first Hub owner. After the first successful deployment, bootstrap the

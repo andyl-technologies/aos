@@ -779,8 +779,8 @@ impl SurfaceFetch for R2SurfaceFetch {
 /// The external-binding counterpart of [`R2SurfaceFetch`]: instead of an R2
 /// `get`/`head`, each operation mints a short-lived presigned URL with
 /// [`S3Surface::object_url`] and sends it through [`WorkerEgressClient`], whose
-/// only platform Fetch destination is the fixed gateway. Response bodies stream
-/// through the isolate exactly like [`WorkerOriginFetch`] (so a
+/// selected transport is Worker Fetch or the optional native router. Response
+/// bodies stream through the isolate exactly like [`WorkerOriginFetch`] (so a
 /// large NAR never buffers). A presigned URL signs only the `Host` header, so a
 /// `Range` request header may be added freely on the streaming path.
 struct S3SurfaceFetch {
