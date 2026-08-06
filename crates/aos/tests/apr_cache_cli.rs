@@ -647,7 +647,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     );
     assert!(
         fs::read_to_string(registry_dir.join("registry.toml"))?
-            .contains(&format!("url = \"{}\"", cache_server.base_url())),
+            .contains(&format!("endpoint = \"{}\"", cache_server.base_url())),
         "release should commit the static cache pointer",
     );
     assert!(
