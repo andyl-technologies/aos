@@ -1076,6 +1076,16 @@ impl SingleScheduler {
                 }
             }
         }
+        if let Some(wakeup) = self.signal_fault_wakeup {
+            match exact_local_event.virtual_time() {
+                Some(current) if current <= wakeup => {}
+                _ => {
+                    exact_local_event = ExactLocalEvent::SignalFaultEvaluation {
+                        virtual_time: wakeup,
+                    };
+                }
+            }
+        }
         Ok(exact_local_event)
     }
 

@@ -180,8 +180,36 @@ impl FaultSignalPlan {
         &self,
         world: &World,
     ) -> Result<(), FaultSignalAuthoringError> {
+        let icount_shift = world
+            .vm_nodes()
+            .iter()
+            .map(|node| node.icount_shift)
+            .max()
+            .unwrap_or(0);
+        let scale = 1_u64.checked_shl(u32::from(icount_shift)).unwrap_or(0);
         for binding in &self.bindings {
             validate_selector_for_world(binding.selector(), world)?;
+            let intervals = [
+                match binding.sampling() {
+                    BindingSampling::CadenceNanos(cadence) => Some(cadence.get()),
+                    _ => None,
+                },
+                match binding.mapping() {
+                    BindingMapping::Threshold {
+                        residence_nanos, ..
+                    } if *residence_nanos > 0 => Some(*residence_nanos),
+                    _ => None,
+                },
+            ];
+            for nanos in intervals.into_iter().flatten() {
+                if scale == 0 || nanos % scale != 0 {
+                    return Err(FaultSignalAuthoringError::RuntimeWakeupAlignment {
+                        binding: binding.id().as_str().to_owned(),
+                        nanos,
+                        icount_shift,
+                    });
+                }
+            }
         }
         let expected_trajectory_shape = SignalShape {
             value_type: SignalValueType::Vector3(Box::new(SignalValueType::I64)),
