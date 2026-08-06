@@ -11,7 +11,9 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io;
 
-use crate::model::{NetworkPolicyArtifactClass, NetworkPolicyArtifactKind, World};
+use crate::model::{
+    NetworkPolicyArtifactClass, NetworkPolicyArtifactKind, NetworkPolicyRfCorruption, World,
+};
 
 use super::*;
 
@@ -551,11 +553,30 @@ fn validate_network_effect_policy_references(
                     "replacement",
                 )?;
             }
-            NetworkPayloadMutation::UndetectedCorruption { transform } => require(
-                transform,
-                &[NetworkPolicyArtifactClass::ByteTemplate],
-                "transform",
-            )?,
+            NetworkPayloadMutation::UndetectedCorruption { transform } => {
+                require(
+                    transform,
+                    &[NetworkPolicyArtifactClass::ByteTemplate],
+                    "transform",
+                )?;
+                let nonempty = topology.network_policy_artifact(transform).is_some_and(
+                    |artifact| {
+                        matches!(
+                            &artifact.artifact,
+                            NetworkPolicyArtifactKind::ByteTemplate { bytes } if !bytes.is_empty()
+                        )
+                    },
+                );
+                if !nonempty {
+                    return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: transform.as_str().to_owned(),
+                        field: "transform",
+                        expected: String::from("nonempty byte_template"),
+                        actual: Some("empty byte_template"),
+                    });
+                }
+            }
             NetworkPayloadMutation::BitFlip { .. } | NetworkPayloadMutation::Truncate { .. } => {}
         },
         NetworkEffectSpecification::Mtu {
@@ -737,6 +758,49 @@ fn validate_network_effect_policy_references(
                 &[NetworkPolicyArtifactClass::RfTransfer],
                 "sinr_transfer",
             )?;
+            let declaration = topology
+                .network_policy_artifact(sinr_transfer)
+                .ok_or_else(
+                    || FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                        binding: binding.id().as_str().to_owned(),
+                        reference: sinr_transfer.as_str().to_owned(),
+                        field: "sinr_transfer",
+                        expected: String::from("rf_transfer"),
+                        actual: None,
+                    },
+                )?;
+            if let NetworkPolicyArtifactKind::RfTransfer(transfer) = &declaration.artifact {
+                for profile in &transfer.profiles {
+                    if let NetworkPolicyRfCorruption::Undetected { transform } =
+                        &profile.corruption_action
+                    {
+                        require(
+                            transform,
+                            &[NetworkPolicyArtifactClass::ByteTemplate],
+                            "sinr_transfer.corruption_action.transform",
+                        )?;
+                        let nonempty =
+                            topology
+                                .network_policy_artifact(transform)
+                                .is_some_and(|artifact| {
+                                    matches!(
+                                        &artifact.artifact,
+                                        NetworkPolicyArtifactKind::ByteTemplate { bytes }
+                                            if !bytes.is_empty()
+                                    )
+                                });
+                        if !nonempty {
+                            return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                                binding: binding.id().as_str().to_owned(),
+                                reference: transform.as_str().to_owned(),
+                                field: "sinr_transfer.corruption_action.transform",
+                                expected: String::from("nonempty byte_template"),
+                                actual: Some("empty byte_template"),
+                            });
+                        }
+                    }
+                }
+            }
         }
         NetworkEffectSpecification::Association {
             candidates,

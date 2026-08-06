@@ -3004,19 +3004,60 @@ fn apply_network_frame_action(
             effects
                 .constrain_rate(profile.rate_bps.get())
                 .map_err(map_effect_error)?;
-            let lost = probability_fires(
-                profile.loss,
-                network_effect_draw(scenario_seed, opportunity, action, "rf-loss", 0),
-            );
-            let detected_error = probability_fires(
-                profile.corruption,
-                network_effect_draw(scenario_seed, opportunity, action, "rf-error", 0),
-            );
-            if lost || detected_error {
-                effects
-                    .add_delay(profile.retry_delay_nanos)
-                    .map_err(map_effect_error)?;
-                effects.mark_drop();
+            for attempt in 0..=profile.maximum_retries {
+                let ordinal = u64::from(attempt);
+                let lost = probability_fires(
+                    profile.loss,
+                    network_effect_draw(scenario_seed, opportunity, action, "rf-loss", ordinal),
+                );
+                if lost {
+                    if attempt == profile.maximum_retries {
+                        effects.mark_drop();
+                        break;
+                    }
+                    effects
+                        .add_delay(profile.retry_delay_nanos)
+                        .map_err(map_effect_error)?;
+                    continue;
+                }
+                let corrupted = probability_fires(
+                    profile.corruption,
+                    network_effect_draw(
+                        scenario_seed,
+                        opportunity,
+                        action,
+                        "rf-corruption",
+                        ordinal,
+                    ),
+                );
+                if !corrupted {
+                    break;
+                }
+                match &profile.corruption_action {
+                    crucible::model::NetworkPolicyRfCorruption::Corrected => break,
+                    crucible::model::NetworkPolicyRfCorruption::Undetected { transform } => {
+                        let bytes = network_byte_template(topology, transform, action)?;
+                        if bytes.is_empty() {
+                            return Err(network_effect_application_error(
+                                action,
+                                "RF undetected-corruption template is empty",
+                            ));
+                        }
+                        for (index, byte) in payload.iter_mut().enumerate() {
+                            *byte ^= bytes[index % bytes.len()];
+                        }
+                        break;
+                    }
+                    crucible::model::NetworkPolicyRfCorruption::Detected => {
+                        if attempt == profile.maximum_retries {
+                            effects.mark_drop();
+                            break;
+                        }
+                        effects
+                            .add_delay(profile.retry_delay_nanos)
+                            .map_err(map_effect_error)?;
+                    }
+                }
             }
         }
         NetworkEffectSpecification::Flap { .. }
@@ -4174,6 +4215,8 @@ mod tests {
             rate_bps: positive(8_000),
             loss: probability,
             corruption: probability,
+            corruption_action: crucible::model::NetworkPolicyRfCorruption::Corrected,
+            maximum_retries: 0,
             retry_delay_nanos: 0,
         };
         let mut topology = crucible::model::WorldFaultTopology::default();
@@ -4308,6 +4351,76 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("RF effect should execute: {error}"));
         assert_eq!(effects.serialization_rate_cap_bps(), Some(8_000));
+        assert!(!effects.is_dropped());
+
+        let always = crucible::model::ProbabilityMillionths::new(1_000_000)
+            .unwrap_or_else(|error| panic!("certain probability: {error}"));
+        let transfer = topology
+            .network_policy_artifacts
+            .iter_mut()
+            .find(|artifact| artifact.id == id("transfer"))
+            .unwrap_or_else(|| panic!("test transfer artifact"));
+        let crucible::model::NetworkPolicyArtifactKind::RfTransfer(transfer) =
+            &mut transfer.artifact
+        else {
+            panic!("test transfer type")
+        };
+        transfer.profiles[0].loss = always;
+        transfer.profiles[0].maximum_retries = 2;
+        transfer.profiles[0].retry_delay_nanos = 7;
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        apply_network_frame_action(
+            &mut payload,
+            &mut effects,
+            &action,
+            &opportunity,
+            ContentHash::from_bytes(b"scenario"),
+            &topology,
+            &mut state,
+        )
+        .unwrap_or_else(|error| panic!("RF retry exhaustion: {error}"));
+        assert_eq!(effects.additional_delay_nanos(), 14);
+        assert!(effects.is_dropped());
+
+        topology
+            .network_policy_artifacts
+            .push(crucible::model::WorldNetworkPolicyArtifact {
+                id: id("rf-xor"),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::ByteTemplate {
+                    bytes: vec![0xff],
+                },
+            });
+        let transfer = topology
+            .network_policy_artifacts
+            .iter_mut()
+            .find(|artifact| artifact.id == id("transfer"))
+            .unwrap_or_else(|| panic!("test transfer artifact"));
+        let crucible::model::NetworkPolicyArtifactKind::RfTransfer(transfer) =
+            &mut transfer.artifact
+        else {
+            panic!("test transfer type")
+        };
+        transfer.profiles[0].loss = probability;
+        transfer.profiles[0].corruption = always;
+        transfer.profiles[0].corruption_action =
+            crucible::model::NetworkPolicyRfCorruption::Undetected {
+                transform: id("rf-xor"),
+            };
+        transfer.profiles[0].maximum_retries = 0;
+        let mut payload = vec![0x0f, 0xf0];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        apply_network_frame_action(
+            &mut payload,
+            &mut effects,
+            &action,
+            &opportunity,
+            ContentHash::from_bytes(b"scenario"),
+            &topology,
+            &mut state,
+        )
+        .unwrap_or_else(|error| panic!("RF undetected corruption: {error}"));
+        assert_eq!(payload, vec![0xf0, 0x0f]);
         assert!(!effects.is_dropped());
     }
 
