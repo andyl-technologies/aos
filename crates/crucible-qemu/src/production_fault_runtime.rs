@@ -12,7 +12,8 @@ use crucible::model::{
     BindingEvaluation, ContentHash, EffectKind, FaultAdapterManifests, FaultCapabilityId,
     FaultCapabilityManifest, FaultCoordinate, FaultExecutionError, FaultObjectId, FaultOpportunity,
     FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink, HostFaultActionState,
-    OwnedFaultExecutionRuntime, SignalArtifactProvider, SignalBoundarySnapshot,
+    NetworkEffectSpecification, NetworkInFlightPolicy, OwnedFaultExecutionRuntime,
+    SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{BackendError, NodeId};
 
@@ -56,6 +57,14 @@ pub enum ProductionFaultRuntimeError {
     /// Restored live QEMU state differs from the paired fault checkpoint.
     #[error("live QEMU execution fingerprints do not match the fault checkpoint")]
     QemuFingerprintMismatch,
+    /// A recognized host effect selected parameters without production semantics.
+    #[error("fault binding `{binding}` selects an unsupported production parameter: {parameter}")]
+    UnsupportedHostEffectParameter {
+        /// Binding that selected the unsupported parameter.
+        binding: FaultObjectId,
+        /// Stable description of the unsupported parameter.
+        parameter: &'static str,
+    },
 }
 
 /// Owning signal runtime coupled to host devices and live patched QEMU.
@@ -78,6 +87,7 @@ impl ProductionFaultRuntime {
         scenario_seed: ContentHash,
         nodes: &QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
+        admit_host_effect_parameters(&plan)?;
         let manifests = production_manifests(nodes)?;
         let runtime = if plan.programs().is_empty() {
             None
@@ -111,6 +121,7 @@ impl ProductionFaultRuntime {
         checkpoint: ProductionFaultRuntimeCheckpoint,
         nodes: &mut QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
+        admit_host_effect_parameters(&plan)?;
         let manifests = production_manifests(nodes)?;
         if checkpoint.identity
             != production_checkpoint_identity(
@@ -279,6 +290,38 @@ impl ProductionFaultRuntime {
     }
 }
 
+fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), ProductionFaultRuntimeError> {
+    for binding in plan.bindings() {
+        let crucible::model::EffectSpecification::Network(
+            NetworkEffectSpecification::Availability {
+                queued_policy,
+                in_flight_policy,
+                ..
+            },
+        ) = binding.effect().specification()
+        else {
+            continue;
+        };
+        if *queued_policy != NetworkInFlightPolicy::Drop {
+            return Err(
+                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
+                    binding: binding.id().clone(),
+                    parameter: "network.availability.queued_policy requires drop",
+                },
+            );
+        }
+        if *in_flight_policy != NetworkInFlightPolicy::Drop {
+            return Err(
+                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
+                    binding: binding.id().clone(),
+                    parameter: "network.availability.in_flight_policy requires drop",
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 fn production_checkpoint_identity(
     plan: ContentHash,
     runtime: Option<&FaultRuntimeCheckpoint>,
@@ -412,7 +455,11 @@ mod tests {
             .unwrap_or_else(|error| panic!("test signal ID should be valid: {error}"))
     }
 
-    fn availability_plan(target: &ResolvedFaultTarget) -> FaultSignalPlan {
+    fn availability_plan(
+        target: &ResolvedFaultTarget,
+        queued_policy: NetworkInFlightPolicy,
+        in_flight_policy: NetworkInFlightPolicy,
+    ) -> FaultSignalPlan {
         let output = signal_id("network-down");
         let program = crucible::model::SignalProgram::new(
             vec![SignalNode {
@@ -436,8 +483,8 @@ mod tests {
             EffectLifetime::Persistent,
             EffectSpecification::Network(NetworkEffectSpecification::Availability {
                 state: NetworkAvailabilityState::Down,
-                queued_policy: NetworkInFlightPolicy::Drop,
-                in_flight_policy: NetworkInFlightPolicy::Drop,
+                queued_policy,
+                in_flight_policy,
             }),
         )
         .unwrap_or_else(|error| panic!("test effect should be valid: {error}"));
@@ -487,7 +534,11 @@ mod tests {
             segment: object_id("segment-left-right"),
             direction: FaultDirection::AToB,
         };
-        let plan = availability_plan(&target);
+        let plan = availability_plan(
+            &target,
+            NetworkInFlightPolicy::Drop,
+            NetworkInFlightPolicy::Drop,
+        );
         let artifacts: Arc<dyn SignalArtifactProvider> = Arc::new(NoArtifacts);
         let mut nodes = QemuNodeSet::new();
         let seed = ContentHash::from_bytes(b"production-availability-test");
@@ -534,5 +585,36 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn production_rejects_unimplemented_availability_transition_policies() {
+        let target = ResolvedFaultTarget::NetworkSegment {
+            segment: object_id("segment-left-right"),
+            direction: FaultDirection::AToB,
+        };
+        let plan = availability_plan(
+            &target,
+            NetworkInFlightPolicy::Preserve,
+            NetworkInFlightPolicy::Drop,
+        );
+        let nodes = QemuNodeSet::new();
+        let result = ProductionFaultRuntime::new(
+            plan,
+            Some(Arc::new(NoArtifacts)),
+            SignalBoundarySnapshot::default(),
+            ContentHash::from_bytes(b"unsupported-availability-policy"),
+            &nodes,
+        );
+
+        assert!(matches!(
+            result,
+            Err(
+                ProductionFaultRuntimeError::UnsupportedHostEffectParameter {
+                    parameter: "network.availability.queued_policy requires drop",
+                    ..
+                }
+            )
+        ));
     }
 }
