@@ -466,6 +466,16 @@ impl OwnedFaultExecutionRuntime {
         self.checkpoint.poisoned
     }
 
+    /// Permanently poisons the continuation after ambiguous external visibility.
+    ///
+    /// Production owners call this when the fault adapter committed but a
+    /// coupled scheduler or device mutation could not be proven complete. A
+    /// poisoned continuation rejects every subsequent evaluation and cannot be
+    /// restored as runnable state.
+    pub fn poison(&mut self) {
+        self.checkpoint.poisoned = true;
+    }
+
     /// Returns the admitted signal and binding plan.
     #[must_use]
     pub const fn plan(&self) -> &FaultSignalPlan {

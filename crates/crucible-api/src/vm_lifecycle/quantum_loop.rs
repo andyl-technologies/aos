@@ -55,12 +55,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         let snapshot_fault_checkpoint = if snapshot_counters.is_empty() {
             None
         } else {
-            let (_scheduler, backend, interceptor) =
-                self.inner.parts_with_network_interceptor_mut();
+            let (scheduler, backend, interceptor, pending_outputs) =
+                self.inner.network_transaction_parts_mut();
             Some(
                 interceptor
-                    .runtime_mut()
-                    .checkpoint(backend)
+                    .checkpoint(scheduler, pending_outputs, backend)
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!(
                             "capture signal fault continuation at checkpoint boundary: {error}"
@@ -268,16 +267,16 @@ impl ProductionVmLifecycleLoop {
         &mut self,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let coordinate = self.inner.loop_impl().frontier().ticks;
-        let (scheduler, backend, interceptor) = self.inner.parts_with_network_interceptor_mut();
-        let evaluation = interceptor.evaluate_boundary(
+        let (scheduler, backend, interceptor, pending_outputs) =
+            self.inner.network_transaction_parts_mut();
+        interceptor.evaluate_boundary(
             FaultCoordinate {
                 virtual_nanos: coordinate,
                 retired_instructions: None,
             },
             scheduler,
             backend,
-        )?;
-        scheduler.set_signal_fault_wakeup(evaluation.next_wakeup_nanos)?;
-        scheduler.append_fault_observations(evaluation.observations)
+            pending_outputs,
+        )
     }
 }

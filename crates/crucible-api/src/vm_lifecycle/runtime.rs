@@ -240,10 +240,10 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
-        let (_scheduler, backend, interceptor) = replay.inner.parts_with_network_interceptor_mut();
+        let (scheduler, backend, interceptor, pending_outputs) =
+            replay.inner.network_transaction_parts_mut();
         let reconstructed_fault_checkpoint = interceptor
-            .runtime_mut()
-            .checkpoint(backend)
+            .checkpoint(scheduler, pending_outputs, backend)
             .map_err(|error| SchedulerError::BoundaryViolation {
                 message: format!("checkpoint reconstructed signal fault continuation: {error}"),
             })?;

@@ -627,33 +627,91 @@ impl SingleScheduler {
             NetworkLinkDirection::EndpointAToEndpointB => "a-to-b",
             NetworkLinkDirection::EndpointBToEndpointA => "b-to-a",
         };
-        let mut material = format!(
-            "link={}\ndirection={direction}\nframes={frame_count}",
-            runtime.canonical_id.name
-        );
-        for delivery in dropped {
-            material.push_str(&format!(
-                "\ndelivery={}:{}:{}:{}",
-                delivery.key.delivery_icount,
-                delivery.key.src_node,
-                delivery.key.seq,
-                delivery.frame_id
-            ));
-            material.push(':');
-            material.push_str(&ContentHash::from_bytes(&delivery.payload).to_hex());
+        let frames = dropped
+            .into_iter()
+            .map(|delivery| NetworkDroppedFrameEvidence {
+                delivery_icount: delivery.key.delivery_icount,
+                source_slot: delivery.key.src_node,
+                delivery_sequence: delivery.key.seq,
+                frame_id: delivery.frame_id,
+                payload: delivery.payload,
+            })
+            .collect::<Vec<_>>();
+        let mut material = Vec::new();
+        append_len_prefixed(&mut material, runtime.canonical_id.name.as_bytes())?;
+        append_len_prefixed(&mut material, direction.as_bytes())?;
+        material.extend_from_slice(&frame_count.to_be_bytes());
+        for frame in &frames {
+            material.extend_from_slice(&frame.delivery_icount.to_be_bytes());
+            material.extend_from_slice(&frame.source_slot.to_be_bytes());
+            material.extend_from_slice(&frame.delivery_sequence.to_be_bytes());
+            material.extend_from_slice(&frame.frame_id.to_be_bytes());
+            append_len_prefixed(&mut material, &frame.payload)?;
         }
-        let evidence = ContentHash::from_canonical_material(
-            "crucible.network-inflight-drop-evidence.v1",
-            &material,
-        );
+        let evidence = ContentHash::from_bytes(&material);
         let result = NetworkInFlightDropEvidence {
             link: runtime.canonical_id.clone(),
             direction: runtime.direction,
             frame_count,
+            frames,
             evidence,
         };
         self.refresh_device_horizons()?;
         Ok(result)
+    }
+
+    /// Returns a canonical identity for scheduler-owned network continuation state.
+    ///
+    /// The digest covers every directed link, its mutable sequencing cursors,
+    /// and every full in-flight response. It deliberately excludes process-local
+    /// addresses and map allocation details.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError::BoundaryViolation`] if any variable-width field
+    /// cannot be represented by the canonical length prefix.
+    pub fn network_continuation_digest(&self) -> Result<ContentHash, SchedulerError> {
+        let mut material = Vec::new();
+        for ((link, direction), runtime) in &self.world_network_links {
+            append_len_prefixed(&mut material, link.name.as_bytes())?;
+            material.push(match direction {
+                NetworkLinkDirection::EndpointAToEndpointB => 1,
+                NetworkLinkDirection::EndpointBToEndpointA => 2,
+            });
+            let snapshot = runtime.link.snapshot();
+            material.extend_from_slice(&snapshot.current_icount.to_be_bytes());
+            material.push(snapshot.shift_bits);
+            material.extend_from_slice(&snapshot.src_node.to_be_bytes());
+            material.extend_from_slice(&snapshot.base_latency_ns.to_be_bytes());
+            material.extend_from_slice(&snapshot.floor_ns.to_be_bytes());
+            material.extend_from_slice(&snapshot.next_seq.to_be_bytes());
+            material.push(u8::from(snapshot.lookahead_recompute_pending));
+            material.extend_from_slice(&snapshot.rng_position.to_be_bytes());
+            let inflight_count = u64::try_from(snapshot.inflight.len()).map_err(|_error| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "network continuation frame count exceeds the canonical width",
+                    ),
+                }
+            })?;
+            material.extend_from_slice(&inflight_count.to_be_bytes());
+            for pending in &snapshot.inflight {
+                material.extend_from_slice(&pending.key.delivery_icount.to_be_bytes());
+                material.extend_from_slice(&pending.key.src_node.to_be_bytes());
+                material.extend_from_slice(&pending.key.seq.to_be_bytes());
+                material.extend_from_slice(&pending.response.request_id.to_be_bytes());
+                material.push(match pending.response.status {
+                    crucible_device::ResponseStatus::Ok => 1,
+                    crucible_device::ResponseStatus::Error => 2,
+                });
+                append_len_prefixed(&mut material, &pending.response.payload)?;
+            }
+        }
+        for (link, position) in &self.world_network_rng_positions {
+            append_len_prefixed(&mut material, link.name.as_bytes())?;
+            material.extend_from_slice(&position.to_be_bytes());
+        }
+        Ok(ContentHash::from_bytes(&material))
     }
 
     /// RESOLVEs every device completion for `node` due at or before
@@ -1590,4 +1648,14 @@ impl SingleScheduler {
 
         Ok(SchedulerQuiescence { blockers })
     }
+}
+
+fn append_len_prefixed(output: &mut Vec<u8>, value: &[u8]) -> Result<(), SchedulerError> {
+    let length =
+        u64::try_from(value.len()).map_err(|_error| SchedulerError::BoundaryViolation {
+            message: String::from("network transition evidence value exceeds the canonical width"),
+        })?;
+    output.extend_from_slice(&length.to_be_bytes());
+    output.extend_from_slice(value);
+    Ok(())
 }
