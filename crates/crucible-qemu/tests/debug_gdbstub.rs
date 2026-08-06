@@ -70,7 +70,9 @@ fn debug_gdbstub_is_fourth_out_of_band_launch_channel() {
             .any(|window| { window == ["-gdb", "tcp:127.0.0.1:9001",] })
     );
     assert!(command.args().windows(2).any(|window| {
-        window[0] == "-plugin" && window[1].contains("simfd=3,slot=0,shmemfd=4,wakefd=5")
+        window[0] == "-plugin"
+            && window[1].contains("simfd=3,slot=0,fault_node_hash=")
+            && window[1].contains(",shmemfd=4,wakefd=5")
     }));
     assert!(!command.args().iter().any(|arg| arg == "127.0.0.1:9000"));
     assert_eq!(command.gdbstub_channel(), Some(&gdbstub));

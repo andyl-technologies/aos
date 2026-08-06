@@ -1,4 +1,5 @@
 diff --git a/accel/accel-target.c b/accel/accel-target.c
+index 33a539b..7ac1978 100644
 --- a/accel/accel-target.c
 +++ b/accel/accel-target.c
 @@ -94,6 +94,12 @@ static void accel_init_cpu_interfaces(AccelClass *ac)
@@ -15,6 +16,7 @@ diff --git a/accel/accel-target.c b/accel/accel-target.c
  
      if (acc) {
 diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
+index 38ff227..4fd8701 100644
 --- a/accel/tcg/meson.build
 +++ b/accel/tcg/meson.build
 @@ -29,5 +29,6 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
@@ -26,6 +28,7 @@ diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
  ))
 diff --git a/accel/tcg/tcg-accel-ops-sim.c b/accel/tcg/tcg-accel-ops-sim.c
 new file mode 100644
+index 0000000..e54900f
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim.c
 @@ -0,0 +1,38 @@
@@ -68,6 +71,7 @@ new file mode 100644
 +}
 +type_init(sim_accel_ops_register_types);
 diff --git a/accel/tcg/tcg-accel-ops.c b/accel/tcg/tcg-accel-ops.c
+index d9b662e..7502118 100644
 --- a/accel/tcg/tcg-accel-ops.c
 +++ b/accel/tcg/tcg-accel-ops.c
 @@ -223,7 +223,7 @@ static void tcg_accel_ops_init(AccelOpsClass *ops)
@@ -80,6 +84,7 @@ diff --git a/accel/tcg/tcg-accel-ops.c b/accel/tcg/tcg-accel-ops.c
      AccelOpsClass *ops = ACCEL_OPS_CLASS(oc);
  
 diff --git a/accel/tcg/tcg-accel-ops.h b/accel/tcg/tcg-accel-ops.h
+index 6feeb3f..c872770 100644
 --- a/accel/tcg/tcg-accel-ops.h
 +++ b/accel/tcg/tcg-accel-ops.h
 @@ -18,5 +18,6 @@ void tcg_cpu_destroy(CPUState *cpu);
@@ -90,6 +95,7 @@ diff --git a/accel/tcg/tcg-accel-ops.h b/accel/tcg/tcg-accel-ops.h
  
  #endif /* TCG_ACCEL_OPS_H */
 diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
+index c1a30b0..faf8c90 100644
 --- a/accel/tcg/tcg-all.c
 +++ b/accel/tcg/tcg-all.c
 @@ -54,6 +54,7 @@ struct TCGState {
@@ -159,6 +165,7 @@ diff --git a/accel/tcg/tcg-all.c b/accel/tcg/tcg-all.c
  
  type_init(register_accel_types);
 diff --git a/qemu-options.hx b/qemu-options.hx
+index dc694a9..c860453 100644
 --- a/qemu-options.hx
 +++ b/qemu-options.hx
 @@ -220,7 +220,7 @@ SRST

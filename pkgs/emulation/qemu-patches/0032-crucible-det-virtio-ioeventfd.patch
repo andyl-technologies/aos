@@ -1,4 +1,5 @@
 diff --git a/hw/virtio/virtio-pci.c b/hw/virtio/virtio-pci.c
+index 3ca3f84..fbcf68f 100644
 --- a/hw/virtio/virtio-pci.c
 +++ b/hw/virtio/virtio-pci.c
 @@ -16,6 +16,8 @@

@@ -1,4 +1,5 @@
 diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
+index 4fd8701..f702397 100644
 --- a/accel/tcg/meson.build
 +++ b/accel/tcg/meson.build
 @@ -30,5 +30,6 @@ system_ss.add(when: ['CONFIG_TCG'], if_true: files(
@@ -9,6 +10,7 @@ diff --git a/accel/tcg/meson.build b/accel/tcg/meson.build
    'watchpoint.c',
  ))
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
+index dc00fb3..a133a7c 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
 @@ -38,6 +38,7 @@
@@ -52,6 +54,7 @@ diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
  
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
 new file mode 100644
+index 0000000..e55a1f8
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
 @@ -0,0 +1,76 @@
@@ -133,6 +136,7 @@ new file mode 100644
 +}
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.h b/accel/tcg/tcg-accel-ops-sim-shmem.h
 new file mode 100644
+index 0000000..69553f3
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.h
 @@ -0,0 +1,12 @@
@@ -149,6 +153,7 @@ new file mode 100644
 +
 +#endif /* TCG_ACCEL_OPS_SIM_SHMEM_H */
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 259ccd1..55c0bea 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -173,6 +173,22 @@ typedef void (*qemu_plugin_tcg_exec_cb_t)(unsigned int vcpu_index,

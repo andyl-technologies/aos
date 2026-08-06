@@ -74,13 +74,25 @@ fn gate_any_guest_whitebox_switch_is_host_plugin_configuration_without_agent_con
     let report = run_single_vm_fingerprint_gate(&mut runner, &scenario).unwrap_or_else(|error| {
         panic!("host-plugin off/on no-agent stream contract should hold: {error}")
     });
+    let fault_hash = whitebox_plugin_config(
+        "/nix/store/plugin/lib/libcrucible_qemu_plugin.so",
+        QemuLaunchPluginSwitch::Off,
+    )
+    .fault_node_hash()
+    .iter()
+    .map(|byte| format!("{byte:02x}"))
+    .collect::<String>();
 
     assert_eq!(report.sample_count, 3);
     assert_eq!(
         runner.plugin_args,
         vec![
-            "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=off,coverage=off",
-            "simfd=3,slot=0,shmemfd=4,wakefd=5,whitebox=on,coverage=off,whitebox_setup=x86-port-00e7-unclaimed-v1",
+            format!(
+                "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=off,coverage=off"
+            ),
+            format!(
+                "simfd=3,slot=0,fault_node_hash={fault_hash},shmemfd=4,wakefd=5,whitebox=on,coverage=off,whitebox_setup=x86-port-00e7-unclaimed-v1"
+            ),
         ]
     );
     compare_single_vm_fingerprint_streams(

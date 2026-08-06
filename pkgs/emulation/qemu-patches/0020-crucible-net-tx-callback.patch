@@ -1,4 +1,5 @@
 diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
+index 8757156..a138db2 100644
 --- a/include/qemu/qemu-plugin.h
 +++ b/include/qemu/qemu-plugin.h
 @@ -1036,6 +1036,33 @@ int qemu_plugin_net_flush(void);
@@ -36,6 +37,7 @@ diff --git a/include/qemu/qemu-plugin.h b/include/qemu/qemu-plugin.h
  (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
                                   int64_t num, uint64_t a1, uint64_t a2,
 diff --git a/net/net.c b/net/net.c
+index 39d6f28..1add21d 100644
 --- a/net/net.c
 +++ b/net/net.c
 @@ -47,6 +47,7 @@

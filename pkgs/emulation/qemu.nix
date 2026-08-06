@@ -204,6 +204,9 @@
   # patch -p1 < ${./qemu-patches/0044-crucible-time-advance-enqueue-kick.patch}
   # patch -p1 < ${./qemu-patches/0045-crucible-time-advance-arm-at-vcpu-boundary.patch}
   # patch -p1 < ${./qemu-patches/0046-crucible-translation-prefetch-helper.patch}
+  # patch -p1 < ${./qemu-patches/0047-crucible-fault-command-abi.patch}
+  # patch -p1 < ${./qemu-patches/0048-crucible-fault-safe-boundary.patch}
+  # patch -p1 < ${./qemu-patches/0049-crucible-memory-boundary-mutate.patch}
 in
   mkDerivation {
     inherit pname;
@@ -368,7 +371,11 @@ in
           cat > "$out/share/licenses/${pname}/AOS-MODIFICATIONS" <<'MODIFICATIONS'
           AOS package: ${pname}
           Upstream version: ${version}
-          Modified QEMU: ${if applyCruciblePatches then "yes" else "no"}
+          Modified QEMU: ${
+            if applyCruciblePatches
+            then "yes"
+            else "no"
+          }
           Ordered patch count: ${toString patchCount}
           Patch series identity: ${patchSeriesHash}
           Corresponding source package: qemu-crucible-source

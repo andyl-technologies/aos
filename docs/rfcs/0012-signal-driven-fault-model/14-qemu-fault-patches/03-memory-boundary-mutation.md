@@ -9,9 +9,10 @@ mutation, or debugger writes.
 
 ## Capability and dependencies
 
-- Provides `qemu.memory.mutate.gpa.v1` on both architectures.
-- Provides `qemu.memory.mutate.gva.x86_64.v1` and
-  `qemu.memory.mutate.gva.aarch64.v1` only with exact translation evidence.
+- Provides exactly one architecture-bound capability row per QEMU process:
+  `qemu.memory.mutate.x86_64.v1` or
+  `qemu.memory.mutate.aarch64.v1`. The closed payload selects GPA or GVA;
+  the GVA form additionally requires exact translation evidence.
 - Depends on 0047–0048 and existing raw-state/dirty-tracking facilities.
 
 ## Command payload
@@ -28,9 +29,11 @@ bytes/bits; unselected bits remain unchanged.
 
 ## Address resolution
 
-GPA mutation accepts only normal guest RAM or explicitly supported device-memory
-RAM regions. ROM, MMIO, aliases with ambiguous ownership, unmapped holes, and
-host pointers are rejected. The result records MemoryRegion identity, RAMBlock
+GPA mutation accepts only normal writable guest RAM. Version 1 has no
+device-memory mutation mode: RAM-backed devices, ROM/ROMD, MMIO, protected RAM,
+read-only regions, aliases with ambiguous ownership, unmapped holes, and host
+pointers are rejected. The closed evidence flag set therefore cannot describe a
+device-memory fragment. The result records MemoryRegion identity, RAMBlock
 identity, offset, length, and mapping generation.
 
 GVA mutation walks the selected vCPU's architecture page tables at the safe
@@ -47,10 +50,14 @@ boundary. On any failure before commit, no byte changes. A failure during commit
 is an internal fatal error because the patch must prove its RAM writes cannot
 partially fail after validation.
 
-The patch uses QEMU RAM APIs that notify dirty tracking, migration, code/TB
-invalidation, IOMMU/address-space listeners where required, and device memory
-observers. Executable-page mutation invalidates affected translated blocks before
-guest execution resumes. The mutation cannot target QEMU host memory.
+The patch uses QEMU's normal-RAM commit path to update dirty tracking and
+migration state and to invalidate code/TB state. It does not claim device or
+IOMMU observer semantics because those targets are outside the closed version-1
+target set. Executable-page mutation invalidates affected translated blocks
+before guest execution resumes. GPA mutation conservatively covers every
+touched physical range with translated-block invalidation because a physical
+page may be executable through an alias not named by the command. The mutation
+cannot target QEMU host memory.
 
 ## Composition and evidence
 
@@ -78,6 +85,23 @@ commands are serialized by patch 0059. No separate mutation shadow memory exists
 4. Save before/after mutation and prove restore/fingerprint equivalence.
 5. Revert patch and prove capability/mutation live gate fails.
 6. Compare non-sim patched and unpatched QEMU.
+
+The x86-64 and AArch64 live guests each publish a readiness byte only after
+installing page tables and enabling write protection. The GPL-side test plugin
+observes that byte and then schedules the GVA command at a deterministic future
+boundary. This makes the write-protected-page rejection, exact single- and
+cross-page translation, and stale-translation rejection tests exercise each
+architecture's live page tables rather than a fixed firmware instruction-count
+guess.
+
+Both architecture matrices mutate an already translated instruction and require
+the guest to publish the new instruction result; an evidence bit alone cannot
+pass the test. They also establish the ROM/ROMD and MMIO target types through
+QEMU's live memory-map introspection before checking rejection, prove that a
+valid first fragment remains unchanged when a later fragment is invalid, cover
+hash-only evidence above 64 KiB, and successfully apply the exact 16 MiB hard
+bound. The stock-QEMU negative control proves that the Crucible fault-command ABI
+is absent.
 
 ## Licensing checklist
 

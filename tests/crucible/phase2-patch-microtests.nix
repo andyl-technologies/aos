@@ -312,6 +312,26 @@
         inherit pkgs lib;
       };
     }
+    {
+      patch = "0047-crucible-fault-command-abi.patch";
+      check = import ./phase2-qemu-fault-boundary.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0047-crucible-fault-command-abi.patch";
+      };
+    }
+    {
+      patch = "0048-crucible-fault-safe-boundary.patch";
+      check = import ./phase2-qemu-fault-boundary.nix {
+        inherit pkgs lib qemuPackage;
+        patchName = "0048-crucible-fault-safe-boundary.patch";
+      };
+    }
+    {
+      patch = "0049-crucible-memory-boundary-mutate.patch";
+      check = import ./phase2-qemu-memory-mutation.nix {
+        inherit pkgs lib qemuPackage;
+      };
+    }
   ];
 
   microtestPatchNames =

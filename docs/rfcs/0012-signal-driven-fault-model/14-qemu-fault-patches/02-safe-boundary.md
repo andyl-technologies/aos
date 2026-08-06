@@ -60,8 +60,10 @@ received -> validated -> armed -> reached -> applying -> applied -> acknowledged
 
 Every transition is one-way and sequence-checked. Once `applying`, cancellation
 is forbidden. Applying twice is impossible even across wakeups, callbacks, or
-save/restore. Same-boundary commands order by phase, command kind's registered
-precedence, binding hash, opportunity hash, then command sequence.
+save/restore. A bounded 4,096-sequence replay window admits host publication
+reordering without permitting duplicate or old sequence reuse. Same-boundary
+commands order by phase, numeric registered command kind, binding hash,
+opportunity hash, then command sequence.
 
 ## Result evidence
 

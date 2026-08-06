@@ -107,6 +107,8 @@ in
           git config commit.gpgsign false
           git config core.autocrlf false
           git config advice.detachedHead false
+          git config gc.auto 0
+          git config maintenance.auto false
           git add -A
           GIT_AUTHOR_NAME="${series.deterministicAuthorName}" \
           GIT_AUTHOR_EMAIL="${series.deterministicAuthorEmail}" \
@@ -127,7 +129,7 @@ in
             GIT_COMMITTER_NAME="${series.deterministicAuthorName}" \
             GIT_COMMITTER_EMAIL="${series.deterministicAuthorEmail}" \
             GIT_COMMITTER_DATE="${series.deterministicPatchDate}" \
-              git -c commit.gpgsign=false commit -q -m "''${patch_name%.patch}"
+              git -c commit.gpgsign=false commit -q -s -m "''${patch_name%.patch}"
             git rev-parse HEAD >> "$TMPDIR/commits"
           done
           head_commit=$(git rev-parse HEAD)
@@ -168,11 +170,10 @@ in
           mkdir -p include/aos/crucible
           cp ${qemuPackage.passthru.shmemGeneratedHeader} \
             include/aos/crucible/crucible_shmem_abi.h
-          # Prune .git: the reconstructed commit chain leaves a live object
-          # store whose loose objects git repacks asynchronously, so traversing
-          # it races ("find: './.git/objects/XX': No such file or directory")
-          # and fails the phase under pipefail. The QEMU python scripts we
-          # rewrite never live under .git.
+          # Prune .git from the traversal. Automatic GC and maintenance are
+          # disabled above so the reconstructed loose-object store cannot race
+          # this or later source walks. The QEMU Python scripts we rewrite never
+          # live under .git.
           find . -path ./.git -prune -o -type f -name '*.py' -print | while IFS= read -r f; do
             sed -i "1s|#!/usr/bin/env python3|#!${pkgs.python3}/bin/python3|" "$f"
             sed -i "1s|#!/usr/bin/python3|#!${pkgs.python3}/bin/python3|" "$f"
