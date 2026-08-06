@@ -140,38 +140,6 @@ pub struct HostFaultActionSink {
 }
 
 impl HostFaultActionSink {
-    /// Derives the exact host capability manifest from the closed effect registry.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`FaultRuntimeError::AdapterManifestMismatch`] for the node
-    /// adapter or [`FaultRuntimeError::Contract`] if a registry identifier is
-    /// not canonical.
-    pub fn capability_manifest(
-        adapter: FaultAdapter,
-    ) -> Result<FaultCapabilityManifest, FaultRuntimeError> {
-        if adapter == FaultAdapter::Node {
-            return Err(FaultRuntimeError::AdapterManifestMismatch);
-        }
-        let backend = FaultObjectId::parse(match adapter {
-            FaultAdapter::Network => "network-host",
-            FaultAdapter::Storage => "storage-host",
-            FaultAdapter::Node => return Err(FaultRuntimeError::AdapterManifestMismatch),
-        })
-        .map_err(FaultRuntimeError::Contract)?;
-        let capabilities = EffectKind::all()
-            .iter()
-            .filter(|kind| kind.descriptor().adapter == adapter)
-            .map(|kind| FaultCapabilityId::parse(kind.descriptor().capability))
-            .collect::<Result<BTreeSet<_>, _>>()
-            .map_err(FaultRuntimeError::Contract)?;
-        Ok(FaultCapabilityManifest {
-            backend,
-            capabilities,
-            bounds: BTreeMap::new(),
-        })
-    }
-
     /// Creates an empty host adapter state.
     #[must_use]
     pub fn new() -> Self {
