@@ -44,11 +44,13 @@ pub mod trigger;
 
 pub use backend::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput,
-    BackendNetworkFaultContinuation, BackendNetworkOutput, BackendNetworkPreservedAvailability,
-    BackendNetworkRoute, BackendSnapshot, ExecutionFingerprint, ExecutionHorizon,
-    FingerprintSample, GdbAttachInfo, GdbListen, MockSimulationBackend, MockSimulationBackendState,
-    SimulationBackend, StepObservation, deterministic_node_mac, deterministic_node_mac_string,
+    BackendNetworkFaultContinuation, BackendNetworkFaultCursor, BackendNetworkFaultCursorError,
+    BackendNetworkOutput, BackendNetworkPreservedAvailability, BackendNetworkRoute,
+    BackendSnapshot, ExecutionFingerprint, ExecutionHorizon, FingerprintSample, GdbAttachInfo,
+    GdbListen, MockSimulationBackend, MockSimulationBackendState, SimulationBackend,
+    StepObservation, deterministic_node_mac, deterministic_node_mac_string,
 };
+pub use crucible_device::{ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError};
 pub use decision::{DecisionRecordError, DecisionRecorder};
 pub use device::{
     LinkEmitDecisionRecord, NetworkFaultApplication, NetworkLinkDirection,

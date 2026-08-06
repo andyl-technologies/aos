@@ -229,7 +229,12 @@ where
             .map(|output| {
                 self.loop_impl
                     .backend_network_output_time(&output.source, output.emit_icount)
-                    .map(|at| (at, output))
+                    .map(|at| {
+                        let resume = VirtualTime {
+                            ticks: output.fault_continuation.cursor().not_before_nanos(),
+                        };
+                        (at.max(resume), output)
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
         timed_network_outputs.sort_by(|(left_at, left), (right_at, right)| {
