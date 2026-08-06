@@ -383,6 +383,7 @@ dependencies = [
  "tower",
  "tracing",
  "url",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "worker",

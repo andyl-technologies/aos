@@ -183,7 +183,8 @@ mod entry {
     };
 
     use aos_hub_core::auth::jwt::JwtKeys;
-    use aos_hub_core::db::Database;
+    use aos_hub_core::db::{Database, TokenAuth};
+    use aos_hub_core::domain::{Permission, Principal, Role, Scope};
     use aos_hub_core::ratelimit::RateLimiter;
     use aos_hub_core::service::RpcService;
     use aos_hub_core::web::console::{console_router, ConsoleDeps};
@@ -1532,14 +1533,9 @@ mod entry {
                 .create_user("workerd@example.test", None)
                 .await
                 .map_err(|error| worker::Error::RustError(format!("e2e user: {error:#}")))?;
-            db.grant_membership(
-                "user",
-                user_id,
-                "instance",
-                aos_hub_core::auth::Role::Owner.as_str(),
-            )
-            .await
-            .map_err(|error| worker::Error::RustError(format!("e2e grant: {error:#}")))?;
+            db.grant_membership("user", user_id, "instance", Role::Owner.as_str())
+                .await
+                .map_err(|error| worker::Error::RustError(format!("e2e grant: {error:#}")))?;
             let session = db
                 .create_session(user_id, 3_600, 0)
                 .await
@@ -1547,15 +1543,15 @@ mod entry {
             let jwt = JwtKeys::from_secret(self.env.secret(HUB_JWT_SECRET)?.to_string().as_bytes());
             let token = jwt
                 .mint(
-                    &aos_hub_core::auth::TokenAuth {
+                    &TokenAuth {
                         token_id: "workerd-e2e".into(),
-                        owner: aos_hub_core::auth::Principal::user(user_id),
-                        scope: aos_hub_core::auth::Scope::root(),
+                        owner: Principal::user(user_id),
+                        scope: Scope::root(),
                         permissions: vec![
-                            aos_hub_core::auth::Permission::IamAdmin,
-                            aos_hub_core::auth::Permission::RegistryConfigure,
-                            aos_hub_core::auth::Permission::Publish,
-                            aos_hub_core::auth::Permission::Read,
+                            Permission::IamAdmin,
+                            Permission::RegistryConfigure,
+                            Permission::Publish,
+                            Permission::Read,
                         ],
                     },
                     3_600,
