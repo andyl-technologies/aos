@@ -97,7 +97,13 @@ the installer. Do not commit any of these values.
 Before enabling automatic deployment, ensure that the `andyl.org` zone belongs
 to the deployment account and that the account can create the
 `aos.staging.andyl.org` custom domain. Configure all GitHub environment values
-above.
+above. Create the staging Worker once with `aos-hub worker install`; routine
+workflow runs deliberately use `worker deploy`, which requires an existing
+Worker so a provider/authentication failure cannot be mistaken for first
+provisioning. Use the same name, domain, external URL, rate-limit base, runtime
+token, JWT/seal values, and route-reservation keyring documented above. After
+that one-time install, every successful `master` run updates staging
+automatically.
 
 ## Optional outbound router and ingress attestation
 
@@ -109,14 +115,22 @@ For a deployment that requires connect-time DNS pinning and signed connected-
 peer evidence, deploy the packaged `aos-hub-egress` router independently, then
 pass both `--egress-gateway-url https://router.example/v1/fetch` and
 `HUB_EGRESS_GATEWAY_KEY=KEY_ID:KEY` to a manual installer run. The installer
-authenticates the router contract before changing the Worker. Removing both
-values returns the generated Worker configuration to direct mode. Routers are
-an optional strengthening layer and may also provide reachability to private
-networks; they are not part of the Worker-only availability path.
+authenticates the router contract and stages its overlap key before selecting
+the router URL. On first install only, the installer uses a direct-Fetch
+bootstrap version until that first secret set is complete. Router rotations keep
+the existing router selected; every old and new router replica must accept both
+key ids for the bounded rotation window. Removing both values returns the
+generated Worker configuration to direct mode. The packaged router
+accepts only public, globally routable upstream peers; it is an optional
+connect-time verification layer, not private-network connectivity and not part
+of the Worker-only availability path.
 
 `HUB_DELIVERY_ATTESTATION_KEY` is also optional. Configure it only when a
 trusted upstream TLS, VPN, or layer-7 adapter sends authenticated delivery
-assertions. The standard Cloudflare edge path does not need it.
+assertions. Pass `--disable-delivery-attestation` when the complete desired
+configuration uses the standard Cloudflare edge path; this also removes a key
+left by an earlier attested deployment. The automated staging and production
+workflows select that standard path explicitly.
 
 The deployment workflow provisions and updates the Worker resources but does not
 create the first Hub owner. After the first successful deployment, bootstrap the

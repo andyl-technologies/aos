@@ -747,6 +747,14 @@ mod entry {
             return Ok(response.with_headers(headers));
         }
 
+        #[cfg(feature = "do-e2e")]
+        if req.method() == Method::Post && req.url()?.path() == "/_e2e/direct-egress" {
+            return match crate::consoleports::e2e_assert_direct_egress().await {
+                Ok(()) => Response::ok("ok"),
+                Err(error) => Response::error(format!("direct egress contract: {error:#}"), 500),
+            };
+        }
+
         // The request's own `scheme://host`, the fallback canonical URL when
         // The **`HubDb` colocated-SQLite Durable Object is the only system of
         // record**. The

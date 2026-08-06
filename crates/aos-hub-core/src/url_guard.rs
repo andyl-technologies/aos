@@ -11,9 +11,11 @@
 //! The native hub layers the IO-bound parts on top in its `fetch` module: a
 //! write-time DNS pre-check and a connect-time validating resolver around
 //! [`is_safe_remote_url`], and symlink-escape canonicalization around
-//! [`safe_join`]. On the Worker those IO-bound parts are supplied by the
-//! repository-owned hardened-egress HTTPS gateway. The scheme and literal-IP
-//! rejections here run on every target regardless of deployment.
+//! [`safe_join`]. The Worker runs those pure checks before its default platform
+//! Fetch transport; an operator may select the repository-owned egress router
+//! when connect-time DNS pinning and signed peer evidence are required. The
+//! scheme and literal-IP rejections here run on every target regardless of
+//! deployment.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

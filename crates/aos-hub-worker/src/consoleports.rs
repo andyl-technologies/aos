@@ -593,12 +593,13 @@ impl WorkerEgressClient {
         })
     }
 
-    /// Sends one authenticated request and verifies gateway-signed evidence.
+    /// Sends one request through the selected Worker egress transport.
     ///
     /// # Errors
     ///
     /// Returns an error for an unsafe target, request construction or transport
-    /// failure, stale/malformed evidence, a non-global peer, or bad signature.
+    /// failure, a forbidden redirect, or invalid gateway evidence when the
+    /// optional router transport is selected.
     #[allow(clippy::too_many_arguments)]
     pub async fn send(
         &self,
@@ -923,6 +924,125 @@ impl WorkerEgressClient {
             &signature,
         )
     }
+}
+
+/// Exercises the Worker-direct Fetch contract against the workerd E2E outbound
+/// fixture. This is compiled only into the non-production `do-e2e` artifact.
+#[cfg(feature = "do-e2e")]
+pub async fn e2e_assert_direct_egress() -> Result<()> {
+    let client = WorkerEgressClient::direct();
+
+    let mut ranged = client
+        .send(
+            "https://egress.test/bytes",
+            "GET",
+            None,
+            None,
+            Some("bytes=1-3"),
+            None,
+            Some("Bearer e2e-token"),
+        )
+        .await?;
+    anyhow::ensure!(ranged.status_code() == 206, "direct range status drift");
+    anyhow::ensure!(ranged.bytes().await? == b"bcd", "direct range body drift");
+
+    let mut head = client
+        .send(
+            "https://egress.test/head",
+            "HEAD",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+    anyhow::ensure!(head.status_code() == 200, "direct HEAD status drift");
+    anyhow::ensure!(
+        head.headers().get("x-egress-fixture")?.as_deref() == Some("head"),
+        "direct HEAD response header drift"
+    );
+    anyhow::ensure!(
+        head.bytes().await?.is_empty(),
+        "direct HEAD returned a body"
+    );
+
+    let mut redirected = client
+        .send(
+            "https://egress.test/redirect-same",
+            "GET",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+    anyhow::ensure!(
+        redirected.bytes().await? == b"redirect-ok",
+        "direct same-origin redirect drift"
+    );
+
+    anyhow::ensure!(
+        client
+            .send(
+                "https://egress.test/redirect-cross",
+                "GET",
+                None,
+                None,
+                None,
+                None,
+                Some("Bearer e2e-token"),
+            )
+            .await
+            .is_err(),
+        "direct egress followed an authenticated cross-origin redirect"
+    );
+    anyhow::ensure!(
+        client
+            .send(
+                "https://egress.test/redirect-mutating",
+                "POST",
+                Some(b"mutation".to_vec()),
+                Some("text/plain"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .is_err(),
+        "direct egress followed a mutating redirect"
+    );
+    anyhow::ensure!(
+        client
+            .send(
+                "https://egress.test/redirect-downgrade",
+                "GET",
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .is_err(),
+        "direct egress followed an HTTPS downgrade"
+    );
+
+    let webhook = client
+        .send_webhook(
+            "https://egress.test/webhook",
+            br#"{"ok":true}"#.to_vec(),
+            "release.published",
+            "sha256=e2e",
+            "delivery-e2e",
+        )
+        .await?;
+    anyhow::ensure!(
+        webhook.status_code() == 204,
+        "direct webhook contract drift"
+    );
+    Ok(())
 }
 
 fn require_fresh_gateway_timestamp(timestamp: i64, now: i64) -> Result<()> {

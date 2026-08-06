@@ -292,6 +292,9 @@ struct WorkerArgs {
     /// TLS, VPN, or layer-7 adapter (HUB_DELIVERY_ATTESTATION_KEY).
     #[arg(long, env = "HUB_DELIVERY_ATTESTATION_KEY")]
     delivery_attestation_key: Option<String>,
+    /// Remove any deployed delivery-attestation key and use the standard edge path.
+    #[arg(long, conflicts_with = "delivery_attestation_key")]
+    disable_delivery_attestation: bool,
     /// JSON file containing Worker TLS-terminator probe signer material.
     #[arg(long)]
     domain_probe_signer_manifest_file: Option<PathBuf>,
@@ -1008,12 +1011,12 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             println!("provisioned: R2 {}, KV id {}", cfg.bucket, cfg.kv_id);
         }
         WorkerCommand::Deploy(args) => {
-            deploy_worker(&assets, args).await?;
+            deploy_worker(&assets, args, cloudflare::DeployMode::Update).await?;
         }
         WorkerCommand::Install(args) => {
             // `HubDb` migrates its schema on first use; the root admin is
             // created via the seal-gated bootstrap endpoint.
-            let seal = deploy_worker(&assets, args).await?;
+            let seal = deploy_worker(&assets, args, cloudflare::DeployMode::Install).await?;
             if let Some(email) = &args.root_email {
                 let plaintext =
                     read_password(args.root_password.clone(), args.root_password_stdin)?;
@@ -1101,6 +1104,7 @@ async fn provision_worker(
 async fn deploy_worker(
     assets: &aos_hub::cloudflare::Assets,
     args: &WorkerArgs,
+    mode: aos_hub::cloudflare::DeployMode,
 ) -> Result<Option<String>> {
     use aos_hub::cloudflare;
 
@@ -1139,12 +1143,13 @@ async fn deploy_worker(
         cloudflare_api_token: args.cloudflare_api_token.clone(),
         email_api_token: args.email_api_token.clone(),
         delivery_attestation_key: args.delivery_attestation_key.clone(),
+        disable_delivery_attestation: args.disable_delivery_attestation,
         domain_probe_signer_manifest,
         route_reservation_keyring,
     };
     secrets.validate()?;
     let cfg = provision_worker(assets, args).await?;
-    let applied = cloudflare::deploy(assets, &cfg, &secrets).await?;
+    let applied = cloudflare::deploy(assets, &cfg, &secrets, mode).await?;
     if applied.minted_jwt_secret.is_some() || applied.minted_seal_key.is_some() {
         println!("NOTE: store these freshly minted secrets — they are not recoverable:");
         if let Some(jwt) = &applied.minted_jwt_secret {

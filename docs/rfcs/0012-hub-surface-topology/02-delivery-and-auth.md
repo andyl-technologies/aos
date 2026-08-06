@@ -405,7 +405,11 @@ stronger guarantees may configure the repository-owned `aos-hub-egress` router
 with `HUB_EGRESS_GATEWAY_URL` and `HUB_EGRESS_GATEWAY_KEY`. The pair is
 optional but atomic: neither may be configured alone. Selecting it routes all
 outbound HTTP through that transport rather than creating inconsistent
-per-feature paths.
+per-feature paths. The runtime ignores a key that has been pre-staged without a
+URL so the installer can use direct Fetch as a safe transition state; desired
+configuration and generated Wrangler configuration never contain only half of
+the pair. The staged-key state is used only during a first-install bootstrap;
+router updates keep the existing router selected throughout rotation.
 
 The repository packages the gateway as `aos-hub-egress`. It disables
 environment proxies and automatic redirects, resolves all addresses at connect
@@ -435,13 +439,16 @@ The deployment interface takes optional `--egress-gateway-url` and an
 operator-provisioned `HUB_EGRESS_GATEWAY_KEY` encoded as one atomic `KEY_ID:KEY`
 value. It never mints that key. During rotation every router
 replica accepts the bounded current/next key-id overlap before the installer
-challenges and atomically changes the Worker's selected id/key. Only after the
-Worker cutover may the old router id be removed. The installer completes a
-fresh, mutually authenticated `/v1/challenge` before Worker deployment or
-secret rotation when this optional transport is selected. It installs the
-scoped provider token separately. There is one egress abstraction and one
-selected transport; the former mandatory gateway configuration and unsigned
-evidence-header contract do not exist after cutover.
+challenges the new router. On an existing deployment it stages the challenged
+overlap key while the existing router remains selected and publishes the new
+router URL only after every secret mutation succeeds. On first install it may
+publish a direct-Fetch bootstrap version, install the first complete secret set,
+and then select the router. Only after the Worker cutover may the old router id
+be removed. The installer completes a fresh, mutually authenticated
+`/v1/challenge` before this sequence whenever the optional transport is
+selected. It installs the scoped provider token separately. There is one egress
+abstraction and one selected transport; the former mandatory gateway
+configuration and unsigned evidence-header contract do not exist after cutover.
 
 ## Writes
 

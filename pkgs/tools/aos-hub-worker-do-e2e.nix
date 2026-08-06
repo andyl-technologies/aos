@@ -51,9 +51,12 @@
   # `mkDerivation` does not thread into a discovered package's function args.
   dist = callPackage ./aos-hub-worker-dist.nix {cargoFeatures = "do-e2e";};
 
+  egressFixture = ./aos-hub-direct-egress-fixture.mjs;
+
   # The workerd config: a module worker (shim.mjs + index.wasm) with the two DO
-  # classes, `enableSql = true` on the SQLite-backed `HubDb`, and the
-  # secrets/vars the DO reads. Open-source workerd has no R2/KV/rate-limit
+  # classes, `enableSql = true` on the SQLite-backed `HubDb`, the direct-Fetch
+  # outbound contract fixture, and the secrets/vars the DO reads. Open-source
+  # workerd has no R2/KV/rate-limit
   # bindings, so the non-default build injects durable SQLite surface storage
   # and in-memory coordination at the production port boundaries. The compat
   # date matches the workerd build.
@@ -63,6 +66,7 @@
     const config :Workerd.Config = (
       services = [
         (name = "main", worker = .mainWorker),
+        (name = "egress-fixture", worker = .egressFixtureWorker),
         (name = "do-disk", disk = (path = "do-storage", writable = true)),
       ],
       sockets = [
@@ -77,6 +81,7 @@
       ],
       compatibilityDate = "2024-09-09",
       compatibilityFlags = ["nodejs_compat"],
+      globalOutbound = "egress-fixture",
       durableObjectNamespaces = [
         (className = "HubDb", uniqueKey = "hubdb-key", enableSql = true),
         (className = "CoordinatorObject", uniqueKey = "coord-key"),
@@ -90,6 +95,13 @@
         (name = "HUB_EXTERNAL_URL", text = "http://127.0.0.1:8799"),
         (name = "HUB_DEPLOYMENT_ID", text = "workerd-e2e-deployment"),
       ],
+    );
+
+    const egressFixtureWorker :Workerd.Worker = (
+      modules = [
+        (name = "fixture.mjs", esModule = embed "fixture.mjs"),
+      ],
+      compatibilityDate = "2024-09-09",
     );
   '';
 
@@ -144,6 +156,11 @@
         || await deploymentHead.text() !== ""
         || deploymentHead.headers.get("x-aos-deployment-id") !== "workerd-e2e-deployment") {
       throw new Error("deployment identity HEAD contract failed");
+    }
+    const directEgress = await fetch(BASE + "/_e2e/direct-egress", { method: "POST" });
+    const directEgressBody = await directEgress.text();
+    if (directEgress.status !== 200 || directEgressBody !== "ok") {
+      throw new Error(`Worker-direct egress: ''${directEgress.status} ''${directEgressBody}`);
     }
     const r2Contract = await fetch(BASE + "/_e2e/r2-js-contract", {
       method: "POST",
@@ -520,7 +537,7 @@ in
     version = "0.1.0";
 
     runtimeDeps = [dist aos nix nodejs workerd-source bash coreutils diffutils grep aos-system-image-e2e-fixture];
-    nukeRefsKeep = [workerCapnp driver];
+    nukeRefsKeep = [workerCapnp driver egressFixture];
 
     phases = [
       {
@@ -546,6 +563,7 @@ in
           }
           trap cleanup EXIT
           cp ${dist}/shim.mjs ${dist}/index.wasm "\$work/"
+          cp ${egressFixture} "\$work/fixture.mjs"
           cp ${workerCapnp} "\$work/worker.capnp"
           cp ${driver} "\$work/driver.mjs"
           ${aos-system-image-e2e-fixture}/bin/aos-system-image-e2e-fixture "\$work/producer"
