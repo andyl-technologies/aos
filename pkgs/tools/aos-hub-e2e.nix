@@ -76,11 +76,15 @@ mkDerivation {
         root="$work/hub"
         fixture="$work/producer"
         route_keys="$work/route-reservation-keys.json"
+        probe_signers="$work/domain-probe-signers.json"
         printf '%s\n' \
           '{"activeVersion":1,"keys":[{"version":1,"keyBase64":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}]}' \
           > "$route_keys"
-        chmod 600 "$route_keys"
+        printf '%s\n' '[]' > "$probe_signers"
+        chmod 600 "$route_keys" "$probe_signers"
         export HUB_ROUTE_RESERVATION_KEYS_FILE="$route_keys"
+        export HUB_DOMAIN_PROBE_SIGNER_MANIFEST_FILE="$probe_signers"
+        export HUB_DNS_JSON_ENDPOINT="https://dns.google/resolve"
         ${aos-system-image-e2e-fixture}/bin/aos-system-image-e2e-fixture "$fixture"
         export AOS_HUB_E2E_IMAGE_FIXTURE="$fixture"
         pass "apr release produced the signed raw + QCOW2 static origin"
@@ -90,7 +94,7 @@ mkDerivation {
         aos-hub --root "$root" serve --seed --listen "127.0.0.1:$PORT" > "$work/serve.log" 2>&1 &
         srv_pid=$!
         ready=0
-        for _ in $(seq 1 50); do
+        for _ in $(seq 1 300); do
           if curl -fsS "$HUB/demo/cdn/-/images" >/dev/null 2>&1; then ready=1; break; fi
           sleep 0.2
         done

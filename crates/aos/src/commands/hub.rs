@@ -147,13 +147,14 @@ async fn login(printer: &Printer, hub: &str, provisioning_token: &str) -> Result
     ) {
         return Ok(());
     }
-    // The access token is the deliverable; print it on its own line (plain, not
-    // a styled header) so it is easy to capture into `--token` or a variable.
+    // The access token is the deliverable; reserve stdout for the exact token
+    // so it can be captured into `--token` or a variable without parsing
+    // human-facing status text.
     printer.info(&format!(
         "access token issued ({}, expires in {}s):",
         grant.token_type, grant.expires_in
     ));
-    printer.plain(&grant.access_token);
+    println!("{}", grant.access_token);
     Ok(())
 }
 

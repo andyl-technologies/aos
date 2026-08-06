@@ -9,15 +9,33 @@
 use aos_hub::auth::password::verify_password;
 use aos_hub::db::Database;
 use aos_hub::seed::{
-    seed_dev, SeedOutcome, DEMO_EMAIL, DEMO_ORG, DEMO_PASSWORD, DEMO_PRIVATE_REGISTRY,
+    seed_dev, SeedOutcome, SeedRouteConfig, DEMO_EMAIL, DEMO_ORG, DEMO_PASSWORD,
+    DEMO_PRIVATE_REGISTRY,
 };
+use aos_hub_core::service::RouteReservationKey;
+
+fn route_config<'a>(keys: &'a [RouteReservationKey]) -> SeedRouteConfig<'a> {
+    SeedRouteConfig {
+        listen_addr: "127.0.0.1:8420".parse().unwrap(),
+        external_url: "http://127.0.0.1:8420",
+        reservation_keys: keys,
+    }
+}
 
 #[tokio::test]
 async fn seed_creates_browsable_registry_and_login() {
     let root = tempfile::tempdir().unwrap();
     let db = Database::open(&root.path().join("hub.db")).await.unwrap();
 
-    let report = match seed_dev(&db, root.path()).await.unwrap() {
+    let keys = [RouteReservationKey {
+        version: 1,
+        secret: vec![9; 32],
+        active: true,
+    }];
+    let report = match seed_dev(&db, root.path(), &route_config(&keys))
+        .await
+        .unwrap()
+    {
         SeedOutcome::Seeded(report) => report,
         SeedOutcome::AlreadySeeded => panic!("fresh hub should seed"),
     };
@@ -79,6 +97,20 @@ async fn seed_creates_browsable_registry_and_login() {
         .expect("private image registry exists");
     assert_eq!(private.visibility, "private");
     assert_eq!(db.list_system_images(private.id).await.unwrap().len(), 2);
+    assert_eq!(
+        db.ready_registry_canonical_url(registry.id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("http://127.0.0.1:8420/demo/cdn")
+    );
+    assert_eq!(
+        db.ready_registry_canonical_url(private.id)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("http://127.0.0.1:8420/demo/private-images")
+    );
 
     // A release + channel were indexed (require_signatures was on, so this only
     // happens if every signature verified).
@@ -96,15 +128,24 @@ async fn seed_creates_browsable_registry_and_login() {
 async fn re_seeding_is_a_safe_no_op() {
     let root = tempfile::tempdir().unwrap();
     let db = Database::open(&root.path().join("hub.db")).await.unwrap();
+    let keys = [RouteReservationKey {
+        version: 1,
+        secret: vec![9; 32],
+        active: true,
+    }];
 
     assert!(matches!(
-        seed_dev(&db, root.path()).await.unwrap(),
+        seed_dev(&db, root.path(), &route_config(&keys))
+            .await
+            .unwrap(),
         SeedOutcome::Seeded(_)
     ));
 
     // A second run detects the existing demo org and skips.
     assert!(matches!(
-        seed_dev(&db, root.path()).await.unwrap(),
+        seed_dev(&db, root.path(), &route_config(&keys))
+            .await
+            .unwrap(),
         SeedOutcome::AlreadySeeded
     ));
 
