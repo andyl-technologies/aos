@@ -1675,7 +1675,7 @@ in rec {
     cliReplayCheck = import ./phase5-cli-replay-check.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase5.cliReplayCheck";
-      taskIds = ["T-CLI-12"];
+      taskIds = ["T-CLI-12" "T-CLI-21" "T-HARN-29"];
       openTaskIds = [];
       dependencies = [
         phase5.cliRunWorkflow

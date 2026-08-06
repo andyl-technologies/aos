@@ -10,6 +10,88 @@ use failure::*;
 struct QemuSearchFinding {
     failure: crucible::SearchDiscoveredFailure,
     evidence: crate::cli_report::TriageFindingEvidence,
+    snapshot: crucible_session::EngineSnapshot,
+    event_frames: Vec<Vec<u8>>,
+    fingerprints: Vec<crucible::FingerprintSample>,
+}
+
+fn search_finding_reproduction_artifact_bytes(
+    backend_plan: &BackendSelectionPlan,
+    plan: &SearchDriverPlan,
+    finding: &QemuSearchFinding,
+) -> Result<Vec<u8>, CliError> {
+    let model = &finding.evidence.finding;
+    let scenario = model.artifact.scenario_form();
+    let canonical_log = canonical_log_entries_from_engine_schedule(model.artifact.schedule());
+    let fingerprints = finding
+        .fingerprints
+        .iter()
+        .enumerate()
+        .map(|(index, sample)| VerifyFingerprintSample {
+            index: index as u64,
+            instruction: sample.at.ticks,
+            node: sample.node.name.clone(),
+            digest: format_content_hash_ref(sample.fingerprint.hash),
+        })
+        .collect::<Vec<_>>();
+    if fingerprints.is_empty() {
+        return Err(artifact_error(
+            "search finding capture requires terminal execution fingerprints",
+        ));
+    }
+    let outcome = match &finding.snapshot.state {
+        crucible_session::EngineState::Stopped { outcome } => OutcomeKind::from(outcome),
+        _ => {
+            return Err(artifact_error(
+                "search finding capture requires a stopped engine snapshot",
+            ));
+        }
+    };
+    let status = status_from_outcome(Some(outcome))?;
+    let (fault_choice_indices, network_choice_indices) =
+        replay_choice_indices(model.artifact.schedule());
+    let live = LiveQemuArtifactEvidence {
+        contract: LiveQemuReplayContract {
+            producer: String::from("search"),
+            terminal_condition: String::from("stopped"),
+            terminal_status: status.label().to_string(),
+            terminal_outcome: terminal_outcome_label(Some(outcome)).to_string(),
+            terminal_configuration: format_content_hash_ref(finding.snapshot.configuration.id()),
+            final_frontier_ticks: finding.snapshot.frontier.ticks,
+            final_quanta: finding.snapshot.quanta,
+            budget_timed_out: matches!(outcome, OutcomeKind::Timeout),
+            max_virtual_time_ticks: None,
+            max_quanta: None,
+            run_ceiling_icount: Some(LIVE_EXPLORATION_RUN_CEILING_ICOUNT),
+            lifecycle_quantum_budget: Some(LIVE_EXPLORATION_QUANTUM_LIMIT),
+            coverage: plan.engine_strategy == crucible::SearchStrategy::CoverageGuided,
+            fingerprint_scope: LiveQemuFingerprintScope::TerminalAllNodes,
+            branch: LiveQemuReplayBranch::None,
+            fault_choice_indices,
+            network_choice_indices,
+            startup_controls: Vec::new(),
+            initial_controls: Vec::new(),
+            controls: Vec::new(),
+        },
+        event_stream: canonical_verify_log_stream_bytes(&[], &finding.event_frames),
+        fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
+        fingerprint_samples: fingerprints.clone(),
+    };
+    let mut payloads = model_reproduction_artifact_payloads(&model.artifact, model.replay.state);
+    payloads.extend(live_qemu_artifact_payloads(&live));
+    let scenario_bytes = scenario.to_compact_binary();
+    reproduction_artifact_bytes_with_scenario_payload(
+        seed_to_u64(model.artifact.seed()),
+        backend_plan.resolved_backend.as_ref(),
+        ReproductionScenarioPayload {
+            name: "search-scenario.crucible-scenario",
+            media_type: "application/vnd.crucible.scenario.compact-binary",
+            bytes: &scenario_bytes,
+        },
+        &canonical_log,
+        &fingerprints,
+        &payloads,
+    )
 }
 
 pub(crate) fn run_local_qemu_search_workflow(
@@ -116,10 +198,9 @@ pub(crate) fn run_local_qemu_search_workflow(
             .collect(),
         exhausted,
     };
-    let counterexample_artifact = run
-        .discovered_failures
+    let counterexample_artifact = discovered_findings
         .first()
-        .map(|failure| search_failure_reproduction_artifact_bytes(backend_plan, plan, failure))
+        .map(|finding| search_finding_reproduction_artifact_bytes(backend_plan, plan, finding))
         .transpose()?;
     let counterexample = run
         .discovered_failures
@@ -200,10 +281,10 @@ pub(crate) fn run_local_qemu_search_workflow(
                 "stored search finding artifact did not match its content identity",
             ));
         }
-        reproductions.push(finding_reproduction_artifact_bytes(
-            backend_plan.resolved_backend.as_ref(),
-            &finding.evidence.finding,
-            "search",
+        reproductions.push(search_finding_reproduction_artifact_bytes(
+            backend_plan,
+            plan,
+            &finding,
         )?);
         evidence.push(finding.evidence);
     }
@@ -407,6 +488,11 @@ async fn qemu_search_realize(
     )
     .await?;
     let coverage = coverage_feedback_from_streamed_events(coverage_events)?;
+    let terminal_fingerprints = if terminal_snapshot.is_some() {
+        qemu_search_query_fingerprints(&control, &mut command_id, scenario).await?
+    } else {
+        Vec::new()
+    };
     let terminal_failure = terminal_snapshot
         .as_ref()
         .map(|snapshot| {
@@ -416,6 +502,7 @@ async fn qemu_search_realize(
                 &streamed_frames,
                 &coverage,
                 max_quanta,
+                &terminal_fingerprints,
             )
         })
         .transpose()?
@@ -439,6 +526,7 @@ fn qemu_search_terminal_finding(
     streamed_frames: &[Vec<u8>],
     coverage: &crucible::EventLogCoverageFeedback,
     configured_quanta: u64,
+    fingerprints: &[crucible::FingerprintSample],
 ) -> Result<Option<QemuSearchFinding>, CliError> {
     let Some(failure) = qemu_search_terminal_failure(scenario, snapshot)? else {
         return Ok(None);
@@ -485,7 +573,56 @@ fn qemu_search_terminal_finding(
         }
     }
     .map_err(|error| backend_error(format!("build live QEMU search evidence: {error}")))?;
-    Ok(Some(QemuSearchFinding { failure, evidence }))
+    Ok(Some(QemuSearchFinding {
+        failure,
+        evidence,
+        snapshot: snapshot.clone(),
+        event_frames: streamed_frames.to_vec(),
+        fingerprints: fingerprints.to_vec(),
+    }))
+}
+
+async fn qemu_search_query_fingerprints(
+    control: &crucible_api::ClientControlStream,
+    command_id: &mut u64,
+    scenario: &crucible::ScenarioDefForm,
+) -> Result<Vec<crucible::FingerprintSample>, CliError> {
+    let mut nodes = scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    nodes.sort_by(|left, right| left.name.cmp(&right.name));
+    let mut samples = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let response = qemu_search_command(
+            control,
+            command_id,
+            SessionCommand::Query {
+                kind: QueryKind::ExecutionFingerprint { node: node.clone() },
+                reply: CommandReply::discard(),
+            },
+            "terminal fingerprint query",
+        )
+        .await?;
+        match response.query_result {
+            Some(QueryResult::ExecutionFingerprint(sample)) => samples.push(sample),
+            Some(other) => {
+                return Err(backend_error(format!(
+                    "QEMU search fingerprint query for node `{}` returned unexpected payload: {other:?}",
+                    node.name
+                )));
+            }
+            None => {
+                return Err(backend_error(format!(
+                    "QEMU search fingerprint query for node `{}` returned no payload",
+                    node.name
+                )));
+            }
+        }
+    }
+    Ok(samples)
 }
 
 async fn qemu_search_query_snapshot(

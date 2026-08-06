@@ -1397,8 +1397,7 @@ pub(super) fn finish_fork_workflow_outcome(
     let artifact = write_fork_reproduction_artifact(
         fork_plan,
         backend_plan.resolved_backend.as_ref(),
-        &report.scenario_form,
-        &report.terminal_configuration,
+        &report,
     )?;
     outcome.status = report.run.status;
     outcome.exit_code = report.run.status.exit_code();
@@ -1489,9 +1488,10 @@ pub(super) fn finish_fork_workflow_outcome(
 pub(super) fn write_fork_reproduction_artifact(
     plan: &ForkInvocationPlan,
     backend: Option<&ResolvedLocalBackend>,
-    scenario_form: &crucible::ScenarioDefForm,
-    configuration: &crucible::Configuration,
+    report: &ForkWorkflowReport,
 ) -> Result<ForkReproductionArtifactReport, CliError> {
+    let scenario_form = &report.scenario_form;
+    let configuration = &report.terminal_configuration;
     let finding_fingerprint = fork_finding_fingerprint(plan, configuration);
     let finding = FindingReproductionArtifact::capture(
         FindingDiscoveryPath::InteractiveFork,
@@ -1506,26 +1506,64 @@ pub(super) fn write_fork_reproduction_artifact(
     })?;
     let canonical_log = fork_artifact_canonical_log(configuration);
     let artifact_seed = seed_to_u64(scenario_form.seed());
-    let instruction = u64::try_from(configuration.schedule.len()).map_err(|_| {
-        CliError::Identity(format!(
-            "fork artifact schedule length {} cannot be represented as an instruction index",
-            configuration.schedule.len()
-        ))
-    })?;
-    let fingerprint = VerifyFingerprintSample {
-        index: 0,
-        instruction,
-        node: String::from("fork"),
-        digest: content_address_bytes(format_content_hash_ref(finding.replay.state).as_bytes()),
-    };
-    let model_payloads =
+    let mut model_payloads =
         model_reproduction_artifact_payloads(&finding.artifact, finding.replay.state);
-    let bytes = verify_reproduction_artifact_bytes_with_components(
+    let mut fingerprints = run_fingerprint_samples(&report.run);
+    if matches!(backend, Some(ResolvedLocalBackend::Qemu { .. })) {
+        let source = fork_handle_evidence(plan)?;
+        let branch = if let Some(seed) = plan.fork_seed {
+            LiveQemuReplayBranch::Reseed {
+                base_decisions: source.configuration.schedule.len() as u64,
+                frontier_ticks: source.checkpoint.virtual_time.ticks,
+                seed,
+            }
+        } else if !plan.decision_overrides.is_empty() {
+            LiveQemuReplayBranch::PrefixOverrides {
+                base_decisions: source.configuration.schedule.len() as u64,
+                frontier_ticks: source.checkpoint.virtual_time.ticks,
+                decision_start: source.configuration.schedule.len() as u64,
+                decision_end: source
+                    .configuration
+                    .schedule
+                    .len()
+                    .saturating_add(plan.decision_overrides.len())
+                    as u64,
+            }
+        } else {
+            LiveQemuReplayBranch::Resume {
+                base_decisions: source.configuration.schedule.len() as u64,
+                frontier_ticks: source.checkpoint.virtual_time.ticks,
+            }
+        };
+        let live = live_qemu_artifact_evidence_from_run(
+            LiveQemuArtifactRecipe {
+                producer: "fork",
+                terminal_condition: plan.terminal_condition,
+                max_virtual_time_ticks: plan.max_virtual_time_ticks,
+                max_quanta: None,
+                coverage: false,
+                execution_mode: plan.execution_mode,
+                startup_commands: &plan.startup_commands,
+                initial_control_commands: &plan.initial_control_commands,
+                branch,
+            },
+            scenario_form,
+            &report.run,
+        )?;
+        fingerprints = live.fingerprint_samples.clone();
+        model_payloads.extend(live_qemu_artifact_payloads(&live));
+    }
+    let scenario_bytes = scenario_form.to_compact_binary();
+    let bytes = reproduction_artifact_bytes_with_scenario_payload(
         artifact_seed,
         backend,
-        &scenario_form.scenario_def(),
+        ReproductionScenarioPayload {
+            name: "fork-scenario.crucible-scenario",
+            media_type: "application/vnd.crucible.scenario.compact-binary",
+            bytes: &scenario_bytes,
+        },
         &canonical_log,
-        &[fingerprint],
+        &fingerprints,
         &model_payloads,
     )?;
     let digest = content_address_bytes(&bytes);
@@ -1820,16 +1858,12 @@ pub(super) fn finish_run_workflow_outcome(
                         .unwrap_or_else(|| run_plan.scenario.scenario_def().seed()),
                 )
             });
-        let terminal_configuration = report.terminal_configuration.as_ref().ok_or_else(|| {
-            artifact_error("non-passing run completed without its terminal configuration")
-        })?;
         let artifact = run_failure_reproduction_artifact_bytes(
             artifact_seed,
             backend_plan.resolved_backend.as_ref(),
-            run_plan.scenario.scenario_form(),
-            terminal_configuration,
+            run_plan,
+            &report,
             &outcome.canonical_log,
-            &run_fingerprint_samples(&report),
         )?;
         outcome.artifact_digest = content_address_bytes(&artifact);
         outcome.reproduction_artifact = Some(artifact);

@@ -414,7 +414,7 @@ pub(super) fn cli_verify_workflow_runs_fresh_remote_daemon_reductions() -> Resul
             .stdout
             .iter()
             .filter(|line| line.starts_with("verify-run\t"))
-            .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=2"))
+            .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=4"))
     );
     assert!(
         outcome
