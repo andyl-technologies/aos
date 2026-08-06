@@ -601,6 +601,8 @@ pub struct FaultRuntimeCheckpoint {
     pub retained_effects: BTreeSet<ContentHash>,
     /// Parent branch provenance for debugger edits.
     pub branch_parent: Option<ContentHash>,
+    /// Whether backend visibility became ambiguous and execution is terminal.
+    pub poisoned: bool,
 }
 
 impl FaultRuntimeCheckpoint {

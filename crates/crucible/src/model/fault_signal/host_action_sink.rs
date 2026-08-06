@@ -41,13 +41,21 @@ impl HostFaultActionState {
 
     /// Removes and returns committed impulse actions in application order.
     pub fn drain_impulses(&mut self) -> Vec<ResolvedBindingAction> {
-        std::mem::take(&mut self.impulses)
+        let impulses = std::mem::take(&mut self.impulses);
+        self.recompute_digest();
+        impulses
     }
 
     /// Returns the complete visible-state identity.
     #[must_use]
     pub const fn digest(&self) -> ContentHash {
         self.digest
+    }
+
+    /// Returns whether no persistent or unconsumed impulse action exists.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.active.is_empty() && self.impulses.is_empty()
     }
 
     /// Returns persistent actions matching an exact target and phase.
@@ -60,6 +68,49 @@ impl HostFaultActionState {
             .iter()
             .filter(move |(key, _action)| key.target == *target && key.phase == phase)
             .map(|(_key, action)| action)
+    }
+
+    /// Verifies persistent host state against the canonical binding ledger.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FaultRuntimeError::IncompleteAdapterState`] when a network or
+    /// storage contribution is missing, added, or differs in typed request,
+    /// mapped values, or transition sequence.
+    pub fn validate_mirror(
+        &self,
+        canonical: &ActiveContributionTable,
+    ) -> Result<(), FaultRuntimeError> {
+        let expected = canonical
+            .entries()
+            .iter()
+            .filter(|(key, _contribution)| {
+                matches!(
+                    key.effect.descriptor().adapter,
+                    FaultAdapter::Network | FaultAdapter::Storage
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if self.active.len() != expected.len() {
+            return Err(FaultRuntimeError::IncompleteAdapterState);
+        }
+        for (key, action) in &self.active {
+            let contribution = expected
+                .get(key)
+                .ok_or(FaultRuntimeError::IncompleteAdapterState)?;
+            if action.kind != BindingActionKind::UpsertPersistent
+                || action.binding != key.binding
+                || action.target != key.target
+                || action.phase != key.phase
+                || action.effect.as_ref() != contribution.request.as_ref()
+                || action.mapped_digest != contribution.mapped_parameters
+                || action.mapping_output.as_ref() != contribution.mapping_output.as_ref()
+                || action.transition_sequence != contribution.transition_sequence
+            {
+                return Err(FaultRuntimeError::IncompleteAdapterState);
+            }
+        }
+        Ok(())
     }
 
     fn recompute_digest(&mut self) {
@@ -147,8 +198,10 @@ impl FaultActionSink for HostFaultActionSink {
         if self.prepared.is_some() {
             return Err(self.reject(None, FaultRuntimeError::AdapterTransactionPending));
         }
+        if !self.state.impulses.is_empty() {
+            return Err(self.reject(None, FaultRuntimeError::IncompleteAdapterState));
+        }
         let mut next = self.state.clone();
-        next.impulses.clear();
         let mut seen = BTreeSet::new();
         for action in actions {
             let adapter = action.effect.kind().descriptor().adapter;
@@ -261,6 +314,11 @@ fn observation(
     kind: FaultObservationKind,
     evidence: ContentHash,
 ) -> FaultObservation {
+    let kind = match action.kind {
+        BindingActionKind::UpsertPersistent => FaultObservationKind::BindingActivation,
+        BindingActionKind::RemovePersistent => FaultObservationKind::BindingDeactivation,
+        BindingActionKind::Apply => kind,
+    };
     FaultObservation {
         semantic_version: FAULT_RUNTIME_STATE_VERSION,
         kind,
