@@ -6,7 +6,7 @@ Description=Commit a successful RFC-0011 image transition
 Requires=aos-graph-compile.service
 
 [Service]
-Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/sbin"
+Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/sbin"
 ExecStart=<<aos-job-script>>
 #!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
 set -e
@@ -159,7 +159,7 @@ if [ "$pending" -eq "$running" ]; then
     fi
   done
   if [ "$live_counted" = true ]; then
-    /nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin/bootctl set-successful
+    /nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin/bootctl set-successful
   elif [ ! -e "$stable_path" ]; then
     echo "aos-image-boot-commit: neither a live counted nor stable UKI exists for $entry" >&2
     exit 1
@@ -172,7 +172,7 @@ if [ "$boot_writable" != true ]; then
   /nix/store/frx251bq8f1b8vk84misiqfl9zm8fimg-util-linux-2.42.1/bin/mount -o remount,rw /boot
   boot_writable=true
 fi
-/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin/bootctl set-default "${stable##*/}"
+/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin/bootctl set-default "${stable##*/}"
 
 # Restore the ESP's steady-state protection before publishing the
 # transition as complete. If this remount fails, the durable pending

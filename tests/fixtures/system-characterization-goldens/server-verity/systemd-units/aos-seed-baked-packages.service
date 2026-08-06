@@ -4,7 +4,7 @@ Before=aos-install-baked-packages.service aos-preset.service multi-user.target
 Description=Seed baked AOS package profile
 
 [Service]
-Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/m58yqnq046yq05x3800az9qls9qwrdnh-systemd-259.1/sbin"
+Environment="PATH=/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/bin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/bin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/bin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/bin:/nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/sbin:/nix/store/z5ydjk898pi7gz5gsdg8wfjwc4gl3bjv-findutils-4.10.0/sbin:/nix/store/4zjrri4rqijr7s5jd1796a56vxfa37z0-grep-3.11/sbin:/nix/store/j1pcpd7inhi6vkpdd3hmyc85ilss1hir-sed-4.9/sbin:/nix/store/672bsqx8rpgn62q1vfvycw3ld8qz4nwc-systemd-259.1/sbin"
 ExecStart=<<aos-job-script>>
 #!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
 set -e
@@ -18,10 +18,10 @@ if [ ! -e "$profile/state.json" ]; then
     seed_one() {
       case "$1" in
   aos-test-agent)
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/lhbb4w57r6j89m0409rc1l1g8xr86kl8-aos-test-agent-0 "$profile/gen-1/usr/lhbb4w57r6j89m0409rc1l1g8xr86kl8"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/isxz4dkz7qqf0s97f98hwjxkaasshva8-expose-aos-test-agent "$profile/gen-1/expose/isxz4dkz7qqf0s97f98hwjxkaasshva8"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/086d7p8hprjy151ynrqlv03sc9y75gl0-aos-package-aos-test-agent-meta.json/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json "$profile/meta/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json"
-  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/086d7p8hprjy151ynrqlv03sc9y75gl0-aos-package-aos-test-agent-meta.json/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json "$profile/gen-1/meta/lhbb4w57r6j89m0409rc1l1g8xr86kl8.json"
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/ri7af9743dclplw3vcyh9bv9bdk92in1-aos-test-agent-0 "$profile/gen-1/usr/ri7af9743dclplw3vcyh9bv9bdk92in1"
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/ln -sfn /nix/store/31gmvkzk62xxyi983g5zar86rylb0bhr-expose-aos-test-agent "$profile/gen-1/expose/31gmvkzk62xxyi983g5zar86rylb0bhr"
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/mr4hzlz57cy5z3jq0pil3mvbmrlzgm0a-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/meta/ri7af9743dclplw3vcyh9bv9bdk92in1.json"
+  /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp /nix/store/mr4hzlz57cy5z3jq0pil3mvbmrlzgm0a-aos-package-aos-test-agent-meta.json/ri7af9743dclplw3vcyh9bv9bdk92in1.json "$profile/gen-1/meta/ri7af9743dclplw3vcyh9bv9bdk92in1.json"
   ;;
 
         *)
@@ -39,7 +39,7 @@ if [ ! -e "$profile/state.json" ]; then
     /nix/store/fz9lrsrqpxhzmkhrbqzndjkh3fl9pygg-coreutils-9.5/bin/cp -a /nix/store/gx7f39szwm6b3b4fm1j976n0iai810c3-aos-package-profile-seed/. "$profile/"
   fi
 fi
-AOS_EXPOSE_START_NO_WAIT=1 /nix/store/61vv1jz0kvrjsj1bpzf6lskv5rlsy96l-aos-reconcile-exposed-units/bin/aos-reconcile-exposed-units --system
+AOS_EXPOSE_START_NO_WAIT=1 /nix/store/fifx8pyly66axjrr02zaf9bfpx06a3lz-aos-reconcile-exposed-units/bin/aos-reconcile-exposed-units --system
 <<aos-job-script-end>>
 RemainAfterExit=true
 Type=oneshot
