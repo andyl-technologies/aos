@@ -10,7 +10,7 @@ ExecStart=<<aos-job-script>>
 #!/nix/store/inkxqwa69sgkj934172yi7bwv97l726g-bash-5.2.37/bin/bash
 set -e
 
-/nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/aos metadata persist-provisioning \
+/nix/store/3bf77b4mzmg3plqbwky36vi05j7l25vf-aos-0.1.0/bin/aos metadata persist-provisioning \
   --state-dir /var/lib/aos-provisioning \
   --module-abi 1 \
   --image-version 0.1.0

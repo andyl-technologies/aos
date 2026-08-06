@@ -14,7 +14,7 @@ ExecStart=<<aos-job-script>>
 set -e
 
 set +e
-/nix/store/y860ysgpqjmgsg1zsdb651kwd7v6dnwv-aos-0.1.0/bin/apm __activate-config \
+/nix/store/3bf77b4mzmg3plqbwky36vi05j7l25vf-aos-0.1.0/bin/apm __activate-config \
   --manifest /run/aos/manifest.json \
   --graph /run/aos/graph.json \
   --module-abi 1 --require-attestation-quote
