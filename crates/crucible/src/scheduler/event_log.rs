@@ -119,10 +119,28 @@ pub trait QuantumLoop {
     /// the loop's most recently completed boundary.
     fn bind_debug_runtime_evidence(
         &mut self,
+        configuration: &Configuration,
         runtime: &RuntimeState,
-    ) -> Result<(), SchedulerError> {
-        let _ = runtime;
-        Ok(())
+    ) -> Result<RuntimeState, SchedulerError> {
+        let _ = configuration;
+        Ok(runtime.clone())
+    }
+
+    /// Resolves graph materialization to a previously bound backend boundary.
+    ///
+    /// Live debugger implementations use this hook before a runtime
+    /// reposition so production-only scheduler and event-log state remains
+    /// part of the replay oracle. Pure loops retain the graph runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no unique backend boundary matches the
+    /// supplied graph runtime.
+    fn resolve_debug_runtime_evidence(
+        &self,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        Ok(runtime.clone())
     }
 
     /// Returns the next GDB run-control packet awaiting scheduler admission.

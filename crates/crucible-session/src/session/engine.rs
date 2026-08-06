@@ -605,12 +605,15 @@ impl<L> Engine<L> {
                 },
                 |checkpoint| checkpoint.virtual_time,
             );
-        let reposition = DebugRuntimeRepositionRequest::from_goto(
+        let mut reposition = DebugRuntimeRepositionRequest::from_goto(
             configuration.clone(),
             goto,
             previous_attach.gdbstub.node.clone(),
             previous_attach.gdbstub.qemu_endpoint.clone(),
         )?;
+        reposition.target_runtime = self
+            .quantum_loop
+            .resolve_debug_runtime_evidence(&reposition.target_runtime)?;
         let attach_request = DebugAttachRequest {
             configuration: configuration.clone(),
             node: previous_attach.gdbstub.node.clone(),
@@ -657,10 +660,10 @@ impl<L> Engine<L> {
 
         self.graph = candidate_graph;
         self.configuration = configuration.clone();
-        self.runtime = Some(goto.runtime.runtime.clone());
+        self.runtime = Some(reposition.target_runtime.clone());
         self.runtime_instantiated = true;
         self.frontier = frontier;
-        self.event_log_len = u64_to_usize(goto.runtime.runtime.event_log.events);
+        self.event_log_len = u64_to_usize(reposition.target_runtime.event_log.events);
         self.active_step = None;
         if matches!(self.state, EngineState::Running) {
             self.state = EngineState::Paused {
@@ -1113,6 +1116,9 @@ impl<L: QuantumLoop> Engine<L> {
         }
 
         let runtime = self.graph.resume(&self.configuration)?.runtime;
+        let runtime = self
+            .quantum_loop
+            .bind_debug_runtime_evidence(&self.configuration, &runtime)?;
         self.runtime = Some(runtime);
         self.runtime_instantiated = true;
         self.state = EngineState::Paused {
@@ -1145,6 +1151,9 @@ impl<L: QuantumLoop> Engine<L> {
         }
 
         let runtime = self.graph.resume(&self.configuration)?.runtime;
+        let runtime = self
+            .quantum_loop
+            .bind_debug_runtime_evidence(&self.configuration, &runtime)?;
         self.runtime = Some(runtime);
         Ok(self.snapshot())
     }
@@ -1163,6 +1172,9 @@ impl<L: QuantumLoop> Engine<L> {
         }
 
         let runtime = self.graph.resume(&self.configuration)?.runtime;
+        let runtime = self
+            .quantum_loop
+            .bind_debug_runtime_evidence(&self.configuration, &runtime)?;
         self.runtime = None;
         self.runtime = Some(runtime);
         Ok(self.snapshot())
@@ -1608,8 +1620,9 @@ impl<L: QuantumLoop> Engine<L> {
                     } else {
                         runtime.clone()
                     };
-                    self.quantum_loop
-                        .bind_debug_runtime_evidence(&debug_runtime)?;
+                    let debug_runtime = self
+                        .quantum_loop
+                        .bind_debug_runtime_evidence(&self.configuration, &debug_runtime)?;
                     let info = self
                         .quantum_loop
                         .open_gdbstub(node.clone(), listen.clone())?;
@@ -1746,6 +1759,11 @@ impl<L: QuantumLoop> Engine<L> {
                             operation: "guest-introspection",
                         });
                     }
+                    if self.white_box_policies.get(node) != Some(&WhiteBoxPolicy::Enabled) {
+                        return Err(SessionError::GuestIntrospectionNotAuthorized {
+                            node: node.name.clone(),
+                        });
+                    }
                     let response = if let Some(record) = request {
                         if record.channel_id() != *channel_id {
                             return Err(SchedulerError::BoundaryViolation {
@@ -1851,7 +1869,9 @@ impl<L: QuantumLoop> Engine<L> {
             None
         };
         let runtime = self.graph.resume(&outcome.configuration)?.runtime;
-        self.quantum_loop.bind_debug_runtime_evidence(&runtime)?;
+        let runtime = self
+            .quantum_loop
+            .bind_debug_runtime_evidence(&outcome.configuration, &runtime)?;
 
         self.configuration = outcome.configuration.clone();
         self.runtime = Some(runtime);
