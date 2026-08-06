@@ -926,6 +926,11 @@ compatibility is advertised only when the image configures an in-guest SSH serve
 argv that speaks its protocol over standard input/output; the bridge does not
 assume or discover a host executable.
 
+For an interactive local terminal, the CLI saves its termios state, enters raw
+mode for the byte bridge, restores the saved state when the channel ends, and
+translates `SIGWINCH` into a bounded resize record. Non-terminal stdin, including
+an SSH `ProxyCommand` pipe, is left unchanged.
+
 The agent bounds concurrent channels at 64, its global response backlog at 64
 records, and each output-reader handoff at two 4,096-byte chunks. Full queues
 apply child-pipe backpressure rather than consuming guest memory without bound.
@@ -1392,9 +1397,10 @@ complete from model-double evidence.
   typed whole-world guest-introspection fork. The CLI exposes argv exec, PTY
   stdin/stdout, and SSH-compatible byte bridging. The session-owned response
   broker demultiplexes bounded records by `(node, channel)` and synthesizes typed
-  closure on successful runtime replacement. Completion remains open for local
-  raw-terminal handling and live resize propagation, transcript persistence,
-  and live x86_64/aarch64 evidence.
+  closure on successful runtime replacement. The CLI enters and restores local
+  raw-terminal mode and forwards `SIGWINCH` dimensions as typed resize records.
+  Completion remains open for transcript persistence and live x86_64/aarch64
+  evidence.
 - [ ] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.

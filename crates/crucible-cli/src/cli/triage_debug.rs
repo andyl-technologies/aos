@@ -1173,6 +1173,8 @@ async fn run_remote_guest_channel(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const CHANNEL_ID: u64 = 1;
+    let _terminal_mode = LocalTerminalMode::enter_raw(interactive)?;
+    let mut resize_signal = local_resize_signal(interactive)?;
     let client = remote_rpc_client(daemon, backend_plan)?;
     let lease = client
         .acquire_debug_controller(session)
@@ -1284,6 +1286,26 @@ async fn run_remote_guest_channel(
                         }
                     }
                 }
+                resized = receive_local_resize(&mut resize_signal), if resize_signal.is_some() => {
+                    if resized {
+                        let (columns, rows) = local_terminal_size()?;
+                        let record = GuestIntrospectionRecord::new(
+                            CHANNEL_ID,
+                            GuestIntrospectionMessage::Resize { columns, rows },
+                        )
+                        .map_err(|error| backend_error(error.to_string()))?;
+                        client
+                            .exchange_guest_introspection(
+                                session,
+                                &lease,
+                                &node,
+                                CHANNEL_ID,
+                                Some(&record),
+                            )
+                            .await
+                            .map_err(control_client_error)?;
+                    }
+                }
                 signal = tokio::signal::ctrl_c() => {
                     signal.map_err(|error| backend_error(format!("guest channel signal error: {error}")))?;
                     let close = GuestIntrospectionRecord::new(
@@ -1353,6 +1375,72 @@ async fn run_remote_guest_channel(
     cleanup_result?;
     release_result.map_err(control_client_error)?;
     Ok(())
+}
+
+struct LocalTerminalMode {
+    original: Option<rustix::termios::Termios>,
+}
+
+impl LocalTerminalMode {
+    fn enter_raw(enabled: bool) -> Result<Self, CliError> {
+        use std::io::IsTerminal;
+
+        if !enabled || !std::io::stdin().is_terminal() {
+            return Ok(Self { original: None });
+        }
+        let original = rustix::termios::tcgetattr(std::io::stdin())
+            .map_err(|error| backend_error(format!("cannot read local terminal mode: {error}")))?;
+        let mut raw = original.clone();
+        raw.make_raw();
+        rustix::termios::tcsetattr(
+            std::io::stdin(),
+            rustix::termios::OptionalActions::Now,
+            &raw,
+        )
+        .map_err(|error| backend_error(format!("cannot enter local terminal raw mode: {error}")))?;
+        Ok(Self {
+            original: Some(original),
+        })
+    }
+}
+
+impl Drop for LocalTerminalMode {
+    fn drop(&mut self) {
+        if let Some(original) = self.original.as_ref() {
+            let _restored = rustix::termios::tcsetattr(
+                std::io::stdin(),
+                rustix::termios::OptionalActions::Now,
+                original,
+            );
+        }
+    }
+}
+
+fn local_resize_signal(enabled: bool) -> Result<Option<tokio::signal::unix::Signal>, CliError> {
+    use std::io::IsTerminal;
+
+    if !enabled || !std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+        .map(Some)
+        .map_err(|error| backend_error(format!("cannot monitor local terminal resize: {error}")))
+}
+
+async fn receive_local_resize(signal: &mut Option<tokio::signal::unix::Signal>) -> bool {
+    match signal {
+        Some(signal) => signal.recv().await.is_some(),
+        None => std::future::pending().await,
+    }
+}
+
+fn local_terminal_size() -> Result<(u16, u16), CliError> {
+    let size = rustix::termios::tcgetwinsize(std::io::stdin())
+        .map_err(|error| backend_error(format!("cannot read local terminal size: {error}")))?;
+    if size.ws_col == 0 || size.ws_row == 0 {
+        return Err(backend_error("local terminal reported a zero window size"));
+    }
+    Ok((size.ws_col, size.ws_row))
 }
 
 fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliError> {
