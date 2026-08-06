@@ -427,6 +427,20 @@ pub(super) fn replay_machine_readable_trace_entries(
             ),
         );
     }
+    if let Some(live) = &report.live_qemu {
+        push_replay_trace_entry(
+            &mut entries,
+            "replay_live_qemu",
+            format!(
+                "status=validated producer={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+                live.producer,
+                live.terminal_configuration,
+                live.event_stream_digest,
+                live.fingerprint_stream_digest,
+                live.controls
+            ),
+        );
+    }
     if let Some(check) = &report.check {
         push_replay_trace_entry(
             &mut entries,

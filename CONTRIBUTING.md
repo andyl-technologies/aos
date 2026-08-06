@@ -1,13 +1,22 @@
 # Contributing to AOS
 
 Thank you for contributing. Before opening a change, read
-[`LICENSING.md`](LICENSING.md) and the repository instructions in
+[the repository license map](docs/legal/licensing.md) and the instructions in
 [`AGENTS.md`](AGENTS.md).
+
+## Code style
+
+New Rust and Nix code follows the repository's
+[code style guide](docs/code-style.md). Existing difficult code is context, not
+a precedent. Feature contributions should leave the local design no worse and
+improve it where that is safe and proportionate. Keep formatting,
+documentation-only work, behavior-preserving refactors, and behavior changes
+reviewable as distinct changes whenever practical.
 
 ## Contributor agreement
 
 Every external human contributor must accept the
-[AOS External Contributor License Agreement](CONTRIBUTOR_LICENSE_AGREEMENT.md)
+[AOS External Contributor License Agreement](docs/legal/external-contributor-license-agreement.md)
 before a contribution is merged. The contributor keeps copyright. If an
 employer or another organization owns rights in the contribution, the external
 contributor must first obtain authority sufficient to make every grant and

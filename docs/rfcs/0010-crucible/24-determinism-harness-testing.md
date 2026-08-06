@@ -1209,3 +1209,23 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     synthetic negative controls prove both task-state inversions fail. The
     repaired source needles, named check reference, and patch-count prose all
     pass the full-tree evaluation.
+
+- [x] **T-HARN-29** Certify that CLI reproduction artifacts replay through
+  independent packaged-QEMU processes rather than only through the model
+  reducer. — satisfies [HARN-12], [HARN-24], [HARN-28]; spec §6, §7.
+  - The gate creates a v3 artifact from a real two-VM QEMU timeout, retains its
+    canonical trace and terminal savepoint, and requires fresh-QEMU ordinary,
+    `--check`, `--to`, and identical-artifact `--bisect` invocations to pass.
+  - The artifact identity pins QEMU, patch-series, plugin, shmem, guest-host,
+    RPC, engine, and artifact ABIs. Its live evidence comparison covers the
+    exact terminal tuple, canonical QEMU event bytes, and the declared full or
+    terminal-all-node fingerprint scope after the pure model preflight. Generic
+    run/verify/fuzz/fork recipes also replay separate closed, ordered startup and
+    initial controls and compare all acknowledgements produced by the fresh
+    session.
+  - Completed by `checks.crucible.phase5.cliReplayCheck`; the check depends on
+    the existing replay-oracle and end-to-end determinism gates and runs the
+    packaged production CLI, QEMU, plugin, kernel, root image, and initramfs.
+    A closed-producer contract matrix separately covers run/verify/search/fuzz/
+    fork recipe admission and the fail-closed branch, lifecycle, fingerprint,
+    choice-order, and unsupported-control rules.

@@ -169,10 +169,15 @@ option; it is not part of the shipped production interface.
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `ARTIFACT` | Required | Reproduction-artifact path. |
-| `--check <original-log>` | Optional | Require byte-identical canonical-log output. |
-| `--to <savepoint>` | Optional | Validate a target savepoint handle or checkpoint hash. |
-| `--bisect <other-artifact>` | Optional | Locate divergence against another artifact. |
+| `ARTIFACT` | Required | v3 reproduction-artifact path; production replay requires the matching packaged QEMU/plugin identity. |
+| `--check <original-log>` | Optional | After live replay succeeds, require byte-identical canonical JSONL output. |
+| `--to <savepoint>` | Optional | Live-replay the artifact, then validate a target savepoint handle or checkpoint hash as its typed prefix. A v3 artifact can resolve its own terminal checkpoint hash without a separate store object. |
+| `--bisect <other-artifact>` | Optional | Live-replay both artifacts, then locate their first evidence divergence. |
+
+The v3 artifact's live recipe declares its fingerprint evidence scope. Run,
+verify, and fuzz use the full execution stream; search and fork use one terminal
+sample per VM node. Interactive control recipes are rejected until exact command
+timing can be reproduced.
 
 ### `search`
 

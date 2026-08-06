@@ -12,10 +12,13 @@
     sourceRoot = "source/crates";
     hash = "sha256-fWBTuyTXJ+/0BiVbB5WAtCqVwufg04NH4BJdocT+moU=";
   };
+  networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  liveReplayContract = builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu.rs;
+  artifactCapture = builtins.readFile ../../crates/crucible-cli/src/cli/artifact_capture.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -301,6 +304,46 @@
         needle = "cli_replay_bisect_accepts_identical_artifacts";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/src/cli/artifact/live_qemu.rs" liveReplayContract [
+      {
+        label = "closed live replay producer matrix";
+        needle = "live_qemu_replay_contract_accepts_every_closed_producer";
+      }
+      {
+        label = "unchanged fork resume recipe regression";
+        needle = "live_qemu_replay_contract_round_trips_unmodified_fork_resume";
+      }
+      {
+        label = "pre-branch choice rejection regression";
+        needle = "live_qemu_replay_contract_rejects_pre_branch_choices";
+      }
+      {
+        label = "fingerprint scope compatibility regression";
+        needle = "live_qemu_replay_contract_rejects_incompatible_fingerprint_scope";
+      }
+      {
+        label = "unknown control command regression";
+        needle = "live_qemu_replay_contract_rejects_unknown_control_commands";
+      }
+      {
+        label = "unsupported startup control regression";
+        needle = "live_qemu_replay_contract_rejects_unsupported_startup_controls";
+      }
+      {
+        label = "initial control ordering regression";
+        needle = "live_qemu_replay_contract_rejects_noncontiguous_initial_controls";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
+      {
+        label = "terminal all-node capture selection regression";
+        needle = "terminal_fingerprint_capture_selects_one_reindexed_sample_per_node";
+      }
+      {
+        label = "terminal duplicate-node capture rejection regression";
+        needle = "terminal_fingerprint_capture_rejects_duplicate_node_suffix";
+      }
+    ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
         label = "process replay check JSONL regression";
@@ -394,6 +437,7 @@ in
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.crucible
         pkgs.rust
         pkgs.sed
       ];
@@ -445,6 +489,20 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
               -p crucible-cli \
+              live_qemu_replay_contract \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+              -p crucible-cli \
+              terminal_fingerprint_capture \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+              -p crucible-cli \
               --test gate_e2e_determinism \
               gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile \
               -- --test-threads=1
@@ -469,6 +527,83 @@ in
               -p crucible-cli \
               cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome \
               -- --test-threads=1
+
+            artifact_dir="$TMPDIR/crucible-live-replay-artifacts"
+            store_dir="$TMPDIR/crucible-live-replay-store"
+            producer_log="$TMPDIR/crucible-live-replay-producer.jsonl"
+            mkdir -p "$artifact_dir" "$store_dir"
+            set +e
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --seed 42 \
+              --format jsonl \
+              --trace "$producer_log" \
+              --artifact-dir "$artifact_dir" \
+              --store "$store_dir" \
+              run \
+              ../tests/crucible/fixtures/happy-path.scenario.toml \
+              --max-quanta 1 \
+              --save-on fail \
+              > "$TMPDIR/crucible-live-replay-producer.out"
+            producer_status=$?
+            set -e
+            test "$producer_status" -eq 2
+            artifact=$(find "$artifact_dir" -type f -name 'repro-timeout-*.crucible' -print -quit)
+            test -n "$artifact"
+            checkpoint=$(
+              sed -n \
+                's/.*checkpoint=\(blake3:[0-9a-f]*\).*/\1/p' \
+                "$TMPDIR/crucible-live-replay-producer.out"
+            )
+            test -n "$checkpoint"
+            # The artifact-owned canonical log ends before the CLI's
+            # self-referential final-outcome line, which names the completed
+            # artifact digest.
+            sed '$d' "$producer_log" > "$TMPDIR/crucible-live-replay-check.jsonl"
+
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --format jsonl \
+              --store "$store_dir" \
+              replay "$artifact" \
+              > "$TMPDIR/crucible-live-replay.out"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --format jsonl \
+              --store "$store_dir" \
+              replay "$artifact" \
+              --check "$TMPDIR/crucible-live-replay-check.jsonl" \
+              > "$TMPDIR/crucible-live-replay-check.out"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --format jsonl \
+              --store "$store_dir" \
+              replay "$artifact" \
+              --bisect "$artifact" \
+              > "$TMPDIR/crucible-live-replay-bisect.out"
+            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
+              "${pkgs.crucible}/bin/crucible" \
+              --backend qemu \
+              --format jsonl \
+              --store "$store_dir" \
+              replay "$artifact" \
+              --to "$checkpoint" \
+              > "$TMPDIR/crucible-live-replay-to.out"
+
+            grep -q '"kind":"replay_reduction".*status=reexecuted' \
+              "$TMPDIR/crucible-live-replay.out"
+            grep -q '"kind":"replay_live_qemu".*status=validated.*producer=run' \
+              "$TMPDIR/crucible-live-replay.out"
+            grep -q '"kind":"replay_check".*status=byte-identical' \
+              "$TMPDIR/crucible-live-replay-check.out"
+            grep -q '"kind":"replay_bisect".*status=byte-identical' \
+              "$TMPDIR/crucible-live-replay-bisect.out"
+            grep -q '"kind":"replay_to_savepoint".*status=target-validated' \
+              "$TMPDIR/crucible-live-replay-to.out"
           '';
         }
         {
@@ -482,13 +617,14 @@ in
             tasks=$TASK_IDS
             open_tasks=$OPEN_TASK_IDS
             status=complete
-            evidence_scope=replay-model-and-process-validation
+            evidence_scope=replay-model-and-live-qemu-process-validation
             component=crucible-cli
             replay_check=byte-identical-canonical-log
             replay_to_schedule_prefix=typed-payload-backed
             replay_to_materialization=model-temporal-graph
             replay_machine_independent=mock-host-profile
-            replay_process=check-jsonl-success-mismatch,to-savepoint-jsonl-target-validation
+            replay_process=live-qemu-ordinary,check,both-bisect-sides,to-savepoint-target-validation
+            producer_contract_matrix=run,verify,search,fuzz,fork
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

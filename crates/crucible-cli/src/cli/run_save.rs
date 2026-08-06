@@ -1033,6 +1033,70 @@ where
     }
     let terminal_oracle = validate_resume_terminal_savepoint(&evidence, &snapshot)?;
     let observed_outcome = remote_resume_observed_outcome(&snapshot, property_violation_reached);
+    let mut execution_fingerprints = Vec::new();
+    let mut nodes = evidence
+        .scenario_form
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    nodes.sort_by(|left, right| left.name.cmp(&right.name));
+    for node in nodes {
+        let response = send_resume_workflow_command(
+            client,
+            resumed.session,
+            &mut command_id,
+            SessionCommand::Query {
+                kind: QueryKind::ExecutionFingerprint { node: node.clone() },
+                reply: CommandReply::discard(),
+            },
+            &mut acknowledged_commands,
+            &mut state_updates,
+        )
+        .await?;
+        match response.query_result {
+            Some(QueryResult::ExecutionFingerprint(sample)) => {
+                execution_fingerprints.push(sample);
+            }
+            Some(other) => {
+                return Err(backend_error(format!(
+                    "remote resume fingerprint query for node `{}` returned unexpected payload: {other:?}",
+                    node.name
+                )));
+            }
+            None => {
+                return Err(backend_error(format!(
+                    "remote resume fingerprint query for node `{}` returned no payload",
+                    node.name
+                )));
+            }
+        }
+    }
+    let mut event_control = client
+        .control_attach(
+            AttachRequest::new(resumed.session)
+                .with_expected_epoch(resumed.session.epoch)
+                .with_client_name("crucible-cli-resume-artifact"),
+        )
+        .await
+        .map_err(control_client_error)?;
+    let mut streamed_events = Vec::new();
+    let mut streamed_event_frames = Vec::new();
+    let mut coverage_events = Vec::new();
+    let mut event_cursor = 0;
+    let terminal_event_log_len = u64::try_from(snapshot.event_log_len)
+        .map_err(|_| backend_error("remote resume event-log length cannot be represented"))?;
+    drain_terminal_event_log(
+        &mut event_control,
+        terminal_event_log_len,
+        VERIFY_BASELINE_PROFILE.event_timeout_ms,
+        &mut streamed_events,
+        &mut streamed_event_frames,
+        &mut coverage_events,
+        &mut event_cursor,
+    )
+    .await?;
     if !matches!(
         snapshot.state,
         crucible_session::EngineState::Stopped { .. }
@@ -1084,10 +1148,10 @@ where
             final_quanta: snapshot.quanta.max(boundary.quanta_stepped),
             budget_timed_out: false,
             state_updates,
-            streamed_events: Vec::new(),
-            streamed_event_frames: Vec::new(),
-            coverage_feedback: crucible::EventLogCoverageFeedback::from_event_log(&[]),
-            execution_fingerprints: Vec::new(),
+            streamed_events,
+            streamed_event_frames,
+            coverage_feedback: coverage_feedback_from_streamed_events(coverage_events)?,
+            execution_fingerprints,
             acknowledged_commands,
             watch_statuses,
         },

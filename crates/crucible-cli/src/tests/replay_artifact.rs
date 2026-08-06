@@ -2528,14 +2528,14 @@ pub(super) fn cli_verify_workflow_runs_fresh_local_double_reductions() -> Result
             .filter(|line| line.starts_with("verify-run\t"))
             .all(|line| line.contains("\tcanonical_log=")
                 && line.contains("\tfingerprint=")
-                && line.contains("\tsamples=2"))
+                && line.contains("\tsamples=4"))
     );
     assert!(
         outcome
             .stdout
             .iter()
             .filter(|line| line.starts_with("verify-run\t"))
-            .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=2"))
+            .all(|line| line.contains("\tfingerprint=") && line.contains("\tsamples=4"))
     );
     assert!(
         outcome
