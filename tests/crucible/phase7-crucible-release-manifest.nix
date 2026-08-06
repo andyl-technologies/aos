@@ -172,6 +172,23 @@
     ++ lib.optionals (manifest.components.boundaryCrates.packages != ["crucible-protocol" "crucible-shmem"]) [
       "release manifest boundary-crate inventory is incomplete"
     ]
+    ++ lib.optionals (
+      manifest.components.debugGateway.package
+      != "crucible-debug-gateway"
+      || manifest.components.debugGateway.license != "GPL-2.0-only"
+      || manifest.components.debugGateway.boundary != "separate-process-qemu-rsp-owner"
+      || manifest.components.debugGateway.source != "crucible.workspace"
+    ) [
+      "release manifest debugger gateway component is incomplete"
+    ]
+    ++ lib.optionals (
+      manifest.components.gdb.package
+      != "gdb"
+      || manifest.components.gdb.license != "GPL-3.0-or-later"
+      || manifest.components.gdb.boundary != "operator-debugger-client"
+    ) [
+      "release manifest GDB component is incomplete"
+    ]
     ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"]) [
       "release manifest QEMU component license inventory is incomplete"
     ]
@@ -193,7 +210,7 @@
     ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
       "release manifest corresponding-source license inventory is incomplete"
     ]
-    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
+    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later"]) [
       "release manifest aggregate project license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.licensing.licenseSetScope != "primary-project-components") [
@@ -429,7 +446,15 @@
       }
       {
         label = "aggregate project licenses include MIT";
-        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later";
+        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later";
+      }
+      {
+        label = "debug gateway component";
+        needle = "debug_gateway_package=crucible-debug-gateway";
+      }
+      {
+        label = "debug gateway process boundary";
+        needle = "debug_gateway_boundary=separate-process-qemu-rsp-owner";
       }
       {
         label = "aggregate license scope";
@@ -456,6 +481,18 @@
       {
         label = "RPC build";
         needle = "\"build\":\"${rpcProtocolBuild}\"";
+      }
+      {
+        label = "debug gateway component";
+        needle = "\"debugGateway\":{";
+      }
+      {
+        label = "debug gateway GPL license";
+        needle = "\"license\":\"GPL-2.0-only\"";
+      }
+      {
+        label = "GDB component";
+        needle = "\"gdb\":{";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -518,7 +555,10 @@ in
           grep -q '^qemu_generated_boundary_header_license_option=MIT$' "$manifest_env"
           grep -q '^qemu_standalone_release=false$' "$manifest_env"
           grep -q '^qemu_release_via=crucible$' "$manifest_env"
-          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later$' "$manifest_env"
+          grep -q '^gdb_package=gdb$' "$manifest_env"
+          grep -q '^gdb_license=GPL-3.0-or-later$' "$manifest_env"
+          grep -q '^gdb_boundary=operator-debugger-client$' "$manifest_env"
+          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later$' "$manifest_env"
           grep -q '^aggregate_license_scope=primary-project-components$' "$manifest_env"
           grep -q '^third_party_license_metadata=vendored-source-manifests$' "$manifest_env"
           grep -q '^publication_root_package=crucible$' "$manifest_env"

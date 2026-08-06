@@ -1,6 +1,8 @@
 //! Quantum-loop contracts plus canonical scheduler event-log storage and projections.
 
 use super::*;
+use crate::RuntimeState;
+use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
 mod observation_append;
 pub use backend_loop::BackendQuantumLoop;
@@ -86,6 +88,25 @@ pub trait QuantumLoop {
         Ok(VirtualTime { ticks: at.retired })
     }
 
+    /// Projects a backend observation's physical counter onto scheduler time.
+    ///
+    /// Backends whose counters share the scheduler origin use the identity
+    /// projection. Production VM schedulers override this for ready-point and
+    /// restart counter origins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the node is unknown or the physical
+    /// counter cannot be projected onto the scheduler timeline.
+    fn backend_observation_time(
+        &self,
+        node: &NodeId,
+        at: VirtualTime,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let _ = node;
+        Ok(at)
+    }
+
     /// Samples a deterministic execution fingerprint for `node`.
     ///
     /// Backends that do not own concrete VM state use the default unsupported
@@ -101,6 +122,64 @@ pub trait QuantumLoop {
         let _ = node;
         Err(BackendError::Unsupported {
             capability: "sample_fingerprint",
+        }
+        .into())
+    }
+
+    /// Binds the completed backend boundary to its exact graph runtime identity.
+    ///
+    /// Live debugger implementations use this post-materialization hook to seal
+    /// backend fingerprints to the content-addressed node blobs and runtime ID
+    /// produced by the temporal graph. Pure loops may retain the no-op default.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the supplied runtime does not describe
+    /// the loop's most recently completed boundary.
+    fn bind_debug_runtime_evidence(
+        &mut self,
+        configuration: &Configuration,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        let _ = configuration;
+        Ok(runtime.clone())
+    }
+
+    /// Resolves graph materialization to a previously bound backend boundary.
+    ///
+    /// Live debugger implementations use this hook before a runtime
+    /// reposition so production-only scheduler and event-log state remains
+    /// part of the replay oracle. Pure loops retain the graph runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no unique backend boundary matches the
+    /// supplied graph runtime.
+    fn resolve_debug_runtime_evidence(
+        &self,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        Ok(runtime.clone())
+    }
+
+    /// Returns the next GDB run-control packet awaiting scheduler admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the mediated gateway cannot be polled.
+    fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        Ok(None)
+    }
+
+    /// Delivers the scheduler's RSP completion to the mediated GDB connection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the gateway cannot deliver the response.
+    fn complete_gdb_run_control(&mut self, response: &[u8]) -> Result<(), SchedulerError> {
+        let _ = response;
+        Err(BackendError::Unsupported {
+            capability: "complete_gdb_run_control",
         }
         .into())
     }
@@ -142,6 +221,65 @@ pub trait QuantumLoop {
         let _ = listen;
         Err(BackendError::Unsupported {
             capability: "open_gdbstub",
+        }
+        .into())
+    }
+
+    /// Sends one request to a node's out-of-band debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not support guest
+    /// introspection or rejects the bounded request.
+    fn send_guest_introspection(
+        &mut self,
+        node: NodeId,
+        record: GuestIntrospectionRecord,
+    ) -> Result<(), SchedulerError> {
+        let _ = node;
+        let _ = record;
+        Err(BackendError::Unsupported {
+            capability: "send_guest_introspection",
+        }
+        .into())
+    }
+
+    /// Receives one available response from a node's out-of-band debug guest agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the backend does not support guest
+    /// introspection or the bounded response is malformed.
+    fn receive_guest_introspection(
+        &mut self,
+        node: NodeId,
+    ) -> Result<Option<GuestIntrospectionRecord>, SchedulerError> {
+        let _ = node;
+        Err(BackendError::Unsupported {
+            capability: "receive_guest_introspection",
+        }
+        .into())
+    }
+
+    /// Atomically replaces the live runtime at a resolved debugger coordinate.
+    ///
+    /// Implementations must leave the current runtime usable when candidate
+    /// instantiation, replay, verification, or replacement fails. A successful
+    /// return means the old runtime has been replaced and the new runtime is
+    /// paused at the requested target.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the candidate runtime cannot be built,
+    /// replayed, verified, or installed. Loops without an owned live runtime
+    /// return an unsupported-capability error.
+    fn reposition_debug_runtime(
+        &mut self,
+        request: DebugRuntimeRepositionRequest,
+    ) -> Result<DebugRuntimeRepositionReport, SchedulerError> {
+        let _ = request;
+        Err(BackendError::Unsupported {
+            capability: "reposition_debug_runtime",
         }
         .into())
     }

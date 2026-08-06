@@ -176,8 +176,8 @@ pub(crate) fn verify_selftest_corpus(
 }
 
 #[cfg(any(test, feature = "test-double"))]
-pub(crate) fn verify_selftest_builtin_corpus(
-) -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
+pub(crate) fn verify_selftest_builtin_corpus()
+-> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
     let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
     let mut verified = Vec::with_capacity(corpus.len());
     for fixture in corpus {

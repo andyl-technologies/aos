@@ -2208,7 +2208,6 @@ pub(super) fn cli_backend_selection_covers_every_backend_routed_subcommand()
     for argv in [
         vec!["crucible", "selftest"],
         vec!["crucible", "triage", "findings"],
-        vec!["crucible", "debug", "case.crucible"],
         vec!["crucible", "completions", "bash"],
     ] {
         let cli = Cli::parse_from(argv);

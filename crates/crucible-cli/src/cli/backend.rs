@@ -14,9 +14,17 @@ pub(super) struct BackendSelectionPlan {
     pub(super) resolved_backend: Option<ResolvedLocalBackend>,
     pub(super) reason: BackendSelectionReason,
     pub(super) daemon: Option<String>,
+    pub(super) daemon_security: Option<DaemonMutualTlsPaths>,
     pub(super) remote_uses_control_api: bool,
     pub(super) local_uses_simulation_backend: bool,
     pub(super) local_remote_equivalence_contract: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DaemonMutualTlsPaths {
+    pub(super) server_ca: PathBuf,
+    pub(super) client_certificate: PathBuf,
+    pub(super) client_private_key: PathBuf,
 }
 
 impl BackendSelectionPlan {
@@ -236,6 +244,12 @@ pub(super) fn plan_backend_selection_with_discovery(
         if daemon.is_empty() {
             return Err(usage_error("--daemon must not be empty"));
         }
+        let daemon_security = daemon_mutual_tls_paths(cli)?;
+        if daemon_security.is_some() && cli.trusted_unauthenticated_daemon {
+            return Err(usage_error(
+                "--trusted-unauthenticated-daemon cannot be combined with daemon mutual TLS",
+            ));
+        }
         return Ok(Some(BackendSelectionPlan {
             subcommand,
             target: BackendExecutionTarget::RemoteDaemon,
@@ -243,6 +257,7 @@ pub(super) fn plan_backend_selection_with_discovery(
             resolved_backend: None,
             reason: BackendSelectionReason::RemoteDaemon,
             daemon: Some(daemon.clone()),
+            daemon_security,
             remote_uses_control_api: true,
             local_uses_simulation_backend: false,
             local_remote_equivalence_contract: true,
@@ -282,10 +297,27 @@ pub(super) fn plan_backend_selection_with_discovery(
         resolved_backend: Some(resolved_backend),
         reason,
         daemon: None,
+        daemon_security: None,
         remote_uses_control_api: false,
         local_uses_simulation_backend: true,
         local_remote_equivalence_contract: true,
     }))
+}
+
+fn daemon_mutual_tls_paths(cli: &Cli) -> Result<Option<DaemonMutualTlsPaths>, CliError> {
+    match (&cli.daemon_ca, &cli.daemon_cert, &cli.daemon_key) {
+        (None, None, None) => Ok(None),
+        (Some(server_ca), Some(client_certificate), Some(client_private_key)) => {
+            Ok(Some(DaemonMutualTlsPaths {
+                server_ca: server_ca.clone(),
+                client_certificate: client_certificate.clone(),
+                client_private_key: client_private_key.clone(),
+            }))
+        }
+        _ => Err(usage_error(
+            "--daemon-ca, --daemon-cert, and --daemon-key must be supplied together",
+        )),
+    }
 }
 
 pub(super) trait QemuDiscoveryEnvironment {
@@ -1077,6 +1109,7 @@ pub(super) fn subcommand_uses_backend_selection(command: &Commands) -> bool {
             | Commands::Replay(_)
             | Commands::Search(_)
             | Commands::Fuzz(_)
+            | Commands::Debug(_)
             | Commands::Serve(_)
     )
 }

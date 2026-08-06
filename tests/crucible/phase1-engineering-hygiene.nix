@@ -28,7 +28,7 @@
     "crucible-cli"
     "crucible-harness"
   ];
-  qemuBoundaryPackages = ["crucible-qemu" "crucible-qemu-plugin"];
+  qemuBoundaryPackages = ["crucible-debug-gateway" "crucible-qemu" "crucible-qemu-plugin"];
   qemuSpecificTokens = [
     "qemu"
     "Qemu"

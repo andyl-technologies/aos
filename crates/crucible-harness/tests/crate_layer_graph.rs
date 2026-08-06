@@ -56,6 +56,11 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
         in_vm: true,
     },
     LayerSpec {
+        package: "crucible-debug-gateway",
+        layer: 2,
+        in_vm: false,
+    },
+    LayerSpec {
         package: "crucible-guest",
         layer: 2,
         in_vm: true,

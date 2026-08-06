@@ -55,14 +55,14 @@ pub const WHITEBOX_MARKER_ENTRY_SIZE: usize = core::mem::size_of::<WhiteboxMarke
 /// Wire alignment of one [`WhiteboxMarkerEntry`].
 pub const WHITEBOX_MARKER_ENTRY_ALIGN: usize = core::mem::align_of::<WhiteboxMarkerEntry>();
 
-pub(super) const _: () = assert!(WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET == 0);
-pub(super) const _: () = assert!(WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET == 8);
-pub(super) const _: () = assert!(WHITEBOX_MARKER_ENTRY_KIND_OFFSET == 12);
-pub(super) const _: () = assert!(WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET == 14);
-pub(super) const _: () = assert!(WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET == 16);
-pub(super) const _: () = assert!(WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET == 16 + MAX_FRAME_DATA);
-pub(super) const _: () = assert!(WHITEBOX_MARKER_ENTRY_SIZE == 4_672);
-pub(super) const _: () = assert!(WHITEBOX_MARKER_ENTRY_ALIGN == 64);
+const _: () = assert!(WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET == 0);
+const _: () = assert!(WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET == 8);
+const _: () = assert!(WHITEBOX_MARKER_ENTRY_KIND_OFFSET == 12);
+const _: () = assert!(WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET == 14);
+const _: () = assert!(WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET == 16);
+const _: () = assert!(WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET == 16 + MAX_FRAME_DATA);
+const _: () = assert!(WHITEBOX_MARKER_ENTRY_SIZE == 4_672);
+const _: () = assert!(WHITEBOX_MARKER_ENTRY_ALIGN == 64);
 
 impl WhiteboxMarkerEntry {
     /// Builds one bounded observational marker entry.

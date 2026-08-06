@@ -30,7 +30,7 @@ normative `MUST` maps to at least one task.
 
 ## Inventory
 
-The plan covers **586 tasks** across 37 areas, satisfying **1092 numbered
+The plan covers **592 tasks** across 37 areas, satisfying **1094 numbered
 requirements** (plus the goal/non-goal/invariant/decision IDs). Coverage is
 **complete**: every defined requirement is cited by at least one checklist task,
 and no task cites a non-existent requirement (verified by the `T-PLAN-1` lint).
@@ -39,11 +39,11 @@ Task counts by area:
 ```text
 PERF 34  DET 31  SCHED 30  HARN 28  PLUG 27  PATCH 24  PKG 23  ADV 21  SPAT 21
 CLI 20  EXEC 20  RISK 20  TRIG 20  SHM 19  ASRT 18  GHC 17  CRATE 16  FAULT 16
-IO 16  QEMU 16  API 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11  DCE 10
-PAT 9  TIME 9  DBG 8  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
+IO 16  QEMU 16  API 14  DBG 14  OBS 14  SESS 14  STD 14  PROTO 11  TEMP 11
+DCE 10  PAT 9  TIME 9  TRI 8  WL 6  ARCH 5  EX 5  BOUND 4  D 4  PLAN 3
 ```
 
-Checklist sync digest: `rfc0010-checklist-v1:030fdf9445e0c4f9`
+Checklist sync digest: `rfc0010-checklist-v1:9fc3e3ccd119f1f2`
 
 ### Adversarial completion audit (2026-07-09)
 
@@ -705,7 +705,7 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
 - Advanced features — fork/save/resume/search/fuzz plus guided/adaptive
   (pluggable signals + bandit), interleaving, and app-random search
   (`T-ADV-17 … T-ADV-21`): `T-ADV-1 … T-ADV-21` ([`22`](22-advanced-features.md)).
-- Time-travel debugging (built on the checkpoint DAG + replay): `T-DBG-1 … T-DBG-8` ([`36`](36-time-travel-debugging.md)).
+- Time-travel debugging (built on the checkpoint DAG + replay): `T-DBG-1 … T-DBG-12` ([`36`](36-time-travel-debugging.md)).
   `T-DBG-1` is completed through `checks.crucible.phase6.debugAttach`; `T-DBG-2`
   is completed through `checks.crucible.phase6.readOnlyDebugInspection`, which proves
   read-only debugger observations do not alter config, virtual time, or the
@@ -741,7 +741,20 @@ foundation (the dependency ladder in [`22`](22-advanced-features.md)).
   gdbstub proxy, read-only default inspection, explicit non-canonical mutation
   branches, no-symbol-server ownership, coherent multi-vCPU gdb threads, and
   disabled raw gdb single-step. The command resolves and boots the hermetic
-  packaged QEMU/plugin backend before reporting the delegated debug plan.
+  packaged QEMU/plugin backend before reporting the delegated debug plan. The
+  remote path additionally exposes controller-leased GDB relay plus explicit
+  whole-world guest-introspection fork, argv exec, PTY, and configured in-guest
+  SSH byte bridging through the bounded public protocol, with opt-in bounded
+  branch-local transcript files. Controller-leased
+  `goto`, `reverse-step`, and `reverse-continue` carry operator intent only;
+  the actor binds that intent to its authoritative configuration, event-log
+  prefix, and schedule-prefix event index before restore/replay and gateway
+  replacement. An in-flight operation gate prevents controller lease handoff
+  until replacement completes, and checkpoint-resumed actors reject event
+  history before their explicit resume floor.
+  `T-DBG-9 … T-DBG-12` remain open for the production gateway/live replacement
+  gates, complete authorization and peer-credential enforcement, and live
+  guest-channel acceptance.
 - Failure triage: `T-TRI-1` is green through `checks.crucible.phase6.failureSignature`,
   which implements the recorded-run-only `FailureSignature` tuple for property
   violations and divergence bisection points, binds checked event-log projection
@@ -798,6 +811,17 @@ acceptance gate.
 **Tasks.**
 - AOS packaging (hermetic, patched QEMU pkg, fixtures, CI wiring, ratchet seam;
   incl. the new packaging tasks `T-PKG-21 … T-PKG-23`): `T-PKG-1 … T-PKG-23` ([`26`](26-packaging-aos-integration.md)).
+- Debugger packaging and live acceptance: `T-DBG-13 … T-DBG-14`
+  ([`36`](36-time-travel-debugging.md)).
+  `T-DBG-13` is green through `checks.crucible.phase7.debuggerPackage`, which
+  builds GNU GDB 17.2 hermetically with the AOS toolchain, exposes `gdb` and
+  `gdbserver` from the Crucible suite, and verifies Python plus x86_64/aarch64
+  target selection. `T-DBG-14` remains open for captured live parity evidence.
+  The first parity slice is automated by
+  `checks.crucible.phase7.debuggerLiveArchitectures`: packaged x86_64 and
+  aarch64 QEMU run under TCG, negotiate RSP with packaged GDB, preserve repeated
+  register reads, and accept hardware-breakpoint insert/remove packets without
+  a model double. The complete controller/gateway matrix remains open.
 - Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28` and the host-parallelism tasks `T-PERF-29 … T-PERF-34`): `T-PERF-1 … T-PERF-34` ([`25`](25-performance-targets.md)).
 - Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.
@@ -835,7 +859,7 @@ maintained two ways:
    SHM     37    16      SPAT   33    21       ARCH    9     5
    ADV     40    21      FAULT  34    16       TEMP   30    11
    EXEC    34    20      API    31    14       TRIG   32    20
-   DBG     40     8      ASRT   33    18       TRI    19     8
+   DBG     47    14      ASRT   33    18       TRI    19     8
    DCE     33    10      SESS   33    13       WL     12     6
                                                EX      3     5
    ```

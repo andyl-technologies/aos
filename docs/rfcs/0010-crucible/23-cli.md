@@ -842,7 +842,7 @@ reverse verbs. It introduces no determinism mechanism of its own ([CLI-1]).
     --node <id>               Which node's gdbstub to open. Default: the failing node.
     --gdb-listen <addr>       Address QEMU's gdbstub listens on. Default: a local port.
     --read-only               Read-only debugging (the default): no mutation, fully canonical.
-    --allow-mutate            Permit continuing/mutating from the attach — forks a NON-CANONICAL debug branch.
+    --allow-mutate            Authorize an explicit `fork-debug`; never forks implicitly.
     --checkpoint-stride <n>   Checkpoint density for reverse stepping (replay-suffix bound, 36).
 ```
 
@@ -850,12 +850,17 @@ reverse verbs. It introduces no determinism mechanism of its own ([CLI-1]).
 (`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`; default `--at-failure` for
 a failing artifact), opens the gdbstub on `--node` at `--gdb-listen`
 ([SESS-33], [SESS-32]), and then reads interactive verbs — `attach-gdb`,
-`goto`, `reverse-step`, `reverse-continue` — mapping each to the session's
+`fork-debug`, `goto`, `reverse-step`, `reverse-continue`, `exec`, `pty`, `ssh` — mapping each to the session's
 read-only debugging command (20 §4.4). It is **read-only by default**
 ([SESS-33]): the run stays fully canonical and the gdbstub is observation-only.
-`--allow-mutate` permits continuing or mutating from the attach, which forks a
-**clearly-marked NON-CANONICAL debug branch** (excluded from the replay oracle,
-not artifact-reproducible, [SESS-33]); the CLI MUST label this prominently.
+`--allow-mutate` authorizes the explicit `fork-debug` verb; it does not fork by
+itself. Continuing or mutating is rejected until `fork-debug` has created a
+**clearly-marked whole-world NON-CANONICAL debug branch** (excluded from the replay
+oracle, not artifact-reproducible, [SESS-33]); the CLI MUST label this prominently.
+Guest `exec`, `pty`, and `ssh` additionally require the authenticated role's
+closed `shell` capability and the exclusive controller lease. Arguments are sent
+as argv values without host-shell parsing. PTY and SSH bytes use the public,
+bounded guest-introspection protocol; they never expose a host shell.
 `--checkpoint-stride` tunes checkpoint density so reverse stepping stays cheap
 (bounded replay suffix, 36, [HARN-9]).
 
@@ -870,11 +875,13 @@ artifact/savepoint; `64` = usage error (e.g. conflicting `--at*` flags).
   the run, position it at the coordinate selected by `--at` / `--at-event` /
   `--at-failure` / `--at-checkpoint` via restore-nearest-checkpoint + deterministic
   replay ([SESS-33]), open the gdbstub on `--node` at `--gdb-listen` ([SESS-32]),
-  and accept the interactive reverse verbs `attach-gdb`/`goto`/`reverse-step`/
-  `reverse-continue`. It MUST be **read-only by default** (`--read-only`,
-  canonical); `--allow-mutate` MUST fork a clearly-marked NON-CANONICAL debug
-  branch (excluded from the replay oracle, not artifact-reproducible, [SESS-33])
-  and the CLI MUST label it as such. `--checkpoint-stride` MUST tune reverse-step
+  and accept the interactive verbs `attach-gdb`/`fork-debug`/`goto`/`reverse-step`/
+  `reverse-continue`/`exec`/`pty`/`ssh`. It MUST be **read-only by default** (`--read-only`,
+  canonical); `--allow-mutate` MUST only authorize an explicit `fork-debug`, and
+  mutation/free run control MUST be rejected before that verb creates a clearly-marked
+  whole-world NON-CANONICAL debug branch (excluded from the replay oracle, not
+  artifact-reproducible, [SESS-33]). The CLI MUST label it as such.
+  `--checkpoint-stride` MUST tune reverse-step
   cost (bounded replay suffix, 36). The CLI MUST NOT implement any debugging or
   time-travel mechanism of its own ([CLI-1]); a backend without `open_gdbstub`
   ([SESS-32]) MUST fail clearly (exit 4), never fake a stub. *Gate:*
@@ -1409,7 +1416,8 @@ branch on the verdict without parsing output:
   restore-nearest-checkpoint-replay to the coordinate
   (`--at`/`--at-event`/`--at-failure`/`--at-checkpoint`), open the gdbstub
   (`--node`/`--gdb-listen`, [SESS-32]), interactive reverse verbs, read-only
-  default with `--allow-mutate` forking a labelled NON-CANONICAL branch,
+  default with `--allow-mutate` authorizing an explicit `fork-debug` that creates a
+  labelled whole-world NON-CANONICAL branch,
   `--checkpoint-stride`; print the `crucible debug <artifact> --at-failure` footer
   line on a non-passing run. — satisfies [CLI-27]; spec §17, §4; cross-ref 36,
   20 §4.4.
@@ -1419,7 +1427,10 @@ branch on the verdict without parsing output:
   reverse verbs routed through the debug reverse-step/goto path instead of
   unsupported forward session step modes, read-only default, explicit
   `--allow-mutate` non-canonical branch planning, checkpoint-stride latency tuning,
-  and the at-failure footer shared with failure artifact emission.
+  and the at-failure footer shared with failure artifact emission. The completed
+  remote surface exposes explicit `fork-debug`, authenticated stable GDB relay,
+  actor-owned goto/reverse operations, and fork-gated guest exec/PTY/SSH without
+  admitting mutation or free control before the explicit transition.
 - [x] **T-CLI-19** Validate a discovered QEMU plugin by reading its ELF dynamic
   symbol table, not by scanning the file for symbol-name bytes, so a file that
   merely contains the string cannot impersonate a plugin.

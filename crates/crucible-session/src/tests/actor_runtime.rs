@@ -606,6 +606,50 @@ pub(super) async fn session_actor_publishes_non_backend_scheduler_failure_as_ter
 }
 
 #[tokio::test]
+pub(super) async fn session_actor_terminalizes_mismatched_debug_runtime_evidence() {
+    let (_root, first, second, graph) = debug_time_travel_fixture();
+    let engine = Engine::new(second.clone(), graph, MismatchingDebugRepositionLoop);
+    let (sender, receiver) = mpsc::channel(4);
+    for command in [
+        SessionCommand::Start,
+        SessionCommand::AttachGdb {
+            node: node_id("guest-a"),
+            listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
+            reply: CommandReply::discard(),
+        },
+        SessionCommand::DebugGoto {
+            request: DebugGotoRequest::at_configuration(second, first),
+            reply: CommandReply::discard(),
+        },
+    ] {
+        sender
+            .send(command)
+            .await
+            .unwrap_or_else(|error| panic!("debug command should enqueue: {error}"));
+    }
+
+    let actor = SessionActor::new(engine, receiver);
+    let live = actor.live_snapshot();
+    let report = actor
+        .run()
+        .await
+        .unwrap_or_else(|error| panic!("runtime mismatch should terminalize: {error}"));
+
+    let EngineState::Stopped {
+        outcome: Outcome::Crashed { detail },
+    } = report.final_snapshot.state
+    else {
+        panic!("runtime mismatch should stop with a crashed outcome");
+    };
+    assert!(detail.contains("debug runtime reposition evidence mismatch"));
+    let status = live.read();
+    assert_eq!(status.state_kind, LiveStateKind::Stopped);
+    assert_eq!(status.outcome, Some(OutcomeKind::Crashed));
+    drop(sender);
+}
+
+#[tokio::test]
 pub(super) async fn session_actor_yields_after_command_driven_step() {
     let scenario = generated_scenario(16);
     let config = Configuration::genesis(scenario.clone());
@@ -1895,6 +1939,99 @@ impl QuantumLoop for DebugGdbLoop {
         listen: GdbListen,
     ) -> Result<GdbAttachInfo, SchedulerError> {
         GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
+    }
+
+    fn reposition_debug_runtime(
+        &mut self,
+        request: DebugRuntimeRepositionRequest,
+    ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
+        let next_endpoint = if request.current_qemu_gdbstub.as_str().ends_with(":9001") {
+            "tcp:127.0.0.1:9002"
+        } else {
+            "tcp:127.0.0.1:9001"
+        };
+        let endpoint = DebugGdbEndpoint::new("qemu_gdbstub", next_endpoint)
+            .unwrap_or_else(|error| panic!("replacement endpoint should be valid: {error}"));
+        Ok(crucible::DebugRuntimeRepositionReport::completed(
+            &request, endpoint, 1,
+        ))
+    }
+}
+
+pub(super) struct MismatchingDebugRepositionLoop;
+
+impl QuantumLoop for MismatchingDebugRepositionLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime::default(),
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
+
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
+    }
+
+    fn reposition_debug_runtime(
+        &mut self,
+        request: DebugRuntimeRepositionRequest,
+    ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
+        let endpoint = DebugGdbEndpoint::new("qemu_gdbstub", "tcp:127.0.0.1:9002")
+            .unwrap_or_else(|error| panic!("replacement endpoint should be valid: {error}"));
+        let mut report = crucible::DebugRuntimeRepositionReport::completed(&request, endpoint, 1);
+        report.gateway_generation = 0;
+        Ok(report)
+    }
+}
+
+pub(super) struct RejectingDebugRepositionLoop;
+
+impl QuantumLoop for RejectingDebugRepositionLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        Ok(QuantumOutcome {
+            configuration: request.configuration,
+            frontier: VirtualTime::default(),
+            advanced_node: None,
+            resolved_events: Vec::new(),
+            decisions: Vec::new(),
+            event_log_entries: Vec::new(),
+            event_log_segment_bytes: Vec::new(),
+            event_log_segment_text: String::new(),
+            event_log_segment_hash: None,
+            event_log_offset: crucible::EventLogOffset::default(),
+            scheduler_quiescence: None,
+        })
+    }
+
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        GdbAttachInfo::new(node, "tcp:127.0.0.1:9001", listen).map_err(SchedulerError::from)
+    }
+
+    fn reposition_debug_runtime(
+        &mut self,
+        _request: DebugRuntimeRepositionRequest,
+    ) -> Result<crucible::DebugRuntimeRepositionReport, SchedulerError> {
+        Err(BackendError::Rejected {
+            message: String::from("candidate runtime verification failed"),
+        }
+        .into())
     }
 }
 
