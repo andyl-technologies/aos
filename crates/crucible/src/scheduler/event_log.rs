@@ -3,7 +3,9 @@
 use super::*;
 mod backend_loop;
 mod observation_append;
-pub use backend_loop::BackendQuantumLoop;
+pub use backend_loop::{
+    BackendNetworkOutputInterceptor, BackendQuantumLoop, NoopBackendNetworkOutputInterceptor,
+};
 
 /// Terminal verdict emitted by a scenario trigger at a quantum boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]

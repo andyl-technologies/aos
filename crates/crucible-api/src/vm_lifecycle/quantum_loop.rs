@@ -55,9 +55,12 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         let snapshot_fault_checkpoint = if snapshot_counters.is_empty() {
             None
         } else {
+            let (_scheduler, backend, interceptor) =
+                self.inner.parts_with_network_interceptor_mut();
             Some(
-                self.fault_runtime
-                    .checkpoint(self.inner.backend_mut())
+                interceptor
+                    .runtime_mut()
+                    .checkpoint(backend)
                     .map_err(|error| SchedulerError::BoundaryViolation {
                         message: format!(
                             "capture signal fault continuation at checkpoint boundary: {error}"
@@ -265,37 +268,15 @@ impl ProductionVmLifecycleLoop {
         &mut self,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         let coordinate = self.inner.loop_impl().frontier().ticks;
-        if self.fault_coordinate == Some(coordinate) {
-            self.fault_coordinate_sequence = self
-                .fault_coordinate_sequence
-                .checked_add(1)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: String::from(
-                        "signal fault same-coordinate sequence space is exhausted",
-                    ),
-                })?;
-        } else {
-            self.fault_coordinate = Some(coordinate);
-            self.fault_coordinate_sequence = 0;
-        }
-        let evaluation = self
-            .fault_runtime
-            .evaluate_boundary(
-                FaultCoordinate {
-                    virtual_nanos: coordinate,
-                    retired_instructions: None,
-                },
-                self.fault_coordinate_sequence,
-                self.inner.backend_mut(),
-            )
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("signal fault boundary failed closed: {error}"),
-            })?;
-        self.inner
-            .loop_impl_mut()
-            .set_signal_fault_wakeup(evaluation.next_wakeup_nanos)?;
-        self.inner
-            .loop_impl_mut()
-            .append_fault_observations(evaluation.observations)
+        let (scheduler, backend, interceptor) = self.inner.parts_with_network_interceptor_mut();
+        let evaluation = interceptor.evaluate_boundary(
+            FaultCoordinate {
+                virtual_nanos: coordinate,
+                retired_instructions: None,
+            },
+            backend,
+        )?;
+        scheduler.set_signal_fault_wakeup(evaluation.next_wakeup_nanos)?;
+        scheduler.append_fault_observations(evaluation.observations)
     }
 }
