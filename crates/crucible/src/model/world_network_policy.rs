@@ -187,6 +187,21 @@ pub struct NetworkPolicyMediumAccess {
     pub duty_cycle_denominator: PositiveU64,
 }
 
+/// Receiver treatment when an RF transfer profile samples corruption.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
+pub enum NetworkPolicyRfCorruption {
+    /// Corrects the frame without a retry or payload change.
+    Corrected,
+    /// Detects the error and retries or drops at retry exhaustion.
+    Detected,
+    /// Delivers an undetected XOR corruption from a byte-template artifact.
+    Undetected {
+        /// Nonempty byte-template artifact repeated across the frame.
+        transform: FaultObjectId,
+    },
+}
+
 /// One SINR transfer-table result.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -199,7 +214,11 @@ pub struct NetworkPolicyRfProfile {
     pub loss: ProbabilityMillionths,
     /// Resulting corruption probability.
     pub corruption: ProbabilityMillionths,
-    /// Resulting retry delay.
+    /// Receiver treatment when corruption fires.
+    pub corruption_action: NetworkPolicyRfCorruption,
+    /// Maximum retries after the first transmission, in `0..=256`.
+    pub maximum_retries: u16,
+    /// Delay for every consumed retry.
     pub retry_delay_nanos: u64,
 }
 
@@ -784,6 +803,13 @@ impl WorldNetworkPolicyArtifact {
                         .windows(2)
                         .all(|pair| pair[0].minimum_sinr < pair[1].minimum_sinr),
                     "network RF profile order",
+                )?;
+                require(
+                    transfer
+                        .profiles
+                        .iter()
+                        .all(|profile| profile.maximum_retries <= 256),
+                    "network RF retry limit",
                 )
             }
             NetworkPolicyArtifactKind::Association(policy) => {
@@ -1054,6 +1080,8 @@ mod tests {
             rate_bps: positive(1),
             loss: probability,
             corruption: probability,
+            corruption_action: NetworkPolicyRfCorruption::Corrected,
+            maximum_retries: 0,
             retry_delay_nanos: 0,
         };
         let declaration = WorldNetworkPolicyArtifact {

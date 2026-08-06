@@ -117,7 +117,7 @@ the effect record.
 | `network.firewall_disposition` | opportunity/state; admit | `action = accept/reject/drop`, response artifact iff reject, packet-selector rule, exhaustive state machine and event | most restrictive unless explicit ordered chain | `network.firewall.v1`; selector result, rule trace, state transition and response ID |
 | `network.connection_state` | state-machine; resolve | `kind = nat/conntrack/load_balancer/tunnel/dns`, table bound, packet-key artifact, exhaustive state machine/event, overflow policy | one machine per extracted flow; bounded table policy | domain capability; key digest, entry before/after, eviction/overflow and state timer |
 | `network.shared_medium` | persistent state; admit/queue/resolve | channel resources, arbitration, collision, capture, backoff and duty-cycle parameters | one conflict-free policy per medium; signals combine as inputs | `network.shared-medium.v1`; contenders, allocation, collision/capture, service |
-| `network.rf_channel` | persistent/opportunity; resolve | carrier/bandwidth, power, noise, gain, attenuation, SINR transfer table, fading field IDs | power/interference sum in exact linear unit then transfer lookup | `network.rf-channel.v1`; sampled geometry/field/power and resulting profile |
+| `network.rf_channel` | persistent/opportunity; resolve | carrier/bandwidth, power, noise, gain, attenuation, fading inputs, and SINR profiles with rate/loss/corruption/retry contracts | power/interference sum in exact linear unit then transfer lookup | `network.rf-channel.v1`; sampled geometry/field/power, per-attempt draws, retries and resulting profile/outcome |
 | `network.association` | state-machine; boundary/resolve | technology, candidates, selection, hysteresis, timers, auth, buffering/address policy | one machine per interface; inputs combine before selection | technology capability; candidates, timers, old/new attachment and traffic policy |
 | `network.control_result_transform` | opportunity; resolve/deliver | technology, operation, kind `drop/stale/bias/replace/error`, typed result fields | ordered-transform or severity for errors | technology capability; request/result schema and before/after evidence |
 | `network.contact` | state-machine; boundary/resolve | contact-plan intervals with acquisition/teardown, range-delay lookup, beam/gateway IDs | contact availability AND other outages | `network.contact.v1`; contact interval, range, selected beam/gateway |
@@ -298,6 +298,35 @@ creation opportunity, last-use coordinate, current state, pending transition,
 and transition sequence. The explicit network continuation digest also includes
 generated-response ancestry, forwarding-mutation ancestry, and forced recipient;
 changing any of those fields necessarily changes restore identity.
+
+### 8.3.5 RF transfer attempts and corruption
+
+`network.rf_channel` computes received signal and SINR only with checked integer
+arithmetic. Transmit femtowatts are multiplied by path-gain, antenna-gain, and
+fading ratios in millionths with ties-to-even division. Interference and receiver
+noise are checked-summed, and SINR is a ratio in millionths. The greatest
+transfer-profile threshold no larger than that SINR selects one complete
+profile; an SINR below every profile fails closed.
+
+Each profile declares rate, per-attempt loss probability, per-attempt corruption
+probability, corruption action, `maximum_retries` in `0..=256`, and exact delay
+per consumed retry. Attempt zero is the original transmission. Every attempt
+uses separate opportunity-keyed `rf-loss` and `rf-corruption` draws with the
+attempt ordinal. Loss consumes a retry when available and drops at exhaustion.
+A nonlost, noncorrupt attempt succeeds. Corruption has one closed disposition:
+
+| Corruption action | Result |
+| --- | --- |
+| `corrected` | Delivers unchanged without consuming a retry |
+| `detected` | Consumes a retry when available and drops at exhaustion |
+| `undetected` | XORs the frame with the repeated nonempty byte-template artifact and delivers |
+
+Only consumed retries add delay; a configuration with two retries can therefore
+execute at most three attempts and add at most twice the retry delay. Admission
+validates every undetected-corruption template reference. The selected rate cap,
+total retry delay, final drop, and final payload bytes flow into ordinary
+resolved-frame state and checkpoint evidence; no host radio stack or hidden
+random source participates.
 
 ## 8.4 Storage and 9p effect registry
 
