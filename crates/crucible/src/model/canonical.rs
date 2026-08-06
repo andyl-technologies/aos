@@ -471,10 +471,6 @@ impl MaterialHasher {
         self.bytes_written = self.bytes_written.wrapping_add(8);
     }
 
-    fn write_i64(&mut self, value: i64) {
-        self.write_u64(value as u64);
-    }
-
     fn write_bool(&mut self, value: bool) {
         self.write_u64(u64::from(value));
     }
