@@ -513,6 +513,26 @@ fn append_backend_output_evidence(
         append_evidence_bytes(material, preserved.binding.as_str().as_bytes())?;
         append_evidence_bytes(material, preserved.phase.as_str().as_bytes())?;
     }
+    let effects = output.fault_continuation.resolved_frame_effects();
+    material.extend_from_slice(&effects.latency_delta_nanos.to_be_bytes());
+    material.extend_from_slice(&effects.additional_delay_nanos.to_be_bytes());
+    material.push(u8::from(effects.drop));
+    match effects.serialization_rate_cap_bps {
+        Some(rate) => {
+            material.push(1);
+            material.extend_from_slice(&rate.to_be_bytes());
+        }
+        None => material.push(0),
+    }
+    let duplicate_count = u64::try_from(effects.duplicate_gaps_nanos.len()).map_err(|_error| {
+        SchedulerError::BoundaryViolation {
+            message: String::from("network duplicate count exceeds the canonical width"),
+        }
+    })?;
+    material.extend_from_slice(&duplicate_count.to_be_bytes());
+    for gap in &effects.duplicate_gaps_nanos {
+        material.extend_from_slice(&gap.to_be_bytes());
+    }
     append_evidence_bytes(material, &output.payload)
 }
 

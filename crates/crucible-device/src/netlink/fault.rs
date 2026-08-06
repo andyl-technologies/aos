@@ -244,7 +244,7 @@ fn non_firing_draw(probability: Probability) -> u64 {
 
 /// Computes serialization delay for a bit-per-second bandwidth cap.
 #[must_use]
-fn serialization_delay_bits_per_sec(len_bytes: u64, bits_per_sec: u64) -> u64 {
+pub(super) fn serialization_delay_bits_per_sec(len_bytes: u64, bits_per_sec: u64) -> u64 {
     if bits_per_sec == 0 {
         return 0;
     }

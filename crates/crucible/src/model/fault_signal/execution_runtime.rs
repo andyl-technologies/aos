@@ -481,6 +481,12 @@ impl OwnedFaultExecutionRuntime {
     pub const fn plan(&self) -> &FaultSignalPlan {
         &self.plan
     }
+
+    /// Returns the authoritative scenario seed used for keyed effect choices.
+    #[must_use]
+    pub const fn scenario_seed(&self) -> ContentHash {
+        self.scenario_seed
+    }
 }
 
 impl fmt::Debug for OwnedFaultExecutionRuntime {

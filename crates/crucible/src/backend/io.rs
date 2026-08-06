@@ -28,6 +28,8 @@ pub struct BackendNetworkPreservedAvailability {
 pub struct BackendNetworkFaultContinuation {
     /// Canonical contributions whose pre-transition profile is preserved.
     preserved_availability: Vec<BackendNetworkPreservedAvailability>,
+    /// Exact signal-adapter outcomes resolved before link scheduling.
+    resolved_frame_effects: crucible_device::ResolvedNetworkFrameEffects,
 }
 
 impl BackendNetworkFaultContinuation {
@@ -55,6 +57,20 @@ impl BackendNetworkFaultContinuation {
     #[must_use]
     pub fn preserved_availability(&self) -> &[BackendNetworkPreservedAvailability] {
         &self.preserved_availability
+    }
+
+    /// Replaces the exact signal-adapter outcomes for this frame.
+    pub fn set_resolved_frame_effects(
+        &mut self,
+        effects: crucible_device::ResolvedNetworkFrameEffects,
+    ) {
+        self.resolved_frame_effects = effects;
+    }
+
+    /// Returns the exact signal-adapter outcomes for this frame.
+    #[must_use]
+    pub const fn resolved_frame_effects(&self) -> &crucible_device::ResolvedNetworkFrameEffects {
+        &self.resolved_frame_effects
     }
 }
 

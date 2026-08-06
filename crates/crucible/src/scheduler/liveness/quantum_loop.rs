@@ -283,7 +283,8 @@ impl QuantumLoop for SingleScheduler {
                     logical_emit_icount,
                     frame_id,
                     output.payload.clone(),
-                );
+                )
+                .with_resolved_effects(output.fault_continuation.resolved_frame_effects().clone());
                 let seed = self.decision_seed;
                 let (record, branch_choices) = self.resolve_live_world_network_frame(
                     &route.link,

@@ -328,6 +328,14 @@ impl ProductionFaultRuntime {
             runtime.poison();
         }
     }
+
+    /// Returns the authoritative scenario seed for keyed host-adapter choices.
+    #[must_use]
+    pub fn scenario_seed(&self) -> Option<ContentHash> {
+        self.runtime
+            .as_ref()
+            .map(OwnedFaultExecutionRuntime::scenario_seed)
+    }
 }
 
 fn admit_host_effect_parameters(plan: &FaultSignalPlan) -> Result<(), ProductionFaultRuntimeError> {

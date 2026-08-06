@@ -50,7 +50,7 @@ pub use fault::{
 };
 pub use link::{
     Delivery, Frame, FrameDraws, LINK_SLOT, LinkSnapshot, NetLink, PastDeliveryPolicy,
-    ResolveOutcome,
+    ResolveOutcome, ResolvedNetworkFrameEffects,
 };
 
 #[cfg(test)]
@@ -117,6 +117,62 @@ mod tests {
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].payload, vec![1, 2, 3, 4]);
         assert_eq!(due[0].frame_id, 1);
+    }
+
+    #[test]
+    fn resolved_signal_outcomes_apply_without_link_rng_interpretation() {
+        let mut l = link(LinkFaults::none());
+        let effects = ResolvedNetworkFrameEffects {
+            latency_delta_nanos: -1_280,
+            additional_delay_nanos: 256,
+            serialization_rate_cap_bps: Some(32_000_000),
+            drop: false,
+            duplicate_gaps_nanos: vec![256, 512],
+        };
+        let resolved = frame(vec![1, 2, 3, 4]).with_resolved_effects(effects);
+        let out = ok(l.emit(
+            &resolved,
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+
+        // 1,280 ns adjusted latency + 1,000 ns serialization + 256 ns delay
+        // rounds to icount 10; the two exact copy gaps round to 11 and 12.
+        assert_eq!(
+            out.deliveries
+                .iter()
+                .map(Delivery::delivery_icount)
+                .collect::<Vec<_>>(),
+            vec![10, 11, 12]
+        );
+    }
+
+    #[test]
+    fn resolved_signal_drop_and_latency_floor_are_exact() {
+        let mut dropped = link(LinkFaults::none());
+        let dropped_frame = frame(vec![0; 4]).with_resolved_effects(ResolvedNetworkFrameEffects {
+            latency_delta_nanos: i64::MIN,
+            drop: true,
+            ..ResolvedNetworkFrameEffects::default()
+        });
+        let out = ok(dropped.emit(
+            &dropped_frame,
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+        assert!(out.deliveries.is_empty());
+
+        let mut clamped = link(LinkFaults::none());
+        let clamped_frame = frame(vec![0; 4]).with_resolved_effects(ResolvedNetworkFrameEffects {
+            latency_delta_nanos: -10_000,
+            ..ResolvedNetworkFrameEffects::default()
+        });
+        let out = ok(clamped.emit(
+            &clamped_frame,
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+        assert_eq!(out.deliveries[0].delivery_icount(), 4);
     }
 
     // ---- latency fault shifts delivery later (IO-20) ----
