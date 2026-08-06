@@ -795,6 +795,14 @@ pub(super) fn lifecycle_error_response(error: LifecycleApiError) -> axum::respon
             "invalid-argument",
             &error.to_string(),
         ),
+        LifecycleApiError::DebugAccess { .. } | LifecycleApiError::DebugEndpointUnavailable => {
+            typed_rpc_status_response(
+                axum::http::StatusCode::FORBIDDEN,
+                crucible_api::RpcStatusCode::InvalidState,
+                "debug-access-denied",
+                &error.to_string(),
+            )
+        }
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::CommandChannelClosed { .. }
@@ -2037,6 +2045,7 @@ pub(super) fn attach_gdb_command(node_name: &str) -> SessionCommand {
         },
         listen: GdbListen::new("127.0.0.1:0")
             .unwrap_or_else(|error| panic!("test gdb listen should be valid: {error}")),
+        debug_genesis: None,
         reply: CommandReply::discard(),
     }
 }

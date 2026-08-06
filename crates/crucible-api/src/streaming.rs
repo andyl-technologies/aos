@@ -912,12 +912,18 @@ fn command_with_reply_observer(
                 Some(CommandReplyObserver::Query(receiver)),
             )
         }
-        SessionCommand::AttachGdb { node, listen, .. } => {
+        SessionCommand::AttachGdb {
+            node,
+            listen,
+            debug_genesis,
+            ..
+        } => {
             let (reply, receiver) = CommandReply::channel();
             (
                 SessionCommand::AttachGdb {
                     node,
                     listen,
+                    debug_genesis,
                     reply,
                 },
                 Some(CommandReplyObserver::DebugAttach(receiver)),

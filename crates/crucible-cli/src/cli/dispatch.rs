@@ -418,6 +418,9 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Commands::Debug(args) => {
             let plan = plan_debug_invocation(cli, args)?;
+            if cli.daemon.is_some() {
+                return run_remote_debug_relay(cli, &plan);
+            }
             let backend = require_selftest_qemu_backend(cli)?;
             for line in run_local_qemu_debug_workflow(&backend, &plan)? {
                 println!("{line}");

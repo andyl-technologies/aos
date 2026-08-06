@@ -5,11 +5,10 @@ uses mutual TLS: the server authenticates every client certificate against an
 explicit client CA, and clients authenticate the server against an explicit CA.
 Cleartext service is available only through an explicit trusted-network option.
 
-It is not currently a production remote-QEMU service. The packaged server
-constructs a quiescent lifecycle loop rather than the production QEMU lifecycle
-used by local `run`. This is the most important constraint on daemon operation:
-remote and local commands share the API shape, but they do not currently share
-backend fidelity.
+By default the server constructs a quiescent lifecycle loop for API testing.
+Pass `--production-qemu` to host inline scenarios with the same packaged QEMU
+lifecycle used by local execution. Production service requires the packaged
+kernel, root image, patched QEMU, plugin, and standalone debugger gateway.
 
 ## Start a daemon
 
@@ -21,6 +20,8 @@ Start an authenticated listener:
   --tls-cert server.crt \
   --tls-key server.key \
   --client-ca clients-ca.crt \
+  --production-qemu \
+  --debug-role 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef=observe,control \
   --max-sessions 32
 ```
 
@@ -29,6 +30,12 @@ requires a client certificate during the TLS handshake, and derives the
 authenticated transport identity from the leaf-certificate SHA-256 fingerprint.
 The server prints the resolved `https://` endpoint. `--max-sessions` must be
 greater than zero.
+
+Each repeatable `--debug-role` maps the lowercase SHA-256 fingerprint of one
+client leaf certificate to a closed set of capabilities: `observe`, `control`,
+`mutate`, `shell`, and `admin`. Duplicate fingerprints and unknown capabilities
+are rejected. Certificates without a mapping have no debugger access, even
+though they may use the ordinary lifecycle API.
 
 For an isolated development network, cleartext must be opted into explicitly:
 
@@ -39,7 +46,9 @@ For an isolated development network, cleartext must be opted into explicitly:
 ```
 
 Do not use this option on an untrusted interface. It cannot be combined with
-the mutual-TLS flags.
+the mutual-TLS flags. The trusted cleartext listener receives all debugger
+capabilities; this is intentionally conspicuous and suitable only for an
+isolated development network.
 
 Use `--read-only` to reject mutating API calls:
 
@@ -51,7 +60,8 @@ Use `--read-only` to reject mutating API calls:
 ```
 
 Read-only mode is for query/watch clients. It cannot host normal run creation or
-control workflows.
+control workflows, acquire debugger controller leases, attach a debugger, or
+open a writable GDB relay.
 
 The process handles `SIGINT` and `SIGTERM`, requests server shutdown, and allows
 a short drain interval before exiting.
@@ -89,7 +99,9 @@ The control client has concrete remote workflows for:
 - `run`;
 - `verify`;
 - `save`; and
-- `resume`, including its interactive command path.
+- `resume`, including its interactive command path; and
+- `debug --session ... --node ... attach-gdb`, using an authenticated local
+  loopback GDB relay.
 
 Current restrictions include:
 
@@ -98,20 +110,22 @@ Current restrictions include:
   producer build provenance remotely;
 - `serve --daemon ...` is invalid because a server cannot route itself to
   another daemon; and
-- the current daemon backend does not start packaged QEMU guests.
+- the default daemon backend is quiescent; use `serve --production-qemu` for
+  live guests; and
+- a production debug session currently prepares the first VM node's private
+  gdbstub, so `--node` must name that node.
 
 ## Security boundary
 
 Mutual TLS authenticates the transport. Debugger capabilities and controller
 leases are a separate authorization layer: possessing a valid client
 certificate does not itself grant `observe`, `control`, `mutate`, `shell`, or
-`admin`. Until the debugger relay routes are enabled, the server exposes only
-the existing lifecycle API over this authenticated transport.
+`admin`. The server derives the principal from the transport, never from a
+request field. Controller leases are session-owned and generation-checked on
+every relay operation. Relay opens can connect only to the loopback endpoint
+reported by the session actor, and chunks are bounded to 64 KiB.
 
 ## Intended evolution
 
-Local and remote execution require equivalent session actors and production
-backends if they are to differ only in transport. That is not yet the shipped
-behavior. Remove this experimental warning only after `serve` constructs the
-production QEMU lifecycle and a live conformance test proves canonical-output
-equivalence.
+Unix-socket peer authentication and guest exec/PTY/SSH channels remain planned.
+The current remote surface is authenticated HTTP/2 GDB relay only.

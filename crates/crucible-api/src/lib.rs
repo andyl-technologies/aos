@@ -27,7 +27,9 @@
 
 pub mod client;
 pub mod control_responsive;
+pub mod debug_access;
 pub mod debug_gateway;
+pub mod debug_relay;
 pub mod event_log_stream;
 pub mod lifecycle;
 pub mod open_set;
@@ -52,9 +54,13 @@ pub use control_responsive::{
     ControlResponsiveReport, ControlResponsiveSessionProbe, ControlResponsivenessError,
     ControlSessionState, validate_control_responsiveness,
 };
+pub use debug_access::{DebugAuthorizationPolicy, DebugAuthorizationPolicyError};
 pub use debug_gateway::{
     DEBUG_GATEWAY_STARTUP_TIMEOUT, DEBUG_GATEWAY_V1_CAPABILITY, DebugGatewayClientError,
     DebugGatewayControlClient, DebugGatewayProcess,
+};
+pub use debug_relay::{
+    DEBUG_RELAY_CHUNK_MAX_BYTES, DebugRelayChunk, DebugRelayError, DebugRelayId,
 };
 pub use event_log_stream::{
     ControlPlaneEventLog, EventLogCursor, SESSION_EVENT_LOG_BROADCAST_CAPACITY,
@@ -105,7 +111,8 @@ pub use crucible_protocol::CONTROL_PROTOCOL_VERSION;
 // implementation crate directly.
 pub use server::{
     LifecycleServerMode, serve_lifecycle_http2,
-    serve_lifecycle_http2_mtls_with_mode_until_shutdown, serve_lifecycle_http2_with_mode,
+    serve_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_lifecycle_http2_with_debug_policy_until_shutdown, serve_lifecycle_http2_with_mode,
     serve_lifecycle_http2_with_mode_until_shutdown,
 };
 pub use session_mapping::{
