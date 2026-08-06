@@ -231,7 +231,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 }
                                 frame_actions.push(action.clone());
                             }
-                            let deferred_until = if !frame_actions.is_empty() {
+                            let application = if !frame_actions.is_empty() {
                                 let base_rate_bps = output
                                     .route
                                     .as_ref()
@@ -261,7 +261,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     base_rate_bps,
                                 )?
                             } else {
-                                None
+                                NetworkFrameApplication::default()
                             };
                             output
                                 .fault_continuation
@@ -272,7 +272,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                         "network fault continuation cursor failed: {error}"
                                     ),
                                 })?;
-                            if let Some(not_before_nanos) = deferred_until {
+                            next_wakeup_nanos =
+                                earliest_wakeup(next_wakeup_nanos, application.next_wakeup_nanos);
+                            if let Some(not_before_nanos) = application.defer_until {
                                 if not_before_nanos <= frontier.ticks {
                                     return Err(SchedulerError::BoundaryViolation {
                                         message: format!(
@@ -288,8 +290,6 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 output
                                     .fault_continuation
                                     .set_resolved_frame_effects(resolved_effects);
-                                next_wakeup_nanos =
-                                    earliest_wakeup(next_wakeup_nanos, Some(not_before_nanos));
                                 stage_pending_network_output(&mut staged_pending, output)?;
                                 continue 'route;
                             }
@@ -369,7 +369,7 @@ fn apply_network_frame_actions(
     state: &mut NetworkEffectRuntimeState,
     pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
     base_rate_bps: Option<u64>,
-) -> Result<Option<u64>, SchedulerError> {
+) -> Result<NetworkFrameApplication, SchedulerError> {
     let mut deferred_until = None;
     let mut queue_policy = None;
     let mut service_curves = Vec::new();
@@ -440,6 +440,7 @@ fn apply_network_frame_actions(
                 opportunity,
                 scenario_seed,
                 topology,
+                state,
             )?,
         }
     }
@@ -510,7 +511,23 @@ fn apply_network_frame_actions(
         )?;
         deferred_until = latest_wakeup(deferred_until, release);
     }
-    Ok(deferred_until.filter(|coordinate| *coordinate > opportunity.coordinate().virtual_nanos))
+    let defer_until =
+        deferred_until.filter(|coordinate| *coordinate > opportunity.coordinate().virtual_nanos);
+    Ok(NetworkFrameApplication {
+        defer_until,
+        next_wakeup_nanos: earliest_wakeup(
+            defer_until,
+            state
+                .boundary
+                .next_wakeup_nanos(opportunity.coordinate().virtual_nanos),
+        ),
+    })
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NetworkFrameApplication {
+    defer_until: Option<u64>,
+    next_wakeup_nanos: Option<u64>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1261,6 +1278,7 @@ fn apply_network_frame_action(
     opportunity: &FaultOpportunity,
     scenario_seed: ContentHash,
     topology: &crucible::model::WorldFaultTopology,
+    state: &mut NetworkEffectRuntimeState,
 ) -> Result<(), SchedulerError> {
     let EffectSpecification::Network(specification) = action.effect.specification() else {
         return Err(network_effect_application_error(
@@ -1511,28 +1529,31 @@ fn apply_network_frame_action(
         NetworkEffectSpecification::DetectedFrameError {
             receiver_action: crucible::model::DetectedFrameErrorAction::Retry,
             retry_delay_nanos: Some(retry_delay_nanos),
-            retry_limit: Some(retry_limit),
+            retry_attempts: Some(retry_attempts),
+            retry_succeeds: Some(retry_succeeds),
             ..
         } => {
-            let exhausted_delay = retry_delay_nanos
+            let retry_delay = retry_delay_nanos
                 .get()
-                .checked_mul(u64::from(retry_limit.get()))
+                .checked_mul(u64::from(retry_attempts.get()))
                 .ok_or_else(|| {
                     network_effect_application_error(action, "detected-error retries overflowed")
                 })?;
-            effects
-                .add_delay(exhausted_delay)
-                .map_err(map_effect_error)?;
-            effects.mark_drop();
+            effects.add_delay(retry_delay).map_err(map_effect_error)?;
+            if !retry_succeeds {
+                effects.mark_drop();
+            }
         }
         NetworkEffectSpecification::DetectedFrameError {
             receiver_action: crucible::model::DetectedFrameErrorAction::LinkReset,
             reset_nanos: Some(reset_nanos),
             ..
         } => {
-            effects
-                .add_delay(reset_nanos.get())
-                .map_err(map_effect_error)?;
+            state.boundary.activate_timed_outage(
+                action,
+                opportunity.coordinate().virtual_nanos,
+                reset_nanos.get(),
+            )?;
             effects.mark_drop();
         }
         NetworkEffectSpecification::DetectedFrameError { .. } => {
@@ -2544,6 +2565,90 @@ mod tests {
         .unwrap_or_else(|error| panic!("test opportunity should be valid: {error}"))
     }
 
+    fn action_with_network_effect(
+        specification: NetworkEffectSpecification,
+    ) -> ResolvedBindingAction {
+        let mut action = action();
+        action.phase = FaultPhase::Resolve;
+        action.effect = Arc::new(
+            EffectRequest::new(
+                EFFECT_SEMANTIC_VERSION,
+                EffectLifetime::Opportunity,
+                EffectSpecification::Network(specification),
+            )
+            .unwrap_or_else(|error| panic!("test network effect: {error}")),
+        );
+        action
+    }
+
+    #[test]
+    fn detected_errors_execute_declared_retries_and_timed_link_reset() {
+        let retry_count = |value| {
+            crucible::model::BoundedCount::new(CountLimit::DuplicatesOrInstructionReplay, value)
+                .unwrap_or_else(|error| panic!("test retry count: {error}"))
+        };
+        let retry = action_with_network_effect(NetworkEffectSpecification::DetectedFrameError {
+            kind: crucible::model::DetectedFrameErrorKind::Crc,
+            receiver_action: crucible::model::DetectedFrameErrorAction::Retry,
+            retry_delay_nanos: Some(positive(10)),
+            retry_limit: Some(retry_count(3)),
+            retry_attempts: Some(retry_count(2)),
+            retry_succeeds: Some(true),
+            reset_nanos: None,
+        });
+        let opportunity = opportunity(1);
+        let mut payload = vec![0_u8];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut state = NetworkEffectRuntimeState::default();
+        apply_network_frame_action(
+            &mut payload,
+            &mut effects,
+            &retry,
+            &opportunity,
+            ContentHash::from_bytes(b"retry-seed"),
+            &crucible::model::WorldFaultTopology::default(),
+            &mut state,
+        )
+        .unwrap_or_else(|error| panic!("retry effect: {error}"));
+        assert_eq!(effects.additional_delay_nanos(), 20);
+        assert!(!effects.is_dropped());
+
+        let reset = action_with_network_effect(NetworkEffectSpecification::DetectedFrameError {
+            kind: crucible::model::DetectedFrameErrorKind::FecUncorrectable,
+            receiver_action: crucible::model::DetectedFrameErrorAction::LinkReset,
+            retry_delay_nanos: None,
+            retry_limit: None,
+            retry_attempts: None,
+            retry_succeeds: None,
+            reset_nanos: Some(positive(50)),
+        });
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        apply_network_frame_action(
+            &mut payload,
+            &mut effects,
+            &reset,
+            &opportunity,
+            ContentHash::from_bytes(b"reset-seed"),
+            &crucible::model::WorldFaultTopology::default(),
+            &mut state,
+        )
+        .unwrap_or_else(|error| panic!("reset effect: {error}"));
+        assert!(effects.is_dropped());
+        assert_eq!(state.boundary.next_wakeup_nanos(0), Some(50));
+        let mut during_reset = crucible::ResolvedNetworkFrameEffects::default();
+        state
+            .boundary
+            .apply_frame(&reset.target, 49, &mut during_reset)
+            .unwrap_or_else(|error| panic!("apply reset outage: {error}"));
+        assert!(during_reset.is_dropped());
+        let mut recovered = crucible::ResolvedNetworkFrameEffects::default();
+        state
+            .boundary
+            .apply_frame(&reset.target, 50, &mut recovered)
+            .unwrap_or_else(|error| panic!("apply recovered link: {error}"));
+        assert!(!recovered.is_dropped());
+    }
+
     #[test]
     fn rf_channel_uses_geometry_tables_and_exact_sinr_profile() {
         let probability = crucible::model::ProbabilityMillionths::new(0)
@@ -2678,6 +2783,7 @@ mod tests {
         .unwrap_or_else(|error| panic!("test RF opportunity should be valid: {error}"));
         let mut payload = vec![0_u8];
         let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut state = NetworkEffectRuntimeState::default();
         apply_network_frame_action(
             &mut payload,
             &mut effects,
@@ -2685,6 +2791,7 @@ mod tests {
             &opportunity,
             ContentHash::from_bytes(b"scenario"),
             &topology,
+            &mut state,
         )
         .unwrap_or_else(|error| panic!("RF effect should execute: {error}"));
         assert_eq!(effects.serialization_rate_cap_bps(), Some(8_000));

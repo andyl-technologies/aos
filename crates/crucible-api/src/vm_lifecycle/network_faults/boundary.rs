@@ -93,6 +93,25 @@ pub(super) struct BoundaryRouteApplication {
 }
 
 impl BoundaryNetworkState {
+    pub(super) fn activate_timed_outage(
+        &mut self,
+        action: &ResolvedBindingAction,
+        now: u64,
+        duration_nanos: u64,
+    ) -> Result<u64, SchedulerError> {
+        let unavailable_until = now.checked_add(duration_nanos).ok_or_else(|| {
+            network_effect_application_error(action, "timed outage coordinate overflowed")
+        })?;
+        self.outages.insert(
+            NetworkEffectStateKey::from_action(action),
+            TimedOutage {
+                unavailable_until,
+                transition_sequence: action.transition_sequence,
+            },
+        );
+        Ok(unavailable_until)
+    }
+
     pub(super) fn validate_bounds(&self) -> Result<(), SchedulerError> {
         if self.outages.len() > 65_536
             || self.negotiated_modes.len() > 65_536
@@ -485,7 +504,7 @@ impl BoundaryNetworkState {
             .retain(|_key, outage| outage.unavailable_until > now);
     }
 
-    fn next_wakeup_nanos(&self, now: u64) -> Option<u64> {
+    pub(super) fn next_wakeup_nanos(&self, now: u64) -> Option<u64> {
         self.outages
             .values()
             .map(|outage| outage.unavailable_until)

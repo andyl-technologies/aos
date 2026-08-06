@@ -351,6 +351,12 @@ A contact interval's acquisition and teardown durations are its complete
 transition policy. `network.contact` therefore references the interval set,
 range-to-delay lookup, and admitted beam and gateway sets directly; it does not
 accept a second state-machine artifact with ambiguous event names.
+
+`network.detected_frame_error(receiver_action=retry)` requires a positive retry
+delay, retry limit, positive actual-attempt count no greater than that limit,
+and a final success boolean. An exhausted result is valid only when actual
+attempts equal the limit. `link_reset` instead requires only a positive reset
+duration and creates an adapter-owned timed outage through that boundary.
 | `world.network_recipient_membership` | version `id`; nonempty recipient records in identity order; each record has `member` and monotone `joined_sequence` | none |
 | `world.mobile_endpoint` | `id`, node, truth trajectory | observed-position sensor ID is specification-only and rejected in v2 |
 
