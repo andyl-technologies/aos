@@ -554,7 +554,7 @@ impl FaultCommandBridge {
             };
             match command {
                 DequeuedFaultCommand::Valid { header, payload } => {
-                    self.submit(header, &payload, logical_icount_offset, logical_icount)?;
+                    self.submit(*header, &payload, logical_icount_offset, logical_icount)?;
                 }
                 DequeuedFaultCommand::Rejected {
                     raw_command_kind,

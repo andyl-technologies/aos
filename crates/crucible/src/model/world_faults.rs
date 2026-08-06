@@ -252,7 +252,10 @@ impl WorldFaultTopology {
                     let endpoint_b = interface_endpoints
                         .get(&segment.interface_b)
                         .ok_or_else(|| invalid("network segment interface_b"))?;
-                    Ok(canonical_name_pair(endpoint_a.as_str(), endpoint_b.as_str()))
+                    Ok(canonical_name_pair(
+                        endpoint_a.as_str(),
+                        endpoint_b.as_str(),
+                    ))
                 })
                 .collect::<Result<BTreeSet<_>, WorldFaultTopologyError>>()?;
             let world_pairs = world
@@ -1430,36 +1433,45 @@ impl WorldStorageFaultDevice {
         )?;
         require(
             self.persistence.physical_sector_bytes.is_power_of_two()
-                && self.persistence.physical_sector_bytes % self.persistence.logical_block_bytes
-                    == 0,
+                && self
+                    .persistence
+                    .physical_sector_bytes
+                    .is_multiple_of(self.persistence.logical_block_bytes),
             "storage physical sector geometry",
         )?;
         require(
             self.persistence.atomic_write_bytes > 0
-                && self.persistence.atomic_write_bytes % self.persistence.logical_block_bytes == 0
+                && self
+                    .persistence
+                    .atomic_write_bytes
+                    .is_multiple_of(self.persistence.logical_block_bytes)
                 && self.persistence.atomic_write_bytes <= self.persistence.physical_sector_bytes,
             "storage atomic write geometry",
         )?;
         require(
             self.persistence.length_bytes > 0
-                && self.persistence.length_bytes % u64::from(self.persistence.logical_block_bytes)
-                    == 0,
+                && self
+                    .persistence
+                    .length_bytes
+                    .is_multiple_of(u64::from(self.persistence.logical_block_bytes)),
             "storage length geometry",
         )?;
         require(
             self.persistence.discard_granularity_bytes == 0
                 || (self.persistence.discard_granularity_bytes.is_power_of_two()
-                    && self.persistence.discard_granularity_bytes
-                        % self.persistence.logical_block_bytes
-                        == 0),
+                    && self
+                        .persistence
+                        .discard_granularity_bytes
+                        .is_multiple_of(self.persistence.logical_block_bytes)),
             "storage discard geometry",
         )?;
         require(
             self.persistence.maximum_request_bytes > 0
                 && self.persistence.maximum_request_bytes <= 67_108_864
-                && self.persistence.maximum_request_bytes
-                    % u64::from(self.persistence.logical_block_bytes)
-                    == 0,
+                && self
+                    .persistence
+                    .maximum_request_bytes
+                    .is_multiple_of(u64::from(self.persistence.logical_block_bytes)),
             "storage maximum request geometry",
         )?;
         require(
@@ -1775,8 +1787,7 @@ impl WorldNodeArchitecture {
     const fn matches_vm(self, architecture: VmArchitecture) -> bool {
         matches!(
             (self, architecture),
-            (Self::X86_64, VmArchitecture::X86_64)
-                | (Self::Aarch64, VmArchitecture::Aarch64)
+            (Self::X86_64, VmArchitecture::X86_64) | (Self::Aarch64, VmArchitecture::Aarch64)
         )
     }
 }
@@ -1906,7 +1917,7 @@ impl fmt::Display for WorldFaultTopologyError {
 impl Error for WorldFaultTopologyError {}
 
 fn canonicalize_by_id<T>(
-    values: &mut Vec<T>,
+    values: &mut [T],
     id: impl Fn(&T) -> &SignalId,
 ) -> Result<(), WorldFaultTopologyError> {
     if values.len() > HARD_WORLD_FAULT_DECLARATIONS_PER_KIND {
@@ -1923,7 +1934,7 @@ fn canonicalize_by_id<T>(
     Ok(())
 }
 fn canonicalize_set<T: Ord>(
-    values: &mut Vec<T>,
+    values: &mut [T],
     field: &'static str,
 ) -> Result<(), WorldFaultTopologyError> {
     bounded(values, field)?;

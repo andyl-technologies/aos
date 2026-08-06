@@ -58,6 +58,176 @@ struct PreparedAdapterSet {
     node: Option<ContentHash>,
 }
 
+/// One transaction mirrored into canonical adapter state and a live backend.
+pub(super) struct MirroredFaultActionSink<'a, B> {
+    state: &'a mut TransactionalFaultAdapters,
+    backend: &'a mut B,
+    prepared: Option<PreparedMirroredBatch>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreparedMirroredBatch {
+    transaction: ContentHash,
+    state_transaction: ContentHash,
+    backend_transaction: ContentHash,
+    state_before: TransactionalFaultAdapters,
+}
+
+impl<'a, B> MirroredFaultActionSink<'a, B>
+where
+    B: FaultActionSink,
+{
+    /// Couples canonical adapter state to one live production backend.
+    #[must_use]
+    pub(super) fn new(state: &'a mut TransactionalFaultAdapters, backend: &'a mut B) -> Self {
+        Self {
+            state,
+            backend,
+            prepared: None,
+        }
+    }
+
+    fn abort_prepared(
+        &mut self,
+        prepared: &PreparedMirroredBatch,
+    ) -> Result<(), FaultRuntimeError> {
+        let state = self.state.abort_batch(prepared.state_transaction);
+        let backend = self.backend.abort_batch(prepared.backend_transaction);
+        if state.is_err() || backend.is_err() {
+            *self.state = prepared.state_before.clone();
+            return Err(FaultRuntimeError::AdapterTransactionRollback);
+        }
+        Ok(())
+    }
+}
+
+impl<B> FaultActionSink for MirroredFaultActionSink<'_, B>
+where
+    B: FaultActionSink,
+{
+    fn prepare_batch(
+        &mut self,
+        actions: &[ResolvedBindingAction],
+    ) -> Result<PreparedActionBatch, Box<RejectedActionBatch>> {
+        if self.prepared.is_some() {
+            return Err(Box::new(RejectedActionBatch {
+                error: FaultRuntimeError::AdapterTransactionPending,
+                observations: Vec::new(),
+                rejected_action: None,
+            }));
+        }
+        let state_before = self.state.clone();
+        let backend_batch = self.backend.prepare_batch(actions)?;
+        let state_batch = match self.state.prepare_batch(actions) {
+            Ok(batch) => batch,
+            Err(error) => {
+                if self.backend.abort_batch(backend_batch.transaction).is_err() {
+                    return Err(Box::new(RejectedActionBatch {
+                        error: FaultRuntimeError::AdapterTransactionRollback,
+                        observations: error.observations,
+                        rejected_action: error.rejected_action,
+                    }));
+                }
+                return Err(error);
+            }
+        };
+        let expected = actions
+            .iter()
+            .map(ResolvedBindingAction::id)
+            .collect::<Vec<_>>();
+        let backend_actions = backend_batch
+            .results
+            .iter()
+            .map(|result| result.action)
+            .collect::<Vec<_>>();
+        let state_actions = state_batch
+            .results
+            .iter()
+            .map(|result| result.action)
+            .collect::<Vec<_>>();
+        if backend_actions != expected || state_actions != expected {
+            let prepared = PreparedMirroredBatch {
+                transaction: ContentHash::default(),
+                state_transaction: state_batch.transaction,
+                backend_transaction: backend_batch.transaction,
+                state_before,
+            };
+            let error = if self.abort_prepared(&prepared).is_ok() {
+                FaultRuntimeError::IncompleteAdapterState
+            } else {
+                FaultRuntimeError::AdapterTransactionRollback
+            };
+            return Err(Box::new(RejectedActionBatch {
+                error,
+                observations: Vec::new(),
+                rejected_action: None,
+            }));
+        }
+        let transaction = mirrored_transaction_digest(
+            state_batch.transaction,
+            backend_batch.transaction,
+            &expected,
+        );
+        self.prepared = Some(PreparedMirroredBatch {
+            transaction,
+            state_transaction: state_batch.transaction,
+            backend_transaction: backend_batch.transaction,
+            state_before,
+        });
+        Ok(PreparedActionBatch {
+            transaction,
+            results: backend_batch.results,
+        })
+    }
+
+    fn abort_batch(&mut self, transaction: ContentHash) -> Result<(), FaultRuntimeError> {
+        let prepared = self
+            .prepared
+            .take()
+            .ok_or(FaultRuntimeError::UnknownAdapterTransaction)?;
+        if prepared.transaction != transaction {
+            self.prepared = Some(prepared);
+            return Err(FaultRuntimeError::UnknownAdapterTransaction);
+        }
+        self.abort_prepared(&prepared)
+    }
+
+    fn commit_batch(&mut self, transaction: ContentHash) -> Result<(), Box<RejectedActionBatch>> {
+        let prepared = self.prepared.take().ok_or_else(|| {
+            Box::new(RejectedActionBatch {
+                error: FaultRuntimeError::UnknownAdapterTransaction,
+                observations: Vec::new(),
+                rejected_action: None,
+            })
+        })?;
+        if prepared.transaction != transaction {
+            self.prepared = Some(prepared);
+            return Err(Box::new(RejectedActionBatch {
+                error: FaultRuntimeError::UnknownAdapterTransaction,
+                observations: Vec::new(),
+                rejected_action: None,
+            }));
+        }
+        if let Err(error) = self.state.commit_batch(prepared.state_transaction) {
+            let backend_abort = self.backend.abort_batch(prepared.backend_transaction);
+            *self.state = prepared.state_before;
+            if backend_abort.is_err() {
+                return Err(Box::new(RejectedActionBatch {
+                    error: FaultRuntimeError::AdapterTransactionRollback,
+                    observations: error.observations,
+                    rejected_action: error.rejected_action,
+                }));
+            }
+            return Err(error);
+        }
+        if let Err(error) = self.backend.commit_batch(prepared.backend_transaction) {
+            *self.state = prepared.state_before;
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
 impl TransactionalFaultAdapters {
     /// Creates the three production adapter transaction domains.
     ///
@@ -649,6 +819,19 @@ fn transaction_digest(
     ContentHash::from_canonical_material("crucible.adapter-transaction.v1", &material)
 }
 
+fn mirrored_transaction_digest(
+    state: ContentHash,
+    backend: ContentHash,
+    actions: &[ContentHash],
+) -> ContentHash {
+    let mut material = format!("state={};backend={};", state.to_hex(), backend.to_hex());
+    for action in actions {
+        material.push_str(&action.to_hex());
+        material.push(';');
+    }
+    ContentHash::from_canonical_material("crucible.mirrored-adapter-transaction.v1", &material)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
@@ -709,6 +892,69 @@ mod tests {
         }
     }
 
+    fn manifests() -> FaultAdapterManifests {
+        FaultAdapterManifests {
+            network: manifest(FaultAdapter::Network),
+            storage: manifest(FaultAdapter::Storage),
+            node: manifest(FaultAdapter::Node),
+        }
+    }
+
+    struct TransactionProbe {
+        ledger: TransactionalFaultAdapters,
+        reject_commit: bool,
+        evidence: ContentHash,
+    }
+
+    impl TransactionProbe {
+        fn new(reject_commit: bool) -> Self {
+            Self {
+                ledger: TransactionalFaultAdapters::new(manifests())
+                    .unwrap_or_else(|error| panic!("transaction probe: {error}")),
+                reject_commit,
+                evidence: ContentHash::from_bytes(b"backend-evidence"),
+            }
+        }
+    }
+
+    impl FaultActionSink for TransactionProbe {
+        fn prepare_batch(
+            &mut self,
+            actions: &[ResolvedBindingAction],
+        ) -> Result<PreparedActionBatch, Box<RejectedActionBatch>> {
+            let mut batch = self.ledger.prepare_batch(actions)?;
+            for result in &mut batch.results {
+                result.observation.evidence = self.evidence;
+            }
+            Ok(batch)
+        }
+
+        fn abort_batch(&mut self, transaction: ContentHash) -> Result<(), FaultRuntimeError> {
+            self.ledger.abort_batch(transaction)
+        }
+
+        fn commit_batch(
+            &mut self,
+            transaction: ContentHash,
+        ) -> Result<(), Box<RejectedActionBatch>> {
+            if self.reject_commit {
+                self.ledger.abort_batch(transaction).map_err(|error| {
+                    Box::new(RejectedActionBatch {
+                        error,
+                        observations: Vec::new(),
+                        rejected_action: None,
+                    })
+                })?;
+                return Err(Box::new(RejectedActionBatch {
+                    error: FaultRuntimeError::AdapterActionMismatch,
+                    observations: Vec::new(),
+                    rejected_action: None,
+                }));
+            }
+            self.ledger.commit_batch(transaction)
+        }
+    }
+
     #[test]
     fn prepared_state_is_invisible_until_commit_and_abort_is_exact() {
         let mut runtime = TransactionalAdapterRuntime::new(
@@ -745,9 +991,10 @@ mod tests {
         let mut runtime = TransactionalAdapterRuntime::new(FaultAdapter::Network, missing)
             .unwrap_or_else(|error| panic!("adapter runtime: {error}"));
         let action = network_action();
-        let rejection = runtime
-            .prepare_batch(&[action])
-            .expect_err("missing capability must reject");
+        let rejection = match runtime.prepare_batch(&[action]) {
+            Ok(_) => panic!("missing capability must reject"),
+            Err(rejection) => rejection,
+        };
         assert!(matches!(
             rejection.error,
             FaultRuntimeError::MissingCapability(_)
@@ -797,6 +1044,63 @@ mod tests {
                 &corrupt,
             ),
             Err(FaultRuntimeError::AdapterCheckpointDigest)
+        );
+    }
+
+    #[test]
+    fn mirrored_sink_returns_backend_evidence_and_commits_both_views() {
+        let mut state = TransactionalFaultAdapters::new(manifests())
+            .unwrap_or_else(|error| panic!("adapter state: {error}"));
+        let mut backend = TransactionProbe::new(false);
+        let expected_evidence = backend.evidence;
+        let action = network_action();
+        let mut sink = MirroredFaultActionSink::new(&mut state, &mut backend);
+        let prepared = sink
+            .prepare_batch(&[action])
+            .unwrap_or_else(|error| panic!("prepare: {}", error.error));
+        assert_eq!(prepared.results[0].observation.evidence, expected_evidence);
+        sink.commit_batch(prepared.transaction)
+            .unwrap_or_else(|error| panic!("commit: {}", error.error));
+        assert_eq!(
+            state
+                .adapter(FaultAdapter::Network)
+                .composition_groups()
+                .len(),
+            1
+        );
+        assert_eq!(
+            backend
+                .ledger
+                .adapter(FaultAdapter::Network)
+                .composition_groups()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn mirrored_sink_restores_canonical_state_after_backend_commit_rejection() {
+        let mut state = TransactionalFaultAdapters::new(manifests())
+            .unwrap_or_else(|error| panic!("adapter state: {error}"));
+        let before = state.clone();
+        let mut backend = TransactionProbe::new(true);
+        let action = network_action();
+        let mut sink = MirroredFaultActionSink::new(&mut state, &mut backend);
+        let prepared = sink
+            .prepare_batch(&[action])
+            .unwrap_or_else(|error| panic!("prepare: {}", error.error));
+        let rejection = match sink.commit_batch(prepared.transaction) {
+            Ok(()) => panic!("backend commit must reject"),
+            Err(rejection) => rejection,
+        };
+        assert_eq!(rejection.error, FaultRuntimeError::AdapterActionMismatch);
+        assert_eq!(state, before);
+        assert!(
+            backend
+                .ledger
+                .adapter(FaultAdapter::Network)
+                .composition_groups()
+                .is_empty()
         );
     }
 }
