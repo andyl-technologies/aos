@@ -565,7 +565,7 @@ pub(super) fn entry_is_resolved_external_event(entry: &SchedulerEventLogEntry) -
             ScheduledEventPayload::BackendInput(_)
                 | ScheduledEventPayload::IoCompletion(_)
                 | ScheduledEventPayload::FaultActivation(_)
-                | ScheduledEventPayload::ProbabilisticFault(_)
+                | ScheduledEventPayload::ProbabilisticEffect(_)
         ),
         SchedulerEventLogPayload::Observable(ObservableEventPayload::NetworkDelivered {
             ..

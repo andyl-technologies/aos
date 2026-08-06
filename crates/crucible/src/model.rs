@@ -48,7 +48,7 @@ static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The stable domain used for device-scoped decision streams ([IO-21]).
 ///
-/// A device (block / 9p / network sub-node) draws its probabilistic faults from a
+/// A device (block / 9p / network sub-node) draws its probabilistic effects from a
 /// stream forked by name-hash in this fixed domain, so a device named `"disk"` and
 /// a node named `"disk"` never collide and adding or renaming an unrelated device
 /// never perturbs another device's draws ([DET-25]).

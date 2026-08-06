@@ -10,8 +10,8 @@ use std::io::{Error as IoError, ErrorKind};
 use crucible::{
     AppRandomDecision, AssertionDef, AssertionId, AssertionQuantifierKind,
     AssertionViolationArtifactReplay, AssertionViolationReplayError, Checkpoint, CheckpointKind,
-    Configuration, ContentHash, Decision, DeliveryOrderDecision, EngineError,
-    EventDiagnosticPayload, EventKey, EventLevel, FaultDecision, FaultId, FramePredicate,
+    Configuration, ContentHash, Decision, DeliveryOrderDecision, EffectOutcomeDecision,
+    EngineError, EventDiagnosticPayload, EventKey, EventLevel, FaultId, FramePredicate,
     FrontierReductionPolicy, GenesisCheckpoint, Icount, MaterializationPolicy,
     MaterializationTrigger, MaterializedState, MemoryDagStore, NodeBlobRef, NodeId, NodeTemplate,
     ObservableEvent, OfflineAssertionChecker, Plan, Predicate, Properties, Property, ReadyPoint,
@@ -957,7 +957,7 @@ fn assert_replay_oracle_fixed_checkpoint_corpus()
     );
     let second = step(
         &first,
-        Decision::FaultFires(FaultDecision {
+        Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime { ticks: 8 },
             fault: FaultId {
                 name: String::from("link-a-b/drop"),
@@ -1177,7 +1177,7 @@ fn representative_replay_oracle_reproduction_artifact()
             at: VirtualTime { ticks: 3 },
             order: vec![event_key(3, 10), event_key(3, 11)],
         }))
-        .appended(Decision::FaultFires(FaultDecision {
+        .appended(Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime { ticks: 8 },
             fault: FaultId {
                 name: String::from("artifact/link-drop"),

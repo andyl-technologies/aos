@@ -366,7 +366,7 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
 
 #[test]
 fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() {
-    let (default_outcome, default_loop) = network_branch_fixture(None, 0);
+    let (deeffect_outcome, default_loop) = network_branch_fixture(None, 0);
     let frontier = default_loop
         .loop_impl()
         .search_frontiers()
@@ -413,7 +413,7 @@ fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() 
         ]
     );
     assert!(
-        default_outcome
+        deeffect_outcome
             .decisions
             .iter()
             .all(|decision| !matches!(decision, Decision::Override(_)))
@@ -422,7 +422,7 @@ fn live_world_network_frontier_replays_selected_loss_before_delivery_mutation() 
 
 #[test]
 fn live_world_network_branch_identity_uses_the_causal_emission_ordinal() {
-    let (_default_outcome, default_loop) = network_branch_fixture(None, 4_096);
+    let (_deeffect_outcome, default_loop) = network_branch_fixture(None, 4_096);
     let frontier = default_loop
         .loop_impl()
         .search_frontiers()
@@ -445,7 +445,10 @@ fn live_world_network_branch_identity_uses_the_causal_emission_ordinal() {
 
     let (outcome, loop_impl) = network_branch_fixture(Some(selected.0), 8_192);
 
-    assert_eq!(loop_impl.loop_impl().pending_branch_fault_choice_count(), 0);
+    assert_eq!(
+        loop_impl.loop_impl().pending_branch_effect_choice_count(),
+        0
+    );
     assert_eq!(
         outcome
             .decisions

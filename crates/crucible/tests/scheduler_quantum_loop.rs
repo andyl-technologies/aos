@@ -238,7 +238,7 @@ fn delivery_order(decisions: &[Decision]) -> Vec<EventKey> {
         .iter()
         .flat_map(|decision| match decision {
             Decision::DeliveryOrder(order) => order.order.clone(),
-            Decision::FaultFires(_)
+            Decision::EffectOutcome(_)
             | Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)

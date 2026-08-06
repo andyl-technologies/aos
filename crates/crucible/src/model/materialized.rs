@@ -75,9 +75,9 @@ pub struct DeliveryOrderDecision {
     pub order: Vec<EventKey>,
 }
 
-/// A probabilistic fault decision payload.
+/// A probabilistic effect decision payload.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FaultDecision {
+pub struct EffectOutcomeDecision {
     /// The virtual time at which the fault was resolved.
     pub at: VirtualTime,
     /// The fault whose outcome was resolved.
@@ -309,7 +309,7 @@ impl SearchFrontierChoices {
     /// Builds a frontier-choice set from scheduler-derived candidate decisions.
     ///
     /// The retained decisions are limited to the closed search taxonomy:
-    /// probabilistic fault outcomes, decision-RNG draws, and search overrides.
+    /// probabilistic effect outcomes, decision-RNG draws, and search overrides.
     /// Delivery order is excluded here because RESOLVE already imposes a total
     /// order over scheduled events.
     #[must_use]
@@ -393,7 +393,7 @@ impl SearchFrontierChoice {
         let decisions = decisions.into_iter().collect::<Vec<_>>();
         let decision = match decisions.as_slice() {
             [decision] if is_genuine_search_frontier_decision(decision) => decision.clone(),
-            [Decision::RngDraw(_), decision @ Decision::FaultFires(_)] => decision.clone(),
+            [Decision::RngDraw(_), decision @ Decision::EffectOutcome(_)] => decision.clone(),
             [
                 decision @ Decision::Override(override_decision),
                 causal @ ..,
@@ -402,11 +402,11 @@ impl SearchFrontierChoice {
                 .key
                 .starts_with("live-world-network/")
                 && causal.iter().all(|decision| {
-                    matches!(decision, Decision::RngDraw(_) | Decision::FaultFires(_))
+                    matches!(decision, Decision::RngDraw(_) | Decision::EffectOutcome(_))
                 })
                 && causal
                     .iter()
-                    .any(|decision| matches!(decision, Decision::FaultFires(_))) =>
+                    .any(|decision| matches!(decision, Decision::EffectOutcome(_))) =>
             {
                 decision.clone()
             }

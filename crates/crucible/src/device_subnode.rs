@@ -30,7 +30,7 @@
 //!    transport-timing-independent, and appends the per-device fault
 //!    [`Decision`]s the completion drew ([SCHED-30]).
 //!
-//! # When fault choices are drawn vs recorded
+//! # When effect choices are drawn vs recorded
 //!
 //! A probabilistic device fault (jitter/reorder/loss/duplicate/corrupt/bandwidth)
 //! is **drawn from the per-device RNG at COMPUTE**, when
@@ -39,7 +39,7 @@
 //! perturbed (final) `delivery_icount` enter the in-flight queue, so the horizon
 //! term the scheduler reads is the **exact** completion the requester will
 //! observe — never a pre-fault estimate the run would then have to deliver late.
-//! The raw draws and fault outcomes are buffered with the pending completion and
+//! The raw draws and effect outcomes are buffered with the pending completion and
 //! **recorded as [`Decision`]s on the RESOLVE path**, in delivery
 //! order, so the recorded schedule is appended in the §8.6 total order exactly as
 //! [`resolve_frame`](crate::scheduler) records a link-loss outcome ([SCHED-30]).
@@ -67,8 +67,8 @@ use crucible_device::{
 
 use crate::scheduler::{IoCompletion, SchedulerDiscardedIoCompletion};
 use crate::{
-    ContentHash, DagStore, DagStoreError, Decision, DeviceId, FaultDecision, FaultId, NodeId,
-    RngDecision, SchedulerNodeId, Seed, World, WorldDeviceKind, WorldIoNodeKind,
+    ContentHash, DagStore, DagStoreError, Decision, DeviceId, EffectOutcomeDecision, FaultId,
+    NodeId, RngDecision, SchedulerNodeId, Seed, World, WorldDeviceKind, WorldIoNodeKind,
 };
 
 /// Default physical request-ring capacity selected at instantiation time.
@@ -256,7 +256,7 @@ impl PendingCompletion {
 ///
 /// Most items carry a visible [`IoCompletion`]. Drop-mode block failures carry
 /// only the buffered fault decisions so the schedule records the deterministic
-/// fault choice without fabricating a VM-visible response.
+/// effect choice without fabricating a VM-visible response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceDelivery {
     /// The exact device icount at which this delivery item resolves.
@@ -830,7 +830,7 @@ impl DeviceSchedulingSubNode {
     /// COMPUTE pins the modeled reply, the bridge resolves active I/O faults
     /// through the per-device RNG in sorted delivery-key order, and
     /// [`DeviceSchedulingSubNode::deliver_due`] later records the buffered
-    /// `RngDraw` / `FaultFires` decisions when the reply becomes visible
+    /// `RngDraw` / `EffectOutcome` decisions when the reply becomes visible
     /// ([IO-21], [IO-25], [SCHED-30]).
     ///
     /// # Errors
@@ -927,7 +927,7 @@ impl DeviceSchedulingSubNode {
             let after = rng.position();
 
             // Record one RngDraw per raw value this completion consumed (in order),
-            // then a FaultFires for each probabilistic fault outcome ([SCHED-30]).
+            // then a EffectOutcome for each probabilistic effect outcome ([SCHED-30]).
             let mut decisions = Vec::new();
             let mut replay = crate::device::device_rng(self.seed, &self.device_id, before);
             let at = crate::VirtualTime {
@@ -939,21 +939,21 @@ impl DeviceSchedulingSubNode {
                     value: replay.next_u64(),
                 }));
             }
-            push_fault_outcome(
+            push_effect_outcome(
                 &mut decisions,
                 at,
                 &self.device_id,
                 "loss",
                 outcome.loss_fired,
             );
-            push_fault_outcome(
+            push_effect_outcome(
                 &mut decisions,
                 at,
                 &self.device_id,
                 "duplicate",
                 outcome.duplicate_fired,
             );
-            push_fault_outcome(
+            push_effect_outcome(
                 &mut decisions,
                 at,
                 &self.device_id,
@@ -1239,11 +1239,11 @@ fn ninep_error_payload(modeled_payload: &[u8], failure_errno: Option<u32>) -> Op
     ninep_codec::encode_rlerror(tag, errno).ok()
 }
 
-/// Pushes a [`Decision::FaultFires`] for one I/O fault kind that could fire.
+/// Pushes a [`Decision::EffectOutcome`] for one I/O fault kind that could fire.
 ///
 /// The fault id is the device-scoped tag [`crate::device::io_fault_id`] keys an
 /// active I/O fault by ([IO-26]), so block/9p/link faults live in one namespace.
-fn push_fault_outcome(
+fn push_effect_outcome(
     decisions: &mut Vec<Decision>,
     at: crate::VirtualTime,
     device: &DeviceId,
@@ -1251,7 +1251,11 @@ fn push_fault_outcome(
     fired: bool,
 ) {
     let fault: FaultId = crate::device::io_fault_id(device, kind);
-    decisions.push(Decision::FaultFires(FaultDecision { at, fault, fired }));
+    decisions.push(Decision::EffectOutcome(EffectOutcomeDecision {
+        at,
+        fault,
+        fired,
+    }));
 }
 
 #[cfg(test)]
@@ -1413,9 +1417,9 @@ mod tests {
     }
 
     #[test]
-    fn fault_choices_are_drawn_from_the_device_rng_and_recorded_as_decisions() {
+    fn effect_choices_are_drawn_from_the_device_rng_and_recorded_as_decisions() {
         // A loss fault that always fires: the completion records an RngDraw (the
-        // loss draw) and a FaultFires(loss, fired=true) on the RESOLVE path.
+        // loss draw) and a EffectOutcome(loss, fired=true) on the RESOLVE path.
         let faults = IoFaults {
             loss: Probability::ALWAYS,
             ..IoFaults::none()
@@ -1439,10 +1443,10 @@ mod tests {
         assert!(
             decisions.iter().any(|decision| matches!(
                 decision,
-                Decision::FaultFires(FaultDecision { fired: true, fault, .. })
+                Decision::EffectOutcome(EffectOutcomeDecision { fired: true, fault, .. })
                     if fault == &crate::device::io_fault_id(&device_id("disk"), "loss")
             )),
-            "the loss fault outcome must be recorded as fired"
+            "the loss effect outcome must be recorded as fired"
         );
         // The RNG cursor advanced (the faults consumed draws).
         assert!(disk.rng_position() > 0);
@@ -1458,7 +1462,7 @@ mod tests {
     }
 
     #[test]
-    fn ninep_fault_choices_use_the_same_scheduler_bridge() {
+    fn ninep_effect_choices_use_the_same_scheduler_bridge() {
         let faults = IoFaults {
             duplicate: Probability::ALWAYS,
             duplicate_gap_ns: 1,
@@ -1494,18 +1498,18 @@ mod tests {
         assert!(
             decisions.iter().any(|decision| matches!(
                 decision,
-                Decision::FaultFires(FaultDecision { fired: true, fault, .. })
+                Decision::EffectOutcome(EffectOutcomeDecision { fired: true, fault, .. })
                     if fault == &crate::device::io_fault_id(&device_id("fs"), "duplicate")
             )),
-            "the 9p duplicate fault outcome must be recorded as fired"
+            "the 9p duplicate effect outcome must be recorded as fired"
         );
         assert!(
             decisions.iter().any(|decision| matches!(
                 decision,
-                Decision::FaultFires(FaultDecision { fired: true, fault, .. })
+                Decision::EffectOutcome(EffectOutcomeDecision { fired: true, fault, .. })
                     if fault == &crate::device::io_fault_id(&device_id("fs"), "corrupt")
             )),
-            "the 9p corrupt fault outcome must be recorded as fired"
+            "the 9p corrupt effect outcome must be recorded as fired"
         );
         assert!(fs.rng_position() > 0);
         let ninep_rng_position = fs

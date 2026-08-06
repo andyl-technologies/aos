@@ -1230,7 +1230,7 @@ pub enum ObservedFaultFact {
         /// Fault whose activation was resolved.
         fault: FaultId,
     },
-    /// A scheduled probabilistic fault choice entered the event log.
+    /// A scheduled probabilistic effect choice entered the event log.
     ScheduledProbabilisticChoice {
         /// Dense event-log sequence where the fact was recorded.
         sequence: u64,
@@ -1239,7 +1239,7 @@ pub enum ObservedFaultFact {
         /// Fault whose probabilistic choice was resolved.
         fault: FaultId,
     },
-    /// A probabilistic fault outcome was decided.
+    /// A probabilistic effect outcome was decided.
     ProbabilisticOutcome {
         /// Dense event-log sequence where the fact was recorded.
         sequence: u64,
@@ -1247,7 +1247,7 @@ pub enum ObservedFaultFact {
         at: VirtualTime,
         /// Fault whose outcome was decided.
         fault: FaultId,
-        /// Whether the probabilistic fault fired.
+        /// Whether the probabilistic effect fired.
         fired: bool,
     },
     /// A trigger-owned membership fault was injected.

@@ -1173,7 +1173,7 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
                 writer.write_u64(event.sequence);
             }
         }
-        Decision::FaultFires(fault) => {
+        Decision::EffectOutcome(fault) => {
             writer.write_u8(1);
             writer.write_u64(fault.at.ticks);
             writer.write_string(&fault.fault.name);
@@ -1228,7 +1228,7 @@ pub(super) fn read_decision_binary(
             }
             Ok(Decision::DeliveryOrder(DeliveryOrderDecision { at, order }))
         }
-        1 => Ok(Decision::FaultFires(FaultDecision {
+        1 => Ok(Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime {
                 ticks: reader.read_u64()?,
             },

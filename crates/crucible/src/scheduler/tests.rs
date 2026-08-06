@@ -905,7 +905,7 @@ fn scheduler_quiescence_ignores_idle_nodes_when_peer_can_advance() {
 }
 
 #[test]
-fn search_frontier_choices_from_scheduled_events_captures_probabilistic_fault_branches() {
+fn search_frontier_choices_from_scheduled_events_captures_probabilistic_effect_branches() {
     let configuration = Configuration::genesis(ScenarioDef::from_canonical_material(
         "crucible.test.scheduler.search-frontier",
         "scenario=probabilistic-fault",
@@ -915,14 +915,14 @@ fn search_frontier_choices_from_scheduled_events_captures_probabilistic_fault_br
     let fault = FaultId {
         name: String::from("packet-loss"),
     };
-    let event = probabilistic_fault_event(13, &consumer, &producer, 0, fault.clone());
+    let event = probabilistic_effect_event(13, &consumer, &producer, 0, fault.clone());
 
     let choices = search_frontier_choices_from_scheduled_events(configuration, &[event]);
     let outcomes = choices
         .decisions()
         .iter()
         .map(|decision| match decision {
-            Decision::FaultFires(fired) if fired.fault == fault => fired.fired,
+            Decision::EffectOutcome(fired) if fired.fault == fault => fired.fired,
             other => panic!("unexpected search frontier decision: {other:?}"),
         })
         .collect::<BTreeSet<_>>();
@@ -931,7 +931,7 @@ fn search_frontier_choices_from_scheduled_events_captures_probabilistic_fault_br
     assert!(choices.choices().iter().all(|choice| {
         matches!(
             choice.decisions(),
-            [Decision::RngDraw(_), Decision::FaultFires(_)]
+            [Decision::RngDraw(_), Decision::EffectOutcome(_)]
         )
     }));
     assert_eq!(outcomes, BTreeSet::from([false, true]));
@@ -1107,7 +1107,7 @@ fn fault_event(
     }
 }
 
-fn probabilistic_fault_event(
+fn probabilistic_effect_event(
     virtual_time: u64,
     consumer: &SchedulerNodeId,
     producer: &SchedulerNodeId,
@@ -1116,7 +1116,7 @@ fn probabilistic_fault_event(
 ) -> ScheduledEvent {
     ScheduledEvent {
         key: event_key(virtual_time, consumer, producer, sequence),
-        payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
+        payload: ScheduledEventPayload::ProbabilisticEffect(SchedulerResolveEffectChoice {
             fault,
             stream: RngStreamId::from_name("test-probabilistic-fault"),
             rate: FaultRateBasisPoints::from_basis_points(5_000)

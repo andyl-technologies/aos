@@ -708,7 +708,7 @@ pub enum FaultObservationKind {
     /// An adapter exposed an opportunity.
     FaultOpportunity,
     /// A keyed hazard or search choice was resolved.
-    FaultChoice,
+    EffectChoice,
     /// Simultaneous contributions were combined.
     EffectCombined,
     /// A production adapter applied an effect.
@@ -734,7 +734,7 @@ impl FaultObservationKind {
             Self::BindingActivation => "binding_activation",
             Self::BindingDeactivation => "binding_deactivation",
             Self::FaultOpportunity => "fault_opportunity",
-            Self::FaultChoice => "fault_choice",
+            Self::EffectChoice => "effect_choice",
             Self::EffectCombined => "effect_combined",
             Self::EffectApplied => "effect_applied",
             Self::EffectRejected => "effect_rejected",

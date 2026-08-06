@@ -125,7 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             outcome
                 .decisions
                 .iter()
-                .filter(|decision| matches!(decision, crucible::Decision::FaultFires(_)))
+                .filter(|decision| matches!(decision, crucible::Decision::EffectOutcome(_)))
                 .count(),
         );
         // Backend-input events are frames that have completed the simulated

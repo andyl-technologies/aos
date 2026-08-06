@@ -1,6 +1,6 @@
 //! Decision-stream divergence localization helpers for the fault gate.
 
-use crucible::{Decision, FaultDecision, MembershipFault};
+use crucible::{Decision, EffectOutcomeDecision, MembershipFault};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct DecisionDivergence {
@@ -10,16 +10,16 @@ pub(super) struct DecisionDivergence {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct FaultDecisionDivergence {
+pub(super) struct EffectOutcomeDecisionDivergence {
     pub(super) index: usize,
-    pub(super) expected: Option<FaultDecision>,
-    pub(super) actual: Option<FaultDecision>,
+    pub(super) expected: Option<EffectOutcomeDecision>,
+    pub(super) actual: Option<EffectOutcomeDecision>,
 }
 
 pub(super) fn first_differing_fault_decision(
     expected: &[Decision],
     actual: &[Decision],
-) -> Option<FaultDecisionDivergence> {
+) -> Option<EffectOutcomeDecisionDivergence> {
     let len = expected.len().max(actual.len());
     (0..len).find_map(|index| {
         let expected = expected.get(index);
@@ -31,7 +31,7 @@ pub(super) fn first_differing_fault_decision(
         let expected = fault_decision(expected);
         let actual = fault_decision(actual);
         if expected.is_some() || actual.is_some() {
-            Some(FaultDecisionDivergence {
+            Some(EffectOutcomeDecisionDivergence {
                 index,
                 expected,
                 actual,
@@ -62,9 +62,9 @@ pub(super) fn first_differing_decision(
     })
 }
 
-fn fault_decision(decision: Option<&Decision>) -> Option<FaultDecision> {
+fn fault_decision(decision: Option<&Decision>) -> Option<EffectOutcomeDecision> {
     match decision {
-        Some(Decision::FaultFires(decision)) => Some(decision.clone()),
+        Some(Decision::EffectOutcome(decision)) => Some(decision.clone()),
         _ => None,
     }
 }

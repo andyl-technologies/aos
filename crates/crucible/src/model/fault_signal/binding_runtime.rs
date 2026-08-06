@@ -1056,7 +1056,7 @@ impl<'a> FaultBindingRuntime<'a> {
             {
                 evaluation.observations.push(FaultObservation {
                     semantic_version: FAULT_RUNTIME_STATE_VERSION,
-                    kind: FaultObservationKind::FaultChoice,
+                    kind: FaultObservationKind::EffectChoice,
                     coordinate,
                     binding: Some(binding.id().clone()),
                     target: opportunity.map(|value| value.target().clone()),
@@ -1585,7 +1585,7 @@ fn apply_search_policy(
     );
     evaluation.observations.push(FaultObservation {
         semantic_version: FAULT_RUNTIME_STATE_VERSION,
-        kind: FaultObservationKind::FaultChoice,
+        kind: FaultObservationKind::EffectChoice,
         coordinate,
         binding: Some(binding.id().clone()),
         target: opportunity.map(|value| value.target().clone()),

@@ -9,7 +9,7 @@ use std::error::Error;
 
 use crucible::{
     Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, Decision,
-    DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, FaultState,
+    DeliveryOrderDecision, EffectOutcomeDecision, EngineError, EventKey, FaultId, FaultState,
     FrontierReductionPolicy, GenesisCheckpoint, Icount, MaterializationPolicy,
     MaterializationTrigger, MaterializedState, NodeId, NodeTemplate, OverrideDecision,
     PendingFrame, ReadyPoint, RngDecision, RngStreamId, SchedulerNodeId, SchedulerState,
@@ -57,14 +57,14 @@ fn gate_state_space_search_expands_genuine_decisions_and_dedups_by_content_addre
     );
     assert!(search.frontier_report.explored.iter().all(|child| matches!(
         child.decision,
-        Decision::FaultFires(_) | Decision::RngDraw(_) | Decision::Override(_)
+        Decision::EffectOutcome(_) | Decision::RngDraw(_) | Decision::Override(_)
     )));
     assert!(
         search
             .frontier_report
             .explored
             .iter()
-            .any(|child| matches!(child.decision, Decision::FaultFires(_)))
+            .any(|child| matches!(child.decision, Decision::EffectOutcome(_)))
     );
     assert!(
         search
@@ -161,7 +161,7 @@ fn gate_state_space_search_derives_choices_from_materialized_scheduler_state()
             .frontier_report
             .explored
             .iter()
-            .filter(|child| matches!(child.decision, Decision::FaultFires(_)))
+            .filter(|child| matches!(child.decision, Decision::EffectOutcome(_)))
             .count(),
         2
     );
@@ -406,7 +406,7 @@ fn non_genuine_delivery_decision(label: &str, ticks: u64, sequence: u64) -> Deci
 }
 
 fn fault_decision(fault: impl Into<String>, fired: bool) -> Decision {
-    Decision::FaultFires(FaultDecision {
+    Decision::EffectOutcome(EffectOutcomeDecision {
         at: time(12),
         fault: FaultId { name: fault.into() },
         fired,

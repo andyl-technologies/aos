@@ -134,7 +134,7 @@ struct LaunchMaterial {
 fn deterministic_run_material(form: &ScenarioDefForm) -> RunMaterial {
     let mut recorder = DecisionRecorder::new(Configuration::genesis(form.scenario_def()));
     let _node_draw = recorder.draw_u64(RngStreamId::for_node("node-a/faults/0"));
-    let _fault_fired = recorder.decide_fault_basis_points(
+    let _fault_fired = recorder.decide_effect_basis_points(
         VirtualTime { ticks: 5 },
         FaultId {
             name: String::from("node-a/drop-frame"),

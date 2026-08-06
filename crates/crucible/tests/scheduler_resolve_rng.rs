@@ -5,16 +5,16 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    Decision, DecisionRecorder, EventKey, ExactLocalEvent, FaultDecision, FaultId,
+    Decision, DecisionRecorder, EffectOutcomeDecision, EventKey, ExactLocalEvent, FaultId,
     FaultRateBasisPoints, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     RngDecision, RngStreamId, ScenarioDef, Schedule, ScheduledEvent, ScheduledEventKey,
     ScheduledEventPayload, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerResolveFaultChoice, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift,
+    SchedulerResolveEffectChoice, SchedulerScenarioNode, SchedulingNodeKind, Seed, Shift,
     SimDuration, SimInstant, SingleScheduler, VirtualTime, reduce, resolve_probabilistic_decisions,
 };
 
 #[test]
-fn probabilistic_resolve_records_rng_draw_and_fault_outcome_in_total_order() {
+fn probabilistic_resolve_records_rng_draw_and_effect_outcome_in_total_order() {
     let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
     let producer_a = scheduler_node("alpha-link", SchedulingNodeKind::Network);
     let producer_b = scheduler_node("beta-link", SchedulingNodeKind::Network);
@@ -27,8 +27,8 @@ fn probabilistic_resolve_records_rng_draw_and_fault_outcome_in_total_order() {
         name: String::from("beta-loss"),
     };
     let first =
-        probabilistic_fault_event(4, &consumer, &producer_a, 7, &fault_a, &stream_a, 10_000);
-    let second = probabilistic_fault_event(4, &consumer, &producer_b, 3, &fault_b, &stream_b, 0);
+        probabilistic_effect_event(4, &consumer, &producer_a, 7, &fault_a, &stream_a, 10_000);
+    let second = probabilistic_effect_event(4, &consumer, &producer_b, 3, &fault_b, &stream_b, 0);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "probabilistic-resolve-order",
         shift(0),
@@ -73,8 +73,8 @@ fn probabilistic_resolve_hydrates_streams_from_prior_schedule_decisions() {
     let second_fault = FaultId {
         name: String::from("second-loss"),
     };
-    let first = probabilistic_fault_event(3, &consumer, &producer, 0, &first_fault, &stream, 0);
-    let second = probabilistic_fault_event(6, &consumer, &producer, 1, &second_fault, &stream, 0);
+    let first = probabilistic_effect_event(3, &consumer, &producer, 0, &first_fault, &stream, 0);
+    let second = probabilistic_effect_event(6, &consumer, &producer, 1, &second_fault, &stream, 0);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "probabilistic-resolve-resume",
         shift(0),
@@ -162,7 +162,7 @@ fn probabilistic_resolve_uses_exact_basis_point_rate_comparison() {
     let mut preview = DecisionRecorder::new(configuration.clone());
     let bucket_a = FaultRateBasisPoints::draw_bucket(preview.draw_u64(stream_a.clone()));
     let bucket_b = FaultRateBasisPoints::draw_bucket(preview.draw_u64(stream_b.clone()));
-    let first = probabilistic_fault_event(
+    let first = probabilistic_effect_event(
         4,
         &consumer,
         &producer_a,
@@ -171,7 +171,7 @@ fn probabilistic_resolve_uses_exact_basis_point_rate_comparison() {
         &stream_a,
         u32::from(bucket_a),
     );
-    let second = probabilistic_fault_event(
+    let second = probabilistic_effect_event(
         4,
         &consumer,
         &producer_b,
@@ -194,7 +194,7 @@ fn probabilistic_resolve_uses_exact_basis_point_rate_comparison() {
 }
 
 #[test]
-fn probabilistic_fault_replay_records_outcome_without_rerolling() {
+fn probabilistic_effect_replay_records_outcome_without_rerolling() {
     let stream = RngStreamId::for_link("link/loss");
     let fault = FaultId {
         name: String::from("loss"),
@@ -210,23 +210,23 @@ fn probabilistic_fault_replay_records_outcome_without_rerolling() {
     .canonical_configuration();
     let mut baseline = DecisionRecorder::new(configuration.clone());
     let expected_first_draw = baseline.draw_u64(stream.clone());
-    let recorded_outcome = FaultDecision {
+    let recorded_outcome = EffectOutcomeDecision {
         at: VirtualTime { ticks: 4 },
         fault: fault.clone(),
         fired: true,
     };
     let mut replay = DecisionRecorder::new(configuration);
 
-    replay.record_fault_outcome(recorded_outcome.clone());
+    replay.record_effect_outcome(recorded_outcome.clone());
     let first_draw_after_replay = replay.draw_u64(stream.clone());
 
     assert_eq!(
         first_draw_after_replay, expected_first_draw,
-        "replaying a recorded fault outcome must not consume the decision RNG"
+        "replaying a recorded effect outcome must not consume the decision RNG"
     );
     assert!(matches!(
         &replay.schedule().decisions()[0],
-        Decision::FaultFires(decision) if decision == &recorded_outcome
+        Decision::EffectOutcome(decision) if decision == &recorded_outcome
     ));
     assert!(matches!(
         &replay.schedule().decisions()[1],
@@ -235,7 +235,7 @@ fn probabilistic_fault_replay_records_outcome_without_rerolling() {
 }
 
 #[test]
-fn recorded_probabilistic_fault_schedule_replay_uses_recorded_outcome() {
+fn recorded_probabilistic_effect_schedule_replay_uses_recorded_outcome() {
     let stream = RngStreamId::for_link("link/loss");
     let fault = FaultId {
         name: String::from("loss"),
@@ -252,7 +252,7 @@ fn recorded_probabilistic_fault_schedule_replay_uses_recorded_outcome() {
             stream: stream.clone(),
             value: recorded_draw,
         }))
-        .appended(Decision::FaultFires(FaultDecision {
+        .appended(Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime { ticks: 4 },
             fault: fault.clone(),
             fired: true,
@@ -262,7 +262,7 @@ fn recorded_probabilistic_fault_schedule_replay_uses_recorded_outcome() {
             stream,
             value: recorded_draw,
         }))
-        .appended(Decision::FaultFires(FaultDecision {
+        .appended(Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime { ticks: 4 },
             fault,
             fired: false,
@@ -276,7 +276,7 @@ fn recorded_probabilistic_fault_schedule_replay_uses_recorded_outcome() {
     assert_eq!(first, second);
     assert_ne!(
         first, changed,
-        "replay must use the recorded FaultFires outcome as schedule material"
+        "replay must use the recorded EffectOutcome outcome as schedule material"
     );
 }
 
@@ -285,7 +285,7 @@ fn delivery_order_keys(decisions: &[Decision]) -> Vec<EventKey> {
         .iter()
         .flat_map(|decision| match decision {
             Decision::DeliveryOrder(order) => order.order.clone(),
-            Decision::FaultFires(_)
+            Decision::EffectOutcome(_)
             | Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
@@ -314,7 +314,7 @@ fn assert_rng_draw(decision: &Decision, stream: &RngStreamId) {
 fn assert_fault_decision(decision: &Decision, fault: &FaultId, fired: bool) {
     assert!(matches!(
         decision,
-        Decision::FaultFires(recorded) if &recorded.fault == fault
+        Decision::EffectOutcome(recorded) if &recorded.fault == fault
             && recorded.at == VirtualTime { ticks: 4 }
             && recorded.fired == fired
     ));
@@ -329,7 +329,7 @@ fn event_key(event: &ScheduledEvent) -> EventKey {
     )
 }
 
-fn probabilistic_fault_event(
+fn probabilistic_effect_event(
     virtual_time: u64,
     consumer: &SchedulerNodeId,
     producer: &SchedulerNodeId,
@@ -347,7 +347,7 @@ fn probabilistic_fault_event(
             producer.clone(),
             sequence,
         ),
-        payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
+        payload: ScheduledEventPayload::ProbabilisticEffect(SchedulerResolveEffectChoice {
             fault: fault.clone(),
             stream: stream.clone(),
             rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)

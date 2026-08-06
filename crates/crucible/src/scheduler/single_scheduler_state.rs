@@ -300,7 +300,7 @@ impl SingleScheduler {
             control_inbox: Vec::new(),
             decision_seed,
             decision_rng_cursor: DecisionRngState::empty(),
-            branch_fault_choices: Vec::new(),
+            branch_effect_choices: Vec::new(),
             branch_network_choices: Vec::new(),
             search_frontiers: Vec::new(),
             event_log,

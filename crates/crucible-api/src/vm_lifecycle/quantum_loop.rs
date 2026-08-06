@@ -235,7 +235,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     }
 
     fn pending_search_branch_choices(&self) -> usize {
-        self.inner.loop_impl().pending_branch_fault_choice_count()
+        self.inner.loop_impl().pending_branch_effect_choice_count()
     }
 
     fn take_terminal_verdict(&mut self) -> Option<QuantumTerminalVerdict> {
@@ -243,10 +243,10 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        let pending = self.inner.loop_impl().pending_branch_fault_choice_count();
+        let pending = self.inner.loop_impl().pending_branch_effect_choice_count();
         let pending_error = (pending != 0).then(|| SchedulerError::BoundaryViolation {
             message: format!(
-                "production lifecycle stopped with {pending} unconsumed branch fault choices"
+                "production lifecycle stopped with {pending} unconsumed branch effect choices"
             ),
         });
         let shutdown = self.inner.shutdown();

@@ -9,7 +9,7 @@ use crucible::{
     FaultRateBasisPoints, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     RngStreamId, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass,
     SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerResolveFaultChoice, SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration,
+    SchedulerResolveEffectChoice, SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration,
     SimInstant, SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 
@@ -24,7 +24,7 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
     };
     let frame = backend_event(4, &consumer, &frame_producer, 1, b"frame");
     let probabilistic =
-        probabilistic_fault_event(4, &consumer, &fault_producer, 2, &fault, &stream, 0);
+        probabilistic_effect_event(4, &consumer, &fault_producer, 2, &fault, &stream, 0);
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "emit-step-entry-order",
         shift(0),
@@ -114,7 +114,7 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
     ));
     assert!(matches!(
         outcome.event_log_entries[4].payload(),
-        SchedulerEventLogPayload::Decision(Decision::FaultFires(recorded))
+        SchedulerEventLogPayload::Decision(Decision::EffectOutcome(recorded))
             if recorded.fault == fault && !recorded.fired
     ));
     assert!(matches!(
@@ -271,7 +271,7 @@ fn backend_event(
     }
 }
 
-fn probabilistic_fault_event(
+fn probabilistic_effect_event(
     virtual_time: u64,
     consumer: &SchedulerNodeId,
     producer: &SchedulerNodeId,
@@ -289,7 +289,7 @@ fn probabilistic_fault_event(
             producer.clone(),
             sequence,
         ),
-        payload: ScheduledEventPayload::ProbabilisticFault(SchedulerResolveFaultChoice {
+        payload: ScheduledEventPayload::ProbabilisticEffect(SchedulerResolveEffectChoice {
             fault: fault.clone(),
             stream: stream.clone(),
             rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)

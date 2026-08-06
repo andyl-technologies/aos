@@ -1083,7 +1083,7 @@ pub(super) fn record_representative_decision(recorder: &mut DecisionRecorder, in
             let _ = recorder.draw_u64(RngStreamId::for_node(format!("node-a/faults/{index}")));
         }
         1 => {
-            let _ = recorder.decide_fault_basis_points(
+            let _ = recorder.decide_effect_basis_points(
                 VirtualTime { ticks: index + 1 },
                 FaultId {
                     name: format!("link-a-b/drop-{index}"),
@@ -1232,7 +1232,7 @@ pub(super) fn generated_decision(seed: u64, index: u64) -> Decision {
                 event_key(seed + index, index + 1),
             ],
         }),
-        1 => Decision::FaultFires(FaultDecision {
+        1 => Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime {
                 ticks: seed.saturating_mul(2) + index,
             },

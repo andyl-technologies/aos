@@ -1805,7 +1805,7 @@ pub(super) fn search_frontier_choices(runtime: &RuntimeState) -> Vec<SearchFront
 pub(super) fn is_genuine_search_frontier_decision(decision: &Decision) -> bool {
     match decision {
         Decision::DeliveryOrder(_) => false,
-        Decision::FaultFires(_) | Decision::RngDraw(_) | Decision::Override(_) => true,
+        Decision::EffectOutcome(_) | Decision::RngDraw(_) | Decision::Override(_) => true,
         Decision::Preemption(_) | Decision::AppRandom(_) => false,
     }
 }

@@ -9,7 +9,7 @@
 use crate::scheduler::SchedulerEventLogClass;
 
 /// Current event-kind catalog schema version.
-pub const EVENT_KIND_CATALOG_VERSION: u32 = 2;
+pub const EVENT_KIND_CATALOG_VERSION: u32 = 3;
 
 /// One open-set event kind known by this engine version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -230,10 +230,22 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: FAULT_OBSERVATION_ATTRIBUTES,
     },
     EventKindCatalogEntry {
+        kind: "effect_choice",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
         kind: "effect_combined",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine"],
         attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
+        kind: "effect_outcome",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: &["at", "fault", "fired"],
     },
     EventKindCatalogEntry {
         kind: "effect_rejected",
@@ -264,18 +276,6 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         class: SchedulerEventLogClass::Causal,
         sources: &["engine", "scenario"],
         attributes: &["consumer", "fault", "producer", "sequence", "virtual_time"],
-    },
-    EventKindCatalogEntry {
-        kind: "fault_choice",
-        class: SchedulerEventLogClass::Causal,
-        sources: &["engine"],
-        attributes: FAULT_OBSERVATION_ATTRIBUTES,
-    },
-    EventKindCatalogEntry {
-        kind: "fault_fires",
-        class: SchedulerEventLogClass::Causal,
-        sources: &["engine"],
-        attributes: &["at", "fault", "fired"],
     },
     EventKindCatalogEntry {
         kind: "fault_healed",
@@ -402,7 +402,7 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["at", "kind", "node"],
     },
     EventKindCatalogEntry {
-        kind: "probabilistic_fault",
+        kind: "probabilistic_effect",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine"],
         attributes: &[
@@ -504,9 +504,9 @@ static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
             "binding_activation",
             "binding_deactivation",
             "effect_applied",
+            "effect_choice",
             "effect_combined",
             "effect_rejected",
-            "fault_choice",
             "fault_opportunity",
             "network_profile",
             "signal_sample",
@@ -549,14 +549,14 @@ static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
             "control",
             "delivery_order",
             "effect_applied",
+            "effect_choice",
             "effect_combined",
+            "effect_outcome",
             "effect_rejected",
             "evaluation_boundary",
             "event_activated",
             "fault_activated",
             "fault_activation",
-            "fault_choice",
-            "fault_fires",
             "fault_healed",
             "fault_opportunity",
             "fork",
@@ -569,7 +569,7 @@ static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
             "node_started",
             "override",
             "preemption",
-            "probabilistic_fault",
+            "probabilistic_effect",
             "rng_draw",
             "savepoint",
             "signal_sample",

@@ -686,7 +686,7 @@ pub(super) fn scheduled_event_payload_material(payload: &ScheduledEventPayload) 
             fault.name.len(),
             fault.name,
         ),
-        ScheduledEventPayload::ProbabilisticFault(choice) => format!(
+        ScheduledEventPayload::ProbabilisticEffect(choice) => format!(
             "payload=probabilistic-fault\npayload_fault_len={}\npayload_fault={}\npayload_stream_domain_len={}\npayload_stream_domain={}\npayload_stream_name_len={}\npayload_stream_name={}\npayload_rate_basis_points={}",
             choice.fault.name.len(),
             choice.fault.name,

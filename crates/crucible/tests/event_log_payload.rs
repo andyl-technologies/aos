@@ -7,9 +7,9 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    Decision, EventAttributeValue, EventClass, EventDiagnosticPayload, EventLevel, EventLog,
-    FaultDecision, FaultId, Icount, MarkerId, NodeId, ObservableEvent, RngDecision, RngStreamId,
-    SchedulerEventLogPayload, VirtualTime,
+    Decision, EffectOutcomeDecision, EventAttributeValue, EventClass, EventDiagnosticPayload,
+    EventLevel, EventLog, FaultId, Icount, MarkerId, NodeId, ObservableEvent, RngDecision,
+    RngStreamId, SchedulerEventLogPayload, VirtualTime,
 };
 
 #[test]
@@ -41,7 +41,7 @@ fn payload_attributes_are_read_by_name_and_type() {
     let fault_entry = crucible::test_support::condition_payload_entry_for_test(
         1,
         VirtualTime { ticks: 21 },
-        SchedulerEventLogPayload::Decision(Decision::FaultFires(FaultDecision {
+        SchedulerEventLogPayload::Decision(Decision::EffectOutcome(EffectOutcomeDecision {
             at: VirtualTime { ticks: 21 },
             fault: fault.clone(),
             fired: true,
@@ -49,7 +49,7 @@ fn payload_attributes_are_read_by_name_and_type() {
     );
     let fault_payload = fault_entry.event_payload();
 
-    assert_eq!(fault_payload.kind(), "fault_fires");
+    assert_eq!(fault_payload.kind(), "effect_outcome");
     assert_eq!(fault_payload.fault("fault"), Some(&fault));
     assert_eq!(fault_payload.bool("fired"), Some(true));
     assert_eq!(fault_payload.string("fault"), None);

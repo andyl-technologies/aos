@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    BlockFault, CombinedFaults, Decision, DeviceDelivery, DeviceId, DeviceSchedulingSubNode, Fault,
-    FaultBandwidthBitsPerSecond, FaultDecision, FaultDuration, FaultRateBasisPoints, IoFailureMode,
-    NetworkCorruptionFault, NetworkFault, NetworkLinkDirection, NinePErrno, NinePFault, NodeId,
-    PartitionDirection, SchedulerNodeId, SchedulingNodeKind, Seed,
+    BlockFault, CombinedFaults, Decision, DeviceDelivery, DeviceId, DeviceSchedulingSubNode,
+    EffectOutcomeDecision, Fault, FaultBandwidthBitsPerSecond, FaultDuration, FaultRateBasisPoints,
+    IoFailureMode, NetworkCorruptionFault, NetworkFault, NetworkLinkDirection, NinePErrno,
+    NinePFault, NodeId, PartitionDirection, SchedulerNodeId, SchedulingNodeKind, Seed,
     link_faults_from_combined_network,
 };
 use crucible_device::ninep::codec;
@@ -28,58 +28,58 @@ const LINK_REORDER_REQUESTS: usize = 16;
 const BLOCK_REORDER_REQUESTS: u32 = 16;
 const NINEP_REORDER_REQUESTS: u16 = 16;
 
-const NO_FAULT_FIRES: [ExpectedFaultDecision; 3] = [
-    ExpectedFaultDecision {
+const NO_FAULT_FIRES: [ExpectedEffectOutcomeDecision; 3] = [
+    ExpectedEffectOutcomeDecision {
         kind: "loss",
         fired: false,
     },
-    ExpectedFaultDecision {
+    ExpectedEffectOutcomeDecision {
         kind: "duplicate",
         fired: false,
     },
-    ExpectedFaultDecision {
+    ExpectedEffectOutcomeDecision {
         kind: "corrupt",
         fired: false,
     },
 ];
-const LOSS_FIRES: [ExpectedFaultDecision; 3] = [
-    ExpectedFaultDecision {
+const LOSS_FIRES: [ExpectedEffectOutcomeDecision; 3] = [
+    ExpectedEffectOutcomeDecision {
         kind: "loss",
         fired: true,
     },
-    ExpectedFaultDecision {
+    ExpectedEffectOutcomeDecision {
         kind: "duplicate",
         fired: false,
     },
-    ExpectedFaultDecision {
+    ExpectedEffectOutcomeDecision {
         kind: "corrupt",
         fired: false,
     },
 ];
-const DUPLICATE_FIRES: [ExpectedFaultDecision; 3] = [
-    ExpectedFaultDecision {
+const DUPLICATE_FIRES: [ExpectedEffectOutcomeDecision; 3] = [
+    ExpectedEffectOutcomeDecision {
         kind: "loss",
         fired: false,
     },
-    ExpectedFaultDecision {
+    ExpectedEffectOutcomeDecision {
         kind: "duplicate",
         fired: true,
     },
-    ExpectedFaultDecision {
+    ExpectedEffectOutcomeDecision {
         kind: "corrupt",
         fired: false,
     },
 ];
-const CORRUPT_FIRES: [ExpectedFaultDecision; 3] = [
-    ExpectedFaultDecision {
+const CORRUPT_FIRES: [ExpectedEffectOutcomeDecision; 3] = [
+    ExpectedEffectOutcomeDecision {
         kind: "loss",
         fired: false,
     },
-    ExpectedFaultDecision {
+    ExpectedEffectOutcomeDecision {
         kind: "duplicate",
         fired: false,
     },
-    ExpectedFaultDecision {
+    ExpectedEffectOutcomeDecision {
         kind: "corrupt",
         fired: true,
     },
@@ -93,7 +93,7 @@ struct LinkFaultCase {
     frames: Vec<LinkFrameSpec>,
     expected: ExpectedLog,
     expected_divergence: Option<ExpectedDivergence>,
-    expected_decisions: &'static [ExpectedFaultDecision; 3],
+    expected_decisions: &'static [ExpectedEffectOutcomeDecision; 3],
 }
 
 #[derive(Clone, Debug)]
@@ -103,11 +103,11 @@ struct IoFaultCase {
     table: IoFaults,
     expected: ExpectedIoEffect,
     expected_divergence: Option<ExpectedDivergence>,
-    expected_decisions: &'static [ExpectedFaultDecision; 3],
+    expected_decisions: &'static [ExpectedEffectOutcomeDecision; 3],
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ExpectedFaultDecision {
+struct ExpectedEffectOutcomeDecision {
     kind: &'static str,
     fired: bool,
 }
@@ -1083,12 +1083,12 @@ fn assert_exact_fault_decisions(
     case_name: &str,
     decisions: &[Decision],
     device: &DeviceId,
-    expected: &[ExpectedFaultDecision; 3],
+    expected: &[ExpectedEffectOutcomeDecision; 3],
 ) {
     let actual = decisions
         .iter()
         .filter_map(|decision| match decision {
-            Decision::FaultFires(FaultDecision { fault, fired, .. }) => {
+            Decision::EffectOutcome(EffectOutcomeDecision { fault, fired, .. }) => {
                 Some((fault.clone(), *fired))
             }
             _ => None,

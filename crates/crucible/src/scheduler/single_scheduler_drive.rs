@@ -116,7 +116,7 @@ impl SingleScheduler {
         decisions
             .into_iter()
             .map(|decision| match decision {
-                Decision::FaultFires(mut fault) => {
+                Decision::EffectOutcome(mut fault) => {
                     let virtual_time = self.vm_delivery_time_for_icount(
                         node,
                         Icount {
@@ -126,7 +126,7 @@ impl SingleScheduler {
                     fault.at = VirtualTime {
                         ticks: virtual_time.nanos,
                     };
-                    Ok(Decision::FaultFires(fault))
+                    Ok(Decision::EffectOutcome(fault))
                 }
                 decision => Ok(decision),
             })
