@@ -1536,16 +1536,18 @@ pub(super) fn write_fork_reproduction_artifact(
             }
         };
         let live = live_qemu_artifact_evidence_from_run(
-            "fork",
+            LiveQemuArtifactRecipe {
+                producer: "fork",
+                terminal_condition: plan.terminal_condition,
+                max_virtual_time_ticks: plan.max_virtual_time_ticks,
+                max_quanta: None,
+                coverage: false,
+                execution_mode: plan.execution_mode,
+                startup_commands: &plan.startup_commands,
+                initial_control_commands: &plan.initial_control_commands,
+                branch,
+            },
             scenario_form,
-            plan.terminal_condition,
-            plan.max_virtual_time_ticks,
-            None,
-            false,
-            plan.execution_mode,
-            &plan.startup_commands,
-            &plan.initial_control_commands,
-            branch,
             &report.run,
         )?;
         fingerprints = live.fingerprint_samples.clone();

@@ -642,6 +642,13 @@ mod tests {
         contract
     }
 
+    fn rejected_contract(contract: &LiveQemuReplayContract, reason: &str) -> CliError {
+        match LiveQemuReplayContract::decode(&contract.encode()) {
+            Err(error) => error,
+            Ok(_) => panic!("{reason}"),
+        }
+    }
+
     #[test]
     fn live_qemu_replay_contract_round_trips_canonically() -> Result<(), CliError> {
         let contract = fork_contract();
@@ -680,8 +687,7 @@ mod tests {
     fn live_qemu_replay_contract_rejects_unsupported_producer() {
         let mut contract = fork_contract();
         contract.producer = String::from("unknown");
-        let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("unsupported producer must fail closed");
+        let error = rejected_contract(&contract, "unsupported producer must fail closed");
         assert!(error.to_string().contains("unsupported producer"));
     }
 
@@ -689,8 +695,7 @@ mod tests {
     fn live_qemu_replay_contract_rejects_duplicate_choice_indices() {
         let mut contract = fork_contract();
         contract.fault_choice_indices = vec![4, 4];
-        let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("duplicate choice indices must fail closed");
+        let error = rejected_contract(&contract, "duplicate choice indices must fail closed");
         assert!(error.to_string().contains("unique and increasing"));
     }
 
@@ -698,8 +703,10 @@ mod tests {
     fn live_qemu_replay_contract_rejects_pre_branch_choices() {
         let mut contract = fork_contract();
         contract.fault_choice_indices = vec![2, 4];
-        let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("pre-branch choices must remain owned by the retained base");
+        let error = rejected_contract(
+            &contract,
+            "pre-branch choices must remain owned by the retained base",
+        );
         assert!(error.to_string().contains("post-branch suffix"));
     }
 
@@ -707,8 +714,10 @@ mod tests {
     fn live_qemu_replay_contract_rejects_incompatible_fingerprint_scope() {
         let mut contract = producer_contract("search");
         contract.fingerprint_scope = LiveQemuFingerprintScope::FullExecution;
-        let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("search artifacts must declare their terminal snapshot scope");
+        let error = rejected_contract(
+            &contract,
+            "search artifacts must declare their terminal snapshot scope",
+        );
         assert!(error.to_string().contains("fingerprint scope"));
     }
 
@@ -716,8 +725,7 @@ mod tests {
     fn live_qemu_replay_contract_rejects_missing_fork_branch() {
         let mut contract = fork_contract();
         contract.branch = LiveQemuReplayBranch::None;
-        let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("fork without a retained base must fail closed");
+        let error = rejected_contract(&contract, "fork without a retained base must fail closed");
         assert!(error.to_string().contains("branch recipes"));
     }
 
@@ -725,8 +733,7 @@ mod tests {
     fn live_qemu_replay_contract_rejects_unknown_control_commands() {
         let mut contract = fork_contract();
         contract.controls[0].command = String::from("unknown");
-        let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("unknown control commands must fail closed");
+        let error = rejected_contract(&contract, "unknown control commands must fail closed");
         assert!(
             error
                 .to_string()
@@ -738,8 +745,7 @@ mod tests {
     fn live_qemu_replay_contract_rejects_unsupported_startup_controls() {
         let mut contract = fork_contract();
         contract.startup_controls[0].command = String::from("pause");
-        let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("payload-free startup recipes must remain closed");
+        let error = rejected_contract(&contract, "payload-free startup recipes must remain closed");
         assert!(error.to_string().contains("unsupported startup control"));
     }
 
@@ -747,8 +753,10 @@ mod tests {
     fn live_qemu_replay_contract_rejects_noncontiguous_initial_controls() {
         let mut contract = fork_contract();
         contract.initial_controls[0].sequence = 1;
-        let error = LiveQemuReplayContract::decode(&contract.encode())
-            .expect_err("initial controls must preserve their exact order");
+        let error = rejected_contract(
+            &contract,
+            "initial controls must preserve their exact order",
+        );
         assert!(error.to_string().contains("contiguous from zero"));
     }
 }

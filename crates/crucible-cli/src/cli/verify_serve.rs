@@ -194,16 +194,18 @@ pub(super) fn verify_witness_from_run_report(
                 artifact_error(format!("verify model reproduction replay failed: {error}"))
             })?;
             let live = live_qemu_artifact_evidence_from_run(
-                "verify",
+                LiveQemuArtifactRecipe {
+                    producer: "verify",
+                    terminal_condition: run_plan.terminal_condition,
+                    max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
+                    max_quanta: run_plan.max_quanta,
+                    coverage: false,
+                    execution_mode: run_plan.execution_mode,
+                    startup_commands: &run_plan.startup_commands,
+                    initial_control_commands: &run_plan.initial_control_commands,
+                    branch: LiveQemuReplayBranch::None,
+                },
                 scenario,
-                run_plan.terminal_condition,
-                run_plan.max_virtual_time_ticks,
-                run_plan.max_quanta,
-                false,
-                run_plan.execution_mode,
-                &run_plan.startup_commands,
-                &run_plan.initial_control_commands,
-                LiveQemuReplayBranch::None,
                 report,
             )?;
             let mut payloads = model_reproduction_artifact_payloads(&model, replay.state);
