@@ -704,8 +704,14 @@ fn classify_added(name: &str, candidate: &LogicalUnit, diff: &mut UnitDiff) {
     if candidate.primary.is_none() {
         return;
     }
+    if unit_type(name) == UnitType::Target {
+        if install_link_count(candidate) > 0 {
+            diff.install_only.push(name.to_string());
+        }
+        return;
+    }
     if unit_type(name) != UnitType::Active {
-        return; // targets activate via deps; slices/paths via daemon-reload.
+        return; // uninstalled targets and slices/paths need only daemon-reload.
     }
     let knobs = Knobs::from_merged(&candidate.merged());
     if knobs.only_manual_start {
@@ -958,6 +964,29 @@ mod tests {
 
         let diff = compute_diff(live.path(), cand.path());
         assert_eq!(diff.to_start, vec!["new.service"]);
+        assert!(diff.to_stop.is_empty() && diff.to_restart.is_empty());
+    }
+
+    #[test]
+    fn added_enabled_target_is_started() {
+        let live = TempDir::new().unwrap();
+        let cand = TempDir::new().unwrap();
+        units_dir(live.path());
+        let cu = units_dir(cand.path());
+        write(
+            &cu,
+            "aos-pkg-web.target",
+            "[Unit]\nDescription=Package target\n",
+        );
+        std::fs::create_dir_all(cu.join("multi-user.target.wants")).unwrap();
+        std::os::unix::fs::symlink(
+            "../aos-pkg-web.target",
+            cu.join("multi-user.target.wants/aos-pkg-web.target"),
+        )
+        .unwrap();
+
+        let diff = compute_diff(live.path(), cand.path());
+        assert_eq!(diff.install_only, vec!["aos-pkg-web.target"]);
         assert!(diff.to_stop.is_empty() && diff.to_restart.is_empty());
     }
 

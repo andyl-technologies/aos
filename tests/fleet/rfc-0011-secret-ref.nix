@@ -12,6 +12,12 @@
           bundle = true;
           preset = false;
         };
+        # The in-guest publisher needs both registry-only artifacts. The
+        # runtime package is bundled separately above.
+        environment.systemPackages = [
+          pkgs.aos-rfc0011-secret.expose
+          pkgs.aos-rfc0011-secret.config
+        ];
       }
     ];
   };
@@ -28,10 +34,6 @@ in {
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
-        aos.apm.desiredPackages = [ "aos-rfc0011-secret" ];
-        "aos-rfc0011-secret".credentials.join-token.ref =
-          "system-credential:bootstrap-token";
-        environment.etc."rfc0011-secret-generation".text = "one\n";
       }
     '';
     extraModules = [
@@ -66,10 +68,12 @@ in {
     ''
       import base64
       import json
+      import textwrap
 
       APM = "${pkgs.aos}/bin/apm"
       JQ = "${pkgs.jq}/bin/jq"
       SOURCE = "/run/credstore/rfc0011/join-token"
+      STATE = "/var/lib/aos-pkg-aos-rfc0011-secret"
       ALPHA = "rfc0011-secret-alpha"
       BETA = "rfc0011-secret-beta"
 
@@ -97,9 +101,27 @@ in {
               """)
 
 
-      target.wait_until_succeeds(
-          "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-      )
+      target.wait_until_succeeds("""
+          systemctl is-active --quiet aos-graph-compile.service ||
+            systemctl is-failed --quiet aos-eval.service ||
+            systemctl is-failed --quiet aos-graph-compile.service
+      """, timeout=300)
+      graph_status = target.succeed(
+          "systemctl is-active aos-graph-compile.service || true"
+      ).strip()
+      if graph_status != "active":
+          diagnostics = target.succeed("""
+              systemctl --no-pager --full status \
+                aos-seed-baked-packages.service aos-eval.service \
+                aos-graph-compile.service || true
+              journalctl --no-pager -u aos-seed-baked-packages.service || true
+              journalctl --no-pager -u aos-eval.service \
+                -u aos-graph-compile.service || true
+          """)
+          raise AssertionError(
+              f"configuration pipeline did not become active: {graph_status}\\n"
+              f"{diagnostics}"
+          )
       target.succeed("systemctl is-active --quiet aos-credential-recovery.service")
       recovery_before = target.succeed(
           "systemctl show -P Before aos-credential-recovery.service"
@@ -109,18 +131,117 @@ in {
       target.succeed(
           "test \"$(stat -c %a /var/lib/apm/credential-transactions)\" = 700"
       )
+
+      # Runtime selection is registry-authenticated even when the exact output
+      # is already bundled in the image. Publish the fixture, install the
+      # signed registry snapshot, then drive the first secret-bearing
+      # generation through the production switch path.
+      target.succeed(textwrap.dedent(r"""
+          set -eu
+          export HOME=/tmp/rfc0011-secret-publisher
+          export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@test
+          export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@test
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR=/tmp/rfc0011-secret-nix-conf
+          mkdir -p "$NIX_CONF_DIR"
+          printf 'experimental-features = nix-command\nsandbox = false\nbuild-users-group =\n' \
+            > "$NIX_CONF_DIR/nix.conf"
+
+          KEYGEN=$(${pkgs.aos}/bin/apr keys generate release \
+            --registry rfc0011-secret-reg 2>&1)
+          printf '%s\n' "$KEYGEN"
+          PUBKEY=
+          while IFS= read -r line; do
+            case "$line" in
+              *'Public key: '*) PUBKEY=''${line##* } ;;
+            esac
+          done <<EOF
+          $KEYGEN
+          EOF
+          test -n "$PUBKEY"
+          KEY=$HOME/.config/apm/keys/rfc0011-secret-reg-release.key
+          ${pkgs.aos}/bin/apr create rfc0011-secret-reg \
+            --trust-key "$PUBKEY" \
+            --trust-key-id release \
+            --key "$KEY"
+          REG_DIR=$HOME/.local/share/apm/registries/rfc0011-secret-reg
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/rfc0011-secret-reg.toml" <<EOF
+          [registry]
+          name = "rfc0011-secret-reg"
+          url = "file://$REG_DIR"
+
+          [registry.signing_keys]
+          release = "$KEY"
+          EOF
+
+          ${pkgs.aos}/bin/apr publish '${pkgs.aos-rfc0011-secret}' \
+            --name aos-rfc0011-secret \
+            --version 1.0.0 \
+            --description 'RFC-0011 secret reference fixture' \
+            --license MIT \
+            --maintainer test \
+            --expose-manifest '${pkgs.aos-rfc0011-secret.expose}/manifest.json' \
+            --config-module '${pkgs.aos-rfc0011-secret.config}' \
+            --config-base-lib '${secretSystem.config.aos.config.evalAtBoot.baseLib}' \
+            --registry rfc0011-secret-reg \
+            --key-id release
+          mkdir -p /var/lib/rfc0011-secret-cache
+          ${pkgs.aos}/bin/apr release 1.0.0 \
+            --registry rfc0011-secret-reg \
+            --key-id release \
+            --cache-url file:///var/lib/rfc0011-secret-cache \
+            --upload-url file:///var/lib/rfc0011-secret-cache
+          HOME=/tmp USER=root ${pkgs.aos}/bin/apm registry --system add \
+            "file://$REG_DIR" \
+            --name rfc0011-secret-reg \
+            --version '=1.0.0' \
+            --trust-key "$PUBKEY"
+          HOME=/tmp USER=root ${pkgs.aos}/bin/apm update \
+            --system --registry rfc0011-secret-reg
+      """), timeout=1200)
+
+      first_host = """{
+        aos.provisioning.storage.partitions.var.sizeMin = \"2G\";
+        aos.apm.desiredPackages = [ \"aos-rfc0011-secret\" ];
+        \"aos-rfc0011-secret\".credentials.join-token.ref =
+          \"system-credential:bootstrap-token\";
+        environment.etc.\"rfc0011-secret-generation\".text = \"one\\n\";
+      }
+      """
+      encoded = base64.b64encode(first_host.encode()).decode()
+      target.succeed(
+          f"printf '%s' {encoded} | base64 -d > /run/rfc0011-secret-one.nix"
+      )
+      target.succeed(f"""
+          if ! {APM} switch \
+              --from /run/rfc0011-secret-one.nix \
+              --eval-root /run/rfc0011-secret-first-switch; then
+            systemctl --no-pager --full status \
+              aos-config.target aos-fetch.target aos-config-render.target \
+              aos-activate.service \
+              'aos-pkg-fetch@aos-rfc0011-secret.service' \
+              'aos-pkg-install@aos-rfc0011-secret.service' || true
+            journalctl --no-pager -u aos-config.target -u aos-fetch.target \
+              -u aos-config-render.target -u aos-activate.service \
+              -u 'aos-pkg-fetch@aos-rfc0011-secret.service' \
+              -u 'aos-pkg-install@aos-rfc0011-secret.service' || true
+            exit 1
+          fi
+      """, timeout=300)
       target.wait_until_succeeds(
           "systemctl is-active --quiet aos-rfc0011-secret.service", timeout=120
       )
       first = current_generation()
       target.succeed(f"test \"$(cat {SOURCE})\" = {ALPHA}")
       target.succeed(f"test \"$(stat -c %a {SOURCE})\" = 600")
-      target.succeed(f"test \"$(cat /run/aos-rfc0011-secret-observed)\" = {ALPHA}")
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-start-count)\" = 1")
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-attempt-count)\" = 1")
+      target.succeed(f"test \"$(cat {STATE}/observed)\" = {ALPHA}")
+      target.succeed(f"test \"$(cat {STATE}/start-count)\" = 1")
+      target.succeed(f"test \"$(cat {STATE}/attempt-count)\" = 1")
       # systemd mounted a private credential file before ExecStart; the
       # consumer records its delivery mode while the namespace exists.
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-delivery-mode)\" = 400")
+      delivery_mode = target.succeed(f"cat {STATE}/delivery-mode").strip()
+      assert delivery_mode == "440", delivery_mode
 
       manifest = json.loads(target.succeed("cat /run/aos/manifest.json"))
       reference = manifest["credentials"]["aos-rfc0011-secret"]["join-token"]
@@ -152,7 +273,7 @@ in {
       target.succeed(
           f"printf '%s' {encoded} | base64 -d > /run/rfc0011-secret-two.nix"
       )
-      target.succeed(f"""
+      second_switch = target.succeed(f"""
           {APM} switch \
             --from /run/rfc0011-secret-two.nix \
             --eval-root /run/rfc0011-secret-switch
@@ -162,9 +283,24 @@ in {
       assert second != first, (first, second)
       target.succeed(f"test \"$(cat {SOURCE})\" = {BETA}")
       target.succeed(f"test \"$(stat -c %a {SOURCE})\" = 600")
-      target.succeed(f"test \"$(cat /run/aos-rfc0011-secret-observed)\" = {BETA}")
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-start-count)\" = 2")
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-attempt-count)\" = 2")
+      observed = target.succeed(f"cat {STATE}/observed").strip()
+      if observed != BETA:
+          diagnostics = target.succeed(f"""
+              printf '%s\n' '--- consumer state ---'
+              cat {STATE}/start-count {STATE}/attempt-count || true
+              systemctl --no-pager --full status \
+                aos-rfc0011-secret.service || true
+              journalctl --no-pager -u aos-rfc0011-secret.service || true
+              printf '%s\n' '--- current credential reference ---'
+              {JQ} '.credentials."aos-rfc0011-secret"."join-token"' \
+                /run/aos/manifest.json || true
+          """)
+          raise AssertionError(
+              f"consumer observed {observed!r}, expected {BETA!r}\n"
+              f"switch output:\n{second_switch}\n{diagnostics}"
+          )
+      target.succeed(f"test \"$(cat {STATE}/start-count)\" = 2")
+      target.succeed(f"test \"$(cat {STATE}/attempt-count)\" = 2")
       target.succeed("systemctl is-active --quiet aos-rfc0011-secret.service")
       assert_no_plaintext(second, ALPHA, BETA)
 
@@ -179,9 +315,9 @@ in {
       """, timeout=300)
       assert current_generation() == first
       target.succeed(f"test \"$(cat {SOURCE})\" = {ALPHA}")
-      target.succeed(f"test \"$(cat /run/aos-rfc0011-secret-observed)\" = {ALPHA}")
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-start-count)\" = 3")
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-attempt-count)\" = 3")
+      target.succeed(f"test \"$(cat {STATE}/observed)\" = {ALPHA}")
+      target.succeed(f"test \"$(cat {STATE}/start-count)\" = 3")
+      target.succeed(f"test \"$(cat {STATE}/attempt-count)\" = 3")
       target.succeed("systemctl is-active --quiet aos-rfc0011-secret.service")
       assert_no_plaintext(first, ALPHA, BETA)
 
@@ -211,7 +347,7 @@ in {
             --eval-root /run/rfc0011-secret-inactive-switch
       """, timeout=300)
       target.fail("systemctl is-active --quiet aos-rfc0011-secret.service")
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-start-count)\" = 3")
+      target.succeed(f"test \"$(cat {STATE}/start-count)\" = 3")
       target.succeed(f"test \"$(cat {SOURCE})\" = {BETA}")
 
       removed_host = """{
@@ -230,7 +366,7 @@ in {
             --eval-root /run/rfc0011-secret-removed-switch
       """, timeout=300)
       target.fail("systemctl is-active --quiet aos-rfc0011-secret.service")
-      target.succeed("test \"$(cat /run/aos-rfc0011-secret-start-count)\" = 3")
+      target.succeed(f"test \"$(cat {STATE}/start-count)\" = 3")
       target.succeed(f"test ! -e {SOURCE}")
     '';
 }

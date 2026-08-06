@@ -148,24 +148,33 @@ pub fn merge_staged_projection(
             bail!("render stage identity disagrees for package {package:?}");
         }
 
-        let raw_credentials = source
-            .credentials
-            .get(package)
-            .cloned()
-            .unwrap_or(Value::Null);
-        let expected_credentials = source
+        let package_pin = source
             .package_outputs
             .get(package)
-            .and_then(|pin| pin.config_projection.as_ref())
-            .map(|pin| {
-                super::subverbs::canonicalize_credential_handles(
-                    package,
-                    source.credentials.get(package),
-                    &pin.config.credentials,
-                )
-            })
-            .transpose()?
-            .unwrap_or(raw_credentials);
+            .with_context(|| format!("manifest omitted runtime pin for {package:?}"))?;
+        let signed_credentials = package_pin
+            .config_projection
+            .as_ref()
+            .map(|pin| pin.config.credentials.as_slice())
+            .or_else(|| {
+                package_pin
+                    .legacy_config
+                    .as_ref()
+                    .map(|config| config.credentials.as_slice())
+            });
+        let expected_credentials = if let Some(signed_credentials) = signed_credentials {
+            super::subverbs::canonicalize_credential_handles(
+                package,
+                source.credentials.get(package),
+                signed_credentials,
+            )?
+        } else {
+            source
+                .credentials
+                .get(package)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
         if stage.credentials != expected_credentials {
             bail!("render stage credential handles disagree for package {package:?}");
         }

@@ -19,6 +19,12 @@
 }: let
   cfg = config.aos.config.evalAtBoot;
   provisioningStateDir = config.aos.provisioning.stateDir;
+  exposedBundledPackages =
+    lib.filterAttrs
+    (_: package: package.bundle && (package.package ? expose))
+    config.aos.packages;
+  packageSeedReadinessUnits =
+    lib.optionals (exposedBundledPackages != {}) ["aos-seed-baked-packages.service"];
 in {
   options.aos.config.evalAtBoot = {
     hostNix = lib.mkOption {
@@ -301,21 +307,25 @@ in {
       description = "Evaluate host configuration to a converged manifest";
       wantedBy = ["multi-user.target"];
       wants = ["network-online.target"];
-      requires = [
-        "aos-credential-recovery.service"
-        "aos-host-config-restore.service"
-        "aos-firstboot-reeval.service"
-        "aos-nix-db.service"
-      ];
-      after = [
-        "network-online.target"
-        "nix-overlay-setup.service"
-        "aos-config-seed.service"
-        "aos-credential-recovery.service"
-        "aos-seed-profiles.service"
-        "aos-host-config-restore.service"
-        "aos-nix-db.service"
-      ];
+      requires =
+        [
+          "aos-credential-recovery.service"
+          "aos-host-config-restore.service"
+          "aos-firstboot-reeval.service"
+          "aos-nix-db.service"
+        ]
+        ++ packageSeedReadinessUnits;
+      after =
+        [
+          "network-online.target"
+          "nix-overlay-setup.service"
+          "aos-config-seed.service"
+          "aos-credential-recovery.service"
+          "aos-seed-profiles.service"
+          "aos-host-config-restore.service"
+          "aos-nix-db.service"
+        ]
+        ++ packageSeedReadinessUnits;
       before = [
         "aos-install-baked-packages.service"
         "aos-graph-compile.service"

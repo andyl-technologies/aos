@@ -13,21 +13,22 @@
       set -euo pipefail
 
       credential="$CREDENTIALS_DIRECTORY/join-token"
+      state_dir=/var/lib/aos-pkg-aos-rfc0011-secret
       attempts=0
-      if [ -s /run/aos-rfc0011-secret-attempt-count ]; then
-        attempts=$(${coreutils}/bin/cat /run/aos-rfc0011-secret-attempt-count)
+      if [ -s "$state_dir/attempt-count" ]; then
+        attempts=$(${coreutils}/bin/cat "$state_dir/attempt-count")
       fi
       attempts=$((attempts + 1))
-      ${coreutils}/bin/printf '%s\n' "$attempts" > /run/aos-rfc0011-secret-attempt-count
+      ${coreutils}/bin/printf '%s\n' "$attempts" > "$state_dir/attempt-count"
       test -s "$credential"
       count=0
-      if [ -s /run/aos-rfc0011-secret-start-count ]; then
-        count=$(${coreutils}/bin/cat /run/aos-rfc0011-secret-start-count)
+      if [ -s "$state_dir/start-count" ]; then
+        count=$(${coreutils}/bin/cat "$state_dir/start-count")
       fi
       count=$((count + 1))
-      ${coreutils}/bin/printf '%s\n' "$count" > /run/aos-rfc0011-secret-start-count
-      ${coreutils}/bin/cp "$credential" /run/aos-rfc0011-secret-observed
-      ${coreutils}/bin/stat -c '%a' "$credential" > /run/aos-rfc0011-secret-delivery-mode
+      ${coreutils}/bin/printf '%s\n' "$count" > "$state_dir/start-count"
+      ${coreutils}/bin/cat "$credential" > "$state_dir/observed"
+      ${coreutils}/bin/stat -c '%a' "$credential" > "$state_dir/delivery-mode"
     '';
   };
 in
