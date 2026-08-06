@@ -47,27 +47,6 @@ impl ProductionVmLifecycleLoop {
         Ok(())
     }
 
-    pub(super) fn rollback_prelaunch_after_error(
-        &mut self,
-        nodes: &[NodeId],
-        original: SchedulerError,
-    ) -> SchedulerError {
-        for node in nodes.iter().rev() {
-            self.prelaunched_restarts.remove(node);
-            if self.inner.backend().contains(node)
-                && let Err(cleanup) = self.inner.backend_mut().stop_intended_crash(node)
-            {
-                return SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "production QEMU prelaunch failed with `{original}` and rollback for `{}` failed with `{cleanup}`",
-                        node.name
-                    ),
-                };
-            }
-        }
-        original
-    }
-
     pub(super) fn relaunch_ready_point(
         &mut self,
         restart: &crucible::SchedulerNodeRestartApplication,

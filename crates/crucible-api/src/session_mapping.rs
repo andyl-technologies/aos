@@ -272,7 +272,7 @@ pub const API_METHOD_MAPPINGS: [ApiMethodMapping; 9] = [
 ];
 
 /// API command mapping table covering the complete session command vocabulary.
-pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 24] = [
+pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 22] = [
     ApiCommandMapping {
         command_name: "start",
         command_kind: SessionCommandKind::Start,
@@ -316,14 +316,6 @@ pub const API_COMMAND_MAPPINGS: [ApiCommandMapping; 24] = [
     ApiCommandMapping {
         command_name: "inject",
         command_kind: SessionCommandKind::Inject,
-    },
-    ApiCommandMapping {
-        command_name: "inject-fault",
-        command_kind: SessionCommandKind::InjectFault,
-    },
-    ApiCommandMapping {
-        command_name: "heal-fault",
-        command_kind: SessionCommandKind::HealFault,
     },
     ApiCommandMapping {
         command_name: "set-breakpoint",

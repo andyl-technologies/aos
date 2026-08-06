@@ -13,10 +13,10 @@ use std::sync::Arc;
 use crucible::{
     Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind, Decision,
     DeliveryOrderDecision, EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel,
-    EventLogOffset, ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel,
-    MembershipFault, NodeId, PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest,
-    RestartPolicy, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
-    SchedulerQuiescence, Seed, TemporalGraph, VirtualTime, WhiteBoxPolicy,
+    EventLogOffset, ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel, NodeId,
+    QuantumLoop, QuantumOutcome, QuantumRequest, ScenarioDef, ScenarioDefForm, Schedule,
+    SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed, TemporalGraph, VirtualTime,
+    WhiteBoxPolicy,
 };
 use crucible_session::{
     BreakpointDisposition, BreakpointPolicy, CheckpointRef, CommandReply, Engine, LiveSnapshot,
@@ -618,12 +618,6 @@ fn session_control_payload_material(payload: &SessionControlPayload) -> String {
         SessionControlPayload::Fork { from } => {
             format!("payload=fork\nfrom={}\n", checkpoint_ref_material(*from))
         }
-        SessionControlPayload::InjectFault { spec } => {
-            fault_spec_material("payload=inject-fault", &spec.tag.name, &spec.fault)
-        }
-        SessionControlPayload::HealFault { tag } => {
-            format!("payload=heal-fault\ntag={}\n", hex_string(&tag.name))
-        }
         SessionControlPayload::SetBreakpoint { spec } => format!(
             "payload=set-breakpoint\npredicate={}\ndisposition={}\npolicy={}\n",
             hex_string(&spec.predicate.canonical_summary()),
@@ -647,31 +641,8 @@ fn control_operation_material(control: &ControlOperationKind) -> String {
         ControlOperationKind::Snapshot => String::from("control=snapshot\n"),
         ControlOperationKind::Fork => String::from("control=fork\n"),
         ControlOperationKind::Inject => String::from("control=inject\n"),
-        ControlOperationKind::InjectFault { tag, fault } => {
-            fault_spec_material("control=inject-fault", &tag.name, fault)
-        }
-        ControlOperationKind::HealFault { tag } => {
-            format!("control=heal-fault\ntag={}\n", hex_string(&tag.name))
-        }
         ControlOperationKind::Query => String::from("control=query\n"),
     }
-}
-
-fn fault_spec_material(prefix: &str, tag: &str, fault: &crucible::Fault) -> String {
-    format!(
-        "{prefix}\ntag={}\n{}",
-        hex_string(tag),
-        fault_taxonomy_material(fault),
-    )
-}
-
-fn fault_taxonomy_material(fault: &crucible::Fault) -> String {
-    format!(
-        "fault-kind={}\nfault-hash={}\nfault-material={}\n",
-        fault.kind_key(),
-        fault.content_hash().to_hex(),
-        hex_string(&fault.canonical_material()),
-    )
 }
 
 fn checkpoint_ref_material(from: CheckpointRef) -> String {
@@ -693,12 +664,6 @@ fn breakpoint_disposition_material(disposition: &BreakpointDisposition) -> Strin
 
 fn action_material(action: &Action) -> String {
     match action {
-        Action::InjectFault { tag, fault } => format!(
-            "action=inject-fault\ntag={}\n{}",
-            hex_string(&tag.name),
-            membership_fault_material(fault),
-        ),
-        Action::HealFault { tag } => format!("action=heal-fault\ntag={}\n", hex_string(&tag.name)),
         Action::ArmTimer { name, after } => format!(
             "action=arm-timer\nname={}\nafter-nanos={}\n",
             hex_string(&name.name),
@@ -741,42 +706,6 @@ fn action_material(action: &Action) -> String {
     }
 }
 
-fn membership_fault_material(fault: &MembershipFault) -> String {
-    match fault {
-        MembershipFault::Crash { node, restart } => format!(
-            "membership-fault=crash\nnode={}\nrestart={}\n",
-            hex_string(&node.name),
-            restart_policy_material(*restart),
-        ),
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => format!(
-            "membership-fault=partition\nendpoint-a={}\nendpoint-b={}\ndirection={}\n",
-            hex_string(&endpoint_a.name),
-            hex_string(&endpoint_b.name),
-            partition_direction_material(*direction),
-        ),
-        MembershipFault::Isolate { node } => {
-            format!(
-                "membership-fault=isolate\nnode={}\n",
-                hex_string(&node.name)
-            )
-        }
-        MembershipFault::NotYetJoined { node } => format!(
-            "membership-fault=not-yet-joined\nnode={}\n",
-            hex_string(&node.name),
-        ),
-        MembershipFault::Taxonomy { fault } => {
-            format!(
-                "membership-fault=taxonomy\n{}",
-                fault_taxonomy_material(fault)
-            )
-        }
-    }
-}
-
 fn optional_hex_string(value: Option<&str>) -> String {
     value.map_or_else(|| String::from("none"), hex_string)
 }
@@ -787,22 +716,6 @@ fn log_level_material(level: LogLevel) -> &'static str {
         LogLevel::Info => "info",
         LogLevel::Warn => "warn",
         LogLevel::Error => "error",
-    }
-}
-
-fn restart_policy_material(policy: RestartPolicy) -> &'static str {
-    match policy {
-        RestartPolicy::FromReadyPoint => "from-ready-point",
-        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
-        RestartPolicy::StayDown => "stay-down",
-    }
-}
-
-fn partition_direction_material(direction: PartitionDirection) -> &'static str {
-    match direction {
-        PartitionDirection::Bidirectional => "bidirectional",
-        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
-        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
     }
 }
 

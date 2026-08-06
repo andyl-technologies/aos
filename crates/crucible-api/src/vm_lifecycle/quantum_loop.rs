@@ -5,6 +5,7 @@ use super::*;
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.reconcile_backend_membership()?;
+        self.evaluate_signal_fault_boundary()?;
         let pre_quantum_trigger_appends = self.settle_trigger_graph()?;
         self.reconcile_backend_membership()?;
         if self.branch.as_ref().is_some_and(|branch| {
@@ -56,41 +57,6 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         } else {
             Vec::new()
         };
-        let pending_restarts = self
-            .inner
-            .loop_impl()
-            .preview_ready_point_control_restarts(&request.control);
-        let mut prelaunched_this_quantum = Vec::new();
-        for (node, counter) in pending_restarts {
-            if let Err(error) = self.launch_ready_point(&node, counter.ticks) {
-                return Err(self.rollback_prelaunch_after_error(&prelaunched_this_quantum, error));
-            }
-            self.prelaunched_restarts
-                .insert(node.clone(), (RestartPolicy::FromReadyPoint, counter.ticks));
-            prelaunched_this_quantum.push(node);
-        }
-        let pending_checkpoint_restarts = self
-            .inner
-            .loop_impl()
-            .preview_checkpoint_control_restarts(&request.control);
-        for node in pending_checkpoint_restarts {
-            let expected = self
-                .checkpoint_targets
-                .get(&node)
-                .map(|target| target.counter)
-                .ok_or_else(|| SchedulerError::BoundaryViolation {
-                    message: format!(
-                        "production QEMU checkpoint restart for `{}` has no captured target",
-                        node.name
-                    ),
-                })?;
-            if let Err(error) = self.relaunch_last_checkpoint_node(&node, expected) {
-                return Err(self.rollback_prelaunch_after_error(&prelaunched_this_quantum, error));
-            }
-            self.prelaunched_restarts
-                .insert(node.clone(), (RestartPolicy::FromLastCheckpoint, expected));
-            prelaunched_this_quantum.push(node);
-        }
         if let Some(branch) = self.branch.as_ref() {
             let frontier = self.inner.loop_impl().frontier();
             if frontier > branch.frontier {
@@ -159,12 +125,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 });
             }
         }
-        let mut outcome = match crucible_session::drive_engine_quantum(&mut self.inner, request) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                return Err(self.rollback_prelaunch_after_error(&prelaunched_this_quantum, error));
-            }
-        };
+        let mut outcome = crucible_session::drive_engine_quantum(&mut self.inner, request)?;
         prepend_event_log_appends(&mut outcome, pre_quantum_trigger_appends);
         for append in self.settle_trigger_graph()? {
             merge_event_log_append(&mut outcome, append);
@@ -259,5 +220,41 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             return Err(error);
         }
         shutdown
+    }
+}
+
+impl ProductionVmLifecycleLoop {
+    /// Evaluates the signal program exactly once in the ordered sequence of
+    /// scheduler visits to the current virtual-time coordinate.
+    fn evaluate_signal_fault_boundary(&mut self) -> Result<(), SchedulerError> {
+        let coordinate = self.inner.loop_impl().frontier().ticks;
+        if self.fault_coordinate == Some(coordinate) {
+            self.fault_coordinate_sequence = self
+                .fault_coordinate_sequence
+                .checked_add(1)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "signal fault same-coordinate sequence space is exhausted",
+                    ),
+                })?;
+        } else {
+            self.fault_coordinate = Some(coordinate);
+            self.fault_coordinate_sequence = 0;
+        }
+        let evaluation = self
+            .fault_runtime
+            .evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: coordinate,
+                    retired_instructions: None,
+                },
+                self.fault_coordinate_sequence,
+                self.inner.backend_mut(),
+            )
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("signal fault boundary failed closed: {error}"),
+            })?;
+        self.fault_observations.extend(evaluation.observations);
+        Ok(())
     }
 }

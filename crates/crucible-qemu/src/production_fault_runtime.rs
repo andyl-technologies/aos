@@ -44,6 +44,9 @@ impl ProductionFaultRuntimeCheckpoint {
 /// Failure to admit, execute, checkpoint, or restore the production runtime.
 #[derive(Debug, thiserror::Error)]
 pub enum ProductionFaultRuntimeError {
+    /// A nonempty plan was admitted without its immutable artifact provider.
+    #[error("a nonempty signal fault plan requires an artifact provider")]
+    MissingArtifactProvider,
     /// Signal evaluation, capability admission, or adapter execution failed.
     #[error(transparent)]
     Execution(#[from] FaultExecutionError),
@@ -70,7 +73,7 @@ impl ProductionFaultRuntime {
     /// capability required by a nonempty plan cannot be admitted.
     pub fn new(
         plan: FaultSignalPlan,
-        artifacts: Arc<dyn SignalArtifactProvider>,
+        artifacts: Option<Arc<dyn SignalArtifactProvider>>,
         boundary: SignalBoundarySnapshot,
         scenario_seed: ContentHash,
         nodes: &QemuNodeSet,
@@ -79,6 +82,8 @@ impl ProductionFaultRuntime {
         let runtime = if plan.programs().is_empty() {
             None
         } else {
+            let artifacts =
+                artifacts.ok_or(ProductionFaultRuntimeError::MissingArtifactProvider)?;
             Some(OwnedFaultExecutionRuntime::new(
                 plan,
                 artifacts,
@@ -101,7 +106,7 @@ impl ProductionFaultRuntime {
     /// disagrees with the plan or any runtime identity/capability check fails.
     pub fn restore(
         plan: FaultSignalPlan,
-        artifacts: Arc<dyn SignalArtifactProvider>,
+        artifacts: Option<Arc<dyn SignalArtifactProvider>>,
         scenario_seed: ContentHash,
         checkpoint: ProductionFaultRuntimeCheckpoint,
         nodes: &mut QemuNodeSet,
@@ -139,13 +144,17 @@ impl ProductionFaultRuntime {
         let host = checkpoint.host;
         let runtime = match (plan.programs().is_empty(), checkpoint.runtime) {
             (true, None) => None,
-            (false, Some(checkpoint)) => Some(OwnedFaultExecutionRuntime::restore(
-                plan,
-                artifacts,
-                scenario_seed,
-                manifests,
-                checkpoint,
-            )?),
+            (false, Some(checkpoint)) => {
+                let artifacts =
+                    artifacts.ok_or(ProductionFaultRuntimeError::MissingArtifactProvider)?;
+                Some(OwnedFaultExecutionRuntime::restore(
+                    plan,
+                    artifacts,
+                    scenario_seed,
+                    manifests,
+                    checkpoint,
+                )?)
+            }
             _ => return Err(FaultExecutionError::CheckpointPresence.into()),
         };
         nodes.restore_fault_command_sequences(&qemu_fault_sequences)?;

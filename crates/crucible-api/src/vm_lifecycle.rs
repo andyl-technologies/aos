@@ -10,12 +10,16 @@ use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::vm_resume::{
     PRODUCTION_ROOT_OVERLAY_FILE_NAME, ProductionAppRandomConfig, ProductionGdbstubChannelConfig,
     ProductionLiveNode, ProductionLiveNodeStepGateConfig, ProductionNodeSet,
     ProductionPluginSwitch, ProductionRootImageFormat, launch_production_live_node,
+};
+use crucible::model::{
+    FaultCoordinate, FaultObservation, SignalArtifactProvider, SignalBoundarySnapshot,
 };
 use crucible::{
     Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, ConditionEvaluationPass,
@@ -27,6 +31,7 @@ use crucible::{
     SchedulerLivenessScenario, SearchFrontierChoices, Seed, Shift, SimInstant, SimulationBackend,
     SingleScheduler, VirtualTime, World,
 };
+use crucible_qemu::ProductionFaultRuntime;
 
 use crate::LifecycleApiError;
 
@@ -40,7 +45,7 @@ const PRODUCTION_QUEUE_CAPACITY: u32 = 1_024;
 const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 
 /// Immutable artifacts and bounds for local production QEMU execution.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProductionVmLifecycleConfig {
     executable: PathBuf,
     plugin: PathBuf,
@@ -57,6 +62,34 @@ pub struct ProductionVmLifecycleConfig {
     branch: Option<ProductionVmBranchConfig>,
     branch_fault_choices: Vec<Decision>,
     branch_network_choices: Vec<crucible::OverrideDecision>,
+    signal_artifacts: Option<Arc<dyn SignalArtifactProvider>>,
+}
+
+impl std::fmt::Debug for ProductionVmLifecycleConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProductionVmLifecycleConfig")
+            .field("executable", &self.executable)
+            .field("plugin", &self.plugin)
+            .field("kernel", &self.kernel)
+            .field("root_image", &self.root_image)
+            .field("initrd", &self.initrd)
+            .field("kernel_cmdline_prefix", &self.kernel_cmdline_prefix)
+            .field("root_image_format", &self.root_image_format)
+            .field("run_ceiling_icount", &self.run_ceiling_icount)
+            .field("quantum_budget", &self.quantum_budget)
+            .field("completion_timeout", &self.completion_timeout)
+            .field("coverage", &self.coverage)
+            .field("debug", &self.debug)
+            .field("branch", &self.branch)
+            .field("branch_fault_choices", &self.branch_fault_choices)
+            .field("branch_network_choices", &self.branch_network_choices)
+            .field(
+                "signal_artifacts_configured",
+                &self.signal_artifacts.is_some(),
+            )
+            .finish()
+    }
 }
 
 /// Debugger channel requested for one production QEMU lifecycle node.
@@ -114,6 +147,7 @@ impl ProductionVmLifecycleConfig {
             branch: None,
             branch_fault_choices: Vec::new(),
             branch_network_choices: Vec::new(),
+            signal_artifacts: None,
         }
     }
 
@@ -245,6 +279,16 @@ impl ProductionVmLifecycleConfig {
         self
     }
 
+    /// Returns this configuration with the production signal-artifact provider.
+    ///
+    /// A nonempty signal fault plan is rejected unless this provider is present;
+    /// the lifecycle never substitutes an empty or process-local test store.
+    #[must_use]
+    pub fn with_signal_artifacts(mut self, artifacts: Arc<dyn SignalArtifactProvider>) -> Self {
+        self.signal_artifacts = Some(artifacts);
+        self
+    }
+
     fn for_thin_replay(mut self) -> Self {
         self.debug = None;
         self
@@ -267,6 +311,10 @@ impl ProductionVmLifecycleConfig {
 /// Lifecycle loop backed by an authoritative scheduler and live QEMU node set.
 pub struct ProductionVmLifecycleLoop {
     inner: BackendQuantumLoop<SingleScheduler, ProductionNodeSet>,
+    fault_runtime: ProductionFaultRuntime,
+    fault_coordinate: Option<u64>,
+    fault_coordinate_sequence: u64,
+    fault_observations: Vec<FaultObservation>,
     trigger_graph: EventGraph,
     trigger_state: EventGraphState,
     trigger_world: World,
@@ -561,9 +609,31 @@ pub fn build_production_vm_lifecycle_loop(
         .lower_to_event_graph_for_world(source.world())
         .map_err(|error| loop_factory_error(format!("lower scenario trigger plan: {error}")))?
         .into_event_graph();
+    let fault_plan = source.plan().fault_signals().clone();
+    let signal_artifacts = if fault_plan.programs().is_empty() {
+        None
+    } else {
+        Some(config.signal_artifacts.clone().ok_or_else(|| {
+            loop_factory_error(
+                "a nonempty signal fault plan requires a production signal-artifact provider",
+            )
+        })?)
+    };
+    let fault_runtime = ProductionFaultRuntime::new(
+        fault_plan,
+        signal_artifacts,
+        SignalBoundarySnapshot::default(),
+        scenario.id(),
+        &backends,
+    )
+    .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
 
     Ok(ProductionVmLifecycleLoop {
         inner: BackendQuantumLoop::new(scheduler, backends),
+        fault_runtime,
+        fault_coordinate: None,
+        fault_coordinate_sequence: 0,
+        fault_observations: Vec::new(),
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),

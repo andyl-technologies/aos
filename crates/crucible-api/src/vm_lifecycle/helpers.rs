@@ -117,9 +117,7 @@ pub(super) fn collect_terminal_actions(
                 collect_terminal_actions(action, passed, violations);
             }
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }

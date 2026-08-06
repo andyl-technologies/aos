@@ -50,6 +50,17 @@ impl<L, B> BackendQuantumLoop<L, B> {
         &mut self.backend
     }
 
+    /// Returns mutable access to the authoritative loop and live backend together.
+    ///
+    /// This is the transaction seam for boundary operations that must update
+    /// scheduler-owned state and a live backend atomically. Returning both
+    /// disjoint fields avoids temporarily moving either continuation out of the
+    /// adapter.
+    #[must_use]
+    pub fn parts_mut(&mut self) -> (&mut L, &mut B) {
+        (&mut self.loop_impl, &mut self.backend)
+    }
+
     /// Consumes the adapter and returns its parts.
     #[must_use]
     pub fn into_parts(self) -> (L, B) {
