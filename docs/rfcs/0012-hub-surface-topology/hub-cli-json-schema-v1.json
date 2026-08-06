@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aos.andyl.org/schemas/hub-cli-output-v1.json",
+  "title": "AOS Hub CLI success output v1",
+  "description": "Discriminated success envelope for aos hub --json. The kind is stable snake_case and identifies the command-specific or generated protobuf response carried by data.",
+  "type": "object",
+  "required": ["schema_version", "kind", "data"],
+  "properties": {
+    "schema_version": { "const": "aos.hub.cli/v1" },
+    "kind": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+    "data": { "type": "object" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": { "const": "login" },
+        "data": {
+          "type": "object",
+          "required": ["access_token", "token_type", "expires_in"],
+          "properties": {
+            "access_token": { "type": "string" },
+            "token_type": { "type": "string" },
+            "expires_in": { "type": "integer" }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "placement_list" },
+        "data": {
+          "type": "object",
+          "required": ["surface", "placements", "next_page_token"],
+          "properties": {
+            "surface": { "type": "string" },
+            "placements": { "type": "array", "items": { "$ref": "#/$defs/placement" } },
+            "next_page_token": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "const": "placement_show" },
+        "data": {
+          "type": "object",
+          "required": ["surface", "placement"],
+          "properties": {
+            "surface": { "type": "string" },
+            "placement": { "$ref": "#/$defs/placement" }
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "properties": {
+        "kind": { "pattern": "^(?!login$|placement_list$|placement_show$)[a-z][a-z0-9_]*$" },
+        "data": { "type": "object" }
+      }
+    }
+  ],
+  "$defs": {
+    "placement": {
+      "type": "object",
+      "required": ["name", "storage_binding_name", "prefix", "spec", "observation", "status", "resource_version"],
+      "properties": {
+        "name": { "type": "string" },
+        "storage_binding_name": { "type": "string" },
+        "prefix": { "type": "string" },
+        "spec": { "type": "object" },
+        "observation": { "type": "object" },
+        "status": { "type": "object" },
+        "created_at": { "type": "integer" },
+        "updated_at": { "type": "integer" },
+        "resource_version": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

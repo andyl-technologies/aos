@@ -34,22 +34,97 @@
 use anyhow::Result;
 
 use crate::backend::BackendBounds;
-use crate::db::RegistryRecord;
+use crate::db::SurfacePlacementRecord;
 
 /// One multipart-upload part's identity: its 1-based `part_number` and the
 /// backend's entity tag.
 ///
 /// `etag` is the value the backend returns for an uploaded part and requires
-/// back at completion (S3/R2 multipart); a backend with no native etag (local
-/// disk) returns and accepts an empty string. It is opaque to the hub and the
-/// client, which only carry it through the wire protocol and echo the full,
-/// ordered set back at [`complete`](SurfaceWrite::complete_multipart).
+/// back at completion. S3/R2 return their native opaque ETag; local disk
+/// returns a SHA-256 tag and verifies it before assembly. The hub and client
+/// carry the value through the wire protocol and echo the full ordered set
+/// back at [`complete`](SurfaceWrite::complete_multipart).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartTag {
     /// 1-based, contiguous part index.
     pub part_number: u32,
-    /// Backend-returned entity tag (empty when the backend has none).
+    /// Backend-returned part identity.
     pub etag: String,
+}
+
+/// Immutable backend identity required by a physical deletion request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceDeletePrecondition {
+    /// Exact entity tag, when supplied by the inventory backend.
+    pub etag: Option<String>,
+    /// Exact content hash, when supplied by inventory.
+    pub content_hash: Option<String>,
+    /// Exact object size, when supplied by inventory.
+    pub size: Option<i64>,
+}
+
+/// Verified result of an identity-checked backend deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceDeleteOutcome {
+    /// The exact observed object was deleted.
+    Deleted {
+        /// Entity tag accepted by the backend.
+        etag: Option<String>,
+        /// Hash accepted by the backend.
+        content_hash: Option<String>,
+        /// Size accepted by the backend.
+        size: Option<i64>,
+    },
+    /// The object was already absent.
+    NotFound,
+    /// A live object no longer matched the reviewed inventory identity.
+    PreconditionFailed {
+        /// Sanitized backend explanation.
+        detail: String,
+    },
+}
+
+/// Durable-cleanup significance of a multipart abort attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultipartAbortOutcome {
+    /// The backend confirmed that the staged upload was aborted.
+    Aborted,
+    /// The backend confirmed that no staged upload exists.
+    Absent,
+    /// The backend cannot distinguish an absent upload from one already completed.
+    PossiblyCompleted,
+}
+
+/// Formats an inventory ETag as one strong HTTP `If-Match` entity tag.
+///
+/// # Errors
+///
+/// Returns an error for an empty, weak, quoted-malformed, or control-bearing
+/// value.
+pub fn strong_if_match_etag(etag: &str) -> Result<String> {
+    let etag = etag.trim();
+    if etag.is_empty() || etag.starts_with("W/") {
+        anyhow::bail!("inventory ETag is not a strong HTTP entity tag");
+    }
+    if etag.starts_with('"') || etag.ends_with('"') {
+        if etag.len() < 2 || !etag.starts_with('"') || !etag.ends_with('"') {
+            anyhow::bail!("inventory ETag has malformed quotes");
+        }
+        if etag[1..etag.len() - 1]
+            .bytes()
+            .any(|byte| byte < 0x21 || byte == b'"' || byte == b'\\' || byte == 0x7f)
+        {
+            anyhow::bail!("inventory ETag contains an invalid entity-tag byte");
+        }
+        return Ok(etag.to_string());
+    }
+    if etag
+        .bytes()
+        .any(|byte| byte < 0x21 || byte == b'"' || byte == b'\\' || byte == 0x7f)
+    {
+        anyhow::bail!("inventory ETag contains an invalid entity-tag byte");
+    }
+    Ok(format!("\"{etag}\""))
 }
 
 /// Write access to a registry surface by relative path (the "Blobs" write
@@ -61,6 +136,15 @@ pub struct PartTag {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWrite: BackendBounds {
+    /// Reports the exact multipart protocol version implemented by this backend.
+    ///
+    /// Callers must check this capability before creating a durable ticket or
+    /// mutating backend state. Version 1 is the durable
+    /// create/part/complete/abort contract; the default is fail-closed.
+    fn multipart_protocol_version(&self) -> Option<u32> {
+        None
+    }
+
     /// Atomically write `bytes` to the surface at the logical `path`.
     ///
     /// The write MUST be atomic with respect to a concurrent reader: a reader
@@ -93,6 +177,24 @@ pub trait SurfaceWrite: BackendBounds {
     /// `path` is rejected as unsafe, or on any IO or transport failure other
     /// than the object being absent.
     async fn delete(&self, path: &str) -> Result<()>;
+
+    /// Deletes only the exact backend object captured by inventory.
+    ///
+    /// Implementations must provide an atomic backend precondition or return
+    /// an error without deleting. Absence is a verified idempotent success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend cannot enforce the supplied identity,
+    /// the path is unsafe, or the transport fails.
+    async fn delete_if_matches(
+        &self,
+        path: &str,
+        expected: &SurfaceDeletePrecondition,
+    ) -> Result<SurfaceDeleteOutcome> {
+        let _ = (path, expected);
+        anyhow::bail!("this backend does not support identity-checked deletion")
+    }
 
     /// Begin a multipart upload targeting the logical `path`, returning the
     /// backend's opaque upload id.
@@ -160,51 +262,79 @@ pub trait SurfaceWrite: BackendBounds {
 
     /// Abort the upload `upload_id` for `path`, freeing any backend-held state.
     ///
-    /// Best-effort and idempotent: aborting an unknown or already-completed
-    /// upload is not an error, so a retry or redundant cleanup is harmless.
+    /// The result distinguishes a confirmed abort/absence from a possibly
+    /// completed upload so callers never discard uncertain landed-byte evidence.
     ///
     /// # Errors
     ///
     /// Returns an error only on a transport failure the backend deems fatal.
-    async fn abort_multipart(&self, path: &str, upload_id: &str) -> Result<()> {
+    async fn abort_multipart(&self, path: &str, upload_id: &str) -> Result<MultipartAbortOutcome> {
+        let _ = (path, upload_id);
+        anyhow::bail!("multipart upload not supported by this backend")
+    }
+
+    /// Removes backend-local completion evidence after the durable write ticket
+    /// has settled successfully.
+    ///
+    /// Remote object stores need no action. Local filesystems use this callback
+    /// to remove the ambiguity marker only after the database commit proves the
+    /// completion is durably accounted for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when settlement evidence cannot be cleaned up.
+    async fn settle_multipart(&self, path: &str, upload_id: &str) -> Result<()> {
         let _ = (path, upload_id);
         Ok(())
     }
 }
 
-/// Resolves the [`SurfaceWrite`] for a registry (the per-registry store seam).
-///
-/// The write sibling of [`SurfaceProvider`](crate::fetch::SurfaceProvider):
-/// the native hub returns a filesystem writer rooted at the registry's storage
-/// binding (the same root the read fetcher uses), and the Worker returns an
-/// R2-backed writer scoped to the registry's prefix. Keeping this a port lets
-/// the shared console's git-backed change-request handlers obtain a writer
-/// without knowing the store.
+/// Resolves the [`SurfaceWrite`] for one explicit physical placement.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWriteProvider: BackendBounds {
-    /// Build the surface writer for `registry`.
+    /// Builds a writer rooted at one explicit physical placement.
     ///
     /// # Errors
     ///
-    /// Returns an error when the registry's writable store cannot be resolved
-    /// (e.g. a registration-only registry with no storage binding, or an
-    /// unreadable binding).
-    async fn writer(&self, registry: &RegistryRecord) -> Result<Box<dyn SurfaceWrite>>;
+    /// Returns an error when the placement's binding cannot be resolved, lacks
+    /// validated write capability, or is unsupported by this runtime.
+    async fn placement_writer(
+        &self,
+        placement: &SurfacePlacementRecord,
+    ) -> Result<Box<dyn SurfaceWrite>>;
 
-    /// Build the surface writer for a managed [`Cache`](crate::db::Cache).
+    /// Builds a conditional deleter for one explicit physical placement.
     ///
-    /// The cache analog of [`writer`](Self::writer): the native hub roots a
-    /// filesystem writer at the cache's binding root + prefix; the Worker scopes
-    /// an R2 writer to the cache's prefix. The provided default errors, so a
-    /// provider that does not host caches need not override it.
+    /// Delete capability is independent of logical write authority: GC must
+    /// delete reviewed replicas and shards that are intentionally not the
+    /// surface's current write target. Implementations must still reject a
+    /// backend that cannot enforce [`SurfaceDeletePrecondition`] atomically.
     ///
     /// # Errors
     ///
-    /// Returns an error when the provider does not serve caches, or when the
-    /// cache's writable store cannot be resolved.
-    async fn cache_writer(&self, cache: &crate::db::Cache) -> Result<Box<dyn SurfaceWrite>> {
-        let _ = cache;
-        anyhow::bail!("this surface write provider does not serve caches")
+    /// Returns an error when credentials cannot be resolved or the backend
+    /// cannot perform identity-checked deletion.
+    async fn placement_deleter(
+        &self,
+        placement: &SurfacePlacementRecord,
+        expected_binding_resource_version: i64,
+        delete_credential_generation: i64,
+    ) -> Result<Box<dyn SurfaceWrite>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strong_if_match_etag;
+
+    #[test]
+    fn exact_delete_etags_are_strong_and_canonical() {
+        assert_eq!(strong_if_match_etag("abc").unwrap(), "\"abc\"");
+        assert_eq!(strong_if_match_etag("\"abc\"").unwrap(), "\"abc\"");
+        assert!(strong_if_match_etag("W/\"abc\"").is_err());
+        assert!(strong_if_match_etag("\"abc").is_err());
+        assert!(strong_if_match_etag("\"a\\b\"").is_err());
+        assert!(strong_if_match_etag("\"a\"b\"").is_err());
+        assert!(strong_if_match_etag("").is_err());
     }
 }

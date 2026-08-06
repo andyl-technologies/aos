@@ -23,7 +23,7 @@ use crate::fetch::SurfaceFetch;
 /// of millions of tiny valid package files across nested buckets, and the
 /// background re-index runs in the web-server process — so an uncapped walk
 /// would let one tenant OOM the hub for all of them. Mirrors the indexer's
-/// [`MAX_SEMVER_TAGS`](crate::indexer::MAX_SEMVER_TAGS) /
+/// [`MAX_RELEASE_TAGS`](crate::indexer::MAX_RELEASE_TAGS) /
 /// [`MAX_BRANCHES`](crate::indexer::MAX_BRANCHES) caps, but aborts (rather than
 /// truncating) so a registry that overflows is marked failed instead of being
 /// silently partially indexed. Sized far above any realistic registry.

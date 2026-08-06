@@ -21,7 +21,7 @@
 //!    a consumer who only changed the URL in their `registries.d` still
 //!    verifies against upstream's roster.
 //!
-//! 2. **Pull-through cache** ([`fetch_through`]) — a *proxied* frontend that
+//! 2. **Pull-through cache** ([`fetch_through`]) — a Hub delivery route that
 //!    fetches-on-miss from upstream, verifies, persists the loose objects it
 //!    can hash-check to the local binding, and serves. Loose `objects/<oid>`
 //!    are verified by oid and frozen. Narinfos are signature-verified against
@@ -50,7 +50,7 @@ use anyhow::{bail, Context, Result};
 use aos_package::registry::verify::TagTarget;
 
 use crate::db::{Database, RegistryRecord};
-use crate::fetch::{fetch_for_url, safe_join, SurfaceFetch};
+use crate::fetch::{fetch_mirror_upstream, safe_join, SurfaceFetch};
 use crate::surface::load::{load_registry_tree, ObjectReader};
 use crate::surface::object::{ObjectKind, Oid};
 use crate::surface::refs::{parse_head, parse_info_refs};
@@ -141,15 +141,23 @@ pub async fn sync_full_mirror(
             source.mode
         );
     }
-    let root = db
-        .registry_surface_root(registry.id)
+    let placement = db
+        .reconciled_surface_writer(aos_hub_core::db::SurfaceTarget::Registry(registry.id))
+        .await
+        .with_context(|| format!("mirror '{}' has no reconciled writer", registry.slug))?;
+    let binding = db
+        .storage_binding(placement.storage_binding_id)
         .await?
-        .with_context(|| {
-            format!(
-                "mirror '{}' has no local binding to write into",
-                registry.slug
-            )
-        })?;
+        .context("mirror placement references a missing storage binding")?;
+    if binding.kind != "local_fs" {
+        bail!("native full-mirror sync currently requires a local_fs write placement");
+    }
+    let root = std::path::PathBuf::from(
+        binding
+            .local_root_path
+            .context("local mirror binding has no localRootPath")?,
+    )
+    .join(placement.prefix);
 
     // Defense in depth: re-validate the upstream is a safe remote target before
     // fetching, even though creation already validated it (the row could have
@@ -160,7 +168,7 @@ pub async fn sync_full_mirror(
             registry.slug
         )
     })?;
-    let fetch = fetch_for_url(&source.upstream_url).await?;
+    let fetch = fetch_mirror_upstream(&source.upstream_url).await?;
     let now = unix_now();
 
     // Verify the upstream surface up front. A failure records `failed` and is

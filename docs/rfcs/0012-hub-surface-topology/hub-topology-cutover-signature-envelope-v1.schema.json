@@ -1,0 +1,25 @@
+{
+  "$schema": "https://aos.andyl.org/schemas/aos-cutover-schema-v1.metaschema.json",
+  "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-signature-envelope-v1.schema.json",
+  "dialect": "aos-cutover-schema/v1",
+  "type": "object",
+  "required": ["schema_version", "document_node_id", "document_kind", "canonical_payload_sha256", "omitted_json_pointers", "signer_key_id", "signer_role", "signature_node_id", "signature_sha256", "algorithm", "domain"],
+  "properties": {
+    "schema_version": { "const": "aos-cutover-signature-envelope/v1" },
+    "document_node_id": { "$ref": "#/$defs/stableId" },
+    "document_kind": { "enum": ["plan", "report", "verification", "signer_key_map"] },
+    "canonical_payload_sha256": { "$ref": "#/$defs/sha256" },
+    "omitted_json_pointers": { "const": [] },
+    "signer_key_id": { "$ref": "#/$defs/stableId" },
+    "signer_role": { "enum": ["plan", "report", "verification", "key_map_root"] },
+    "signature_node_id": { "$ref": "#/$defs/stableId" },
+    "signature_sha256": { "$ref": "#/$defs/sha256" },
+    "algorithm": { "const": "ed25519" },
+    "domain": { "enum": ["aos.hub.topology-cutover.document/v1", "aos.hub.topology-cutover.signer-key-map/v1"] }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "stableId": { "type": "string", "minLength": 1, "maxLength": 255, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

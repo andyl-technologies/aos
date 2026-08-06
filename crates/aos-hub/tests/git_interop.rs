@@ -173,7 +173,7 @@ async fn real_git_surface_verifies_and_indexes() {
 
     // The hub verifies and indexes the git-produced surface fail-closed.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    db.register_registry("demo", surface.to_str().unwrap(), &[trust_key], true)
+    db.register_registry("demo", &[trust_key], true)
         .await
         .unwrap();
     let registry = db.registry_by_slug("demo").await.unwrap().unwrap();

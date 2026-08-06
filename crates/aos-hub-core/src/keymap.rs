@@ -44,6 +44,7 @@ pub fn is_machine_path(path: &str) -> bool {
         || path == "nix-cache-info"
         || path == "index.html"
         || path.ends_with(".narinfo")
+        || is_image_object_path(path)
         || MACHINE_DIRS
             .iter()
             .any(|dir| path == *dir || path.starts_with(&format!("{dir}/")))
@@ -63,7 +64,7 @@ pub fn cache_control(path: &str) -> &'static str {
     } else if let Some(rest) = path.strip_prefix("web/") {
         rest != "config.json" && rest != "index.json" && !rest.starts_with("packages/")
     } else {
-        path.starts_with("releases/") || path.starts_with("nar/")
+        path.starts_with("releases/") || path.starts_with("nar/") || is_image_object_path(path)
     };
     if immutable {
         IMMUTABLE_CACHE_CONTROL
@@ -81,6 +82,16 @@ pub fn content_type(path: &str) -> &'static str {
         "application/zstd"
     } else if path.ends_with(".nar.xz") || path.ends_with(".xz") {
         "application/x-xz"
+    } else if path.starts_with("images/") && path.ends_with("image-info.json") {
+        "application/vnd.aos.image-info+json"
+    } else if path.starts_with("images/") && path.ends_with(".img") {
+        "application/vnd.aos.disk-image.raw"
+    } else if path.starts_with("images/") && path.ends_with(".qcow2") {
+        "application/vnd.aos.disk-image.qcow2"
+    } else if path.starts_with("images/") && path.ends_with(".vmdk") {
+        "application/x-vmdk"
+    } else if path.starts_with("images/") && path.ends_with(".vhd") {
+        "application/vnd.aos.disk-image.vhd"
     } else if path.ends_with(".json") {
         "application/json"
     } else if path.ends_with(".html") {
@@ -96,6 +107,53 @@ pub fn content_type(path: &str) -> &'static str {
     } else {
         "application/octet-stream"
     }
+}
+
+fn is_image_object_path(path: &str) -> bool {
+    image_object_sha256(path).is_some()
+}
+
+/// Returns the content digest encoded by a canonical immutable image path.
+///
+/// Disk paths encode the disk digest; per-format `image-info.json` paths
+/// encode the metadata digest. Non-canonical paths return `None`.
+#[must_use]
+pub fn image_object_sha256(path: &str) -> Option<&str> {
+    let Some(rest) = path.strip_prefix("images/sha256/") else {
+        return None;
+    };
+    let parts = rest.split('/').collect::<Vec<_>>();
+    let digest = |value: &str| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    };
+    let filename = |value: &str| {
+        !value.is_empty()
+            && value.is_ascii()
+            && !value.starts_with('.')
+            && !value.contains("..")
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    };
+    match parts.as_slice() {
+        [sha256, name] if digest(sha256) && filename(name) => Some(*sha256),
+        [disk_sha256, "metadata", info_sha256, "image-info.json"] => {
+            (digest(disk_sha256) && digest(info_sha256)).then_some(*info_sha256)
+        }
+        _ => None,
+    }
+}
+
+/// Whether a machine path is producer-controlled executable document content.
+///
+/// These paths must be served with a sandbox CSP and attachment disposition so
+/// uploaded HTML or JavaScript cannot execute in the authenticated Hub origin.
+#[must_use]
+pub fn is_producer_document(path: &str) -> bool {
+    path.ends_with(".html") || path.ends_with(".js")
 }
 
 /// Map a registry prefix and a machine path to its R2 object key.
@@ -176,6 +234,7 @@ mod tests {
             "index.html",
             "web/index.json",
             "browse/curl.html",
+            "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.img",
         ] {
             assert!(is_machine_path(path), "{path}");
         }
@@ -195,18 +254,17 @@ mod tests {
         assert!(!is_machine_path("-/packages"));
         assert!(!is_machine_path("random"));
         assert!(!is_machine_path("objectstore"), "prefixes must not bleed");
+        assert!(!is_machine_path("images/latest/aos.img"));
+        assert!(!is_machine_path("images/sha256/not-a-digest/aos.img"));
     }
 
     #[test]
     fn suffix_classified_paths_match_with_a_leading_segment() {
         // `*.narinfo` is suffix-classified, so it matches even when a leading
-        // path segment precedes it — e.g. the `/{slug}/{*path}` wildcard for a
-        // nested-canonical registry splits `/andyl/main/<hash>.narinfo` into
-        // `slug = "andyl"`, `path = "main/<hash>.narinfo"`. The dir/exact
-        // classes do NOT match with a leading segment, so the root pointers
-        // reach the nested fallthrough on their own; only the suffix class is
-        // asymmetric, which is why the facade handler must extend the
-        // nested fallthrough to a `not_found` for these paths too.
+        // path segment precedes it. Delivery-route resolution strips the exact
+        // configured base path before classification, so this asymmetry is
+        // retained only for callers classifying already-relative keys. The
+        // directory and exact classes do not accept such a leading segment.
         assert!(is_machine_path("main/abcd.narinfo"));
         assert!(!is_machine_path("main/info/refs"));
         assert!(!is_machine_path("main/HEAD"));
@@ -241,6 +299,7 @@ mod tests {
             "objects/ab/cd",
             "releases/1/2/3/pack/p",
             "nar/x.nar.zst",
+            "images/sha256/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aos.qcow2",
             "web/app-ab12cd_bg.wasm",
             "web/app-ab12cd.js",
             "web/style-ab12cd.css",
@@ -290,5 +349,15 @@ mod tests {
             r2_key("acme/infra/prod", "nar/x.nar"),
             "acme/infra/prod/nar/x.nar"
         );
+    }
+
+    #[test]
+    fn producer_documents_are_classified_for_inert_serving() {
+        for path in ["index.html", "browse/pkg.html", "web/app.js"] {
+            assert!(is_producer_document(path), "{path}");
+        }
+        for path in ["web/index.json", "web/app.wasm", "abcd.narinfo"] {
+            assert!(!is_producer_document(path), "{path}");
+        }
     }
 }

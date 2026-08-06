@@ -19,6 +19,8 @@ mod cache;
 mod doc;
 mod gc;
 mod hub;
+mod hub_retained_control;
+mod image;
 mod package;
 mod prefetch;
 mod server;
@@ -26,6 +28,8 @@ mod test;
 
 pub use cache::*;
 pub use hub::*;
+pub use hub_retained_control::*;
+pub use image::*;
 pub use package::*;
 pub use server::*;
 pub use test::*;
@@ -209,6 +213,11 @@ pub enum Commands {
     Hub {
         #[command(subcommand)]
         command: HubCmd,
+    },
+    /// Discover and download signed AOS system images
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
     },
     /// Profile a closure for leaked build/dev artifacts
     Profile {

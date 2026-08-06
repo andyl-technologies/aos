@@ -1,0 +1,175 @@
+name: Promote Hub production
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_run_id:
+        description: Successful Deploy Hub staging workflow run ID to promote
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: aos-hub-production
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: production
+      url: https://aos.andyl.org
+    steps:
+      - name: Resolve an eligible staging deployment
+        id: staging
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+        run: |
+          set -euo pipefail
+          case "$STAGING_RUN_ID" in
+            ''|*[!0-9]*)
+              echo 'staging_run_id must contain only decimal digits' >&2
+              exit 1
+              ;;
+          esac
+
+          run="$(gh api "repos/$GH_REPO/actions/runs/$STAGING_RUN_ID")"
+          workflow_path="$(printf '%s' "$run" | jq -r '.path')"
+          event="$(printf '%s' "$run" | jq -r '.event')"
+          branch="$(printf '%s' "$run" | jq -r '.head_branch')"
+          conclusion="$(printf '%s' "$run" | jq -r '.conclusion')"
+          sha="$(printf '%s' "$run" | jq -r '.head_sha')"
+
+          test "$workflow_path" = '.github/workflows/deploy-hub-staging.yml'
+          case "$event" in
+            push|workflow_dispatch) ;;
+            *)
+              echo 'staging run has an ineligible trigger' >&2
+              exit 1
+              ;;
+          esac
+          test "$branch" = 'master'
+          test "$conclusion" = 'success'
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'staging run returned an invalid commit SHA' >&2
+            exit 1
+          fi
+
+          printf 'sha=%s\n' "$sha" >> "$GITHUB_OUTPUT"
+          printf 'artifact_name=aos-hub-cloudflare-%s\n' "$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the staged source commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.staging.outputs.sha }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@786fff0690178f1234e4e1fe9b536e94f5433196 # v20
+
+      - name: Download and verify the staged installer closure
+        id: artifact
+        shell: bash
+        env:
+          ARTIFACT_NAME: ${{ steps.staging.outputs.artifact_name }}
+          EXPECTED_SHA: ${{ steps.staging.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+        run: |
+          set -euo pipefail
+          artifact="$RUNNER_TEMP/aos-hub-cloudflare"
+          gh run download "$STAGING_RUN_ID" \
+            --repo "$GH_REPO" \
+            --name "$ARTIFACT_NAME" \
+            --dir "$artifact"
+
+          test "$(cat "$artifact/source-commit")" = "$EXPECTED_SHA"
+          installer="$(cat "$artifact/store-path")"
+          case "$installer" in
+            /nix/store/*-aos-hub-cloudflare-*) ;;
+            *)
+              echo 'staging artifact contains an invalid installer store path' >&2
+              exit 1
+              ;;
+          esac
+          nix copy --from "file://$artifact/cache" "$installer"
+          test -x "$installer/bin/aos-hub"
+          printf 'installer=%s\n' "$installer" >> "$GITHUB_OUTPUT"
+
+      - name: Promote the exact staged artifact to production
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          HUB_CLOUDFLARE_API_TOKEN: ${{ secrets.HUB_CLOUDFLARE_API_TOKEN }}
+          HUB_MANAGED_DOMAINS: ${{ vars.HUB_MANAGED_DOMAINS }}
+          HUB_ROUTE_RESERVATION_KEYRING: ${{ secrets.HUB_ROUTE_RESERVATION_KEYRING }}
+          INSTALLER: ${{ steps.artifact.outputs.installer }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$HUB_CLOUDFLARE_API_TOKEN"
+          test -n "$HUB_MANAGED_DOMAINS"
+          test -n "$HUB_ROUTE_RESERVATION_KEYRING"
+
+          umask 077
+          keyring="$RUNNER_TEMP/route-reservation-keyring.json"
+          printf '%s' "$HUB_ROUTE_RESERVATION_KEYRING" > "$keyring"
+
+          domain_args=()
+          has_canonical_domain=false
+          while IFS= read -r domain; do
+            test -n "$domain" || continue
+            case "$domain" in
+              *[!A-Za-z0-9.-]*|.*|*.)
+                echo "invalid managed production domain: $domain" >&2
+                exit 1
+                ;;
+            esac
+            domain_args+=(--domain "$domain")
+            if test "$domain" = aos.andyl.org; then
+              has_canonical_domain=true
+            fi
+          done <<< "$HUB_MANAGED_DOMAINS"
+          test "$has_canonical_domain" = true
+
+          "$INSTALLER/bin/aos-hub" worker deploy \
+            --name aos-hub \
+            --external-url https://aos.andyl.org \
+            --deployment-id "${{ steps.staging.outputs.sha }}" \
+            --rate-limit-namespace-base 1000 \
+            --disable-delivery-attestation \
+            --route-reservation-keys-file "$keyring" \
+            "${domain_args[@]}"
+
+      - name: Probe the hosted production deployment
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.staging.outputs.sha }}
+        run: |
+          set -euo pipefail
+          curl_package="$(nix build .#pkg-curl --no-link --print-out-paths)"
+          response="$("$curl_package/bin/curl" \
+            --fail-with-body \
+            --proto '=https' \
+            --retry 12 \
+            --retry-all-errors \
+            --retry-delay 5 \
+            --silent \
+            --show-error \
+            --header 'cache-control: no-cache' \
+            --write-out $'\n%{http_code}' \
+            "https://aos.andyl.org/.well-known/aos-deployment?run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT")"
+          status="${response##*$'\n'}"
+          deployment_id="${response%$'\n'*}"
+          test "$status" = 200
+          test "$deployment_id" = "$EXPECTED_SHA"

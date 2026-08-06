@@ -38,9 +38,8 @@ use aos_hub_core::value::Value;
 ///
 /// A bound `null` value crossing into the DO engine through worker-rs's variadic
 /// `exec` is **not** stored as SQL `NULL`: it lands as the JavaScript string
-/// `"[object Object]"`, so a binding-less managed registry's `storage_binding_id`
-/// (a bound `None`) read back as that text and failed every `row.get::<i64>`
-/// mapping (`ListRegistries`/`GetRegistry` 500s). A SQL-literal `NULL` stores
+/// `"[object Object]"`, so nullable topology values read back as text and fail
+/// typed row mapping. A SQL-literal `NULL` stores
 /// correctly (`typeof` reports `null`), so this emits `NULL` directly into the
 /// SQL for any [`Value::Null`] parameter and omits it from the binding list,
 /// keeping the remaining `?` placeholders aligned with the remaining bindings.
@@ -132,24 +131,20 @@ mod tests {
         assert_eq!(params, vec![Value::Int(3)]);
     }
 
-    // The regression guard for the managed-registry bootstrap 500: a bound
-    // `NULL` (e.g. a binding-less registry's `storage_binding_id`) is inlined as
+    // A bound nullable topology value is inlined as
     // a literal `NULL` rather than bound, because the DO `exec` path stores a
     // bound null as the string `"[object Object]"`.
     #[test]
     fn inlines_a_bound_null_as_a_literal_and_omits_it_from_bindings() {
         let (sql, params) = numbered_to_positional(
-            "INSERT INTO registries (a, storage_binding_id, prefix) VALUES (?1, ?2, ?3)",
-            &[Value::Int(1), Value::Null, Value::Text("andyl/main".into())],
+            "INSERT INTO example (a, optional_value, name) VALUES (?1, ?2, ?3)",
+            &[Value::Int(1), Value::Null, Value::Text("topology".into())],
         );
         assert_eq!(
             sql,
-            "INSERT INTO registries (a, storage_binding_id, prefix) VALUES (?, NULL, ?)"
+            "INSERT INTO example (a, optional_value, name) VALUES (?, NULL, ?)"
         );
-        assert_eq!(
-            params,
-            vec![Value::Int(1), Value::Text("andyl/main".into())]
-        );
+        assert_eq!(params, vec![Value::Int(1), Value::Text("topology".into())]);
     }
 
     #[test]
