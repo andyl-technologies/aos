@@ -630,7 +630,10 @@ pub fn build_production_vm_lifecycle_loop(
         inner: BackendQuantumLoop::with_network_output_interceptor(
             scheduler,
             backends,
-            ProductionFaultNetworkInterceptor::new(fault_runtime),
+            ProductionFaultNetworkInterceptor::new(
+                fault_runtime,
+                source.world().fault_topology().clone(),
+            ),
         ),
         trigger_graph,
         trigger_state: EventGraphState::default(),
