@@ -26,13 +26,14 @@ clap = { workspace = true }
 clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
 crucible-session = { path = "../crucible-session" }
+rustix = { workspace = true, features = ["termios"] }
 serde = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 toml = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
 crucible-harness = { path = "../crucible-harness" }
-crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }
 serde_json = { workspace = true }

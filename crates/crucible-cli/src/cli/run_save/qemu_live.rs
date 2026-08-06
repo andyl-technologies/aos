@@ -136,6 +136,7 @@ fn validate_live_qemu_probe_evidence(
         resolved_backend: Some(backend.clone()),
         reason: BackendSelectionReason::ExplicitQemu,
         daemon: None,
+        daemon_security: None,
         remote_uses_control_api: false,
         local_uses_simulation_backend: true,
         local_remote_equivalence_contract: true,
@@ -1155,6 +1156,11 @@ pub(crate) fn production_qemu_lifecycle_config(
         "initrd",
     )? {
         config = config.with_initrd(initrd);
+    }
+    if let Some(gateway) =
+        optional_live_qemu_asset("CRUCIBLE_DEBUG_GATEWAY", None, "debugger gateway")?
+    {
+        config = config.with_debug_gateway(gateway);
     }
     Ok(config)
 }

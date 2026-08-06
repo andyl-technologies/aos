@@ -55,6 +55,12 @@
       section6 = true;
     }
     {
+      package = "crucible-debug-gateway";
+      root = "src/lib.rs";
+      specFiles = ["36"];
+      section6 = true;
+    }
+    {
       package = "crucible-guest";
       root = "src/lib.rs";
       specFiles = ["16"];

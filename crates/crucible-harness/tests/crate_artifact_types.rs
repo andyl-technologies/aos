@@ -2,9 +2,10 @@
 //!
 //! RFC-0010 file 27 fixes the Rust artifact surface before later phases add
 //! implementation detail: only the QEMU plugin builds a `cdylib`, the CLI
-//! builds the public `crucible` binary, `crucible-guest` builds its optional
-//! in-guest emitter binary, `crucible-cas` builds the fleet-store binary, and
-//! every other Crucible package remains a library crate.
+//! builds the public `crucible` binary, `crucible-debug-gateway` builds the
+//! GPL-side gateway process, `crucible-guest` builds its optional in-guest
+//! emitter binary, `crucible-cas` builds the fleet-store binary, and every
+//! other Crucible package remains a library crate.
 
 #![forbid(unsafe_code)]
 
@@ -19,6 +20,7 @@ use toml::Value;
 enum ExpectedArtifact {
     CdylibPlugin,
     CliBinary,
+    DebugGatewayBinary,
     FleetStoreBinary,
     GuestEmitter,
     Library,
@@ -82,6 +84,10 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
     ArtifactSpec {
         package: "crucible-daemon",
         expected: ExpectedArtifact::Library,
+    },
+    ArtifactSpec {
+        package: "crucible-debug-gateway",
+        expected: ExpectedArtifact::DebugGatewayBinary,
     },
     ArtifactSpec {
         package: "crucible-cli",
@@ -398,6 +404,56 @@ fn artifact_type_failures(
             if layout.has_src_bin_dir {
                 failures.push(format!(
                     "{}: CLI must not add extra implicit binary targets under src/bin",
+                    spec.package
+                ));
+            }
+        }
+        ExpectedArtifact::DebugGatewayBinary => {
+            if !declares_or_implies_lib_target(manifest, layout) {
+                failures.push(format!(
+                    "{}: debug gateway must expose its gateway library target",
+                    spec.package
+                ));
+            }
+            for crate_type in lib_crate_types(manifest) {
+                if !matches!(crate_type.as_str(), "lib" | "rlib") {
+                    failures.push(format!(
+                        "{}: forbidden crate-type `{}` for debug gateway library target",
+                        spec.package, crate_type
+                    ));
+                }
+            }
+            let bins = bin_targets(manifest);
+            if bins.len() != 1 {
+                failures.push(format!(
+                    "{}: debug gateway must declare exactly one [[bin]] target, found {}",
+                    spec.package,
+                    bins.len()
+                ));
+            } else {
+                let bin = &bins[0];
+                if bin.name.as_deref() != Some("crucible-debug-gateway") {
+                    failures.push(format!(
+                        "{}: debug gateway [[bin]] name must be `crucible-debug-gateway`, found {:?}",
+                        spec.package, bin.name
+                    ));
+                }
+                if bin.path.as_deref() != Some("src/main.rs") {
+                    failures.push(format!(
+                        "{}: debug gateway [[bin]] path must be `src/main.rs`, found {:?}",
+                        spec.package, bin.path
+                    ));
+                }
+            }
+            if !layout.has_main_rs {
+                failures.push(format!(
+                    "{}: debug gateway target must have src/main.rs",
+                    spec.package
+                ));
+            }
+            if layout.has_src_bin_dir {
+                failures.push(format!(
+                    "{}: debug gateway must not add extra implicit binary targets under src/bin",
                     spec.package
                 ));
             }

@@ -1673,8 +1673,7 @@ pub(super) fn run_remote_workflow(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
-        .map_err(control_client_error)?;
+    let client = remote_rpc_client(daemon, backend_plan)?;
     let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
         runtime.block_on(run_control_client_workflow_stdin_async(&client, run_plan))?
     } else {
@@ -1695,8 +1694,7 @@ pub(super) fn run_remote_verify_workflow(
         .build()?;
     let report = match &verify_plan.mode {
         VerifyMode::RunScenario { .. } => {
-            let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
-                .map_err(control_client_error)?;
+            let client = remote_rpc_client(daemon, backend_plan)?;
             runtime.block_on(run_control_client_verify_workflow_async(
                 &client,
                 verify_plan,
@@ -1727,8 +1725,7 @@ pub(super) fn run_remote_save_workflow(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
-        .map_err(control_client_error)?;
+    let client = remote_rpc_client(daemon, backend_plan)?;
     let report = runtime.block_on(run_remote_control_client_save_workflow_async(
         &client, save_plan,
     ))?;
@@ -1745,8 +1742,7 @@ pub(super) fn run_remote_resume_workflow(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
-        .map_err(control_client_error)?;
+    let client = remote_rpc_client(daemon, backend_plan)?;
     let report = runtime.block_on(run_remote_control_client_resume_workflow_async(
         &client,
         resume_plan,
@@ -1772,8 +1768,7 @@ pub(super) fn run_remote_resume_workflow_with_interactive_commands(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let client = RpcControlClient::new(RpcEndpoint::http2(daemon_rpc_endpoint(daemon)))
-        .map_err(control_client_error)?;
+    let client = remote_rpc_client(daemon, backend_plan)?;
     let report = runtime.block_on(run_remote_control_client_resume_workflow_with_driver_async(
         &client,
         resume_plan,
@@ -1794,6 +1789,49 @@ pub(super) fn daemon_rpc_endpoint(daemon: &str) -> String {
     } else {
         format!("http://{daemon}")
     }
+}
+
+pub(super) fn remote_rpc_client(
+    daemon: &str,
+    backend_plan: &BackendSelectionPlan,
+) -> Result<RpcControlClient, CliError> {
+    let endpoint = RpcEndpoint::http2(daemon_rpc_endpoint(daemon));
+    let Some(paths) = backend_plan.daemon_security.as_ref() else {
+        return RpcControlClient::new(endpoint).map_err(control_client_error);
+    };
+    let server_ca = fs::read(&paths.server_ca).map_err(|error| {
+        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
+            message: format!(
+                "cannot read daemon CA certificate {}: {error}",
+                paths.server_ca.display()
+            ),
+        })
+    })?;
+    let mut client_identity = fs::read(&paths.client_certificate).map_err(|error| {
+        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
+            message: format!(
+                "cannot read daemon client certificate {}: {error}",
+                paths.client_certificate.display()
+            ),
+        })
+    })?;
+    if !client_identity.ends_with(b"\n") {
+        client_identity.push(b'\n');
+    }
+    let private_key = fs::read(&paths.client_private_key).map_err(|error| {
+        control_client_error(crucible_api::ControlClientError::HttpClientBuild {
+            message: format!(
+                "cannot read daemon client private key {}: {error}",
+                paths.client_private_key.display()
+            ),
+        })
+    })?;
+    client_identity.extend_from_slice(&private_key);
+    RpcControlClient::new_mtls(
+        endpoint,
+        RpcMutualTlsConfig::from_pem(server_ca, client_identity),
+    )
+    .map_err(control_client_error)
 }
 
 pub(super) fn finish_run_workflow_outcome(

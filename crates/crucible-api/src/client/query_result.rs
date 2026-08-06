@@ -110,6 +110,26 @@ pub(super) fn parse_query_result_line(
                 fingerprint: ExecutionFingerprint { hash },
             })))
         }
+        "debug-operator-endpoint" => {
+            let value = fields
+                .next()
+                .ok_or_else(|| rpc_decode("missing debug operator endpoint"))?;
+            let target = if value == "none" {
+                None
+            } else {
+                let node = NodeId {
+                    name: parse_hex_string(value)?,
+                };
+                let endpoint = DebugGdbEndpoint::new(
+                    "debug_operator_endpoint",
+                    parse_hex_string_field(fields.next(), "debug operator endpoint")?,
+                )
+                .map_err(|error| rpc_decode(format!("invalid debug operator endpoint: {error}")))?;
+                Some((node, endpoint))
+            };
+            reject_extra_query_result_fields(fields.next())?;
+            Ok(Some(QueryResult::DebugOperatorEndpoint(target)))
+        }
         "snapshot" => {
             let state = parse_engine_state_field(fields.next(), "query result snapshot state")?;
             let frontier = VirtualTime {

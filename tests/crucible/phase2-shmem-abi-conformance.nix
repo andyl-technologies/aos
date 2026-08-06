@@ -22,6 +22,7 @@
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/preemption_mailbox.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs
+    + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_guest_introspection.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_whitebox_marker.rs
     + builtins.readFile ../../crates/crucible-shmem/src/shmem/fingerprint_sample.rs;
   shmemGate =
@@ -403,11 +404,11 @@
     ++ failuresFor "crates/crucible-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
-        needle = "abi_version=5";
+        needle = "abi_version=6";
       }
       {
         label = "total serialized length";
-        needle = "total_len=9880";
+        needle = "total_len=14552";
       }
       {
         label = "region magic";
@@ -432,6 +433,14 @@
       {
         label = "white-box marker payload marker";
         needle = "5224=4d41524b";
+      }
+      {
+        label = "guest-introspection sequence marker";
+        needle = "9880=1300000000000000";
+      }
+      {
+        label = "guest-introspection complete CRGI record marker";
+        needle = "9896=4352474901000700010000000000000000000000";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/include/crucible_shmem_abi.h" generatedHeader [
@@ -918,7 +927,7 @@ in
                 atomic_init(&header.ring_hdr_off, 4352u);
                 atomic_init(&header.ring_data_off, 5888u);
                 atomic_init(&header.entry_stride, CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE);
-                atomic_init(&header.region_size, 18409216u);
+                atomic_init(&header.region_size, 19605760u);
                 atomic_init(&header.icount_shift, 4u);
                 atomic_init(&header.pause_requested, 1u);
                 atomic_init(&header.shutdown_requested, 0u);
@@ -975,13 +984,69 @@ in
                 marker.payload_len = 4u;
                 memcpy(marker.payload, "MARK", 4);
 
+                static const uint8_t close_record[20] = {
+                    'C', 'R', 'G', 'I', 1u, 0u, 7u, 0u,
+                    1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+                    0u, 0u, 0u, 0u,
+                };
+                crucible_shmem_guest_introspection_entry guest_introspection;
+                memset(&guest_introspection, 0, sizeof(guest_introspection));
+                guest_introspection.sequence = 19u;
+                guest_introspection.len = sizeof(close_record);
+                memcpy(
+                    guest_introspection.data,
+                    close_record,
+                    sizeof(close_record)
+                );
+
                 int failed = 0;
+                uint32_t request_ring = UINT32_MAX;
+                uint32_t response_ring = UINT32_MAX;
+                crucible_shmem_guest_introspection_layout guest_layout;
+                if (crucible_shmem_guest_introspection_ring_index(
+                        1u,
+                        CRUCIBLE_SHMEM_GUEST_INTROSPECTION_REQUEST_RING_OFFSET,
+                        &request_ring
+                    ) != 0
+                    || crucible_shmem_guest_introspection_ring_index(
+                        1u,
+                        CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RESPONSE_RING_OFFSET,
+                        &response_ring
+                    ) != 0
+                    || request_ring != 2u
+                    || response_ring != 3u
+                    || crucible_shmem_guest_introspection_layout_compute(
+                        5888u,
+                        12u,
+                        8u,
+                        CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE,
+                        2u,
+                        19605760u,
+                        &guest_layout
+                    ) != 0
+                    || guest_layout.ring_count != 4u
+                    || guest_layout.queue_capacity
+                        != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY
+                    || guest_layout.ring_hdr_off != 18409216u
+                    || guest_layout.ring_data_off != 18409728u
+                    || guest_layout.entry_stride
+                        != CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE
+                    || guest_layout.region_size != 19605760u) {
+                    fprintf(stderr, "guest-introspection geometry validation failed\n");
+                    failed = 1;
+                }
                 failed |= write_exact(out, &header, sizeof(header), "region header");
                 failed |= write_exact(out, &slot, sizeof(slot), "node slot");
                 failed |= write_exact(out, &ring, sizeof(ring), "ring header");
                 failed |= write_exact(out, &frame, sizeof(frame), "frame entry");
                 failed |= write_exact(out, &coverage, sizeof(coverage), "coverage entry");
                 failed |= write_exact(out, &marker, sizeof(marker), "white-box marker entry");
+                failed |= write_exact(
+                    out,
+                    &guest_introspection,
+                    sizeof(guest_introspection),
+                    "guest-introspection entry"
+                );
                 if (fclose(out) != 0) {
                     perror("fclose");
                     failed = 1;
@@ -1038,6 +1103,7 @@ in
                 crucible_shmem_frame_entry frame;
                 crucible_shmem_coverage_entry coverage;
                 crucible_shmem_whitebox_marker_entry marker;
+                crucible_shmem_guest_introspection_entry guest_introspection;
 
                 int failed = 0;
                 failed |= read_exact(in, &header, sizeof(header), "region header");
@@ -1046,6 +1112,12 @@ in
                 failed |= read_exact(in, &frame, sizeof(frame), "frame entry");
                 failed |= read_exact(in, &coverage, sizeof(coverage), "coverage entry");
                 failed |= read_exact(in, &marker, sizeof(marker), "white-box marker entry");
+                failed |= read_exact(
+                    in,
+                    &guest_introspection,
+                    sizeof(guest_introspection),
+                    "guest-introspection entry"
+                );
                 if (fclose(in) != 0) {
                     perror("fclose input");
                     failed = 1;
@@ -1062,7 +1134,7 @@ in
                     || atomic_load_explicit(&header.ring_hdr_off, memory_order_acquire) != 4352u
                     || atomic_load_explicit(&header.ring_data_off, memory_order_acquire) != 5888u
                     || atomic_load_explicit(&header.entry_stride, memory_order_acquire) != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
-                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 18409216u
+                    || atomic_load_explicit(&header.region_size, memory_order_acquire) != 19605760u
                     || atomic_load_explicit(&header.icount_shift, memory_order_acquire) != 4u
                     || atomic_load_explicit(&header.pause_requested, memory_order_acquire) != 1u
                     || atomic_load_explicit(&header.shutdown_requested, memory_order_acquire) != 0u) {
@@ -1125,6 +1197,22 @@ in
                     return 1;
                 }
 
+                static const uint8_t close_record[20] = {
+                    'C', 'R', 'G', 'I', 1u, 0u, 7u, 0u,
+                    1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+                    0u, 0u, 0u, 0u,
+                };
+                if (guest_introspection.sequence != 19u
+                    || guest_introspection.len != sizeof(close_record)
+                    || memcmp(
+                        guest_introspection.data,
+                        close_record,
+                        sizeof(close_record)
+                    ) != 0) {
+                    fprintf(stderr, "guest-introspection entry validation failed\n");
+                    return 1;
+                }
+
                 FILE *out = fopen(argv[2], "wb");
                 if (out == NULL) {
                     perror("fopen output");
@@ -1136,6 +1224,12 @@ in
                 failed |= write_exact(out, &frame, sizeof(frame), "frame entry");
                 failed |= write_exact(out, &coverage, sizeof(coverage), "coverage entry");
                 failed |= write_exact(out, &marker, sizeof(marker), "white-box marker entry");
+                failed |= write_exact(
+                    out,
+                    &guest_introspection,
+                    sizeof(guest_introspection),
+                    "guest-introspection entry"
+                );
                 if (fclose(out) != 0) {
                     perror("fclose output");
                     failed = 1;

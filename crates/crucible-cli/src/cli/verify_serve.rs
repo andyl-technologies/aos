@@ -945,6 +945,14 @@ pub(super) async fn run_serve_invocation_until_shutdown<S>(
 where
     S: Future<Output = Result<(), CliError>> + Send + 'static,
 {
+    let debug_authorization = debug_authorization_policy(args)?;
+    let tls_acceptor = match (&args.tls_cert, &args.tls_key, &args.client_ca) {
+        (Some(certificate), Some(private_key), Some(client_ca)) => Some(
+            mutual_tls_acceptor_from_pem(certificate, private_key, client_ca)
+                .map_err(|error| serve_error(format!("serve mutual-TLS error: {error}")))?,
+        ),
+        _ => None,
+    };
     let listener = tokio::net::TcpListener::bind(&args.listen)
         .await
         .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
@@ -957,7 +965,48 @@ where
         } else {
             "read-write"
         };
-        println!("crucible: serving API daemon at http://{address} mode={mode}");
+        let scheme = if tls_acceptor.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        println!("crucible: serving API daemon at {scheme}://{address} mode={mode}");
+    }
+    let mode = if args.read_only {
+        LifecycleServerMode::read_only()
+    } else {
+        LifecycleServerMode::read_write()
+    };
+    if args.production_qemu {
+        let backend = require_selftest_qemu_backend(cli)?;
+        let config =
+            production_qemu_lifecycle_config(&backend)?.with_debug_gdbstub(None, "127.0.0.1:0");
+        let mut control_plane = LifecycleControlPlane::new_with_fallible_source_factory(
+            "crucible-cli-qemu-daemon",
+            Vec::new(),
+            move |scenario, source, _seed| {
+                let source =
+                    source.ok_or_else(|| crucible_api::LifecycleApiError::LoopFactory {
+                        message: String::from(
+                            "production QEMU daemon requires an inline scenario definition",
+                        ),
+                    })?;
+                crucible_api::build_production_vm_lifecycle_loop(scenario, source, &config)
+            },
+        )
+        .with_thin_replay_resume();
+        if let Some(max_sessions) = args.max_sessions {
+            control_plane = control_plane.with_max_sessions(max_sessions);
+        }
+        return run_bound_lifecycle_server(
+            listener,
+            control_plane,
+            mode,
+            tls_acceptor,
+            debug_authorization,
+            shutdown,
+        )
+        .await;
     }
     let mut control_plane = LifecycleControlPlane::new(
         "crucible-cli-daemon",
@@ -967,16 +1016,61 @@ where
     if let Some(max_sessions) = args.max_sessions {
         control_plane = control_plane.with_max_sessions(max_sessions);
     }
-    let mode = if args.read_only {
-        LifecycleServerMode::read_only()
-    } else {
-        LifecycleServerMode::read_write()
-    };
+    run_bound_lifecycle_server(
+        listener,
+        control_plane,
+        mode,
+        tls_acceptor,
+        debug_authorization,
+        shutdown,
+    )
+    .await
+}
+
+async fn run_bound_lifecycle_server<L, F, S>(
+    listener: tokio::net::TcpListener,
+    control_plane: LifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    tls_acceptor: Option<tokio_rustls::TlsAcceptor>,
+    debug_authorization: DebugAuthorizationPolicy,
+    shutdown: S,
+) -> Result<(), CliError>
+where
+    L: crucible::QuantumLoop + Send + 'static,
+    F: Fn(
+            &crucible::ScenarioDef,
+            Option<&crucible::ScenarioDefForm>,
+            crucible::Seed,
+        ) -> Result<L, crucible_api::LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = Result<(), CliError>> + Send + 'static,
+{
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
-    let server =
-        serve_lifecycle_http2_with_mode_until_shutdown(listener, control_plane, mode, async move {
-            let _ = shutdown_receiver.await;
-        });
+    let server: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>> =
+        if let Some(tls_acceptor) = tls_acceptor {
+            Box::pin(serve_lifecycle_http2_mtls_with_mode_until_shutdown(
+                listener,
+                control_plane,
+                mode,
+                tls_acceptor,
+                debug_authorization,
+                async move {
+                    let _ = shutdown_receiver.await;
+                },
+            ))
+        } else {
+            Box::pin(serve_lifecycle_http2_with_debug_policy_until_shutdown(
+                listener,
+                control_plane,
+                mode,
+                debug_authorization,
+                async move {
+                    let _ = shutdown_receiver.await;
+                },
+            ))
+        };
     tokio::pin!(server);
     tokio::pin!(shutdown);
     // crucible-lint: allow unordered-select -- serve shutdown races only with host daemon drainage.
@@ -1022,7 +1116,73 @@ pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
     }
+    let tls_file_count = [
+        args.tls_cert.is_some(),
+        args.tls_key.is_some(),
+        args.client_ca.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if tls_file_count != 0 && tls_file_count != 3 {
+        return Err(usage_error(
+            "--tls-cert, --tls-key, and --client-ca must be supplied together",
+        ));
+    }
+    if tls_file_count == 3 && args.trusted_unauthenticated_bind {
+        return Err(usage_error(
+            "--trusted-unauthenticated-bind cannot be combined with mutual TLS",
+        ));
+    }
+    if tls_file_count == 0 && !args.trusted_unauthenticated_bind {
+        return Err(usage_error(
+            "serve requires mutual TLS or explicit --trusted-unauthenticated-bind",
+        ));
+    }
+    let _ = debug_authorization_policy(args)?;
     Ok(())
+}
+
+fn debug_authorization_policy(args: &ServeArgs) -> Result<DebugAuthorizationPolicy, CliError> {
+    let mut policy = DebugAuthorizationPolicy::deny_all();
+    if args.trusted_unauthenticated_bind {
+        policy.grant_trusted_unauthenticated_role(DebugRole::new([
+            DebugCapability::Observe,
+            DebugCapability::Control,
+            DebugCapability::Mutate,
+            DebugCapability::Shell,
+            DebugCapability::Admin,
+        ]));
+    }
+    for mapping in &args.debug_role {
+        let (fingerprint, capabilities) = mapping
+            .split_once('=')
+            .ok_or_else(|| usage_error("--debug-role must use sha256=capability,... syntax"))?;
+        let mut parsed = Vec::new();
+        for capability in capabilities.split(',') {
+            parsed.push(match capability {
+                "observe" => DebugCapability::Observe,
+                "control" => DebugCapability::Control,
+                "mutate" => DebugCapability::Mutate,
+                "shell" => DebugCapability::Shell,
+                "admin" => DebugCapability::Admin,
+                _ => {
+                    return Err(usage_error(format!(
+                        "unknown debugger capability `{capability}`"
+                    )));
+                }
+            });
+        }
+        if parsed.is_empty() {
+            return Err(usage_error(
+                "--debug-role must grant at least one capability",
+            ));
+        }
+        policy
+            .grant_certificate_role(fingerprint, DebugRole::new(parsed))
+            .map_err(|error| usage_error(error.to_string()))?;
+    }
+    Ok(policy)
 }
 
 pub(super) async fn run_control_client_workflow_async<C>(

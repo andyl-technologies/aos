@@ -251,7 +251,7 @@
       }
       {
         label = "allow mutate test";
-        needle = "cli_debug_surface_supports_session_checkpoint_and_allow_mutate";
+        needle = "cli_debug_surface_requires_explicit_fork_for_allow_mutate";
       }
       {
         label = "conflict test";

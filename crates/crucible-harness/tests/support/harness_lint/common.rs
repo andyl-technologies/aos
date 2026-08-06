@@ -13,6 +13,7 @@ pub(super) const REDUCTION_PATH_PACKAGES: &[&str] = &[
 pub(super) const NONDETERMINISTIC_BOUNDARY_PACKAGES: &[&str] =
     &["crucible-daemon", "crucible-cli", "crucible-qemu"];
 pub(super) const BINARY_BOUNDARY_PACKAGE: &str = "crucible-cli";
+pub(super) const BINARY_ENTRY_PACKAGES: &[&str] = &["crucible-debug-gateway", "crucible-guest"];
 pub(super) const CLIPPY_DISALLOWED_METHODS: &[&str] = &[
     "std::time::Instant::now",
     "std::time::Instant::elapsed",
@@ -167,6 +168,8 @@ pub(super) fn is_binary_boundary_source(package: &str, package_dir: &Path, sourc
         source.strip_prefix(package_dir),
         Ok(relative)
             if package == BINARY_BOUNDARY_PACKAGE && relative.starts_with(Path::new("src"))
+                || BINARY_ENTRY_PACKAGES.contains(&package)
+                    && relative == Path::new("src/main.rs")
                 || relative.starts_with(Path::new("src/bin"))
     )
 }

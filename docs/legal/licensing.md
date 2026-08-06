@@ -11,6 +11,7 @@ over the defaults below. Third-party files retain their existing licenses.
 | Original AOS code without a more specific notice | Apache-2.0 |
 | `crucible-protocol` and `crucible-shmem` | MIT OR Apache-2.0 |
 | `crucible-qemu-plugin` | GPL-2.0-only |
+| `crucible-debug-gateway` | GPL-2.0-only |
 | `crucible-qemu-trace-plugin` | GPL-2.0-only |
 | QEMU emulator as a combined work | GPL-2.0-only |
 | Individual QEMU source files | The file's notice; unmarked files default to GPL-2.0-or-later under QEMU 10.0's `LICENSE` |
@@ -46,6 +47,12 @@ QEMU's combined-work license and its per-file licenses are separate metadata:
 the current patch series creates GPL-2.0-or-later QEMU source files, while the
 Rust and C Crucible QEMU plugins remain explicitly GPL-2.0-only. Packages and
 corresponding-source artifacts must preserve and inventory both GPL scopes.
+
+`crucible-debug-gateway` is a GPL-2.0-only standalone process. It owns the
+persistent debugger session and connects to QEMU's private RSP socket. The
+Apache controller communicates with it only through versioned Unix-socket
+frames defined by the dual-licensed `crucible-protocol` crate; neither process
+links or dynamically loads the other.
 
 Shared memory must remain protocol-shaped. It may contain fixed-width fields,
 atomics, offsets, ring entries, sequence numbers, feature bits, and serialized

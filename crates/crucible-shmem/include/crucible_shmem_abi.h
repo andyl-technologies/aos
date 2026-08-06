@@ -16,11 +16,16 @@
 #define CRUCIBLE_SHMEM_STATIC_ASSERT(COND, MSG) _Static_assert((COND), MSG)
 
 #define CRUCIBLE_SHMEM_REGION_MAGIC UINT64_C(0x314d485343555243)
-#define CRUCIBLE_SHMEM_ABI_VERSION 5u
+#define CRUCIBLE_SHMEM_ABI_VERSION 6u
 #define CRUCIBLE_SHMEM_MAX_FRAME_DATA 4608u
 #define CRUCIBLE_SHMEM_DEFAULT_QUEUE_CAPACITY 64u
 #define CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY 65536u
 #define CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY 1024u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY 64u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM 2u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_REQUEST_RING_OFFSET 0u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RESPONSE_RING_OFFSET 1u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_DATA_BYTES 4608u
 #define CRUCIBLE_SHMEM_MAX_NODES 32u
 #define CRUCIBLE_SHMEM_RESERVED_SLOTS 3u
 #define CRUCIBLE_SHMEM_MAX_VM_NODES 29u
@@ -129,6 +134,141 @@
 #define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET 16u
 #define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET 4624u
 #define CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_LEN 48u
+
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE 4672u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_ALIGN 64u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET 0u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_LEN_OFFSET 8u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_PAD_OFFSET 10u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_DATA_OFFSET 16u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET 4624u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_PAD_LEN 6u
+#define CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_RESERVED_LEN 48u
+
+typedef struct crucible_shmem_guest_introspection_layout {
+    uint32_t ring_count;
+    uint32_t queue_capacity;
+    uint64_t ring_hdr_off;
+    uint64_t ring_data_off;
+    uint64_t entry_stride;
+    uint64_t region_size;
+} crucible_shmem_guest_introspection_layout;
+
+static inline int crucible_shmem_u64_checked_add(uint64_t left, uint64_t right, uint64_t *out) {
+    if (out == NULL || left > UINT64_MAX - right) {
+        return -1;
+    }
+    *out = left + right;
+    return 0;
+}
+
+static inline int crucible_shmem_u64_checked_mul(uint64_t left, uint64_t right, uint64_t *out) {
+    if (out == NULL || (right != 0u && left > UINT64_MAX / right)) {
+        return -1;
+    }
+    *out = left * right;
+    return 0;
+}
+
+static inline int crucible_shmem_u64_checked_align_up(uint64_t value, uint64_t alignment, uint64_t *out) {
+    uint64_t remainder;
+    uint64_t adjustment;
+    if (out == NULL || alignment == 0u || (alignment & (alignment - 1u)) != 0u) {
+        return -1;
+    }
+    remainder = value & (alignment - 1u);
+    adjustment = remainder == 0u ? 0u : alignment - remainder;
+    return crucible_shmem_u64_checked_add(value, adjustment, out);
+}
+
+static inline int crucible_shmem_guest_introspection_ring_index(
+    uint32_t vm_slot,
+    uint32_t direction_offset,
+    uint32_t *out
+) {
+    if (out == NULL
+        || direction_offset >= CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM
+        || vm_slot > UINT32_MAX / CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM) {
+        return -1;
+    }
+    *out = vm_slot * CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM + direction_offset;
+    return 0;
+}
+
+static inline int crucible_shmem_guest_introspection_layout_compute(
+    uint64_t frame_ring_data_off,
+    uint32_t frame_ring_count,
+    uint32_t frame_queue_capacity,
+    uint64_t frame_entry_stride,
+    uint32_t vm_node_count,
+    uint64_t advertised_region_size,
+    crucible_shmem_guest_introspection_layout *out
+) {
+    uint64_t count;
+    uint64_t byte_len;
+    uint64_t frame_data_end;
+    uint64_t coverage_hdr_off;
+    uint64_t coverage_data_off;
+    uint64_t coverage_data_end;
+    uint64_t fingerprint_off;
+    uint64_t fingerprint_end;
+    uint64_t marker_hdr_off;
+    uint64_t marker_data_off;
+    uint64_t marker_data_end;
+    uint64_t guest_hdr_off;
+    uint64_t guest_data_off;
+    uint64_t computed_region_size;
+    uint32_t guest_ring_count;
+
+    if (out == NULL
+        || vm_node_count > CRUCIBLE_SHMEM_MAX_VM_NODES
+        || frame_queue_capacity == 0u
+        || (frame_queue_capacity & (frame_queue_capacity - 1u)) != 0u
+        || frame_entry_stride != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
+        || frame_ring_count
+            != vm_node_count * CRUCIBLE_SHMEM_RESERVED_SLOTS * 2u) {
+        return -1;
+    }
+    if (crucible_shmem_u64_checked_mul(frame_ring_count, frame_queue_capacity, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, frame_entry_stride, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(frame_ring_data_off, byte_len, &frame_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(frame_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &coverage_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(coverage_hdr_off, byte_len, &coverage_data_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_COVERAGE_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(coverage_data_off, byte_len, &coverage_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(coverage_data_end, CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_ALIGN, &fingerprint_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fingerprint_off, byte_len, &fingerprint_end) != 0
+        || crucible_shmem_u64_checked_align_up(fingerprint_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &marker_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(marker_hdr_off, byte_len, &marker_data_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(marker_data_off, byte_len, &marker_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(marker_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &guest_hdr_off) != 0
+        || vm_node_count > UINT32_MAX / CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM) {
+        return -1;
+    }
+    guest_ring_count = vm_node_count * CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM;
+    if (crucible_shmem_u64_checked_mul(guest_ring_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(guest_hdr_off, byte_len, &guest_data_off) != 0
+        || crucible_shmem_u64_checked_mul(guest_ring_count, CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(guest_data_off, byte_len, &computed_region_size) != 0
+        || computed_region_size != advertised_region_size) {
+        return -1;
+    }
+
+    out->ring_count = guest_ring_count;
+    out->queue_capacity = CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY;
+    out->ring_hdr_off = guest_hdr_off;
+    out->ring_data_off = guest_data_off;
+    out->entry_stride = CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE;
+    out->region_size = computed_region_size;
+    return 0;
+}
 
 typedef struct CRUCIBLE_SHMEM_ALIGNED(128) crucible_shmem_region_header {
     _Atomic uint64_t magic;
@@ -288,5 +428,21 @@ CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, kind
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, payload_len) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET, "crucible_shmem_whitebox_marker_entry.payload_len offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, payload) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET, "crucible_shmem_whitebox_marker_entry.payload offset");
 CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_whitebox_marker_entry, reserved) == CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET, "crucible_shmem_whitebox_marker_entry.reserved offset");
+
+typedef struct CRUCIBLE_SHMEM_ALIGNED(64) crucible_shmem_guest_introspection_entry {
+    uint64_t sequence;
+    uint16_t len;
+    uint8_t pad[CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_PAD_LEN];
+    uint8_t data[CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_DATA_BYTES];
+    uint8_t reserved[CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_RESERVED_LEN];
+} crucible_shmem_guest_introspection_entry;
+
+CRUCIBLE_SHMEM_STATIC_ASSERT(sizeof(crucible_shmem_guest_introspection_entry) == CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE, "crucible_shmem_guest_introspection_entry size");
+CRUCIBLE_SHMEM_STATIC_ASSERT(_Alignof(crucible_shmem_guest_introspection_entry) == CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_ALIGN, "crucible_shmem_guest_introspection_entry alignment");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_guest_introspection_entry, sequence) == CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET, "crucible_shmem_guest_introspection_entry.sequence offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_guest_introspection_entry, len) == CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_LEN_OFFSET, "crucible_shmem_guest_introspection_entry.len offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_guest_introspection_entry, pad) == CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_PAD_OFFSET, "crucible_shmem_guest_introspection_entry.pad offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_guest_introspection_entry, data) == CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_DATA_OFFSET, "crucible_shmem_guest_introspection_entry.data offset");
+CRUCIBLE_SHMEM_STATIC_ASSERT(offsetof(crucible_shmem_guest_introspection_entry, reserved) == CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET, "crucible_shmem_guest_introspection_entry.reserved offset");
 
 #endif /* CRUCIBLE_SHMEM_ABI_H */

@@ -19,6 +19,7 @@ use std::fs;
 use std::future::Future;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 #[cfg(any(test, feature = "test-double"))]
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,10 +28,12 @@ use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueE
 use clap_complete::Shell;
 use crucible_api::{
     AttachRequest, CONTROL_PROTOCOL_VERSION, CommandResultStatus, ControlClient,
-    CreateSessionRequest, DestroySessionRequest, InProcessLifecycleClient, LifecycleControlPlane,
-    LifecycleServerMode, QuiescentLifecycleLoop, RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,
-    RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH, ResumeSessionRequest, RpcControlClient, RpcEndpoint,
-    SendRequest, SessionRef, serve_lifecycle_http2_with_mode_until_shutdown,
+    CreateSessionRequest, DebugAuthorizationPolicy, DestroySessionRequest,
+    InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
+    RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
+    ResumeSessionRequest, RpcControlClient, RpcEndpoint, RpcMutualTlsConfig, SendRequest,
+    SessionRef, mutual_tls_acceptor_from_pem, serve_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 use crucible_session::engine as crucible_model;
 #[cfg(test)]
@@ -40,9 +43,9 @@ use crucible_session::validation::{
     validation_dag_with_baked_genesis,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, EngineSnapshot,
-    LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand, SessionCommandKind,
-    StepMode,
+    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, DebugCapability, DebugRole,
+    EngineSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
+    SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
         FindingReproductionArtifact, MaterializationPolicy, MaterializationTrigger, MemoryDagStore,
@@ -154,6 +157,18 @@ struct Cli {
     /// Talk to a daemon (21) instead of running in-process.
     #[arg(long, value_name = "addr", global = true)]
     daemon: Option<String>,
+    /// CA certificate used to authenticate an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true)]
+    daemon_ca: Option<PathBuf>,
+    /// Client certificate chain presented to an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true)]
+    daemon_cert: Option<PathBuf>,
+    /// Client private key presented to an HTTPS daemon.
+    #[arg(long, value_name = "path", global = true)]
+    daemon_key: Option<PathBuf>,
+    /// Permit an unauthenticated daemon endpoint on a trusted network.
+    #[arg(long, action = ArgAction::SetTrue, global = true)]
+    trusted_unauthenticated_daemon: bool,
     /// Patched QEMU system binary (26). Else discovered.
     #[arg(long, value_name = "path", global = true)]
     qemu: Option<PathBuf>,
@@ -730,12 +745,15 @@ struct DebugArgs {
     /// Keep the canonical run read-only.
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "allow_mutate")]
     read_only: bool,
-    /// Fork a non-canonical branch for mutation.
+    /// Authorize an explicit non-canonical debug fork.
     #[arg(long, action = ArgAction::SetTrue)]
     allow_mutate: bool,
     /// Bound reverse-step replay distance.
     #[arg(long, value_name = "N")]
     checkpoint_stride: Option<u64>,
+    /// Record the non-canonical guest channel to a new transcript file.
+    #[arg(long, value_name = "PATH")]
+    record_transcript: Option<PathBuf>,
     #[command(subcommand)]
     verb: Option<DebugVerbArgs>,
 }
@@ -744,6 +762,8 @@ struct DebugArgs {
 enum DebugVerbArgs {
     /// Open the mediated gdbstub channel.
     AttachGdb,
+    /// Explicitly fork a non-canonical whole-world debug branch.
+    ForkDebug,
     /// Move to another debug coordinate.
     Goto {
         /// Coordinate accepted by --at.
@@ -760,6 +780,26 @@ enum DebugVerbArgs {
         /// Condition expression.
         condition: String,
     },
+    /// Execute an argv-based command through the guest debug agent.
+    Exec {
+        /// Program and arguments, without shell parsing.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Open an interactive command on a guest PTY.
+    Pty {
+        /// Initial terminal columns.
+        #[arg(long, default_value_t = 80)]
+        columns: u16,
+        /// Initial terminal rows.
+        #[arg(long, default_value_t = 24)]
+        rows: u16,
+        /// Program and arguments, without shell parsing.
+        #[arg(required = true, trailing_var_arg = true)]
+        argv: Vec<String>,
+    },
+    /// Bridge stdin/stdout to the guest agent's configured SSH server.
+    Ssh,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -796,9 +836,27 @@ struct ServeArgs {
     /// Concurrency cap on live sessions.
     #[arg(long, value_name = "n")]
     max_sessions: Option<usize>,
+    /// Host sessions with the packaged production QEMU lifecycle.
+    #[arg(long, action = ArgAction::SetTrue)]
+    production_qemu: bool,
     /// Accept only read-only API calls (query/watch); no mutate.
     #[arg(long, action = ArgAction::SetTrue)]
     read_only: bool,
+    /// Server certificate chain for authenticated remote access.
+    #[arg(long, value_name = "path")]
+    tls_cert: Option<PathBuf>,
+    /// Server private key for authenticated remote access.
+    #[arg(long, value_name = "path")]
+    tls_key: Option<PathBuf>,
+    /// CA certificate used to authenticate remote clients.
+    #[arg(long, value_name = "path")]
+    client_ca: Option<PathBuf>,
+    /// Permit cleartext access on this explicitly trusted bind address.
+    #[arg(long, action = ArgAction::SetTrue)]
+    trusted_unauthenticated_bind: bool,
+    /// Map a client certificate fingerprint to debugger capabilities.
+    #[arg(long, value_name = "sha256=capability,...")]
+    debug_role: Vec<String>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

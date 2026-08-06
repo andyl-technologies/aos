@@ -4,6 +4,7 @@ use super::*;
 
 impl QuantumLoop for ProductionVmLifecycleLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
         self.reconcile_backend_membership()?;
         let pre_quantum_trigger_appends = self.settle_trigger_graph()?;
         self.reconcile_backend_membership()?;
@@ -145,6 +146,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                     scheduler_quiescence,
                 };
                 prepend_event_log_appends(&mut outcome, pre_quantum_trigger_appends);
+                self.capture_debug_runtime_evidence()?;
                 return Ok(outcome);
             }
             if request.configuration.schedule.len() > branch.base.schedule.len()
@@ -175,6 +177,7 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
                 .record_node_checkpoint_at(&node, crucible::NodeCounter { ticks: counter })?;
         }
         self.reconcile_backend_membership()?;
+        self.capture_debug_runtime_evidence()?;
         Ok(outcome)
     }
 
@@ -189,6 +192,45 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.inner.sample_fingerprint(node)
     }
 
+    fn bind_debug_runtime_evidence(
+        &mut self,
+        configuration: &Configuration,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        self.bind_latest_debug_runtime_evidence(configuration, runtime)
+    }
+
+    fn resolve_debug_runtime_evidence(
+        &self,
+        runtime: &RuntimeState,
+    ) -> Result<RuntimeState, SchedulerError> {
+        self.resolve_recorded_debug_runtime_evidence(runtime)
+    }
+
+    fn poll_gdb_run_control(&mut self) -> Result<Option<Vec<u8>>, SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        self.debug_gateway.as_mut().map_or(Ok(None), |gateway| {
+            gateway
+                .poll_run_control()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("poll debugger scheduler run control: {error}"),
+                })
+        })
+    }
+
+    fn complete_gdb_run_control(&mut self, response: &[u8]) -> Result<(), SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
+        self.debug_gateway
+            .as_mut()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("production debugger gateway process is unavailable"),
+            })?
+            .complete_run_control(response)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("complete debugger scheduler run control: {error}"),
+            })
+    }
+
     fn apply_control_at_boundary(
         &mut self,
         control: Vec<ControlOperation>,
@@ -196,12 +238,124 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         self.inner.apply_control_at_boundary(control)
     }
 
+    fn send_guest_introspection(
+        &mut self,
+        node: NodeId,
+        record: crucible_protocol::guest_introspection::GuestIntrospectionRecord,
+    ) -> Result<(), SchedulerError> {
+        self.inner.send_guest_introspection(node, record)
+    }
+
+    fn receive_guest_introspection(
+        &mut self,
+        node: NodeId,
+    ) -> Result<
+        Option<crucible_protocol::guest_introspection::GuestIntrospectionRecord>,
+        SchedulerError,
+    > {
+        self.inner.receive_guest_introspection(node)
+    }
+
     fn open_gdbstub(
         &mut self,
         node: NodeId,
         listen: GdbListen,
     ) -> Result<GdbAttachInfo, SchedulerError> {
-        self.inner.open_gdbstub(node, listen)
+        self.reconcile_indeterminate_debug_ownership()?;
+        if let Some(attach) = &self.debug_attach {
+            if attach.node == node && attach.operator_listen == listen {
+                return Ok(attach.clone());
+            }
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "production debugger gateway is already attached to another node or listener",
+                ),
+            });
+        }
+        let backend_path = self
+            .debug_backend_paths
+            .get(&node)
+            .cloned()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU node `{}` has no configured debugger channel",
+                    node.name
+                ),
+            })?;
+        let configured =
+            self.config
+                .debug
+                .as_ref()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("production debugger configuration is unavailable"),
+                })?;
+        if listen.as_str() != configured.operator_listen {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "requested debugger listener {} does not match configured listener {}",
+                    listen.as_str(),
+                    configured.operator_listen
+                ),
+            });
+        }
+        let requested: SocketAddr =
+            listen
+                .as_str()
+                .parse()
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "parse trusted debugger listener {}: {error}",
+                        listen.as_str()
+                    ),
+                })?;
+        if !requested.ip().is_loopback() {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "unauthenticated production debugger listener must be loopback, not {requested}"
+                ),
+            });
+        }
+        let executable = self
+            .config
+            .debug_gateway_executable
+            .as_ref()
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("standalone debugger gateway executable is unavailable"),
+            })?;
+        let mut gateway = DebugGatewayProcess::launch_with_trusted_loopback(executable, requested)
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("launch production debugger gateway: {error}"),
+            })?;
+        gateway.promote_backend(&backend_path).map_err(|error| {
+            SchedulerError::BoundaryViolation {
+                message: format!("promote production QEMU debugger backend: {error}"),
+            }
+        })?;
+        let actual =
+            gateway
+                .operator_listen()
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "production debugger gateway did not bind a GDB listener",
+                    ),
+                })?;
+        let actual_listen = GdbListen::new(actual.to_string()).map_err(SchedulerError::Backend)?;
+        let info = GdbAttachInfo::new(
+            node,
+            backend_path.to_string_lossy().into_owned(),
+            actual_listen,
+        )
+        .map_err(SchedulerError::Backend)?;
+        self.debug_gateway = Some(gateway);
+        self.debug_attach = Some(info.clone());
+        Ok(info)
+    }
+
+    fn reposition_debug_runtime(
+        &mut self,
+        request: DebugRuntimeRepositionRequest,
+    ) -> Result<DebugRuntimeRepositionReport, SchedulerError> {
+        self.reposition_debug_world(request)
     }
 
     fn append_backend_observable_events(
@@ -247,13 +401,25 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
     }
 
     fn shutdown(&mut self) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
+        self.reconcile_indeterminate_debug_ownership()?;
         let pending = self.inner.loop_impl().pending_branch_fault_choice_count();
         let pending_error = (pending != 0).then(|| SchedulerError::BoundaryViolation {
             message: format!(
                 "production lifecycle stopped with {pending} unconsumed branch fault choices"
             ),
         });
+        let gateway_shutdown = self.debug_gateway.take().map(|gateway| {
+            gateway
+                .shutdown()
+                .map(|_| ())
+                .map_err(|error| SchedulerError::BoundaryViolation {
+                    message: format!("shutdown production debugger gateway: {error}"),
+                })
+        });
         let shutdown = self.inner.shutdown();
+        if let Some(gateway_shutdown) = gateway_shutdown {
+            gateway_shutdown?;
+        }
         if let Some(error) = pending_error {
             shutdown?;
             return Err(error);

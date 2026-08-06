@@ -2029,10 +2029,16 @@ dependencies = [
  "crucible-qemu",
  "crucible-session",
  "futures-util",
+ "hyper-util",
  "reqwest",
+ "rustls 0.23.40",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls 0.26.4",
 ]
 
 [[package]]
@@ -2060,13 +2066,14 @@ dependencies = [
  "clap_complete",
  "crucible-api",
  "crucible-harness",
- "crucible-protocol",
  "crucible-session",
  "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-rustls 0.26.4",
  "toml 0.8.23",
 ]
 
@@ -2080,6 +2087,16 @@ dependencies = [
  "crucible-session",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "crucible-debug-gateway"
+version = "0.1.0"
+dependencies = [
+ "crucible-api",
+ "crucible-protocol",
+ "tempfile",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2157,6 +2174,7 @@ dependencies = [
 name = "crucible-shmem"
 version = "0.1.0"
 dependencies = [
+ "crucible-protocol",
  "libc",
  "thiserror 2.0.18",
 ]
