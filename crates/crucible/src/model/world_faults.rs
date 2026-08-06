@@ -92,6 +92,8 @@ pub struct WorldFaultTopology {
     pub storage_controllers: Vec<WorldStorageController>,
     /// Storage arrays and their member/path topology.
     pub storage_arrays: Vec<WorldStorageArray>,
+    /// Closed policy declarations referenced by storage and 9p effects.
+    pub storage_policy_artifacts: Vec<WorldStoragePolicyArtifact>,
     /// Live-QEMU capability contracts for VM nodes.
     pub node_capabilities: Vec<WorldNodeFaultCapabilities>,
 }
@@ -107,6 +109,18 @@ impl WorldFaultTopology {
             .binary_search_by(|candidate| candidate.id.cmp(id))
             .ok()
             .map(|index| &self.network_policy_artifacts[index])
+    }
+
+    /// Returns one scenario-owned storage policy declaration by stable ID.
+    #[must_use]
+    pub fn storage_policy_artifact(
+        &self,
+        id: &FaultObjectId,
+    ) -> Option<&WorldStoragePolicyArtifact> {
+        self.storage_policy_artifacts
+            .binary_search_by(|candidate| candidate.id.cmp(id))
+            .ok()
+            .map(|index| &self.storage_policy_artifacts[index])
     }
 
     /// Returns whether the registry contains no fault-addressable declarations.
@@ -164,6 +178,11 @@ impl WorldFaultTopology {
         hard_count(&self.storage_devices, "storage devices", 16_384)?;
         hard_count(&self.storage_controllers, "storage controllers", 16_384)?;
         hard_count(&self.storage_arrays, "storage arrays", 16_384)?;
+        hard_count(
+            &self.storage_policy_artifacts,
+            "storage policy artifacts",
+            HARD_STORAGE_POLICY_ARTIFACTS,
+        )?;
         hard_count(&self.node_capabilities, "node capabilities", 16_384)?;
         canonicalize_by_id(&mut self.fault_domains, WorldFaultDomain::id)?;
         canonicalize_by_id(&mut self.network_interfaces, WorldNetworkInterface::id)?;
@@ -250,6 +269,115 @@ impl WorldFaultTopology {
         canonicalize_by_id(&mut self.storage_devices, WorldStorageFaultDevice::id)?;
         canonicalize_by_id(&mut self.storage_controllers, WorldStorageController::id)?;
         canonicalize_by_id(&mut self.storage_arrays, WorldStorageArray::id)?;
+        self.storage_policy_artifacts
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        require(
+            !self
+                .storage_policy_artifacts
+                .windows(2)
+                .any(|pair| pair[0].id == pair[1].id),
+            "storage policy artifact identity",
+        )?;
+        for artifact in &self.storage_policy_artifacts {
+            artifact.validate()?;
+        }
+        for artifact in &self.storage_policy_artifacts {
+            match &artifact.artifact {
+                StoragePolicyArtifactKind::Cache(StoragePolicyCache {
+                    dirty_eviction: StoragePolicyDirtyEviction::Fail { result },
+                    ..
+                }) => {
+                    validate_storage_policy_reference(
+                        &self,
+                        result,
+                        StoragePolicyArtifactClass::TypedResult,
+                        "storage nested typed result",
+                    )?;
+                    require(
+                        self.storage_policy_artifact(result)
+                            .is_some_and(|artifact| {
+                                matches!(
+                                    artifact.artifact,
+                                    StoragePolicyArtifactKind::TypedResult(
+                                        StoragePolicyTypedResult::Block { result }
+                                    ) if result != StoragePolicyResult::Success
+                                )
+                            }),
+                        "storage cache failure result",
+                    )?;
+                }
+                StoragePolicyArtifactKind::DuplicateCompletion(
+                    StoragePolicyDuplicateCompletion::ProtocolError { result },
+                ) => {
+                    validate_storage_policy_reference(
+                        &self,
+                        result,
+                        StoragePolicyArtifactClass::TypedResult,
+                        "storage nested typed result",
+                    )?;
+                    require(
+                        self.storage_policy_artifact(result)
+                            .is_some_and(|artifact| {
+                                !matches!(
+                                    artifact.artifact,
+                                    StoragePolicyArtifactKind::TypedResult(
+                                        StoragePolicyTypedResult::Block {
+                                            result: StoragePolicyResult::Success
+                                        }
+                                    )
+                                )
+                            }),
+                        "storage duplicate protocol error result",
+                    )?;
+                }
+                StoragePolicyArtifactKind::DuplicateCompletion(
+                    StoragePolicyDuplicateCompletion::Reset { transition_policy },
+                ) => {
+                    validate_storage_policy_reference(
+                        &self,
+                        transition_policy,
+                        StoragePolicyArtifactClass::ControllerTransition,
+                        "storage duplicate controller reset",
+                    )?;
+                    require(
+                        self.storage_policy_artifact(transition_policy)
+                            .is_some_and(|artifact| {
+                                matches!(
+                                    artifact.artifact,
+                                    StoragePolicyArtifactKind::ControllerTransition(
+                                        StoragePolicyControllerTransition {
+                                            transition: StorageControllerTransition::Reset,
+                                            ..
+                                        }
+                                    )
+                                )
+                            }),
+                        "storage duplicate reset transition policy",
+                    )?;
+                }
+                StoragePolicyArtifactKind::ControllerTransition(policy) => {
+                    validate_storage_policy_reference(
+                        &self,
+                        &policy.failure_result,
+                        StoragePolicyArtifactClass::TypedResult,
+                        "storage reset failure result",
+                    )?;
+                    require(
+                        self.storage_policy_artifact(&policy.failure_result)
+                            .is_some_and(|artifact| {
+                                matches!(
+                                    artifact.artifact,
+                                    StoragePolicyArtifactKind::TypedResult(
+                                        StoragePolicyTypedResult::Block { result }
+                                    ) if result != StoragePolicyResult::Success
+                                )
+                            }),
+                        "storage reset failure result",
+                    )?;
+                }
+                _ => {}
+            }
+        }
         canonicalize_by_id(&mut self.node_capabilities, WorldNodeFaultCapabilities::id)?;
 
         for domain in &mut self.fault_domains {
@@ -647,12 +775,33 @@ impl WorldFaultTopology {
                 )?;
             }
             storage.validate()?;
+            if let WorldStorageMedia::Remote { protocol } = &storage.media {
+                require(
+                    self.storage_policy_artifacts.iter().any(|artifact| {
+                        artifact.id.as_str() == protocol.as_str()
+                            && artifact.artifact.class()
+                                == StoragePolicyArtifactClass::RemoteProtocol
+                    }),
+                    "storage remote media protocol",
+                )?;
+            }
         }
         let storage_devices = self
             .storage_devices
             .iter()
             .map(|item| item.device.clone())
             .collect::<BTreeSet<_>>();
+        let storage_device_contracts = self
+            .storage_devices
+            .iter()
+            .map(|item| (item.device.as_str(), item))
+            .collect::<BTreeMap<_, _>>();
+        let path_policy_exists = |policy: &SignalId| {
+            self.storage_policy_artifacts.iter().any(|artifact| {
+                artifact.id.as_str() == policy.as_str()
+                    && artifact.artifact.class() == StoragePolicyArtifactClass::Path
+            })
+        };
         for controller in &self.storage_controllers {
             require(
                 controller.semantic_version == 1,
@@ -672,11 +821,26 @@ impl WorldFaultTopology {
                     storage_devices.contains(&namespace.device),
                     "storage controller namespace device",
                 )?;
-                require(namespace.capacity_bytes > 0, "storage namespace capacity")?;
+                let device = storage_device_contracts
+                    .get(namespace.device.as_str())
+                    .ok_or_else(|| invalid("storage controller namespace device"))?;
+                require(
+                    device.kind == WorldStorageKind::Block
+                        && namespace.capacity_bytes > 0
+                        && namespace.capacity_bytes <= device.persistence.length_bytes
+                        && namespace
+                            .capacity_bytes
+                            .is_multiple_of(u64::from(device.persistence.logical_block_bytes)),
+                    "storage namespace capacity and geometry",
+                )?;
             }
             require(!controller.paths.is_empty(), "storage controller paths")?;
             for path in &controller.paths {
                 require(path.queue_depth > 0, "storage controller path queue depth")?;
+                require(
+                    path_policy_exists(&path.policy),
+                    "storage controller path policy",
+                )?;
             }
         }
         for array in &self.storage_arrays {
@@ -704,7 +868,10 @@ impl WorldFaultTopology {
             )?;
             for member in &array.members {
                 require(
-                    storage_devices.contains(&member.device),
+                    storage_devices.contains(&member.device)
+                        && storage_device_contracts
+                            .get(member.device.as_str())
+                            .is_some_and(|device| device.kind == WorldStorageKind::Block),
                     "storage array member device",
                 )?;
             }
@@ -719,6 +886,10 @@ impl WorldFaultTopology {
             )?;
             for path in &array.paths {
                 require(path.queue_depth > 0, "storage array path queue depth")?;
+                require(
+                    path_policy_exists(&path.policy),
+                    "storage array path policy",
+                )?;
             }
         }
         let mut declared_node_capabilities = BTreeSet::new();
@@ -1786,6 +1957,12 @@ pub struct WorldStoragePersistence {
         serialize_with = "super::toml::serialize_u64_toml_number_or_string"
     )]
     pub volatile_cache_bytes: u64,
+    /// Controller-accepted write-buffer capacity.
+    #[serde(
+        deserialize_with = "super::toml::deserialize_u64_toml_number_or_string",
+        serialize_with = "super::toml::serialize_u64_toml_number_or_string"
+    )]
+    pub controller_buffer_bytes: u64,
     /// Flush ordering contract.
     pub flush_semantics: WorldFlushSemantics,
     /// Discard readback contract.
@@ -1794,6 +1971,8 @@ pub struct WorldStoragePersistence {
     pub completion_durability: WorldCompletionDurability,
     /// Maximum volatile cache entry count.
     pub cache_entries: u32,
+    /// Maximum controller-accepted write-buffer entry count.
+    pub controller_entries: u32,
     /// Maximum persistence dependency edge count.
     pub persistence_dependencies: u32,
     /// Maximum retained logical versions per interval.
@@ -1842,6 +2021,21 @@ pub enum WorldStorageMedia {
         /// Protocol contract ID.
         protocol: SignalId,
     },
+}
+
+impl WorldStorageMedia {
+    /// Returns exact erase, program-page, and endurance geometry for flash media.
+    #[must_use]
+    pub const fn flash_geometry(&self) -> Option<(u64, u32, u64)> {
+        match self {
+            Self::Flash {
+                erase_block_bytes,
+                program_page_bytes,
+                endurance_cycles,
+            } => Some((*erase_block_bytes, *program_page_bytes, *endurance_cycles)),
+            Self::Magnetic { .. } | Self::Ram { .. } | Self::Remote { .. } => None,
+        }
+    }
 }
 
 /// One storage node's executable durability/media declaration.
@@ -1907,6 +2101,7 @@ impl WorldStorageFaultDevice {
         )?;
         require(
             self.persistence.maximum_request_bytes > 0
+                && self.persistence.maximum_request_bytes <= self.persistence.length_bytes
                 && self.persistence.maximum_request_bytes <= 67_108_864
                 && self
                     .persistence
@@ -1915,12 +2110,30 @@ impl WorldStorageFaultDevice {
             "storage maximum request geometry",
         )?;
         require(
-            self.persistence.volatile_cache_bytes <= 68_719_476_736,
+            self.persistence.volatile_cache_bytes <= 68_719_476_736
+                && (self.persistence.volatile_cache_bytes == 0)
+                    == (self.persistence.cache_entries == 0)
+                && (self.persistence.completion_durability
+                    != WorldCompletionDurability::VolatileCacheAccepted
+                    || self.persistence.volatile_cache_bytes > 0),
             "storage cache byte limit",
+        )?;
+        require(
+            self.persistence.controller_buffer_bytes <= 68_719_476_736
+                && (self.persistence.controller_buffer_bytes == 0)
+                    == (self.persistence.controller_entries == 0)
+                && (self.persistence.completion_durability
+                    != WorldCompletionDurability::ControllerAccepted
+                    || self.persistence.controller_buffer_bytes > 0),
+            "storage controller buffer limit",
         )?;
         require(
             self.persistence.cache_entries <= 4_194_304,
             "storage cache entry limit",
+        )?;
+        require(
+            self.persistence.controller_entries <= 4_194_304,
+            "storage controller entry limit",
         )?;
         require(
             self.persistence.persistence_dependencies <= 16_777_216,

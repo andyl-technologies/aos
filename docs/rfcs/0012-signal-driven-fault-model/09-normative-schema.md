@@ -413,6 +413,8 @@ Block/9p declarations add required bounded durability/media tables from §11:
 sector_bytes = 512
 atomic_write_bytes = 512
 volatile_cache_bytes = 8388608
+controller_buffer_bytes = 1048576
+controller_entries = 1024
 flush_semantics = "ordered_barrier"
 discard_semantics = "deterministic_zero"
 
@@ -422,6 +424,42 @@ erase_block_bytes = 2097152
 program_page_bytes = 16384
 endurance_cycles = 3000
 ```
+
+Every `FaultObjectId` parameter used by a storage effect resolves in the
+scenario-owned `world.storage_policy_artifact` registry below. An ID is only an
+address; it has no built-in, host-local, or convention-by-name meaning. The
+registry is canonical ID order, rejects duplicate IDs and unknown fields, uses
+`semantic_version = 1`, contains at most 65,536 declarations, and permits at
+most 65,536 entries or 16 MiB of inline bytes in one declaration.
+
+| Artifact `kind` | Complete payload | Referenced by |
+| --- | --- | --- |
+| `typed_result` | exactly one protocol form: block `result = success/offline/read_only/invalid_range/busy/timeout/medium_error/integrity_error/io_error/no_space/not_found/stale`, or positive Linux 9p `errno` | operation failure, timeout, acknowledged write, flush, nested protocol errors |
+| `service` | discipline `fifo/strict_priority/weighted_round_robin`; canonical classes with ID, nonempty operation set, priority, positive weight; whether rebuild shares service | `storage.service.service_policy` |
+| `path` | selection `active_passive/round_robin/least_outstanding/stable_hash`; bounded positive attempt count; positive adjacent-attempt delay and recovery-probe interval; nonempty canonical retry-result set excluding success | every controller or array path declaration |
+| `remote_protocol` | transport `nvme_tcp/iscsi/nbd`; bounded positive outstanding-command count; positive command timeout and reconnect delay; explicit cross-reconnect ordering | remote storage-media declarations |
+| `duplicate_completion` | `ignore`, `protocol_error` with typed-result reference, or `reset` with a reset-kind `controller_transition` reference | `storage.duplicate_completion.protocol_policy` |
+| `controller_transition` | exact transition `reset/reconnect/enumerate`; typed failure result; explicit unadmitted, queued, executing, resolved, and completed-undelivered treatments; controller-buffer/cache retention; request-ID epoch rule; duplicate-history rule; topology re-enumeration rule; positive recovery duration | duplicate-completion `reset` and `storage.controller_lifecycle.transition_policy` |
+| `cache` | eviction `fifo/lru/writeback_sequence`; dirty eviction `persist` or `fail` with typed-result reference; power-loss protection | `storage.volatile_cache.cache_policy` |
+| `persistence` | ready-fragment ordering `preserve/reverse_ready/descending_range/keyed_permutation`; added delay; barrier preservation | `storage.persistence_order.ordering_rule` |
+| `retention` | positive minimum age, wear-age contribution, bit probability, bounded changed-bit count | `storage.flash_state.retention_rule` |
+| `read_disturb` | positive read threshold, bounded neighbor distance, bit probability, bounded changed-bit count | `storage.flash_state.read_disturb_rule` |
+| `program_erase` | normal program/erase and worn probabilities; explicit partial-program and partial-erase booleans | `storage.flash_state.program_erase_rule` |
+| `array_state` | separate nonempty canonical member and path tables, each containing every and only the members/paths of the selected World array, with explicit online state | `storage.array_state.member_path_state` |
+| `array_selection` | `lowest_healthy/stable_hash/least_loaded` | `storage.array_state.selection_policy` |
+| `rebuild` | positive chunk bytes, bounded queue depth, positive byte rate | `storage.array_state.rebuild_service` |
+| `array_consistency` | `require_quorum/degraded_commit/atomic_stripe` | `storage.array_state.consistency_policy` |
+| `ninep_visibility` | scope `global/per_session/writer_immediate`; metadata/data atomicity; deleted-object retention | `ninep.visibility.visibility_policy` |
+| `ninep_object` | absolute canonical path, version sequence, Linux mode, and bounded exact bytes | stale or misdirected `ninep.result` |
+| `bytes` | nonempty bounded exact bytes | static stale block-read versions |
+
+Plan admission checks every reference's artifact class, nested typed-result
+references, namespace capacity/alignment against its exact device, path and
+remote-media policy class, controller-owned namespace/path membership, exact
+array member/path tables, static misdirection device, and flash-rule class. A volatile-cache `loss_event`
+references an actual signal node in the binding's program. Missing or
+wrong-class references fail before guest start; there is no opaque policy
+fallback.
 
 Node declarations add a required `[world.node.fault_capabilities]` table naming
 architecture, register schema, memory address spaces/page geometry, interrupt

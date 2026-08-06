@@ -48,10 +48,18 @@ impl<'de> serde::Deserialize<'de> for ProbabilityMillionths {
 }
 
 /// A positive count whose semantic hard ceiling is checked at construction.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BoundedCount {
     value: NonZeroU32,
-    limit: CountLimit,
+}
+
+impl serde::Serialize for BoundedCount {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u32(self.value.get())
+    }
 }
 
 impl<'de> serde::Deserialize<'de> for BoundedCount {
@@ -59,23 +67,13 @@ impl<'de> serde::Deserialize<'de> for BoundedCount {
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Wire {
-            value: NonZeroU32,
-            limit: CountLimit,
-        }
-        let wire = Wire::deserialize(deserializer)?;
-        Self::new(wire.limit, wire.value.get()).map_err(serde::de::Error::custom)
+        let value = <u32 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(CountLimit::LargeStateEntries, value).map_err(serde::de::Error::custom)
     }
 }
 
 /// An implementation-owned semantic ceiling for a positive count field.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CountLimit {
     /// Network lanes or node vCPUs: 4,096.
     LanesOrVcpus,
@@ -132,19 +130,13 @@ impl BoundedCount {
                 hard: u64::from(hard),
             });
         }
-        Ok(Self { value, limit })
+        Ok(Self { value })
     }
 
     /// Returns the validated count.
     #[must_use]
     pub const fn get(self) -> u32 {
         self.value.get()
-    }
-
-    /// Returns the compiled semantic ceiling used by this value.
-    #[must_use]
-    pub const fn hard(self) -> u32 {
-        self.limit.hard()
     }
 }
 
@@ -458,6 +450,43 @@ mod tests {
                 requested: 257,
                 hard: 256,
             })
+        );
+    }
+
+    #[test]
+    fn bounded_count_wire_is_a_scalar_without_an_authored_limit() {
+        #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            count: BoundedCount,
+        }
+
+        let count = BoundedCount::new(CountLimit::DuplicatesOrInstructionReplay, 7)
+            .unwrap_or_else(|error| panic!("bounded count constructs: {error}"));
+        let value = Wire { count };
+        assert_eq!(
+            serde_json::to_string(&value).unwrap_or_else(|error| panic!("JSON encodes: {error}")),
+            r#"{"count":7}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<Wire>(r#"{"count":7}"#)
+                .unwrap_or_else(|error| panic!("JSON decodes: {error}")),
+            value
+        );
+        assert_eq!(
+            toml::to_string(&value).unwrap_or_else(|error| panic!("TOML encodes: {error}")),
+            "count = 7\n"
+        );
+        assert_eq!(
+            toml::from_str::<Wire>("count = 7\n")
+                .unwrap_or_else(|error| panic!("TOML decodes: {error}")),
+            value
+        );
+        assert!(
+            serde_json::from_str::<Wire>(
+                r#"{"count":{"value":7,"limit":"duplicates_or_instruction_replay"}}"#,
+            )
+            .is_err()
         );
     }
 }

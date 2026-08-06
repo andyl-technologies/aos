@@ -2981,6 +2981,19 @@ pub(crate) enum FaultSignalAuthoringError {
         /// Actual class, or none when the declaration is absent.
         actual: Option<&'static str>,
     },
+    /// A storage or 9p effect refers to an absent or wrong-typed policy declaration.
+    InvalidStoragePolicyReference {
+        /// Binding containing the reference.
+        binding: String,
+        /// Rejected policy identity.
+        reference: String,
+        /// Effect parameter containing the reference.
+        field: &'static str,
+        /// Accepted policy class or classes.
+        expected: String,
+        /// Actual class, or none when the declaration is absent.
+        actual: Option<&'static str>,
+    },
     /// A shared-medium binding disagrees with its World medium contract.
     InvalidNetworkMediumContract {
         /// Binding containing the shared-medium effect.
@@ -3103,6 +3116,17 @@ impl fmt::Display for FaultSignalAuthoringError {
             } => write!(
                 formatter,
                 "binding `{binding}` field `{field}` references network policy `{reference}` with class {}, expected {expected}",
+                actual.unwrap_or("absent")
+            ),
+            Self::InvalidStoragePolicyReference {
+                binding,
+                reference,
+                field,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "binding `{binding}` field `{field}` references storage policy `{reference}` with class {}, expected {expected}",
                 actual.unwrap_or("absent")
             ),
             Self::InvalidNetworkMediumContract { binding, field } => write!(

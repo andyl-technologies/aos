@@ -63,6 +63,67 @@ pub enum DeviceError {
         latency_ns: u64,
     },
 
+    /// A device returned additional completions without a primary completion.
+    #[error("computed response contains duplicates but no primary completion")]
+    InvalidComputedResponse,
+
+    /// The canonical completion-order sequence exhausted its wire width.
+    #[error("response ordering sequence exhausted at {sequence}")]
+    ResponseSequenceOverflow {
+        /// Last representable sequence value that could not be advanced.
+        sequence: u32,
+    },
+
+    /// A resolved block directive is malformed or disagrees with its request.
+    #[error("invalid resolved block fault directive: {reason}")]
+    InvalidBlockFaultDirective {
+        /// Stable validation failure.
+        reason: &'static str,
+    },
+
+    /// Signal-driven execution required a directive for this exact request.
+    #[error("missing resolved block fault directive for request {request_id}")]
+    MissingBlockFaultDirective {
+        /// Guest request identity.
+        request_id: u32,
+    },
+
+    /// Two unresolved directives attempted to own one request identity.
+    #[error("duplicate resolved block fault directive for request {request_id}")]
+    DuplicateBlockFaultDirective {
+        /// Guest request identity.
+        request_id: u32,
+    },
+
+    /// A duplicate completion reached a device without a bound live transport.
+    #[error(
+        "block request {request_id} requires duplicate-completion transport handling before COMPUTE"
+    )]
+    BlockDuplicateTransportUnavailable {
+        /// Guest request whose resolved directive requires transport handling.
+        request_id: u32,
+    },
+
+    /// Checkpointed block fault state reached a compiled hard ceiling.
+    #[error("block fault state `{field}` reached hard limit {hard}")]
+    BlockFaultStateLimit {
+        /// Bounded state collection.
+        field: &'static str,
+        /// Compiled hard ceiling.
+        hard: usize,
+    },
+
+    /// The exact volatile cache cannot admit another selected write.
+    #[error(
+        "block volatile cache has {available_bytes} bytes available, request needs {requested_bytes}"
+    )]
+    BlockCacheFull {
+        /// Bytes requested by the write fragment.
+        requested_bytes: u64,
+        /// Remaining configured capacity.
+        available_bytes: u64,
+    },
+
     /// The scheduler asked the clock to move backward.
     ///
     /// The virtual clock is monotonic and advanced only by the scheduler; a

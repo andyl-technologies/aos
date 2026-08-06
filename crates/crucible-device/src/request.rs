@@ -84,6 +84,53 @@ impl Response {
     }
 }
 
+/// One additional protocol-valid completion derived from a primary response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdditionalCompletion {
+    /// Delay after the primary completion in virtual nanoseconds.
+    pub gap_nanos: u64,
+    /// Exact duplicate or protocol-transformed response.
+    pub response: Response,
+}
+
+/// Complete deterministic COMPUTE result before delivery-time scheduling.
+///
+/// A device returns the primary response together with adapter-owned timing and
+/// duplication decisions. [`crate::subnode::IoCore`] converts every nanosecond
+/// delay to the device clock exactly once and inserts all completions into its
+/// canonical delivery order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ComputedResponse {
+    /// Primary response, or none when completion is intentionally retained.
+    pub primary: Option<Response>,
+    /// Additional delay applied after the device's immutable base latency.
+    pub additional_latency_nanos: u64,
+    /// Ordered protocol-valid additional completions.
+    pub additional: Vec<AdditionalCompletion>,
+}
+
+impl ComputedResponse {
+    /// Builds an ordinary result with no dynamic delay or duplicate.
+    #[must_use]
+    pub fn primary(response: Response) -> Self {
+        Self {
+            primary: Some(response),
+            additional_latency_nanos: 0,
+            additional: Vec::new(),
+        }
+    }
+
+    /// Builds a retained result that schedules no completion yet.
+    #[must_use]
+    pub const fn retained() -> Self {
+        Self {
+            primary: None,
+            additional_latency_nanos: 0,
+            additional: Vec::new(),
+        }
+    }
+}
+
 /// A deterministic map from a request to its modeled latency in nanoseconds.
 ///
 /// Implementations MUST be pure functions of the request (and per-device
