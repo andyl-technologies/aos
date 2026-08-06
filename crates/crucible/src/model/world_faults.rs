@@ -643,10 +643,12 @@ impl WorldFaultTopology {
     /// Resolves every fault-addressable stage on one directed World link.
     ///
     /// The returned order is the physical traversal order: source interface,
-    /// segment, medium resources, forwarders, queues, containing paths,
-    /// attachment machines, active contacts, and destination interface. Each
-    /// object appears at most once. An empty fault topology returns an empty
-    /// route so ordinary worlds do not acquire implicit fault objects.
+    /// segment, medium resources, forwarders, attachment machines, active
+    /// contacts, and destination interface. Queues and paths are not inferred
+    /// from shared ownership or partial containment; they enter traversal only
+    /// through an explicitly selected ordered path. Each object appears at most
+    /// once. An empty fault topology returns an empty route so ordinary worlds
+    /// do not acquire implicit fault objects.
     ///
     /// # Errors
     ///
@@ -710,73 +712,59 @@ impl WorldFaultTopology {
             operation: FaultOperation::NetworkTransmit,
             direction: FaultDirection::Egress,
         });
-        route.push(WorldNetworkRouteFaultTarget {
-            target: ResolvedFaultTarget::NetworkSegment {
-                segment: fault_object_id_from_signal(&segment.id)?,
-                direction,
-            },
-            operation: FaultOperation::NetworkTraverse,
-            direction,
-        });
-        if let Some(medium_id) = &segment.medium {
-            let medium = self
-                .network_media
-                .iter()
-                .find(|medium| &medium.id == medium_id)
-                .ok_or_else(|| invalid("network route medium"))?;
-            for resource in &medium.resources {
-                route.push(WorldNetworkRouteFaultTarget {
-                    target: ResolvedFaultTarget::NetworkMedium {
-                        medium: fault_object_id_from_signal(&medium.id)?,
-                        resource: fault_object_id_from_signal(resource)?,
-                    },
-                    operation: FaultOperation::NetworkContend,
-                    direction,
-                });
-            }
-        }
-        for forwarder in &segment.forwarders {
+        let selected_path = self
+            .network_paths
+            .iter()
+            .filter(|path| direct_path_matches(path, &segment.id, direction))
+            .min_by(|left, right| left.id.cmp(&right.id));
+        if let Some(path) = selected_path {
             route.push(WorldNetworkRouteFaultTarget {
-                target: ResolvedFaultTarget::NetworkForwarder {
-                    forwarder: fault_object_id_from_signal(forwarder)?,
+                target: ResolvedFaultTarget::NetworkPath {
+                    path_version: fault_object_id_from_signal(&path.id)?,
+                    direction,
                 },
-                operation: FaultOperation::NetworkLookup,
+                operation: FaultOperation::NetworkTraverse,
                 direction,
             });
-        }
-        let route_owners = std::iter::once(source_interface)
-            .chain(std::iter::once(destination_interface))
-            .chain(segment.medium.iter())
-            .chain(segment.forwarders.iter())
-            .collect::<BTreeSet<_>>();
-        for queue in &self.network_queues {
-            if route_owners.contains(&queue.owner) {
-                route.push(WorldNetworkRouteFaultTarget {
-                    target: ResolvedFaultTarget::NetworkQueue {
-                        owner: fault_object_id_from_signal(&queue.owner)?,
-                        queue: fault_object_id_from_signal(&queue.id)?,
-                    },
-                    operation: FaultOperation::NetworkEnqueue,
-                    direction,
-                });
+            for hop in &path.hops {
+                match hop {
+                    WorldNetworkPathHop::Segment { segment, direction } => {
+                        push_network_segment_route_stages(self, &mut route, segment, *direction)?;
+                    }
+                    WorldNetworkPathHop::Forwarder { forwarder } => {
+                        route.push(WorldNetworkRouteFaultTarget {
+                            target: ResolvedFaultTarget::NetworkForwarder {
+                                forwarder: fault_object_id_from_signal(forwarder)?,
+                            },
+                            operation: FaultOperation::NetworkLookup,
+                            direction,
+                        });
+                    }
+                    WorldNetworkPathHop::Queue { queue } => {
+                        let queue = self
+                            .network_queues
+                            .iter()
+                            .find(|candidate| &candidate.id == queue)
+                            .ok_or_else(|| invalid("selected network path queue"))?;
+                        route.push(WorldNetworkRouteFaultTarget {
+                            target: ResolvedFaultTarget::NetworkQueue {
+                                owner: fault_object_id_from_signal(&queue.owner)?,
+                                queue: fault_object_id_from_signal(&queue.id)?,
+                            },
+                            operation: FaultOperation::NetworkEnqueue,
+                            direction,
+                        });
+                    }
+                }
             }
-        }
-        for path in &self.network_paths {
-            if path.hops.iter().any(|hop| {
-                matches!(
-                    hop,
-                    WorldNetworkPathHop::Segment {
-                        segment: candidate,
-                        direction: candidate_direction,
-                    } if candidate == &segment.id && *candidate_direction == direction
-                )
-            }) {
+        } else {
+            push_network_segment_route_stages(self, &mut route, &segment.id, direction)?;
+            for forwarder in &segment.forwarders {
                 route.push(WorldNetworkRouteFaultTarget {
-                    target: ResolvedFaultTarget::NetworkPath {
-                        path_version: fault_object_id_from_signal(&path.id)?,
-                        direction,
+                    target: ResolvedFaultTarget::NetworkForwarder {
+                        forwarder: fault_object_id_from_signal(forwarder)?,
                     },
-                    operation: FaultOperation::NetworkTraverse,
+                    operation: FaultOperation::NetworkLookup,
                     direction,
                 });
             }
@@ -2214,6 +2202,57 @@ fn require(condition: bool, field: &'static str) -> Result<(), WorldFaultTopolog
         Err(invalid(field))
     }
 }
+fn direct_path_matches(
+    path: &WorldNetworkPath,
+    segment: &SignalId,
+    direction: FaultDirection,
+) -> bool {
+    let mut segments = path.hops.iter().filter_map(|hop| match hop {
+        WorldNetworkPathHop::Segment { segment, direction } => Some((segment, *direction)),
+        WorldNetworkPathHop::Forwarder { .. } | WorldNetworkPathHop::Queue { .. } => None,
+    });
+    matches!(segments.next(), Some((candidate, candidate_direction))
+        if candidate == segment && candidate_direction == direction)
+        && segments.next().is_none()
+}
+fn push_network_segment_route_stages(
+    topology: &WorldFaultTopology,
+    route: &mut Vec<WorldNetworkRouteFaultTarget>,
+    segment: &SignalId,
+    direction: FaultDirection,
+) -> Result<(), WorldFaultTopologyError> {
+    let segment = topology
+        .network_segments
+        .iter()
+        .find(|candidate| &candidate.id == segment)
+        .ok_or_else(|| invalid("selected network path segment"))?;
+    route.push(WorldNetworkRouteFaultTarget {
+        target: ResolvedFaultTarget::NetworkSegment {
+            segment: fault_object_id_from_signal(&segment.id)?,
+            direction,
+        },
+        operation: FaultOperation::NetworkTraverse,
+        direction,
+    });
+    if let Some(medium_id) = &segment.medium {
+        let medium = topology
+            .network_media
+            .iter()
+            .find(|medium| &medium.id == medium_id)
+            .ok_or_else(|| invalid("network route medium"))?;
+        for resource in &medium.resources {
+            route.push(WorldNetworkRouteFaultTarget {
+                target: ResolvedFaultTarget::NetworkMedium {
+                    medium: fault_object_id_from_signal(&medium.id)?,
+                    resource: fault_object_id_from_signal(resource)?,
+                },
+                operation: FaultOperation::NetworkContend,
+                direction,
+            });
+        }
+    }
+    Ok(())
+}
 fn invalid(field: &'static str) -> WorldFaultTopologyError {
     WorldFaultTopologyError::Invalid(field)
 }
@@ -2421,5 +2460,69 @@ mod tests {
                 .unwrap_or_else(|error| panic!("empty topology should remain inert: {error}"))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn route_fault_targets_select_one_path_and_only_its_explicit_queues() {
+        let mut topology = two_endpoint_topology();
+        for queue in ["explicit-queue", "owner-only-queue"] {
+            topology.network_queues.push(WorldNetworkQueue {
+                id: id(queue),
+                owner: id("if-a"),
+                capacity_packets: 8,
+                capacity_bytes: 4096,
+                discipline: WorldNetworkQueueDiscipline::Fifo,
+                overflow: WorldNetworkQueueOverflow::DropTail,
+                fault_domains: Vec::new(),
+            });
+        }
+        topology.network_paths.extend([
+            WorldNetworkPath {
+                id: id("path-a"),
+                hops: vec![
+                    WorldNetworkPathHop::Segment {
+                        segment: id("segment-ab"),
+                        direction: FaultDirection::AToB,
+                    },
+                    WorldNetworkPathHop::Queue {
+                        queue: id("explicit-queue"),
+                    },
+                ],
+                mtu_bytes: 1500,
+            },
+            WorldNetworkPath {
+                id: id("path-z"),
+                hops: vec![WorldNetworkPathHop::Segment {
+                    segment: id("segment-ab"),
+                    direction: FaultDirection::AToB,
+                }],
+                mtu_bytes: 1500,
+            },
+        ]);
+
+        let route = topology
+            .network_route_fault_targets("vm-a", "vm-b", 0)
+            .unwrap_or_else(|error| panic!("direct route should resolve: {error}"));
+        assert_eq!(route.len(), 5);
+        assert!(route.iter().any(|stage| matches!(
+            &stage.target,
+            ResolvedFaultTarget::NetworkPath { path_version, .. }
+                if path_version.as_str() == "path-a"
+        )));
+        assert!(route.iter().any(|stage| matches!(
+            &stage.target,
+            ResolvedFaultTarget::NetworkQueue { queue, .. }
+                if queue.as_str() == "explicit-queue"
+        )));
+        assert!(route.iter().all(|stage| !matches!(
+            &stage.target,
+            ResolvedFaultTarget::NetworkPath { path_version, .. }
+                if path_version.as_str() == "path-z"
+        )));
+        assert!(route.iter().all(|stage| !matches!(
+            &stage.target,
+            ResolvedFaultTarget::NetworkQueue { queue, .. }
+                if queue.as_str() == "owner-only-queue"
+        )));
     }
 }

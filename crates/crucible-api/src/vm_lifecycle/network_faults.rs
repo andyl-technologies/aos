@@ -541,79 +541,81 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                         payload_digest: ContentHash::from_bytes(&output.payload),
                     };
                     let mut admitted = true;
-                    for stage in stages
-                        .iter()
-                        .filter(|stage| stage.phases().contains(&FaultPhase::Admit))
-                    {
-                        let opportunity = FaultOpportunity::new(
-                            stage.target.clone(),
-                            stage.operation,
-                            FaultPhase::Admit,
-                            FaultCoordinate {
-                                virtual_nanos: frontier.ticks,
-                                retired_instructions: Some(output.emit_icount.retired),
-                            },
-                            output.sequence,
-                            Some(stage.direction),
-                            payload.clone(),
-                        )
-                        .map_err(|error| {
-                            SchedulerError::BoundaryViolation {
-                                message: format!(
-                                    "construct network admission opportunity: {error}"
-                                ),
+                    for stage in &stages {
+                        for phase in [FaultPhase::Admit, FaultPhase::Resolve] {
+                            if !stage.phases().contains(&phase) {
+                                continue;
                             }
-                        })?;
-                        let sequence = self.next_sequence(frontier.ticks)?;
-                        let host_before = self.runtime.host_state().clone();
-                        let evaluation = self
-                            .runtime
-                            .evaluate_opportunity(&opportunity, sequence, _backend)
-                            .map_err(|error| SchedulerError::BoundaryViolation {
-                                message: format!(
-                                    "signal network opportunity failed closed: {error}"
-                                ),
-                            })?;
-                        runtime_committed = true;
-                        next_wakeup_nanos =
-                            earliest_wakeup(next_wakeup_nanos, evaluation.next_wakeup_nanos);
-                        let impulses = self.runtime.drain_host_impulses();
-                        if !impulses.is_empty() {
-                            return Err(SchedulerError::BoundaryViolation {
-                                message: String::from(
-                                    "network availability produced an invalid impulse action",
-                                ),
-                            });
-                        }
-                        let (transition_observations, records) = self
-                            .stage_availability_transition_drops(
-                                opportunity.coordinate(),
-                                &evaluation.actions,
-                                &host_before,
-                                &mut staged_scheduler,
-                                &mut staged_pending,
-                                Some(&mut routed),
-                            )?;
-                        observations.extend(evaluation.observations);
-                        observations.extend(transition_observations);
-                        transition_records.extend(records);
-                        for action in self
-                            .runtime
-                            .host_state()
-                            .matching(opportunity.target(), FaultPhase::Admit)
-                        {
-                            let EffectSpecification::Network(
-                                NetworkEffectSpecification::Availability { state, .. },
-                            ) = action.effect.specification()
-                            else {
-                                return Err(SchedulerError::BoundaryViolation {
+                            let opportunity = FaultOpportunity::new(
+                                stage.target.clone(),
+                                stage.operation,
+                                phase,
+                                FaultCoordinate {
+                                    virtual_nanos: frontier.ticks,
+                                    retired_instructions: Some(output.emit_icount.retired),
+                                },
+                                output.sequence,
+                                Some(stage.direction),
+                                payload.clone(),
+                            )
+                            .map_err(|error| {
+                                SchedulerError::BoundaryViolation {
                                     message: format!(
-                                        "production network admission encountered unadvertised effect `{}`",
-                                        action.effect.kind().as_str()
+                                        "construct network admission opportunity: {error}"
+                                    ),
+                                }
+                            })?;
+                            let sequence = self.next_sequence(frontier.ticks)?;
+                            let host_before = self.runtime.host_state().clone();
+                            let evaluation = self
+                                .runtime
+                                .evaluate_opportunity(&opportunity, sequence, _backend)
+                                .map_err(|error| SchedulerError::BoundaryViolation {
+                                    message: format!(
+                                        "signal network opportunity failed closed: {error}"
+                                    ),
+                                })?;
+                            runtime_committed = true;
+                            next_wakeup_nanos =
+                                earliest_wakeup(next_wakeup_nanos, evaluation.next_wakeup_nanos);
+                            let impulses = self.runtime.drain_host_impulses();
+                            if !impulses.is_empty() {
+                                return Err(SchedulerError::BoundaryViolation {
+                                    message: String::from(
+                                        "network availability produced an invalid impulse action",
                                     ),
                                 });
-                            };
-                            admitted &= availability_allows(*state, stage.direction);
+                            }
+                            let (transition_observations, records) = self
+                                .stage_availability_transition_drops(
+                                    opportunity.coordinate(),
+                                    &evaluation.actions,
+                                    &host_before,
+                                    &mut staged_scheduler,
+                                    &mut staged_pending,
+                                    Some(&mut routed),
+                                )?;
+                            observations.extend(evaluation.observations);
+                            observations.extend(transition_observations);
+                            transition_records.extend(records);
+                            for action in self
+                                .runtime
+                                .host_state()
+                                .matching(opportunity.target(), phase)
+                            {
+                                let EffectSpecification::Network(
+                                    NetworkEffectSpecification::Availability { state, .. },
+                                ) = action.effect.specification()
+                                else {
+                                    return Err(SchedulerError::BoundaryViolation {
+                                        message: format!(
+                                            "production network admission encountered unadvertised effect `{}`",
+                                            action.effect.kind().as_str()
+                                        ),
+                                    });
+                                };
+                                admitted &= availability_allows(*state, stage.direction);
+                            }
                         }
                     }
                     if admitted {
@@ -801,6 +803,10 @@ mod tests {
     }
 
     fn down_plan(segment: FaultObjectId) -> crucible::model::FaultSignalPlan {
+        down_plan_at(segment, FaultPhase::Admit)
+    }
+
+    fn down_plan_at(segment: FaultObjectId, phase: FaultPhase) -> crucible::model::FaultSignalPlan {
         let output = signal_id("network-down");
         let program = crucible::model::SignalProgram::new(
             vec![SignalNode {
@@ -841,7 +847,7 @@ mod tests {
             BindingSampling::AtBoundary,
             BindingMapping::ActiveWhenTrue { invert: false },
             TargetSelector::Exact(targets),
-            [FaultPhase::Admit].into_iter().collect(),
+            [phase].into_iter().collect(),
             effect,
             None,
             BindingSearchPolicy::Fixed,
@@ -1002,5 +1008,78 @@ mod tests {
             .drop_network_inflight_for_route(&source, &destination)
             .unwrap_or_else(|error| panic!("test route should remain valid: {error}"));
         assert_eq!(after.frame_count, 0);
+    }
+
+    #[test]
+    fn production_resolve_availability_suppresses_the_routed_frame() {
+        let (world, segment) = availability_world();
+        let scenario = SchedulerLivenessScenario::from_runnable_world(
+            "production-resolve-availability",
+            Shift::default(),
+            16,
+            SimInstant { nanos: 128 },
+            0,
+            &world,
+        );
+        let mut scheduler = SingleScheduler::from_world(
+            scenario,
+            &world,
+            &MemoryDagStore::new(),
+            WorldIoLayoutPolicy::default(),
+        )
+        .unwrap_or_else(|error| panic!("test scheduler should build: {error}"));
+        let mut nodes = ProductionNodeSet::new();
+        let runtime = ProductionFaultRuntime::new(
+            down_plan_at(segment, FaultPhase::Resolve),
+            Some(Arc::new(NoArtifacts)),
+            SignalBoundarySnapshot::default(),
+            ContentHash::from_bytes(b"production-resolve-availability"),
+            &nodes,
+        )
+        .unwrap_or_else(|error| panic!("test fault runtime should build: {error}"));
+        let mut interceptor = ProductionFaultNetworkInterceptor::new(
+            runtime,
+            world.fault_topology().clone(),
+            world.links().to_vec(),
+        );
+        let mut pending_outputs = Vec::new();
+        interceptor
+            .evaluate_boundary(
+                FaultCoordinate {
+                    virtual_nanos: 0,
+                    retired_instructions: None,
+                },
+                &mut scheduler,
+                &mut nodes,
+                &mut pending_outputs,
+            )
+            .unwrap_or_else(|error| panic!("resolve availability should activate: {error}"));
+
+        let source = crucible::NodeId {
+            name: String::from("left"),
+        };
+        let destination = crucible::NodeId {
+            name: String::from("right"),
+        };
+        let mut payload = vec![0_u8; 14];
+        payload[..6].copy_from_slice(&deterministic_node_mac(&destination));
+        let mut outputs = vec![BackendNetworkOutput {
+            source,
+            destination,
+            emit_icount: Icount { retired: 0 },
+            sequence: 1,
+            payload,
+            route: None,
+        }];
+        interceptor
+            .intercept_network_outputs(
+                &mut scheduler,
+                &mut nodes,
+                VirtualTime { ticks: 0 },
+                &mut pending_outputs,
+                &mut outputs,
+            )
+            .unwrap_or_else(|error| panic!("resolve opportunity should execute: {error}"));
+        assert!(outputs.is_empty());
     }
 }
