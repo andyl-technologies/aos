@@ -31,46 +31,51 @@ pub struct BackendNetworkPreservedAvailability {
 /// Resumable signal-adapter position for one routed network frame.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BackendNetworkFaultCursor {
-    /// Next ordered route stage to evaluate.
-    stage_index: u32,
-    /// Next phase within that stage's declared phase list.
-    phase_index: u8,
+    /// Canonically ordered target/phase pairs already resolved for this frame.
+    completed_phases: Vec<BackendNetworkCompletedFaultPhase>,
     /// Earliest virtual coordinate at which evaluation may resume.
     not_before_nanos: u64,
     /// Latest adapter release coordinate already committed for delivery timing.
     release_nanos: u64,
     /// Queue opportunity that owns the current reservation, when deferred.
     queue_opportunity: Option<ContentHash>,
+    /// Path version locked for preserve semantics across deferred phases.
+    route_path_version: Option<FaultObjectId>,
 }
 
-/// Failure to advance a bounded network fault continuation.
+/// One exact route target/phase pair already resolved for a frame.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BackendNetworkCompletedFaultPhase {
+    /// Concrete route target that owned the opportunity.
+    pub target: ResolvedFaultTarget,
+    /// Exact adapter phase already applied at that target.
+    pub phase: FaultPhase,
+}
+
+/// Failure to record a bounded network fault continuation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum BackendNetworkFaultCursorError {
-    /// The route stage exposed no phases.
-    #[error("network fault route stage has no phases")]
-    EmptyStage,
-    /// The route stage has more phases than the continuation ABI can encode.
-    #[error("network fault route stage phase count exceeds u8")]
-    PhaseCountOverflow,
-    /// The within-stage phase cursor overflowed.
-    #[error("network fault route phase cursor overflowed")]
-    PhaseOverflow,
-    /// The route-stage cursor overflowed.
-    #[error("network fault route stage cursor overflowed")]
-    StageOverflow,
+    /// The frame crossed more target/phase pairs than the hard continuation bound.
+    #[error("network fault completed-phase count exceeds 65,536")]
+    CompletedPhaseLimit,
 }
 
 impl BackendNetworkFaultCursor {
-    /// Returns the next route-stage index.
+    /// Returns completed route target/phase pairs in canonical order.
     #[must_use]
-    pub const fn stage_index(&self) -> u32 {
-        self.stage_index
+    pub fn completed_phases(&self) -> &[BackendNetworkCompletedFaultPhase] {
+        &self.completed_phases
     }
 
-    /// Returns the next within-stage phase index.
+    /// Returns whether this exact target/phase opportunity has already resolved.
     #[must_use]
-    pub const fn phase_index(&self) -> u8 {
-        self.phase_index
+    pub fn is_complete(&self, target: &ResolvedFaultTarget, phase: FaultPhase) -> bool {
+        self.completed_phases
+            .binary_search(&BackendNetworkCompletedFaultPhase {
+                target: target.clone(),
+                phase,
+            })
+            .is_ok()
     }
 
     /// Returns the earliest virtual coordinate at which the frame may resume.
@@ -91,28 +96,42 @@ impl BackendNetworkFaultCursor {
         self.queue_opportunity
     }
 
-    /// Advances to the following phase or route stage.
+    /// Returns the route path version locked for this frame, when one exists.
+    #[must_use]
+    pub const fn route_path_version(&self) -> Option<&FaultObjectId> {
+        self.route_path_version.as_ref()
+    }
+
+    /// Locks the route path selected at first admission.
+    pub fn lock_route_path(&mut self, path_version: FaultObjectId) {
+        self.route_path_version = Some(path_version);
+    }
+
+    /// Clears the path lock so the next declared phase re-resolves routing.
+    pub fn reevaluate_route_path(&mut self) {
+        self.route_path_version = None;
+    }
+
+    /// Records one exact route target/phase pair as resolved.
     ///
     /// # Errors
     ///
-    /// Returns [`BackendNetworkFaultCursorError`] when the phase count is empty
-    /// or an index exceeds its fixed ABI width.
-    pub fn advance(&mut self, phase_count: usize) -> Result<(), BackendNetworkFaultCursorError> {
-        let phase_count = u8::try_from(phase_count)
-            .map_err(|_error| BackendNetworkFaultCursorError::PhaseCountOverflow)?;
-        if phase_count == 0 {
-            return Err(BackendNetworkFaultCursorError::EmptyStage);
-        }
-        self.phase_index = self
-            .phase_index
-            .checked_add(1)
-            .ok_or(BackendNetworkFaultCursorError::PhaseOverflow)?;
-        if self.phase_index == phase_count {
-            self.stage_index = self
-                .stage_index
-                .checked_add(1)
-                .ok_or(BackendNetworkFaultCursorError::StageOverflow)?;
-            self.phase_index = 0;
+    /// Returns [`BackendNetworkFaultCursorError::CompletedPhaseLimit`] when a
+    /// frame would exceed the hard route-complexity bound.
+    pub fn complete(
+        &mut self,
+        target: ResolvedFaultTarget,
+        phase: FaultPhase,
+    ) -> Result<(), BackendNetworkFaultCursorError> {
+        let completed = BackendNetworkCompletedFaultPhase { target, phase };
+        match self.completed_phases.binary_search(&completed) {
+            Ok(_index) => return Ok(()),
+            Err(index) => {
+                if self.completed_phases.len() == 65_536 {
+                    return Err(BackendNetworkFaultCursorError::CompletedPhaseLimit);
+                }
+                self.completed_phases.insert(index, completed);
+            }
         }
         self.not_before_nanos = 0;
         self.queue_opportunity = None;
@@ -131,6 +150,13 @@ impl BackendNetworkFaultCursor {
 mod tests {
     use super::*;
 
+    fn target() -> ResolvedFaultTarget {
+        ResolvedFaultTarget::NetworkForwarder {
+            forwarder: FaultObjectId::parse("forwarder-a")
+                .unwrap_or_else(|error| panic!("test target should be valid: {error}")),
+        }
+    }
+
     #[test]
     fn network_fault_cursor_retains_release_after_resuming() {
         let mut cursor = BackendNetworkFaultCursor::default();
@@ -138,20 +164,29 @@ mod tests {
         assert_eq!(cursor.not_before_nanos(), 41);
         assert_eq!(cursor.release_nanos(), 41);
         cursor
-            .advance(2)
+            .complete(target(), FaultPhase::Resolve)
             .unwrap_or_else(|error| panic!("cursor should advance: {error}"));
         assert_eq!(cursor.not_before_nanos(), 0);
         assert_eq!(cursor.release_nanos(), 41);
-        assert_eq!(cursor.phase_index(), 1);
+        assert!(cursor.is_complete(&target(), FaultPhase::Resolve));
     }
 
     #[test]
-    fn network_fault_cursor_rejects_an_empty_stage() {
+    fn network_fault_cursor_completion_is_idempotent_across_path_reevaluation() {
         let mut cursor = BackendNetworkFaultCursor::default();
-        assert_eq!(
-            cursor.advance(0),
-            Err(BackendNetworkFaultCursorError::EmptyStage)
+        cursor
+            .complete(target(), FaultPhase::Resolve)
+            .unwrap_or_else(|error| panic!("cursor should complete: {error}"));
+        cursor.lock_route_path(
+            FaultObjectId::parse("old-path")
+                .unwrap_or_else(|error| panic!("test path should be valid: {error}")),
         );
+        cursor.reevaluate_route_path();
+        cursor
+            .complete(target(), FaultPhase::Resolve)
+            .unwrap_or_else(|error| panic!("duplicate completion should succeed: {error}"));
+        assert_eq!(cursor.completed_phases().len(), 1);
+        assert!(cursor.route_path_version().is_none());
     }
 }
 

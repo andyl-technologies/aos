@@ -161,12 +161,14 @@ fn test_world_with_shift(icount_shift: u8) -> World {
                 interface_a: signal_id("left-interface"),
                 interface_b: signal_id("right-interface"),
                 minimum_latency_nanos: 1,
+                mtu_bytes: 1500,
                 medium: None,
                 forwarders: Vec::new(),
                 fault_domains: vec![signal_id("campus-uplink")],
             }],
             network_paths: vec![WorldNetworkPath {
                 id: signal_id("active-uplink"),
+                direction: FaultDirection::AToB,
                 hops: vec![WorldNetworkPathHop::Segment {
                     segment,
                     direction: FaultDirection::AToB,
