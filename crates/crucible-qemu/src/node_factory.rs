@@ -187,6 +187,7 @@ impl QemuWarmRestoreLaunchError {
 struct PreparedQemuNodeSetup {
     plugin_control: QemuHostPluginSetup,
     shmem_hot_path: QemuMappedQuantumShmemHotPath,
+    fault_capabilities: Vec<crucible_shmem::FaultCapabilityRowV1>,
 }
 
 /// Runtime inputs shared by cold and warm QEMU node factory paths.
@@ -552,6 +553,8 @@ where
 {
     validate_setup_slot_matches_config(&setup, &shmem_config)?;
 
+    let fault_capabilities = setup.fault_capabilities().to_vec();
+
     let region = mmap_setup_region(setup.shmem_as_fd(), setup.region().region_len)
         .map_err(|source| QemuNodeFactoryError::SetupRegionMap { source })?;
     let shmem_hot_path = QemuMappedQuantumShmemHotPath::new(shmem_config, region, send_authorizer)
@@ -560,6 +563,7 @@ where
     Ok(PreparedQemuNodeSetup {
         plugin_control: setup,
         shmem_hot_path,
+        fault_capabilities,
     })
 }
 
@@ -591,6 +595,7 @@ where
         crash_detector,
         host_io_runtime,
     )
+    .with_fault_capabilities(prepared_setup.fault_capabilities)
 }
 
 fn validate_setup_slot_matches_config(

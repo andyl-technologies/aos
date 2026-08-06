@@ -12,6 +12,7 @@ use crucible::{
     FingerprintSample, GdbAttachInfo, GdbListen, NodeId, ObservableEvent, SimulationBackend,
     StepObservation, VirtualTime,
 };
+use crucible_shmem::{DequeuedFaultResult, FaultCapabilityRowV1, FaultCommandHeaderV1};
 
 use crate::QemuNode;
 
@@ -79,6 +80,76 @@ impl QemuNodeSet {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// Returns the exact QEMU fault capabilities admitted for `node`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when `node` is not live in this set.
+    pub fn fault_capabilities(
+        &self,
+        node: &NodeId,
+    ) -> Result<&[FaultCapabilityRowV1], BackendError> {
+        self.nodes
+            .get(node)
+            .map(QemuNode::fault_capabilities)
+            .ok_or_else(|| BackendError::Rejected {
+                message: format!("QEMU backend set has no node `{}`", node.name),
+            })
+    }
+
+    /// Publishes one authenticated QEMU fault command for `node`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or its mapped command
+    /// transport rejects the command.
+    pub fn enqueue_fault_command(
+        &mut self,
+        node: &NodeId,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+    ) -> Result<(), BackendError> {
+        self.node_mut(node)?
+            .enqueue_fault_command(header, payload)
+            .map_err(|source| BackendError::Rejected {
+                message: source.to_string(),
+            })
+    }
+
+    /// Removes one completed QEMU fault result for `node`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or its mapped result
+    /// transport is corrupt.
+    pub fn dequeue_fault_result(
+        &mut self,
+        node: &NodeId,
+    ) -> Result<Option<DequeuedFaultResult>, BackendError> {
+        self.node_mut(node)?
+            .dequeue_fault_result()
+            .map_err(|source| BackendError::Rejected {
+                message: source.to_string(),
+            })
+    }
+
+    /// Applies one admitted QEMU fault command at `node`'s current boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or the command fails
+    /// capability, coordinate, transport, liveness, or result validation.
+    pub fn apply_fault_command_at_current_boundary(
+        &mut self,
+        node: &NodeId,
+        header: FaultCommandHeaderV1,
+        payload: &[u8],
+    ) -> Result<DequeuedFaultResult, BackendError> {
+        self.node_mut(node)?
+            .apply_fault_command_at_current_boundary(header, payload)
+            .map_err(BackendError::from)
     }
 
     fn node_mut(&mut self, node: &NodeId) -> Result<&mut QemuNode, BackendError> {

@@ -160,10 +160,11 @@ mod tests {
                 mutation.required_feature_bits,
                 FAULT_CAPABILITY_FEATURE_MEMORY_MUTATION
             );
-            assert_eq!(
-                fault_capability_manifest_digest(requirement.rows()).unwrap(),
-                requirement.digest()
-            );
+            let digest = match fault_capability_manifest_digest(requirement.rows()) {
+                Ok(digest) => digest,
+                Err(error) => panic!("current capability manifest must be valid: {error}"),
+            };
+            assert_eq!(digest, requirement.digest());
         }
     }
 

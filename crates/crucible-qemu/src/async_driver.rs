@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use crucible::{AdvanceOutcome, ExecutionHorizon};
+use crucible_shmem::DequeuedFaultResult;
 use thiserror::Error;
 
 use crate::{
@@ -181,6 +182,26 @@ pub trait QemuHostIoRuntime: Send {
         wait: QemuAsyncWait,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError>;
+
+    /// Wakes QEMU and waits for one lossless fault-command result.
+    ///
+    /// Implementations must use `timeout` only as a host-liveness bound. The
+    /// returned result carries the QEMU-observed virtual coordinate and is the
+    /// sole mutation evidence used by the scheduler.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime cannot wake
+    /// QEMU, the result transport is corrupt, or the bounded wait expires.
+    fn await_fault_result(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<DequeuedFaultResult, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "await fault result",
+            "host-I/O runtime does not own a QEMU fault-result transport",
+        ))
+    }
 }
 
 /// Error returned by a host-I/O runtime adapter.

@@ -839,6 +839,26 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
             })
     }
 
+    fn enqueue_fault_command(
+        &mut self,
+        _header: crucible_shmem::FaultCommandHeaderV1,
+        _payload: &[u8],
+    ) -> Result<(), QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "enqueue_fault_command",
+            "the borrowed quantum view does not own the mapped fault transport",
+        ))
+    }
+
+    fn dequeue_fault_result(
+        &mut self,
+    ) -> Result<Option<crucible_shmem::DequeuedFaultResult>, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "dequeue_fault_result",
+            "the borrowed quantum view does not own the mapped fault transport",
+        ))
+    }
+
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
         let delivery_icount = Icount {
             retired: self.current_icount_from_slot().retired.saturating_add(1),
