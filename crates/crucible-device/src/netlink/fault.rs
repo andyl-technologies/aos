@@ -245,14 +245,22 @@ fn non_firing_draw(probability: Probability) -> u64 {
 /// Computes serialization delay for a bit-per-second bandwidth cap.
 #[must_use]
 pub(super) fn serialization_delay_bits_per_sec(len_bytes: u64, bits_per_sec: u64) -> u64 {
+    checked_serialization_delay_bits_per_sec(len_bytes, bits_per_sec).unwrap_or(u64::MAX)
+}
+
+pub(super) fn checked_serialization_delay_bits_per_sec(
+    len_bytes: u64,
+    bits_per_sec: u64,
+) -> Option<u64> {
     if bits_per_sec == 0 {
-        return 0;
+        return None;
     }
     let nanos = u128::from(len_bytes)
-        .saturating_mul(8)
-        .saturating_mul(1_000_000_000_u128)
-        / u128::from(bits_per_sec);
-    u64::try_from(nanos).unwrap_or(u64::MAX)
+        .checked_mul(8)?
+        .checked_mul(1_000_000_000_u128)?;
+    let denominator = u128::from(bits_per_sec);
+    let nanos = nanos.checked_add(denominator.checked_sub(1)?)? / denominator;
+    u64::try_from(nanos).ok()
 }
 
 #[cfg(test)]

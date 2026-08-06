@@ -102,6 +102,7 @@ pub use inflight::{InflightQueue, PendingResponse};
 pub use netlink::{
     Delivery, Frame, FrameDraws, LINK_SLOT, LinkCorruptionStrategy, LinkFaults, LinkSnapshot,
     NetLink, PastDeliveryPolicy, ResolveOutcome, ResolvedNetworkFrameEffects,
+    ResolvedNetworkFrameEffectsError,
 };
 pub use ninep::{
     FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepServer, NinepServerSnapshot,

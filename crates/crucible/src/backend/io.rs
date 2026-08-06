@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::LinkId;
+use crate::model::ResolvedFaultTarget;
 
 /// One scheduler-validated directed route for a guest-originated frame.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -19,8 +20,12 @@ pub struct BackendNetworkRoute {
 pub struct BackendNetworkPreservedAvailability {
     /// Binding whose later availability state must not affect this frame.
     pub binding: FaultObjectId,
+    /// Concrete route target whose captured behavior is preserved.
+    pub target: ResolvedFaultTarget,
     /// Adapter phase at which the prior contribution was captured.
     pub phase: FaultPhase,
+    /// Exact binding transition version whose behavior was captured.
+    pub transition_sequence: u64,
 }
 
 /// Fault-policy continuation retained with one scheduler-queued frame.
@@ -33,9 +38,20 @@ pub struct BackendNetworkFaultContinuation {
 }
 
 impl BackendNetworkFaultContinuation {
-    /// Preserves the pre-transition state of one binding and phase.
-    pub fn preserve_availability(&mut self, binding: FaultObjectId, phase: FaultPhase) {
-        let preserved = BackendNetworkPreservedAvailability { binding, phase };
+    /// Preserves one exact pre-transition contribution identity.
+    pub fn preserve_availability(
+        &mut self,
+        binding: FaultObjectId,
+        target: ResolvedFaultTarget,
+        phase: FaultPhase,
+        transition_sequence: u64,
+    ) {
+        let preserved = BackendNetworkPreservedAvailability {
+            binding,
+            target,
+            phase,
+            transition_sequence,
+        };
         match self.preserved_availability.binary_search(&preserved) {
             Ok(_index) => {}
             Err(index) => self.preserved_availability.insert(index, preserved),
@@ -44,11 +60,19 @@ impl BackendNetworkFaultContinuation {
 
     /// Returns whether a later contribution must be ignored for this frame.
     #[must_use]
-    pub fn preserves_availability(&self, binding: &FaultObjectId, phase: FaultPhase) -> bool {
+    pub fn preserves_availability(
+        &self,
+        binding: &FaultObjectId,
+        target: &ResolvedFaultTarget,
+        phase: FaultPhase,
+        transition_sequence: u64,
+    ) -> bool {
         self.preserved_availability
             .binary_search(&BackendNetworkPreservedAvailability {
                 binding: binding.clone(),
+                target: target.clone(),
                 phase,
+                transition_sequence,
             })
             .is_ok()
     }

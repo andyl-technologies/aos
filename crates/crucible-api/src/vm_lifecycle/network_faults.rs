@@ -138,16 +138,23 @@ impl ProductionFaultNetworkInterceptor {
         backend: &mut ProductionNodeSet,
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
+        let cursor_before = (self.coordinate, self.coordinate_sequence);
         let sequence = self.next_sequence(coordinate.virtual_nanos)?;
         let mut staged_scheduler = scheduler.clone();
         let mut staged_pending = pending_outputs.clone();
         let host_before = self.runtime.host_state().clone();
-        let mut evaluation = self
+        let mut evaluation = match self
             .runtime
             .evaluate_boundary(coordinate, sequence, backend)
-            .map_err(|error| SchedulerError::BoundaryViolation {
-                message: format!("signal fault boundary failed closed: {error}"),
-            })?;
+        {
+            Ok(evaluation) => evaluation,
+            Err(error) => {
+                (self.coordinate, self.coordinate_sequence) = cursor_before;
+                return Err(SchedulerError::BoundaryViolation {
+                    message: format!("signal fault boundary failed closed: {error}"),
+                });
+            }
+        };
         let staged = (|| {
             let impulses = self.runtime.drain_host_impulses();
             if !impulses.is_empty() {
@@ -432,9 +439,14 @@ fn partition_transition_queued_outputs(
                     continue;
                 };
                 match queued_policy {
-                    NetworkInFlightPolicy::Preserve => routed
-                        .fault_continuation
-                        .preserve_availability(action.binding.clone(), action.phase),
+                    NetworkInFlightPolicy::Preserve => {
+                        routed.fault_continuation.preserve_availability(
+                            action.binding.clone(),
+                            action.target.clone(),
+                            action.phase,
+                            action.transition_sequence,
+                        )
+                    }
                     NetworkInFlightPolicy::Reevaluate => {}
                     NetworkInFlightPolicy::Drop | NetworkInFlightPolicy::TypedError => {
                         destructive = true;
@@ -511,26 +523,29 @@ fn append_backend_output_evidence(
     material.extend_from_slice(&preserved_count.to_be_bytes());
     for preserved in output.fault_continuation.preserved_availability() {
         append_evidence_bytes(material, preserved.binding.as_str().as_bytes())?;
+        append_evidence_bytes(material, preserved.target.canonical_material().as_bytes())?;
         append_evidence_bytes(material, preserved.phase.as_str().as_bytes())?;
+        material.extend_from_slice(&preserved.transition_sequence.to_be_bytes());
     }
     let effects = output.fault_continuation.resolved_frame_effects();
-    material.extend_from_slice(&effects.latency_delta_nanos.to_be_bytes());
-    material.extend_from_slice(&effects.additional_delay_nanos.to_be_bytes());
-    material.push(u8::from(effects.drop));
-    match effects.serialization_rate_cap_bps {
+    material.extend_from_slice(&effects.latency_delta_nanos().to_be_bytes());
+    material.extend_from_slice(&effects.additional_delay_nanos().to_be_bytes());
+    material.push(u8::from(effects.is_dropped()));
+    match effects.serialization_rate_cap_bps() {
         Some(rate) => {
             material.push(1);
             material.extend_from_slice(&rate.to_be_bytes());
         }
         None => material.push(0),
     }
-    let duplicate_count = u64::try_from(effects.duplicate_gaps_nanos.len()).map_err(|_error| {
-        SchedulerError::BoundaryViolation {
-            message: String::from("network duplicate count exceeds the canonical width"),
-        }
-    })?;
+    let duplicate_count =
+        u64::try_from(effects.duplicate_gaps_nanos().len()).map_err(|_error| {
+            SchedulerError::BoundaryViolation {
+                message: String::from("network duplicate count exceeds the canonical width"),
+            }
+        })?;
     material.extend_from_slice(&duplicate_count.to_be_bytes());
-    for gap in &effects.duplicate_gaps_nanos {
+    for gap in effects.duplicate_gaps_nanos() {
         material.extend_from_slice(&gap.to_be_bytes());
     }
     append_evidence_bytes(material, &output.payload)
@@ -575,6 +590,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
         outputs: &mut Vec<crucible::BackendNetworkOutput>,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+        let cursor_before = (self.coordinate, self.coordinate_sequence);
         let mut staged_scheduler = loop_impl.clone();
         let mut staged_pending = pending_outputs.clone();
         let source_outputs = outputs.clone();
@@ -685,10 +701,12 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 .host_state()
                                 .matching(opportunity.target(), phase)
                             {
-                                if output
-                                    .fault_continuation
-                                    .preserves_availability(&action.binding, phase)
-                                {
+                                if output.fault_continuation.preserves_availability(
+                                    &action.binding,
+                                    &action.target,
+                                    phase,
+                                    action.transition_sequence,
+                                ) {
                                     continue;
                                 }
                                 let EffectSpecification::Network(
@@ -726,6 +744,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
             Err(error) => {
                 if runtime_committed {
                     self.runtime.poison();
+                } else {
+                    (self.coordinate, self.coordinate_sequence) = cursor_before;
                 }
                 return Err(error);
             }
@@ -1270,10 +1290,19 @@ mod tests {
             .unwrap_or_else(|error| panic!("preserve transition should execute: {error}"));
 
         assert_eq!(pending_outputs.len(), 1);
+        let preserved = &pending_outputs[0]
+            .fault_continuation
+            .preserved_availability()[0];
+        assert_eq!(preserved.binding, object_id("network-down-binding"));
         assert!(
             pending_outputs[0]
                 .fault_continuation
-                .preserves_availability(&object_id("network-down-binding"), FaultPhase::Admit)
+                .preserves_availability(
+                    &preserved.binding,
+                    &preserved.target,
+                    preserved.phase,
+                    preserved.transition_sequence,
+                )
         );
         let preserved_inflight = scheduler
             .drop_network_inflight_for_route(&source, &destination)
@@ -1374,9 +1403,10 @@ mod tests {
 
         assert_eq!(pending_outputs.len(), 1);
         assert!(
-            !pending_outputs[0]
+            pending_outputs[0]
                 .fault_continuation
-                .preserves_availability(&object_id("network-down-binding"), FaultPhase::Admit)
+                .preserved_availability()
+                .is_empty()
         );
         let retained_inflight = scheduler
             .drop_network_inflight_for_route(&source, &destination)

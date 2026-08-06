@@ -50,7 +50,7 @@ pub use fault::{
 };
 pub use link::{
     Delivery, Frame, FrameDraws, LINK_SLOT, LinkSnapshot, NetLink, PastDeliveryPolicy,
-    ResolveOutcome, ResolvedNetworkFrameEffects,
+    ResolveOutcome, ResolvedNetworkFrameEffects, ResolvedNetworkFrameEffectsError,
 };
 
 #[cfg(test)]
@@ -122,13 +122,12 @@ mod tests {
     #[test]
     fn resolved_signal_outcomes_apply_without_link_rng_interpretation() {
         let mut l = link(LinkFaults::none());
-        let effects = ResolvedNetworkFrameEffects {
-            latency_delta_nanos: -1_280,
-            additional_delay_nanos: 256,
-            serialization_rate_cap_bps: Some(32_000_000),
-            drop: false,
-            duplicate_gaps_nanos: vec![256, 512],
-        };
+        let mut effects = ResolvedNetworkFrameEffects::default();
+        ok(effects.add_latency_delta(-1_280));
+        ok(effects.add_delay(256));
+        ok(effects.constrain_rate(32_000_000));
+        ok(effects.add_duplicate_gap(512));
+        ok(effects.add_duplicate_gap(256));
         let resolved = frame(vec![1, 2, 3, 4]).with_resolved_effects(effects);
         let out = ok(l.emit(
             &resolved,
@@ -150,11 +149,10 @@ mod tests {
     #[test]
     fn resolved_signal_drop_and_latency_floor_are_exact() {
         let mut dropped = link(LinkFaults::none());
-        let dropped_frame = frame(vec![0; 4]).with_resolved_effects(ResolvedNetworkFrameEffects {
-            latency_delta_nanos: i64::MIN,
-            drop: true,
-            ..ResolvedNetworkFrameEffects::default()
-        });
+        let mut dropped_effects = ResolvedNetworkFrameEffects::default();
+        ok(dropped_effects.add_latency_delta(i64::MIN));
+        dropped_effects.mark_drop();
+        let dropped_frame = frame(vec![0; 4]).with_resolved_effects(dropped_effects);
         let out = ok(dropped.emit(
             &dropped_frame,
             &FrameDraws::default(),
@@ -163,16 +161,41 @@ mod tests {
         assert!(out.deliveries.is_empty());
 
         let mut clamped = link(LinkFaults::none());
-        let clamped_frame = frame(vec![0; 4]).with_resolved_effects(ResolvedNetworkFrameEffects {
-            latency_delta_nanos: -10_000,
-            ..ResolvedNetworkFrameEffects::default()
-        });
+        let mut clamped_effects = ResolvedNetworkFrameEffects::default();
+        ok(clamped_effects.add_latency_delta(-10_000));
+        let clamped_frame = frame(vec![0; 4]).with_resolved_effects(clamped_effects);
         let out = ok(clamped.emit(
             &clamped_frame,
             &FrameDraws::default(),
             PastDeliveryPolicy::FailLoud,
         ));
         assert_eq!(out.deliveries[0].delivery_icount(), 4);
+    }
+
+    #[test]
+    fn resolved_duplicate_failure_enqueues_nothing() {
+        let mut l = link(LinkFaults::none());
+        let mut effects = ResolvedNetworkFrameEffects::default();
+        ok(effects.add_delay(u64::MAX - BASE_NS - 100));
+        ok(effects.add_duplicate_gap(200));
+        let overflowing = frame(vec![0; 4]).with_resolved_effects(effects);
+
+        assert!(
+            l.emit(
+                &overflowing,
+                &FrameDraws::default(),
+                PastDeliveryPolicy::FailLoud,
+            )
+            .is_err()
+        );
+        assert_eq!(l.inflight_len(), 0);
+
+        let out = ok(l.emit(
+            &frame(vec![0; 4]),
+            &FrameDraws::default(),
+            PastDeliveryPolicy::FailLoud,
+        ));
+        assert_eq!(out.deliveries[0].key.seq, 0);
     }
 
     // ---- latency fault shifts delivery later (IO-20) ----
