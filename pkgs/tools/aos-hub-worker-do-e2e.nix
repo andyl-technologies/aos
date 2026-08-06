@@ -168,7 +168,7 @@
     }
     const inspected = await imageRpc("GetImage", {
       slug: "failure/images-public",
-      release: "2026.03",
+      release: "2026.3.0",
       architecture: "x86_64",
       format: "raw",
       package: "aos-system",
@@ -230,7 +230,7 @@
     if (imagesPage.status !== 200
         || !imagesHtml.includes("Download")
         || !imagesHtml.includes("qcow2")
-        || !imagesHtml.includes("2026.03")
+        || !imagesHtml.includes("2026.3.0")
         || !imagesHtml.includes("stable")
         || !imagesHtml.includes("x86_64")
         || !imagesHtml.includes("qemu-kvm")
