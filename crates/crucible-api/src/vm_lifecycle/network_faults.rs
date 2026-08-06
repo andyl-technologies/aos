@@ -144,7 +144,9 @@ use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
 const HARD_PENDING_NETWORK_FRAMES: usize = 65_536;
 const HARD_PENDING_NETWORK_BYTES: usize = 1_073_741_824;
-const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 2;
+const HARD_CONTACT_SERVICE_RESERVATIONS: usize = 262_144;
+const HARD_CONTACT_SERVICE_STATES: usize = 262_144;
+const NETWORK_ADAPTER_CHECKPOINT_VERSION: u16 = 4;
 
 fn stage_pending_network_output(
     pending: &mut Vec<crucible::BackendNetworkOutput>,
@@ -203,6 +205,19 @@ fn validate_pending_network_outputs(
             ),
         });
     }
+    if pending.iter().any(|output| {
+        let cursor = output.fault_continuation.cursor();
+        cursor.queue_priority().is_some_and(|priority| priority > 3)
+            || cursor.queue_priority().is_some()
+                && cursor.repeated_phase_effect()
+                    != Some(crucible::model::EffectKind::NetworkCustodyQueue)
+    }) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from(
+                "restored network queue priority is invalid or has no custody owner",
+            ),
+        });
+    }
     let bytes = pending.iter().try_fold(0_usize, |total, output| {
         total.checked_add(output.payload.len())
     });
@@ -228,6 +243,8 @@ fn validate_network_adapter_checkpoint(
         || checkpoint.effect_state.connection_tables.len() > 65_536
         || checkpoint.effect_state.shared_media.len() > 65_536
         || checkpoint.effect_state.backpressure.len() > 65_536
+        || checkpoint.effect_state.custody_queues.len() > 65_536
+        || checkpoint.effect_state.contact_services.len() > HARD_CONTACT_SERVICE_STATES
     {
         return Err(SchedulerError::BoundaryViolation {
             message: String::from(
@@ -436,6 +453,179 @@ fn validate_network_adapter_checkpoint(
             message: String::from("network backpressure checkpoint is invalid"),
         });
     }
+    let custody_entries = checkpoint
+        .effect_state
+        .custody_queues
+        .values()
+        .try_fold(0_usize, |total, queue| {
+            total
+                .checked_add(queue.reservations.len())
+                .and_then(|total| total.checked_add(queue.overflow_timeouts.len()))
+        })
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network custody checkpoint count overflowed"),
+        })?;
+    let contact_reservations = checkpoint
+        .effect_state
+        .contact_services
+        .values()
+        .try_fold(0_usize, |total, service| {
+            total.checked_add(service.reservations.len())
+        })
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network contact reservation count overflowed"),
+        })?;
+    if custody_entries > HARD_PENDING_NETWORK_FRAMES
+        || contact_reservations > HARD_CONTACT_SERVICE_RESERVATIONS
+        || checkpoint
+            .effect_state
+            .custody_queues
+            .iter()
+            .any(|(key, queue)| {
+                key.effect != crucible::model::EffectKind::NetworkCustodyQueue
+                    || queue.configuration.as_ref().is_none_or(|configuration| {
+                        &configuration.owner != key
+                            || configuration.capacity_bytes == 0
+                            || configuration.capacity_bundles == 0
+                            || configuration.expiry_nanos == 0
+                            || configuration.max_visited_hops == 0
+                            || configuration.max_visited_hops > 256
+                            || u64::try_from(queue.reservations.len())
+                                .ok()
+                                .is_none_or(|count| count > configuration.capacity_bundles)
+                            || queue
+                                .reservations
+                                .iter()
+                                .try_fold(0_u64, |total, reservation| {
+                                    total.checked_add(reservation.bytes)
+                                })
+                                .is_none_or(|bytes| bytes > configuration.capacity_bytes)
+                            || queue.reservations.iter().any(|reservation| {
+                                reservation.bundle.priority != configuration.priority
+                                    || reservation
+                                        .enqueue_nanos
+                                        .checked_add(configuration.expiry_nanos)
+                                        != Some(reservation.expiry_nanos)
+                            })
+                            || queue.overflow_timeouts.iter().any(|timeout| {
+                                timeout.bundle.priority != configuration.priority
+                                    || timeout.enqueue_nanos >= timeout.deadline_nanos
+                                    || timeout.deadline_nanos > timeout.expiry_nanos
+                                    || timeout
+                                        .enqueue_nanos
+                                        .checked_add(configuration.expiry_nanos)
+                                        != Some(timeout.expiry_nanos)
+                            })
+                    })
+                    || queue.reservations.windows(2).any(|pair| {
+                        (
+                            pair[0].bundle.priority.rank(),
+                            pair[0].enqueue_nanos,
+                            &pair[0].bundle,
+                        ) >= (
+                            pair[1].bundle.priority.rank(),
+                            pair[1].enqueue_nanos,
+                            &pair[1].bundle,
+                        )
+                    })
+                    || queue.overflow_timeouts.windows(2).any(|pair| {
+                        (pair[0].deadline_nanos, &pair[0].bundle)
+                            >= (pair[1].deadline_nanos, &pair[1].bundle)
+                    })
+                    || queue.reservations.iter().any(|reservation| {
+                        reservation.bytes != reservation.bundle.length_bytes
+                            || reservation.enqueue_nanos >= reservation.expiry_nanos
+                            || reservation.release_nanos > reservation.expiry_nanos
+                            || reservation.contact_path.len()
+                                > usize::try_from(
+                                    queue
+                                        .configuration
+                                        .as_ref()
+                                        .map_or(0, |configuration| configuration.max_visited_hops),
+                                )
+                                .unwrap_or(0)
+                            || reservation.contact_path_committed
+                                && reservation.contact_path.is_empty()
+                    })
+            })
+        || checkpoint
+            .effect_state
+            .contact_services
+            .iter()
+            .any(|(key, service)| {
+                key.source == key.destination
+                    || key.start_nanos >= key.end_nanos
+                    || service.settled_cursor_nanos < key.start_nanos
+                    || service.settled_cursor_nanos > service.service_cursor_nanos
+                    || service.service_cursor_nanos < key.start_nanos
+                    || service.reservations.windows(2).any(|pair| {
+                        (
+                            pair[0].start_nanos,
+                            pair[0].finish_nanos,
+                            pair[0].opportunity,
+                        ) >= (
+                            pair[1].start_nanos,
+                            pair[1].finish_nanos,
+                            pair[1].opportunity,
+                        ) || pair[0].finish_nanos > pair[1].start_nanos
+                    })
+                    || service.reservations.iter().any(|reservation| {
+                        reservation.start_nanos >= reservation.finish_nanos
+                            || reservation.finish_nanos > reservation.arrival_nanos
+                            || reservation.finish_nanos > key.end_nanos
+                            || reservation.bytes == 0
+                    })
+                    || service.service_cursor_nanos
+                        != service.settled_cursor_nanos.max(
+                            service
+                                .reservations
+                                .iter()
+                                .map(|reservation| reservation.finish_nanos)
+                                .max()
+                                .unwrap_or(key.start_nanos),
+                        )
+                    || service.served_bundles
+                        < u64::try_from(service.reservations.len()).unwrap_or(u64::MAX)
+                    || service.served_bytes
+                        < service
+                            .reservations
+                            .iter()
+                            .try_fold(0_u64, |total, reservation| {
+                                total.checked_add(reservation.bytes)
+                            })
+                            .unwrap_or(u64::MAX)
+            })
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("network custody/contact checkpoint is invalid"),
+        });
+    }
+    let mut custody_bundles = BTreeSet::new();
+    let mut custody_opportunities = BTreeSet::new();
+    if checkpoint
+        .effect_state
+        .custody_queues
+        .values()
+        .flat_map(|queue| {
+            queue
+                .reservations
+                .iter()
+                .map(|reservation| (&reservation.bundle, reservation.opportunity))
+                .chain(
+                    queue
+                        .overflow_timeouts
+                        .iter()
+                        .map(|timeout| (&timeout.bundle, timeout.opportunity)),
+                )
+        })
+        .any(|(bundle, opportunity)| {
+            !custody_bundles.insert(bundle.clone()) || !custody_opportunities.insert(opportunity)
+        })
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("network custody checkpoint repeats bundle ownership"),
+        });
+    }
     checkpoint.effect_state.boundary.validate_bounds()
 }
 
@@ -569,6 +759,115 @@ struct NetworkMediumState {
     reservations: Vec<NetworkMediumReservation>,
 }
 
+/// Stable identity of one guest-originated bundle across queue retries.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+struct NetworkBundleIdentity {
+    producer: FaultObjectId,
+    destination: FaultObjectId,
+    producer_sequence: u64,
+    protocol_expansion_path: Vec<u16>,
+    generated_response_depth: u8,
+    generated_response_cause: Option<ContentHash>,
+    forwarding_mutation_path: Vec<ContentHash>,
+    length_bytes: u64,
+    payload_digest: ContentHash,
+    priority: crucible::model::NetworkBundlePriority,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct NetworkCustodyConfiguration {
+    owner: NetworkEffectStateKey,
+    capacity_bytes: u64,
+    capacity_bundles: u64,
+    expiry_nanos: u64,
+    custody_policy: FaultObjectId,
+    route_contact_plan: FaultObjectId,
+    priority: crucible::model::NetworkBundlePriority,
+    max_visited_hops: u32,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkCustodyReservation {
+    bundle: NetworkBundleIdentity,
+    opportunity: ContentHash,
+    enqueue_nanos: u64,
+    expiry_nanos: u64,
+    release_nanos: u64,
+    bytes: u64,
+    contact_path: Vec<FaultObjectId>,
+    contact_path_committed: bool,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkCustodyTimeout {
+    bundle: NetworkBundleIdentity,
+    opportunity: ContentHash,
+    enqueue_nanos: u64,
+    expiry_nanos: u64,
+    deadline_nanos: u64,
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct NetworkCustodyQueueState {
+    configuration: Option<NetworkCustodyConfiguration>,
+    reservations: Vec<NetworkCustodyReservation>,
+    overflow_timeouts: Vec<NetworkCustodyTimeout>,
+    admitted_bundles: u64,
+    released_bundles: u64,
+    dropped_bundles: u64,
+    expired_bundles: u64,
+    missed_contact_bundles: u64,
+    stale_plan_bundles: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+struct NetworkContactServiceKey {
+    plan: FaultObjectId,
+    contact: FaultObjectId,
+    service_resource: FaultObjectId,
+    source: FaultObjectId,
+    destination: FaultObjectId,
+    start_nanos: u64,
+    end_nanos: u64,
+}
+
+fn network_contact_service_identity(key: &NetworkContactServiceKey) -> [u8; 32] {
+    let mut material = Vec::new();
+    for value in [
+        &key.plan,
+        &key.contact,
+        &key.service_resource,
+        &key.source,
+        &key.destination,
+    ] {
+        let bytes = value.as_str().as_bytes();
+        material.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        material.extend_from_slice(bytes);
+    }
+    material.extend_from_slice(&key.start_nanos.to_be_bytes());
+    material.extend_from_slice(&key.end_nanos.to_be_bytes());
+    ContentHash::from_bytes(&material).bytes
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct NetworkContactServiceState {
+    settled_cursor_nanos: u64,
+    service_cursor_nanos: u64,
+    served_bundles: u64,
+    served_bytes: u64,
+    reservations: Vec<NetworkContactServiceReservation>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkContactServiceReservation {
+    custody_owner: Option<NetworkEffectStateKey>,
+    opportunity: ContentHash,
+    start_nanos: u64,
+    finish_nanos: u64,
+    arrival_nanos: u64,
+    bytes: u64,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkEffectRuntimeState {
     #[serde(with = "ordered_map_entries")]
@@ -586,6 +885,10 @@ struct NetworkEffectRuntimeState {
     shared_media: BTreeMap<NetworkEffectStateKey, NetworkMediumState>,
     #[serde(with = "ordered_map_entries")]
     backpressure: BTreeMap<NetworkEffectStateKey, NetworkPauseState>,
+    #[serde(with = "ordered_map_entries")]
+    custody_queues: BTreeMap<NetworkEffectStateKey, NetworkCustodyQueueState>,
+    #[serde(with = "ordered_map_entries")]
+    contact_services: BTreeMap<NetworkContactServiceKey, NetworkContactServiceState>,
     boundary: boundary::BoundaryNetworkState,
 }
 
@@ -658,10 +961,19 @@ fn validate_medium_pending_links(
     state: &NetworkEffectRuntimeState,
     pending_outputs: &[crucible::BackendNetworkOutput],
 ) -> Result<(), SchedulerError> {
-    let pending = pending_outputs
+    let pending_opportunities = pending_outputs
         .iter()
         .filter_map(|output| output.fault_continuation.cursor().queue_opportunity())
+        .collect::<Vec<_>>();
+    let pending = pending_opportunities
+        .iter()
+        .copied()
         .collect::<BTreeSet<_>>();
+    if pending.len() != pending_opportunities.len() {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("pending network frames repeat queue opportunity ownership"),
+        });
+    }
     if state
         .shared_media
         .values()
@@ -674,12 +986,283 @@ fn validate_medium_pending_links(
             ),
         });
     }
+    if state
+        .custody_queues
+        .values()
+        .flat_map(|queue| {
+            queue
+                .reservations
+                .iter()
+                .map(|reservation| reservation.opportunity)
+                .chain(
+                    queue
+                        .overflow_timeouts
+                        .iter()
+                        .map(|timeout| timeout.opportunity),
+                )
+        })
+        .any(|opportunity| !pending.contains(&opportunity))
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("network custody checkpoint entry has no pending frame"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_custody_contact_topology(
+    state: &NetworkEffectRuntimeState,
+    pending_outputs: &[crucible::BackendNetworkOutput],
+    topology: &crucible::model::WorldFaultTopology,
+) -> Result<(), SchedulerError> {
+    let invalid = || SchedulerError::BoundaryViolation {
+        message: String::from("network custody/contact checkpoint topology join is invalid"),
+    };
+    let output_bundle = |output: &crucible::BackendNetworkOutput,
+                         priority: crucible::model::NetworkBundlePriority|
+     -> Result<NetworkBundleIdentity, SchedulerError> {
+        let route = output.route.as_ref().ok_or_else(invalid)?;
+        Ok(NetworkBundleIdentity {
+            producer: FaultObjectId::parse(&output.source.name).map_err(|_error| invalid())?,
+            destination: FaultObjectId::parse(&route.destination.name)
+                .map_err(|_error| invalid())?,
+            producer_sequence: output.sequence,
+            protocol_expansion_path: output.fault_continuation.protocol_expansion_path().to_vec(),
+            generated_response_depth: output.fault_continuation.generated_response_depth(),
+            generated_response_cause: output.fault_continuation.generated_response_cause(),
+            forwarding_mutation_path: output
+                .fault_continuation
+                .forwarding_mutation_path()
+                .to_vec(),
+            length_bytes: u64::try_from(output.payload.len()).map_err(|_error| invalid())?,
+            payload_digest: ContentHash::from_bytes(&output.payload),
+            priority,
+        })
+    };
+    for (key, service) in &state.contact_services {
+        let plan = topology
+            .network_policy_artifact(&key.plan)
+            .ok_or_else(invalid)?;
+        let crucible::model::NetworkPolicyArtifactKind::ContactPlan { intervals } = &plan.artifact
+        else {
+            return Err(invalid());
+        };
+        let interval = intervals
+            .iter()
+            .find(|interval| interval.contact == key.contact)
+            .ok_or_else(invalid)?;
+        let traffic_open = interval
+            .start_nanos
+            .checked_add(interval.acquisition_nanos)
+            .ok_or_else(invalid)?;
+        let traffic_close = interval
+            .end_nanos
+            .checked_sub(interval.teardown_nanos)
+            .ok_or_else(invalid)?;
+        if interval.service_resource != key.service_resource
+            || interval.source != key.source
+            || interval.destination != key.destination
+            || interval.start_nanos != key.start_nanos
+            || interval.end_nanos != key.end_nanos
+            || service.service_cursor_nanos > traffic_close
+            || service.reservations.iter().any(|reservation| {
+                reservation.start_nanos < traffic_open || reservation.finish_nanos > traffic_close
+            })
+        {
+            return Err(invalid());
+        }
+    }
+    for (owner, queue) in &state.custody_queues {
+        let configuration = queue.configuration.as_ref().ok_or_else(invalid)?;
+        let plan = topology
+            .network_policy_artifact(&configuration.route_contact_plan)
+            .ok_or_else(invalid)?;
+        let crucible::model::NetworkPolicyArtifactKind::ContactPlan { intervals } = &plan.artifact
+        else {
+            return Err(invalid());
+        };
+        for reservation in &queue.reservations {
+            let output = pending_outputs
+                .iter()
+                .find(|output| {
+                    output.fault_continuation.cursor().queue_opportunity()
+                        == Some(reservation.opportunity)
+                })
+                .ok_or_else(invalid)?;
+            if reservation.bundle.priority != configuration.priority
+                || output_bundle(output, reservation.bundle.priority)? != reservation.bundle
+            {
+                return Err(invalid());
+            }
+            let cursor = output.fault_continuation.cursor();
+            if cursor.not_before_nanos() != reservation.release_nanos
+                || cursor.release_nanos() != reservation.release_nanos
+                || cursor.repeated_phase_effect()
+                    != Some(crucible::model::EffectKind::NetworkCustodyQueue)
+                || cursor.queue_priority() != Some(reservation.bundle.priority.rank())
+            {
+                return Err(invalid());
+            }
+            let mut node = reservation.bundle.producer.clone();
+            let mut seen = BTreeSet::new();
+            let mut expected_identities = BTreeSet::new();
+            let mut last_arrival = None;
+            let mut previous_arrival = None;
+            let mut first_open = None;
+            for contact in &reservation.contact_path {
+                if !seen.insert(contact.clone()) {
+                    return Err(invalid());
+                }
+                let interval = intervals
+                    .iter()
+                    .find(|interval| &interval.contact == contact)
+                    .ok_or_else(invalid)?;
+                if interval.source != node {
+                    return Err(invalid());
+                }
+                first_open.get_or_insert(
+                    interval
+                        .start_nanos
+                        .checked_add(interval.acquisition_nanos)
+                        .ok_or_else(invalid)?,
+                );
+                node = interval.destination.clone();
+                let service_key = NetworkContactServiceKey {
+                    plan: configuration.route_contact_plan.clone(),
+                    contact: interval.contact.clone(),
+                    service_resource: interval.service_resource.clone(),
+                    source: interval.source.clone(),
+                    destination: interval.destination.clone(),
+                    start_nanos: interval.start_nanos,
+                    end_nanos: interval.end_nanos,
+                };
+                let ledger = state
+                    .contact_services
+                    .get(&service_key)
+                    .and_then(|service| {
+                        service.reservations.iter().find(|entry| {
+                            entry.custody_owner.as_ref() == Some(owner)
+                                && entry.opportunity == reservation.opportunity
+                        })
+                    });
+                if reservation.contact_path_committed {
+                    let ledger = ledger.ok_or_else(invalid)?;
+                    let expected_arrival = ledger
+                        .finish_nanos
+                        .checked_add(interval.routing_propagation_nanos)
+                        .ok_or_else(invalid)?;
+                    let earliest_start = previous_arrival.unwrap_or(reservation.enqueue_nanos);
+                    if ledger.bytes != reservation.bytes
+                        || ledger.arrival_nanos != expected_arrival
+                        || ledger.start_nanos < earliest_start
+                    {
+                        return Err(invalid());
+                    }
+                    if !expected_identities.insert(network_contact_service_identity(&service_key)) {
+                        return Err(invalid());
+                    }
+                    last_arrival = Some(ledger.arrival_nanos);
+                    previous_arrival = Some(ledger.arrival_nanos);
+                } else if ledger.is_some() {
+                    return Err(invalid());
+                }
+            }
+            if !reservation.contact_path.is_empty() && node != reservation.bundle.destination {
+                return Err(invalid());
+            }
+            if reservation.contact_path_committed {
+                let expected_identities = expected_identities.into_iter().collect::<Vec<_>>();
+                if last_arrival != Some(reservation.release_nanos)
+                    || output
+                        .fault_continuation
+                        .resolved_frame_effects()
+                        .accounted_contact_services()
+                        != expected_identities
+                {
+                    return Err(invalid());
+                }
+            } else if let Some(first_open) = first_open {
+                if reservation.release_nanos < first_open
+                    || !output
+                        .fault_continuation
+                        .resolved_frame_effects()
+                        .accounted_contact_services()
+                        .is_empty()
+                {
+                    return Err(invalid());
+                }
+            }
+        }
+        for timeout in &queue.overflow_timeouts {
+            let policy = topology
+                .network_policy_artifact(&configuration.custody_policy)
+                .ok_or_else(invalid)?;
+            let crucible::model::NetworkPolicyArtifactKind::Overflow {
+                disposition: crucible::model::NetworkPolicyOverflow::Timeout,
+                timeout_nanos: Some(timeout_duration),
+                typed_error: None,
+            } = &policy.artifact
+            else {
+                return Err(invalid());
+            };
+            let expected_deadline = timeout
+                .enqueue_nanos
+                .checked_add(timeout_duration.get())
+                .ok_or_else(invalid)?
+                .min(timeout.expiry_nanos);
+            let output = pending_outputs
+                .iter()
+                .find(|output| {
+                    output.fault_continuation.cursor().queue_opportunity()
+                        == Some(timeout.opportunity)
+                })
+                .ok_or_else(invalid)?;
+            if timeout.bundle.priority != configuration.priority
+                || output_bundle(output, timeout.bundle.priority)? != timeout.bundle
+                || !output
+                    .fault_continuation
+                    .resolved_frame_effects()
+                    .accounted_contact_services()
+                    .is_empty()
+            {
+                return Err(invalid());
+            }
+            let cursor = output.fault_continuation.cursor();
+            if timeout.deadline_nanos != expected_deadline
+                || cursor.not_before_nanos() != timeout.deadline_nanos
+                || cursor.release_nanos() != timeout.deadline_nanos
+                || cursor.repeated_phase_effect()
+                    != Some(crucible::model::EffectKind::NetworkCustodyQueue)
+                || cursor.queue_priority() != Some(timeout.bundle.priority.rank())
+            {
+                return Err(invalid());
+            }
+        }
+    }
+    for (key, service) in &state.contact_services {
+        for ledger in &service.reservations {
+            let Some(owner) = &ledger.custody_owner else {
+                continue;
+            };
+            let queue = state.custody_queues.get(owner).ok_or_else(invalid)?;
+            let mut matching = queue.reservations.iter().filter(|reservation| {
+                reservation.opportunity == ledger.opportunity
+                    && reservation.contact_path_committed
+                    && reservation.bytes == ledger.bytes
+                    && reservation.contact_path.contains(&key.contact)
+            });
+            if matching.next().is_none() || matching.next().is_some() {
+                return Err(invalid());
+            }
+        }
+    }
     Ok(())
 }
 
 fn checkpoint_network_effect_state(
     state: &NetworkEffectRuntimeState,
     pending_outputs: &[crucible::BackendNetworkOutput],
+    now: u64,
 ) -> NetworkEffectRuntimeState {
     let pending = pending_outputs
         .iter()
@@ -692,6 +1275,38 @@ fn checkpoint_network_effect_state(
             .retain(|reservation| pending.contains(&reservation.opportunity));
         !medium.reservations.is_empty()
     });
+    checkpoint.custody_queues.retain(|_key, queue| {
+        queue
+            .reservations
+            .retain(|reservation| pending.contains(&reservation.opportunity));
+        queue
+            .overflow_timeouts
+            .retain(|timeout| pending.contains(&timeout.opportunity));
+        queue.configuration.is_some()
+    });
+    for (key, service) in &mut checkpoint.contact_services {
+        service.reservations.retain(|reservation| {
+            let retained_custody = reservation
+                .custody_owner
+                .as_ref()
+                .is_some_and(|_owner| pending.contains(&reservation.opportunity));
+            if reservation.finish_nanos <= now && !retained_custody {
+                service.settled_cursor_nanos =
+                    service.settled_cursor_nanos.max(reservation.finish_nanos);
+                false
+            } else {
+                true
+            }
+        });
+        service.service_cursor_nanos = service.settled_cursor_nanos.max(
+            service
+                .reservations
+                .iter()
+                .map(|reservation| reservation.finish_nanos)
+                .max()
+                .unwrap_or(key.start_nanos),
+        );
+    }
     checkpoint
 }
 
@@ -773,6 +1388,11 @@ impl ProductionFaultNetworkInterceptor {
             .effect_state
             .boundary
             .validate_topology(&topology)?;
+        validate_custody_contact_topology(
+            &staged.adapter.effect_state,
+            &staged.pending_outputs,
+            &topology,
+        )?;
         let mut runtime =
             ProductionFaultRuntime::restore(plan, artifacts, scenario_seed, checkpoint, nodes)
                 .map_err(|error| SchedulerError::BoundaryViolation {
@@ -818,7 +1438,11 @@ impl ProductionFaultNetworkInterceptor {
         pending_outputs: &[crucible::BackendNetworkOutput],
         backend: &mut ProductionNodeSet,
     ) -> Result<ProductionFaultRuntimeCheckpoint, SchedulerError> {
-        let effect_state = checkpoint_network_effect_state(&self.effect_state, pending_outputs);
+        let effect_state = checkpoint_network_effect_state(
+            &self.effect_state,
+            pending_outputs,
+            self.coordinate.unwrap_or(0),
+        );
         let network_state = network_state_digest_from_parts(
             scheduler,
             pending_outputs,
@@ -896,6 +1520,12 @@ impl ProductionFaultNetworkInterceptor {
                 .cloned()
                 .chain(impulses)
                 .collect::<Vec<_>>();
+            let _custody_release_due = route::apply_network_custody_removals(
+                &mut staged_effect_state,
+                &mut staged_pending,
+                &evaluation.actions,
+                coordinate.virtual_nanos,
+            )?;
             let mut boundary_application = staged_effect_state.boundary.apply_actions(
                 coordinate,
                 boundary_actions,
@@ -1922,6 +2552,20 @@ fn append_backend_output_evidence(
         }
         None => material.push(0),
     }
+    match cursor.repeated_phase_effect() {
+        Some(effect) => {
+            material.push(1);
+            append_evidence_bytes(material, effect.as_str().as_bytes())?;
+        }
+        None => material.push(0),
+    }
+    match cursor.queue_priority() {
+        Some(priority) => {
+            material.push(1);
+            material.push(priority);
+        }
+        None => material.push(0),
+    }
     match cursor.route_path_version() {
         Some(path) => {
             material.push(1);
@@ -1934,6 +2578,10 @@ fn append_backend_output_evidence(
     material.extend_from_slice(&effects.additional_delay_nanos().to_be_bytes());
     material.push(u8::from(effects.is_dropped()));
     material.push(u8::from(effects.serialization_is_accounted()));
+    append_evidence_count(material, effects.accounted_contact_services().len())?;
+    for identity in effects.accounted_contact_services() {
+        material.extend_from_slice(identity);
+    }
     match effects.serialization_rate_cap_bps() {
         Some(rate) => {
             material.push(1);
@@ -2088,7 +2736,114 @@ fn append_network_effect_state(
         }
         material.extend_from_slice(&pause.transition_sequence.to_be_bytes());
     }
+    append_evidence_count(material, state.custody_queues.len())?;
+    for (key, queue) in &state.custody_queues {
+        append_network_effect_state_key(material, key)?;
+        match &queue.configuration {
+            Some(configuration) => {
+                material.push(1);
+                append_network_effect_state_key(material, &configuration.owner)?;
+                material.extend_from_slice(&configuration.capacity_bytes.to_be_bytes());
+                material.extend_from_slice(&configuration.capacity_bundles.to_be_bytes());
+                material.extend_from_slice(&configuration.expiry_nanos.to_be_bytes());
+                append_evidence_bytes(material, configuration.custody_policy.as_str().as_bytes())?;
+                append_evidence_bytes(
+                    material,
+                    configuration.route_contact_plan.as_str().as_bytes(),
+                )?;
+                material.push(configuration.priority.rank());
+                material.extend_from_slice(&configuration.max_visited_hops.to_be_bytes());
+            }
+            None => material.push(0),
+        }
+        append_evidence_count(material, queue.reservations.len())?;
+        for reservation in &queue.reservations {
+            append_network_bundle_identity(material, &reservation.bundle)?;
+            material.extend_from_slice(&reservation.opportunity.bytes);
+            material.extend_from_slice(&reservation.enqueue_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.expiry_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.release_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.bytes.to_be_bytes());
+            append_evidence_count(material, reservation.contact_path.len())?;
+            for contact in &reservation.contact_path {
+                append_evidence_bytes(material, contact.as_str().as_bytes())?;
+            }
+            material.push(u8::from(reservation.contact_path_committed));
+        }
+        append_evidence_count(material, queue.overflow_timeouts.len())?;
+        for timeout in &queue.overflow_timeouts {
+            append_network_bundle_identity(material, &timeout.bundle)?;
+            material.extend_from_slice(&timeout.opportunity.bytes);
+            material.extend_from_slice(&timeout.enqueue_nanos.to_be_bytes());
+            material.extend_from_slice(&timeout.expiry_nanos.to_be_bytes());
+            material.extend_from_slice(&timeout.deadline_nanos.to_be_bytes());
+        }
+        material.extend_from_slice(&queue.admitted_bundles.to_be_bytes());
+        material.extend_from_slice(&queue.released_bundles.to_be_bytes());
+        material.extend_from_slice(&queue.dropped_bundles.to_be_bytes());
+        material.extend_from_slice(&queue.expired_bundles.to_be_bytes());
+        material.extend_from_slice(&queue.missed_contact_bundles.to_be_bytes());
+        material.extend_from_slice(&queue.stale_plan_bundles.to_be_bytes());
+    }
+    append_evidence_count(material, state.contact_services.len())?;
+    for (key, service) in &state.contact_services {
+        append_evidence_bytes(material, key.plan.as_str().as_bytes())?;
+        append_evidence_bytes(material, key.contact.as_str().as_bytes())?;
+        append_evidence_bytes(material, key.service_resource.as_str().as_bytes())?;
+        append_evidence_bytes(material, key.source.as_str().as_bytes())?;
+        append_evidence_bytes(material, key.destination.as_str().as_bytes())?;
+        material.extend_from_slice(&key.start_nanos.to_be_bytes());
+        material.extend_from_slice(&key.end_nanos.to_be_bytes());
+        material.extend_from_slice(&service.settled_cursor_nanos.to_be_bytes());
+        material.extend_from_slice(&service.service_cursor_nanos.to_be_bytes());
+        material.extend_from_slice(&service.served_bundles.to_be_bytes());
+        material.extend_from_slice(&service.served_bytes.to_be_bytes());
+        append_evidence_count(material, service.reservations.len())?;
+        for reservation in &service.reservations {
+            match &reservation.custody_owner {
+                Some(owner) => {
+                    material.push(1);
+                    append_network_effect_state_key(material, owner)?;
+                }
+                None => material.push(0),
+            }
+            material.extend_from_slice(&reservation.opportunity.bytes);
+            material.extend_from_slice(&reservation.start_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.finish_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.arrival_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.bytes.to_be_bytes());
+        }
+    }
     state.boundary.append_evidence(material)
+}
+
+fn append_network_bundle_identity(
+    material: &mut Vec<u8>,
+    bundle: &NetworkBundleIdentity,
+) -> Result<(), SchedulerError> {
+    append_evidence_bytes(material, bundle.producer.as_str().as_bytes())?;
+    append_evidence_bytes(material, bundle.destination.as_str().as_bytes())?;
+    material.extend_from_slice(&bundle.producer_sequence.to_be_bytes());
+    append_evidence_count(material, bundle.protocol_expansion_path.len())?;
+    for ordinal in &bundle.protocol_expansion_path {
+        material.extend_from_slice(&ordinal.to_be_bytes());
+    }
+    material.push(bundle.generated_response_depth);
+    match bundle.generated_response_cause {
+        Some(cause) => {
+            material.push(1);
+            material.extend_from_slice(&cause.bytes);
+        }
+        None => material.push(0),
+    }
+    append_evidence_count(material, bundle.forwarding_mutation_path.len())?;
+    for opportunity in &bundle.forwarding_mutation_path {
+        material.extend_from_slice(&opportunity.bytes);
+    }
+    material.extend_from_slice(&bundle.length_bytes.to_be_bytes());
+    material.extend_from_slice(&bundle.payload_digest.bytes);
+    material.push(bundle.priority.rank());
+    Ok(())
 }
 
 fn append_network_state_machine(
@@ -2971,12 +3726,12 @@ mod tests {
             route: None,
             fault_continuation: continuation,
         }];
-        let retained = checkpoint_network_effect_state(&state, &pending);
+        let retained = checkpoint_network_effect_state(&state, &pending, 30);
         validate_medium_pending_links(&retained, &pending)
             .unwrap_or_else(|error| panic!("joined medium checkpoint: {error}"));
         assert_eq!(retained.shared_media.len(), 1);
         assert!(
-            checkpoint_network_effect_state(&state, &[])
+            checkpoint_network_effect_state(&state, &[], 30)
                 .shared_media
                 .is_empty()
         );
@@ -3318,6 +4073,10 @@ mod tests {
             action: contact_action,
         };
         let contact_interval = |beam: &str| crucible::model::NetworkPolicyContactInterval {
+            contact: object_id(&format!("contact-{beam}")),
+            service_resource: object_id(&format!("resource-{beam}")),
+            route_cost: positive("route_cost", 1),
+            routing_propagation_nanos: 1,
             start_nanos: 0,
             end_nanos: 100,
             source: object_id("ground"),

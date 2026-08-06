@@ -345,20 +345,38 @@ registry expands each effect into a distinct closed field table; generic
 | `world.network_queue` | owner, `id`, capacity, discipline, overflow | class map, service reference |
 | `world.network_path` | `id`, ordered segments/forwarders, direction | route policy and MTU/encapsulation policy |
 | `world.network_attachment` | `id`, interface, canonical candidate segments, `technology`, semantic version, authentication policy, address-continuity policy | none |
-| `world.network_contact_plan` | `id`, endpoints, ordered contacts, routing/custody policy | range/profile artifacts |
+| `world.network_contact_plan` | `id`; canonical finite contacts, each with `contact`, `service_resource`, positive `route_cost`, exact `routing_propagation_nanos`, directed endpoints, half-open interval, acquisition/teardown, capacity profile, beam, gateway, range, confidence, and provenance | none |
 
 A contact interval's acquisition and teardown durations are its complete
 transition policy. `network.contact` therefore references the interval set,
 range-to-delay lookup, and admitted beam and gateway sets directly; it does not
 accept a second state-machine artifact with ambiguous event names.
 
+Contact records are strictly ordered by `(start_nanos, end_nanos, contact)` and
+contact IDs are unique within the schedule version. Time overlap is valid for
+different `service_resource` IDs, which permits simultaneous beams, radios,
+links, gateways, and media. Intervals naming the same exclusive resource MUST
+NOT overlap. A custody effect additionally requires `priority` in
+`bulk|normal|expedited|critical` and a positive `max_visited_hops` bounded by
+256. There are no omitted/defaulted route fields and no legacy direct-contact
+form. The adapter stores at most 262,144 keyed contact-service states and
+262,144 live contact reservation records in aggregate. Completed direct records
+and custody records whose owning frame is no longer live fold into an exact
+settled service cursor and cumulative
+counters; path admission fails atomically if its complete hop set would exceed
+the live-record bound.
+
 An `overflow` policy artifact has `disposition`, optional `timeout_nanos`, and
-optional `typed_error`. `timeout_nanos` is required only for `timeout`;
-`typed_error` is required only for `typed_error` and MUST reference a
-`control_result` artifact. A `control_result` is a closed `schema` ID plus
-bounded canonical bytes. There is no untyped extension map or legacy error
-string. Control-service and transform schema meanings are defined completely in
-§8.3.8.
+optional `typed_error`. `timeout_nanos` is required only for `timeout`, and
+`typed_error` is required only for `typed_error`. The referenced error class is
+determined by the consumer and is checked when the plan is admitted:
+`network.control_plane_service` requires a `control_result`, while
+`network.custody_queue` requires a `typed_response` because it rejects a data
+frame on the reverse path. A `control_result` is a closed `schema` ID plus
+bounded canonical bytes. A `typed_response` is one of the closed packet
+response variants in §8.3.4. There is no untyped extension map, legacy error
+string, or cross-use of the two result classes. Control-service and transform
+schema meanings are defined completely in §8.3.8.
 
 `network.detected_frame_error(receiver_action=retry)` requires a positive retry
 delay, retry limit, positive actual-attempt count no greater than that limit,

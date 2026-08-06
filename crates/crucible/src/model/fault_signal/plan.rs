@@ -643,6 +643,13 @@ fn validate_network_effect_policy_references(
                 &[NetworkPolicyArtifactClass::Overflow],
                 "overflow_policy",
             )?;
+            require_overflow_typed_error(
+                topology,
+                binding,
+                overflow_policy,
+                NetworkPolicyArtifactClass::ControlResult,
+                "overflow_policy.typed_error",
+            )?;
         }
         NetworkEffectSpecification::FirewallDisposition {
             typed_reject,
@@ -1133,6 +1140,13 @@ fn validate_network_effect_policy_references(
                 &[NetworkPolicyArtifactClass::ContactPlan],
                 "route_contact_plan",
             )?;
+            require_overflow_typed_error(
+                topology,
+                binding,
+                custody_policy,
+                NetworkPolicyArtifactClass::TypedResponse,
+                "custody_policy.typed_error",
+            )?;
         }
         NetworkEffectSpecification::Availability { .. }
         | NetworkEffectSpecification::Flap { .. }
@@ -1151,6 +1165,43 @@ fn validate_network_effect_policy_references(
         | NetworkEffectSpecification::ForwarderLifecycle { .. } => {}
     }
     Ok(())
+}
+
+fn require_overflow_typed_error(
+    topology: &crate::model::WorldFaultTopology,
+    binding: &FaultBinding,
+    overflow: &FaultObjectId,
+    expected: NetworkPolicyArtifactClass,
+    field: &'static str,
+) -> Result<(), FaultSignalAuthoringError> {
+    let declaration = topology.network_policy_artifact(overflow).ok_or_else(|| {
+        FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+            binding: binding.id().as_str().to_owned(),
+            reference: overflow.as_str().to_owned(),
+            field,
+            expected: String::from("overflow"),
+            actual: None,
+        }
+    })?;
+    let NetworkPolicyArtifactKind::Overflow { typed_error, .. } = &declaration.artifact else {
+        return Ok(());
+    };
+    let Some(typed_error) = typed_error else {
+        return Ok(());
+    };
+    let actual = topology
+        .network_policy_artifact(typed_error)
+        .map(|result| result.artifact.class());
+    if actual == Some(expected) {
+        return Ok(());
+    }
+    Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+        binding: binding.id().as_str().to_owned(),
+        reference: typed_error.as_str().to_owned(),
+        field,
+        expected: String::from(expected.as_str()),
+        actual: actual.map(NetworkPolicyArtifactClass::as_str),
+    })
 }
 
 impl Hash for FaultSignalPlan {

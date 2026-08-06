@@ -43,6 +43,36 @@ pub enum NetworkInFlightPolicy {
     TypedError,
 }
 
+/// Service priority carried by bundles in a custody queue.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkBundlePriority {
+    /// Deferrable background transfer.
+    Bulk,
+    /// Ordinary application traffic.
+    Normal,
+    /// Time-sensitive expedited traffic.
+    Expedited,
+    /// Highest-priority emergency traffic.
+    Critical,
+}
+
+impl NetworkBundlePriority {
+    /// Returns the canonical routing and queue rank, where zero is highest.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Critical => 0,
+            Self::Expedited => 1,
+            Self::Normal => 2,
+            Self::Bulk => 3,
+        }
+    }
+}
+
 /// Negotiated duplex mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -734,6 +764,10 @@ pub enum NetworkEffectSpecification {
         custody_policy: FaultObjectId,
         /// Registered route/contact plan.
         route_contact_plan: FaultObjectId,
+        /// Priority carried by bundles admitted through this binding.
+        priority: NetworkBundlePriority,
+        /// Positive maximum number of contacts in one selected route.
+        max_visited_hops: BoundedCount,
     },
 }
 
@@ -989,6 +1023,11 @@ impl NetworkEffectSpecification {
                     effect: self.kind(),
                 })
             }
+            Self::CustodyQueue {
+                max_visited_hops, ..
+            } if max_visited_hops.get() > 256 => Err(FaultContractError::InvalidEffectParameters {
+                effect: self.kind(),
+            }),
             Self::ControlResultTransform { kind, result, .. } => {
                 let valid = match kind {
                     NetworkControlResultKind::Drop | NetworkControlResultKind::Stale => {
@@ -1053,6 +1092,32 @@ mod tests {
             Err(FaultContractError::MutuallyExclusiveFields {
                 left: "probability_millionths",
                 right: "outcome",
+            })
+        );
+    }
+
+    #[test]
+    fn custody_hop_bound_cannot_exceed_accounted_contact_capacity() {
+        let id = |value| {
+            FaultObjectId::parse(value).unwrap_or_else(|error| panic!("test custody ID: {error}"))
+        };
+        let effect = NetworkEffectSpecification::CustodyQueue {
+            capacity_bytes: PositiveU64::new("capacity_bytes", 1)
+                .unwrap_or_else(|error| panic!("test custody bytes: {error}")),
+            capacity_bundles: BoundedCount::new(CountLimit::LargeStateEntries, 1)
+                .unwrap_or_else(|error| panic!("test custody bundles: {error}")),
+            expiry_nanos: PositiveU64::new("expiry_nanos", 1)
+                .unwrap_or_else(|error| panic!("test custody expiry: {error}")),
+            custody_policy: id("custody-policy"),
+            route_contact_plan: id("contact-plan"),
+            priority: NetworkBundlePriority::Normal,
+            max_visited_hops: BoundedCount::new(CountLimit::LargeStateEntries, 257)
+                .unwrap_or_else(|error| panic!("test oversized hop count: {error}")),
+        };
+        assert_eq!(
+            effect.validate(),
+            Err(FaultContractError::InvalidEffectParameters {
+                effect: EffectKind::NetworkCustodyQueue,
             })
         );
     }

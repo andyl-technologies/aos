@@ -54,6 +54,29 @@ pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     pending_network_outputs: Vec<BackendNetworkOutput>,
     pending_observations: Vec<ObservableEvent>,
     committed_frontier: VirtualTime,
+    network_settlement_poisoned: bool,
+}
+
+/// Scheduler changes produced while settling network frames at one boundary.
+#[derive(Clone, Debug)]
+pub struct BackendNetworkSettlement {
+    decisions: Vec<Decision>,
+    configuration: Option<Configuration>,
+    appends: Vec<SchedulerEventLogAppend>,
+}
+
+impl BackendNetworkSettlement {
+    /// Consumes the settlement into decisions, the latest configuration, and appends.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<Decision>,
+        Option<Configuration>,
+        Vec<SchedulerEventLogAppend>,
+    ) {
+        (self.decisions, self.configuration, self.appends)
+    }
 }
 
 impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
@@ -67,6 +90,7 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
             pending_network_outputs: Vec::new(),
             pending_observations: Vec::new(),
             committed_frontier: VirtualTime { ticks: 0 },
+            network_settlement_poisoned: false,
         }
     }
 }
@@ -86,6 +110,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
             pending_network_outputs: Vec::new(),
             pending_observations: Vec::new(),
             committed_frontier: VirtualTime { ticks: 0 },
+            network_settlement_poisoned: false,
         }
     }
 
@@ -174,6 +199,123 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
     }
 }
 
+impl<L, B, I> BackendQuantumLoop<L, B, I>
+where
+    L: QuantumLoop,
+    B: SimulationBackend,
+    I: BackendNetworkOutputInterceptor<L, B>,
+{
+    /// Settles scheduler-owned network frames due at the exact current frontier.
+    ///
+    /// This does not step or drain the backend. It exists for boundary mutations
+    /// that make an already-pending frame due at the current coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when timestamp conversion, signal adaptation,
+    /// link resolution, or event-log commitment fails.
+    pub fn settle_pending_network_outputs_at_current_frontier(
+        &mut self,
+    ) -> Result<BackendNetworkSettlement, SchedulerError> {
+        if self.network_settlement_poisoned {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network settlement continuation is poisoned"),
+            });
+        }
+        let pending_before = self.pending_network_outputs.clone();
+        match self.settle_pending_network_outputs_at_current_frontier_inner() {
+            Ok(settlement) => Ok(settlement),
+            Err(error) => {
+                self.pending_network_outputs = pending_before;
+                self.network_settlement_poisoned = true;
+                Err(error)
+            }
+        }
+    }
+
+    fn settle_pending_network_outputs_at_current_frontier_inner(
+        &mut self,
+    ) -> Result<BackendNetworkSettlement, SchedulerError> {
+        let frontier = self.committed_frontier;
+        let mut timed_network_outputs = std::mem::take(&mut self.pending_network_outputs)
+            .into_iter()
+            .map(|output| {
+                self.loop_impl
+                    .backend_network_output_time(&output.source, output.emit_icount)
+                    .map(|at| {
+                        let resume = VirtualTime {
+                            ticks: output.fault_continuation.cursor().not_before_nanos(),
+                        };
+                        (at.max(resume), output)
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        timed_network_outputs.sort_by(|(left_at, left), (right_at, right)| {
+            (
+                left_at,
+                left.fault_continuation
+                    .cursor()
+                    .queue_priority()
+                    .unwrap_or(crate::model::NetworkBundlePriority::Normal.rank()),
+                &left.source,
+                left.sequence,
+                &left.destination,
+                &left.route,
+                &left.fault_continuation,
+                &left.payload,
+            )
+                .cmp(&(
+                    right_at,
+                    right
+                        .fault_continuation
+                        .cursor()
+                        .queue_priority()
+                        .unwrap_or(crate::model::NetworkBundlePriority::Normal.rank()),
+                    &right.source,
+                    right.sequence,
+                    &right.destination,
+                    &right.route,
+                    &right.fault_continuation,
+                    &right.payload,
+                ))
+        });
+        let committed =
+            timed_network_outputs.partition_point(|(at, _output)| at.ticks <= frontier.ticks);
+        self.pending_network_outputs = timed_network_outputs
+            .drain(committed..)
+            .map(|(_at, output)| output)
+            .collect();
+        let mut network_outputs = timed_network_outputs
+            .into_iter()
+            .map(|(_at, output)| output)
+            .collect::<Vec<_>>();
+        let mut appends = Vec::new();
+        if !network_outputs.is_empty() {
+            appends.extend(self.network_output_interceptor.intercept_network_outputs(
+                &mut self.loop_impl,
+                &mut self.backend,
+                frontier,
+                &mut self.pending_network_outputs,
+                &mut network_outputs,
+            )?);
+        }
+        let (decisions, configuration) = if network_outputs.is_empty() {
+            (Vec::new(), None)
+        } else {
+            let (decisions, configuration, append) = self
+                .loop_impl
+                .append_backend_network_outputs(network_outputs)?;
+            appends.push(append);
+            (decisions, Some(configuration))
+        };
+        Ok(BackendNetworkSettlement {
+            decisions,
+            configuration,
+            appends,
+        })
+    }
+}
+
 impl<L, B, I> QuantumLoop for BackendQuantumLoop<L, B, I>
 where
     L: QuantumLoop,
@@ -181,6 +323,11 @@ where
     I: BackendNetworkOutputInterceptor<L, B>,
 {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        if self.network_settlement_poisoned {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network settlement continuation is poisoned"),
+            });
+        }
         let mut outcome = self.loop_impl.drive_quantum(request)?;
         self.committed_frontier = outcome.frontier;
         if let Some(advanced_node) = outcome.advanced_node.as_ref() {
@@ -240,6 +387,10 @@ where
         timed_network_outputs.sort_by(|(left_at, left), (right_at, right)| {
             (
                 left_at,
+                left.fault_continuation
+                    .cursor()
+                    .queue_priority()
+                    .unwrap_or(crate::model::NetworkBundlePriority::Normal.rank()),
                 &left.source,
                 left.sequence,
                 &left.destination,
@@ -249,6 +400,11 @@ where
             )
                 .cmp(&(
                     right_at,
+                    right
+                        .fault_continuation
+                        .cursor()
+                        .queue_priority()
+                        .unwrap_or(crate::model::NetworkBundlePriority::Normal.rank()),
                     &right.source,
                     right.sequence,
                     &right.destination,

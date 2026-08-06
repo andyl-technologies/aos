@@ -234,7 +234,11 @@ impl WorldFaultTopology {
                     require(
                         self.network_policy_artifact(typed_error)
                             .is_some_and(|result| {
-                                result.artifact.class() == NetworkPolicyArtifactClass::ControlResult
+                                matches!(
+                                    result.artifact.class(),
+                                    NetworkPolicyArtifactClass::ControlResult
+                                        | NetworkPolicyArtifactClass::TypedResponse
+                                )
                             }),
                         "network overflow typed error",
                     )?;
