@@ -30,9 +30,20 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     max_virtual_time_ticks: Option<u64>,
     max_quanta: Option<u64>,
     coverage: bool,
+    execution_mode: RunExecutionMode,
     branch: LiveQemuReplayBranch,
     report: &RunWorkflowReport,
 ) -> Result<LiveQemuArtifactEvidence, CliError> {
+    if execution_mode == RunExecutionMode::Interactive {
+        return Err(artifact_error(
+            "live-QEMU reproduction artifacts do not yet support interactive control recipes",
+        ));
+    }
+    if !report.acknowledged_commands.is_empty() {
+        return Err(artifact_error(
+            "live-QEMU reproduction artifacts cannot capture acknowledged control commands",
+        ));
+    }
     let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
         artifact_error("live-QEMU artifact capture requires a terminal configuration")
     })?;
@@ -42,18 +53,16 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
             "live-QEMU artifact capture requires execution fingerprint samples",
         ));
     }
-    let (fault_choice_indices, network_choice_indices) = replay_choice_indices(&terminal.schedule);
-    let controls = report
-        .acknowledged_commands
-        .iter()
-        .enumerate()
-        .map(|(sequence, command)| LiveQemuReplayControl {
-            sequence: sequence as u64,
-            configuration_decisions: 0,
-            frontier_ticks: 0,
-            command: session_command_name(*command).to_string(),
-        })
-        .collect();
+    let (mut fault_choice_indices, mut network_choice_indices) =
+        replay_choice_indices(&terminal.schedule);
+    let branch_start = match &branch {
+        LiveQemuReplayBranch::None => 0,
+        LiveQemuReplayBranch::Resume { base_decisions, .. }
+        | LiveQemuReplayBranch::Reseed { base_decisions, .. }
+        | LiveQemuReplayBranch::PrefixOverrides { base_decisions, .. } => *base_decisions,
+    };
+    fault_choice_indices.retain(|index| *index >= branch_start);
+    network_choice_indices.retain(|index| *index >= branch_start);
     let contract = LiveQemuReplayContract {
         producer: producer.to_string(),
         terminal_condition: terminal_condition.label().to_string(),
@@ -65,11 +74,18 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         budget_timed_out: report.budget_timed_out,
         max_virtual_time_ticks,
         max_quanta,
+        run_ceiling_icount: Some(PRODUCTION_CLI_RUN_CEILING_ICOUNT),
+        lifecycle_quantum_budget: Some(PRODUCTION_CLI_QUANTUM_BUDGET),
         coverage,
+        fingerprint_scope: if producer == "fork" {
+            LiveQemuFingerprintScope::TerminalAllNodes
+        } else {
+            LiveQemuFingerprintScope::FullExecution
+        },
         branch,
         fault_choice_indices,
         network_choice_indices,
-        controls,
+        controls: Vec::new(),
     };
     Ok(LiveQemuArtifactEvidence {
         contract,
@@ -240,6 +256,7 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
             run_plan.max_virtual_time_ticks,
             run_plan.max_quanta,
             false,
+            run_plan.execution_mode,
             LiveQemuReplayBranch::None,
             report,
         )?;
@@ -290,6 +307,7 @@ pub(crate) fn live_finding_reproduction_artifact_bytes(
         run_plan.max_virtual_time_ticks,
         run_plan.max_quanta,
         true,
+        run_plan.execution_mode,
         branch,
         report,
     )?;

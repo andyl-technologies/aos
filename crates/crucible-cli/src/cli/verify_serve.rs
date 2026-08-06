@@ -199,6 +199,7 @@ pub(super) fn verify_witness_from_run_report(
                 run_plan.max_virtual_time_ticks,
                 run_plan.max_quanta,
                 false,
+                run_plan.execution_mode,
                 LiveQemuReplayBranch::None,
                 report,
             )?;

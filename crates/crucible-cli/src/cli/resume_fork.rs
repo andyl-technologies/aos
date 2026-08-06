@@ -1529,7 +1529,10 @@ pub(super) fn write_fork_reproduction_artifact(
                     as u64,
             }
         } else {
-            LiveQemuReplayBranch::None
+            LiveQemuReplayBranch::Resume {
+                base_decisions: source.configuration.schedule.len() as u64,
+                frontier_ticks: source.checkpoint.virtual_time.ticks,
+            }
         };
         let live = live_qemu_artifact_evidence_from_run(
             "fork",
@@ -1537,6 +1540,7 @@ pub(super) fn write_fork_reproduction_artifact(
             plan.max_virtual_time_ticks,
             None,
             false,
+            plan.execution_mode,
             branch,
             &report.run,
         )?;

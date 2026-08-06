@@ -6,19 +6,19 @@ use super::*;
 ///
 /// Exact local events and conservative link horizons may split a realization;
 /// the bound leaves room for both VM nodes and terminal scheduler settling.
-const LIVE_EXPLORATION_QUANTUM_LIMIT: u64 = 16;
+pub(crate) const LIVE_EXPLORATION_QUANTUM_LIMIT: u64 = 16;
 
 /// Terminal instruction-count ceiling for one live exploration realization.
 ///
 /// The certified stock-kernel network workload emits near 3.3 billion
 /// instructions and resolves its link delivery below this three-window bound.
-const LIVE_EXPLORATION_RUN_CEILING_ICOUNT: u64 = 12_000_000_000;
+pub(crate) const LIVE_EXPLORATION_RUN_CEILING_ICOUNT: u64 = 12_000_000_000;
 
 /// Terminal instruction-count ceiling for a production CLI lifecycle session.
-const PRODUCTION_CLI_RUN_CEILING_ICOUNT: u64 = 40_000_000_000;
+pub(crate) const PRODUCTION_CLI_RUN_CEILING_ICOUNT: u64 = 40_000_000_000;
 
 /// Scheduler-quantum ceiling for a production CLI lifecycle session.
-const PRODUCTION_CLI_QUANTUM_BUDGET: u64 = 10_000;
+pub(crate) const PRODUCTION_CLI_QUANTUM_BUDGET: u64 = 10_000;
 
 /// Per-node wall-clock timeout for a production CLI lifecycle step.
 const PRODUCTION_CLI_COMPLETION_TIMEOUT: Duration = Duration::from_secs(300);
@@ -879,8 +879,27 @@ pub(crate) fn run_live_qemu_artifact_replay(
         invalid_scenario_exit_code: 4,
     };
     let mut config = production_qemu_lifecycle_config(backend)?;
+    if let Some(run_ceiling_icount) = contract.run_ceiling_icount {
+        config = config.with_run_ceiling_icount(run_ceiling_icount);
+    }
+    if let Some(quantum_budget) = contract.lifecycle_quantum_budget {
+        config = config.with_quantum_budget(quantum_budget);
+    }
     match &contract.branch {
         LiveQemuReplayBranch::None => {}
+        LiveQemuReplayBranch::Resume {
+            base_decisions,
+            frontier_ticks,
+        } => {
+            let base = replay_branch_base(&scenario_def, schedule, *base_decisions)?;
+            config = config.with_branch_prefix_overrides(
+                base,
+                VirtualTime {
+                    ticks: *frontier_ticks,
+                },
+                Vec::new(),
+            );
+        }
         LiveQemuReplayBranch::Reseed {
             base_decisions,
             frontier_ticks,
