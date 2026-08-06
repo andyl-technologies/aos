@@ -106,6 +106,15 @@ delivered service reaches frame bits, rounded up. Token buckets refill with
 checked integer division and retain remainder. Shared schedulers conserve total
 service exactly; the sum assigned cannot exceed medium/forwarder service.
 
+Each queued reservation checkpoints its base-ready coordinate, current-ready
+coordinate, service-start coordinate, predicted finish, and remaining demand in
+nano-bits. A boundary first integrates service already received, then applies
+the new constraint and reschedules only the remaining demand. Class-scoped
+backpressure is work-conserving: a paused active class is preempted at the exact
+boundary and ready sibling classes may run. A timed class resumes at its exact
+expiry; an indefinite class resumes when its persistent contribution is
+removed. No host-local resume event is accepted.
+
 Head-of-line blocking declares dependency classes. Bufferbloat is not a special
 delay injection: it is queue occupancy produced by arrivals and service.
 Priority starvation is the measured absence of service under the declared
