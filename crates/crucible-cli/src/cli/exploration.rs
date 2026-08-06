@@ -373,6 +373,36 @@ pub(super) fn emit_replay_report_output(
     Ok(())
 }
 
+pub(super) fn emit_replay_error_output(
+    cli: &Cli,
+    args: &ReplayArgs,
+    error: &CliError,
+) -> Result<(), CliError> {
+    let format = cli.output_format();
+    if !format.is_machine_readable() {
+        return Ok(());
+    }
+
+    let mut entries = Vec::new();
+    push_replay_trace_entry(
+        &mut entries,
+        "replay_error",
+        format!("path={} error={error}", args.artifact.display()),
+    );
+    let canonical_log_digest = canonical_log_digest(&entries);
+    push_replay_trace_entry(
+        &mut entries,
+        "final_outcome",
+        format!(
+            "subcommand=replay status=failed exit_code={} canonical_log={} artifact=unavailable",
+            error.exit_code(),
+            canonical_log_digest
+        ),
+    );
+    emit_canonical_trace(format, &entries, cli.trace.as_deref(), !cli.quiet)?;
+    Ok(())
+}
+
 pub(super) fn replay_report_status(report: &ReplayArtifactReport) -> BackendCommandStatus {
     if report
         .check

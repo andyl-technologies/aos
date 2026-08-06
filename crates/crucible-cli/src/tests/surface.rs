@@ -1513,7 +1513,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "save_on",
                 "watch",
             ][..],
-            "about=Run a scenario to completion (local or via a daemon)\nusage=Usage: crucible run [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nuntil=Terminal condition. Default: quiescence\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nmax_quanta=Stop with Timeout past this many scheduler quanta\ninteractive=Pause at genesis and drive the session interactively\nsave_on=Materialize a savepoint at the outcome. Default: never\nwatch=Stream the live status line (20 §9) alongside the trace\n",
+            "about=Run a scenario to completion (local or via a daemon)\nusage=Usage: crucible run [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nuntil=Terminal condition. Default: quiescence\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nmax_quanta=Stop with Timeout at this scheduler-quantum boundary\ninteractive=Pause at genesis and drive the session interactively\nsave_on=Materialize a savepoint at the outcome. Default: never\nwatch=Stream the live status line (20 §9) alongside the trace\n",
         ),
         (
             "verify",

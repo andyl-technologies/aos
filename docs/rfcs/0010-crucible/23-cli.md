@@ -353,7 +353,7 @@ report. The workhorse subcommand.
   FLAGS (subcommand-local; global flags from §2 also apply)
     --until <quiescence|virtual-time|property|stopped>   Terminal condition. Default: quiescence.
     --max-virtual-time <dur>   Stop with Timeout past this virtual time (20 §2).
-    --max-quanta <n>           Stop with Timeout past this many scheduler quanta.
+    --max-quanta <n>           Stop with Timeout at this scheduler-quantum boundary.
     --interactive              Pause at genesis and drive the session interactively.
     --save-on <fail|always|never>   Materialize a savepoint at the outcome. Default: never.
     --watch                    Stream the live status line (20 §9) alongside the trace.
@@ -361,7 +361,9 @@ report. The workhorse subcommand.
 
 `run` constructs a local or remote session (§3), issues `start` then `continue`
 (20 §4), streams the event log in `--format` (§4), and exits on the terminal
-outcome. `--interactive` instead leaves the session `Paused(Instantiated)` and
+outcome. When `--max-quanta` is present, the CLI advances one paused quantum at
+a time so the terminal coordinate cannot overshoot the requested bound.
+`--interactive` instead leaves the session `Paused(Instantiated)` and
 reads control commands (continue/pause/step/inject/heal/fork/save/query, 20 §4)
 from stdin — the CLI face of the session command set, with each command
 acknowledged within a bounded quantum count ([SESS-3], `gate:control-responsive`).
@@ -1056,8 +1058,9 @@ branch on the verdict without parsing output:
   in-process-double and `--daemon` HTTP/2 RPC sessions through the same typed
   control-client workflow, streams non-empty scheduler event/state frames,
   derives terminal status from session `OutcomeKind`, enforces
-  virtual-time/quanta budgets from live counters, emits user-visible `--watch`
-  status, materializes real terminal savepoint handles for `--save-on`, maps
+  virtual-time budgets from live counters and exact paused boundaries for
+  quantum budgets, emits user-visible `--watch` status, materializes real
+  terminal savepoint handles for `--save-on`, maps
   non-passing outcomes to reproduction artifacts and exit codes, and provides
   incremental stdin acknowledgements for interactive commands.
 - [x] **T-CLI-7** Implement `verify` (N independent reductions, canonical-log +

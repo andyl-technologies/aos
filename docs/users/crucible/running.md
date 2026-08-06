@@ -86,7 +86,9 @@ No suffix means ticks. Fractional durations are not accepted.
   --max-quanta 10000
 ```
 
-Budget exhaustion is a timeout, not a property failure.
+Budget exhaustion is a timeout, not a property failure. A bounded run stops at
+exactly the requested scheduler-quantum boundary unless it reaches another
+terminal condition first; observer polling does not add extra quanta.
 
 Ordinary local QEMU lifecycle operations admit up to 40 billion retired
 instructions per node and allow 300 wall-clock seconds for each node step.

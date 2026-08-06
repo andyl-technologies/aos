@@ -96,7 +96,7 @@ Output-format values:
 | `SCENARIO` | Required | Canonical scenario TOML path or content hash. |
 | `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the terminal condition; see [terminal values](#terminal-and-save-boundary-values). |
 | `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
-| `--max-quanta <n>` | Optional | Add an independent scheduler-quantum timeout. |
+| `--max-quanta <n>` | Optional | Stop at an exact scheduler-quantum boundary unless another terminal condition occurs first. |
 | `--interactive` | Off | Pause at genesis and read interactive commands from standard input. |
 | `--save-on <fail\|always\|never>` | Default `never` | Materialize an outcome savepoint only on failure, for every outcome, or never. |
 | `--watch` | Off | Collect live session-status updates alongside run evidence. |

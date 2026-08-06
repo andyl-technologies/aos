@@ -1349,7 +1349,7 @@ pub(crate) fn plan_search_invocation_with_artifact_dir(
     })
 }
 
-/// Resolves a scenario for the search command's backend-facing error surface.
+/// Resolves a scenario for the search command.
 ///
 /// # Errors
 ///
@@ -1359,10 +1359,7 @@ pub(crate) fn resolve_search_scenario(
     scenario: Option<&str>,
     store_root: &Path,
 ) -> Result<RunScenarioRef, CliError> {
-    resolve_command_scenario("search", scenario, store_root).map_err(|error| match error {
-        CliError::InvalidScenario(message) => backend_error(message),
-        error => error,
-    })
+    resolve_command_scenario("search", scenario, store_root)
 }
 
 /// Loads and validates schedule-named predicate truths from a TOML file.
@@ -1855,7 +1852,7 @@ pub(crate) fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError
             .bytes()
             .any(|byte| matches!(byte, b'\t' | b'\n' | b'\r'))
     {
-        return Err(backend_error(
+        return Err(invalid_scenario(
             "family reference must not be empty or multiline",
         ));
     }
@@ -1863,14 +1860,14 @@ pub(crate) fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError
         return Ok(FuzzFamilyRef::BuiltInFaultCampaign);
     }
     if value.starts_with(CONTENT_ADDRESS_PREFIX) {
-        return Err(backend_error(format!(
+        return Err(invalid_scenario(format!(
             "family content hash `{value}` is not a DAG-store `blake3:<hash>` reference"
         )));
     }
     if value.starts_with("blake3:") {
         let reference =
             crucible::ContentAddressedBlobRef::parse("family", value).map_err(|error| {
-                backend_error(format!(
+                invalid_scenario(format!(
                     "family content hash `{value}` is malformed: {error}"
                 ))
             })?;
@@ -1879,10 +1876,10 @@ pub(crate) fn parse_fuzz_family_ref(raw: &str) -> Result<FuzzFamilyRef, CliError
     let path = Path::new(value);
     validate_exploration_path_arg("FAMILY", path)?;
     if !path.exists() {
-        return Err(backend_error(format!("family `{value}` does not exist")));
+        return Err(invalid_scenario(format!("family `{value}` does not exist")));
     }
     if !path.is_file() {
-        return Err(backend_error(format!(
+        return Err(invalid_scenario(format!(
             "family `{value}` is not a regular file"
         )));
     }
@@ -1917,7 +1914,7 @@ pub(crate) fn load_fuzz_family(
 /// scenario-family document.
 pub(crate) fn load_fuzz_family_file(path: &Path) -> Result<crucible::ScenarioFamily, CliError> {
     let text = fs::read_to_string(path).map_err(|error| {
-        backend_error(format!(
+        invalid_scenario(format!(
             "family `{}` could not be read: {error}",
             path.display()
         ))
@@ -1937,14 +1934,14 @@ pub(crate) fn load_stored_fuzz_family(
 ) -> Result<crucible::ScenarioFamily, CliError> {
     let store = crucible::LocalDagStore::new(plan.store_root.clone());
     let bytes = store.get(&reference).map_err(|error| {
-        backend_error(format!(
+        invalid_scenario(format!(
             "family {} could not be loaded from store `{}`: {error}",
             format_content_hash_ref(reference),
             plan.store_root.display()
         ))
     })?;
     let text = std::str::from_utf8(&bytes).map_err(|error| {
-        backend_error(format!(
+        invalid_scenario(format!(
             "family {} in store `{}` is not UTF-8 scenario-family TOML: {error}",
             format_content_hash_ref(reference),
             plan.store_root.display()
@@ -1971,7 +1968,7 @@ pub(crate) fn load_fuzz_family_toml(
     text: &str,
 ) -> Result<crucible::ScenarioFamily, CliError> {
     let authored = toml::from_str::<CliScenarioFamilyToml>(text).map_err(|error| {
-        backend_error(format!(
+        invalid_scenario(format!(
             "family {label} is not valid scenario-family TOML: {error}"
         ))
     })?;
@@ -2276,7 +2273,7 @@ pub(crate) fn parse_family_seed_hex(
 }
 
 pub(crate) fn family_file_error(label: &str, message: impl Into<String>) -> CliError {
-    backend_error(format!("family {label} {}", message.into()))
+    invalid_scenario(format!("family {label} {}", message.into()))
 }
 
 /// Validates that an optional exploration budget is positive.

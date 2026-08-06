@@ -228,11 +228,11 @@ pub(super) fn cli_search_fuzz_workflow_plans_drivers_and_rejects_bad_inputs()
         },
         temp.path(),
     ) {
-        Ok(_) => panic!("missing search scenario must be discovery/config"),
+        Ok(_) => panic!("missing search scenario must be invalid input"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
 
     let malformed_named_truths = temp.path().join("bad-search-named-truths.toml");
     fs::write(&malformed_named_truths, "schema = \"wrong.schema\"\n")?;
@@ -525,11 +525,11 @@ quiescent = false
         ..FuzzArgs::default()
     };
     let error = match plan_fuzz_invocation(&malformed_hash, &seed_plan, temp.path()) {
-        Ok(_) => panic!("malformed fuzz family hash must be discovery/config"),
+        Ok(_) => panic!("malformed fuzz family hash must be invalid input"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
 
     for args in [
         FuzzArgs::default(),
@@ -645,6 +645,33 @@ pub(super) fn cli_fuzz_does_not_run_builtin_proof_for_remote_route() -> Result<(
         error
             .to_string()
             .contains("requires the exploration-engine driver")
+    );
+    Ok(())
+}
+
+#[test]
+pub(super) fn cli_fuzz_validates_family_before_backend_discovery() -> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let family = temp.path().join("malformed.family.toml");
+    fs::write(&family, "schema = [")?;
+    let cli = Cli::parse_from([
+        String::from("crucible"),
+        String::from("--backend"),
+        String::from("qemu"),
+        String::from("--seed"),
+        String::from("0x33a4"),
+        String::from("fuzz"),
+        family.display().to_string(),
+    ]);
+
+    let error = dispatch(&cli).expect_err("malformed family must precede backend discovery");
+
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
+    assert!(
+        error
+            .to_string()
+            .contains("is not valid scenario-family TOML")
     );
     Ok(())
 }
@@ -1509,8 +1536,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
         Ok(_) => panic!("missing stored family hashes must fail"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
     assert!(error.to_string().contains("could not be loaded from store"));
 
     let corrupt_family = store.put(
@@ -1534,8 +1561,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
         Ok(_) => panic!("corrupt stored family TOML must fail"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
     assert!(error.to_string().contains("unsupported schema"));
 
     let invalid_utf8_family = store.put(&[0xff, 0xfe])?;
@@ -1555,8 +1582,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
         Ok(_) => panic!("non-UTF-8 stored family bytes must fail"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
     assert!(
         error
             .to_string()
@@ -1580,8 +1607,8 @@ pub(super) fn cli_search_fuzz_workflow_executes_local_double_fuzz() -> Result<()
         Ok(_) => panic!("malformed stored family TOML must fail"),
         Err(error) => error,
     };
-    assert!(matches!(error, CliError::Backend(_)));
-    assert_eq!(error.exit_code(), 4);
+    assert!(matches!(error, CliError::InvalidScenario(_)));
+    assert_eq!(error.exit_code(), 5);
     assert!(
         error
             .to_string()
