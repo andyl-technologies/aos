@@ -32,12 +32,20 @@ impl SingleScheduler {
                 message: String::from("Ethernet destination width changed during routing"),
             })?;
         let flood = destination_mac == [0xff; 6] || destination_mac[0] & 1 == 1;
+        let forced_destination = output.fault_continuation.forced_route_destination();
         let candidates = self
             .world_network_links
             .iter()
             .filter(|(_key, runtime)| {
                 runtime.source() == &output.source
-                    && (flood || crate::deterministic_node_mac(runtime.target()) == destination_mac)
+                    && forced_destination.map_or_else(
+                        || {
+                            flood
+                                || crate::deterministic_node_mac(runtime.target())
+                                    == destination_mac
+                        },
+                        |forced| runtime.target() == forced,
+                    )
             })
             .map(|((link, direction), runtime)| BackendNetworkRoute {
                 link: link.clone(),

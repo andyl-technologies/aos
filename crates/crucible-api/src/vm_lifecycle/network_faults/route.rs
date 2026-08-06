@@ -153,6 +153,10 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 generated_response_cause: output
                                     .fault_continuation
                                     .generated_response_cause(),
+                                forwarding_mutation_path: output
+                                    .fault_continuation
+                                    .forwarding_mutation_path()
+                                    .to_vec(),
                                 length_bytes,
                                 payload_digest: ContentHash::from_bytes(&output.payload),
                             };
@@ -308,6 +312,31 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     earliest_wakeup(next_wakeup_nanos, response_wakeup);
                                 continue 'route;
                             }
+                            if let Some(recipients) = application.forwarding_recipients.as_ref() {
+                                output
+                                    .fault_continuation
+                                    .set_resolved_frame_effects(resolved_effects.clone());
+                                for recipient in recipients {
+                                    let recipient = crucible::NodeId {
+                                        name: recipient.as_str().to_owned(),
+                                    };
+                                    let mut rerouted = output.clone();
+                                    rerouted.destination = recipient.clone();
+                                    rerouted.route = None;
+                                    rerouted.fault_continuation = output
+                                        .fault_continuation
+                                        .forwarding_mutation(opportunity.id(), recipient)
+                                        .ok_or_else(|| SchedulerError::BoundaryViolation {
+                                            message: format!(
+                                                "network forwarding mutation exceeds depth bound {}",
+                                                crucible::model::HARD_NETWORK_FORWARDING_MUTATION_DEPTH
+                                            ),
+                                        })?;
+                                    staged_scheduler.resolve_backend_network_routes(&rerouted)?;
+                                    stage_pending_network_output(&mut staged_pending, rerouted)?;
+                                }
+                                continue 'route;
+                            }
                             if !application.expanded_payloads.is_empty() {
                                 if admitted && !resolved_effects.is_dropped() {
                                     resolved_effects.require_serialization();
@@ -451,6 +480,7 @@ fn apply_network_frame_actions(
     let mut service_curves = Vec::new();
     let mut mtu_policy: Option<(&ResolvedBindingAction, &NetworkEffectSpecification)> = None;
     let mut typed_response = None;
+    let mut forwarding_recipients = None;
     let backpressure_wakeup = apply_network_backpressure_transitions(
         state,
         pending_outputs,
@@ -571,6 +601,20 @@ fn apply_network_frame_actions(
                 request_typed_response(&mut typed_response, response, action)?;
                 effects.mark_drop();
             }
+            NetworkEffectSpecification::ForwardingMutation { selector, mutation } => {
+                apply_network_forwarding_mutation(
+                    payload,
+                    topology,
+                    action,
+                    opportunity,
+                    selector,
+                    mutation,
+                    &mut forwarding_recipients,
+                )?;
+                if forwarding_recipients.is_some() {
+                    effects.mark_drop();
+                }
+            }
             _ => apply_network_frame_action(
                 payload,
                 effects,
@@ -687,6 +731,7 @@ fn apply_network_frame_actions(
         ),
         expanded_payloads: Vec::new(),
         typed_response,
+        forwarding_recipients,
     })
 }
 
@@ -696,6 +741,67 @@ struct NetworkFrameApplication {
     next_wakeup_nanos: Option<u64>,
     expanded_payloads: Vec<Vec<u8>>,
     typed_response: Option<FaultObjectId>,
+    forwarding_recipients: Option<Vec<FaultObjectId>>,
+}
+
+fn apply_network_forwarding_mutation(
+    payload: &[u8],
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    selector: &FaultObjectId,
+    mutation: &crucible::model::NetworkForwardingMutationKind,
+    recipients: &mut Option<Vec<FaultObjectId>>,
+) -> Result<(), SchedulerError> {
+    if !network_packet_selector_matches(payload, topology, selector, action)? {
+        return Ok(());
+    }
+    use crucible::model::{
+        NetworkForwardingMutationKind as Mutation, NetworkStaleEntryDisposition,
+    };
+    let replacement = match mutation {
+        Mutation::WrongPort { recipient } => Some(vec![recipient.clone()]),
+        Mutation::Flood { recipients } => Some(recipients.as_slice().to_vec()),
+        Mutation::Blackhole => Some(Vec::new()),
+        Mutation::Loop {
+            next_hop,
+            hop_limit,
+        } => {
+            let OpportunityPayload::NetworkFrame {
+                forwarding_mutation_path,
+                ..
+            } = opportunity.payload()
+            else {
+                return Err(network_effect_application_error(
+                    action,
+                    "forwarding mutation received a non-frame opportunity",
+                ));
+            };
+            if u64::try_from(forwarding_mutation_path.len())
+                .map_or(true, |depth| depth >= hop_limit.get())
+            {
+                Some(Vec::new())
+            } else {
+                Some(vec![next_hop.clone()])
+            }
+        }
+        Mutation::StaleAge {
+            age_nanos,
+            expiration_nanos,
+            expired,
+        } if *age_nanos >= expiration_nanos.get() => match expired {
+            NetworkStaleEntryDisposition::Preserve => None,
+            NetworkStaleEntryDisposition::Blackhole => Some(Vec::new()),
+            NetworkStaleEntryDisposition::Flood { recipients } => {
+                Some(recipients.as_slice().to_vec())
+            }
+        },
+        Mutation::StaleAge { .. } => None,
+    };
+    if let Some(replacement) = replacement {
+        *recipients = Some(replacement);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3278,6 +3384,7 @@ mod tests {
                     protocol_expansion_path: Vec::new(),
                     generated_response_depth: 0,
                     generated_response_cause: None,
+                    forwarding_mutation_path: Vec::new(),
                     length_bytes: 64,
                     payload_digest: ContentHash::from_bytes(b"multicast-frame"),
                 },
@@ -3323,6 +3430,7 @@ mod tests {
                 protocol_expansion_path: Vec::new(),
                 generated_response_depth: 0,
                 generated_response_cause: None,
+                forwarding_mutation_path: Vec::new(),
                 length_bytes: 1,
                 payload_digest: ContentHash::from_bytes(&sequence.to_be_bytes()),
             },
@@ -3369,6 +3477,99 @@ mod tests {
     }
 
     #[test]
+    fn forwarding_mutations_use_selectors_canonical_recipients_and_hop_limits() {
+        let selector = id("forwarding-selector");
+        let mut topology = crucible::model::WorldFaultTopology::default();
+        topology
+            .network_policy_artifacts
+            .push(crucible::model::WorldNetworkPolicyArtifact {
+                id: selector.clone(),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::PacketSelector {
+                    matches: vec![crucible::model::NetworkPolicyByteMatch {
+                        offset_bytes: 0,
+                        value: vec![0xaa],
+                        mask: vec![0xff],
+                    }],
+                },
+            });
+        let recipients =
+            crucible::model::ObjectIdSet::new(vec![id("receiver-b"), id("receiver-a")])
+                .unwrap_or_else(|error| panic!("test recipients: {error}"));
+        let flood = action_with_network_effect(NetworkEffectSpecification::ForwardingMutation {
+            selector: selector.clone(),
+            mutation: crucible::model::NetworkForwardingMutationKind::Flood { recipients },
+        });
+        let mut payload = vec![0xaa];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut state = NetworkEffectRuntimeState::default();
+        let application = apply_network_frame_actions(
+            &mut payload,
+            &mut effects,
+            &[flood],
+            &opportunity(1),
+            ContentHash::from_bytes(b"forwarding"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("flood mutation: {error}"));
+        assert_eq!(
+            application.forwarding_recipients,
+            Some(vec![id("receiver-a"), id("receiver-b")])
+        );
+        assert!(effects.is_dropped());
+
+        let loop_action =
+            action_with_network_effect(NetworkEffectSpecification::ForwardingMutation {
+                selector,
+                mutation: crucible::model::NetworkForwardingMutationKind::Loop {
+                    next_hop: id("receiver-a"),
+                    hop_limit: positive(1),
+                },
+            });
+        let exhausted = FaultOpportunity::new(
+            loop_action.target.clone(),
+            crucible::model::FaultOperation::NetworkTraverse,
+            FaultPhase::Resolve,
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            2,
+            Some(crucible::model::FaultDirection::AToB),
+            OpportunityPayload::NetworkFrame {
+                producer: id("sender"),
+                destination: id("receiver"),
+                producer_sequence: 2,
+                protocol_expansion_path: Vec::new(),
+                generated_response_depth: 0,
+                generated_response_cause: None,
+                forwarding_mutation_path: vec![ContentHash::from_bytes(b"prior-hop")],
+                length_bytes: 1,
+                payload_digest: ContentHash::from_bytes(&payload),
+            },
+        )
+        .unwrap_or_else(|error| panic!("loop opportunity: {error}"));
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let application = apply_network_frame_actions(
+            &mut payload,
+            &mut effects,
+            &[loop_action],
+            &exhausted,
+            ContentHash::from_bytes(b"forwarding"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("loop mutation: {error}"));
+        assert_eq!(application.forwarding_recipients, Some(Vec::new()));
+        assert!(effects.is_dropped());
+    }
+
+    #[test]
     fn mtu_expansion_returns_real_child_frames_before_queue_service() {
         let mut action = action();
         action.phase = FaultPhase::Admit;
@@ -3405,6 +3606,7 @@ mod tests {
                 protocol_expansion_path: Vec::new(),
                 generated_response_depth: 0,
                 generated_response_cause: None,
+                forwarding_mutation_path: Vec::new(),
                 length_bytes: u64::try_from(payload.len())
                     .unwrap_or_else(|error| panic!("test frame length: {error}")),
                 payload_digest: ContentHash::from_bytes(&payload),
@@ -3633,6 +3835,7 @@ mod tests {
                 protocol_expansion_path: Vec::new(),
                 generated_response_depth: 0,
                 generated_response_cause: None,
+                forwarding_mutation_path: Vec::new(),
                 length_bytes: 1,
                 payload_digest: ContentHash::from_bytes(b"frame"),
             },

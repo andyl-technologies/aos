@@ -216,6 +216,41 @@ Response ancestry is bounded at eight; exceeding the bound fails atomically and
 prevents response loops from growing without limit. Simultaneous rejecting
 effects must select the same response artifact or the opportunity fails closed.
 
+### 8.3.3 Forwarding mutations and route authorization
+
+`network.forwarding_mutation` first applies its required packet-selector
+artifact. A nonmatching frame is unchanged. A matching mutation has one of the
+following closed consequences:
+
+| Mutation | Required fields | Consequence |
+| --- | --- | --- |
+| `wrong_port` | one World VM recipient | Sends one child through the World link from the current producer to that recipient |
+| `flood` | nonempty canonical World VM recipient set | Sends one child to every declared recipient in identity order |
+| `blackhole` | none | Produces no child and drops the original |
+| `loop` | one World VM next hop and positive ancestry hop limit no greater than 64 | Sends one child to the next hop while below the declared limit; drops it at the limit |
+| `stale_age` | replacement age, positive expiration age, expired disposition | Below expiration only records the declared stale-table behavior; at or above expiration preserves, blackholes, or floods exactly as declared |
+
+Recipient references are admitted only when they name VM nodes in the same
+World. The scheduler validates that the current producer has a World link to
+each selected recipient before atomically staging any child. A policy-selected
+route is carried as a typed continuation override; it does not rewrite the
+Ethernet destination. This distinction is required to reproduce wrong-port and
+flood behavior in which the receiving interface may reject a frame addressed to
+some other station. Ordinary guest frames cannot set this override, and the
+route resolver accepts it only from the signal adapter's bounded continuation.
+
+Ordered simultaneous forwarding mutations transform the candidate recipient
+set in action order: wrong-port, flood, loop, or an expired stale action replaces
+the prior set; blackhole replaces it with the empty set; a preserved or
+unexpired stale entry leaves it unchanged. Once a nonempty replacement is
+resolved, the original route copy is dropped and canonical child outputs are
+staged. Children preserve payload bytes, protocol-expansion ancestry, resolved
+upstream frame effects, and completed phase identities; they clear the selected
+route/path lock and resolve the replacement route normally. Each child appends
+the causing opportunity to `forwarding_mutation_path`. That path enters pending
+ordering, checkpoint state, and every downstream opportunity ID and is hard
+bounded at 64 independently of a loop effect's smaller declared limit.
+
 ## 8.4 Storage and 9p effect registry
 
 | Effect key | Lifetime and phase | Required parameters | Composition | Capability and replay evidence |

@@ -252,6 +252,26 @@ mod tests {
         }
         assert!(child.generated_response(cause).is_none());
     }
+
+    #[test]
+    fn forwarding_mutation_preserves_wire_state_and_records_forced_recipient() {
+        let cause = ContentHash::from_bytes(b"wrong-port");
+        let destination = NodeId {
+            name: String::from("receiver-b"),
+        };
+        let mut parent = BackendNetworkFaultContinuation::default();
+        parent.append_protocol_expansion_ordinal(2);
+        parent.cursor_mut().lock_route_path(
+            FaultObjectId::parse("old-path").unwrap_or_else(|error| panic!("test path: {error}")),
+        );
+        let child = parent
+            .forwarding_mutation(cause, destination.clone())
+            .unwrap_or_else(|| panic!("first forwarding mutation must fit"));
+        assert_eq!(child.protocol_expansion_path(), &[2]);
+        assert_eq!(child.forwarding_mutation_path(), &[cause]);
+        assert_eq!(child.forced_route_destination(), Some(&destination));
+        assert!(child.cursor().route_path_version().is_none());
+    }
 }
 
 /// Fault-policy continuation retained with one scheduler-queued frame.
@@ -267,6 +287,10 @@ pub struct BackendNetworkFaultContinuation {
     generated_response_depth: u8,
     /// Opportunity that generated this frame, absent for guest frames.
     generated_response_cause: Option<ContentHash>,
+    /// Ordered opportunities that changed this frame's World route.
+    forwarding_mutation_path: Vec<ContentHash>,
+    /// Policy-authorized recipient used without rewriting Ethernet bytes.
+    forced_route_destination: Option<NodeId>,
     /// Resumable ordered route/phase position.
     cursor: BackendNetworkFaultCursor,
 }
@@ -383,6 +407,33 @@ impl BackendNetworkFaultContinuation {
     #[must_use]
     pub const fn generated_response_cause(&self) -> Option<ContentHash> {
         self.generated_response_cause
+    }
+
+    /// Creates a rerouted child while preserving already-resolved frame state.
+    #[must_use]
+    pub fn forwarding_mutation(&self, cause: ContentHash, destination: NodeId) -> Option<Self> {
+        if self.forwarding_mutation_path.len()
+            >= usize::from(crate::model::HARD_NETWORK_FORWARDING_MUTATION_DEPTH)
+        {
+            return None;
+        }
+        let mut child = self.clone();
+        child.forwarding_mutation_path.push(cause);
+        child.forced_route_destination = Some(destination);
+        child.cursor.reevaluate_route_path();
+        Some(child)
+    }
+
+    /// Returns the ordered forwarding-mutation ancestry.
+    #[must_use]
+    pub fn forwarding_mutation_path(&self) -> &[ContentHash] {
+        &self.forwarding_mutation_path
+    }
+
+    /// Returns the policy-authorized route recipient, when present.
+    #[must_use]
+    pub const fn forced_route_destination(&self) -> Option<&NodeId> {
+        self.forced_route_destination.as_ref()
     }
 
     /// Returns the resumable ordered route/phase position.

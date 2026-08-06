@@ -331,6 +331,23 @@ fn validate_network_effect_policy_references(
                 actual: None,
             })
         };
+    let require_vm =
+        |reference: &FaultObjectId, field: &'static str| -> Result<(), FaultSignalAuthoringError> {
+            if world
+                .vm_nodes()
+                .iter()
+                .any(|node| node.id.name == reference.as_str())
+            {
+                return Ok(());
+            }
+            Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                binding: binding.id().as_str().to_owned(),
+                reference: reference.as_str().to_owned(),
+                field,
+                expected: String::from("world VM node"),
+                actual: None,
+            })
+        };
     match specification {
         NetworkEffectSpecification::ProfileDelta {
             loss_hazard,
@@ -498,11 +515,37 @@ fn validate_network_effect_policy_references(
             &[NetworkPolicyArtifactClass::TypedResponse],
             "typed_error",
         )?,
-        NetworkEffectSpecification::ForwardingMutation { selector, .. } => require(
-            selector,
-            &[NetworkPolicyArtifactClass::PacketSelector],
-            "selector",
-        )?,
+        NetworkEffectSpecification::ForwardingMutation { selector, mutation } => {
+            require(
+                selector,
+                &[NetworkPolicyArtifactClass::PacketSelector],
+                "selector",
+            )?;
+            use super::NetworkStaleEntryDisposition;
+            match mutation {
+                NetworkForwardingMutationKind::WrongPort { recipient } => {
+                    require_vm(recipient, "recipient")?;
+                }
+                NetworkForwardingMutationKind::Flood { recipients } => {
+                    for recipient in recipients.as_slice() {
+                        require_vm(recipient, "recipients")?;
+                    }
+                }
+                NetworkForwardingMutationKind::Loop { next_hop, .. } => {
+                    require_vm(next_hop, "next_hop")?;
+                }
+                NetworkForwardingMutationKind::StaleAge {
+                    expired: NetworkStaleEntryDisposition::Flood { recipients },
+                    ..
+                } => {
+                    for recipient in recipients.as_slice() {
+                        require_vm(recipient, "expired.recipients")?;
+                    }
+                }
+                NetworkForwardingMutationKind::Blackhole
+                | NetworkForwardingMutationKind::StaleAge { .. } => {}
+            }
+        }
         NetworkEffectSpecification::RouteTransition {
             old_route,
             new_route,

@@ -796,6 +796,8 @@ pub struct FaultCoordinate {
 pub const HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH: usize = 256;
 /// Maximum nested scheduler-generated reverse-path responses.
 pub const HARD_NETWORK_RESPONSE_DEPTH: u8 = 8;
+/// Maximum policy-authorized forwarding mutations in one frame ancestry.
+pub const HARD_NETWORK_FORWARDING_MUTATION_DEPTH: u8 = 64;
 
 /// Bounded immutable metadata needed to distinguish and validate an operation.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -818,6 +820,8 @@ pub enum OpportunityPayload {
         generated_response_depth: u8,
         /// Opportunity that generated this frame, absent for guest frames.
         generated_response_cause: Option<ContentHash>,
+        /// Ordered opportunities that changed this frame's World route.
+        forwarding_mutation_path: Vec<ContentHash>,
         /// Frame length in bytes.
         length_bytes: u64,
         /// Digest of immutable frame bytes or normalized fields.
@@ -874,9 +878,12 @@ impl OpportunityPayload {
             Self::NetworkFrame {
                 protocol_expansion_path,
                 generated_response_depth,
+                forwarding_mutation_path,
                 ..
             } if protocol_expansion_path.len() > HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
-                || *generated_response_depth > HARD_NETWORK_RESPONSE_DEPTH =>
+                || *generated_response_depth > HARD_NETWORK_RESPONSE_DEPTH
+                || forwarding_mutation_path.len()
+                    > usize::from(HARD_NETWORK_FORWARDING_MUTATION_DEPTH) =>
             {
                 return Err(FaultContractError::InvalidPayload);
             }
@@ -908,6 +915,7 @@ impl OpportunityPayload {
                 protocol_expansion_path,
                 generated_response_depth,
                 generated_response_cause,
+                forwarding_mutation_path,
                 length_bytes,
                 payload_digest,
             } => {
@@ -926,6 +934,13 @@ impl OpportunityPayload {
                 match generated_response_cause {
                     Some(cause) => push_text(material, &cause.to_hex()),
                     None => material.push_str("none;"),
+                }
+                push_u64(
+                    material,
+                    u64::try_from(forwarding_mutation_path.len()).unwrap_or(u64::MAX),
+                );
+                for cause in forwarding_mutation_path {
+                    push_text(material, &cause.to_hex());
                 }
                 push_u64(material, *length_bytes);
                 push_text(material, &payload_digest.to_hex());
@@ -1391,6 +1406,7 @@ mod tests {
                     protocol_expansion_path,
                     generated_response_depth: 0,
                     generated_response_cause: None,
+                    forwarding_mutation_path: Vec::new(),
                     length_bytes: 1_500,
                     payload_digest: ContentHash::from_bytes(b"frame"),
                 },
