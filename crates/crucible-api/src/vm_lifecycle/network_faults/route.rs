@@ -481,6 +481,7 @@ fn apply_network_frame_actions(
     let mut mtu_policy: Option<(&ResolvedBindingAction, &NetworkEffectSpecification)> = None;
     let mut typed_response = None;
     let mut forwarding_recipients = None;
+    let mut state_machine_wakeup = None;
     let backpressure_wakeup = apply_network_backpressure_transitions(
         state,
         pending_outputs,
@@ -594,12 +595,64 @@ fn apply_network_frame_actions(
             }
             NetworkEffectSpecification::QueuePolicy { .. } => {}
             NetworkEffectSpecification::FirewallDisposition {
-                action: crucible::model::NetworkFirewallAction::Reject,
-                typed_reject: Some(response),
+                action: disposition,
+                typed_reject,
+                rule,
+                state_machine,
+                transition_event,
+            } => {
+                if action.kind == BindingActionKind::RemovePersistent {
+                    state
+                        .state_machines
+                        .remove(&NetworkEffectStateKey::from_action(action));
+                    continue;
+                }
+                let release = apply_network_firewall(
+                    payload,
+                    effects,
+                    state,
+                    topology,
+                    action,
+                    opportunity,
+                    *disposition,
+                    typed_reject.as_ref(),
+                    rule,
+                    state_machine,
+                    transition_event,
+                    &mut typed_response,
+                )?;
+                state_machine_wakeup = earliest_wakeup(state_machine_wakeup, release);
+            }
+            NetworkEffectSpecification::ConnectionState {
+                table_bound,
+                flow_key,
+                state_machine,
+                transition_event,
+                overflow,
                 ..
             } => {
-                request_typed_response(&mut typed_response, response, action)?;
-                effects.mark_drop();
+                if action.kind == BindingActionKind::RemovePersistent {
+                    state
+                        .connection_tables
+                        .remove(&NetworkEffectStateKey::from_action(action));
+                    continue;
+                }
+                let release = apply_network_connection_state(
+                    payload,
+                    effects,
+                    state,
+                    topology,
+                    action,
+                    opportunity,
+                    scenario_seed,
+                    table_bound.get(),
+                    flow_key,
+                    state_machine,
+                    transition_event,
+                    overflow,
+                    &mut typed_response,
+                )?;
+                state_machine_wakeup = earliest_wakeup(state_machine_wakeup, release);
             }
             NetworkEffectSpecification::ForwardingMutation { selector, mutation } => {
                 apply_network_forwarding_mutation(
@@ -721,7 +774,7 @@ fn apply_network_frame_actions(
     Ok(NetworkFrameApplication {
         defer_until,
         next_wakeup_nanos: earliest_wakeup(
-            defer_until,
+            earliest_wakeup(defer_until, state_machine_wakeup),
             earliest_wakeup(
                 state
                     .boundary
@@ -802,6 +855,279 @@ fn apply_network_forwarding_mutation(
         *recipients = Some(replacement);
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_network_firewall(
+    payload: &[u8],
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    state: &mut NetworkEffectRuntimeState,
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    disposition: crucible::model::NetworkFirewallAction,
+    typed_reject: Option<&FaultObjectId>,
+    rule: &FaultObjectId,
+    state_machine: &FaultObjectId,
+    transition_event: &FaultObjectId,
+    typed_response: &mut Option<FaultObjectId>,
+) -> Result<Option<u64>, SchedulerError> {
+    if !network_packet_selector_matches(payload, topology, rule, action)? {
+        return Ok(None);
+    }
+    let key = NetworkEffectStateKey::from_action(action);
+    let initial = network_state_machine_initial(topology, state_machine, action)?;
+    let machine = state
+        .state_machines
+        .entry(key)
+        .or_insert_with(|| NetworkStateMachineRuntime {
+            current: initial,
+            pending: Vec::new(),
+            transition_sequence: action.transition_sequence,
+        });
+    let release = advance_network_state_machine(
+        machine,
+        topology,
+        state_machine,
+        transition_event,
+        action,
+        opportunity.coordinate().virtual_nanos,
+    )?;
+    match disposition {
+        crucible::model::NetworkFirewallAction::Accept => {}
+        crucible::model::NetworkFirewallAction::Drop => effects.mark_drop(),
+        crucible::model::NetworkFirewallAction::Reject => {
+            let response = typed_reject.ok_or_else(|| {
+                network_effect_application_error(action, "firewall reject omitted its response")
+            })?;
+            request_typed_response(typed_response, response, action)?;
+            effects.mark_drop();
+        }
+    }
+    Ok(release)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_network_connection_state(
+    payload: &[u8],
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    state: &mut NetworkEffectRuntimeState,
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+    opportunity: &FaultOpportunity,
+    scenario_seed: ContentHash,
+    table_bound: u32,
+    flow_key: &FaultObjectId,
+    state_machine: &FaultObjectId,
+    transition_event: &FaultObjectId,
+    overflow: &crucible::model::NetworkConnectionOverflow,
+    typed_response: &mut Option<FaultObjectId>,
+) -> Result<Option<u64>, SchedulerError> {
+    let flow = network_packet_key(payload, topology, flow_key, action)?;
+    let owner = NetworkEffectStateKey::from_action(action);
+    let initial = network_state_machine_initial(topology, state_machine, action)?;
+    let table = state.connection_tables.entry(owner).or_default();
+    if !table.contains_key(&flow)
+        && u32::try_from(table.len()).map_or(true, |length| length >= table_bound)
+    {
+        use crucible::model::NetworkConnectionOverflow as Overflow;
+        match overflow {
+            Overflow::DropNewest => {
+                effects.mark_drop();
+                return Ok(None);
+            }
+            Overflow::TypedError { response } => {
+                request_typed_response(typed_response, response, action)?;
+                effects.mark_drop();
+                return Ok(None);
+            }
+            Overflow::EvictOldest => {
+                let victim = table
+                    .iter()
+                    .min_by_key(|(identity, entry)| {
+                        (entry.last_used_nanos, entry.created_by, **identity)
+                    })
+                    .map(|(identity, _entry)| *identity)
+                    .ok_or_else(|| {
+                        network_effect_application_error(
+                            action,
+                            "connection table reached its bound without an eviction candidate",
+                        )
+                    })?;
+                table.remove(&victim);
+            }
+            Overflow::KeyedEviction => {
+                let count = u64::try_from(table.len()).map_err(|_error| {
+                    network_effect_application_error(
+                        action,
+                        "connection table candidate count exceeds u64",
+                    )
+                })?;
+                let index = usize::try_from(
+                    network_effect_draw(
+                        scenario_seed,
+                        opportunity,
+                        action,
+                        "connection-eviction",
+                        0,
+                    ) % count,
+                )
+                .map_err(|_error| {
+                    network_effect_application_error(
+                        action,
+                        "connection eviction index exceeds host width",
+                    )
+                })?;
+                let victim = table.keys().nth(index).copied().ok_or_else(|| {
+                    network_effect_application_error(
+                        action,
+                        "connection eviction candidate disappeared",
+                    )
+                })?;
+                table.remove(&victim);
+            }
+        }
+    }
+    let entry = table.entry(flow).or_insert_with(|| NetworkConnectionEntry {
+        machine: NetworkStateMachineRuntime {
+            current: initial,
+            pending: Vec::new(),
+            transition_sequence: action.transition_sequence,
+        },
+        created_by: opportunity.id(),
+        last_used_nanos: opportunity.coordinate().virtual_nanos,
+    });
+    entry.last_used_nanos = opportunity.coordinate().virtual_nanos;
+    advance_network_state_machine(
+        &mut entry.machine,
+        topology,
+        state_machine,
+        transition_event,
+        action,
+        opportunity.coordinate().virtual_nanos,
+    )
+}
+
+fn network_packet_key(
+    payload: &[u8],
+    topology: &crucible::model::WorldFaultTopology,
+    key: &FaultObjectId,
+    action: &ResolvedBindingAction,
+) -> Result<ContentHash, SchedulerError> {
+    let declaration = topology.network_policy_artifact(key).ok_or_else(|| {
+        network_effect_application_error(action, "network packet key disappeared")
+    })?;
+    let crucible::model::NetworkPolicyArtifactKind::PacketKey { ranges } = &declaration.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "network packet key changed type after admission",
+        ));
+    };
+    let mut material = Vec::new();
+    for range in ranges {
+        let start = usize::try_from(range.start()).map_err(|_error| {
+            network_effect_application_error(action, "packet key offset exceeds host width")
+        })?;
+        let end = usize::try_from(range.end()).map_err(|_error| {
+            network_effect_application_error(action, "packet key end exceeds host width")
+        })?;
+        let bytes = payload.get(start..end).ok_or_else(|| {
+            network_effect_application_error(action, "packet key range is outside the frame")
+        })?;
+        material.extend_from_slice(&range.length().to_be_bytes());
+        material.extend_from_slice(bytes);
+    }
+    Ok(ContentHash::from_bytes(&material))
+}
+
+fn network_state_machine_initial(
+    topology: &crucible::model::WorldFaultTopology,
+    machine: &FaultObjectId,
+    action: &ResolvedBindingAction,
+) -> Result<FaultObjectId, SchedulerError> {
+    let declaration = topology.network_policy_artifact(machine).ok_or_else(|| {
+        network_effect_application_error(action, "network state machine disappeared")
+    })?;
+    let crucible::model::NetworkPolicyArtifactKind::StateMachine { initial, .. } =
+        &declaration.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "network state machine changed type after admission",
+        ));
+    };
+    Ok(initial.clone())
+}
+
+fn advance_network_state_machine(
+    runtime: &mut NetworkStateMachineRuntime,
+    topology: &crucible::model::WorldFaultTopology,
+    machine: &FaultObjectId,
+    event: &FaultObjectId,
+    action: &ResolvedBindingAction,
+    now: u64,
+) -> Result<Option<u64>, SchedulerError> {
+    let declaration = topology.network_policy_artifact(machine).ok_or_else(|| {
+        network_effect_application_error(action, "network state machine disappeared")
+    })?;
+    let crucible::model::NetworkPolicyArtifactKind::StateMachine {
+        initial,
+        transitions,
+        ..
+    } = &declaration.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "network state machine changed type after admission",
+        ));
+    };
+    if runtime.transition_sequence != action.transition_sequence {
+        *runtime = NetworkStateMachineRuntime {
+            current: initial.clone(),
+            pending: Vec::new(),
+            transition_sequence: action.transition_sequence,
+        };
+    }
+    let committed = runtime
+        .pending
+        .partition_point(|pending| pending.commit_nanos <= now);
+    if committed > 0 {
+        runtime.current = runtime.pending[committed - 1].state.clone();
+        runtime.pending.drain(..committed);
+    }
+    let (from, service_start) = runtime.pending.last().map_or_else(
+        || (runtime.current.clone(), now),
+        |pending| (pending.state.clone(), pending.commit_nanos),
+    );
+    let edge = transitions
+        .iter()
+        .find(|edge| edge.from == from && &edge.event == event)
+        .ok_or_else(|| {
+            network_effect_application_error(
+                action,
+                "network state machine lacks its admitted exhaustive event edge",
+            )
+        })?;
+    let commit = service_start.checked_add(edge.delay_nanos).ok_or_else(|| {
+        network_effect_application_error(action, "network state transition coordinate overflowed")
+    })?;
+    if commit <= now {
+        runtime.current = edge.to.clone();
+        Ok(None)
+    } else {
+        if runtime.pending.len() >= 65_536 {
+            return Err(network_effect_application_error(
+                action,
+                "network state-machine pending transition bound exceeded",
+            ));
+        }
+        runtime.pending.push(NetworkPendingStateTransition {
+            state: edge.to.clone(),
+            commit_nanos: commit,
+        });
+        Ok(Some(commit))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3567,6 +3893,133 @@ mod tests {
         .unwrap_or_else(|error| panic!("loop mutation: {error}"));
         assert_eq!(application.forwarding_recipients, Some(Vec::new()));
         assert!(effects.is_dropped());
+    }
+
+    #[test]
+    fn firewall_and_connection_state_are_bounded_exhaustive_and_timed() {
+        let selector = id("stateful-selector");
+        let key = id("flow-key");
+        let machine = id("flow-machine");
+        let event = id("packet-event");
+        let transition =
+            |from: &str, to: &str, delay_nanos| crucible::model::NetworkPolicyTransition {
+                from: id(from),
+                event: event.clone(),
+                to: id(to),
+                delay_nanos,
+                traffic_policy: crucible::model::NetworkInFlightPolicy::Preserve,
+            };
+        let mut topology = crucible::model::WorldFaultTopology::default();
+        topology.network_policy_artifacts = vec![
+            crucible::model::WorldNetworkPolicyArtifact {
+                id: selector.clone(),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::PacketSelector {
+                    matches: vec![crucible::model::NetworkPolicyByteMatch {
+                        offset_bytes: 0,
+                        value: vec![0xaa],
+                        mask: vec![0xff],
+                    }],
+                },
+            },
+            crucible::model::WorldNetworkPolicyArtifact {
+                id: key.clone(),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::PacketKey {
+                    ranges: vec![
+                        crucible::model::ByteRange::new(0, 1)
+                            .unwrap_or_else(|error| panic!("test packet key: {error}")),
+                    ],
+                },
+            },
+            crucible::model::WorldNetworkPolicyArtifact {
+                id: machine.clone(),
+                semantic_version: 1,
+                artifact: crucible::model::NetworkPolicyArtifactKind::StateMachine {
+                    initial: id("cold"),
+                    states: vec![id("cold"), id("warm")],
+                    transitions: vec![
+                        transition("cold", "warm", 10),
+                        transition("warm", "warm", 10),
+                    ],
+                },
+            },
+        ];
+        let firewall =
+            action_with_network_effect(NetworkEffectSpecification::FirewallDisposition {
+                action: crucible::model::NetworkFirewallAction::Drop,
+                typed_reject: None,
+                rule: selector,
+                state_machine: machine.clone(),
+                transition_event: event.clone(),
+            });
+        let mut payload = vec![0xaa];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut state = NetworkEffectRuntimeState::default();
+        let application = apply_network_frame_actions(
+            &mut payload,
+            &mut effects,
+            &[firewall],
+            &opportunity(10),
+            ContentHash::from_bytes(b"stateful"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("firewall state: {error}"));
+        assert!(effects.is_dropped());
+        assert_eq!(application.next_wakeup_nanos, Some(10));
+        assert_eq!(state.state_machines.len(), 1);
+
+        let bound = crucible::model::BoundedCount::new(CountLimit::LargeStateEntries, 1)
+            .unwrap_or_else(|error| panic!("test table bound: {error}"));
+        let connection = action_with_network_effect(NetworkEffectSpecification::ConnectionState {
+            kind: crucible::model::NetworkConnectionKind::Conntrack,
+            table_bound: bound,
+            flow_key: key,
+            state_machine: machine,
+            transition_event: event,
+            overflow: crucible::model::NetworkConnectionOverflow::DropNewest,
+        });
+        let mut first = vec![0xaa];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        apply_network_frame_actions(
+            &mut first,
+            &mut effects,
+            std::slice::from_ref(&connection),
+            &opportunity(11),
+            ContentHash::from_bytes(b"stateful"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("first connection: {error}"));
+        assert!(!effects.is_dropped());
+        let mut second = vec![0xbb];
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        apply_network_frame_actions(
+            &mut second,
+            &mut effects,
+            &[connection],
+            &opportunity(12),
+            ContentHash::from_bytes(b"stateful"),
+            &topology,
+            &mut state,
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("overflow connection: {error}"));
+        assert!(effects.is_dropped());
+        assert_eq!(
+            state
+                .connection_tables
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>(),
+            1
+        );
     }
 
     #[test]

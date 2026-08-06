@@ -422,6 +422,8 @@ pub enum NetworkPolicyArtifactClass {
     ByteTemplate,
     /// Typed packet selector.
     PacketSelector,
+    /// Ordered byte ranges forming a stable packet/flow key.
+    PacketKey,
     /// Exhaustive state machine.
     StateMachine,
     /// Piecewise service curve.
@@ -456,6 +458,7 @@ impl NetworkPolicyArtifactClass {
             Self::QueueDiscipline => "queue_discipline",
             Self::ByteTemplate => "byte_template",
             Self::PacketSelector => "packet_selector",
+            Self::PacketKey => "packet_key",
             Self::StateMachine => "state_machine",
             Self::ServiceCurve => "service_curve",
             Self::MediumAccess => "medium_access",
@@ -499,6 +502,11 @@ pub enum NetworkPolicyArtifactKind {
     PacketSelector {
         /// All predicates must match.
         matches: Vec<NetworkPolicyByteMatch>,
+    },
+    /// Ordered non-overlapping byte ranges concatenated into a packet key.
+    PacketKey {
+        /// Canonical ranges in strictly increasing offset order.
+        ranges: Vec<ByteRange>,
     },
     /// Exhaustive deterministic state machine.
     StateMachine {
@@ -560,6 +568,7 @@ impl NetworkPolicyArtifactKind {
             Self::QueueDiscipline(_) => NetworkPolicyArtifactClass::QueueDiscipline,
             Self::ByteTemplate { .. } => NetworkPolicyArtifactClass::ByteTemplate,
             Self::PacketSelector { .. } => NetworkPolicyArtifactClass::PacketSelector,
+            Self::PacketKey { .. } => NetworkPolicyArtifactClass::PacketKey,
             Self::StateMachine { .. } => NetworkPolicyArtifactClass::StateMachine,
             Self::ServiceCurve { .. } => NetworkPolicyArtifactClass::ServiceCurve,
             Self::MediumAccess(_) => NetworkPolicyArtifactClass::MediumAccess,
@@ -690,6 +699,26 @@ impl WorldNetworkPolicyArtifact {
                     )?;
                 }
                 Ok(())
+            }
+            NetworkPolicyArtifactKind::PacketKey { ranges } => {
+                hard_policy_count(ranges.len(), "network packet key ranges")?;
+                require(!ranges.is_empty(), "network packet key ranges")?;
+                let mut prior_end = 0_u64;
+                let mut total = 0_u64;
+                for (index, range) in ranges.iter().copied().enumerate() {
+                    require(
+                        index == 0 || range.start() >= prior_end,
+                        "network packet key order",
+                    )?;
+                    prior_end = range.end();
+                    total = total
+                        .checked_add(range.length())
+                        .ok_or_else(|| invalid("network packet key bytes"))?;
+                }
+                require(
+                    total <= u64::try_from(HARD_NETWORK_POLICY_BYTES).unwrap_or(u64::MAX),
+                    "network packet key bytes",
+                )
             }
             NetworkPolicyArtifactKind::StateMachine {
                 initial,
@@ -1159,6 +1188,28 @@ mod tests {
                 responses: vec![opaque, ipv4],
                 unmatched: NetworkPolicyUnmatchedResponse::FailClosed,
             });
+        assert!(declaration.validate().is_err());
+    }
+
+    #[test]
+    fn packet_keys_require_canonical_nonoverlapping_ranges() {
+        let range = |start, length| {
+            ByteRange::new(start, length)
+                .unwrap_or_else(|error| panic!("test packet-key range: {error}"))
+        };
+        let mut declaration = WorldNetworkPolicyArtifact {
+            id: id("five-tuple"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::PacketKey {
+                ranges: vec![range(12, 8), range(20, 4)],
+            },
+        };
+        declaration
+            .validate()
+            .unwrap_or_else(|error| panic!("canonical packet key: {error}"));
+        declaration.artifact = NetworkPolicyArtifactKind::PacketKey {
+            ranges: vec![range(12, 8), range(19, 4)],
+        };
         assert!(declaration.validate().is_err());
     }
 }

@@ -103,12 +103,71 @@ fn validate_network_adapter_checkpoint(
         || checkpoint.effect_state.queues.len() > 65_536
         || checkpoint.effect_state.burst_states.len() > 65_536
         || checkpoint.effect_state.state_machines.len() > 65_536
+        || checkpoint.effect_state.connection_tables.len() > 65_536
         || checkpoint.effect_state.backpressure.len() > 65_536
     {
         return Err(SchedulerError::BoundaryViolation {
             message: String::from(
                 "network adapter checkpoint schema or top-level bounds are invalid",
             ),
+        });
+    }
+    let connection_entries = checkpoint
+        .effect_state
+        .connection_tables
+        .values()
+        .try_fold(0_usize, |total, table| total.checked_add(table.len()))
+        .ok_or_else(|| SchedulerError::BoundaryViolation {
+            message: String::from("network connection checkpoint count overflowed"),
+        })?;
+    if connection_entries > 4_194_304
+        || checkpoint
+            .effect_state
+            .connection_tables
+            .iter()
+            .any(|(key, table)| {
+                key.effect != crucible::model::EffectKind::NetworkConnectionState
+                    || table.len() > 4_194_304
+                    || table.values().any(|entry| {
+                        entry.machine.current.as_str().is_empty()
+                            || entry.machine.pending.len() > 65_536
+                            || entry
+                                .machine
+                                .pending
+                                .iter()
+                                .any(|pending| pending.state.as_str().is_empty())
+                            || entry
+                                .machine
+                                .pending
+                                .windows(2)
+                                .any(|pair| pair[0].commit_nanos > pair[1].commit_nanos)
+                    })
+            })
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("network connection checkpoint exceeds hard bounds"),
+        });
+    }
+    if checkpoint
+        .effect_state
+        .state_machines
+        .iter()
+        .any(|(key, machine)| {
+            key.effect != crucible::model::EffectKind::NetworkFirewallDisposition
+                || machine.current.as_str().is_empty()
+                || machine.pending.len() > 65_536
+                || machine
+                    .pending
+                    .iter()
+                    .any(|pending| pending.state.as_str().is_empty())
+                || machine
+                    .pending
+                    .windows(2)
+                    .any(|pair| pair[0].commit_nanos > pair[1].commit_nanos)
+        })
+    {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("network state-machine checkpoint is invalid"),
         });
     }
     for (target, queue) in &checkpoint.effect_state.queues {
@@ -280,12 +339,34 @@ struct NetworkPauseState {
     transition_sequence: u64,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkPendingStateTransition {
+    state: FaultObjectId,
+    commit_nanos: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkStateMachineRuntime {
+    current: FaultObjectId,
+    pending: Vec<NetworkPendingStateTransition>,
+    transition_sequence: u64,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NetworkConnectionEntry {
+    machine: NetworkStateMachineRuntime,
+    created_by: ContentHash,
+    last_used_nanos: u64,
+}
+
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct NetworkEffectRuntimeState {
     token_buckets: BTreeMap<NetworkEffectStateKey, NetworkTokenBucketState>,
     queues: BTreeMap<crucible::model::ResolvedFaultTarget, NetworkQueueState>,
     burst_states: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
-    state_machines: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
+    state_machines: BTreeMap<NetworkEffectStateKey, NetworkStateMachineRuntime>,
+    connection_tables:
+        BTreeMap<NetworkEffectStateKey, BTreeMap<ContentHash, NetworkConnectionEntry>>,
     backpressure: BTreeMap<NetworkEffectStateKey, NetworkPauseState>,
     boundary: boundary::BoundaryNetworkState,
 }
@@ -1024,6 +1105,28 @@ fn append_backend_output_evidence(
     for ordinal in output.fault_continuation.protocol_expansion_path() {
         material.extend_from_slice(&ordinal.to_be_bytes());
     }
+    material.push(output.fault_continuation.generated_response_depth());
+    match output.fault_continuation.generated_response_cause() {
+        Some(cause) => {
+            material.push(1);
+            material.extend_from_slice(&cause.bytes);
+        }
+        None => material.push(0),
+    }
+    append_evidence_count(
+        material,
+        output.fault_continuation.forwarding_mutation_path().len(),
+    )?;
+    for cause in output.fault_continuation.forwarding_mutation_path() {
+        material.extend_from_slice(&cause.bytes);
+    }
+    match output.fault_continuation.forced_route_destination() {
+        Some(destination) => {
+            material.push(1);
+            append_evidence_bytes(material, destination.name.as_bytes())?;
+        }
+        None => material.push(0),
+    }
     let cursor = output.fault_continuation.cursor();
     append_evidence_count(material, cursor.completed_phases().len())?;
     for completed in cursor.completed_phases() {
@@ -1154,9 +1257,20 @@ fn append_network_effect_state(
         append_evidence_bytes(material, current.as_str().as_bytes())?;
     }
     append_evidence_count(material, state.state_machines.len())?;
-    for (key, current) in &state.state_machines {
+    for (key, machine) in &state.state_machines {
         append_network_effect_state_key(material, key)?;
-        append_evidence_bytes(material, current.as_str().as_bytes())?;
+        append_network_state_machine(material, machine)?;
+    }
+    append_evidence_count(material, state.connection_tables.len())?;
+    for (key, table) in &state.connection_tables {
+        append_network_effect_state_key(material, key)?;
+        append_evidence_count(material, table.len())?;
+        for (flow, entry) in table {
+            material.extend_from_slice(&flow.bytes);
+            append_network_state_machine(material, &entry.machine)?;
+            material.extend_from_slice(&entry.created_by.bytes);
+            material.extend_from_slice(&entry.last_used_nanos.to_be_bytes());
+        }
     }
     append_evidence_count(material, state.backpressure.len())?;
     for (key, pause) in &state.backpressure {
@@ -1172,6 +1286,20 @@ fn append_network_effect_state(
         material.extend_from_slice(&pause.transition_sequence.to_be_bytes());
     }
     state.boundary.append_evidence(material)
+}
+
+fn append_network_state_machine(
+    material: &mut Vec<u8>,
+    machine: &NetworkStateMachineRuntime,
+) -> Result<(), SchedulerError> {
+    append_evidence_bytes(material, machine.current.as_str().as_bytes())?;
+    append_evidence_count(material, machine.pending.len())?;
+    for pending in &machine.pending {
+        append_evidence_bytes(material, pending.state.as_str().as_bytes())?;
+        material.extend_from_slice(&pending.commit_nanos.to_be_bytes());
+    }
+    material.extend_from_slice(&machine.transition_sequence.to_be_bytes());
+    Ok(())
 }
 
 const fn network_queue_discipline_tag(discipline: crucible::model::NetworkQueueDiscipline) -> u8 {
@@ -1946,5 +2074,47 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("reevaluated frame should execute: {error}"));
         assert!(outputs.is_empty());
+    }
+
+    #[test]
+    fn continuation_digest_covers_response_and_forwarding_lineage() {
+        let source = crucible::NodeId {
+            name: String::from("sender"),
+        };
+        let destination = crucible::NodeId {
+            name: String::from("receiver"),
+        };
+        let base = BackendNetworkOutput {
+            source,
+            destination: destination.clone(),
+            emit_icount: Icount { retired: 1 },
+            sequence: 7,
+            payload: vec![0; 14],
+            route: None,
+            fault_continuation: Default::default(),
+        };
+        let evidence = |output: &BackendNetworkOutput| {
+            let mut material = Vec::new();
+            append_backend_output_evidence(&mut material, output)
+                .unwrap_or_else(|error| panic!("test continuation evidence: {error}"));
+            ContentHash::from_bytes(&material)
+        };
+        let baseline = evidence(&base);
+
+        let cause = ContentHash::from_bytes(b"typed-reject");
+        let mut response = base.clone();
+        response.fault_continuation = response
+            .fault_continuation
+            .generated_response(cause)
+            .unwrap_or_else(|| panic!("first response must fit"));
+        assert_ne!(baseline, evidence(&response));
+
+        let mut rerouted = base;
+        rerouted.fault_continuation = rerouted
+            .fault_continuation
+            .forwarding_mutation(ContentHash::from_bytes(b"wrong-port"), destination)
+            .unwrap_or_else(|| panic!("first forwarding mutation must fit"));
+        assert_ne!(baseline, evidence(&rerouted));
+        assert_ne!(evidence(&response), evidence(&rerouted));
     }
 }

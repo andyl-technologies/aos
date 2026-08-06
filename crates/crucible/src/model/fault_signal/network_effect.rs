@@ -383,6 +383,23 @@ pub enum NetworkConnectionKind {
     Dns,
 }
 
+/// Disposition when a bounded connection-state table admits a new flow.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "parameters", rename_all = "snake_case")]
+pub enum NetworkConnectionOverflow {
+    /// Drops the arriving frame and preserves every existing entry.
+    DropNewest,
+    /// Evicts the least-recently-used entry with canonical identity tie-breaks.
+    EvictOldest,
+    /// Evicts one entry through the opportunity-keyed canonical candidate set.
+    KeyedEviction,
+    /// Rejects the arriving frame with a typed reverse-path response.
+    TypedError {
+        /// Typed-response artifact identity.
+        response: FaultObjectId,
+    },
+}
+
 /// Mutation applied to a typed control-operation result.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -630,8 +647,10 @@ pub enum NetworkEffectSpecification {
         typed_reject: Option<FaultObjectId>,
         /// Matched rule identity.
         rule: FaultObjectId,
-        /// Stateful firewall table identity.
-        state: FaultObjectId,
+        /// Stateful firewall machine identity.
+        state_machine: FaultObjectId,
+        /// Exhaustive event applied to the current firewall state.
+        transition_event: FaultObjectId,
     },
     /// Stateful logical network-function transition.
     ConnectionState {
@@ -639,8 +658,14 @@ pub enum NetworkEffectSpecification {
         kind: NetworkConnectionKind,
         /// Positive table bound.
         table_bound: BoundedCount,
-        /// Registered transition event.
-        transition: FaultObjectId,
+        /// Ordered packet ranges forming the stable per-flow key.
+        flow_key: FaultObjectId,
+        /// Exhaustive per-flow state-machine identity.
+        state_machine: FaultObjectId,
+        /// Event applied to the selected flow state.
+        transition_event: FaultObjectId,
+        /// Exact new-flow behavior at the table bound.
+        overflow: NetworkConnectionOverflow,
     },
     /// Shared-medium arbitration and collision state.
     SharedMedium {
@@ -1046,13 +1071,16 @@ mod tests {
             .unwrap_or_else(|error| panic!("test response ID: {error}"));
         let rule =
             FaultObjectId::parse("rule").unwrap_or_else(|error| panic!("test rule ID: {error}"));
-        let state =
-            FaultObjectId::parse("state").unwrap_or_else(|error| panic!("test state ID: {error}"));
+        let state_machine = FaultObjectId::parse("state-machine")
+            .unwrap_or_else(|error| panic!("test state-machine ID: {error}"));
+        let transition_event =
+            FaultObjectId::parse("packet").unwrap_or_else(|error| panic!("test event ID: {error}"));
         let firewall = |action, typed_reject| NetworkEffectSpecification::FirewallDisposition {
             action,
             typed_reject,
             rule: rule.clone(),
-            state: state.clone(),
+            state_machine: state_machine.clone(),
+            transition_event: transition_event.clone(),
         };
         assert!(
             firewall(NetworkFirewallAction::Reject, Some(response.clone()))

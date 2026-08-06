@@ -114,8 +114,8 @@ the effect record.
 | `network.forwarding_mutation` | impulse/persistent; resolve | `kind = wrong_port/flood/blackhole/loop/stale_age`, selector and replacement | ordered-transform by rule identity | `network.forwarding-mutation.v1`; lookup inputs, before/after entries, chosen hop |
 | `network.route_transition` | state-machine; boundary/resolve | old/new route IDs, convergence events, in-flight policy | state-machine | `network.route-transition.v1`; paths, cause, convergence and traffic treatment |
 | `network.control_plane_service` | persistent state; queue/resolve | service curve, queue bound, drop/timeout policy | minimum service and shared queue | `network.control-plane.v1`; queued events and applied transitions |
-| `network.firewall_disposition` | opportunity/state; admit | `action = accept/reject/drop`, response artifact iff reject, rule/state IDs | most restrictive unless explicit ordered chain | `network.firewall.v1`; rule trace, state transition and response ID |
-| `network.connection_state` | state-machine; resolve | `kind = nat/conntrack/load_balancer/tunnel/dns`, table bounds and transition event | state-machine | domain capability; entry before/after, mapping/backend/answer/path result |
+| `network.firewall_disposition` | opportunity/state; admit | `action = accept/reject/drop`, response artifact iff reject, packet-selector rule, exhaustive state machine and event | most restrictive unless explicit ordered chain | `network.firewall.v1`; selector result, rule trace, state transition and response ID |
+| `network.connection_state` | state-machine; resolve | `kind = nat/conntrack/load_balancer/tunnel/dns`, table bound, packet-key artifact, exhaustive state machine/event, overflow policy | one machine per extracted flow; bounded table policy | domain capability; key digest, entry before/after, eviction/overflow and state timer |
 | `network.shared_medium` | persistent state; admit/queue/resolve | channel resources, arbitration, collision, capture, backoff and duty-cycle parameters | one conflict-free policy per medium; signals combine as inputs | `network.shared-medium.v1`; contenders, allocation, collision/capture, service |
 | `network.rf_channel` | persistent/opportunity; resolve | carrier/bandwidth, power, noise, gain, attenuation, SINR transfer table, fading field IDs | power/interference sum in exact linear unit then transfer lookup | `network.rf-channel.v1`; sampled geometry/field/power and resulting profile |
 | `network.association` | state-machine; boundary/resolve | technology, candidates, selection, hysteresis, timers, auth, buffering/address policy | one machine per interface; inputs combine before selection | technology capability; candidates, timers, old/new attachment and traffic policy |
@@ -250,6 +250,54 @@ route/path lock and resolve the replacement route normally. Each child appends
 the causing opportunity to `forwarding_mutation_path`. That path enters pending
 ordering, checkpoint state, and every downstream opportunity ID and is hard
 bounded at 64 independently of a loop effect's smaller declared limit.
+
+### 8.3.4 Firewall and per-flow connection state
+
+Firewall rules are executable packet selectors, not labels. A nonmatching rule
+does not change firewall state or disposition. A matching rule applies exactly
+one declared event to its state-machine artifact and then accepts, silently
+drops, or rejects the frame with a typed response. Reject requires a response
+artifact; accept and drop prohibit one.
+
+Connection-state effects extract a stable flow identity with a `packet_key`
+artifact. That artifact is a nonempty ordered list of non-overlapping byte
+ranges. The scheduler prefixes every selected range with its length,
+concatenates the exact frame bytes, and hashes the result. A range outside the
+frame is a malformed opportunity and fails closed; it is never shortened. NAT,
+conntrack, load-balancer, tunnel, and DNS kinds use the same bounded state
+engine. Kind-specific packet/result changes are separate forwarding,
+payload-transform, route-transition, or control-result bindings so their
+composition and evidence remain explicit.
+
+Each flow owns an independent instance of the declared state machine. The
+effect supplies one `transition_event`, and admission requires exactly one edge
+for that event from every machine state. These frame-local machines require
+`traffic_policy = preserve` on every such edge; drop, reevaluate, and typed-error
+traffic policies belong to the surrounding firewall/connection effect and are
+rejected here because they would otherwise be ambiguous. A positive edge delay
+schedules the destination state at an exact virtual coordinate and installs a
+scheduler wakeup. Further events serialize after an already-pending transition
+and select their edge from its destination state. Runtime state records current
+state, pending destination/coordinate, and binding transition sequence; a new
+binding sequence resets to the declared initial state.
+
+The connection table has a positive authored bound under the compiled
+4,194,304-entry ceiling. Existing-flow access updates exact virtual last-use
+time. A new flow at the bound performs exactly one declared action:
+
+| Overflow | Behavior |
+| --- | --- |
+| `drop_newest` | Drops the arriving frame and preserves all entries |
+| `evict_oldest` | Evicts least-recently-used, then creation-opportunity and flow-digest order |
+| `keyed_eviction` | Selects from flow-digest order with the opportunity-keyed draw |
+| `typed_error` | Preserves all entries, drops the arriving frame, and generates the referenced typed response |
+
+Removing a persistent firewall or connection contribution deletes all of its
+machine state atomically. Checkpoints bound and encode every table, flow digest,
+creation opportunity, last-use coordinate, current state, pending transition,
+and transition sequence. The explicit network continuation digest also includes
+generated-response ancestry, forwarding-mutation ancestry, and forced recipient;
+changing any of those fields necessarily changes restore identity.
 
 ## 8.4 Storage and 9p effect registry
 
