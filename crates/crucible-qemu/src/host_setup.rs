@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn qemu_host_rejects_a_v1_plugin_against_the_v5_region() {
-        assert_eq!(ABI_VERSION, 5);
+        assert_eq!(ABI_VERSION, 6);
         let config = HostHandshakeConfig {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,

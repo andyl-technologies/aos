@@ -42,6 +42,12 @@ use crate::{
     FINGERPRINT_DIGEST_BYTES, FINGERPRINT_SAMPLE_MAX_VCPUS, FINGERPRINT_SAMPLE_SLOT_ALIGN,
     FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET, FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET,
     FINGERPRINT_SAMPLE_SLOT_SIZE, FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET, FINGERPRINT_SAMPLE_WORDS,
+    GUEST_INTROSPECTION_ENTRY_ALIGN, GUEST_INTROSPECTION_ENTRY_DATA_BYTES,
+    GUEST_INTROSPECTION_ENTRY_DATA_OFFSET, GUEST_INTROSPECTION_ENTRY_LEN_OFFSET,
+    GUEST_INTROSPECTION_ENTRY_PAD_OFFSET, GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET,
+    GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET, GUEST_INTROSPECTION_ENTRY_SIZE,
+    GUEST_INTROSPECTION_QUEUE_CAPACITY, GUEST_INTROSPECTION_REQUEST_RING_OFFSET,
+    GUEST_INTROSPECTION_RESPONSE_RING_OFFSET, GUEST_INTROSPECTION_RINGS_PER_VM,
 };
 
 /// Generates the committed `crucible_shmem_abi.h` contents.
@@ -55,6 +61,7 @@ pub fn generated_c_header() -> String {
     let mut out = String::new();
     emit_preamble(&mut out);
     emit_constants(&mut out);
+    emit_guest_introspection_geometry_helpers(&mut out);
     emit_region_header(&mut out);
     emit_node_slot(&mut out);
     emit_ring_header(&mut out);
@@ -62,6 +69,7 @@ pub fn generated_c_header() -> String {
     emit_coverage_entry(&mut out);
     emit_fingerprint_sample_slot(&mut out);
     emit_whitebox_marker_entry(&mut out);
+    emit_guest_introspection_entry(&mut out);
     emit_footer(&mut out);
     out
 }
@@ -104,6 +112,31 @@ fn emit_constants(out: &mut String) {
         out,
         "CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY",
         WHITEBOX_MARKER_QUEUE_CAPACITY,
+    );
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY",
+        GUEST_INTROSPECTION_QUEUE_CAPACITY,
+    );
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM",
+        GUEST_INTROSPECTION_RINGS_PER_VM,
+    );
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_REQUEST_RING_OFFSET",
+        GUEST_INTROSPECTION_REQUEST_RING_OFFSET,
+    );
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RESPONSE_RING_OFFSET",
+        GUEST_INTROSPECTION_RESPONSE_RING_OFFSET,
+    );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_DATA_BYTES",
+        GUEST_INTROSPECTION_ENTRY_DATA_BYTES,
     );
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_NODES", MAX_NODES);
     emit_define_usize(out, "CRUCIBLE_SHMEM_RESERVED_SLOTS", RESERVED_SLOTS);
@@ -344,6 +377,162 @@ fn emit_constants(out: &mut String) {
         WHITEBOX_MARKER_ENTRY_SIZE - WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET,
     );
     out.push('\n');
+
+    emit_layout_constant_group(
+        out,
+        "GUEST_INTROSPECTION_ENTRY",
+        GUEST_INTROSPECTION_ENTRY_SIZE,
+        GUEST_INTROSPECTION_ENTRY_ALIGN,
+        &[
+            ("SEQUENCE", GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET),
+            ("LEN", GUEST_INTROSPECTION_ENTRY_LEN_OFFSET),
+            ("PAD", GUEST_INTROSPECTION_ENTRY_PAD_OFFSET),
+            ("DATA", GUEST_INTROSPECTION_ENTRY_DATA_OFFSET),
+            ("RESERVED", GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET),
+        ],
+    );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_PAD_LEN",
+        GUEST_INTROSPECTION_ENTRY_DATA_OFFSET - GUEST_INTROSPECTION_ENTRY_PAD_OFFSET,
+    );
+    emit_define_usize(
+        out,
+        "CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_RESERVED_LEN",
+        GUEST_INTROSPECTION_ENTRY_SIZE - GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET,
+    );
+    out.push('\n');
+}
+
+fn emit_guest_introspection_geometry_helpers(out: &mut String) {
+    out.push_str(
+        r#"typedef struct crucible_shmem_guest_introspection_layout {
+    uint32_t ring_count;
+    uint32_t queue_capacity;
+    uint64_t ring_hdr_off;
+    uint64_t ring_data_off;
+    uint64_t entry_stride;
+    uint64_t region_size;
+} crucible_shmem_guest_introspection_layout;
+
+static inline int crucible_shmem_u64_checked_add(uint64_t left, uint64_t right, uint64_t *out) {
+    if (out == NULL || left > UINT64_MAX - right) {
+        return -1;
+    }
+    *out = left + right;
+    return 0;
+}
+
+static inline int crucible_shmem_u64_checked_mul(uint64_t left, uint64_t right, uint64_t *out) {
+    if (out == NULL || (right != 0u && left > UINT64_MAX / right)) {
+        return -1;
+    }
+    *out = left * right;
+    return 0;
+}
+
+static inline int crucible_shmem_u64_checked_align_up(uint64_t value, uint64_t alignment, uint64_t *out) {
+    uint64_t remainder;
+    uint64_t adjustment;
+    if (out == NULL || alignment == 0u || (alignment & (alignment - 1u)) != 0u) {
+        return -1;
+    }
+    remainder = value & (alignment - 1u);
+    adjustment = remainder == 0u ? 0u : alignment - remainder;
+    return crucible_shmem_u64_checked_add(value, adjustment, out);
+}
+
+static inline int crucible_shmem_guest_introspection_ring_index(
+    uint32_t vm_slot,
+    uint32_t direction_offset,
+    uint32_t *out
+) {
+    if (out == NULL
+        || direction_offset >= CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM
+        || vm_slot > UINT32_MAX / CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM) {
+        return -1;
+    }
+    *out = vm_slot * CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM + direction_offset;
+    return 0;
+}
+
+static inline int crucible_shmem_guest_introspection_layout_compute(
+    uint64_t frame_ring_data_off,
+    uint32_t frame_ring_count,
+    uint32_t frame_queue_capacity,
+    uint64_t frame_entry_stride,
+    uint32_t vm_node_count,
+    uint64_t advertised_region_size,
+    crucible_shmem_guest_introspection_layout *out
+) {
+    uint64_t count;
+    uint64_t byte_len;
+    uint64_t frame_data_end;
+    uint64_t coverage_hdr_off;
+    uint64_t coverage_data_off;
+    uint64_t coverage_data_end;
+    uint64_t fingerprint_off;
+    uint64_t fingerprint_end;
+    uint64_t marker_hdr_off;
+    uint64_t marker_data_off;
+    uint64_t marker_data_end;
+    uint64_t guest_hdr_off;
+    uint64_t guest_data_off;
+    uint64_t computed_region_size;
+    uint32_t guest_ring_count;
+
+    if (out == NULL
+        || vm_node_count > CRUCIBLE_SHMEM_MAX_VM_NODES
+        || frame_queue_capacity == 0u
+        || (frame_queue_capacity & (frame_queue_capacity - 1u)) != 0u
+        || frame_entry_stride != CRUCIBLE_SHMEM_FRAME_ENTRY_SIZE
+        || frame_ring_count
+            != vm_node_count * CRUCIBLE_SHMEM_RESERVED_SLOTS * 2u) {
+        return -1;
+    }
+    if (crucible_shmem_u64_checked_mul(frame_ring_count, frame_queue_capacity, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, frame_entry_stride, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(frame_ring_data_off, byte_len, &frame_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(frame_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &coverage_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(coverage_hdr_off, byte_len, &coverage_data_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_COVERAGE_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_COVERAGE_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(coverage_data_off, byte_len, &coverage_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(coverage_data_end, CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_ALIGN, &fingerprint_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_FINGERPRINT_SAMPLE_SLOT_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(fingerprint_off, byte_len, &fingerprint_end) != 0
+        || crucible_shmem_u64_checked_align_up(fingerprint_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &marker_hdr_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(marker_hdr_off, byte_len, &marker_data_off) != 0
+        || crucible_shmem_u64_checked_mul(vm_node_count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_WHITEBOX_MARKER_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(marker_data_off, byte_len, &marker_data_end) != 0
+        || crucible_shmem_u64_checked_align_up(marker_data_end, CRUCIBLE_SHMEM_RING_HEADER_ALIGN, &guest_hdr_off) != 0
+        || vm_node_count > UINT32_MAX / CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM) {
+        return -1;
+    }
+    guest_ring_count = vm_node_count * CRUCIBLE_SHMEM_GUEST_INTROSPECTION_RINGS_PER_VM;
+    if (crucible_shmem_u64_checked_mul(guest_ring_count, CRUCIBLE_SHMEM_RING_HEADER_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(guest_hdr_off, byte_len, &guest_data_off) != 0
+        || crucible_shmem_u64_checked_mul(guest_ring_count, CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY, &count) != 0
+        || crucible_shmem_u64_checked_mul(count, CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE, &byte_len) != 0
+        || crucible_shmem_u64_checked_add(guest_data_off, byte_len, &computed_region_size) != 0
+        || computed_region_size != advertised_region_size) {
+        return -1;
+    }
+
+    out->ring_count = guest_ring_count;
+    out->queue_capacity = CRUCIBLE_SHMEM_GUEST_INTROSPECTION_QUEUE_CAPACITY;
+    out->ring_hdr_off = guest_hdr_off;
+    out->ring_data_off = guest_data_off;
+    out->entry_stride = CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_SIZE;
+    out->region_size = computed_region_size;
+    return 0;
+}
+
+"#,
+    );
 }
 
 fn emit_region_header(out: &mut String) {
@@ -501,6 +690,31 @@ fn emit_whitebox_marker_entry(out: &mut String) {
             ("kind", "KIND"),
             ("payload_len", "PAYLOAD_LEN"),
             ("payload", "PAYLOAD"),
+            ("reserved", "RESERVED"),
+        ],
+    );
+}
+
+fn emit_guest_introspection_entry(out: &mut String) {
+    out.push_str(&format!(
+        "typedef struct CRUCIBLE_SHMEM_ALIGNED({GUEST_INTROSPECTION_ENTRY_ALIGN}) crucible_shmem_guest_introspection_entry {{\n"
+    ));
+    out.push_str("    uint64_t sequence;\n");
+    out.push_str("    uint16_t len;\n");
+    out.push_str("    uint8_t pad[CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_PAD_LEN];\n");
+    out.push_str("    uint8_t data[CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_DATA_BYTES];\n");
+    out.push_str("    uint8_t reserved[CRUCIBLE_SHMEM_GUEST_INTROSPECTION_ENTRY_RESERVED_LEN];\n");
+    out.push_str("} crucible_shmem_guest_introspection_entry;\n\n");
+
+    emit_static_asserts(
+        out,
+        "crucible_shmem_guest_introspection_entry",
+        "GUEST_INTROSPECTION_ENTRY",
+        &[
+            ("sequence", "SEQUENCE"),
+            ("len", "LEN"),
+            ("pad", "PAD"),
+            ("data", "DATA"),
             ("reserved", "RESERVED"),
         ],
     );

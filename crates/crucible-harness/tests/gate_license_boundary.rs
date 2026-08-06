@@ -362,7 +362,10 @@ fn public_shmem_interface_is_process_shaped() -> Result<(), Box<dyn Error>> {
         !header.contains("(*"),
         "public C ABI must not contain function pointers"
     );
-    for line in header.lines().filter(|line| line.trim_end().ends_with(';')) {
+    for line in header
+        .lines()
+        .filter(|line| line.trim_end().ends_with(';') && !line.contains('='))
+    {
         assert!(
             !line.contains('*'),
             "public C ABI field must not be a pointer: {line}"
@@ -410,7 +413,7 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
         version_bytes[3],
     ]);
     assert_eq!(version, fixture.abi_version);
-    assert_eq!(fixture.total_len, 9_880);
+    assert_eq!(fixture.total_len, 14_552);
     Ok(())
 }
 
