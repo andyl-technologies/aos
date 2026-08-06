@@ -49,7 +49,7 @@ fn repository_publishes_each_declared_license_scope() -> Result<(), Box<dyn Erro
         );
     }
 
-    let licensing = fs::read_to_string(root.join("LICENSING.md"))?;
+    let licensing = fs::read_to_string(root.join("docs/legal/licensing.md"))?;
     for marker in [
         "`crucible-protocol` and `crucible-shmem` | MIT OR Apache-2.0",
         "`crucible-qemu-plugin` | GPL-2.0-only",
@@ -60,7 +60,7 @@ fn repository_publishes_each_declared_license_scope() -> Result<(), Box<dyn Erro
     ] {
         assert!(
             licensing.contains(marker),
-            "LICENSING.md must contain `{marker}`"
+            "docs/legal/licensing.md must contain `{marker}`"
         );
     }
     let readme = fs::read_to_string(root.join("README.md"))?;

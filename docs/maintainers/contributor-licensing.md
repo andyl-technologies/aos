@@ -3,8 +3,8 @@
 This policy is the maintainer procedure for deciding whether a contribution may
 be merged. It complements the public contributor instructions in
 [`CONTRIBUTING.md`](../../CONTRIBUTING.md), the
-[`AOS External Contributor License Agreement`](../../CONTRIBUTOR_LICENSE_AGREEMENT.md),
-and the repository license map in [`LICENSING.md`](../../LICENSING.md).
+[`AOS External Contributor License Agreement`](../legal/external-contributor-license-agreement.md),
+and the [repository license map](../legal/licensing.md).
 
 The Project Steward is Andyl, Inc., a Delaware corporation. Contribution
 authorization, current legal-notice instructions, agreement status, and the
@@ -90,6 +90,6 @@ Before merge:
 3. For QEMU-side changes, confirm that each applicable commit also carries a
    valid DCO `Signed-off-by` line.
 4. Review third-party material and cross-license-boundary changes under
-   [`LICENSING.md`](../../LICENSING.md).
+   [repository license map](../legal/licensing.md).
 5. Never copy private acceptance or employee records into an issue, pull
    request, commit, build artifact, or public log.
