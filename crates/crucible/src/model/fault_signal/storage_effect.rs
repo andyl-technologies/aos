@@ -230,7 +230,7 @@ pub enum StorageEffectSpecification {
     DuplicateCompletion {
         /// Number of additional completions.
         copies: BoundedCount,
-        /// Gap between completions.
+        /// Gap between adjacent completions; resolution cumulatively multiplies it by copy index.
         gap_nanos: u64,
         /// Registered protocol duplicate policy.
         protocol_policy: FaultObjectId,
@@ -304,8 +304,8 @@ pub enum StorageEffectSpecification {
     ControllerLifecycle {
         /// Requested controller transition.
         transition: StorageControllerTransition,
-        /// Treatment of pending queues.
-        queue_policy: StorageTransitionPolicy,
+        /// Complete registered transition policy for every lifecycle stage.
+        transition_policy: FaultObjectId,
         /// Resulting namespace identities.
         namespaces: ObjectIdSet,
         /// Resulting path identities.
@@ -386,6 +386,21 @@ impl StorageEffectSpecification {
     /// do not match the selected result kind.
     pub fn validate(&self) -> Result<(), FaultContractError> {
         match self {
+            Self::Service { queue_depth, .. } if queue_depth.get() > 1_048_576 => {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
+            }
+            Self::DuplicateCompletion {
+                copies, gap_nanos, ..
+            } if *gap_nanos == 0
+                || copies.get() > 256
+                || gap_nanos.checked_mul(u64::from(copies.get())).is_none() =>
+            {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
+            }
             Self::StallTimeout {
                 stall_nanos,
                 recovery_event,

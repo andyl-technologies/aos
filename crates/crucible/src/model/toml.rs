@@ -150,6 +150,8 @@ pub(super) struct WorldToml {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) storage_array: Vec<WorldStorageArray>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) storage_policy_artifact: Vec<WorldStoragePolicyArtifact>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) node_fault_capabilities: Vec<WorldNodeFaultCapabilities>,
 }
 
@@ -702,6 +704,7 @@ pub(super) fn world_to_toml(world: &World) -> WorldToml {
         storage_device: fault_topology.storage_devices.clone(),
         storage_controller: fault_topology.storage_controllers.clone(),
         storage_array: fault_topology.storage_arrays.clone(),
+        storage_policy_artifact: fault_topology.storage_policy_artifacts.clone(),
         node_fault_capabilities: fault_topology.node_capabilities.clone(),
     }
 }
@@ -722,6 +725,7 @@ pub(super) fn world_from_toml(toml: WorldToml) -> Result<World, EngineError> {
         storage_devices: toml.storage_device,
         storage_controllers: toml.storage_controller,
         storage_arrays: toml.storage_array,
+        storage_policy_artifacts: toml.storage_policy_artifact,
         node_capabilities: toml.node_fault_capabilities,
     };
     let id = parse_content_hash_ref(&toml.id)?;

@@ -6,6 +6,7 @@ use crate::fault::IoFaults;
 use crate::inflight::PendingResponse;
 use crate::subnode::IoCoreSnapshot;
 
+use super::super::BlockFaultState;
 use super::super::overlay::{OverlayDelta, PAGE_SIZE};
 use super::BlockLatency;
 
@@ -32,6 +33,8 @@ pub struct BlockSnapshot {
     pub full_pages: BTreeMap<u64, [u8; PAGE_SIZE]>,
     /// The dirty page set at snapshot time.
     pub dirty: BTreeSet<u64>,
+    /// Volatile cache, durability frontiers, retained versions, and directives.
+    pub storage_faults: BlockFaultState,
     /// The deterministic latency model parameters.
     pub latency: BlockLatency,
     /// The active I/O fault table.

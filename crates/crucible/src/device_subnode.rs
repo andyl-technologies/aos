@@ -58,6 +58,8 @@ mod reseed;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::model::WorldCompletionDurability;
+use crucible_device::block::{BlockCompletionDurability, BlockDurabilityConfig};
 use crucible_device::ninep::codec as ninep_codec;
 use crucible_device::{
     BaseImage, BlockDevice, BlockLatency, BlockRequest, BlockResponse, DeviceError, FsTree,
@@ -323,6 +325,15 @@ pub enum DeviceSubNodeBindingError {
         #[source]
         source: DeviceError,
     },
+    /// The exact World storage durability contract could not configure the device.
+    #[error("world I/O node `{node}` has an unusable storage durability contract: {source}")]
+    StorageConfiguration {
+        /// I/O node whose storage contract failed.
+        node: String,
+        /// Concrete storage-state validation failure.
+        #[source]
+        source: DeviceError,
+    },
     /// The physical instantiation layout is invalid or lacks this I/O node.
     #[error("world I/O node `{node}` has no valid instantiation-time layout: {source}")]
     Layout {
@@ -562,11 +573,49 @@ impl DeviceSchedulingSubNode {
             latency.get_length_ns,
             latency.per_byte_ns,
         );
+        let mut device = BlockDevice::new(core, base, latency);
+        if let Some(storage) = world
+            .fault_topology()
+            .storage_devices
+            .iter()
+            .find(|storage| storage.device.as_str() == node.id.name.as_str())
+        {
+            let completion_durability = match storage.persistence.completion_durability {
+                WorldCompletionDurability::ControllerAccepted => {
+                    BlockCompletionDurability::ControllerAccepted
+                }
+                WorldCompletionDurability::VolatileCacheAccepted => {
+                    BlockCompletionDurability::VolatileCacheAccepted
+                }
+                WorldCompletionDurability::Durable => BlockCompletionDurability::Durable,
+            };
+            device
+                .configure_storage_faults(
+                    BlockDurabilityConfig {
+                        length_bytes: storage.persistence.length_bytes,
+                        atomic_write_bytes: storage.persistence.atomic_write_bytes,
+                        maximum_request_bytes: storage.persistence.maximum_request_bytes,
+                        volatile_cache_bytes: storage.persistence.volatile_cache_bytes,
+                        cache_entries: storage.persistence.cache_entries,
+                        controller_buffer_bytes: storage.persistence.controller_buffer_bytes,
+                        controller_entries: storage.persistence.controller_entries,
+                        retained_versions: u32::from(
+                            storage.persistence.retained_versions_per_interval,
+                        ),
+                        completion_durability,
+                    },
+                    false,
+                )
+                .map_err(|source| DeviceSubNodeBindingError::StorageConfiguration {
+                    node: node.id.name.clone(),
+                    source,
+                })?;
+        }
         Ok(Self::new(
             node.scheduler_node_id(),
             node.owner.clone(),
             node.device_id(),
-            BlockDevice::new(core, base, latency),
+            device,
             seed,
         ))
     }

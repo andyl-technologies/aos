@@ -88,6 +88,7 @@ pub use backpressure::{BackpressureState, BoundedQueue, PushError};
 pub use block::{
     BLOCK_ABI_VERSION, BaseImage, BlockCodecError, BlockDevice, BlockLatency, BlockOp,
     BlockRequest, BlockResponse, BlockSnapshot, BlockStatus, CowOverlay, OverlayDelta, PAGE_SIZE,
+    submit_cross_device_misdirected_write,
 };
 pub use clock::{VirtualClock, ceil_ns_to_icount};
 pub use error::DeviceError;
@@ -110,7 +111,10 @@ pub use ninep::{
     FsTree, FsTreeDecodeError, NinepDevice, NinepLatency, NinepServer, NinepServerSnapshot,
     NinepSnapshot, Node, Qid, QidType,
 };
-pub use request::{AffineLatency, LatencyModel, Request, RequestId, Response, ResponseStatus};
+pub use request::{
+    AdditionalCompletion, AffineLatency, ComputedResponse, LatencyModel, Request, RequestId,
+    Response, ResponseStatus,
+};
 pub use subnode::{
     IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryResult, ShmemDequeueResult, ShmemInboxProcess,
 };

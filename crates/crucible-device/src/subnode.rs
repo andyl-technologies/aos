@@ -46,7 +46,7 @@ use crate::backpressure::{BackpressureState, BoundedQueue, PushError};
 use crate::clock::VirtualClock;
 use crate::error::DeviceError;
 use crate::inflight::{InflightQueue, PendingResponse};
-use crate::request::{LatencyModel, Request, Response};
+use crate::request::{ComputedResponse, LatencyModel, Request, Response};
 
 mod frame;
 mod io_core_private;
@@ -65,8 +65,17 @@ pub trait IoSubNode {
     /// The latency model this device applies to derive completion times.
     type Latency: LatencyModel;
 
+    /// Device-owned state needed to roll back a failed COMPUTE transaction.
+    type ComputeCheckpoint;
+
     /// Returns the device's latency model.
     fn latency_model(&self) -> &Self::Latency;
+
+    /// Captures device-owned state before COMPUTE mutates it.
+    fn compute_checkpoint(&self) -> Self::ComputeCheckpoint;
+
+    /// Restores device-owned state when response scheduling cannot be committed.
+    fn restore_compute_checkpoint(&mut self, checkpoint: Self::ComputeCheckpoint);
 
     /// COMPUTEs the response status and payload for `request`.
     ///
@@ -81,7 +90,7 @@ pub trait IoSubNode {
     /// example a malformed request the device rejects before producing wire
     /// bytes). Devices that answer errors *in band* (an error-status response)
     /// return `Ok` with [`crate::request::ResponseStatus::Error`] instead.
-    fn compute(&mut self, request: &Request) -> Result<Response, DeviceError>;
+    fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError>;
 }
 
 /// The deterministic lifecycle engine shared by every I/O sub-node.
@@ -230,6 +239,21 @@ impl IoCore {
         self.inflight.drain_all()
     }
 
+    /// Schedules an externally released response at the current exact icount.
+    ///
+    /// Recovery and timeout events use this entry point to release a completion
+    /// that a device retained during COMPUTE. Scheduling at the current clock
+    /// coordinate preserves the event's authoritative virtual-time ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::ResponseSequenceOverflow`] if the canonical
+    /// completion-order sequence is exhausted.
+    pub fn schedule_response_now(&mut self, response: Response) -> Result<(), DeviceError> {
+        let delivery_icount = self.clock.current_icount();
+        self.insert_computed_response(delivery_icount, response)
+    }
+
     /// Enqueues a request into the inbound ring (the ARRIVE step).
     ///
     /// The request lands at the requester's emit icount; it is COMPUTEd later by
@@ -264,14 +288,15 @@ impl IoCore {
     /// [`DeviceError::DeliveryInPast`] when a computed `delivery_icount` lands
     /// strictly before the sub-node's current icount (the fail-loud guard of
     /// RFC §15.1.1, [IO-31]), and any [`DeviceError`] the device's `compute`
-    /// raises. On error the remaining inbox entries are preserved for a later
-    /// retry; the offending request is consumed.
+    /// raises. On error the offending request and every later inbox entry remain
+    /// queued for an exact retry.
     pub fn process_inbox<D>(&mut self, device: &mut D) -> Result<(), DeviceError>
     where
         D: IoSubNode,
     {
-        while let Some(request) = self.inbox.pop() {
+        while let Some(request) = self.inbox.front().cloned() {
             self.compute_request(device, request)?;
+            let _committed = self.inbox.pop();
         }
         Ok(())
     }
@@ -345,13 +370,19 @@ impl IoCore {
         let mut request_kinds = Vec::new();
         let mut first_request_icount = None;
         let mut producer_wakes = Vec::new();
-        let processed = if let Some(frame) = inbox.dequeue(inbox_entries)? {
+        let processed = if let Some(frame) = inbox.peek(inbox_entries)? {
             first_request_icount.get_or_insert(frame.delivery_icount);
-            let wake = producer_slot.wake_for_device_io_release()?;
-            producer_wakes.push(wake);
             let request = request_from_frame(&frame)?;
             request_kinds.push(request.payload.first().copied());
             self.compute_request(device, request)?;
+            let committed = inbox
+                .dequeue(inbox_entries)?
+                .ok_or(DeviceError::InvalidComputedResponse)?;
+            if committed != frame {
+                return Err(DeviceError::InvalidComputedResponse);
+            }
+            let wake = producer_slot.wake_for_device_io_release()?;
+            producer_wakes.push(wake);
             1
         } else {
             0

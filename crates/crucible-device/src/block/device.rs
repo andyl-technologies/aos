@@ -29,10 +29,13 @@ use crucible_shmem::{FrameEntry, NodeSlot, RingHeader};
 use crate::clock::ceil_ns_to_icount;
 use crate::error::DeviceError;
 use crate::fault::{DeviceRng, IoFaultOutcome, IoFaults};
-use crate::request::{LatencyModel, Request, Response, ResponseStatus};
+use crate::request::{ComputedResponse, LatencyModel, Request, Response, ResponseStatus};
 use crate::subnode::{IoCore, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
 use super::codec::{BlockOp, BlockRequest, BlockResponse, RESPONSE_HEADER_LEN};
+use super::fault::{
+    BlockDurabilityConfig, BlockFaultState, BlockRetainedRelease, ResolvedBlockFaultDirective,
+};
 use super::overlay::{BaseImage, CowOverlay};
 
 mod snapshot;
@@ -143,6 +146,7 @@ pub struct BlockDevice {
     core: IoCore,
     base: BaseImage,
     overlay: CowOverlay,
+    storage_faults: BlockFaultState,
     latency: BlockLatency,
     /// The active I/O fault table applied to completions ([IO-25], [IO-26]).
     faults: IoFaults,
@@ -154,6 +158,51 @@ pub struct BlockDevice {
     rng_position: u64,
 }
 
+/// Atomically submits a write whose bytes are redirected to another block device.
+///
+/// The source produces the sole guest completion and remains unchanged; the
+/// destination applies the bytes through its own controller/cache/durable
+/// layers. Both complete device states are staged first and commit together.
+///
+/// # Errors
+///
+/// Returns [`DeviceError`] for a non-write request, a directive whose local
+/// destination differs from `destination_offset`, any destination mutation
+/// failure, or any source directive/COMPUTE/scheduling failure. On error neither
+/// device changes.
+pub fn submit_cross_device_misdirected_write(
+    source: &mut BlockDevice,
+    destination: &mut BlockDevice,
+    request_icount: u64,
+    request: &BlockRequest,
+    mut directive: ResolvedBlockFaultDirective,
+    destination_offset: u64,
+) -> Result<(), DeviceError> {
+    if request.op != BlockOp::Write
+        || directive.write_disposition
+            != (super::fault::BlockFaultWriteDisposition::Misdirected { destination_offset })
+    {
+        return Err(DeviceError::InvalidBlockFaultDirective {
+            reason: "cross-device misdirection requires its exact write destination",
+        });
+    }
+    let mut next_source = source.clone();
+    let mut next_destination = destination.clone();
+    next_destination.storage_faults.apply_external_write(
+        &next_destination.base,
+        &mut next_destination.overlay,
+        request.request_id,
+        destination_offset,
+        request.data.clone(),
+    )?;
+    directive.write_disposition = super::fault::BlockFaultWriteDisposition::Lost;
+    next_source.install_storage_fault_directive(request.request_id, directive)?;
+    next_source.submit(request_icount, request)?;
+    *source = next_source;
+    *destination = next_destination;
+    Ok(())
+}
+
 impl BlockDevice {
     /// Builds a block device over `base` with the given core and latency model.
     ///
@@ -161,10 +210,12 @@ impl BlockDevice {
     /// starts empty so every read falls through to the base.
     #[must_use]
     pub fn new(core: IoCore, base: BaseImage, latency: BlockLatency) -> Self {
+        let storage_faults = BlockFaultState::write_through(base.len());
         Self {
             core,
             base,
             overlay: CowOverlay::new(),
+            storage_faults,
             latency,
             faults: IoFaults::none(),
             rng_position: 0,
@@ -208,6 +259,78 @@ impl BlockDevice {
     #[must_use]
     pub fn overlay(&self) -> &CowOverlay {
         &self.overlay
+    }
+
+    /// Returns checkpointed durability and resolved fault state.
+    #[must_use]
+    pub const fn storage_fault_state(&self) -> &BlockFaultState {
+        &self.storage_faults
+    }
+
+    /// Replaces durability configuration before request execution begins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] when the configuration is invalid or does not
+    /// describe the exact bound base image.
+    pub fn configure_storage_faults(
+        &mut self,
+        config: BlockDurabilityConfig,
+        require_directives: bool,
+    ) -> Result<(), DeviceError> {
+        if config.length_bytes != self.base.len()
+            || !self.storage_faults.is_pristine()
+            || self.overlay.page_count() != 0
+        {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "storage durability must be configured before device mutation",
+            });
+        }
+        let mut state = BlockFaultState::new(config)?;
+        state.require_directives(require_directives);
+        self.storage_faults = state;
+        Ok(())
+    }
+
+    /// Installs one fully resolved directive for an exact pending request ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError`] for duplicate identity or bounded-state failure.
+    pub fn install_storage_fault_directive(
+        &mut self,
+        request_id: u32,
+        directive: ResolvedBlockFaultDirective,
+    ) -> Result<(), DeviceError> {
+        self.storage_faults.install(request_id, directive)
+    }
+
+    /// Releases a stalled storage completion at the current scheduler icount.
+    ///
+    /// The response remains retained if the delivery core cannot reserve its
+    /// canonical ordering sequence, so retrying cannot lose the completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::InvalidBlockFaultDirective`] when `request_id` is
+    /// not retained, or propagates the delivery core's scheduling error.
+    pub fn release_storage_completion(
+        &mut self,
+        request_id: u32,
+        release: BlockRetainedRelease,
+    ) -> Result<(), DeviceError> {
+        let mut next_faults = self.storage_faults.clone();
+        let mut next_overlay = self.overlay.clone();
+        let response = next_faults.resolve_retained_completion(
+            &self.base,
+            &mut next_overlay,
+            request_id,
+            release,
+        )?;
+        self.core.schedule_response_now(response)?;
+        self.storage_faults = next_faults;
+        self.overlay = next_overlay;
+        Ok(())
     }
 
     /// Returns a read-only view of the base image.
@@ -309,7 +432,13 @@ impl BlockDevice {
             })?;
         // Borrow split: process_inbox needs `&mut self.core` and `&mut device`
         // simultaneously, so serve through a detached server view.
-        Self::process_pending(&mut self.core, &self.base, &mut self.overlay, &self.latency)
+        Self::process_pending(
+            &mut self.core,
+            &self.base,
+            &mut self.overlay,
+            &mut self.storage_faults,
+            &self.latency,
+        )
     }
 
     /// Drains raw block request frames from a shared-memory inbox ring.
@@ -333,6 +462,7 @@ impl BlockDevice {
         let mut node = BlockServer {
             base: &self.base,
             overlay: &mut self.overlay,
+            storage_faults: &mut self.storage_faults,
             latency: &self.latency,
         };
         self.core
@@ -358,6 +488,7 @@ impl BlockDevice {
         let mut node = BlockServer {
             base: &self.base,
             overlay: &mut self.overlay,
+            storage_faults: &mut self.storage_faults,
             latency: &self.latency,
         };
         self.core
@@ -433,11 +564,13 @@ impl BlockDevice {
         core: &mut IoCore,
         base: &BaseImage,
         overlay: &mut CowOverlay,
+        storage_faults: &mut BlockFaultState,
         latency: &BlockLatency,
     ) -> Result<(), DeviceError> {
         let mut server = BlockServer {
             base,
             overlay,
+            storage_faults,
             latency,
         };
         core.process_inbox(&mut server)
@@ -463,6 +596,7 @@ impl BlockDevice {
             overlay_delta: self.overlay.dirty_delta(),
             full_pages: self.overlay.all_pages().clone(),
             dirty: self.overlay.dirty_pages().clone(),
+            storage_faults: self.storage_faults.clone(),
             latency: self.latency,
             faults: self.faults.clone(),
             rng_position: self.rng_position,
@@ -514,6 +648,14 @@ impl BlockDevice {
                 found: base.hash(),
             });
         }
+        snapshot
+            .storage_faults
+            .validate_restore(snapshot.device_length)?;
+        if snapshot.device_length != base.len() {
+            return Err(DeviceError::InvalidBlockFaultDirective {
+                reason: "snapshot storage length differs from the base image",
+            });
+        }
         let core = IoCore::restore(&snapshot.core)?;
         let overlay = match parent {
             Some(parent) => {
@@ -531,6 +673,7 @@ impl BlockDevice {
             core,
             base,
             overlay,
+            storage_faults: snapshot.storage_faults.clone(),
             // Restore the snapshot's latency model so post-restore completion
             // icounts match an uninterrupted run ([IO-10], [IO-22]); never
             // substitute the default, which would silently diverge.
@@ -584,72 +727,46 @@ impl BlockDevice {
 struct BlockServer<'a> {
     base: &'a BaseImage,
     overlay: &'a mut CowOverlay,
+    storage_faults: &'a mut BlockFaultState,
     latency: &'a BlockLatency,
 }
 
 impl<'a> IoSubNode for BlockServer<'a> {
     type Latency = BlockLatency;
+    type ComputeCheckpoint = (CowOverlay, BlockFaultState);
 
     fn latency_model(&self) -> &Self::Latency {
         self.latency
     }
 
-    fn compute(&mut self, request: &Request) -> Result<Response, DeviceError> {
+    fn compute_checkpoint(&self) -> Self::ComputeCheckpoint {
+        (self.overlay.clone(), self.storage_faults.clone())
+    }
+
+    fn restore_compute_checkpoint(&mut self, checkpoint: Self::ComputeCheckpoint) {
+        *self.overlay = checkpoint.0;
+        *self.storage_faults = checkpoint.1;
+    }
+
+    fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError> {
         // Decode the wire request from the opaque payload. Hostile bytes yield an
         // error-status response keyed to the uniform request id ([IO-8]); the
         // device never panics or reads out of bounds.
-        let wire = match BlockRequest::decode(&request.payload) {
-            Ok(decoded) => self.serve(&decoded),
-            Err(_) => BlockResponse::error(request.request_id),
-        };
-        let status = match wire.status {
-            super::codec::BlockStatus::Ok => ResponseStatus::Ok,
-            super::codec::BlockStatus::Error => ResponseStatus::Error,
-        };
-        // Encoding cannot overflow the wire `count`: `serve` already caps a read
-        // response at `MAX_FRAME_DATA - RESPONSE_HEADER_LEN`, and every other
-        // response payload is bounded by the base length or empty. A decode of
-        // the request never produces a response larger than the frame.
-        let encoded = wire.encode().map_err(DeviceError::Codec)?;
-        Ok(Response::new(request.request_id, status, encoded))
-    }
-}
-
-impl<'a> BlockServer<'a> {
-    /// Serves a decoded request against the overlay and base, returning a wire
-    /// response.
-    ///
-    /// An out-of-range read or write returns an error-status response rather than
-    /// truncating ([IO-6]); a read whose response payload would exceed a single
-    /// shmem frame ([`crucible_shmem::MAX_FRAME_DATA`]) is rejected with an
-    /// error status rather than emitting an un-transportable frame ([IO-8]);
-    /// flush is a no-op success; get-length returns the base length as
-    /// little-endian bytes.
-    fn serve(&mut self, request: &BlockRequest) -> BlockResponse {
-        match request.op {
-            BlockOp::Read => {
-                // A read response is the data plus the fixed response header; it
-                // must fit one SPSC frame ([IO-8], [SHM-13]). Reject a count
-                // that would overrun the frame rather than producing a response
-                // the transport cannot carry.
-                if usize::try_from(request.count).unwrap_or(usize::MAX) > MAX_READ_BYTES {
-                    return BlockResponse::error(request.request_id);
-                }
-                match self
-                    .overlay
-                    .read(self.base, request.offset, u64::from(request.count))
-                {
-                    Ok(data) => BlockResponse::ok(request.request_id, data),
-                    Err(_) => BlockResponse::error(request.request_id),
-                }
-            }
-            BlockOp::Write => match self.overlay.write(self.base, request.offset, &request.data) {
-                Ok(()) => BlockResponse::ok(request.request_id, Vec::new()),
-                Err(_) => BlockResponse::error(request.request_id),
-            },
-            BlockOp::Flush => BlockResponse::ok(request.request_id, Vec::new()),
-            BlockOp::GetLength => {
-                BlockResponse::ok(request.request_id, self.base.len().to_le_bytes().to_vec())
+        match BlockRequest::decode(&request.payload) {
+            Ok(decoded) => self.storage_faults.execute(
+                self.base,
+                self.overlay,
+                &decoded,
+                request.request_icount,
+            ),
+            Err(_) => {
+                let wire = BlockResponse::error(request.request_id);
+                let encoded = wire.encode().map_err(DeviceError::Codec)?;
+                Ok(ComputedResponse::primary(Response::new(
+                    request.request_id,
+                    ResponseStatus::Error,
+                    encoded,
+                )))
             }
         }
     }

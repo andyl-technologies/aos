@@ -5,6 +5,13 @@ without treating persistence faults as generic completion errors. Block and 9p
 operations use the same deterministic opportunity and replay machinery but keep
 their protocol semantics typed.
 
+All named policies and typed results are declarations in the closed
+`world.storage_policy_artifact` registry specified by §9.7. Runtime code resolves
+the declaration during admission and retains its content identity in evidence.
+It never assigns behavior by comparing an ID string, consulting a host file, or
+falling back to a generic I/O error. Cross-artifact references are class-checked
+before any guest starts.
+
 ## 11.1 Storage state layers
 
 Each block device owns these bounded layers:
@@ -104,6 +111,12 @@ Cache-loss selectors are:
 Loss removes only selected volatile versions. Reads after loss resolve the prior
 durable version. Locked replay verifies the cache-entry set digest before loss.
 
+Controller-accepted entries occupy a separate bounded byte/entry buffer and do
+not consume volatile-cache capacity. Controller reset/loss selects only that
+layer; volatile-cache loss selects only cache entries. Promotion and flush merge
+the two layers by their shared global write sequence, preserving exact issue
+order without conflating their capacities or loss domains.
+
 ## 11.5 Persistence dependency graph
 
 Persistence is a finite DAG. A fragment may persist when its dependencies are
@@ -134,7 +147,26 @@ digests; it cannot create a cycle. Cycles fail at the effect boundary.
 Torn selectors operate at configured atomic fragments by default. Byte-level
 tearing requires `allow_subatomic_tearing = true`, an exact bit/byte mask, and a
 capability that exposes that lower fidelity honestly. Misdirection validates
-replacement range, alignment, overlap, and capacity before execution.
+replacement range, alignment, overlap, and capacity before execution. The
+authored replacement `ByteRange` is a bounded transfer window, not an implicit
+request-relative address. The resolved operation starts at the window's
+`start`; its complete request byte count is copied contiguously and must fit
+within `length`. Admission requires the window to accommodate the largest
+request legal for every selected block target (the lesser of a selected block-
+range length and that device's declared maximum request size), so a live adapter
+never invents truncation, wrapping, modulo addressing, or a host-dependent
+offset. The unused suffix of a larger window is unchanged. Source and
+destination windows are physical-device bounded and logical-block aligned; the
+concrete operation still enforces its atomic-fragment alignment.
+
+Cross-device misdirection is a two-device transaction. The owner stages the
+destination mutation through the destination's own geometry and normal
+controller/cache/durable policy, stages the source request with a lost local
+write and the sole guest completion, and commits both complete device states
+together. Any destination admission, state-limit, mutation, or source completion
+scheduling failure leaves both devices byte-identical to their pre-operation
+checkpoints. Same-device misdirection uses the same atomic-fragment rules without
+creating a second device transaction.
 
 Acknowledged lost/torn/misdirected writes are distinct from failed writes. The
 event log records guest status, logical visibility, cache state, and durable
@@ -161,6 +193,16 @@ A lying flush records both reported and actual frontier. A subsequent honest
 flush may persist the entries unless they were separately lost. Reset/power loss
 then applies cache-loss policy to the actual state, not the reported frontier.
 
+A stalled flush captures its exclusive controller/cache sequence frontier when
+the request resolves. Recovery persists exactly entries below that captured
+frontier before releasing the original success; writes admitted later remain
+volatile. Timeout releases the configured typed failure without persistence or
+reported-frontier advancement. The retained record includes the original
+request coordinate, resolved dynamic delay, recovery response, timeout response,
+and captured frontier. Release is one transaction with response scheduling: a
+scheduling failure commits neither overlay nor durability state and leaves the
+completion retained for exact retry.
+
 ## 11.8 Reset, reconnect, namespace, and path state
 
 Controller states are `offline`, `initializing`, `online`, `resetting`,
@@ -177,6 +219,11 @@ zero/content artifact, never host garbage.
 Multipath selection uses versioned path policy and stable operation keys.
 Failover treatment of in-flight operations and duplicate-suppression identity is
 explicit.
+
+Every path references a typed `path` artifact; every remote medium references a
+typed `remote_protocol` artifact. These references have no string-convention or
+host-default meaning. A controller-lifecycle effect may name only namespaces and
+paths owned by every controller selected by its binding.
 
 ## 11.9 Media range and latent faults
 
@@ -249,7 +296,9 @@ consistency digest.
   does so.
 - Stale read selects a retained prior logical version by explicit version ID,
   maximum age/version distance, or keyed choice from a bounded eligible set.
-- Misdirected read resolves an explicit replacement range of equal length.
+- A misdirected read of `request.count` bytes uses exactly
+  `[source_range.start, source_range.start + request.count)` within its declared
+  source window; the window suffix is not read.
 - Mixed-version reads record every source interval/version.
 
 Retained versions consume bounded history budget. Admission rejects scenarios
@@ -283,6 +332,23 @@ transform applies. The device/guest protocol decides whether the duplicate is
 ignored, rejected, or causes a modeled protocol error; the simulator records
 that outcome and never invokes undefined host behavior. Test fixtures must cover
 ring/index wrap and duplicate-after-reset cases.
+
+Authored `gap_nanos` is the delay between adjacent completions. For additional
+copy index `i` starting at zero, the resolved delivery delay from the primary is
+`gap_nanos * (i + 1)` using checked integer arithmetic. The resolved directive
+stores these strictly increasing primary-relative delays; overflow rejects the
+effect before device mutation. `reset` is not an evidence-only label: delivery
+of the first duplicate must execute the live guest transport reset transition,
+including its specified pending-request and post-reset request-ID treatment.
+The duplicate policy therefore references a reset-kind typed
+`controller_transition` artifact.
+That artifact independently fixes requests arriving during reset, queued and
+executing requests, resolved results, completed-but-undelivered results,
+controller-buffer and volatile-cache retention, monotonic versus new-epoch
+request-ID allocation, pre-reset duplicate-history retention, namespace/path
+re-enumeration, the typed failure result, and exact recovery duration. A new
+epoch increments before its request counter restarts at zero, so request
+identity is the `(epoch, request_id)` pair and can never alias an old duplicate.
 
 ## 11.16 Storage replay evidence
 

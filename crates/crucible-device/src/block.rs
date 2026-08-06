@@ -21,13 +21,15 @@
 
 pub mod codec;
 pub mod device;
+pub mod fault;
 pub mod overlay;
 
 pub use codec::{
     BLOCK_ABI_VERSION, BlockCodecError, BlockOp, BlockRequest, BlockResponse, BlockStatus,
     REQUEST_HEADER_LEN, RESPONSE_HEADER_LEN,
 };
-pub use device::{BlockDevice, BlockLatency, BlockSnapshot};
+pub use device::{BlockDevice, BlockLatency, BlockSnapshot, submit_cross_device_misdirected_write};
+pub use fault::*;
 pub use overlay::{BaseImage, CowOverlay, OverlayDelta, PAGE_SIZE};
 
 #[cfg(test)]
@@ -61,7 +63,139 @@ mod tests {
         BlockDevice::new(core, ramp_base(base_len), latency)
     }
 
+    fn cached_fault_config(length_bytes: u64) -> BlockDurabilityConfig {
+        BlockDurabilityConfig {
+            length_bytes,
+            atomic_write_bytes: 512,
+            maximum_request_bytes: length_bytes,
+            volatile_cache_bytes: length_bytes,
+            cache_entries: 64,
+            controller_buffer_bytes: 0,
+            controller_entries: 0,
+            retained_versions: 64,
+            completion_durability: BlockCompletionDurability::VolatileCacheAccepted,
+        }
+    }
+
     // ---- CoW: read / write / copy-up / base-never-mutated (IO-5,6) ----
+
+    #[test]
+    fn retained_flush_release_rolls_back_when_completion_order_is_exhausted() {
+        let mut original = device(PAGE_SIZE);
+        ok(original.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
+        let write = BlockRequest::write(1, 0, vec![0x5a; 512]);
+        ok(original.install_storage_fault_directive(
+            write.request_id,
+            ResolvedBlockFaultDirective::fault_free(&write, PAGE_SIZE as u64),
+        ));
+        ok(original.submit(0, &write));
+
+        let flush = BlockRequest::flush(2);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&flush, PAGE_SIZE as u64);
+        directive.flush_disposition = BlockFaultFlushDisposition::Stall;
+        directive.retain_completion = true;
+        directive.retention_timeout_response = Some(BlockResponse::error(flush.request_id));
+        ok(original.install_storage_fault_directive(flush.request_id, directive));
+        ok(original.submit(0, &flush));
+
+        let mut exhausted = original.snapshot();
+        exhausted.core.next_seq = u32::MAX;
+        let mut restored = ok(BlockDevice::restore(&exhausted, ramp_base(PAGE_SIZE), None));
+        let before = restored.snapshot();
+        assert!(matches!(
+            restored.release_storage_completion(flush.request_id, BlockRetainedRelease::Recovery),
+            Err(crate::DeviceError::ResponseSequenceOverflow { .. })
+        ));
+        assert_eq!(restored.snapshot(), before);
+    }
+
+    #[test]
+    fn cross_device_misdirection_commits_both_devices_or_neither() {
+        let mut source = device(PAGE_SIZE);
+        let mut destination = device(PAGE_SIZE);
+        ok(source.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
+        let mut destination_config = cached_fault_config(PAGE_SIZE as u64);
+        destination_config.completion_durability = BlockCompletionDurability::Durable;
+        destination_config.volatile_cache_bytes = 0;
+        destination_config.cache_entries = 0;
+        ok(destination.configure_storage_faults(destination_config, false));
+        let request = BlockRequest::write(10, 0, vec![0x5a; 512]);
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
+            destination_offset: 512,
+        };
+        ok(submit_cross_device_misdirected_write(
+            &mut source,
+            &mut destination,
+            0,
+            &request,
+            directive,
+            512,
+        ));
+        assert_ne!(&source.materialize()[0..512], &[0x5a; 512]);
+        assert_eq!(&destination.materialize()[512..1024], &[0x5a; 512]);
+
+        let mut failing_source = device(PAGE_SIZE);
+        let mut failing_destination = device(PAGE_SIZE);
+        ok(failing_source.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
+        let mut too_small = cached_fault_config(PAGE_SIZE as u64);
+        too_small.volatile_cache_bytes = 256;
+        ok(failing_destination.configure_storage_faults(too_small, false));
+        let before_source = failing_source.snapshot();
+        let before_destination = failing_destination.snapshot();
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
+            destination_offset: 512,
+        };
+        assert!(matches!(
+            submit_cross_device_misdirected_write(
+                &mut failing_source,
+                &mut failing_destination,
+                0,
+                &request,
+                directive,
+                512,
+            ),
+            Err(crate::DeviceError::BlockCacheFull { .. })
+        ));
+        assert_eq!(failing_source.snapshot(), before_source);
+        assert_eq!(failing_destination.snapshot(), before_destination);
+
+        let mut exhausted_source = device(PAGE_SIZE);
+        let mut untouched_destination = device(PAGE_SIZE);
+        ok(exhausted_source.configure_storage_faults(cached_fault_config(PAGE_SIZE as u64), true));
+        let mut destination_config = cached_fault_config(PAGE_SIZE as u64);
+        destination_config.completion_durability = BlockCompletionDurability::Durable;
+        destination_config.volatile_cache_bytes = 0;
+        destination_config.cache_entries = 0;
+        ok(untouched_destination.configure_storage_faults(destination_config, false));
+        let mut exhausted_snapshot = exhausted_source.snapshot();
+        exhausted_snapshot.core.next_seq = u32::MAX;
+        exhausted_source = ok(BlockDevice::restore(
+            &exhausted_snapshot,
+            ramp_base(PAGE_SIZE),
+            None,
+        ));
+        let before_source = exhausted_source.snapshot();
+        let before_destination = untouched_destination.snapshot();
+        let mut directive = ResolvedBlockFaultDirective::fault_free(&request, PAGE_SIZE as u64);
+        directive.write_disposition = BlockFaultWriteDisposition::Misdirected {
+            destination_offset: 512,
+        };
+        assert!(matches!(
+            submit_cross_device_misdirected_write(
+                &mut exhausted_source,
+                &mut untouched_destination,
+                0,
+                &request,
+                directive,
+                512,
+            ),
+            Err(crate::DeviceError::ResponseSequenceOverflow { .. })
+        ));
+        assert_eq!(exhausted_source.snapshot(), before_source);
+        assert_eq!(untouched_destination.snapshot(), before_destination);
+    }
 
     #[test]
     fn read_falls_through_to_base_when_overlay_empty() {

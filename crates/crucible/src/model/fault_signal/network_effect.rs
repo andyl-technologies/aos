@@ -852,7 +852,13 @@ impl NetworkEffectSpecification {
                     effect: self.kind(),
                 })
             }
+            Self::NegotiatedMode { lanes, .. } if lanes.get() > 4_096 => {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
+            }
             Self::QueuePolicy {
+                capacity_frames,
                 discipline,
                 discipline_parameters,
                 overflow,
@@ -868,7 +874,7 @@ impl NetworkEffectSpecification {
                 };
                 let overflow_valid =
                     matches!(overflow, NetworkQueueOverflow::TypedError) == typed_error.is_some();
-                if discipline_valid && overflow_valid {
+                if capacity_frames.get() <= 1_048_576 && discipline_valid && overflow_valid {
                     Ok(())
                 } else {
                     Err(FaultContractError::InvalidEffectParameters {
@@ -885,6 +891,13 @@ impl NetworkEffectSpecification {
                 "probability_millionths",
                 "outcome",
             ),
+            Self::Duplicate {
+                gap_nanos, copies, ..
+            } if copies.get() > 256 || gap_nanos.checked_mul(u64::from(copies.get())).is_none() => {
+                Err(FaultContractError::InvalidEffectParameters {
+                    effect: self.kind(),
+                })
+            }
             Self::PayloadTransform {
                 mutation: NetworkPayloadMutation::BitFlip { mask: 0, .. },
             } => Err(FaultContractError::InvalidEffectParameters {
@@ -928,7 +941,8 @@ impl NetworkEffectSpecification {
                             retry_succeeds,
                         ) {
                             (Some(_delay), Some(limit), Some(attempts), Some(succeeds)) => {
-                                attempts.get() > 0
+                                limit.get() <= 256
+                                    && attempts.get() <= 256
                                     && attempts.get() <= limit.get()
                                     && (*succeeds || attempts.get() == limit.get())
                                     && reset_nanos.is_none()

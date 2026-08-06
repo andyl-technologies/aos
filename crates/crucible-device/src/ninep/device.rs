@@ -28,7 +28,7 @@ use crate::clock::ceil_ns_to_icount;
 use crate::error::DeviceError;
 use crate::fault::{DeviceRng, IoFaultOutcome, IoFaults};
 use crate::inflight::PendingResponse;
-use crate::request::{LatencyModel, Request, Response, ResponseStatus};
+use crate::request::{ComputedResponse, LatencyModel, Request, Response, ResponseStatus};
 use crate::subnode::{IoCore, IoCoreSnapshot, IoSubNode, ShmemDeliveryResult, ShmemInboxProcess};
 
 use super::codec::{self, Message, TMessage};
@@ -407,12 +407,21 @@ struct NinepServerNode<'a> {
 
 impl<'a> IoSubNode for NinepServerNode<'a> {
     type Latency = NinepLatency;
+    type ComputeCheckpoint = NinepServer;
 
     fn latency_model(&self) -> &Self::Latency {
         self.latency
     }
 
-    fn compute(&mut self, request: &Request) -> Result<Response, DeviceError> {
+    fn compute_checkpoint(&self) -> Self::ComputeCheckpoint {
+        self.server.clone()
+    }
+
+    fn restore_compute_checkpoint(&mut self, checkpoint: Self::ComputeCheckpoint) {
+        *self.server = checkpoint;
+    }
+
+    fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError> {
         // Dispatch the 9p request frame. Hostile/mutating/unknown bytes yield a
         // well-formed Rlerror reply frame ([IO-17], [IO-18]); the only Err here
         // is a pathological reply that cannot be encoded, which is an internal
@@ -425,7 +434,11 @@ impl<'a> IoSubNode for NinepServerNode<'a> {
             Some(&codec::RLERROR) => ResponseStatus::Error,
             _ => ResponseStatus::Ok,
         };
-        Ok(Response::new(request.request_id, status, reply))
+        Ok(ComputedResponse::primary(Response::new(
+            request.request_id,
+            status,
+            reply,
+        )))
     }
 }
 

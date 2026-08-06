@@ -545,6 +545,15 @@ impl NodeEffectSpecification {
                     Err(invalid())
                 }
             }
+            Self::InstructionTransform {
+                mutation: InstructionMutation::Replay { count },
+                ..
+            } if count.get() > 256 => Err(invalid()),
+            Self::InterruptDisposition {
+                mutation: InterruptMutation::Duplicate { copies, gap_nanos },
+            } if copies.get() > 256 || gap_nanos.checked_mul(u64::from(copies.get())).is_none() => {
+                Err(invalid())
+            }
             Self::MemoryMutation {
                 range, mutation, ..
             } => {
