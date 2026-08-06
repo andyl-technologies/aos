@@ -485,34 +485,39 @@
             '[.generations[] | select(.toplevel == $top) | .number][0] // 0' \
             "$image_dir/state.json")
         fi
-        pcr11=
+        initrd_pcr11=
         steady_recurrent=false
         if [ "$existing" -eq 0 ]; then
           # Indexing a genuinely new immutable image requires a live reading.
           # An unavailable TPM preserves the historical unmeasured-record
           # representation rather than inventing an expected PCR value.
           if measured=$(read_pcr11); then
-            pcr11=$measured
+            initrd_pcr11=$measured
           fi
         else
           # On a recurrent boot, /var has just been unsealed and the immutable
           # image record is checked field-by-field below. Reuse its indexed
           # expectation here instead of contending with cryptsetup for the TPM;
           # stage 2 independently quotes the live PCR bank for attestation.
-          pcr11=$(${pkgs.jq}/bin/jq -er --argjson existing "$existing" \
-            '[.generations[] | select(.number == $existing) | .expected_pcr11][0] // ""' \
+          initrd_pcr11=$(${pkgs.jq}/bin/jq -er --argjson existing "$existing" \
+            '[.generations[] | select(.number == $existing) | .initrd_pcr11][0] // ""' \
             "$image_dir/state.json")
-          case "$pcr11" in
+          if [ -z "$initrd_pcr11" ]; then
+            if measured=$(read_pcr11); then
+              initrd_pcr11=$measured
+            fi
+          fi
+          case "$initrd_pcr11" in
             "") ;;
             *[!0-9A-Fa-f]*)
-              fail_image_identity "persisted image record has malformed expected PCR 11"
+              fail_image_identity "persisted image record has malformed initrd PCR 11"
               ;;
             *)
-              [ "''${#pcr11}" -eq 64 ] \
-                || fail_image_identity "persisted image record has malformed expected PCR 11"
+              [ "''${#initrd_pcr11}" -eq 64 ] \
+                || fail_image_identity "persisted image record has malformed initrd PCR 11"
               ;;
           esac
-          pcr11=$(printf '%s' "$pcr11" | tr '[:upper:]' '[:lower:]')
+          initrd_pcr11=$(printf '%s' "$initrd_pcr11" | tr '[:upper:]' '[:lower:]')
         fi
 
         if [ ! -e "$image_dir/state.json" ]; then
@@ -527,7 +532,7 @@
             --arg uki "$uki_path" \
             --arg slot "$boot_slot" \
             --arg root_hash "$root_hash" \
-            --arg pcr11 "$pcr11" \
+            --arg initrd_pcr11 "$initrd_pcr11" \
             --argjson abi "$abi" \
             '{ running: 1, default: 1, pending: 1,
                generations: [({ number: 1, slot: $slot, uki_path: $uki,
@@ -536,7 +541,7 @@
                  evaluator_ref: $base, module_abi: $abi,
                  baselib_digest: $digest, created_at: $now }
                  + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
-                 + (if $pcr11 == "" then {} else {expected_pcr11: $pcr11} end))] }' \
+                 + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end))] }' \
             > "$image_dir/.state.json.new"
           publish_image_state "$image_dir/.state.json.new"
           existing=1
@@ -548,7 +553,7 @@
               --arg top "$toplevel" --arg kern "$kern" --arg base "$base_lib" \
               --arg digest "$baselib_digest" --arg now "$now" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
-              --arg root_hash "$root_hash" --arg pcr11 "$pcr11" \
+              --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
               --argjson abi "$abi" --argjson next "$next" \
               '.generations += [({ number: $next,
                  slot: $slot,
@@ -557,7 +562,7 @@
                  evaluator_ref: $base, module_abi: $abi,
                  baselib_digest: $digest, created_at: $now }
                  + (if $root_hash == "" then {} else {root_verity_roothash: $root_hash} end)
-                 + (if $pcr11 == "" then {} else {expected_pcr11: $pcr11} end))]
+                 + (if $initrd_pcr11 == "" then {} else {initrd_pcr11: $initrd_pcr11} end))]
                | .running = $next' \
               "$image_dir/state.json" > "$image_dir/.state.json.new"
             publish_image_state "$image_dir/.state.json.new"
@@ -571,7 +576,7 @@
               --arg ver "$(read_meta version)" --arg kern "$kern" \
               --arg base "$base_lib" --arg digest "$baselib_digest" \
               --arg uki "$uki_path" --arg slot "$boot_slot" \
-              --arg root_hash "$root_hash" --arg pcr11 "$pcr11" \
+              --arg root_hash "$root_hash" --arg initrd_pcr11 "$initrd_pcr11" \
               --argjson abi "$abi" \
               '[.generations[] | select(
                  .toplevel == $top and .package_name == $pn and .version == $ver
@@ -579,15 +584,35 @@
                  and .module_abi == $abi and .baselib_digest == $digest
                  and .uki_path == $uki and .slot == $slot
                  and ((.root_verity_roothash // "") == $root_hash)
-                 and ((.expected_pcr11 == null and $pcr11 == "")
-                      or (.expected_pcr11 != null and $pcr11 != ""
-                          and (.expected_pcr11 | ascii_downcase) == $pcr11))
+                 and ((.initrd_pcr11 == null)
+                      or (.initrd_pcr11 != null and $initrd_pcr11 != ""
+                          and (.initrd_pcr11 | ascii_downcase) == $initrd_pcr11))
                )] | length' "$image_dir/state.json")
             [ "$top_count" -eq 1 ] && [ "$matching" -eq 1 ] \
               || fail_image_identity "persisted image record disagrees with the booted immutable image"
             recorded_running=$(${pkgs.jq}/bin/jq -er '.running' \
               "$image_dir/state.json")
-            if [ "$recorded_running" -ne "$existing" ]; then
+            recorded_initrd=$(${pkgs.jq}/bin/jq -r --argjson existing "$existing" \
+              '[.generations[] | select(.number == $existing) | .initrd_pcr11][0] // ""' \
+              "$image_dir/state.json")
+            if [ -z "$recorded_initrd" ] && [ -n "$initrd_pcr11" ]; then
+              # Preserve the catalog-published stable PCR 11 separately. For
+              # legacy seed records only, an equal old expected value was the
+              # initrd snapshot and is migrated rather than reinterpreted as
+              # the stable ready-phase value.
+              ${pkgs.jq}/bin/jq \
+                --argjson existing "$existing" --arg initrd "$initrd_pcr11" \
+                '.running = $existing
+                 | (.generations[] | select(.number == $existing)) |=
+                   (.initrd_pcr11 = $initrd
+                    | if .registry == "seed"
+                         and ((.expected_pcr11 // "") | ascii_downcase) == $initrd
+                      then del(.expected_pcr11)
+                      else .
+                      end)' \
+                "$image_dir/state.json" > "$image_dir/.state.json.new"
+              publish_image_state "$image_dir/.state.json.new"
+            elif [ "$recorded_running" -ne "$existing" ]; then
               ${pkgs.jq}/bin/jq --argjson running "$existing" \
                 '.running = $running' \
                 "$image_dir/state.json" > "$image_dir/.state.json.new"

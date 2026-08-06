@@ -1756,6 +1756,7 @@ where
         expected_pcr11: image_uki_for_slot(image, target_slot)?
             .and_then(|uki| uki.expected_pcr11.clone())
             .or_else(|| image.expected_pcr11.clone()),
+        initrd_pcr11: None,
         created_at,
     };
     if let Some(index) = existing {
@@ -4285,6 +4286,7 @@ mod tests {
                 baselib_digest: "sha256:base".into(),
                 root_verity_roothash: Some("deadbeef".into()),
                 expected_pcr11: Some("abcd".into()),
+                initrd_pcr11: None,
                 created_at: "2026-08-04T00:00:00Z".into(),
             }],
         };
@@ -4589,6 +4591,7 @@ mod tests {
             baselib_digest: format!("digest-{number}"),
             root_verity_roothash: Some(format!("root-{number}")),
             expected_pcr11: Some(format!("pcr-{number}")),
+            initrd_pcr11: None,
             created_at: "2026-01-01T00:00:00Z".into(),
         };
         let state = ImageGenerationState {
@@ -4947,6 +4950,7 @@ mod tests {
                 baselib_digest: format!("sha256:{}", "a".repeat(64)),
                 root_verity_roothash: None,
                 expected_pcr11: None,
+                initrd_pcr11: None,
                 created_at: "2026-01-01T00:00:00Z".into(),
             }],
         };

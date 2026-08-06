@@ -505,17 +505,50 @@ impl RegistryConfigModules {
         let config = crate::config::ApmConfig::load(scope)?;
         let registries = crate::install::load_registries(&config)?;
         let profile = crate::profile::Profile::open_readonly(scope);
+        let mut image_catalog = None;
         let mut installed = Vec::new();
         let mut image_packages = BTreeMap::new();
         for record in crate::profile::meta::list_meta(&profile)? {
-            let Some(apm) = record.apm else {
+            let Some(mut apm) = record.apm else {
                 continue;
             };
             let is_image = record.pushed_by == "aos-image" && apm.registry == "seed";
-            let mut config_module = apm.config_module;
+            if is_image {
+                if image_catalog.is_none() {
+                    image_catalog = Some(immutable_image_seed_catalog()?);
+                }
+                let image_catalog = image_catalog
+                    .as_ref()
+                    .context("loading the immutable image package catalog")?;
+                let catalog_record = image_catalog.get(&record.store_path).with_context(|| {
+                    format!(
+                        "image-seeded package '{}' is absent from the immutable image catalog",
+                        apm.name
+                    )
+                })?;
+                let catalog_apm = catalog_record.apm.as_ref().with_context(|| {
+                    format!(
+                        "immutable image catalog entry {} has no APM metadata",
+                        record.store_path
+                    )
+                })?;
+                validate_image_seed_metadata(&apm, catalog_apm)?;
+                apm = catalog_apm.clone();
+                require_immutable_image_path(&record.store_path, "runtime output")?;
+                if let Some(artifact) = &apm.expose_artifact {
+                    require_immutable_image_path(&artifact.store_path, "expose artifact")?;
+                }
+            }
+            let mut config_module = apm.config_module.clone();
             if is_image && let Some(module) = config_module.as_mut() {
-                let (nar_hash, nar_size) =
-                    super::runtime::local_store_identity(&module.config_output.store_path)?;
+                let lower = require_immutable_image_path(
+                    &module.config_output.store_path,
+                    "config-module output",
+                )?;
+                let (nar_hash, nar_size) = super::runtime::local_store_identity_at(
+                    &module.config_output.store_path,
+                    &lower,
+                )?;
                 module.config_output.nar_hash = nar_hash;
                 module.config_output.nar_size = nar_size;
             }
@@ -583,6 +616,95 @@ impl RegistryConfigModules {
                 })
             })
     }
+}
+
+fn immutable_image_seed_catalog() -> Result<BTreeMap<String, crate::types::InstalledMeta>> {
+    let toplevel = std::fs::read_link("/aos-toplevel")
+        .context("reading the booted immutable toplevel link")?;
+    let toplevel = toplevel
+        .to_str()
+        .context("booted immutable toplevel path is not UTF-8")?;
+    let lower_toplevel = super::runtime::immutable_lower_store_path(toplevel)?;
+    if !lower_toplevel.exists() {
+        anyhow::bail!("booted toplevel {toplevel} is absent from the immutable image store");
+    }
+    let seed_link = lower_toplevel.join("package-profile-seed");
+    let seed = std::fs::read_link(&seed_link).with_context(|| {
+        format!(
+            "reading immutable package seed link {}",
+            seed_link.display()
+        )
+    })?;
+    let seed = seed
+        .to_str()
+        .context("immutable package seed path is not UTF-8")?;
+    let lower_seed = super::runtime::immutable_lower_store_path(seed)?;
+    let meta_dir = lower_seed.join("meta");
+    let mut files = std::fs::read_dir(&meta_dir)
+        .with_context(|| {
+            format!(
+                "reading immutable image package catalog {}",
+                meta_dir.display()
+            )
+        })?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    files.sort_by_key(std::fs::DirEntry::file_name);
+
+    let mut catalog = BTreeMap::new();
+    for entry in files {
+        if !entry.file_type()?.is_file()
+            || entry
+                .path()
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("json")
+        {
+            continue;
+        }
+        let record: crate::types::InstalledMeta = serde_json::from_slice(
+            &std::fs::read(entry.path())
+                .with_context(|| format!("reading {}", entry.path().display()))?,
+        )
+        .with_context(|| format!("parsing {}", entry.path().display()))?;
+        let apm = record.apm.as_ref().with_context(|| {
+            format!(
+                "immutable image catalog entry {} has no APM metadata",
+                entry.path().display()
+            )
+        })?;
+        if record.pushed_by != "aos-image" || apm.registry != "seed" {
+            anyhow::bail!(
+                "immutable image catalog entry '{}' has invalid image provenance",
+                apm.name
+            );
+        }
+        require_immutable_image_path(&record.store_path, "catalog runtime output")?;
+        if catalog.insert(record.store_path.clone(), record).is_some() {
+            anyhow::bail!("immutable image package catalog contains a duplicate store path");
+        }
+    }
+    Ok(catalog)
+}
+
+fn require_immutable_image_path(path: &str, kind: &str) -> Result<PathBuf> {
+    let lower = super::runtime::immutable_lower_store_path(path)?;
+    if !lower.exists() {
+        anyhow::bail!("image {kind} {path} is absent from the immutable image store");
+    }
+    Ok(lower)
+}
+
+fn validate_image_seed_metadata(
+    profile: &crate::types::ApmMeta,
+    immutable: &crate::types::ApmMeta,
+) -> Result<()> {
+    if serde_json::to_value(profile)? != serde_json::to_value(immutable)? {
+        anyhow::bail!(
+            "image-seeded package '{}' disagrees with immutable image metadata",
+            profile.name
+        );
+    }
+    Ok(())
 }
 
 impl ConfigModuleResolver for RegistryConfigModules {
@@ -683,7 +805,7 @@ impl ConfigModuleResolver for RegistryConfigModules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ModuleAbiCompat;
+    use crate::types::{ApmMeta, ModuleAbiCompat};
 
     fn member(pkg: &str, config_output: Option<&str>) -> WorkingSetMember {
         WorkingSetMember {
@@ -698,6 +820,42 @@ mod tests {
             authorization: super::super::PackageAuthorization::default(),
             outputs: super::super::PackageOutputs::default(),
         }
+    }
+
+    fn image_seed_metadata() -> ApmMeta {
+        ApmMeta {
+            name: "web".to_string(),
+            version: "1.0.0".to_string(),
+            explicit: true,
+            registry: "seed".to_string(),
+            installed_at: "1970-01-01T00:00:00Z".to_string(),
+            held: false,
+            source_drv: "/nix/store/source-web.drv".to_string(),
+            source_nar_hash: "sha256:source".to_string(),
+            expose: None,
+            expose_artifact: None,
+            config_module: None,
+            permissions: Default::default(),
+            bpf_lsm: None,
+            attestation: Default::default(),
+        }
+    }
+
+    #[test]
+    fn mutable_image_seed_metadata_must_match_the_immutable_catalog() {
+        let immutable = image_seed_metadata();
+        let mut profile = immutable.clone();
+        assert!(validate_image_seed_metadata(&profile, &immutable).is_ok());
+
+        profile.held = true;
+        let error = validate_image_seed_metadata(&profile, &immutable)
+            .expect_err("mutable profile forgery must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("disagrees with immutable image metadata"),
+            "{error:#}"
+        );
     }
 
     #[test]

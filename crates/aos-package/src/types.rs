@@ -2945,6 +2945,11 @@ pub struct ImageGeneration {
     /// `systemd-measure` was unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_pcr11: Option<String>,
+    /// PCR-11 observed in initrd for immutable-image identity reconciliation.
+    /// This is deliberately separate from the published stable `ready` value
+    /// in [`Self::expected_pcr11`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initrd_pcr11: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -5564,6 +5569,7 @@ provenance = "provenance/firewall.jsonl"
                     baselib_digest: "sha256:aa".into(),
                     root_verity_roothash: Some("deadbeef".into()),
                     expected_pcr11: None,
+                    initrd_pcr11: None,
                     created_at: "2026-06-01T00:00:00Z".into(),
                 },
                 ImageGeneration {
@@ -5580,6 +5586,7 @@ provenance = "provenance/firewall.jsonl"
                     baselib_digest: "sha256:bb".into(),
                     root_verity_roothash: None,
                     expected_pcr11: None,
+                    initrd_pcr11: None,
                     created_at: "2026-06-02T00:00:00Z".into(),
                 },
             ],

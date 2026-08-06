@@ -1912,8 +1912,13 @@ concrete.
   closure only transitively via the root (F1) — recorded for re-derivation.
 - `config_modules.origins` — one `registry` or `image` origin aligned with each
   module path. `image` means the exact config companion came from the active
-  image-seeded package profile; its NAR is verified locally and its trust is
-  bound by the quoted dm-verity image root and PCR 11.
+  image-seeded package profile. The evaluator resolves the booted toplevel's
+  `package-profile-seed` through `/nix.lower/store`, requires the mutable
+  profile record to exactly match that immutable seed record, requires all
+  referenced outputs to exist in the immutable lower store, and hashes the
+  lower-store NAR bytes. A remote verifier independently reconstructs the same
+  image-module catalog and requires an exact tuple match; a claimed
+  `origin=image` value absent from that catalog fails closed.
 - Registry-origin `config_modules.*` — from the resolver's `TrustContext`: `registry`,
   `release_tag` (the `verify_tag_chain` target, `registry/verify.rs:99`),
   `tag_signer_key` (`security.rs::key_fingerprint`), `realization` (sha256 of the
@@ -2003,6 +2008,9 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
            independently reverified release object
        AND module membership, NAR hashes, and realization are reconstructed
            from that signed commit
+       AND every image-origin module exactly matches the verifier's immutable
+           image package-seed catalog (path, NAR identity, ABI, and authorized
+           option roots); no uncataloged image tuple is accepted
   8. host_nix.trust_mode == "platform"
        AND host_nix.platform ∈ trusted_platforms
      OR host_nix.trust_mode == "signed"
@@ -2018,6 +2026,11 @@ verify(record, ak_pubkey, registry_catalog, trusted_config_keys, trusted_platfor
         config_modules@realization, host_nix@content_hash,
         instance_facts@facts_hash), re-run the pure eval and check
         sha256(canonical(manifest)) == record.manifest_hash      else FAIL(rederive)
+ 11. before blessing a counted boot, the local boot-commit verifier validates
+       the stored TPM quote signature and nonce, requires PCR 7 and ready-phase
+       PCR 11 in that quote to equal the live values, and requires PCR 11 to
+       equal the independently published image value. A missing or failed
+       systemd-pcrphase ready transition prevents evaluation and blessing.
   => PASS
 ```
 

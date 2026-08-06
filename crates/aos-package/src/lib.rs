@@ -858,6 +858,19 @@ pub enum AttestCommand {
         #[arg(long = "catalog-file")]
         catalog_file: PathBuf,
     },
+    /// Verify the local generation quote before blessing a booted image.
+    #[command(name = "__verify-boot-commit", hide = true)]
+    VerifyBootCommit {
+        /// Generation-attestation JSON record produced by activation
+        #[arg(long = "generation-attestation")]
+        generation_attestation: PathBuf,
+        /// Private quote bundle published beside the generation record
+        #[arg(long = "quote-dir")]
+        quote_dir: PathBuf,
+        /// Catalog-published stable PCR 11, when the image record has one
+        #[arg(long = "expected-pcr11")]
+        expected_pcr11: Option<String>,
+    },
     /// Verify a package event log against a PCR 15 value or quote bundle
     Verify {
         /// Use system registry metadata
@@ -913,7 +926,9 @@ impl AttestCommand {
         match self {
             AttestCommand::Verify { system, .. } => *system,
             AttestCommand::Catalog { system, .. } => *system,
-            AttestCommand::Quote { .. } | AttestCommand::Enroll { .. } => false,
+            AttestCommand::Quote { .. }
+            | AttestCommand::Enroll { .. }
+            | AttestCommand::VerifyBootCommit { .. } => false,
         }
     }
 }
@@ -2577,6 +2592,22 @@ pub async fn run(
         );
     }
 
+    if let PackageCommand::Attest {
+        command:
+            AttestCommand::VerifyBootCommit {
+                generation_attestation,
+                quote_dir,
+                expected_pcr11,
+            },
+    } = command
+    {
+        return verify_local_boot_commit(
+            generation_attestation,
+            quote_dir,
+            expected_pcr11.as_deref(),
+        );
+    }
+
     // The hidden activate split runs during the activate script while that
     // script holds the switch lock. These paths talk to systemd over D-Bus,
     // need no apm config, and must return their own 0/1/2 exit codes (which
@@ -2825,6 +2856,9 @@ pub async fn run(
         PackageCommand::Attest {
             command: AttestCommand::Enroll { .. },
         } => unreachable!("AttestCommand::Enroll is handled before ApmConfig::load"),
+        PackageCommand::Attest {
+            command: AttestCommand::VerifyBootCommit { .. },
+        } => unreachable!("AttestCommand::VerifyBootCommit is handled before ApmConfig::load"),
         PackageCommand::Hold { package } => hold::run_hold(&config, package, printer).await,
         PackageCommand::Unhold { package } => hold::run_unhold(&config, package, printer).await,
         PackageCommand::Held { .. } => hold::run_held(&config, printer).await,
@@ -2975,6 +3009,8 @@ struct GenerationVerifierPolicyFile {
     trusted_config_keys: Vec<String>,
     #[serde(default)]
     trusted_platforms: Vec<String>,
+    #[serde(default)]
+    image_config_modules: Vec<attestation::VerifiedConfigModuleMember>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -3301,6 +3337,7 @@ where
         roster_fingerprints: roster,
         revoked_roster_fingerprints: revoked,
         valid_release_tags: release.into_iter().collect(),
+        image_config_modules: policy_file.image_config_modules,
     };
     attestation::verify_gen_attestation(
         &record,
@@ -3331,6 +3368,69 @@ fn hash_rederived_manifest(path: &Path) -> Result<String> {
     )
     .with_context(|| format!("parsing {}", path.display()))?;
     Ok(graph_compile::reproject::hash_cjson(&value))
+}
+
+fn verify_local_boot_commit(
+    record_path: &Path,
+    quote_dir: &Path,
+    catalog_expected_pcr11: Option<&str>,
+) -> Result<()> {
+    let record: attestation::GenAttestation = serde_json::from_slice(
+        &fs::read(record_path).with_context(|| format!("reading {}", record_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", record_path.display()))?;
+    if record.schema != attestation::GEN_ATTESTATION_SCHEMA
+        || record.quote_status != attestation::QUOTE_STATUS_QUOTED
+        || record.quote.is_empty()
+    {
+        bail!("generation attestation is not a complete quoted record");
+    }
+    let embedded: EmbeddedGenerationQuote = serde_json::from_slice(
+        &hex::decode(&record.quote).context("decoding embedded generation quote")?,
+    )
+    .context("parsing embedded generation quote")?;
+    let nonce = hex::encode(attestation::record_hash(&record)?);
+    if embedded.schema != "aos.gen-attestation-quote/v1"
+        || embedded.nonce != nonce
+        || embedded.pcr_selection != "sha256:7,11,12,15"
+    {
+        bail!("embedded generation quote does not bind the activation record and PCR policy");
+    }
+    let verified = package_attestation::verify_attestation_quote_bundle(quote_dir, &nonce, &[])?;
+    if embedded.ak_public != verified.bundle.ak_public
+        || embedded.quote_message != verified.bundle.quote_message
+        || embedded.quote_signature != verified.bundle.quote_signature
+        || embedded.quote_pcrs != verified.bundle.quote_pcrs
+        || !embedded
+            .quoted_pcr15
+            .eq_ignore_ascii_case(&verified.quoted_pcr15)
+    {
+        bail!("embedded generation quote differs from the signature-verified bundle");
+    }
+    let record_expected = record
+        .inputs
+        .base_lib
+        .pcr11_expected
+        .as_deref()
+        .context("generation attestation has no expected PCR 11")?
+        .trim_start_matches("sha256:");
+    if !verified.quoted_pcr11.eq_ignore_ascii_case(record_expected)
+        || catalog_expected_pcr11.is_some_and(|expected| {
+            !verified
+                .quoted_pcr11
+                .eq_ignore_ascii_case(expected.trim_start_matches("sha256:"))
+        })
+    {
+        bail!("generation quote PCR 11 does not match the published image expectation");
+    }
+    let live_pcr7 = package_attestation::current_pcr7()?;
+    let live_pcr11 = package_attestation::current_pcr11()?;
+    if !verified.quoted_pcr7.eq_ignore_ascii_case(&live_pcr7)
+        || !verified.quoted_pcr11.eq_ignore_ascii_case(&live_pcr11)
+    {
+        bail!("generation quote does not bind the live PCR 7/11 state");
+    }
+    Ok(())
 }
 
 fn verified_generation_release(

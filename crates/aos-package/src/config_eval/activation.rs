@@ -1154,6 +1154,7 @@ mod tests {
                 baselib_digest: format!("sha256:{}", "0".repeat(64)),
                 root_verity_roothash: None,
                 expected_pcr11: None,
+                initrd_pcr11: None,
                 created_at: "1970-01-01T00:00:00Z".to_string(),
             }),
             image_profile: root.path().join("image-profile"),

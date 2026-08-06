@@ -513,6 +513,7 @@ in {
                 ln -sfn ${config.system.build.initrd} $out/initrd
                 ln -sfn ${config.system.build.activateScript} $out/activate
                 ln -sfn ${config.aos.config.evalAtBoot.baseLib} $out/base-lib
+                ln -sfn ${config.system.build.aosPackageProfileSeed} $out/package-profile-seed
 
                 # `aos-seed-profiles.service` reads these on first boot
                 # to populate `state.json`. Plain text — `read_meta`

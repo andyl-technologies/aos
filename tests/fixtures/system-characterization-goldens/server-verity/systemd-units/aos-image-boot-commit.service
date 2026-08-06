@@ -81,6 +81,21 @@ if ! /nix/store/<hash>-jq-1.8.1/bin/jq -e \
   echo "aos-image-boot-commit: measured boot requires a quoted generation attestation" >&2
   exit 1
 fi
+expected_pcr11=$(/nix/store/<hash>-jq-1.8.1/bin/jq -r \
+  --argjson running "$running" \
+  '[.generations[] | select(.number == $running) | .expected_pcr11][0] // ""' \
+  "$state")
+quote_dir="/var/lib/profiles/system/gen-$current/gen-attestation-quote"
+if [ -n "$expected_pcr11" ]; then
+  /nix/store/<hash>-aos-0.1.0/bin/apm attest __verify-boot-commit \
+    --generation-attestation "$attestation" \
+    --quote-dir "$quote_dir" \
+    --expected-pcr11 "$expected_pcr11"
+else
+  /nix/store/<hash>-aos-0.1.0/bin/apm attest __verify-boot-commit \
+    --generation-attestation "$attestation" \
+    --quote-dir "$quote_dir"
+fi
 
 if [ "$parent" != "$running" ]; then
   echo "aos-image-boot-commit: configuration has not rebound to running image $running" >&2

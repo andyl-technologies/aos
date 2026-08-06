@@ -332,20 +332,14 @@ async fn fetch_inner(
         .get(package)
         .with_context(|| format!("manifest has no runtime output pin for package '{package}'"))?;
     let known_paths = pinned_named_paths(pin);
-    let missing = filter_missing(&known_paths)
-        .await
-        .context("checking pinned closure validity")?;
     if pin.origin == RuntimePackageOrigin::Image {
-        if !missing.is_empty() {
-            bail!(
-                "image-local closure for '{package}' is incomplete: {}",
-                missing.join(", ")
-            );
-        }
-        verify_local_closure(pin)?;
+        verify_image_closure(pin)?;
         write_marker(&fetch_marker(marker_root, package), &manifest, package)?;
         return Ok(known_paths);
     }
+    let missing = filter_missing(&known_paths)
+        .await
+        .context("checking pinned closure validity")?;
     let registry = config
         .find_registry(&pin.registry)
         .map(|(registry, _)| registry)
@@ -434,7 +428,7 @@ async fn fetch_inner(
     Ok(known_paths)
 }
 
-fn verify_local_closure(pin: &RuntimePackagePin) -> Result<()> {
+fn verify_image_closure(pin: &RuntimePackagePin) -> Result<()> {
     for member in &pin.closure {
         let path = member.store_path.as_deref().with_context(|| {
             format!(
@@ -442,7 +436,11 @@ fn verify_local_closure(pin: &RuntimePackagePin) -> Result<()> {
                 member.store_path_hash
             )
         })?;
-        let (hash, size) = crate::config_eval::runtime::local_store_identity(path)?;
+        let lower_path = crate::config_eval::runtime::immutable_lower_store_path(path)?;
+        if !lower_path.exists() {
+            bail!("image-local store path {path} is absent from the immutable image store");
+        }
+        let (hash, size) = crate::config_eval::runtime::local_store_identity_at(path, &lower_path)?;
         if !blessed_nars(pin, &member.store_path_hash)?
             .iter()
             .any(|expected| expected.matches(&hash, size))

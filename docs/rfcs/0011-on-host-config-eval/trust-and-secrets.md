@@ -206,8 +206,9 @@ cumulative PCR 15; quote covers PCR 7, 11, 12, 15):
 ```
 
 A verifier confirms (a) PCR-7 and ready-phase PCR-11 plus the dm-verity root match the image
-catalog, thereby authenticating every `image`-origin module, and
-PCR-11 matches the registry's recorded `expected_pcr11`
+catalog, and every `image`-origin module exactly matches the independently
+recovered immutable package seed catalog carried by that image; mutable profile
+metadata is not an authority. PCR-11 also matches the registry's recorded `expected_pcr11`
 (`registry-catalog.md:42-52`, reused — not a parallel value), (b) `release_tag`
 is signed by a roster key and not revoked for the registry-origin subset, (c) the recorded configuration trust
 evidence satisfies the named policy (platform binding or trusted signed-mode
