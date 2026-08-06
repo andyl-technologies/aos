@@ -182,7 +182,8 @@ option; it is not part of the shipped production interface.
 | `--strategy <bfs\|dfs\|guided>` | Default `bfs` | Expand breadth-first, depth-first, or by coverage guidance. |
 | `--max-depth <n>` | Optional | Bound decision depth. |
 | `--max-states <n>` | Default `1` | Bound materialized states. Set this explicitly for useful campaigns. |
-| `--on-violation <stop\|collect>` | Engine default `stop` when omitted | Stop at the first counterexample or continue within the supplied budget. |
+| `--on-violation <stop\|collect>` | Engine default `stop` when omitted | Stop at the first property/timeout finding or continue within the supplied budget. |
+| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Override the signed findings-ledger output path. |
 | `--schedule-named-truths <path>` | Optional | Load schedule-named assertion truth data. |
 | `--retained-evidence <path>` | Hidden/internal | Load backend-retained assertion evidence for gate workflows. |
 
@@ -194,7 +195,7 @@ Search policy values:
 | `--strategy dfs` | Follow a frontier deeply before returning to siblings. |
 | `--strategy guided` | Use coverage feedback to prioritize frontiers. |
 | `--on-violation stop` | Stop after the first counterexample. |
-| `--on-violation collect` | Continue exploring within the configured budget. See the exploration guide for current artifact-retention limits. |
+| `--on-violation collect` | Continue exploring within the configured budget and retain every distinct property or timeout finding. |
 
 ### `fuzz`
 
@@ -207,12 +208,14 @@ Supply the family either positionally or with `--family`, never both.
 | `--runs <n>` | Default `1` | Number of concrete family instances to run. |
 | `--coverage <basic-block>` | Default `basic-block` | Select the coverage feedback signal. |
 | `--corpus <path>` | Optional | Seed and regression corpus directory. |
+| `--on-violation <stop\|collect>` | Default `stop` | Stop at the first property/timeout finding or retain findings through the run budget. |
+| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Override the signed findings-ledger output path. |
 
 ### `triage`
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `FINDINGS` | Required | Engine-owned findings ledger. |
+| `FINDINGS` | Required | Signed findings ledger emitted by `search` or `fuzz`. |
 | `--policy <coarse\|default\|fine\|exact>` | Default `default` | Select how much failure evidence participates in a cluster signature. Finer policies split more findings. |
 | `--minimize <none\|representative\|all>` | Default `representative` | Skip minimization, minimize one deterministic representative per cluster, or minimize every selected representative. |
 | `--report <dir>` | Default below `--artifact-dir` | Write per-cluster reports here. |

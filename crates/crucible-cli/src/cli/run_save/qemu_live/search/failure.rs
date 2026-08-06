@@ -9,30 +9,31 @@ pub(super) fn qemu_search_terminal_failure(
     let crucible_session::EngineState::Stopped { outcome } = &snapshot.state else {
         return Ok(None);
     };
-    let violations = match outcome {
-        crucible_session::Outcome::Failed { violations } => violations,
+    let failure_material = match outcome {
+        crucible_session::Outcome::Failed { violations } => {
+            let mut canonical_violations = violations.clone();
+            canonical_violations.sort();
+            canonical_violations.dedup();
+            format!(
+                "kind=property\nviolations={}",
+                canonical_violations.join("\n")
+            )
+        }
         crucible_session::Outcome::Crashed { detail } => {
             return Err(backend_error(format!(
                 "live QEMU search backend crashed: {detail}"
             )));
         }
-        crucible_session::Outcome::Timeout => {
-            return Err(backend_error(
-                "live QEMU search exhausted a session budget before reaching a search frontier",
-            ));
-        }
+        crucible_session::Outcome::Timeout => String::from("kind=timeout"),
         crucible_session::Outcome::Passed | crucible_session::Outcome::Stopped => return Ok(None),
     };
-    let mut canonical_violations = violations.clone();
-    canonical_violations.sort();
-    canonical_violations.dedup();
     let configuration = snapshot.configuration.clone();
     let fingerprint = crucible::ContentHash::from_canonical_material(
         "crucible.live-qemu-search-failure.v1",
         &format!(
-            "configuration={}\nviolations={}",
+            "configuration={}\n{}",
             configuration.id().to_hex(),
-            canonical_violations.join("\n")
+            failure_material
         ),
     );
     let reproduction_artifact = crucible::FindingReproductionArtifact::capture(
@@ -123,6 +124,14 @@ mod tests {
         let scenario = crucible::happy_path_scenario()?.scenario;
         let passed = snapshot_with_outcome(&scenario, crucible_session::Outcome::Passed);
         assert!(qemu_search_terminal_failure(&scenario, &passed)?.is_none());
+
+        let timeout = snapshot_with_outcome(&scenario, crucible_session::Outcome::Timeout);
+        let timeout_finding = qemu_search_terminal_failure(&scenario, &timeout)?
+            .ok_or_else(|| std::io::Error::other("timeout produced no search finding"))?;
+        assert_eq!(
+            timeout_finding.reproduction_artifact.discovery_path,
+            crucible::FindingDiscoveryPath::StateSpaceSearch
+        );
 
         let crashed = snapshot_with_outcome(
             &scenario,
