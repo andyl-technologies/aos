@@ -243,7 +243,6 @@ pub enum SchedulerWorldInstantiationError {
 #[derive(Clone, Debug)]
 pub struct WorldNetworkLinkRuntime {
     pub(super) canonical_id: LinkId,
-    pub(super) legacy_id: Option<LinkId>,
     pub(super) endpoint_a: NodeId,
     pub(super) endpoint_b: NodeId,
     pub(super) direction: NetworkLinkDirection,
@@ -255,8 +254,7 @@ pub struct WorldNetworkLinkRuntime {
 
 impl WorldNetworkLinkRuntime {
     pub(super) fn matches(&self, link: &LinkId, direction: NetworkLinkDirection) -> bool {
-        self.direction == direction
-            && (&self.canonical_id == link || self.legacy_id.as_ref() == Some(link))
+        self.direction == direction && &self.canonical_id == link
     }
 
     /// Returns the canonical collision-free logical link identifier.

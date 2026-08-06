@@ -1444,22 +1444,19 @@ pub(super) fn trigger_log_level_label(level: LogLevel) -> &'static str {
     }
 }
 
-pub(super) fn scheduler_link_ids_for_nodes(left: &NodeId, right: &NodeId) -> [LinkId; 2] {
+pub(super) fn scheduler_link_id_for_nodes(left: &NodeId, right: &NodeId) -> LinkId {
     let (endpoint_a, endpoint_b) = if left <= right {
         (left, right)
     } else {
         (right, left)
     };
-    [
-        LinkId::from_name(format!(
-            "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
-            endpoint_a.name.len(),
-            endpoint_a.name,
-            endpoint_b.name.len(),
-            endpoint_b.name
-        )),
-        LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name)),
-    ]
+    LinkId::from_name(format!(
+        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+        endpoint_a.name.len(),
+        endpoint_a.name,
+        endpoint_b.name.len(),
+        endpoint_b.name
+    ))
 }
 
 pub(super) fn instantiate_world_network_links(
@@ -1470,18 +1467,9 @@ pub(super) fn instantiate_world_network_links(
     SchedulerWorldInstantiationError,
 > {
     let mut links = BTreeMap::new();
-    let mut legacy_counts = BTreeMap::new();
-    for definition in world.links() {
-        let legacy =
-            scheduler_link_ids_for_nodes(definition.endpoints().0, definition.endpoints().1)[1]
-                .clone();
-        let count = legacy_counts.entry(legacy).or_insert(0_usize);
-        *count = count.saturating_add(1);
-    }
     for (index, definition) in world.links().iter().enumerate() {
-        let [canonical_id, legacy_id] =
-            scheduler_link_ids_for_nodes(definition.endpoints().0, definition.endpoints().1);
-        let legacy_id = (legacy_counts.get(&legacy_id) == Some(&1)).then_some(legacy_id);
+        let canonical_id =
+            scheduler_link_id_for_nodes(definition.endpoints().0, definition.endpoints().1);
         for (direction_index, direction) in [
             NetworkLinkDirection::EndpointAToEndpointB,
             NetworkLinkDirection::EndpointBToEndpointA,
@@ -1519,7 +1507,6 @@ pub(super) fn instantiate_world_network_links(
                 (canonical_id.clone(), direction),
                 WorldNetworkLinkRuntime {
                     canonical_id: canonical_id.clone(),
-                    legacy_id: legacy_id.clone(),
                     endpoint_a: definition.endpoints().0.clone(),
                     endpoint_b: definition.endpoints().1.clone(),
                     direction,

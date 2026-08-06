@@ -1144,20 +1144,7 @@ pub(super) fn world_device_kind_name(kind: WorldDeviceKind) -> &'static str {
 }
 
 pub(super) fn event_graph_link_ids(links: &[LinkDef]) -> BTreeSet<LinkId> {
-    let mut ids = BTreeSet::new();
-    let mut legacy_counts = BTreeMap::new();
-    for link in links {
-        ids.insert(canonical_link_id_for_world_link(link));
-        let legacy = legacy_link_id_for_world_link(link);
-        let count = legacy_counts.entry(legacy).or_insert(0_usize);
-        *count = count.saturating_add(1);
-    }
-    for (legacy, count) in legacy_counts {
-        if count == 1 {
-            ids.insert(legacy);
-        }
-    }
-    ids
+    links.iter().map(canonical_link_id_for_world_link).collect()
 }
 
 pub(super) fn canonical_link_id_for_world_link(link: &LinkDef) -> LinkId {
@@ -1169,11 +1156,6 @@ pub(super) fn canonical_link_id_for_world_link(link: &LinkDef) -> LinkId {
         endpoint_b.name.len(),
         endpoint_b.name
     ))
-}
-
-pub(super) fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
-    let (endpoint_a, endpoint_b) = link.endpoints();
-    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
 }
 
 pub(super) fn armed_timer_names(events: &[Event]) -> BTreeSet<TimerId> {
