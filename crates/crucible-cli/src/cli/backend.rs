@@ -1109,6 +1109,7 @@ pub(super) fn subcommand_uses_backend_selection(command: &Commands) -> bool {
             | Commands::Replay(_)
             | Commands::Search(_)
             | Commands::Fuzz(_)
+            | Commands::Debug(_)
             | Commands::Serve(_)
     )
 }

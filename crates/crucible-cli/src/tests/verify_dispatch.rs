@@ -2955,6 +2955,30 @@ pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<
 }
 
 #[test]
+pub(super) fn cli_remote_debug_selects_the_daemon_backend_route() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "http://127.0.0.1:9000",
+        "--trusted-unauthenticated-daemon",
+        "debug",
+        "--session",
+        "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "--node",
+        "node-a",
+        "attach-gdb",
+    ]);
+
+    let plan = plan_backend_selection(&cli)?.ok_or("debug must select a backend route")?;
+
+    assert_eq!(plan.target, BackendExecutionTarget::RemoteDaemon);
+    assert_eq!(plan.reason, BackendSelectionReason::RemoteDaemon);
+    assert_eq!(plan.daemon.as_deref(), Some("http://127.0.0.1:9000"));
+    assert!(plan.remote_uses_control_api);
+    Ok(())
+}
+
+#[test]
 pub(super) fn cli_debug_reverse_condition_parser_accepts_documented_forms() {
     assert_eq!(
         parse_debug_reverse_condition("quiescent")
