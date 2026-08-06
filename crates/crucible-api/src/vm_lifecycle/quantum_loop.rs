@@ -46,21 +46,28 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             for node in self.source.world().vm_nodes() {
                 let counter = self.inner.backend().node_now(&node.id)?.ticks;
                 let scheduler_time = self.inner.loop_impl().scheduler_time_for_node(&node.id)?;
-                counters.push((node.id.clone(), counter));
-                self.checkpoint_targets.insert(
-                    node.id.clone(),
-                    ProductionVmCheckpointReplayTarget {
-                        configuration: request.configuration.clone(),
-                        counter,
-                        scheduler_time,
-                        control_count: self.recorded_controls.len(),
-                    },
-                );
+                counters.push((node.id.clone(), counter, scheduler_time));
             }
             counters
         } else {
             Vec::new()
         };
+        let snapshot_fault_checkpoint = if snapshot_counters.is_empty() {
+            None
+        } else {
+            Some(
+                self.fault_runtime
+                    .checkpoint(self.inner.backend_mut())
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "capture signal fault continuation at checkpoint boundary: {error}"
+                        ),
+                    })?,
+            )
+        };
+        let snapshot_configuration =
+            (!snapshot_counters.is_empty()).then(|| request.configuration.clone());
+        let snapshot_control_count = self.recorded_controls.len();
         if let Some(branch) = self.branch.as_ref() {
             let frontier = self.inner.loop_impl().frontier();
             if frontier > branch.frontier {
@@ -134,10 +141,34 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         for append in self.settle_trigger_graph()? {
             merge_event_log_append(&mut outcome, append);
         }
-        for (node, counter) in snapshot_counters {
+        for (node, counter, scheduler_time) in snapshot_counters {
             self.inner
                 .loop_impl_mut()
                 .record_node_checkpoint_at(&node, crucible::NodeCounter { ticks: counter })?;
+            let fault_checkpoint =
+                snapshot_fault_checkpoint.as_ref().cloned().ok_or_else(|| {
+                    SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "checkpoint boundary completed without a signal fault continuation",
+                        ),
+                    }
+                })?;
+            self.checkpoint_targets.insert(
+                node,
+                ProductionVmCheckpointReplayTarget {
+                    configuration: snapshot_configuration.as_ref().cloned().ok_or_else(|| {
+                        SchedulerError::BoundaryViolation {
+                            message: String::from(
+                                "checkpoint boundary lost its configuration identity",
+                            ),
+                        }
+                    })?,
+                    counter,
+                    scheduler_time,
+                    control_count: snapshot_control_count,
+                    fault_checkpoint,
+                },
+            );
         }
         self.reconcile_backend_membership()?;
         Ok(outcome)

@@ -240,6 +240,22 @@ impl ProductionVmLifecycleLoop {
                 ),
             });
         }
+        let reconstructed_fault_checkpoint = replay
+            .fault_runtime
+            .checkpoint(replay.inner.backend_mut())
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("checkpoint reconstructed signal fault continuation: {error}"),
+            })?;
+        if reconstructed_fault_checkpoint.id() != target.fault_checkpoint.id() {
+            let _ = replay.shutdown();
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "QEMU thin replay reconstructed signal fault continuation {}, expected {}",
+                    reconstructed_fault_checkpoint.id().to_hex(),
+                    target.fault_checkpoint.id().to_hex(),
+                ),
+            });
+        }
         let (mut backend, run_directory) = replay.take_replayed_node(node)?;
         let observed = SimulationBackend::now(&backend).ticks;
         if self.inner.backend().contains(node) {
