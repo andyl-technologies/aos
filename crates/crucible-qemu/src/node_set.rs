@@ -99,6 +99,81 @@ impl QemuNodeSet {
             })
     }
 
+    /// Derives the node capability manifest common to every live QEMU process.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when a capability identifier is invalid. An
+    /// empty node set advertises no executable node effects.
+    pub fn fault_capability_manifest(
+        &self,
+    ) -> Result<crucible::model::FaultCapabilityManifest, BackendError> {
+        use crucible::model::{FaultCapabilityId, FaultCapabilityManifest, FaultObjectId};
+        use crucible_shmem::FaultCommandKind;
+
+        let mut common = self
+            .nodes
+            .values()
+            .next()
+            .map(|node| {
+                node.fault_capabilities()
+                    .iter()
+                    .map(|row| row.command_kind)
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        for node in self.nodes.values().skip(1) {
+            let supported = node
+                .fault_capabilities()
+                .iter()
+                .map(|row| row.command_kind)
+                .collect::<std::collections::BTreeSet<_>>();
+            common.retain(|kind| supported.contains(kind));
+        }
+        let capability_for = |kind| match kind {
+            FaultCommandKind::NodeLifecycle => Some("qemu.node.lifecycle.v1"),
+            FaultCommandKind::NodeHang => Some("qemu.node.hang.v1"),
+            FaultCommandKind::CpuService => Some("qemu.cpu.service.v1"),
+            FaultCommandKind::CpuVcpuState => Some("qemu.cpu.vcpu-state.v1"),
+            FaultCommandKind::CpuRegisterTransform => Some("qemu.cpu.register-transform.v1"),
+            FaultCommandKind::CpuInstructionTransform => Some("qemu.cpu.instruction-transform.v1"),
+            FaultCommandKind::CpuException => Some("qemu.cpu.exception.v1"),
+            FaultCommandKind::InterruptDisposition => Some("qemu.interrupt.control.v1"),
+            FaultCommandKind::InterruptStorm => Some("qemu.interrupt.storm.v1"),
+            FaultCommandKind::MemoryMutation => Some("qemu.memory.mutate.v1"),
+            FaultCommandKind::MemoryAccessTransform => Some("qemu.memory.access-transform.v1"),
+            FaultCommandKind::MemoryEccEvent => Some("qemu.memory.ecc-event.v1"),
+            FaultCommandKind::MemoryRegionState => Some("qemu.memory.region-state.v1"),
+            FaultCommandKind::MemoryService => Some("qemu.memory.service.v1"),
+            FaultCommandKind::ClockTransform => Some("qemu.clock.transform.v1"),
+            FaultCommandKind::ClockSourceState => Some("qemu.clock.source-state.v1"),
+            FaultCommandKind::AcceleratorLifecycle => Some("qemu.accelerator.lifecycle.v1"),
+            FaultCommandKind::AcceleratorResultTransform => {
+                Some("qemu.accelerator.result-transform.v1")
+            }
+            FaultCommandKind::AcceleratorMemoryEvent => Some("qemu.accelerator.memory-event.v1"),
+            FaultCommandKind::AcceleratorService => Some("qemu.accelerator.service.v1"),
+            FaultCommandKind::QueryCapabilities | FaultCommandKind::BoundaryProbe => None,
+        };
+        let capabilities = common
+            .into_iter()
+            .filter_map(capability_for)
+            .map(FaultCapabilityId::parse)
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()
+            .map_err(|error| BackendError::Rejected {
+                message: error.to_string(),
+            })?;
+        let backend =
+            FaultObjectId::parse("node-qemu").map_err(|error| BackendError::Rejected {
+                message: error.to_string(),
+            })?;
+        Ok(FaultCapabilityManifest {
+            backend,
+            capabilities,
+            bounds: BTreeMap::new(),
+        })
+    }
+
     /// Publishes one authenticated QEMU fault command for `node`.
     ///
     /// # Errors

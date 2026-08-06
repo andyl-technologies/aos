@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crucible::model::{
-    BindingEvaluation, ContentHash, FaultAdapterManifests, FaultCoordinate, FaultExecutionError,
-    FaultOpportunity, FaultRuntimeCheckpoint, FaultSignalPlan, HostFaultActionSink,
-    HostFaultActionState, OwnedFaultExecutionRuntime, SignalArtifactProvider,
+    BindingEvaluation, ContentHash, FaultAdapter, FaultAdapterManifests, FaultCoordinate,
+    FaultExecutionError, FaultOpportunity, FaultRuntimeCheckpoint, FaultSignalPlan,
+    HostFaultActionSink, HostFaultActionState, OwnedFaultExecutionRuntime, SignalArtifactProvider,
     SignalBoundarySnapshot,
 };
 use crucible::{BackendError, NodeId};
@@ -66,15 +66,16 @@ impl ProductionFaultRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`FaultExecutionError`] when graph state or an exact backend
+    /// Returns [`ProductionFaultRuntimeError`] when graph state or an exact backend
     /// capability required by a nonempty plan cannot be admitted.
     pub fn new(
         plan: FaultSignalPlan,
         artifacts: Arc<dyn SignalArtifactProvider>,
         boundary: SignalBoundarySnapshot,
         scenario_seed: ContentHash,
-        manifests: FaultAdapterManifests,
+        nodes: &QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
+        let manifests = production_manifests(nodes)?;
         let runtime = if plan.programs().is_empty() {
             None
         } else {
@@ -96,16 +97,16 @@ impl ProductionFaultRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`FaultExecutionError`] when the checkpoint's runtime presence
+    /// Returns [`ProductionFaultRuntimeError`] when the checkpoint's runtime presence
     /// disagrees with the plan or any runtime identity/capability check fails.
     pub fn restore(
         plan: FaultSignalPlan,
         artifacts: Arc<dyn SignalArtifactProvider>,
         scenario_seed: ContentHash,
-        manifests: FaultAdapterManifests,
         checkpoint: ProductionFaultRuntimeCheckpoint,
         nodes: &mut QemuNodeSet,
     ) -> Result<Self, ProductionFaultRuntimeError> {
+        let manifests = production_manifests(nodes)?;
         if checkpoint.identity
             != production_checkpoint_identity(
                 plan.id(),
@@ -311,6 +312,18 @@ fn production_checkpoint_identity(
         "crucible.production-fault-runtime-checkpoint.v1",
         &hex_bytes(&material),
     )
+}
+
+fn production_manifests(
+    nodes: &QemuNodeSet,
+) -> Result<FaultAdapterManifests, ProductionFaultRuntimeError> {
+    Ok(FaultAdapterManifests {
+        network: HostFaultActionSink::capability_manifest(FaultAdapter::Network)
+            .map_err(FaultExecutionError::from)?,
+        storage: HostFaultActionSink::capability_manifest(FaultAdapter::Storage)
+            .map_err(FaultExecutionError::from)?,
+        node: nodes.fault_capability_manifest()?,
+    })
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
