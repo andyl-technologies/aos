@@ -105,6 +105,22 @@ pty [--columns N --rows N] -- <program> [args...]
 ssh
 ```
 
+The Crucible suite ships its matching hermetic GNU GDB as
+`./result/bin/gdb`. Start the relay in one terminal, copy the loopback address
+it prints, and connect from a second terminal:
+
+```sh
+./result/bin/crucible [daemon TLS flags] \
+  debug --session <id:epoch:seed> --node node-a attach-gdb
+
+./result/bin/gdb /path/to/guest-symbols \
+  -ex 'target remote 127.0.0.1:<port>'
+```
+
+Crucible does not provide a symbol server. Supply the guest executable and
+DWARF files to GDB locally. The packaged GDB includes Python scripting, TUI,
+and both x86_64 and aarch64 target descriptions.
+
 `--allow-mutate` only authorizes the explicit `fork-debug` verb. It does not
 fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.

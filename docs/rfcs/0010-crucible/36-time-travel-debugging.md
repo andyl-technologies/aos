@@ -1401,11 +1401,24 @@ complete from model-double evidence.
   raw-terminal mode and forwards `SIGWINCH` dimensions as typed resize records.
   Completion remains open for transcript persistence and live x86_64/aarch64
   evidence.
-- [ ] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
+- [x] **T-DBG-13** Package GNU GDB hermetically from source and add user workflows
   for local/remote GDB, reverse commands, guest exec, PTY, and SSH compatibility. —
   satisfies [DBG-47]; spec §36.9.4; cross-ref 23, 26.
+  Completed by `checks.crucible.phase7.debuggerPackage`: GNU GDB 17.2 is built
+  from pinned source using only AOS packages, with Python scripting, TUI,
+  compressed debug-section support, and the all-target BFD/GDB configuration.
+  The `crucible` suite exposes the matching `gdb` and `gdbserver`; the package
+  gate executes Python and selects both x86_64 and aarch64 architectures. The
+  local and authenticated remote relay workflows, symbol ownership, reverse
+  commands, and guest exec/PTY/SSH workflows are documented for operators.
 - [ ] **T-DBG-14** Pass live x86_64 and aarch64 gates for read-only neutrality,
   hardware breakpoints, scheduler run control, atomic runtime replacement, stable
   GDB, and guest exec/PTY/SSH introspection without model doubles or fallback. Update S14 and the
   decision register only from captured live evidence. — satisfies [DBG-36],
   [DBG-41], [DBG-42], [DBG-47]; spec §36.9.4, §36.10.1.
+  In progress: `checks.crucible.phase7.debuggerLiveArchitectures` boots the
+  packaged x86_64 `microvm` and aarch64 `virt` emulators under TCG without a
+  model double, negotiates RSP with the packaged GDB, proves repeated register
+  reads are identical, and exercises insert/remove hardware-breakpoint packets.
+  Completion remains open for the full controller/gateway atomic replacement,
+  scheduler run-control, and guest-introspection matrix on both architectures.

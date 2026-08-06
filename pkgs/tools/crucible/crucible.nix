@@ -13,6 +13,7 @@
   crucible-fixtures,
   bash,
   qemu-crucible-source,
+  gdb,
   controllerOnly ? false,
 }: let
   version = "0.1.0";
@@ -222,6 +223,10 @@
     buildDeps = [rust.dev];
     runtimeDeps = [];
 
+    preBuild = ''
+      cd crates
+    '';
+
     postInstall = ''
       mkdir -p "$out/share/licenses/crucible-debug-gateway"
       cp ${../../../LICENSES/GPL-2.0-only.txt} \
@@ -248,6 +253,7 @@
     controllerPackage = controller;
     pluginPackage = crucible-qemu-plugin;
     debugGatewayPackage = debugGateway;
+    gdbPackage = gdb;
     qemuSourcePackage = qemu-crucible-source;
   };
   suite = mkDerivation {
@@ -255,7 +261,7 @@
     inherit version;
     src = null;
     buildDeps = [bash];
-    runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];
+    runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb];
     propagatedDeps = [];
     phases = [
       {
@@ -274,6 +280,8 @@
           exec ${controller}/bin/crucible "$@"
           EOF
           chmod +x "$out/bin/crucible"
+          ln -s ${gdb}/bin/gdb "$out/bin/gdb"
+          ln -s ${gdb}/bin/gdbserver "$out/bin/gdbserver"
 
           cat > "$out/share/aos/crucible/release-manifest.env" <<'CRUCIBLE_RELEASE_MANIFEST'
           ${releaseManifest.envText}
@@ -286,11 +294,12 @@
           cp ${../../../LICENSES/MIT.txt} "$out/share/licenses/crucible/MIT.txt"
           cp ${../../../LICENSES/GPL-2.0-only.txt} "$out/share/licenses/crucible/GPL-2.0-only.txt"
           cp ${../../../LICENSES/GPL-2.0-or-later.txt} "$out/share/licenses/crucible/GPL-2.0-or-later.txt"
+          cp ${gdb}/share/licenses/gdb/GPL-3.0.txt "$out/share/licenses/crucible/GPL-3.0.txt"
           mkdir -p "$out/nix-support"
           cat > "$out/nix-support/crucible-build-info" <<'INFO'
           package=crucible
           component=suite
-          component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later
+          component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later
           boundary_crates=crucible-protocol,crucible-shmem
           boundary_crates_license=MIT
           controller_package=crucible-controller
@@ -309,6 +318,9 @@
           debug_gateway_package=crucible-debug-gateway
           debug_gateway_path=${debugGateway}/bin/crucible-debug-gateway
           debug_gateway_license=GPL-2.0-only
+          gdb_package=gdb
+          gdb_path=${gdb}/bin/gdb
+          gdb_license=GPL-3.0-or-later
           qemu_corresponding_source_package=qemu-crucible-source
           qemu_corresponding_source_path=${qemu-crucible-source}
           qemu_corresponding_source_build_id=${qemu-crucible-source.passthru.qemuBuildIdentity}
@@ -336,6 +348,7 @@
     passthru = {
       inherit controller;
       debugGateway = debugGateway;
+      debugger = gdb;
       qemu = qemu-crucible;
       plugin = crucible-qemu-plugin;
       correspondingSource = qemu-crucible-source;
@@ -344,7 +357,7 @@
     meta = {
       description = "Crucible controller with the GPL QEMU backend";
       homepage = "https://github.com/andyl/andyl-os";
-      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"];
+      license = ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later"];
       mainProgram = "crucible";
     };
   };

@@ -181,6 +181,14 @@
     ) [
       "release manifest debugger gateway component is incomplete"
     ]
+    ++ lib.optionals (
+      manifest.components.gdb.package
+      != "gdb"
+      || manifest.components.gdb.license != "GPL-3.0-or-later"
+      || manifest.components.gdb.boundary != "operator-debugger-client"
+    ) [
+      "release manifest GDB component is incomplete"
+    ]
     ++ lib.optionals (manifest.components.qemu.licenses != ["GPL-2.0-only" "GPL-2.0-or-later" "MIT"]) [
       "release manifest QEMU component license inventory is incomplete"
     ]
@@ -438,7 +446,7 @@
       }
       {
         label = "aggregate project licenses include MIT";
-        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later";
+        needle = "aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later";
       }
       {
         label = "debug gateway component";
@@ -481,6 +489,10 @@
       {
         label = "debug gateway GPL license";
         needle = "\"license\":\"GPL-2.0-only\"";
+      }
+      {
+        label = "GDB component";
+        needle = "\"gdb\":{";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -543,7 +555,10 @@ in
           grep -q '^qemu_generated_boundary_header_license_option=MIT$' "$manifest_env"
           grep -q '^qemu_standalone_release=false$' "$manifest_env"
           grep -q '^qemu_release_via=crucible$' "$manifest_env"
-          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later$' "$manifest_env"
+          grep -q '^gdb_package=gdb$' "$manifest_env"
+          grep -q '^gdb_license=GPL-3.0-or-later$' "$manifest_env"
+          grep -q '^gdb_boundary=operator-debugger-client$' "$manifest_env"
+          grep -q '^aggregate_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later$' "$manifest_env"
           grep -q '^aggregate_license_scope=primary-project-components$' "$manifest_env"
           grep -q '^third_party_license_metadata=vendored-source-manifests$' "$manifest_env"
           grep -q '^publication_root_package=crucible$' "$manifest_env"

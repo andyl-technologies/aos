@@ -106,6 +106,9 @@ pub use vm_lifecycle::{
 // (control-plane boundary): the CLI depends on `crucible-api`, which legally
 // depends on `crucible-protocol`.
 pub use crucible_protocol::CONTROL_PROTOCOL_VERSION;
+pub use crucible_protocol::guest_introspection::{
+    GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream,
+};
 // Re-exported with backend-neutral names so process-local control clients can
 // launch and attest the production backend without depending on its
 // implementation crate directly.

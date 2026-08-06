@@ -2540,6 +2540,16 @@ in rec {
     };
   };
   phase7 = {
+    debuggerPackage = import ./phase7-debugger-package.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.debuggerPackage";
+      taskIds = ["T-DBG-13"];
+    };
+    debuggerLiveArchitectures = import ./phase7-debugger-live-architectures.nix {
+      inherit pkgs lib;
+      attrPath = "checks.crucible.phase7.debuggerLiveArchitectures";
+      taskIds = ["T-DBG-14"];
+    };
     cruciblePackageInventory = import ./phase7-crucible-package-inventory.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.cruciblePackageInventory";

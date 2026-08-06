@@ -956,7 +956,7 @@ pub(super) fn run_remote_debug_relay(
             &backend_plan,
             session,
             node,
-            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Exec {
+            crucible_api::GuestIntrospectionMessage::Exec {
                 argv: argv.clone(),
                 record_transcript: false,
             },
@@ -971,7 +971,7 @@ pub(super) fn run_remote_debug_relay(
             &backend_plan,
             session,
             node,
-            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Pty {
+            crucible_api::GuestIntrospectionMessage::Pty {
                 argv: argv.clone(),
                 columns: *columns,
                 rows: *rows,
@@ -984,7 +984,7 @@ pub(super) fn run_remote_debug_relay(
             &backend_plan,
             session,
             node,
-            crucible_protocol::guest_introspection::GuestIntrospectionMessage::Ssh {
+            crucible_api::GuestIntrospectionMessage::Ssh {
                 record_transcript: false,
             },
             true,
@@ -1164,12 +1164,10 @@ async fn run_remote_guest_channel(
     backend_plan: &BackendSelectionPlan,
     session: SessionRef,
     node: crucible::NodeId,
-    open: crucible_protocol::guest_introspection::GuestIntrospectionMessage,
+    open: crucible_api::GuestIntrospectionMessage,
     interactive: bool,
 ) -> Result<(), CliError> {
-    use crucible_protocol::guest_introspection::{
-        GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream,
-    };
+    use crucible_api::{GuestIntrospectionMessage, GuestIntrospectionRecord, GuestOutputStream};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     const CHANNEL_ID: u64 = 1;

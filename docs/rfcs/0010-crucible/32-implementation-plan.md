@@ -794,6 +794,15 @@ acceptance gate.
   incl. the new packaging tasks `T-PKG-21 … T-PKG-23`): `T-PKG-1 … T-PKG-23` ([`26`](26-packaging-aos-integration.md)).
 - Debugger packaging and live acceptance: `T-DBG-13 … T-DBG-14`
   ([`36`](36-time-travel-debugging.md)).
+  `T-DBG-13` is green through `checks.crucible.phase7.debuggerPackage`, which
+  builds GNU GDB 17.2 hermetically with the AOS toolchain, exposes `gdb` and
+  `gdbserver` from the Crucible suite, and verifies Python plus x86_64/aarch64
+  target selection. `T-DBG-14` remains open for captured live parity evidence.
+  The first parity slice is automated by
+  `checks.crucible.phase7.debuggerLiveArchitectures`: packaged x86_64 and
+  aarch64 QEMU run under TCG, negotiate RSP with packaged GDB, preserve repeated
+  register reads, and accept hardware-breakpoint insert/remove packets without
+  a model double. The complete controller/gateway matrix remains open.
 - Performance (incl. the fleet-perf tasks `T-PERF-27, T-PERF-28` and the host-parallelism tasks `T-PERF-29 … T-PERF-34`): `T-PERF-1 … T-PERF-34` ([`25`](25-performance-targets.md)).
 - Distributed / continuous exploration (campaigns spanning a fleet of workers): `T-DCE-1 … T-DCE-10` ([`35`](35-distributed-continuous-exploration.md)).
 - Worked example scenarios as CI fixtures (happy path, partition-recovery, crash/restart, fault campaign, determinism check): `T-EX-1 … T-EX-5` ([`33`](33-examples-and-workloads.md)). These double as the `gate:e2e-determinism` corpus.

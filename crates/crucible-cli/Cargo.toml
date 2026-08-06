@@ -25,7 +25,6 @@ workspace = true
 clap = { workspace = true }
 clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
-crucible-protocol = { path = "../crucible-protocol" }
 crucible-session = { path = "../crucible-session" }
 rustix = { workspace = true, features = ["termios"] }
 serde = { workspace = true }
