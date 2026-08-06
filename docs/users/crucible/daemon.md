@@ -99,9 +99,12 @@ The control client has concrete remote workflows for:
 - `run`;
 - `verify`;
 - `save`; and
-- `resume`, including its interactive command path; and
+- `resume`, including its interactive command path;
 - `debug --session ... --node ... attach-gdb`, using an authenticated local
-  loopback GDB relay.
+  loopback GDB relay; and
+- the authenticated `fork-debug`, guest `exec`, PTY, and SSH-compatible RPC
+  plumbing. The shipped production VM lifecycle does not yet activate the
+  guest agent at fork time, so the guest-channel verbs remain preview-only.
 
 Current restrictions include:
 
@@ -127,5 +130,8 @@ reported by the session actor, and chunks are bounded to 64 KiB.
 
 ## Intended evolution
 
-Unix-socket peer authentication and guest exec/PTY/SSH channels remain planned.
-The current remote surface is authenticated HTTP/2 GDB relay only.
+Unix-socket peer authentication, fork-time guest-agent activation, bounded
+missing-agent failure, and live exec/PTY/SSH conformance remain planned. The
+current production-ready remote debugger surface is the authenticated HTTP/2
+GDB relay; the guest-channel protocol and RPC path are implemented but not yet
+complete as an operator workflow.
