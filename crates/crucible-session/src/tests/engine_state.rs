@@ -925,7 +925,7 @@ async fn mismatched_debug_runtime_evidence_fails_closed_without_committing_model
 
 #[tokio::test]
 async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
-    let (_root, first, second, graph) = debug_time_travel_fixture();
+    let (root, first, second, graph) = debug_time_travel_fixture();
     let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
     let (_sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
@@ -954,7 +954,9 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     let mut unread_stream = actor.event_log_stream(EventLogCursor::new(0));
     let mut past_stream = actor.event_log_stream(EventLogCursor::new(0));
 
-    actor.append_event_log_entries(&[test_event_log_entry(0), test_event_log_entry(1)]);
+    actor
+        .append_event_log_entries(&[test_event_log_entry(0), test_event_log_entry(1)])
+        .unwrap_or_else(|error| panic!("debug history fixture must append: {error}"));
     actor.engine.event_log_len = 2;
     for expected in [test_event_log_entry(0), test_event_log_entry(1)] {
         let frame = past_stream
@@ -970,7 +972,9 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     let (goto_reply, goto_receiver) = CommandReply::channel();
     if let Err(error) = actor
         .apply_command_without_spawning_forks(SessionCommand::DebugGoto {
-            request: DebugGotoRequest::at_configuration(second.clone(), first.clone()),
+            // The actor replaces this stale caller-supplied current coordinate
+            // with its authoritative engine configuration before dispatch.
+            request: DebugGotoRequest::at_configuration(root.clone(), first.clone()),
             reply: goto_reply,
         })
         .await
@@ -1039,6 +1043,85 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
     assert_eq!(actor.event_log.len(), 1);
     assert_eq!(actor.condition_event_log.len(), 1);
     assert_eq!(actor.condition_event_log[0], marker);
+    assert_eq!(
+        actor.debug_event_coordinates.get(&marker.sequence()),
+        Some(&actor.engine().snapshot().configuration),
+    );
+}
+
+#[test]
+fn actor_debug_history_indexes_each_emitted_decision_prefix() {
+    let (root, first, second, graph) = debug_time_travel_fixture();
+    let engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    let (_sender, receiver) = mpsc::channel(4);
+    let mut actor = SessionActor::new(engine, receiver);
+    actor.debug_index_configuration = root.clone();
+    let decisions = second.schedule.decisions();
+    let entries = vec![
+        crucible::test_support::condition_payload_entry_for_test(
+            0,
+            VirtualTime { ticks: 1 },
+            SchedulerEventLogPayload::Decision(decisions[0].clone()),
+        ),
+        crucible::test_support::condition_payload_entry_for_test(
+            1,
+            VirtualTime { ticks: 1 },
+            resolved_backend_input_payload(1),
+        ),
+        crucible::test_support::condition_payload_entry_for_test(
+            2,
+            VirtualTime { ticks: 2 },
+            SchedulerEventLogPayload::Decision(decisions[1].clone()),
+        ),
+        crucible::test_support::condition_boundary_entry_for_test(
+            3,
+            VirtualTime { ticks: 2 },
+            SchedulerEvaluationBoundaryKind::Quantum,
+        ),
+    ];
+    actor.engine.event_log_len = entries.len();
+    actor
+        .append_event_log_entries(&entries)
+        .unwrap_or_else(|error| panic!("multi-entry history must append: {error}"));
+
+    assert_ne!(root, first);
+    assert_eq!(actor.debug_event_coordinates.get(&0), Some(&first));
+    assert_eq!(actor.debug_event_coordinates.get(&1), Some(&first));
+    assert_eq!(actor.debug_event_coordinates.get(&2), Some(&second));
+    assert_eq!(actor.debug_event_coordinates.get(&3), Some(&second));
+    assert_eq!(actor.debug_current_event_limit(&second), Some(2));
+}
+
+#[tokio::test]
+async fn resumed_actor_rejects_reverse_event_history_before_its_floor() {
+    let (_root, _first, second, graph) = debug_time_travel_fixture();
+    let mut engine = Engine::new(second.clone(), graph, DebugGdbLoop);
+    engine.event_log_len = 7;
+    let (_sender, receiver) = mpsc::channel(4);
+    let mut actor = SessionActor::new(engine, receiver);
+    let (reply, receiver) = CommandReply::channel();
+    let error = actor
+        .apply_command_without_spawning_forks(SessionCommand::DebugReverseStep {
+            request: DebugReverseStepRequest::new(
+                second,
+                DebugReverseStepGrain::Quantum,
+                Vec::new(),
+            ),
+            reply,
+        })
+        .await
+        .expect_err("resumed history before the checkpoint must fail explicitly");
+    assert_eq!(
+        error,
+        SessionError::DebugHistoryUnavailable {
+            operation: "debug-reverse-step",
+            floor: 7,
+        }
+    );
+    assert_eq!(
+        receive_reply_error::<DebugReverseStepReport>(receiver).await,
+        error
+    );
 }
 
 #[tokio::test]

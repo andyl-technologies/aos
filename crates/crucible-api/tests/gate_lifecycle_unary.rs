@@ -230,6 +230,17 @@ async fn trusted_http2_debug_controller_uses_server_side_identity_and_lease() {
             .is_err(),
         "an attached debugger must reject a retry for a different node"
     );
+    let repositioned = client
+        .debug_goto(
+            created.session,
+            &lease,
+            &crucible::DebugCoordinate::virtual_time(VirtualTime::default()),
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("authenticated goto must dispatch through the actor: {error}")
+        });
+    assert_eq!(repositioned.len(), 64);
     client
         .release_debug_controller(created.session, &lease)
         .await

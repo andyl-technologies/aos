@@ -31,7 +31,7 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, OwnedMutexGuard, watch};
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 
@@ -106,6 +106,26 @@ impl<L, F> Clone for Http2LifecycleState<L, F> {
             debug_relays: Arc::clone(&self.debug_relays),
         }
     }
+}
+
+async fn debug_operation_guard<L, F>(
+    state: &Http2LifecycleState<L, F>,
+    session: SessionRef,
+) -> OwnedMutexGuard<()>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>,
+{
+    let gate = match state
+        .control_plane
+        .lock()
+        .await
+        .debug_operation_gate(session)
+    {
+        Ok(gate) => gate,
+        Err(_) => Arc::new(Mutex::new(())),
+    };
+    gate.lock_owned().await
 }
 
 /// Serves a [`LifecycleControlPlane`] over the Crucible HTTP/2 RPC transport.
@@ -390,6 +410,15 @@ where
             "/crucible.rpc/debug/attach",
             post(handle_debug_attach::<L, F>),
         )
+        .route("/crucible.rpc/debug/goto", post(handle_debug_goto::<L, F>))
+        .route(
+            "/crucible.rpc/debug/reverse-step",
+            post(handle_debug_reverse_step::<L, F>),
+        )
+        .route(
+            "/crucible.rpc/debug/reverse-continue",
+            post(handle_debug_reverse_continue::<L, F>),
+        )
         .route(
             "/crucible.rpc/debug/relay/open",
             post(handle_debug_relay_open::<L, F>),
@@ -444,6 +473,7 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease {
         client: client.clone(),
         generation,
@@ -501,6 +531,7 @@ where
             Ok(request) => request,
             Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
         };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease {
         client: client.clone(),
         generation,
@@ -566,6 +597,7 @@ where
             Ok(session) => session,
             Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
         };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     let lease = match state
         .control_plane
         .lock()
@@ -612,6 +644,7 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease { client, generation };
     {
         let control_plane = state.control_plane.lock().await;
@@ -694,6 +727,7 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease { client, generation };
     if let Err(error) = state
         .control_plane
@@ -741,6 +775,7 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     let lease = DebugControllerLease { client, generation };
     let endpoint = {
         let control_plane = state.control_plane.lock().await;
@@ -815,6 +850,7 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     if let Err(response) =
         authorize_relay_request(&state, session, &client, generation, &role).await
     {
@@ -862,6 +898,7 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     if let Err(response) =
         authorize_relay_request(&state, session, &client, generation, &role).await
     {
@@ -906,6 +943,7 @@ where
         Ok(request) => request,
         Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
     };
+    let _operation_guard = debug_operation_guard(&state, session).await;
     if let Err(response) =
         authorize_relay_request(&state, session, &client, generation, &role).await
     {
@@ -2935,4 +2973,8 @@ mod tests;
 
 mod query_wire;
 
+#[path = "server/debug_reposition.rs"]
+mod debug_reposition;
+
+use debug_reposition::*;
 use query_wire::*;

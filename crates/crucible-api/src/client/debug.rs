@@ -5,6 +5,9 @@ use super::*;
 const DEBUG_CONTROLLER_ACQUIRE_RPC_PATH: &str = "/crucible.rpc/debug/controller/acquire";
 const DEBUG_CONTROLLER_RELEASE_RPC_PATH: &str = "/crucible.rpc/debug/controller/release";
 const DEBUG_ATTACH_RPC_PATH: &str = "/crucible.rpc/debug/attach";
+const DEBUG_GOTO_RPC_PATH: &str = "/crucible.rpc/debug/goto";
+const DEBUG_REVERSE_STEP_RPC_PATH: &str = "/crucible.rpc/debug/reverse-step";
+const DEBUG_REVERSE_CONTINUE_RPC_PATH: &str = "/crucible.rpc/debug/reverse-continue";
 const DEBUG_RELAY_OPEN_RPC_PATH: &str = "/crucible.rpc/debug/relay/open";
 const DEBUG_RELAY_WRITE_RPC_PATH: &str = "/crucible.rpc/debug/relay/write";
 const DEBUG_RELAY_READ_RPC_PATH: &str = "/crucible.rpc/debug/relay/read";
@@ -94,6 +97,82 @@ impl RpcControlClient {
         expect_header(lines.next(), "crucible.rpc/debug-attach-response")?;
         reject_trailing(lines.next())?;
         Ok(())
+    }
+
+    /// Moves an attached debugger to a deterministic temporal coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when the lease is stale, the role lacks
+    /// control capability, the coordinate is unsupported by the unary wire
+    /// format, or actor-owned restore/replay and replacement fail.
+    pub async fn debug_goto(
+        &self,
+        session: SessionRef,
+        lease: &DebugControllerLease,
+        target: &crucible::DebugCoordinate,
+    ) -> Result<String, ControlClientError> {
+        let body = self
+            .post_rpc_body(
+                DEBUG_GOTO_RPC_PATH,
+                encode_debug_goto_request(session, lease.generation, target)?,
+            )
+            .await?;
+        let (target, _) =
+            decode_debug_reposition_response(&body, "crucible.rpc/debug-goto-response")?;
+        target.ok_or_else(|| rpc_decode("debug goto response omitted its target configuration"))
+    }
+
+    /// Reverse-steps an attached debugger by one deterministic grain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when authorization, target resolution,
+    /// replay validation, or live-runtime replacement fails.
+    pub async fn debug_reverse_step(
+        &self,
+        session: SessionRef,
+        lease: &DebugControllerLease,
+        grain: crucible::DebugReverseStepGrain,
+    ) -> Result<String, ControlClientError> {
+        let body = self
+            .post_rpc_body(
+                DEBUG_REVERSE_STEP_RPC_PATH,
+                encode_debug_reverse_step_request(session, lease.generation, grain),
+            )
+            .await?;
+        let (target, _) =
+            decode_debug_reposition_response(&body, "crucible.rpc/debug-reverse-step-response")?;
+        target.ok_or_else(|| {
+            rpc_decode("debug reverse-step response omitted its target configuration")
+        })
+    }
+
+    /// Reverse-continues to the latest prior event prefix matching `condition`.
+    ///
+    /// A successful `None` result means the checked history contained no match.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlClientError`] when authorization, condition decoding or
+    /// evaluation, replay validation, or live-runtime replacement fails.
+    pub async fn debug_reverse_continue(
+        &self,
+        session: SessionRef,
+        lease: &DebugControllerLease,
+        condition: &crucible::Predicate,
+    ) -> Result<Option<String>, ControlClientError> {
+        let body = self
+            .post_rpc_body(
+                DEBUG_REVERSE_CONTINUE_RPC_PATH,
+                encode_debug_reverse_continue_request(session, lease.generation, condition),
+            )
+            .await?;
+        let (target, _) = decode_debug_reposition_response(
+            &body,
+            "crucible.rpc/debug-reverse-continue-response",
+        )?;
+        Ok(target)
     }
 
     /// Opens a daemon-side connection to the session's stable local GDB gateway.
@@ -312,6 +391,91 @@ fn encode_debug_controller_release_request(session: SessionRef, generation: u64)
     push_session_ref(&mut output, session);
     push_line(&mut output, "generation", &generation.to_string());
     output.into_bytes()
+}
+
+fn encode_debug_goto_request(
+    session: SessionRef,
+    generation: u64,
+    target: &crucible::DebugCoordinate,
+) -> Result<Vec<u8>, ControlClientError> {
+    let coordinate = match target {
+        crucible::DebugCoordinate::VirtualTime(time) => format!("virtual-time:{}", time.ticks),
+        crucible::DebugCoordinate::NodeIcount { node, icount } => format!(
+            "node-icount:{}:{}",
+            hex_encode(node.name.as_bytes()),
+            icount.retired
+        ),
+        crucible::DebugCoordinate::Configuration(_)
+        | crucible::DebugCoordinate::Checkpoint(_)
+        | crucible::DebugCoordinate::EventSequence(_) => {
+            return Err(rpc_decode(
+                "unary remote goto accepts virtual-time or node-icount coordinates",
+            ));
+        }
+    };
+    let mut output = String::from("crucible.rpc/debug-goto-request\n");
+    push_session_ref(&mut output, session);
+    push_line(&mut output, "generation", &generation.to_string());
+    push_line(&mut output, "coordinate", &coordinate);
+    Ok(output.into_bytes())
+}
+
+fn encode_debug_reverse_step_request(
+    session: SessionRef,
+    generation: u64,
+    grain: crucible::DebugReverseStepGrain,
+) -> Vec<u8> {
+    let grain = match grain {
+        crucible::DebugReverseStepGrain::Instruction => "instruction",
+        crucible::DebugReverseStepGrain::Quantum => "quantum",
+        crucible::DebugReverseStepGrain::Event => "event",
+        crucible::DebugReverseStepGrain::Assertion => "assertion",
+        crucible::DebugReverseStepGrain::Timer => "timer",
+    };
+    let mut output = String::from("crucible.rpc/debug-reverse-step-request\n");
+    push_session_ref(&mut output, session);
+    push_line(&mut output, "generation", &generation.to_string());
+    push_line(&mut output, "grain", grain);
+    output.into_bytes()
+}
+
+fn encode_debug_reverse_continue_request(
+    session: SessionRef,
+    generation: u64,
+    condition: &crucible::Predicate,
+) -> Vec<u8> {
+    let mut output = String::from("crucible.rpc/debug-reverse-continue-request\n");
+    push_session_ref(&mut output, session);
+    push_line(&mut output, "generation", &generation.to_string());
+    push_line(
+        &mut output,
+        "condition",
+        &hex_encode(&condition.to_compact_binary()),
+    );
+    output.into_bytes()
+}
+
+fn decode_debug_reposition_response(
+    body: &[u8],
+    header: &'static str,
+) -> Result<(Option<String>, Option<u64>), ControlClientError> {
+    let text = response_text(body)?;
+    let mut lines = text.lines();
+    expect_header(lines.next(), header)?;
+    let target = parse_prefixed_line(lines.next(), "target-configuration=")?;
+    let target = (!target.is_empty()).then(|| target.to_owned());
+    let event = parse_prefixed_line(lines.next(), "event-sequence=")?;
+    let event = if event == "none" {
+        None
+    } else {
+        Some(
+            event
+                .parse::<u64>()
+                .map_err(|error| rpc_decode(format!("invalid event sequence: {error}")))?,
+        )
+    };
+    reject_trailing(lines.next())?;
+    Ok((target, event))
 }
 
 fn encode_debug_attach_request(session: SessionRef, generation: u64, node: &NodeId) -> Vec<u8> {

@@ -121,6 +121,35 @@ Crucible does not provide a symbol server. Supply the guest executable and
 DWARF files to GDB locally. The packaged GDB includes Python scripting, TUI,
 and both x86_64 and aarch64 target descriptions.
 
+Remote time travel uses the same authenticated controller lease and stable
+gateway attachment. The client sends only the requested coordinate or reverse
+operation; the daemon's session actor supplies the authoritative current
+configuration and event history:
+
+```sh
+./result/bin/crucible [daemon TLS flags] \
+  debug --session <id:epoch:seed> --node node-a goto vtime:42000
+
+./result/bin/crucible [daemon TLS flags] \
+  debug --session <id:epoch:seed> --node node-a reverse-step event
+
+./result/bin/crucible [daemon TLS flags] \
+  debug --session <id:epoch:seed> --node node-a reverse-continue quiescent
+```
+
+`reverse-continue` accepts `quiescent`, `at:<virtual-time-ticks>`, or
+`hex:<compact-predicate>`. The compact form is the canonical binary encoding of
+the RFC-0010 17a predicate and supports the complete condition vocabulary.
+`goto` on a remote session accepts `vtime:<ticks>` (or a bare tick count) and
+`icount:<node>:<retired>` coordinates.
+
+A session resumed from a checkpoint closure can use coordinate `goto` and
+instruction reverse-step immediately. Because that closure does not contain the
+pre-checkpoint event log, event, quantum, assertion, timer, and condition-based
+reverse operations stop with an explicit history-floor error rather than
+guessing across the missing history. Newly recorded post-resume history becomes
+available at subsequent scheduler boundaries.
+
 `--allow-mutate` only authorizes the explicit `fork-debug` verb. It does not
 fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.

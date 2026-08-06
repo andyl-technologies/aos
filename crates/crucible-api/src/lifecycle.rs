@@ -28,7 +28,7 @@ use crucible_session::{
     SessionStateTransitionBus, StepMode,
 };
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::{
@@ -50,6 +50,129 @@ pub const LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS: u64 = 128;
 pub struct GuestIntrospectionDispatch {
     sender: mpsc::Sender<SessionCommand>,
     session_id: SessionId,
+}
+
+/// Authorized actor dispatch handle for debugger time-travel operations.
+#[derive(Clone)]
+pub struct DebugRepositionDispatch {
+    sender: mpsc::Sender<SessionCommand>,
+    session_id: SessionId,
+}
+
+impl DebugRepositionDispatch {
+    async fn current_configuration(&self) -> Result<Configuration, LifecycleApiError> {
+        let (reply, receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::Query {
+                kind: QueryKind::Snapshot,
+                reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        let result = receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug reposition snapshot reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)?;
+        match result {
+            QueryResult::Snapshot(snapshot) => Ok(snapshot.configuration),
+            _ => Err(LifecycleApiError::ActorFailed {
+                message: String::from(
+                    "debug reposition snapshot query returned an unexpected result",
+                ),
+            }),
+        }
+    }
+
+    /// Moves the attached debugger to `target` through actor-owned restore and replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when actor communication, target resolution,
+    /// replay validation, or live-runtime replacement fails.
+    pub async fn goto(
+        &self,
+        target: crucible::DebugCoordinate,
+    ) -> Result<crucible::DebugGotoReport, LifecycleApiError> {
+        let current = self.current_configuration().await?;
+        let (reply, receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::DebugGoto {
+                request: crucible::DebugGotoRequest::new(current, target),
+                reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug goto reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)
+    }
+
+    /// Reverse-steps the attached debugger by one scheduler-defined grain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when actor communication, reverse-target
+    /// resolution, replay validation, or live-runtime replacement fails.
+    pub async fn reverse_step(
+        &self,
+        grain: crucible::DebugReverseStepGrain,
+    ) -> Result<crucible::DebugReverseStepReport, LifecycleApiError> {
+        let current = self.current_configuration().await?;
+        let (reply, receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::DebugReverseStep {
+                request: crucible::DebugReverseStepRequest::new(current, grain, Vec::new()),
+                reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug reverse-step reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)
+    }
+
+    /// Reverse-continues to the latest actor-owned event prefix matching `condition`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when actor communication, condition
+    /// evaluation, replay validation, or live-runtime replacement fails.
+    pub async fn reverse_continue(
+        &self,
+        condition: crucible::Condition,
+    ) -> Result<crucible::DebugReverseContinueReport, LifecycleApiError> {
+        let current = self.current_configuration().await?;
+        let (reply, receiver) = CommandReply::channel();
+        self.sender
+            .send(SessionCommand::DebugReverseContinue {
+                request: crucible::DebugReverseContinueRequest::new(current, condition, Vec::new()),
+                reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed {
+                session_id: self.session_id,
+            })?;
+        receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug reverse-continue reply closed: {error}"),
+            })?
+            .map_err(session_command_rejection)
+    }
 }
 
 impl GuestIntrospectionDispatch {
@@ -1209,6 +1332,7 @@ where
             reproduction_log,
             state_transitions,
             debug_access: DebugCoordinator::new(),
+            debug_operation_gate: Arc::new(Mutex::new(())),
             debug_genesis,
             actor_task,
         };
@@ -1315,6 +1439,7 @@ where
             reproduction_log,
             state_transitions,
             debug_access: DebugCoordinator::new(),
+            debug_operation_gate: Arc::new(Mutex::new(())),
             debug_genesis,
             actor_task,
         };
@@ -1710,6 +1835,40 @@ where
         })
     }
 
+    /// Captures a debugger-reposition actor dispatch handle.
+    ///
+    /// The caller must authorize the controller lease before requesting this
+    /// handle. The returned sender permits the registry lock to be released
+    /// before restore, replay, and live-runtime replacement are awaited.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale.
+    pub fn debug_reposition_dispatch(
+        &self,
+        session: SessionRef,
+    ) -> Result<DebugRepositionDispatch, LifecycleApiError> {
+        let runtime = self.checked_runtime(session, None)?;
+        Ok(DebugRepositionDispatch {
+            sender: runtime.sender.clone(),
+            session_id: runtime.session.id,
+        })
+    }
+
+    /// Captures the session-owned serialization gate for debugger operations.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is absent or stale.
+    pub(crate) fn debug_operation_gate(
+        &self,
+        session: SessionRef,
+    ) -> Result<Arc<Mutex<()>>, LifecycleApiError> {
+        Ok(Arc::clone(
+            &self.checked_runtime(session, None)?.debug_operation_gate,
+        ))
+    }
+
     /// Builds an in-process streaming handle for a live session.
     ///
     /// # Errors
@@ -1983,6 +2142,7 @@ struct SessionRuntime {
     reproduction_log: SessionReproductionLog,
     state_transitions: SessionStateTransitionBus,
     debug_access: DebugCoordinator,
+    debug_operation_gate: Arc<Mutex<()>>,
     debug_genesis: Option<GenesisCheckpoint>,
     actor_task: JoinHandle<Result<SessionRunReport, SessionError>>,
 }
