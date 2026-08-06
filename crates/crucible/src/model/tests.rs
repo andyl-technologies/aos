@@ -148,6 +148,7 @@ fn failure_signature_for_test(property: &str) -> FailureSignature {
             faulting_node: None,
         },
         coverage_class: FailureCoverageClass::from_coverage_fingerprint(coverage),
+        evidence_binding: coverage,
         causal_slice_hash: Some(coverage),
         causal_cone: Some(FailureCausalCone::from_canonical_material(property)),
         at_icount_report_only: None,

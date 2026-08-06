@@ -1123,6 +1123,20 @@ pub struct AssertionDef {
     pub property: Property,
 }
 
+impl AssertionDef {
+    /// Returns the temporal quantifier carried by this assertion definition.
+    #[must_use]
+    pub const fn quantifier_kind(&self) -> AssertionQuantifierKind {
+        match self.property.kind() {
+            PropertyKind::Always => AssertionQuantifierKind::Always,
+            PropertyKind::Sometimes => AssertionQuantifierKind::Sometimes,
+            PropertyKind::Eventually => AssertionQuantifierKind::Eventually,
+            PropertyKind::AfterQuiescence => AssertionQuantifierKind::AfterQuiescence,
+            PropertyKind::Reachable => AssertionQuantifierKind::Reachable,
+        }
+    }
+}
+
 /// A declarative assertion bundle layered over a static [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Properties {

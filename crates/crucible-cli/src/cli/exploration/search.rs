@@ -228,6 +228,8 @@ pub(crate) fn run_search_workflow_with_graph_and_failure_oracle(
         expansions: run.expansions.len(),
         explored: run.explored_graph.len(),
         failures: run.discovered_failures.len(),
+        property_findings: run.discovered_failures.len(),
+        timeout_findings: 0,
         exhausted: run.exhausted,
         failure_oracle: failure_oracle_label.to_string(),
         schedule_named_truths: plan
@@ -410,8 +412,13 @@ pub(crate) fn apply_local_double_search_report(
     report: &LocalDoubleSearchReport,
 ) {
     let budget_exhausted = !report.exhausted;
-    let status =
-        local_double_search_status(report.failures > 0, report.exhausted, plan.on_violation);
+    let status = if report.property_findings > 0 {
+        BackendCommandStatus::Failed
+    } else if report.timeout_findings > 0 {
+        BackendCommandStatus::Timeout
+    } else {
+        local_double_search_status(report.failures > 0, report.exhausted, plan.on_violation)
+    };
     outcome.status = status;
     outcome.exit_code = status.exit_code();
     let (counterexample_stdout, counterexample_summary) =

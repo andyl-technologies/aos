@@ -101,7 +101,8 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
     };
     let search_plan = match &cli.command {
         Commands::Search(args) => {
-            let mut plan = plan_search_invocation(args, &run_store_root)?;
+            let mut plan =
+                plan_search_invocation_with_artifact_dir(args, &run_store_root, &cli.artifact_dir)?;
             if let Some(seed) = run_identity_seed {
                 pin_search_invocation_seed(&mut plan, seed)?;
             }
@@ -114,7 +115,12 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let seed = ergonomics_plan.as_ref().ok_or_else(|| {
                 backend_error("fuzz requires a resolved deterministic campaign seed")
             })?;
-            Some(plan_fuzz_invocation(args, seed, &run_store_root)?)
+            Some(plan_fuzz_invocation_with_artifact_dir(
+                args,
+                seed,
+                &run_store_root,
+                &cli.artifact_dir,
+            )?)
         }
         _ => None,
     };
