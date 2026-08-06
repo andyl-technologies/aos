@@ -175,92 +175,6 @@ pub(crate) fn coverage_event_from_streaming_frame(
     }
 }
 
-#[cfg(test)]
-mod summary_tests {
-    use super::*;
-
-    #[test]
-    fn assertion_summary_preserves_agent_diagnostic_fields() {
-        let frame = crucible_api::StreamingEventFrame {
-            generation: 0,
-            cursor: crucible_api::EventLogCursor::new(3),
-            next_cursor: crucible_api::EventLogCursor::new(4),
-            event: crucible_api::OpenSetEventEnvelope {
-                sequence: 3,
-                at: crucible_api::OpenSetEventTime {
-                    virtual_time_ticks: 40,
-                    icount_retired: 40,
-                    icount_node: None,
-                },
-                source: crucible_api::OpenSetEventSource::Engine,
-                level: crucible::EventLevel::Info,
-                observational: false,
-                payload: crucible_api::OpenSetPayload::new(
-                    "crucible.event.assertion_state_changed",
-                    [
-                        (
-                            String::from("id"),
-                            crucible_api::OpenSetAttributeValue::String(String::from(
-                                "suspect-must-crash",
-                            )),
-                        ),
-                        (
-                            String::from("new_state"),
-                            crucible_api::OpenSetAttributeValue::String(String::from("Violated")),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
-            },
-        };
-
-        assert_eq!(
-            streaming_event_summary(&frame),
-            "crucible.event.assertion_state_changed id=suspect-must-crash new_state=Violated"
-        );
-    }
-
-    #[test]
-    fn console_summary_redacts_guest_bytes() {
-        let secret = b"token=super-secret".to_vec();
-        let frame = crucible_api::StreamingEventFrame {
-            generation: 0,
-            cursor: crucible_api::EventLogCursor::new(1),
-            next_cursor: crucible_api::EventLogCursor::new(2),
-            event: crucible_api::OpenSetEventEnvelope {
-                sequence: 1,
-                at: crucible_api::OpenSetEventTime {
-                    virtual_time_ticks: 1,
-                    icount_retired: 1,
-                    icount_node: Some(String::from("suspect")),
-                },
-                source: crucible_api::OpenSetEventSource::Node {
-                    node: String::from("suspect"),
-                },
-                level: crucible::EventLevel::Info,
-                observational: true,
-                payload: crucible_api::OpenSetPayload::new(
-                    "crucible.event.console_output",
-                    [(
-                        String::from("bytes"),
-                        crucible_api::OpenSetAttributeValue::Bytes(secret),
-                    )]
-                    .into_iter()
-                    .collect(),
-                ),
-            },
-        };
-
-        let summary = streaming_event_summary(&frame);
-        assert_eq!(
-            summary,
-            "crucible.event.console_output bytes_len=18 bytes_content=redacted"
-        );
-        assert!(!summary.contains("super-secret"));
-    }
-}
-
 pub(crate) fn coverage_feedback_from_streamed_events(
     events: Vec<crucible::ObservableEvent>,
 ) -> Result<crucible::EventLogCoverageFeedback, CliError> {
@@ -351,5 +265,91 @@ pub(crate) fn status_from_outcome(
         None => Err(backend_error(
             "session reached a terminal observation without an engine outcome",
         )),
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    #[test]
+    fn assertion_summary_preserves_agent_diagnostic_fields() {
+        let frame = crucible_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_api::EventLogCursor::new(3),
+            next_cursor: crucible_api::EventLogCursor::new(4),
+            event: crucible_api::OpenSetEventEnvelope {
+                sequence: 3,
+                at: crucible_api::OpenSetEventTime {
+                    virtual_time_ticks: 40,
+                    icount_retired: 40,
+                    icount_node: None,
+                },
+                source: crucible_api::OpenSetEventSource::Engine,
+                level: crucible::EventLevel::Info,
+                observational: false,
+                payload: crucible_api::OpenSetPayload::new(
+                    "crucible.event.assertion_state_changed",
+                    [
+                        (
+                            String::from("id"),
+                            crucible_api::OpenSetAttributeValue::String(String::from(
+                                "suspect-must-crash",
+                            )),
+                        ),
+                        (
+                            String::from("new_state"),
+                            crucible_api::OpenSetAttributeValue::String(String::from("Violated")),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+
+        assert_eq!(
+            streaming_event_summary(&frame),
+            "crucible.event.assertion_state_changed id=suspect-must-crash new_state=Violated"
+        );
+    }
+
+    #[test]
+    fn console_summary_redacts_guest_bytes() {
+        let secret = b"token=super-secret".to_vec();
+        let frame = crucible_api::StreamingEventFrame {
+            generation: 0,
+            cursor: crucible_api::EventLogCursor::new(1),
+            next_cursor: crucible_api::EventLogCursor::new(2),
+            event: crucible_api::OpenSetEventEnvelope {
+                sequence: 1,
+                at: crucible_api::OpenSetEventTime {
+                    virtual_time_ticks: 1,
+                    icount_retired: 1,
+                    icount_node: Some(String::from("suspect")),
+                },
+                source: crucible_api::OpenSetEventSource::Node {
+                    node: String::from("suspect"),
+                },
+                level: crucible::EventLevel::Info,
+                observational: true,
+                payload: crucible_api::OpenSetPayload::new(
+                    "crucible.event.console_output",
+                    [(
+                        String::from("bytes"),
+                        crucible_api::OpenSetAttributeValue::Bytes(secret),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            },
+        };
+
+        let summary = streaming_event_summary(&frame);
+        assert_eq!(
+            summary,
+            "crucible.event.console_output bytes_len=18 bytes_content=redacted"
+        );
+        assert!(!summary.contains("super-secret"));
     }
 }
