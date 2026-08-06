@@ -1075,8 +1075,8 @@ impl SingleScheduler {
 
     /// Returns a scheduler-owned directed World network link.
     ///
-    /// `link` may be either the canonical structured identifier or an
-    /// unambiguous legacy `endpoint-a--endpoint-b` spelling.
+    /// `link` must be the structured identity returned by
+    /// [`LinkId::for_endpoints`].
     #[must_use]
     pub fn world_network_link(
         &self,

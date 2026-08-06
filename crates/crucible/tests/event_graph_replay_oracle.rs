@@ -40,8 +40,8 @@ fn timer(name: &str) -> TimerId {
     }
 }
 
-fn link(name: &str) -> LinkId {
-    LinkId::from_name(name)
+fn link(left: &str, right: &str) -> LinkId {
+    LinkId::for_endpoints(&node(left), &node(right))
 }
 
 fn time(ticks: u64) -> VirtualTime {
@@ -148,7 +148,7 @@ fn graph(world: &World) -> EventGraph {
         .when(Predicate::all_of(vec![
             Predicate::assertion_state(assertion("cluster-safe"), AssertionPhase::Satisfied),
             Predicate::network_match(
-                Some(link("db-0--db-1")),
+                Some(link("db-0", "db-1")),
                 FramePredicate::contains(b"raft:converged".to_vec()),
             ),
             Predicate::node_state(node("db-0"), NodeLifecycle::Started),
@@ -193,7 +193,7 @@ fn convergence_observations() -> Vec<ObservableEvent> {
         ),
         ObservableEvent::network_delivered(
             time(50),
-            Some(link("db-0--db-1")),
+            Some(link("db-0", "db-1")),
             b"raft:converged:term=7".to_vec(),
         ),
         ObservableEvent::node_state(time(50), node("db-0"), NodeLifecycle::Started),

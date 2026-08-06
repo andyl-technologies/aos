@@ -378,7 +378,14 @@ fn branch_reseed_drives_live_app_random_and_resets_world_network_cursors() {
     assert_ne!(first, second);
 
     let mut scheduler = test_scheduler(Vec::new(), Vec::new());
-    let link = LinkId::from_name("node-a--node-b");
+    let link = LinkId::for_endpoints(
+        &NodeId {
+            name: String::from("node-a"),
+        },
+        &NodeId {
+            name: String::from("node-b"),
+        },
+    );
     scheduler
         .world_network_rng_positions
         .insert(link.clone(), 19);

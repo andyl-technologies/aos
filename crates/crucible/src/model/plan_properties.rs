@@ -296,6 +296,27 @@ impl LinkId {
     pub fn from_name(name: impl Into<String>) -> Self {
         Self { name: name.into() }
     }
+
+    /// Derives the canonical scheduler identity for an unordered endpoint pair.
+    ///
+    /// Endpoint ordering does not affect the result. Callers should use this
+    /// constructor when addressing a World link instead of constructing an
+    /// endpoint-concatenated name.
+    #[must_use]
+    pub fn for_endpoints(left: &NodeId, right: &NodeId) -> Self {
+        let (endpoint_a, endpoint_b) = if left <= right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        Self::from_name(format!(
+            "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
+            endpoint_a.name.len(),
+            endpoint_a.name,
+            endpoint_b.name.len(),
+            endpoint_b.name
+        ))
+    }
 }
 
 /// Host-side byte predicate for a delivered network frame.

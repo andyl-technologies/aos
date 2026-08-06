@@ -337,7 +337,7 @@ fn world_node_launch_inputs_are_portable_and_identity_bearing() {
     assert_eq!(template_scenario, base_scenario);
     assert_eq!(
         base_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v3", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v4", &material)
     );
     assert_eq!(base_world.vm_nodes().len(), 1);
     assert_eq!(base_world.vm_nodes()[0].arch, VmArchitecture::Aarch64);
@@ -2046,7 +2046,7 @@ fn scheduler_link_latency_floor_rejects_subfloor_before_hashing_and_enters_world
     assert!(material.contains("min_link_latency_ns=1"));
     assert_eq!(
         floor_world.id(),
-        ContentHash::from_canonical_material("crucible.model.world.v3", &material)
+        ContentHash::from_canonical_material("crucible.model.world.v4", &material)
     );
     assert_ne!(floor_world.id(), raised_latency_world.id());
     assert_ne!(
