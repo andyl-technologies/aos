@@ -231,12 +231,18 @@ struct WorkerArgs {
     /// The KV namespace title for sessions (default: `<name>-sessions`).
     #[arg(long)]
     kv_title: Option<String>,
+    /// Base for three account-unique rate-limit namespace IDs.
+    #[arg(long, default_value_t = 1000)]
+    rate_limit_namespace_base: u32,
     /// Exact HTTPS URL of the repository-owned `aos-hub-egress` gateway.
     #[arg(long, env = "HUB_HARDENED_EGRESS_URL")]
     hardened_egress_url: String,
     /// Canonical HTTPS control-plane origin (for example `https://aos.example.com`).
     #[arg(long, env = "HUB_EXTERNAL_URL")]
     external_url: Option<String>,
+    /// Immutable source/build identity exposed for deployment verification.
+    #[arg(long, env = "HUB_DEPLOYMENT_ID")]
+    deployment_id: Option<String>,
     /// Bind the Worker to a custom domain (e.g. `aos.example.com`): `wrangler
     /// deploy` provisions its DNS record + edge cert, and its zone must be on the
     /// same Cloudflare account. Repeatable — pass `--domain` once per hostname to
@@ -265,10 +271,10 @@ struct WorkerArgs {
     #[arg(long)]
     root_password_stdin: bool,
     /// HS256 JWT signing secret; minted randomly when omitted.
-    #[arg(long)]
+    #[arg(long, env = "HUB_JWT_SECRET")]
     jwt_secret: Option<String>,
     /// At-rest AES-GCM sealing key; minted randomly when omitted.
-    #[arg(long)]
+    #[arg(long, env = "HUB_SEAL_KEY")]
     seal_key: Option<String>,
     /// Operator-provisioned `KEY_ID:KEY` already active on the egress gateway.
     /// Required so deploy can authenticate the gateway before changing Worker
@@ -286,7 +292,7 @@ struct WorkerArgs {
     email_api_token: Option<String>,
     /// Shared HMAC key for authenticated delivery assertions from an upstream
     /// TLS, VPN, or layer-7 adapter (HUB_DELIVERY_ATTESTATION_KEY).
-    #[arg(long)]
+    #[arg(long, env = "HUB_DELIVERY_ATTESTATION_KEY")]
     delivery_attestation_key: Option<String>,
     /// JSON file containing Worker TLS-terminator probe signer material.
     #[arg(long)]
@@ -1070,8 +1076,10 @@ async fn provision_worker(
         &args.kv_title(),
         &args.hardened_egress_url,
         &external_url,
+        args.deployment_id.as_deref(),
         args.email_relay_url.as_deref(),
         &args.domains,
+        aos_hub::cloudflare::RateLimitNamespaces::from_base(args.rate_limit_namespace_base)?,
     )
     .await?;
     // Apply the observability flags onto the provisioned config (provision()
@@ -1098,7 +1106,6 @@ async fn deploy_worker(
 ) -> Result<Option<String>> {
     use aos_hub::cloudflare;
 
-    let cfg = provision_worker(assets, args).await?;
     let domain_probe_signer_manifest = args
         .domain_probe_signer_manifest_file
         .as_ref()
@@ -1137,6 +1144,8 @@ async fn deploy_worker(
         domain_probe_signer_manifest,
         route_reservation_keyring,
     };
+    secrets.validate()?;
+    let cfg = provision_worker(assets, args).await?;
     let applied = cloudflare::deploy(assets, &cfg, &secrets).await?;
     if applied.minted_jwt_secret.is_some() || applied.minted_seal_key.is_some() {
         println!("NOTE: store these freshly minted secrets — they are not recoverable:");

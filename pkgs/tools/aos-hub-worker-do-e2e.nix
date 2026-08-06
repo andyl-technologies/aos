@@ -88,6 +88,7 @@
         (name = "HUB_JWT_SECRET", text = "e2e-jwt-secret"),
         (name = "HUB_SEAL_KEY", text = "0000000000000000000000000000000000000000000000000000000000000000"),
         (name = "HUB_EXTERNAL_URL", text = "http://127.0.0.1:8799"),
+        (name = "HUB_DEPLOYMENT_ID", text = "workerd-e2e-deployment"),
       ],
     );
   '';
@@ -131,6 +132,19 @@
     }
     if (!last) { console.error("workerd never accepted a connection"); process.exit(1); }
     if (last.status !== 200) { console.error(last.body); process.exit(1); }
+    const deploymentIdentity = await fetch(BASE + "/.well-known/aos-deployment");
+    if (deploymentIdentity.status !== 200
+        || await deploymentIdentity.text() !== "workerd-e2e-deployment"
+        || deploymentIdentity.headers.get("x-aos-deployment-id") !== "workerd-e2e-deployment"
+        || !deploymentIdentity.headers.get("cache-control")?.includes("no-store")) {
+      throw new Error("deployment identity contract failed");
+    }
+    const deploymentHead = await fetch(BASE + "/.well-known/aos-deployment", { method: "HEAD" });
+    if (deploymentHead.status !== 200
+        || await deploymentHead.text() !== ""
+        || deploymentHead.headers.get("x-aos-deployment-id") !== "workerd-e2e-deployment") {
+      throw new Error("deployment identity HEAD contract failed");
+    }
     const r2Contract = await fetch(BASE + "/_e2e/r2-js-contract", {
       method: "POST",
       body: "",
