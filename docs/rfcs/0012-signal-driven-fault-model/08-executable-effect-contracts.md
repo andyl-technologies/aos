@@ -123,6 +123,42 @@ the effect record.
 | `network.contact` | state-machine; boundary/resolve | contact-plan intervals with acquisition/teardown, range-delay lookup, beam/gateway IDs | contact availability AND other outages | `network.contact.v1`; contact interval, range, selected beam/gateway |
 | `network.custody_queue` | persistent state; queue | capacity, expiry, custody policy, route/contact plan | one bounded queue policy | `network.custody.v1`; bundle identity, custody transitions, drops and next contact |
 
+### 8.3.1 MTU and IPv4 fragmentation
+
+`network.mtu.mtu_bytes` is the maximum complete Ethernet frame length, including
+the 14-byte Ethernet header and every protocol header. The effective MTU is the
+smallest simultaneous value. Simultaneous contributors MUST agree on the
+oversize disposition, fragmentation protocol, and typed-error artifact; an
+otherwise ambiguous composition is rejected.
+
+`fragmentation_protocol = ethernet_ipv4` accepts only an untagged Ethernet II
+frame whose EtherType is IPv4 and whose IPv4 header and total-length fields are
+valid. It rejects VLAN-tagged and non-IPv4 frames. It can re-fragment an
+existing fragment at a smaller later-hop MTU: the prior offset is added to each
+child offset and a prior `MF` remains set on every child. It preserves Ethernet
+addresses, IPv4 options, identification, payload bytes, and the reserved flag;
+clears `DF`; sets `MF` and the fragment offset; and recomputes every IPv4 header
+checksum. Every non-final fragment payload is a positive multiple of eight
+bytes. If `DF` is set, the forward datagram is dropped. Ethernet padding beyond
+the IPv4 total length is not copied into fragments.
+
+Fragmentation expands one scheduler frame into an ordered, bounded set of real
+scheduler frames. Every child resumes immediately after the completed MTU
+phase and independently traverses every downstream path phase and later hop.
+Consequently queue frame and byte capacity, service curves, token accounting,
+link serialization, downstream loss, duplication, corruption, and a smaller
+later-hop MTU operate on actual fragments and include every copied header. The
+checkpoint records each fragment as an ordinary pending frame, so restore and
+replay cannot re-fragment or change fragment boundaries. Expansion clears the
+parent's completed-serialization marker; a downstream queue accounts each
+child, or the destination link serializes it when no downstream queue does.
+
+Each child carries a parent-to-child `protocol_expansion_path` of zero-based
+ordinals. The path enters pending-frame ordering, checkpoint identity, and
+every downstream opportunity ID; two byte-identical child frames therefore
+cannot alias. Nested expansion depth is bounded at 256 and fails atomically
+before staging child frames.
+
 ## 8.4 Storage and 9p effect registry
 
 | Effect key | Lifetime and phase | Required parameters | Composition | Capability and replay evidence |

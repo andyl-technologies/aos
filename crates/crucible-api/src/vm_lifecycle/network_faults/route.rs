@@ -134,13 +134,19 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             let payload = OpportunityPayload::NetworkFrame {
                                 producer: producer.clone(),
                                 destination: FaultObjectId::parse(&route.destination.name)
-                                    .map_err(|error| SchedulerError::BoundaryViolation {
+                                    .map_err(|error| {
+                                        SchedulerError::BoundaryViolation {
                                         message: format!(
                                             "network frame recipient `{}` is not a canonical fault object: {error}",
                                             route.destination.name
                                         ),
+                                        }
                                     })?,
                                 producer_sequence: output.sequence,
+                                protocol_expansion_path: output
+                                    .fault_continuation
+                                    .protocol_expansion_path()
+                                    .to_vec(),
                                 length_bytes,
                                 payload_digest: ContentHash::from_bytes(&output.payload),
                             };
@@ -274,6 +280,48 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 })?;
                             next_wakeup_nanos =
                                 earliest_wakeup(next_wakeup_nanos, application.next_wakeup_nanos);
+                            if !application.expanded_payloads.is_empty() {
+                                if admitted && !resolved_effects.is_dropped() {
+                                    resolved_effects.require_serialization();
+                                    output
+                                        .fault_continuation
+                                        .set_resolved_frame_effects(resolved_effects.clone());
+                                    for (ordinal, payload) in
+                                        application.expanded_payloads.into_iter().enumerate()
+                                    {
+                                        let mut fragment = output.clone();
+                                        fragment.payload = payload;
+                                        if fragment
+                                            .fault_continuation
+                                            .protocol_expansion_path()
+                                            .len()
+                                            >= crucible::model::HARD_NETWORK_PROTOCOL_EXPANSION_DEPTH
+                                        {
+                                            return Err(SchedulerError::BoundaryViolation {
+                                                message: String::from(
+                                                    "network protocol-expansion depth exceeds its hard bound",
+                                                ),
+                                            });
+                                        }
+                                        fragment
+                                            .fault_continuation
+                                            .append_protocol_expansion_ordinal(
+                                                u16::try_from(ordinal).map_err(|_error| {
+                                                    SchedulerError::BoundaryViolation {
+                                                        message: String::from(
+                                                            "network fragment ordinal exceeds u16",
+                                                        ),
+                                                    }
+                                                })?,
+                                            );
+                                        stage_pending_network_output(
+                                            &mut staged_pending,
+                                            fragment,
+                                        )?;
+                                    }
+                                }
+                                continue 'route;
+                            }
                             if let Some(not_before_nanos) = application.defer_until {
                                 if not_before_nanos <= frontier.ticks {
                                     return Err(SchedulerError::BoundaryViolation {
@@ -373,6 +421,7 @@ fn apply_network_frame_actions(
     let mut deferred_until = None;
     let mut queue_policy = None;
     let mut service_curves = Vec::new();
+    let mut mtu_policy: Option<(&ResolvedBindingAction, &NetworkEffectSpecification)> = None;
     let backpressure_wakeup = apply_network_backpressure_transitions(
         state,
         pending_outputs,
@@ -430,6 +479,50 @@ fn apply_network_frame_actions(
                 state_parameters,
             )?,
             NetworkEffectSpecification::PauseBackpressure { .. } => {}
+            NetworkEffectSpecification::Mtu { .. } => {
+                if let Some((existing, existing_specification)) = mtu_policy {
+                    let NetworkEffectSpecification::Mtu {
+                        mtu_bytes: existing_mtu,
+                        oversize: existing_oversize,
+                        fragmentation_protocol: existing_protocol,
+                        typed_error: existing_error,
+                    } = existing_specification
+                    else {
+                        return Err(network_effect_application_error(
+                            action,
+                            "MTU composition lost its typed parameters",
+                        ));
+                    };
+                    let NetworkEffectSpecification::Mtu {
+                        mtu_bytes,
+                        oversize,
+                        fragmentation_protocol,
+                        typed_error,
+                    } = specification
+                    else {
+                        return Err(network_effect_application_error(
+                            action,
+                            "MTU composition received non-MTU parameters",
+                        ));
+                    };
+                    if existing_oversize != oversize
+                        || existing_protocol != fragmentation_protocol
+                        || existing_error != typed_error
+                    {
+                        return Err(network_effect_application_error(
+                            action,
+                            "simultaneous MTU effects disagree on oversize disposition",
+                        ));
+                    }
+                    mtu_policy = Some(if mtu_bytes.get() < existing_mtu.get() {
+                        (action, specification)
+                    } else {
+                        (existing, existing_specification)
+                    });
+                } else {
+                    mtu_policy = Some((action, specification));
+                }
+            }
             NetworkEffectSpecification::QueuePolicy { .. }
                 if opportunity.phase() == FaultPhase::Queue =>
             {
@@ -451,6 +544,23 @@ fn apply_network_frame_actions(
                 state,
             )?,
         }
+    }
+    let expanded_payloads = if let Some((action, specification)) = mtu_policy {
+        apply_network_mtu(payload, effects, action, specification)?
+    } else {
+        None
+    };
+    if let Some(expanded_payloads) = expanded_payloads {
+        return Ok(NetworkFrameApplication {
+            expanded_payloads,
+            next_wakeup_nanos: earliest_wakeup(
+                state
+                    .boundary
+                    .next_wakeup_nanos(opportunity.coordinate().virtual_nanos),
+                backpressure_wakeup,
+            ),
+            ..NetworkFrameApplication::default()
+        });
     }
     if let Some((
         action,
@@ -532,13 +642,72 @@ fn apply_network_frame_actions(
                 backpressure_wakeup,
             ),
         ),
+        expanded_payloads: Vec::new(),
     })
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct NetworkFrameApplication {
     defer_until: Option<u64>,
     next_wakeup_nanos: Option<u64>,
+    expanded_payloads: Vec<Vec<u8>>,
+}
+
+fn apply_network_mtu(
+    payload: &[u8],
+    effects: &mut crucible::ResolvedNetworkFrameEffects,
+    action: &ResolvedBindingAction,
+    specification: &NetworkEffectSpecification,
+) -> Result<Option<Vec<Vec<u8>>>, SchedulerError> {
+    let NetworkEffectSpecification::Mtu {
+        mtu_bytes,
+        oversize,
+        fragmentation_protocol,
+        ..
+    } = specification
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "MTU executor received non-MTU parameters",
+        ));
+    };
+    let mtu = usize::try_from(mtu_bytes.get()).map_err(|_error| {
+        network_effect_application_error(action, "MTU exceeds host address width")
+    })?;
+    if payload.len() <= mtu {
+        return Ok(None);
+    }
+    match oversize {
+        crucible::model::NetworkOversizeDisposition::Drop => {
+            effects.mark_drop();
+            Ok(None)
+        }
+        crucible::model::NetworkOversizeDisposition::Fragment => {
+            let Some(crucible::model::NetworkFragmentationProtocol::EthernetIpv4) =
+                fragmentation_protocol
+            else {
+                return Err(network_effect_application_error(
+                    action,
+                    "fragment disposition omitted its admitted protocol",
+                ));
+            };
+            match crucible_device::fragment_ethernet_ipv4(payload, mtu)
+                .map_err(|error| network_effect_application_error(action, &error.to_string()))?
+            {
+                crucible_device::Ipv4FragmentationOutcome::DontFragment => {
+                    effects.mark_drop();
+                    Ok(None)
+                }
+                crucible_device::Ipv4FragmentationOutcome::Frames(fragments) => Ok(Some(fragments)),
+            }
+        }
+        crucible::model::NetworkOversizeDisposition::TypedError => {
+            Err(network_effect_application_error(
+                action,
+                "typed MTU response requires the generated-response scheduler phase",
+            ))
+        }
+    }
 }
 
 fn apply_network_pause_action(
@@ -1909,14 +2078,12 @@ fn apply_network_frame_action(
                 "detected-frame-error parameters contradicted admission",
             ));
         }
-        NetworkEffectSpecification::Mtu {
-            mtu_bytes,
-            oversize: crucible::model::NetworkOversizeDisposition::Drop,
-            ..
-        } if payload.len() > usize::try_from(mtu_bytes.get()).unwrap_or(usize::MAX) => {
-            effects.mark_drop();
+        NetworkEffectSpecification::Mtu { .. } => {
+            return Err(network_effect_application_error(
+                action,
+                "MTU effects require the composed frame executor",
+            ));
         }
-        NetworkEffectSpecification::Mtu { .. } => {}
         NetworkEffectSpecification::RecipientSubset {
             membership_version,
             drop_members,
@@ -2888,6 +3055,7 @@ mod tests {
                     producer: id("sender"),
                     destination,
                     producer_sequence: 7,
+                    protocol_expansion_path: Vec::new(),
                     length_bytes: 64,
                     payload_digest: ContentHash::from_bytes(b"multicast-frame"),
                 },
@@ -2930,6 +3098,7 @@ mod tests {
                 producer: id("sender"),
                 destination: id("receiver"),
                 producer_sequence: sequence,
+                protocol_expansion_path: Vec::new(),
                 length_bytes: 1,
                 payload_digest: ContentHash::from_bytes(&sequence.to_be_bytes()),
             },
@@ -2952,6 +3121,92 @@ mod tests {
             .unwrap_or_else(|error| panic!("test network effect: {error}")),
         );
         action
+    }
+
+    fn ethernet_ipv4_frame(data: &[u8], flags_offset: u16) -> Vec<u8> {
+        const ETHERNET_HEADER: usize = 14;
+        const IPV4_HEADER: usize = 20;
+        let total_length = u16::try_from(IPV4_HEADER + data.len())
+            .unwrap_or_else(|error| panic!("test IPv4 packet length: {error}"));
+        let mut frame = vec![0_u8; ETHERNET_HEADER + IPV4_HEADER];
+        frame[0..6].copy_from_slice(&[0, 1, 2, 3, 4, 5]);
+        frame[6..12].copy_from_slice(&[6, 7, 8, 9, 10, 11]);
+        frame[12..14].copy_from_slice(&[0x08, 0x00]);
+        frame[14] = 0x45;
+        frame[16..18].copy_from_slice(&total_length.to_be_bytes());
+        frame[18..20].copy_from_slice(&0x1234_u16.to_be_bytes());
+        frame[20..22].copy_from_slice(&flags_offset.to_be_bytes());
+        frame[22] = 64;
+        frame[23] = 17;
+        frame[26..30].copy_from_slice(&[192, 0, 2, 1]);
+        frame[30..34].copy_from_slice(&[198, 51, 100, 2]);
+        frame.extend_from_slice(data);
+        frame
+    }
+
+    #[test]
+    fn mtu_expansion_returns_real_child_frames_before_queue_service() {
+        let mut action = action();
+        action.phase = FaultPhase::Admit;
+        action.effect = Arc::new(
+            EffectRequest::new(
+                EFFECT_SEMANTIC_VERSION,
+                EffectLifetime::Persistent,
+                EffectSpecification::Network(NetworkEffectSpecification::Mtu {
+                    mtu_bytes: positive(42),
+                    oversize: crucible::model::NetworkOversizeDisposition::Fragment,
+                    fragmentation_protocol: Some(
+                        crucible::model::NetworkFragmentationProtocol::EthernetIpv4,
+                    ),
+                    typed_error: None,
+                }),
+            )
+            .unwrap_or_else(|error| panic!("test MTU effect: {error}")),
+        );
+        let mut payload = ethernet_ipv4_frame(&(0_u8..40).collect::<Vec<_>>(), 0);
+        let opportunity = FaultOpportunity::new(
+            action.target.clone(),
+            crucible::model::FaultOperation::NetworkTraverse,
+            FaultPhase::Admit,
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            1,
+            Some(crucible::model::FaultDirection::AToB),
+            OpportunityPayload::NetworkFrame {
+                producer: id("sender"),
+                destination: id("receiver"),
+                producer_sequence: 1,
+                protocol_expansion_path: Vec::new(),
+                length_bytes: u64::try_from(payload.len())
+                    .unwrap_or_else(|error| panic!("test frame length: {error}")),
+                payload_digest: ContentHash::from_bytes(&payload),
+            },
+        )
+        .unwrap_or_else(|error| panic!("test MTU opportunity: {error}"));
+        let mut effects = crucible::ResolvedNetworkFrameEffects::default();
+        let mut state = NetworkEffectRuntimeState::default();
+        let application = apply_network_frame_actions(
+            &mut payload,
+            &mut effects,
+            std::slice::from_ref(&action),
+            &opportunity,
+            ContentHash::from_bytes(b"mtu-expansion"),
+            &crucible::model::WorldFaultTopology::default(),
+            &mut state,
+            &mut Vec::new(),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("MTU expansion: {error}"));
+        assert_eq!(application.expanded_payloads.len(), 5);
+        assert!(
+            application
+                .expanded_payloads
+                .iter()
+                .all(|fragment| fragment.len() <= 42)
+        );
+        assert!(state.queues.is_empty());
     }
 
     #[test]
@@ -3149,6 +3404,7 @@ mod tests {
                 producer: id("sender"),
                 destination: id("receiver"),
                 producer_sequence: 1,
+                protocol_expansion_path: Vec::new(),
                 length_bytes: 1,
                 payload_digest: ContentHash::from_bytes(b"frame"),
             },

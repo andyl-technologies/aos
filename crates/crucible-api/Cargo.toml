@@ -12,6 +12,7 @@ workspace = true
 axum = { workspace = true }
 bytes = { workspace = true }
 crucible = { path = "../crucible" }
+crucible-device = { path = "../crucible-device" }
 crucible-protocol = { path = "../crucible-protocol" }
 crucible-qemu = { path = "../crucible-qemu" }
 crucible-session = { path = "../crucible-session" }

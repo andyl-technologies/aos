@@ -2026,6 +2026,7 @@ dependencies = [
  "axum",
  "bytes",
  "crucible",
+ "crucible-device",
  "crucible-protocol",
  "crucible-qemu",
  "crucible-session",

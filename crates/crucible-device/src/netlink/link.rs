@@ -204,6 +204,14 @@ impl ResolvedNetworkFrameEffects {
         self.serialization_accounted = true;
     }
 
+    /// Requires a later queue or link to serialize this frame again.
+    ///
+    /// Protocol expansion uses this after an upstream service point because
+    /// every child is a new downstream frame with its own copied headers.
+    pub const fn require_serialization(&mut self) {
+        self.serialization_accounted = false;
+    }
+
     /// Adds one bounded copy gap and preserves canonical gap ordering.
     ///
     /// # Errors
