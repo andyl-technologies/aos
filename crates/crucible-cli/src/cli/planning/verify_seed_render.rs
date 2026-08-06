@@ -533,30 +533,23 @@ pub(crate) enum SeedResolutionMode {
 }
 
 pub(crate) fn seed_resolution_mode(command: &Commands) -> SeedResolutionMode {
-    matches!(
-        command,
-        Commands::Run(_)
-            | Commands::Verify(_)
-            | Commands::Save(_)
-            | Commands::Fork(_)
-            | Commands::Search(_)
-            | Commands::Fuzz(_)
-    )
-    .then_some(SeedResolutionMode::FreshRunIdentity)
-    .unwrap_or(match command {
-        Commands::Resume(_) | Commands::Replay(_) => SeedResolutionMode::ArtifactOrSavepointOwned,
-        Commands::Selftest(_)
-        | Commands::Triage(_)
-        | Commands::Debug(_)
-        | Commands::Serve(_)
-        | Commands::Completions(_) => SeedResolutionMode::NotApplicable,
+    match command {
+        Commands::Verify(args) if !args.compare.is_empty() => {
+            SeedResolutionMode::ArtifactOrSavepointOwned
+        }
         Commands::Run(_)
         | Commands::Verify(_)
         | Commands::Save(_)
         | Commands::Fork(_)
         | Commands::Search(_)
         | Commands::Fuzz(_) => SeedResolutionMode::FreshRunIdentity,
-    })
+        Commands::Resume(_) | Commands::Replay(_) => SeedResolutionMode::ArtifactOrSavepointOwned,
+        Commands::Selftest(_)
+        | Commands::Triage(_)
+        | Commands::Debug(_)
+        | Commands::Serve(_)
+        | Commands::Completions(_) => SeedResolutionMode::NotApplicable,
+    }
 }
 
 /// Enforces canonical trace-format constraints for the selected command.

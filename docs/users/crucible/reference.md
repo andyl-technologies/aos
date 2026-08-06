@@ -119,7 +119,7 @@ Exactly one of `SCENARIO` and `--compare` is required.
 | `--runs <n>` | Default `2` | Number of executions to compare. |
 | `--adversarial` | Off | Run under the hostile host-condition matrix. |
 | `--bisect` | Off | On divergence, run deterministic divergence bisection and print its report. |
-| `--compare <a> <b>` | Alternative to `SCENARIO` | Compare two existing reproduction artifacts without executing a scenario. |
+| `--compare <a> <b>` | Alternative to `SCENARIO` | Compare two existing reproduction artifacts using their embedded identities, without executing a scenario or generating a seed. |
 
 ### `selftest`
 

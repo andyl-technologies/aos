@@ -820,6 +820,17 @@ pub(super) fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace
         ),
         SeedResolutionMode::ArtifactOrSavepointOwned
     );
+    let compare = Cli::parse_from([
+        "crucible",
+        "verify",
+        "--compare",
+        "left.crucible",
+        "right.crucible",
+    ]);
+    assert_eq!(
+        seed_resolution_mode(&compare.command),
+        SeedResolutionMode::ArtifactOrSavepointOwned
+    );
     let draws_before = entropy.draws;
     assert!(
         plan_determinism_ergonomics(
@@ -828,6 +839,11 @@ pub(super) fn cli_determinism_ergonomics_rejects_invalid_seed_and_markdown_trace
             &mut entropy,
         )?
         .is_none()
+    );
+    assert_eq!(entropy.draws, draws_before);
+    assert!(
+        plan_determinism_ergonomics(&compare, &FakeSeedEnvironment::default(), &mut entropy,)?
+            .is_none()
     );
     assert_eq!(entropy.draws, draws_before);
 
