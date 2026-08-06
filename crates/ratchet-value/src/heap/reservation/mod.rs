@@ -25,6 +25,9 @@ use super::reservation_registry::{
 use super::{MemoryAdviceOutcome, MemoryAdviceRange, advise_dead};
 use crate::value::HeapObject;
 
+mod mapping_flags;
+use mapping_flags::{MAP_ANONYMOUS_FLAG, MAP_NORESERVE_FLAG};
+
 /// Heap-image round-trip primitive for the Candidate-C address-free snapshot
 /// (RFC-0007 doc 31 §1, stage 1). Adds `impl ReservedArena` methods that dump
 /// the used lanes and reload them into a fresh mapping with the domain
@@ -37,21 +40,6 @@ pub const CANDIDATE_C_ADDRESS_SPACE_BYTES: u64 = 1_u64 << 32;
 /// Maximum nonzero arena domain encodable beside kind and forced metadata.
 pub const CANDIDATE_C_ARENA_DOMAIN_MAX: u32 = (1 << 23) - 1;
 static NEXT_ARENA_DOMAIN: AtomicU32 = AtomicU32::new(1);
-
-#[cfg(any(target_os = "android", target_os = "linux"))]
-const MAP_ANONYMOUS_FLAG: libc::c_int = libc::MAP_ANONYMOUS;
-
-// Candidate C reserves an offset domain, not 4 GiB of committed memory. Linux
-// otherwise charges the entire writable mapping against strict overcommit and
-// cgroup commit limits even though only the two bump lanes are faulted in.
-#[cfg(any(target_os = "android", target_os = "linux"))]
-const MAP_NORESERVE_FLAG: libc::c_int = libc::MAP_NORESERVE;
-
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
-const MAP_ANONYMOUS_FLAG: libc::c_int = libc::MAP_ANON;
-
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
-const MAP_NORESERVE_FLAG: libc::c_int = 0;
 
 /// A byte offset into a Candidate-C reservation.
 #[repr(transparent)]
