@@ -6,11 +6,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crucible::{
-    BackendEffect, BackendInput, Checkpoint, CheckpointKind, Configuration, ControlFaultAction,
-    ControlFaultDecision, ControlOperation, ControlOperationKind, Decision, DeliveryOrderDecision,
-    EventClass, EventDiagnosticPayload, EventKey, EventLevel, EventSource, Fault,
-    FaultSlowdownFactorBasisPoints, FaultTag, GenesisCheckpoint, NodeFault, NodeId, QuantumLoop,
-    QuantumOutcome, QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
+    BackendEffect, BackendInput, Checkpoint, CheckpointKind, Configuration, ControlOperation,
+    ControlOperationKind, Decision, DeliveryOrderDecision, EventClass, EventDiagnosticPayload,
+    EventKey, EventLevel, EventSource, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
+    QuantumRequest, ScenarioDef, ScheduledEvent, ScheduledEventKey, SchedulerError,
     SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, Seed,
     SimDouble, SimDoubleConfig, SimulationBackend, TemporalGraph, VirtualTime,
     compare_event_log_determinism, step,
@@ -146,71 +145,6 @@ async fn gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn gate_control_responsive_accepts_typed_fault_control_commands() {
-    let scenario = generated_scenario(37);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let observed_control = Arc::new(Mutex::new(Vec::new()));
-    let engine = Engine::new(
-        config,
-        graph,
-        SimDoubleQuantumLoop::new(Arc::clone(&observed_control)),
-    );
-    let (sender, receiver) = mpsc::channel(8);
-    let actor = SessionActor::new(engine, receiver);
-    let live = actor.live_snapshot();
-    let actor_task = tokio::spawn(async move { actor.run().await });
-
-    send_command(&sender, SessionCommand::Start).await;
-    send_command(&sender, SessionCommand::Continue).await;
-    wait_until_running(&live).await;
-
-    let tag = FaultTag::from_name("slow-db0");
-    let fault = Fault::Node(NodeFault::Slow {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        factor: FaultSlowdownFactorBasisPoints::from_basis_points(20_000)
-            .unwrap_or_else(|error| panic!("valid slowdown factor: {error}")),
-    });
-    let inject_acknowledged = acknowledge_operation(
-        &sender,
-        &live,
-        SessionCommand::inject_fault(tag.clone(), fault.clone()),
-        "inject-fault",
-    )
-    .await;
-    assert_eq!(inject_acknowledged.state_kind, LiveStateKind::Running);
-    let heal_acknowledged = acknowledge_operation(
-        &sender,
-        &live,
-        SessionCommand::heal_fault(tag.clone()),
-        "heal-fault",
-    )
-    .await;
-    assert_eq!(heal_acknowledged.state_kind, LiveStateKind::Running);
-
-    assert_eq!(
-        observed_control_operations(&observed_control),
-        vec![
-            ControlOperationKind::InjectFault {
-                tag: tag.clone(),
-                fault,
-            },
-            ControlOperationKind::HealFault { tag },
-        ]
-    );
-
-    send_command(&sender, SessionCommand::Stop).await;
-    let report = match actor_task.await {
-        Ok(Ok(report)) => report,
-        Ok(Err(error)) => panic!("actor should stop cleanly: {error}"),
-        Err(error) => panic!("actor task should join cleanly: {error}"),
-    };
-    assert!(report.quanta >= heal_acknowledged.quanta_stepped);
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn gate_control_responsive_acknowledges_query_command_within_quantum_bound() {
     let scenario = generated_scenario(39);
     let config = Configuration::genesis(scenario.clone());
@@ -278,21 +212,7 @@ async fn gate_control_plane_streams_event_log_entries_from_cursor_without_mutati
         .unwrap_or_else(|| panic!("future cursor stream should deliver live entries"));
     assert_eq!(future_frame.cursor, EventLogCursor::default());
 
-    let tag = FaultTag::from_name("streamed-control");
-    let fault = Fault::Node(NodeFault::Slow {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        factor: FaultSlowdownFactorBasisPoints::from_basis_points(20_000)
-            .unwrap_or_else(|error| panic!("valid slowdown factor: {error}")),
-    });
-    acknowledge_operation(
-        &sender,
-        &live,
-        SessionCommand::inject_fault(tag.clone(), fault),
-        "stream-inject-fault",
-    )
-    .await;
+    acknowledge_operation(&sender, &live, SessionCommand::Inject, "stream-inject").await;
     send_command(&sender, SessionCommand::Pause).await;
 
     let mut streamed = Vec::new();
@@ -639,9 +559,7 @@ impl SimDoubleQuantumLoop {
                 ControlOperationKind::Pause
                 | ControlOperationKind::Resume
                 | ControlOperationKind::Step
-                | ControlOperationKind::Fork
-                | ControlOperationKind::InjectFault { .. }
-                | ControlOperationKind::HealFault { .. } => {
+                | ControlOperationKind::Fork => {
                     let now = SimulationBackend::now(&self.backend);
                     SimulationBackend::apply(&mut self.backend, &BackendEffect::Noop, now)?;
                 }
@@ -710,33 +628,11 @@ fn complete_sim_double_setup(backend: &mut SimDouble) {
 }
 
 fn control_operation_log_entry(
-    sequence: u64,
-    ticks: u64,
-    operation: &ControlOperation,
+    _sequence: u64,
+    _ticks: u64,
+    _operation: &ControlOperation,
 ) -> Option<SchedulerEventLogEntry> {
-    let action = match &operation.kind {
-        ControlOperationKind::InjectFault { tag, fault } => ControlFaultAction::Inject {
-            tag: tag.clone(),
-            fault: fault.clone(),
-        },
-        ControlOperationKind::HealFault { tag } => ControlFaultAction::Heal { tag: tag.clone() },
-        ControlOperationKind::Pause
-        | ControlOperationKind::Resume
-        | ControlOperationKind::Step
-        | ControlOperationKind::Snapshot
-        | ControlOperationKind::Fork
-        | ControlOperationKind::Inject
-        | ControlOperationKind::Query => return None,
-    };
-    Some(crucible::test_support::condition_payload_entry_for_test(
-        sequence,
-        VirtualTime { ticks },
-        SchedulerEventLogPayload::Decision(Decision::ControlFault(ControlFaultDecision {
-            at: VirtualTime { ticks },
-            sequence: operation.sequence,
-            action,
-        })),
-    ))
+    None
 }
 
 fn record_control_operations(

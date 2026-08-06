@@ -200,8 +200,6 @@ fn lifecycle_state_reason_outcome_and_command_sets_are_closed() {
             SessionCommandKind::Stop,
             SessionCommandKind::ExhaustBudget,
             SessionCommandKind::Inject,
-            SessionCommandKind::InjectFault,
-            SessionCommandKind::HealFault,
             SessionCommandKind::SetBreakpoint,
             SessionCommandKind::RemoveBreakpoint,
             SessionCommandKind::CreateSavepoint,
@@ -443,33 +441,6 @@ async fn rfc_command_payloads_return_replies_through_engine_boundary() {
     if let Err(error) = engine.apply_command(SessionCommand::Continue) {
         panic!("continue should enter the running command boundary: {error}");
     }
-    let fault_tag = FaultTag::from_name("rfc-command-payload");
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
-    let (inject_reply, inject_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::InjectFault {
-        spec: FaultSpec::new(fault_tag.clone(), fault),
-        reply: inject_reply,
-    }) {
-        panic!("inject fault should return its stable tag: {error}");
-    }
-    assert_eq!(receive_reply(inject_receiver).await, fault_tag);
-    assert_eq!(engine.pending_control_len(), 0);
-
-    let (heal_reply, heal_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::HealFault {
-        tag: fault_tag.clone(),
-        reply: heal_reply,
-    }) {
-        panic!("heal fault should complete its acknowledgement: {error}");
-    }
-    receive_reply(heal_receiver).await;
-    assert_eq!(engine.pending_control_len(), 0);
-
     let (savepoint_reply, savepoint_receiver) = CommandReply::channel();
     if let Err(error) = engine.apply_command(SessionCommand::CreateSavepoint {
         label: String::from("rfc-command-savepoint"),
@@ -1006,44 +977,6 @@ async fn running_boundary_commands_record_deterministic_control_log() {
         panic!("running legacy inject should be applied at a boundary: {error}");
     }
 
-    let fault_tag = FaultTag::from_name("boundary-log-fault");
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
-    let (inject_reply, inject_receiver) = CommandReply::channel();
-    if let Err(error) = sender
-        .send(SessionCommand::InjectFault {
-            spec: FaultSpec::new(fault_tag.clone(), fault.clone()),
-            reply: inject_reply,
-        })
-        .await
-    {
-        panic!("inject-fault command should enqueue: {error}");
-    }
-    if let Err(error) = actor.run_once().await {
-        panic!("running inject-fault should be applied at a boundary: {error}");
-    }
-    assert_eq!(receive_reply(inject_receiver).await, fault_tag.clone());
-
-    let (heal_reply, heal_receiver) = CommandReply::channel();
-    if let Err(error) = sender
-        .send(SessionCommand::HealFault {
-            tag: fault_tag.clone(),
-            reply: heal_reply,
-        })
-        .await
-    {
-        panic!("heal-fault command should enqueue: {error}");
-    }
-    if let Err(error) = actor.run_once().await {
-        panic!("running heal-fault should be applied at a boundary: {error}");
-    }
-    receive_reply(heal_receiver).await;
-    assert_eq!(actor.engine().pending_control_len(), 0);
-
     let breakpoint = BreakpointSpec::suspend_once(Condition::Quiescent);
     let (set_reply, set_receiver) = CommandReply::channel();
     if let Err(error) = sender
@@ -1111,34 +1044,17 @@ async fn running_boundary_commands_record_deterministic_control_log() {
     assert_eq!(fork.configuration, actor.engine().configuration().id());
 
     let log = actor.engine().boundary_control_log();
-    assert_eq!(log.len(), 7);
+    assert_eq!(log.len(), 5);
     assert_boundary_log_entry(
         &log[0],
         1,
         SessionCommandKind::Inject,
         Some(ControlOperationKind::Inject),
     );
-    assert_boundary_log_entry(
-        &log[1],
-        2,
-        SessionCommandKind::InjectFault,
-        Some(ControlOperationKind::InjectFault {
-            tag: fault_tag.clone(),
-            fault: fault.clone(),
-        }),
-    );
-    assert_boundary_log_entry(
-        &log[2],
-        3,
-        SessionCommandKind::HealFault,
-        Some(ControlOperationKind::HealFault {
-            tag: fault_tag.clone(),
-        }),
-    );
-    assert_boundary_log_entry(&log[3], 4, SessionCommandKind::SetBreakpoint, None);
-    assert_boundary_log_entry(&log[4], 5, SessionCommandKind::RemoveBreakpoint, None);
-    assert_boundary_log_entry(&log[5], 6, SessionCommandKind::CreateSavepoint, None);
-    assert_boundary_log_entry(&log[6], 7, SessionCommandKind::Fork, None);
+    assert_boundary_log_entry(&log[1], 2, SessionCommandKind::SetBreakpoint, None);
+    assert_boundary_log_entry(&log[2], 3, SessionCommandKind::RemoveBreakpoint, None);
+    assert_boundary_log_entry(&log[3], 4, SessionCommandKind::CreateSavepoint, None);
+    assert_boundary_log_entry(&log[4], 5, SessionCommandKind::Fork, None);
     assert!(
         log.iter()
             .all(|entry| entry.frontier.ticks > 0 && entry.quanta > 0),
@@ -1146,19 +1062,11 @@ async fn running_boundary_commands_record_deterministic_control_log() {
     );
     assert_eq!(log[0].frontier, VirtualTime { ticks: 1 });
     assert_eq!(log[0].quanta, 1);
-    assert_eq!(log[6].frontier, VirtualTime { ticks: 1 });
-    assert_eq!(log[6].quanta, 1);
+    assert_eq!(log[4].frontier, VirtualTime { ticks: 1 });
+    assert_eq!(log[4].quanta, 1);
     assert_eq!(
         recorded_control_batches(&control_batches),
-        vec![
-            Vec::new(),
-            vec![ControlOperationKind::Inject],
-            vec![ControlOperationKind::InjectFault {
-                tag: fault_tag.clone(),
-                fault,
-            }],
-            vec![ControlOperationKind::HealFault { tag: fault_tag }],
-        ]
+        vec![Vec::new(), vec![ControlOperationKind::Inject]]
     );
     assert_eq!(actor.engine().pending_control_len(), 0);
     assert_eq!(actor.engine().quanta(), 1);
@@ -1189,55 +1097,13 @@ async fn paused_boundary_mutators_apply_and_record_control_log() {
         panic!("paused legacy inject should apply at the current boundary: {error}");
     }
 
-    let fault_tag = FaultTag::from_name("paused-boundary-fault");
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
-    let (inject_reply, inject_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::InjectFault {
-        spec: FaultSpec::new(fault_tag.clone(), fault.clone()),
-        reply: inject_reply,
-    }) {
-        panic!("paused inject-fault should apply at the current boundary: {error}");
-    }
-    assert_eq!(receive_reply(inject_receiver).await, fault_tag.clone());
-
-    let (heal_reply, heal_receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::HealFault {
-        tag: fault_tag.clone(),
-        reply: heal_reply,
-    }) {
-        panic!("paused heal-fault should apply at the current boundary: {error}");
-    }
-    receive_reply(heal_receiver).await;
-
     let log = engine.boundary_control_log();
-    assert_eq!(log.len(), 3);
+    assert_eq!(log.len(), 1);
     assert_boundary_log_entry(
         &log[0],
         1,
         SessionCommandKind::Inject,
         Some(ControlOperationKind::Inject),
-    );
-    assert_boundary_log_entry(
-        &log[1],
-        2,
-        SessionCommandKind::InjectFault,
-        Some(ControlOperationKind::InjectFault {
-            tag: fault_tag.clone(),
-            fault: fault.clone(),
-        }),
-    );
-    assert_boundary_log_entry(
-        &log[2],
-        3,
-        SessionCommandKind::HealFault,
-        Some(ControlOperationKind::HealFault {
-            tag: fault_tag.clone(),
-        }),
     );
     assert!(
         log.iter()
@@ -1246,14 +1112,7 @@ async fn paused_boundary_mutators_apply_and_record_control_log() {
     );
     assert_eq!(
         recorded_control_batches(&control_batches),
-        vec![
-            vec![ControlOperationKind::Inject],
-            vec![ControlOperationKind::InjectFault {
-                tag: fault_tag.clone(),
-                fault,
-            }],
-            vec![ControlOperationKind::HealFault { tag: fault_tag }],
-        ]
+        vec![vec![ControlOperationKind::Inject]]
     );
     assert_eq!(engine.pending_control_len(), 0);
     assert!(matches!(
@@ -1375,82 +1234,6 @@ fn control_replay_artifact_rejects_final_snapshot_mismatch() {
 }
 
 #[tokio::test]
-async fn control_replay_artifact_replays_grouped_breakpoint_actions_as_one_batch() {
-    let scenario = generated_scenario(47);
-    let initial = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(
-        initial.clone(),
-        graph.clone(),
-        ControlSensitiveLoop::default(),
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("group replay producer should instantiate: {error}");
-    }
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
-    let first_tag = FaultTag::from_name("group-replay-first");
-    let second_tag = FaultTag::from_name("group-replay-second");
-    let action = Action::group(vec![
-        Action::inject_fault(first_tag.clone(), MembershipFault::taxonomy(fault.clone())),
-        Action::inject_fault(second_tag.clone(), MembershipFault::taxonomy(fault)),
-    ]);
-    let breakpoint = BreakpointSpec {
-        predicate: Predicate::at(VirtualTime { ticks: 1 }),
-        disposition: BreakpointDisposition::Action(action),
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (reply, _receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("group breakpoint should register before continue: {error}");
-    }
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("group replay producer should run: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-    if let Err(error) = actor.run_once().await {
-        panic!("first producer quantum should fire the grouped breakpoint: {error}");
-    }
-    if let Err(error) = actor.run_once().await {
-        panic!("second producer quantum should observe grouped scheduler state: {error}");
-    }
-    let artifact = actor.engine().control_replay_artifact(initial);
-
-    assert_eq!(artifact.control_log.len(), 2);
-    assert_ne!(artifact.control_log[0].scheduler_batch, 0);
-    assert_eq!(
-        artifact.control_log[0].scheduler_batch, artifact.control_log[1].scheduler_batch,
-        "grouped breakpoint controls must share one scheduler batch"
-    );
-    assert!(matches!(
-        &artifact.control_log[0].scheduler_control,
-        Some(ControlOperationKind::InjectFault { tag, .. }) if tag == &first_tag
-    ));
-    assert!(matches!(
-        &artifact.control_log[1].scheduler_control,
-        Some(ControlOperationKind::InjectFault { tag, .. }) if tag == &second_tag
-    ));
-
-    let replay = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
-        &artifact,
-        graph_with_baked_genesis(&scenario),
-        ControlSensitiveLoop::default(),
-    ) {
-        Ok(snapshot) => snapshot,
-        Err(error) => panic!("grouped breakpoint controls should replay as one batch: {error}"),
-    };
-    assert_eq!(replay, artifact.final_snapshot);
-}
-
-#[tokio::test]
 async fn pause_and_stop_take_effect_at_boundary_without_extra_quantum() {
     for command in [SessionCommand::Pause, SessionCommand::Stop] {
         let scenario = generated_scenario(36);
@@ -1522,27 +1305,12 @@ async fn stop_after_scheduler_control_does_not_drop_logged_effect() {
     let (sender, receiver) = mpsc::channel(4);
     let mut actor = SessionActor::new(engine, receiver);
 
-    let fault_tag = FaultTag::from_name("stop-after-control");
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
-    let (inject_reply, inject_receiver) = CommandReply::channel();
-    if let Err(error) = sender
-        .send(SessionCommand::InjectFault {
-            spec: FaultSpec::new(fault_tag.clone(), fault.clone()),
-            reply: inject_reply,
-        })
-        .await
-    {
-        panic!("inject-fault command should enqueue: {error}");
+    if let Err(error) = sender.send(SessionCommand::Inject).await {
+        panic!("inject command should enqueue: {error}");
     }
     if let Err(error) = actor.run_once().await {
-        panic!("running inject-fault should be applied at a boundary: {error}");
+        panic!("running inject should be applied at a boundary: {error}");
     }
-    assert_eq!(receive_reply(inject_receiver).await, fault_tag.clone());
     assert_eq!(actor.engine().pending_control_len(), 0);
 
     if let Err(error) = sender.send(SessionCommand::Stop).await {
@@ -1555,15 +1323,12 @@ async fn stop_after_scheduler_control_does_not_drop_logged_effect() {
     assert_eq!(actor.engine().quanta(), 0);
     assert_eq!(
         recorded_control_batches(&control_batches),
-        vec![vec![ControlOperationKind::InjectFault {
-            tag: fault_tag,
-            fault,
-        }]]
+        vec![vec![ControlOperationKind::Inject]]
     );
     assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
     let log = actor.engine().boundary_control_log();
     assert_eq!(log.len(), 2);
-    assert_eq!(log[0].command, SessionCommandKind::InjectFault);
+    assert_eq!(log[0].command, SessionCommandKind::Inject);
     assert_eq!(log[1].command, SessionCommandKind::Stop);
     assert!(matches!(
         actor.engine().state(),
@@ -1764,76 +1529,6 @@ async fn breakpoint_once_combinator_latches_across_boundaries() {
 }
 
 #[tokio::test]
-async fn breakpoint_action_applies_scheduler_control_at_boundary() {
-    let scenario = generated_scenario(41);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let control_batches = Arc::new(Mutex::new(Vec::new()));
-    let mut engine = Engine::new(
-        config,
-        graph,
-        RecordingLoop::new(Arc::clone(&control_batches)),
-    );
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("action breakpoint start should instantiate runtime: {error}");
-    }
-    let tag = FaultTag::from_name("breakpoint-action-fault");
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
-    let action = Action::inject_fault(tag.clone(), MembershipFault::taxonomy(fault.clone()));
-    let breakpoint = BreakpointSpec {
-        predicate: Predicate::at(VirtualTime { ticks: 1 }),
-        disposition: BreakpointDisposition::Action(action),
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("action breakpoint should register before continue: {error}");
-    }
-    let breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("action breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-
-    if let Err(error) = actor.run_once().await {
-        panic!("action breakpoint quantum should run: {error}");
-    }
-
-    let expected_control = ControlOperationKind::InjectFault {
-        tag: tag.clone(),
-        fault: fault.clone(),
-    };
-    assert!(matches!(actor.engine().state(), EngineState::Running));
-    assert_eq!(actor.engine().pending_control_len(), 0);
-    assert_eq!(
-        actor.engine().breakpoint_firings()[0].scheduler_controls,
-        vec![expected_control.clone()]
-    );
-    assert_eq!(actor.engine().breakpoint_firings()[0].id, breakpoint_id);
-    let log = actor.engine().boundary_control_log();
-    assert_eq!(log.len(), 1);
-    assert_boundary_log_entry(
-        &log[0],
-        1,
-        SessionCommandKind::InjectFault,
-        Some(expected_control.clone()),
-    );
-    assert_eq!(
-        recorded_control_batches(&control_batches),
-        vec![Vec::new(), vec![expected_control]]
-    );
-}
-
-#[tokio::test]
 async fn unsupported_breakpoint_action_fails_loudly() {
     let scenario = generated_scenario(42);
     let config = Configuration::genesis(scenario.clone());
@@ -1877,56 +1572,6 @@ async fn unsupported_breakpoint_action_fails_loudly() {
 }
 
 #[tokio::test]
-async fn unsupported_breakpoint_fault_fails_loudly() {
-    let scenario = generated_scenario(43);
-    let config = Configuration::genesis(scenario.clone());
-    let graph = graph_with_baked_genesis(&scenario);
-    let mut engine = Engine::new(config, graph, ScriptedStepLoop::default());
-    if let Err(error) = engine.apply_command(SessionCommand::Start) {
-        panic!("unsupported-fault breakpoint start should instantiate runtime: {error}");
-    }
-    let breakpoint = BreakpointSpec {
-        predicate: Predicate::at(VirtualTime { ticks: 1 }),
-        disposition: BreakpointDisposition::Action(Action::inject_fault(
-            FaultTag::from_name("unsupported-breakpoint-fault"),
-            MembershipFault::Isolate {
-                node: NodeId {
-                    name: String::from("node-a"),
-                },
-            },
-        )),
-        policy: BreakpointPolicy::OneShot,
-    };
-    let (reply, receiver) = CommandReply::channel();
-    if let Err(error) = engine.apply_command(SessionCommand::SetBreakpoint {
-        spec: breakpoint,
-        reply,
-    }) {
-        panic!("unsupported-fault breakpoint should register: {error}");
-    }
-    let _breakpoint_id = receive_reply(receiver).await;
-    if let Err(error) = engine.apply_command(SessionCommand::Continue) {
-        panic!("unsupported-fault breakpoint continue should enter running state: {error}");
-    }
-    let (_sender, receiver) = mpsc::channel(1);
-    let mut actor = SessionActor::new(engine, receiver);
-
-    let error = actor
-        .run_once()
-        .await
-        .expect_err("unsupported fault breakpoint should fail loudly");
-
-    assert_eq!(
-        error,
-        SessionError::UnsupportedBreakpointFault {
-            action: "inject-fault",
-            reason: "fault has no scheduler-control representation",
-        }
-    );
-    assert!(actor.engine().breakpoint_firings().is_empty());
-}
-
-#[tokio::test]
 async fn breakpoint_action_group_is_prevalidated_before_control_application() {
     let scenario = generated_scenario(44);
     let config = Configuration::genesis(scenario.clone());
@@ -1940,17 +1585,10 @@ async fn breakpoint_action_group_is_prevalidated_before_control_application() {
     if let Err(error) = engine.apply_command(SessionCommand::Start) {
         panic!("group breakpoint start should instantiate runtime: {error}");
     }
-    let tag = FaultTag::from_name("group-prefix-fault");
-    let fault = Fault::Node(crucible::NodeFault::Crash {
-        node: NodeId {
-            name: String::from("node-a"),
-        },
-        restart: crucible::RestartPolicy::StayDown,
-    });
     let breakpoint = BreakpointSpec {
         predicate: Predicate::at(VirtualTime { ticks: 1 }),
         disposition: BreakpointDisposition::Action(Action::Group(vec![
-            Action::inject_fault(tag, MembershipFault::taxonomy(fault)),
+            Action::Pass,
             Action::Log {
                 level: LogLevel::Info,
                 message: String::from("unsupported group suffix"),
