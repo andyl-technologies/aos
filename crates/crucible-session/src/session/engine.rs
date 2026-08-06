@@ -862,7 +862,7 @@ impl<L> Engine<L> {
     where
         L: QuantumLoop,
     {
-        if self.breakpoints.is_empty() {
+        if matches!(self.state, EngineState::Stopped { .. }) || self.breakpoints.is_empty() {
             return Ok(());
         }
 
