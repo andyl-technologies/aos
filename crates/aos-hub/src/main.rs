@@ -234,9 +234,9 @@ struct WorkerArgs {
     /// Base for three account-unique rate-limit namespace IDs.
     #[arg(long, default_value_t = 1000)]
     rate_limit_namespace_base: u32,
-    /// Exact HTTPS URL of the repository-owned `aos-hub-egress` gateway.
-    #[arg(long, env = "HUB_HARDENED_EGRESS_URL")]
-    hardened_egress_url: String,
+    /// Exact HTTPS URL of an optional `aos-hub-egress` router.
+    #[arg(long, env = "HUB_EGRESS_GATEWAY_URL", requires = "egress_gateway_key")]
+    egress_gateway_url: Option<String>,
     /// Canonical HTTPS control-plane origin (for example `https://aos.example.com`).
     #[arg(long, env = "HUB_EXTERNAL_URL")]
     external_url: Option<String>,
@@ -276,11 +276,9 @@ struct WorkerArgs {
     /// At-rest AES-GCM sealing key; minted randomly when omitted.
     #[arg(long, env = "HUB_SEAL_KEY")]
     seal_key: Option<String>,
-    /// Operator-provisioned `KEY_ID:KEY` already active on the egress gateway.
-    /// Required so deploy can authenticate the gateway before changing Worker
-    /// code or rotating its matching secret.
-    #[arg(long, env = "HUB_EGRESS_SHARED_KEY")]
-    egress_shared_key: String,
+    /// `KEY_ID:KEY` already active on the optional egress router.
+    #[arg(long, env = "HUB_EGRESS_GATEWAY_KEY", requires = "egress_gateway_url")]
+    egress_gateway_key: Option<String>,
     /// Scoped Cloudflare API token used for route-control-plane observation.
     #[arg(long, env = "HUB_CLOUDFLARE_API_TOKEN")]
     cloudflare_api_token: Option<String>,
@@ -1074,7 +1072,7 @@ async fn provision_worker(
         &args.name,
         &args.bucket(),
         &args.kv_title(),
-        &args.hardened_egress_url,
+        args.egress_gateway_url.as_deref(),
         &external_url,
         args.deployment_id.as_deref(),
         args.email_relay_url.as_deref(),
@@ -1137,7 +1135,7 @@ async fn deploy_worker(
     let secrets = cloudflare::Secrets {
         jwt_secret: args.jwt_secret.clone(),
         seal_key: args.seal_key.clone(),
-        egress_shared_key: args.egress_shared_key.clone(),
+        egress_gateway_key: args.egress_gateway_key.clone(),
         cloudflare_api_token: args.cloudflare_api_token.clone(),
         email_api_token: args.email_api_token.clone(),
         delivery_attestation_key: args.delivery_attestation_key.clone(),

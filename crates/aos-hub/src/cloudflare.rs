@@ -185,8 +185,9 @@ pub struct DeployConfig {
     pub kv_id: String,
     /// Account-unique rate-limit namespaces for this Worker installation.
     pub rate_limit_namespaces: RateLimitNamespaces,
-    /// Exact HTTPS endpoint of the repository-owned native egress gateway.
-    pub hardened_egress_url: String,
+    /// Exact HTTPS endpoint of an optional repository-owned native egress router.
+    /// `None` uses Cloudflare's Worker Fetch transport directly.
+    pub egress_gateway_url: Option<String>,
     /// The required canonical public origin baked into `HUB_EXTERNAL_URL`.
     ///
     /// It is the origin the hub emits about itself (the `{url}/{slug}`
@@ -244,9 +245,9 @@ pub struct DeployConfig {
 ///
 /// `main` is `shim.mjs` (relative to the config's directory, where the dist is
 /// staged). There is intentionally **no** `[build]` command — the hermetic dist
-/// is deployed as-is rather than rebuilt on the operator's machine. The non-
-/// non-secret configuration (required `HUB_EXTERNAL_URL` and hardened-egress
-/// URL; optional email relay/sender) is baked into `[vars]`; secrets are applied separately with
+/// is deployed as-is rather than rebuilt on the operator's machine. The
+/// non-secret configuration (required `HUB_EXTERNAL_URL`; optional egress-router
+/// URL and email relay/sender) is baked into `[vars]`; secrets are applied separately with
 /// [`secret_put_args`]. When [`DeployConfig::email_from`] is set, a
 /// `[[send_email]]` binding named `EMAIL` (`remote = true`) is emitted so the
 /// Worker can deliver through Cloudflare Email Service.
@@ -257,10 +258,9 @@ pub struct DeployConfig {
 pub fn render_wrangler_toml(cfg: &DeployConfig) -> String {
     let mut vars = String::from("[vars]\n");
     vars.push_str("HUB_DNS_JSON_ENDPOINT = \"https://dns.google/resolve\"\n");
-    vars.push_str(&format!(
-        "HUB_HARDENED_EGRESS_URL = {}\n",
-        toml_string(&cfg.hardened_egress_url)
-    ));
+    if let Some(url) = &cfg.egress_gateway_url {
+        vars.push_str(&format!("HUB_EGRESS_GATEWAY_URL = {}\n", toml_string(url)));
+    }
     vars.push_str(&format!(
         "HUB_EXTERNAL_URL = {}\n",
         toml_string(&cfg.external_url)
@@ -461,6 +461,20 @@ pub fn secret_put_args(name: &str, config: &Path) -> Vec<String> {
     vec![
         "secret".into(),
         "put".into(),
+        name.into(),
+        "--config".into(),
+        config.display().to_string(),
+    ]
+}
+
+/// `wrangler secret delete <name> --config <path>` — removes an obsolete
+/// Worker secret. Wrangler 4.20 asks for confirmation, which the deployer
+/// supplies on stdin.
+#[must_use]
+pub fn secret_delete_args(name: &str, config: &Path) -> Vec<String> {
+    vec![
+        "secret".into(),
+        "delete".into(),
         name.into(),
         "--config".into(),
         config.display().to_string(),
@@ -749,11 +763,9 @@ pub struct Secrets {
     pub jwt_secret: Option<String>,
     /// `HUB_SEAL_KEY` — at-rest AES-GCM sealing key. `None` = preserve-or-mint.
     pub seal_key: Option<String>,
-    /// `HUB_EGRESS_SHARED_KEY` — operator-provisioned atomic `KEY_ID:KEY`.
-    ///
-    /// Required on every deploy so the installer can prove the gateway already
-    /// serves the exact key before it changes Worker code or secrets.
-    pub egress_shared_key: String,
+    /// `HUB_EGRESS_GATEWAY_KEY` — optional operator-provisioned `KEY_ID:KEY`.
+    /// Required exactly when [`DeployConfig::egress_gateway_url`] is configured.
+    pub egress_gateway_key: Option<String>,
     /// `HUB_CLOUDFLARE_API_TOKEN` — scoped route-observation token.
     pub cloudflare_api_token: Option<String>,
     /// `HUB_EMAIL_API_TOKEN` — bearer token for the magic-link email relay.
@@ -774,10 +786,6 @@ impl Secrets {
     /// Returns an error for an explicitly empty secret or a malformed domain
     /// probe or route-reservation manifest.
     pub fn validate(&self) -> Result<()> {
-        anyhow::ensure!(
-            !self.egress_shared_key.is_empty(),
-            "HUB_EGRESS_SHARED_KEY must not be empty"
-        );
         for (name, value) in [
             ("HUB_JWT_SECRET", self.jwt_secret.as_deref()),
             ("HUB_SEAL_KEY", self.seal_key.as_deref()),
@@ -786,6 +794,7 @@ impl Secrets {
                 self.cloudflare_api_token.as_deref(),
             ),
             ("HUB_EMAIL_API_TOKEN", self.email_api_token.as_deref()),
+            ("HUB_EGRESS_GATEWAY_KEY", self.egress_gateway_key.as_deref()),
             (
                 "HUB_DELIVERY_ATTESTATION_KEY",
                 self.delivery_attestation_key.as_deref(),
@@ -841,22 +850,24 @@ pub async fn provision(
     name: &str,
     bucket: &str,
     kv_title: &str,
-    hardened_egress_url: &str,
+    egress_gateway_url: Option<&str>,
     external_url: &str,
     deployment_id: Option<&str>,
     email_relay_url: Option<&str>,
     custom_domains: &[String],
     rate_limit_namespaces: RateLimitNamespaces,
 ) -> Result<DeployConfig> {
-    let egress = url::Url::parse(hardened_egress_url).context("hardened egress URL is invalid")?;
-    if egress.scheme() != "https"
-        || egress.username() != ""
-        || egress.password().is_some()
-        || egress.query().is_some()
-        || egress.fragment().is_some()
-        || egress.path() != "/v1/fetch"
-    {
-        bail!("hardened egress URL must be an exact HTTPS /v1/fetch endpoint");
+    if let Some(url) = egress_gateway_url {
+        let egress = url::Url::parse(url).context("egress gateway URL is invalid")?;
+        if egress.scheme() != "https"
+            || egress.username() != ""
+            || egress.password().is_some()
+            || egress.query().is_some()
+            || egress.fragment().is_some()
+            || egress.path() != "/v1/fetch"
+        {
+            bail!("egress gateway URL must be an exact HTTPS /v1/fetch endpoint");
+        }
     }
     let external = url::Url::parse(external_url).context("external URL is invalid")?;
     if external.scheme() != "https"
@@ -892,7 +903,7 @@ pub async fn provision(
         bucket: bucket.to_string(),
         kv_id,
         rate_limit_namespaces,
-        hardened_egress_url: hardened_egress_url.to_string(),
+        egress_gateway_url: egress_gateway_url.map(str::to_string),
         external_url: external_url.to_string(),
         deployment_id: deployment_id.map(str::to_string),
         email_relay_url: email_relay_url.map(str::to_string),
@@ -989,7 +1000,16 @@ async fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
 /// any `secret put` fails.
 pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> Result<Applied> {
     secrets.validate()?;
-    authenticate_gateway_contract(&cfg.hardened_egress_url, &secrets.egress_shared_key).await?;
+    anyhow::ensure!(
+        cfg.egress_gateway_url.is_some() == secrets.egress_gateway_key.is_some(),
+        "HUB_EGRESS_GATEWAY_URL and HUB_EGRESS_GATEWAY_KEY must be configured together"
+    );
+    if let (Some(url), Some(key)) = (
+        cfg.egress_gateway_url.as_deref(),
+        secrets.egress_gateway_key.as_deref(),
+    ) {
+        authenticate_gateway_contract(url, key).await?;
+    }
     let work = tempfile::Builder::new()
         .prefix("aos-hub-deploy")
         .tempdir()
@@ -1000,6 +1020,23 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
 
     let listed = run_wrangler(assets, &secret_list_args(&config), None, None).await?;
     let existing = parse_secret_names(&listed)?;
+
+    // Secrets survive `wrangler deploy` when omitted from configuration. Remove
+    // the pre-cutover gateway name unconditionally, and remove the current
+    // router key when this deployment has selected Worker-direct transport.
+    for obsolete in [
+        Some("HUB_EGRESS_SHARED_KEY"),
+        cfg.egress_gateway_url
+            .is_none()
+            .then_some("HUB_EGRESS_GATEWAY_KEY"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if existing.iter().any(|name| name == obsolete) {
+            delete_secret(assets, obsolete, &config).await?;
+        }
+    }
 
     let minted_jwt_secret = apply_secret(
         assets,
@@ -1017,16 +1054,12 @@ pub async fn deploy(assets: &Assets, cfg: &DeployConfig, secrets: &Secrets) -> R
         &config,
     )
     .await?;
-    // The authenticated challenge above is deliberately before both deploy and
-    // secret rotation. Reaching this write proves the operator has already
-    // provisioned the same key on the gateway.
-    put_secret(
-        assets,
-        "HUB_EGRESS_SHARED_KEY",
-        &secrets.egress_shared_key,
-        &config,
-    )
-    .await?;
+    if let Some(key) = &secrets.egress_gateway_key {
+        // The authenticated challenge above is deliberately before both deploy
+        // and secret rotation. Reaching this write proves the router already
+        // serves the same key.
+        put_secret(assets, "HUB_EGRESS_GATEWAY_KEY", key, &config).await?;
+    }
     match secrets.cloudflare_api_token.as_deref() {
         Some(token) => put_secret(assets, "HUB_CLOUDFLARE_API_TOKEN", token, &config).await?,
         None if existing
@@ -1249,6 +1282,14 @@ async fn put_secret(assets: &Assets, name: &str, value: &str, config: &Path) -> 
     Ok(())
 }
 
+/// Removes one obsolete Worker secret through Wrangler.
+async fn delete_secret(assets: &Assets, name: &str, config: &Path) -> Result<()> {
+    run_wrangler(assets, &secret_delete_args(name, config), Some("y\n"), None)
+        .await
+        .with_context(|| format!("deleting obsolete secret {name}"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1303,6 +1344,10 @@ mod tests {
             ["secret", "list", "--config", "/tmp/w.toml"]
         );
         assert_eq!(
+            secret_delete_args("OLD_SECRET", Path::new("/tmp/w.toml")),
+            ["secret", "delete", "OLD_SECRET", "--config", "/tmp/w.toml"]
+        );
+        assert_eq!(
             deploy_args(Path::new("/tmp/w.toml")),
             ["deploy", "--config", "/tmp/w.toml"]
         );
@@ -1315,7 +1360,7 @@ mod tests {
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
-            hardened_egress_url: "https://egress.example.com/v1/fetch".into(),
+            egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: Some("0123456789abcdef".into()),
             email_relay_url: None,
@@ -1364,10 +1409,7 @@ mod tests {
             parsed["ratelimits"][2]["namespace_id"].as_str(),
             Some("1003")
         );
-        assert_eq!(
-            parsed["vars"]["HUB_HARDENED_EGRESS_URL"].as_str(),
-            Some("https://egress.example.com/v1/fetch")
-        );
+        assert!(parsed["vars"].get("HUB_EGRESS_GATEWAY_URL").is_none());
         assert!(parsed.get("services").is_none());
         assert_eq!(parsed["triggers"]["crons"][0].as_str(), Some(INDEXER_CRON));
         // No build command — we deploy the prebuilt dist.
@@ -1390,7 +1432,7 @@ mod tests {
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
-            hardened_egress_url: "https://egress.example.com/v1/fetch".into(),
+            egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
             email_relay_url: None,
@@ -1414,7 +1456,7 @@ mod tests {
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
-            hardened_egress_url: "https://egress.example.com/v1/fetch".into(),
+            egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
             email_relay_url: None,
@@ -1439,7 +1481,7 @@ mod tests {
             bucket: "aos-hub-surfaces".into(),
             kv_id: "kv-id".into(),
             rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
-            hardened_egress_url: "https://egress.example.com/v1/fetch".into(),
+            egress_gateway_url: None,
             external_url: "https://aos.example.com".into(),
             deployment_id: None,
             email_relay_url: None,
@@ -1476,6 +1518,31 @@ mod tests {
     }
 
     #[test]
+    fn rendered_toml_selects_optional_egress_gateway() {
+        let cfg = DeployConfig {
+            name: "aos-hub".into(),
+            bucket: "aos-hub-surfaces".into(),
+            kv_id: "kv-id".into(),
+            rate_limit_namespaces: RateLimitNamespaces::from_base(1000).unwrap(),
+            egress_gateway_url: Some("https://egress.example.com/v1/fetch".into()),
+            external_url: "https://aos.example.com".into(),
+            deployment_id: None,
+            email_relay_url: None,
+            email_from: None,
+            custom_domains: vec![],
+            serve_assets: false,
+            observability: true,
+            head_sampling_rate: 1.0,
+            logpush: false,
+        };
+        let parsed: toml::Value = toml::from_str(&render_wrangler_toml(&cfg)).unwrap();
+        assert_eq!(
+            parsed["vars"]["HUB_EGRESS_GATEWAY_URL"].as_str(),
+            Some("https://egress.example.com/v1/fetch")
+        );
+    }
+
+    #[test]
     fn rate_limit_namespace_ranges_are_isolated_and_bounded() {
         assert_eq!(
             RateLimitNamespaces::from_base(1000).unwrap(),
@@ -1502,7 +1569,7 @@ mod tests {
         let valid = || Secrets {
             jwt_secret: Some("jwt".into()),
             seal_key: Some("seal".into()),
-            egress_shared_key: "key-id:key".into(),
+            egress_gateway_key: Some("key-id:key".into()),
             cloudflare_api_token: Some("cloudflare".into()),
             email_api_token: None,
             delivery_attestation_key: Some("attestation".into()),
@@ -1510,6 +1577,10 @@ mod tests {
             route_reservation_keyring: None,
         };
         assert!(valid().validate().is_ok());
+
+        let mut direct = valid();
+        direct.egress_gateway_key = None;
+        assert!(direct.validate().is_ok());
 
         let mut secrets = valid();
         secrets.jwt_secret = Some(String::new());

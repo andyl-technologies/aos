@@ -12,8 +12,9 @@ Platform-specific adapters provide:
 - KV for cache-aside session state and revocation tombstones;
 - Durable Objects/Queues for coordination and deferred work;
 - edge rate-limit bindings; and
-- the fixed repository-owned `aos-hub-egress` gateway for every external HTTP
-  operation.
+- Worker Fetch for external HTTP operations, with an optional authenticated
+  `aos-hub-egress` router for installations requiring pinned DNS and signed
+  connected-peer evidence.
 
 `HubDb` applies the shared schema on first use, and administrative mutations
 use the typed Hub API.
@@ -27,12 +28,12 @@ receivers should deduplicate retries by `X-AOS-Delivery-ID`.
 
 ## Outbound security boundary
 
-The Workers runtime cannot pin a validated DNS answer to the actual connection.
-The Worker therefore uses its HTTP primitive only for the exact HTTPS URL configured in
-`HUB_HARDENED_EGRESS_URL`; it never fetches an OIDC, probe, mail-relay, S3, or
-proxy-origin URL directly. The packaged `aos-hub-egress` binary performs the
-connect-time checks and signs its final-URL, peer, status, and nonce evidence
-under `aos-hardened-egress-v3`. Missing, stale, or invalid evidence fails closed.
+Worker Fetch is the default outbound transport and needs no separately deployed
+service. AOS validates targets, rebuilds a closed request, bounds redirects, and
+prevents credentials from crossing origins. The optional packaged
+`aos-hub-egress` router adds connect-time DNS pinning and signs its final-URL,
+peer, status, and nonce evidence under `aos-hardened-egress-v3`. Missing, stale,
+or invalid evidence fails closed whenever that transport is selected.
 See [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
 
 ## Build and deploy
@@ -46,7 +47,6 @@ development and documents required binding names.
 nix build .#pkg-aos-hub-cloudflare
 ./result/bin/aos-hub worker install \
   --name aos-hub \
-  --hardened-egress-url https://egress.example.com/v1/fetch \
   --cloudflare-api-token "$HUB_CLOUDFLARE_API_TOKEN" \
   --domain reg.example.com \
   --root-email ops@example.com \
