@@ -69,10 +69,13 @@ fn search_finding_reproduction_artifact_bytes(
             branch: LiveQemuReplayBranch::None,
             fault_choice_indices,
             network_choice_indices,
+            startup_controls: Vec::new(),
+            initial_controls: Vec::new(),
             controls: Vec::new(),
         },
         event_stream: canonical_verify_log_stream_bytes(&[], &finding.event_frames),
         fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprints),
+        fingerprint_samples: fingerprints.clone(),
     };
     let mut payloads = model_reproduction_artifact_payloads(&model.artifact, model.replay.state);
     payloads.extend(live_qemu_artifact_payloads(&live));

@@ -574,13 +574,18 @@ long-held locks.
   coverage in the same gate for quiet single-core vs loaded many-core artifact
   reproduction. The pure `reduce(ScenarioDef, Schedule)` materialization is the
   mandatory replay preflight; T-CLI-21 removes the production model-only path.
-  V3 artifacts from every local-QEMU producer add a compact live recipe plus
-  exact event and all-node fingerprint streams. Ordinary replay, `--check`, and
-  `--to` launch a fresh pinned QEMU/plugin pair, while `--bisect` launches both
-  sides independently before comparison. The live executor reapplies recorded
-  branch, fault, network, and applicable control inputs and rejects any terminal
-  tuple, event-byte, fingerprint-byte, or control-sequence divergence. The same
-  check creates and replays a real two-VM timeout artifact through ordinary,
+  V3 artifacts from every local-QEMU producer add a v2 live recipe plus exact
+  event bytes and an explicit fingerprint scope: full execution for
+  run/verify/fuzz, terminal all-node snapshot for search/fork. Fork recipes
+  preserve the retained base for unchanged, reseeded, and contiguous-override
+  children and force only post-base choices; search recipes preserve their
+  lifecycle ceilings. Interactive capture fails closed until exact timed command
+  replay exists; ordered non-interactive startup and initial recipes reproduce
+  the acknowledgement sequence compared by replay. Ordinary replay, `--check`,
+  and `--to` launch a fresh pinned
+  QEMU/plugin pair, while `--bisect` launches both sides independently before
+  comparison. The same check covers the closed five-producer recipe matrix and
+  creates and replays a real two-VM timeout artifact through ordinary,
   `--check`, `--to`, and identical-artifact `--bisect`, completing T-HARN-29.
   `T-CLI-13` is completed through `checks.crucible.phase5.cliSearchFuzzWorkflow`,
   which covers `search <SCENARIO>` and `fuzz <FAMILY>` parser/help surface,

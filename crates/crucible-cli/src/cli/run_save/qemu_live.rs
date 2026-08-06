@@ -848,6 +848,24 @@ pub(crate) fn run_live_qemu_artifact_replay(
         }
     };
     let scenario_def = scenario.scenario_def();
+    let mut startup_commands = contract
+        .startup_controls
+        .iter()
+        .filter_map(|control| match control.command.as_str() {
+            "start" => Some(SessionCommandKind::Start),
+            "continue" => Some(SessionCommandKind::Continue),
+            "step-quantum" => Some(SessionCommandKind::StepQuantum),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if startup_commands.is_empty() {
+        startup_commands = vec![SessionCommandKind::Start, SessionCommandKind::Continue];
+    }
+    let initial_control_commands = contract
+        .initial_controls
+        .iter()
+        .map(|_| SessionCommandKind::Query)
+        .collect();
     let run_plan = RunInvocationPlan {
         request_seed: Some(scenario_def.seed()),
         scenario: RunScenarioRef::BuiltInExample {
@@ -864,8 +882,8 @@ pub(crate) fn run_live_qemu_artifact_replay(
         execution_mode: RunExecutionMode::ToCompletion,
         save_policy: RunSavePolicy::Never,
         watch_streams_live_status: false,
-        startup_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
-        initial_control_commands: vec![SessionCommandKind::Query],
+        startup_commands,
+        initial_control_commands,
         accepted_interactive_commands: Vec::new(),
         observer_profile: VERIFY_BASELINE_PROFILE,
         collect_execution_fingerprints: true,

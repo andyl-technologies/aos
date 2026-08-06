@@ -195,11 +195,14 @@ pub(super) fn verify_witness_from_run_report(
             })?;
             let live = live_qemu_artifact_evidence_from_run(
                 "verify",
+                scenario,
                 run_plan.terminal_condition,
                 run_plan.max_virtual_time_ticks,
                 run_plan.max_quanta,
                 false,
                 run_plan.execution_mode,
+                &run_plan.startup_commands,
+                &run_plan.initial_control_commands,
                 LiveQemuReplayBranch::None,
                 report,
             )?;

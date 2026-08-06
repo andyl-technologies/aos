@@ -1508,6 +1508,7 @@ pub(super) fn write_fork_reproduction_artifact(
     let artifact_seed = seed_to_u64(scenario_form.seed());
     let mut model_payloads =
         model_reproduction_artifact_payloads(&finding.artifact, finding.replay.state);
+    let mut fingerprints = run_fingerprint_samples(&report.run);
     if matches!(backend, Some(ResolvedLocalBackend::Qemu { .. })) {
         let source = fork_handle_evidence(plan)?;
         let branch = if let Some(seed) = plan.fork_seed {
@@ -1536,18 +1537,21 @@ pub(super) fn write_fork_reproduction_artifact(
         };
         let live = live_qemu_artifact_evidence_from_run(
             "fork",
+            scenario_form,
             plan.terminal_condition,
             plan.max_virtual_time_ticks,
             None,
             false,
             plan.execution_mode,
+            &plan.startup_commands,
+            &plan.initial_control_commands,
             branch,
             &report.run,
         )?;
+        fingerprints = live.fingerprint_samples.clone();
         model_payloads.extend(live_qemu_artifact_payloads(&live));
     }
     let scenario_bytes = scenario_form.to_compact_binary();
-    let fingerprints = run_fingerprint_samples(&report.run);
     let bytes = reproduction_artifact_bytes_with_scenario_payload(
         artifact_seed,
         backend,

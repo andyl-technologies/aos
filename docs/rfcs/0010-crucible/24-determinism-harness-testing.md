@@ -1218,8 +1218,14 @@ and [`32-implementation-plan.md`](32-implementation-plan.md):
     `--check`, `--to`, and identical-artifact `--bisect` invocations to pass.
   - The artifact identity pins QEMU, patch-series, plugin, shmem, guest-host,
     RPC, engine, and artifact ABIs. Its live evidence comparison covers the
-    exact terminal tuple, canonical QEMU event bytes, all-node fingerprints,
-    and applicable controls after the pure model preflight.
+    exact terminal tuple, canonical QEMU event bytes, and the declared full or
+    terminal-all-node fingerprint scope after the pure model preflight. Generic
+    run/verify/fuzz/fork recipes also replay separate closed, ordered startup and
+    initial controls and compare all acknowledgements produced by the fresh
+    session.
   - Completed by `checks.crucible.phase5.cliReplayCheck`; the check depends on
     the existing replay-oracle and end-to-end determinism gates and runs the
     packaged production CLI, QEMU, plugin, kernel, root image, and initramfs.
+    A closed-producer contract matrix separately covers run/verify/search/fuzz/
+    fork recipe admission and the fail-closed branch, lifecycle, fingerprint,
+    choice-order, and unsupported-control rules.

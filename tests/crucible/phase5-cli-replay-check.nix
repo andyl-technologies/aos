@@ -17,6 +17,8 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
+  liveReplayContract = builtins.readFile ../../crates/crucible-cli/src/cli/artifact/live_qemu.rs;
+  artifactCapture = builtins.readFile ../../crates/crucible-cli/src/cli/artifact_capture.rs;
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -302,6 +304,46 @@
         needle = "cli_replay_bisect_accepts_identical_artifacts";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/src/cli/artifact/live_qemu.rs" liveReplayContract [
+      {
+        label = "closed live replay producer matrix";
+        needle = "live_qemu_replay_contract_accepts_every_closed_producer";
+      }
+      {
+        label = "unchanged fork resume recipe regression";
+        needle = "live_qemu_replay_contract_round_trips_unmodified_fork_resume";
+      }
+      {
+        label = "pre-branch choice rejection regression";
+        needle = "live_qemu_replay_contract_rejects_pre_branch_choices";
+      }
+      {
+        label = "fingerprint scope compatibility regression";
+        needle = "live_qemu_replay_contract_rejects_incompatible_fingerprint_scope";
+      }
+      {
+        label = "unknown control command regression";
+        needle = "live_qemu_replay_contract_rejects_unknown_control_commands";
+      }
+      {
+        label = "unsupported startup control regression";
+        needle = "live_qemu_replay_contract_rejects_unsupported_startup_controls";
+      }
+      {
+        label = "initial control ordering regression";
+        needle = "live_qemu_replay_contract_rejects_noncontiguous_initial_controls";
+      }
+    ]
+    ++ failuresFor "crates/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
+      {
+        label = "terminal all-node capture selection regression";
+        needle = "terminal_fingerprint_capture_selects_one_reindexed_sample_per_node";
+      }
+      {
+        label = "terminal duplicate-node capture rejection regression";
+        needle = "terminal_fingerprint_capture_rejects_duplicate_node_suffix";
+      }
+    ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
         label = "process replay check JSONL regression";
@@ -452,6 +494,20 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
               -p crucible-cli \
+              live_qemu_replay_contract \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+              -p crucible-cli \
+              terminal_fingerprint_capture \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+              -p crucible-cli \
               --test gate_e2e_determinism \
               gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile \
               -- --test-threads=1
@@ -573,6 +629,7 @@ in
             replay_to_materialization=model-temporal-graph
             replay_machine_independent=mock-host-profile
             replay_process=live-qemu-ordinary,check,both-bisect-sides,to-savepoint-target-validation
+            producer_contract_matrix=run,verify,search,fuzz,fork
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

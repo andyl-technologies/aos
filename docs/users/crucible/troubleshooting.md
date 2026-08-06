@@ -121,10 +121,15 @@ Retain the emitted `.crucible` artifact and replay it before changing the test:
 Then save or fork immediately before the failure boundary if an alternate
 schedule needs investigation.
 
-If replay reports a terminal, event-stream, fingerprint-stream, or control
-sequence divergence, retain both the artifact and complete packaged QEMU
+If replay reports a terminal, event-stream, or fingerprint-stream divergence,
+retain both the artifact and complete packaged QEMU
 closure. Those errors mean the fresh guest execution did not reproduce the
 recording; they are not ordinary assertion failures.
+
+An interactive run can finish normally, but Crucible will reject live-QEMU
+failure-artifact capture until interactive commands can be recorded and replayed
+at exact scheduler coordinates. Re-run non-interactively to produce a portable
+artifact.
 
 ### Verify divergence
 

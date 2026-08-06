@@ -174,6 +174,11 @@ option; it is not part of the shipped production interface.
 | `--to <savepoint>` | Optional | Live-replay the artifact, then validate a target savepoint handle or checkpoint hash as its typed prefix. A v3 artifact can resolve its own terminal checkpoint hash without a separate store object. |
 | `--bisect <other-artifact>` | Optional | Live-replay both artifacts, then locate their first evidence divergence. |
 
+The v3 artifact's live recipe declares its fingerprint evidence scope. Run,
+verify, and fuzz use the full execution stream; search and fork use one terminal
+sample per VM node. Interactive control recipes are rejected until exact command
+timing can be reproduced.
+
 ### `search`
 
 | Argument or option | Required/default | Meaning |

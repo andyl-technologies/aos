@@ -21,16 +21,21 @@ pub(crate) struct LiveQemuArtifactEvidence {
     pub(crate) event_stream: Vec<u8>,
     /// Canonical producer fingerprint stream compared with the replay.
     pub(crate) fingerprint_stream: Vec<u8>,
+    /// Typed samples encoded into both the component and top-level artifact.
+    pub(crate) fingerprint_samples: Vec<VerifyFingerprintSample>,
 }
 
 /// Builds the required v3 live-QEMU components from one completed run.
 pub(crate) fn live_qemu_artifact_evidence_from_run(
     producer: &str,
+    scenario: &crucible::ScenarioDefForm,
     terminal_condition: RunTerminalCondition,
     max_virtual_time_ticks: Option<u64>,
     max_quanta: Option<u64>,
     coverage: bool,
     execution_mode: RunExecutionMode,
+    startup_commands: &[SessionCommandKind],
+    initial_control_commands: &[SessionCommandKind],
     branch: LiveQemuReplayBranch,
     report: &RunWorkflowReport,
 ) -> Result<LiveQemuArtifactEvidence, CliError> {
@@ -39,15 +44,20 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
             "live-QEMU reproduction artifacts do not yet support interactive control recipes",
         ));
     }
-    if !report.acknowledged_commands.is_empty() {
-        return Err(artifact_error(
-            "live-QEMU reproduction artifacts cannot capture acknowledged control commands",
-        ));
-    }
     let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
         artifact_error("live-QEMU artifact capture requires a terminal configuration")
     })?;
-    let fingerprint_samples = run_fingerprint_samples(report);
+    let all_fingerprint_samples = run_fingerprint_samples(report);
+    let fingerprint_scope = if producer == "fork" {
+        LiveQemuFingerprintScope::TerminalAllNodes
+    } else {
+        LiveQemuFingerprintScope::FullExecution
+    };
+    let fingerprint_samples = select_live_qemu_artifact_fingerprints(
+        scenario.world().vm_nodes(),
+        all_fingerprint_samples,
+        fingerprint_scope,
+    )?;
     if fingerprint_samples.is_empty() {
         return Err(artifact_error(
             "live-QEMU artifact capture requires execution fingerprint samples",
@@ -63,6 +73,25 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
     };
     fault_choice_indices.retain(|index| *index >= branch_start);
     network_choice_indices.retain(|index| *index >= branch_start);
+    let controls = report
+        .acknowledged_commands
+        .iter()
+        .enumerate()
+        .map(|(sequence, command)| LiveQemuReplayControl {
+            sequence: sequence as u64,
+            command: session_command_name(*command).to_string(),
+        })
+        .collect();
+    let encode_plan_controls = |commands: &[SessionCommandKind]| {
+        commands
+            .iter()
+            .enumerate()
+            .map(|(sequence, command)| LiveQemuReplayControl {
+                sequence: sequence as u64,
+                command: session_command_name(*command).to_string(),
+            })
+            .collect::<Vec<_>>()
+    };
     let contract = LiveQemuReplayContract {
         producer: producer.to_string(),
         terminal_condition: terminal_condition.label().to_string(),
@@ -77,21 +106,56 @@ pub(crate) fn live_qemu_artifact_evidence_from_run(
         run_ceiling_icount: Some(PRODUCTION_CLI_RUN_CEILING_ICOUNT),
         lifecycle_quantum_budget: Some(PRODUCTION_CLI_QUANTUM_BUDGET),
         coverage,
-        fingerprint_scope: if producer == "fork" {
-            LiveQemuFingerprintScope::TerminalAllNodes
-        } else {
-            LiveQemuFingerprintScope::FullExecution
-        },
+        fingerprint_scope,
         branch,
         fault_choice_indices,
         network_choice_indices,
-        controls: Vec::new(),
+        startup_controls: encode_plan_controls(startup_commands),
+        initial_controls: encode_plan_controls(initial_control_commands),
+        controls,
     };
+    let fingerprint_stream = verify_fingerprint_stream_bytes(&fingerprint_samples);
     Ok(LiveQemuArtifactEvidence {
         contract,
         event_stream: canonical_verify_log_stream_bytes(&[], &report.streamed_event_frames),
-        fingerprint_stream: verify_fingerprint_stream_bytes(&fingerprint_samples),
+        fingerprint_stream,
+        fingerprint_samples,
     })
+}
+
+fn select_live_qemu_artifact_fingerprints(
+    nodes: &[crucible::WorldNode],
+    mut samples: Vec<VerifyFingerprintSample>,
+    scope: LiveQemuFingerprintScope,
+) -> Result<Vec<VerifyFingerprintSample>, CliError> {
+    if scope == LiveQemuFingerprintScope::FullExecution {
+        return Ok(samples);
+    }
+    let node_count = nodes.len();
+    if samples.len() < node_count {
+        return Err(artifact_error(format!(
+            "terminal fingerprint capture produced {} samples for {node_count} VM nodes",
+            samples.len()
+        )));
+    }
+    let mut terminal = samples.split_off(samples.len() - node_count);
+    let expected_nodes = nodes
+        .iter()
+        .map(|node| node.id.name.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_nodes = terminal
+        .iter()
+        .map(|sample| sample.node.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual_nodes != expected_nodes {
+        return Err(artifact_error(format!(
+            "terminal fingerprint capture nodes {actual_nodes:?} did not match scenario VM nodes {expected_nodes:?}"
+        )));
+    }
+    for (index, sample) in terminal.iter_mut().enumerate() {
+        sample.index = index as u64;
+    }
+    Ok(terminal)
 }
 
 /// Encodes the required live-QEMU evidence components for a v3 artifact.
@@ -249,20 +313,24 @@ pub(crate) fn run_failure_reproduction_artifact_bytes(
         ))
     })?;
     let mut model_payloads = model_reproduction_artifact_payloads(&model_artifact, replay.state);
+    let mut fingerprint_samples = run_fingerprint_samples(report);
     if matches!(backend, Some(ResolvedLocalBackend::Qemu { .. })) {
         let live_evidence = live_qemu_artifact_evidence_from_run(
             "run",
+            scenario,
             run_plan.terminal_condition,
             run_plan.max_virtual_time_ticks,
             run_plan.max_quanta,
             false,
             run_plan.execution_mode,
+            &run_plan.startup_commands,
+            &run_plan.initial_control_commands,
             LiveQemuReplayBranch::None,
             report,
         )?;
+        fingerprint_samples = live_evidence.fingerprint_samples.clone();
         model_payloads.extend(live_qemu_artifact_payloads(&live_evidence));
     }
-    let fingerprint_samples = run_fingerprint_samples(report);
     reproduction_artifact_bytes_with_scenario_payload(
         seed,
         backend,
@@ -300,14 +368,16 @@ pub(crate) fn live_finding_reproduction_artifact_bytes(
         )));
     }
     let canonical_log = canonical_run_log_entries(run_plan, report);
-    let fingerprints = run_fingerprint_samples(report);
     let live = live_qemu_artifact_evidence_from_run(
         producer,
+        scenario,
         run_plan.terminal_condition,
         run_plan.max_virtual_time_ticks,
         run_plan.max_quanta,
         true,
         run_plan.execution_mode,
+        &run_plan.startup_commands,
+        &run_plan.initial_control_commands,
         branch,
         report,
     )?;
@@ -324,7 +394,68 @@ pub(crate) fn live_finding_reproduction_artifact_bytes(
             bytes: &scenario_bytes,
         },
         &canonical_log,
-        &fingerprints,
+        &live.fingerprint_samples,
         &payloads,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(index: u64, node: &str) -> VerifyFingerprintSample {
+        VerifyFingerprintSample {
+            index,
+            instruction: index + 10,
+            node: node.to_string(),
+            digest: format!("blake3:{index:064x}"),
+        }
+    }
+
+    #[test]
+    fn terminal_fingerprint_capture_selects_one_reindexed_sample_per_node()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let nodes = scenario.world().vm_nodes();
+        let first = nodes
+            .first()
+            .ok_or_else(|| std::io::Error::other("fixture has no first node"))?;
+        let second = nodes
+            .get(1)
+            .ok_or_else(|| std::io::Error::other("fixture has no second node"))?;
+        let selected = select_live_qemu_artifact_fingerprints(
+            nodes,
+            vec![
+                sample(0, &first.id.name),
+                sample(1, &second.id.name),
+                sample(2, &first.id.name),
+                sample(3, &second.id.name),
+            ],
+            LiveQemuFingerprintScope::TerminalAllNodes,
+        )?;
+        assert_eq!(selected.len(), 2);
+        assert_eq!(selected[0].index, 0);
+        assert_eq!(selected[0].node, first.id.name);
+        assert_eq!(selected[1].index, 1);
+        assert_eq!(selected[1].node, second.id.name);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_fingerprint_capture_rejects_duplicate_node_suffix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let scenario = crucible::happy_path_scenario()?.scenario;
+        let nodes = scenario.world().vm_nodes();
+        let first = nodes
+            .first()
+            .ok_or_else(|| std::io::Error::other("fixture has no first node"))?;
+        let error = select_live_qemu_artifact_fingerprints(
+            nodes,
+            vec![sample(0, &first.id.name), sample(1, &first.id.name)],
+            LiveQemuFingerprintScope::TerminalAllNodes,
+        )
+        .expect_err("duplicate terminal node samples must fail closed");
+        assert!(error.to_string().contains("scenario VM nodes"));
+        Ok(())
+    }
 }

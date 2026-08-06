@@ -287,7 +287,10 @@ fn replay_live_qemu_evidence(
             replay_fingerprints.len()
         )));
     }
-    if matches!(contract.producer.as_str(), "run" | "verify" | "fuzz") {
+    if matches!(
+        contract.producer.as_str(),
+        "run" | "verify" | "fuzz" | "fork"
+    ) {
         let actual_controls = report
             .acknowledged_commands
             .iter()
