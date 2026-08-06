@@ -252,6 +252,28 @@ pub struct WorldNetworkLinkRuntime {
     pub(super) link: crucible_device::NetLink,
 }
 
+/// Complete scheduler-owned continuation for every modeled network link.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerNetworkCheckpoint {
+    /// Directed link snapshots in canonical link/direction order.
+    pub links: Vec<SchedulerNetworkLinkCheckpoint>,
+    /// Shared RNG positions in canonical link order.
+    pub rng_positions: BTreeMap<LinkId, u64>,
+    /// Exact signal-driven wakeup armed at capture time.
+    pub signal_fault_wakeup_nanos: Option<u64>,
+}
+
+/// One directed scheduler link and its complete device continuation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchedulerNetworkLinkCheckpoint {
+    /// Canonical symmetric World-link identity.
+    pub link: LinkId,
+    /// Directed orientation within the symmetric link.
+    pub direction: NetworkLinkDirection,
+    /// Clock, fault, RNG, sequence, and in-flight frame state.
+    pub state: crucible_device::LinkSnapshot,
+}
+
 /// Authenticated result of removing frames during a directed link transition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetworkInFlightDropEvidence {

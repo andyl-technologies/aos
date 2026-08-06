@@ -1109,6 +1109,9 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
         },
     );
     scheduler
+        .world_network_rng_positions
+        .insert(link_id.clone(), 19);
+    scheduler
         .refresh_device_horizons()
         .unwrap_or_else(|error| panic!("network horizon should refresh: {error}"));
     assert_eq!(
@@ -1120,6 +1123,7 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
     let before_digest = scheduler
         .network_continuation_digest()
         .unwrap_or_else(|error| panic!("network state should encode: {error}"));
+    let checkpoint = scheduler.network_checkpoint();
 
     let first = scheduler
         .drop_network_inflight_for_route(&source, &destination)
@@ -1148,6 +1152,21 @@ fn network_transition_drop_clears_inflight_and_authenticates_frames() {
         scheduler
             .network_continuation_digest()
             .unwrap_or_else(|error| panic!("dropped network state should encode: {error}"))
+    );
+    scheduler
+        .restore_network_checkpoint(&checkpoint)
+        .unwrap_or_else(|error| panic!("network checkpoint should restore: {error}"));
+    assert_eq!(
+        scheduler
+            .network_continuation_digest()
+            .unwrap_or_else(|error| panic!("restored network state should encode: {error}")),
+        before_digest
+    );
+    assert_eq!(
+        scheduler.world_network_links[&(link_id, direction)]
+            .link
+            .inflight_len(),
+        1
     );
 }
 

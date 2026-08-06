@@ -15,7 +15,7 @@ use crucible::model::{
     NetworkEffectSpecification, OwnedFaultExecutionRuntime, SignalArtifactProvider,
     SignalBoundarySnapshot,
 };
-use crucible::{BackendError, NodeId};
+use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 
 use crate::{ProductionFaultActionSink, QemuNodeSet};
 
@@ -31,9 +31,60 @@ pub struct ProductionFaultRuntimeCheckpoint {
     /// Per-node fault-command continuation paired with the QEMU snapshots.
     qemu_fault_sequences: BTreeMap<NodeId, u64>,
     /// Scheduler-owned network queues, pending outputs, and transition ledger.
-    network_state: ContentHash,
+    network_state: Option<ProductionNetworkStateCheckpoint>,
     /// Aggregate identity binding every continuation component to the plan.
     identity: ContentHash,
+}
+
+/// Complete host/scheduler network continuation paired with QEMU snapshots.
+#[derive(Clone, Debug)]
+pub struct ProductionNetworkStateCheckpoint {
+    identity: ContentHash,
+    scheduler: SchedulerNetworkCheckpoint,
+    pending_outputs: Vec<BackendNetworkOutput>,
+    adapter_state: Vec<u8>,
+}
+
+impl ProductionNetworkStateCheckpoint {
+    /// Creates a network continuation with its independently recomputable identity.
+    #[must_use]
+    pub fn new(
+        identity: ContentHash,
+        scheduler: SchedulerNetworkCheckpoint,
+        pending_outputs: Vec<BackendNetworkOutput>,
+        adapter_state: Vec<u8>,
+    ) -> Self {
+        Self {
+            identity,
+            scheduler,
+            pending_outputs,
+            adapter_state,
+        }
+    }
+
+    /// Returns the expected identity of the complete network continuation.
+    #[must_use]
+    pub const fn id(&self) -> ContentHash {
+        self.identity
+    }
+
+    /// Consumes the checkpoint into scheduler, pending-frame, and adapter state.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        SchedulerNetworkCheckpoint,
+        Vec<BackendNetworkOutput>,
+        Vec<u8>,
+        ContentHash,
+    ) {
+        (
+            self.scheduler,
+            self.pending_outputs,
+            self.adapter_state,
+            self.identity,
+        )
+    }
 }
 
 impl ProductionFaultRuntimeCheckpoint {
@@ -41,6 +92,12 @@ impl ProductionFaultRuntimeCheckpoint {
     #[must_use]
     pub const fn id(&self) -> ContentHash {
         self.identity
+    }
+
+    /// Returns the scheduler and adapter continuation paired with this checkpoint.
+    #[must_use]
+    pub const fn network_state(&self) -> Option<&ProductionNetworkStateCheckpoint> {
+        self.network_state.as_ref()
     }
 }
 
@@ -73,6 +130,7 @@ pub enum ProductionFaultRuntimeError {
 pub struct ProductionFaultRuntime {
     runtime: Option<OwnedFaultExecutionRuntime>,
     host: HostFaultActionSink,
+    restored_network_state: Option<ProductionNetworkStateCheckpoint>,
 }
 
 impl ProductionFaultRuntime {
@@ -107,6 +165,7 @@ impl ProductionFaultRuntime {
         Ok(Self {
             runtime,
             host: HostFaultActionSink::new(),
+            restored_network_state: None,
         })
     }
 
@@ -132,7 +191,7 @@ impl ProductionFaultRuntime {
                 &checkpoint.host,
                 &checkpoint.qemu_fingerprints,
                 &checkpoint.qemu_fault_sequences,
-                checkpoint.network_state,
+                checkpoint.network_state.as_ref(),
             )
         {
             return Err(FaultExecutionError::CheckpointPresence.into());
@@ -156,6 +215,7 @@ impl ProductionFaultRuntime {
             .map_err(FaultExecutionError::from)?;
         let qemu_fault_sequences = checkpoint.qemu_fault_sequences;
         let host = checkpoint.host;
+        let restored_network_state = checkpoint.network_state;
         let runtime = match (plan.programs().is_empty(), checkpoint.runtime) {
             (true, None) => None,
             (false, Some(checkpoint)) => {
@@ -175,7 +235,14 @@ impl ProductionFaultRuntime {
         Ok(Self {
             runtime,
             host: HostFaultActionSink::from_state(host),
+            restored_network_state,
         })
+    }
+
+    /// Takes the authenticated network continuation paired with this restore.
+    #[must_use]
+    pub fn take_restored_network_state(&mut self) -> Option<ProductionNetworkStateCheckpoint> {
+        self.restored_network_state.take()
     }
 
     /// Evaluates one scheduler boundary against host devices and live QEMU.
@@ -267,14 +334,14 @@ impl ProductionFaultRuntime {
             &host,
             &qemu_fingerprints,
             &qemu_fault_sequences,
-            ContentHash::default(),
+            self.restored_network_state.as_ref(),
         );
         Ok(ProductionFaultRuntimeCheckpoint {
             runtime,
             host,
             qemu_fingerprints,
             qemu_fault_sequences,
-            network_state: ContentHash::default(),
+            network_state: self.restored_network_state.clone(),
             identity,
         })
     }
@@ -288,21 +355,21 @@ impl ProductionFaultRuntime {
     pub fn checkpoint_with_network_state(
         &self,
         nodes: &mut QemuNodeSet,
-        network_state: ContentHash,
+        network_state: ProductionNetworkStateCheckpoint,
     ) -> Result<ProductionFaultRuntimeCheckpoint, ProductionFaultRuntimeError> {
         let mut checkpoint = self.checkpoint(nodes)?;
         let plan = self.runtime.as_ref().map_or_else(
             || FaultSignalPlan::empty().id(),
             |runtime| runtime.plan().id(),
         );
-        checkpoint.network_state = network_state;
+        checkpoint.network_state = Some(network_state);
         checkpoint.identity = production_checkpoint_identity(
             plan,
             checkpoint.runtime.as_ref(),
             &checkpoint.host,
             &checkpoint.qemu_fingerprints,
             &checkpoint.qemu_fault_sequences,
-            network_state,
+            checkpoint.network_state.as_ref(),
         );
         Ok(checkpoint)
     }
@@ -440,12 +507,18 @@ fn production_checkpoint_identity(
     host: &HostFaultActionState,
     qemu_fingerprints: &BTreeMap<NodeId, ContentHash>,
     qemu_fault_sequences: &BTreeMap<NodeId, u64>,
-    network_state: ContentHash,
+    network_state: Option<&ProductionNetworkStateCheckpoint>,
 ) -> ContentHash {
     let mut material = Vec::new();
     material.extend_from_slice(&plan.bytes);
     material.extend_from_slice(&host.digest().bytes);
-    material.extend_from_slice(&network_state.bytes);
+    match network_state {
+        Some(network_state) => {
+            material.push(1);
+            material.extend_from_slice(&network_state.id().bytes);
+        }
+        None => material.push(0),
+    }
     if let Some(runtime) = runtime {
         material.extend_from_slice(&runtime.binding_runtime.evaluator.content().bytes);
         material.push(u8::from(runtime.poisoned));
