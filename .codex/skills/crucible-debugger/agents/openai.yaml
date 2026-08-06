@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crucible Debugger"
+  short_description: "Diagnose deterministic Crucible scenario failures"
+  default_prompt: "Use $crucible-debugger to reproduce and diagnose this Crucible scenario failure."

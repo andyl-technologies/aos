@@ -247,6 +247,39 @@ For example:
 Until these seams converge, use `verify --bisect`, `replay --check`, and explicit
 savepoints as the primary failure-analysis tools.
 
+## Agent-oriented failure exercise
+
+The repository includes a deliberately incorrect scenario at
+`.codex/skills/crucible-debugger/assets/inverted-crash-expectation.scenario.toml`
+and an agent workflow in `.codex/skills/crucible-debugger/`. The scenario runs a
+healthy HTTP workload but asserts that its node must remain crashed. It is an
+operator exercise, not a Nix check: the expected result is a retained failure
+artifact and the expected diagnosis is an inverted scenario assertion.
+
+Run it with a fixed seed, finite budget, and failure retention:
+
+```sh
+mkdir -p /tmp/crucible-debugger-artifacts
+./result/bin/crucible \
+  --seed 0xdeb6 \
+  --format table \
+  --artifact-dir /tmp/crucible-debugger-artifacts \
+  run .codex/skills/crucible-debugger/assets/inverted-crash-expectation.scenario.toml \
+  --until property \
+  --save-on fail \
+  --max-quanta 100
+```
+
+An agent or operator should report the terminal outcome, violated assertion,
+seed, frontier, quanta, artifact path, and the evidence that distinguishes a
+scenario-authoring error from a guest crash. Artifact `debug` commands currently
+emit `debug-plan execution=planned-only`; use a live production-daemon session
+for executed reverse operations or persistent GDB inspection. `--save-on`
+controls savepoint creation, while failed runs retain a reproduction artifact
+under every savepoint policy. Treat any confusing command, unexpected exit
+status, or plan-only response that looks like executed work as a debugger
+usability finding.
+
 ## Remote GDB attachment
 
 Start `serve --production-qemu` with mutual TLS and grant the operator

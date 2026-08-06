@@ -1,0 +1,54 @@
+[scenario]
+id = "blake3:60b458f8cd17175e72f6ec914e46b926cce859dcb3dc1f65cd15a327b58fa180"
+seed = "0xb6de000000000000000000000000000000000000000000000000000000000000"
+app_random_draw_cap = 0
+
+[world]
+id = "blake3:980390cc9799d8c6dd13d12697a30343ca87859516fde145780cee7d199e2fdd"
+
+[[world.node]]
+id = "suspect"
+arch = "x86_64"
+memory_mib = 256
+cmdline = "console=ttyS0 quiet net.ifnames=0 port=8080 crucible.workload=httpd"
+smp_vcpus = 1
+icount_shift = 0
+kernel = "blake3:f3882922ce3a87f35103aabfc79230c9953f008c23d7e5107f506f3cad1d7099"
+root_image = "blake3:8875ce0b483b08381b54dcd2add3e3bfda817b60169450914ab48259ff7c189c"
+white_box = "disabled"
+
+[world.node.ready_point]
+kind = "fixed_icount"
+retired = 0
+
+[plan]
+id = "blake3:018d6a033afb9bbd7c78c7727e75212bb8ad0bb833236c3b0f9dc4420c2974f9"
+kind = "event_graph"
+
+[[plan.event]]
+id = "fail-on-inverted-expectation"
+policy = "once"
+
+[plan.event.trigger]
+kind = "assertion_state"
+name = "suspect-must-crash"
+state = "violated"
+
+[plan.event.action]
+kind = "fail"
+reason = "the suspect VM did not crash"
+
+[properties]
+id = "blake3:581f109299fe28293b1480057e0d998a4063d4c472cbf9e812b27492d1c4f2c6"
+
+[[properties.assertion]]
+id = "suspect-must-crash"
+message = "the suspect VM must remain crashed"
+
+[properties.assertion.property]
+kind = "always"
+
+[properties.assertion.property.predicate]
+kind = "node_state"
+node = "suspect"
+state = "crashed"
