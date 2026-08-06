@@ -669,14 +669,12 @@ pub enum NetworkEffectSpecification {
     },
     /// Shared-medium arbitration and collision state.
     SharedMedium {
-        /// Canonical participating resource set.
+        /// Complete canonical set of VM endpoints attached to the medium.
         resources: ObjectIdSet,
-        /// Registered arbitration policy.
-        arbitration: FaultObjectId,
-        /// Registered collision and capture policy.
-        collision_capture: FaultObjectId,
-        /// Registered backoff and duty-cycle policy.
-        backoff_duty_cycle: FaultObjectId,
+        /// Complete arbitration, collision, retry, and duty-cycle policy.
+        policy: FaultObjectId,
+        /// Transmit power used for deterministic capture decisions.
+        transmit_power_femtowatts: PositiveU64,
     },
     /// RF channel calculation.
     RfChannel {

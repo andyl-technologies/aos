@@ -389,6 +389,7 @@ const NETWORK_TARGETS: &[FaultTargetKind] = &[
     FaultTargetKind::NetworkAttachment,
     FaultTargetKind::NetworkContact,
 ];
+const NETWORK_MEDIUM_TARGETS: &[FaultTargetKind] = &[FaultTargetKind::NetworkMedium];
 const STORAGE_TARGETS: &[FaultTargetKind] = &[
     FaultTargetKind::BlockDevice,
     FaultTargetKind::BlockRange,
@@ -531,7 +532,7 @@ effect_registry! {
     /// NAT, conntrack, load-balancer, tunnel, or DNS table state.
     NetworkConnectionState => { key: "network.connection_state", adapter: Network, targets: NETWORK_TARGETS, phases: [Resolve], lifetimes: [StateMachine], composition: StateMachine, capability: "network.connection-state.v1", evidence: ["entry_before", "entry_after", "resolved_result"] },
     /// Shared-medium arbitration, collision, capture, backoff, and duty cycle.
-    NetworkSharedMedium => { key: "network.shared_medium", adapter: Network, targets: NETWORK_TARGETS, phases: [Admit, Queue, Resolve], lifetimes: [Persistent, StateMachine], composition: Conflict, capability: "network.shared-medium.v1", evidence: ["contenders", "allocation", "collision", "capture", "service"] },
+    NetworkSharedMedium => { key: "network.shared_medium", adapter: Network, targets: NETWORK_MEDIUM_TARGETS, phases: [Admit, Queue, Resolve], lifetimes: [Persistent, StateMachine], composition: Conflict, capability: "network.shared-medium.v1", evidence: ["contenders", "allocation", "collision", "capture", "service"] },
     /// Geometry-, propagation-, and interference-derived RF channel state.
     NetworkRfChannel => { key: "network.rf_channel", adapter: Network, targets: NETWORK_TARGETS, phases: [Resolve], lifetimes: [Persistent, Opportunity], composition: Composite, capability: "network.rf-channel.v1", evidence: ["geometry", "fields", "power", "resolved_profile"] },
     /// Authentication, association, handoff, and address-continuity machine.

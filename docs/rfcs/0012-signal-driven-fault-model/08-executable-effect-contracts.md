@@ -116,7 +116,7 @@ the effect record.
 | `network.control_plane_service` | persistent state; queue/resolve | service curve, queue bound, drop/timeout policy | minimum service and shared queue | `network.control-plane.v1`; queued events and applied transitions |
 | `network.firewall_disposition` | opportunity/state; admit | `action = accept/reject/drop`, response artifact iff reject, packet-selector rule, exhaustive state machine and event | most restrictive unless explicit ordered chain | `network.firewall.v1`; selector result, rule trace, state transition and response ID |
 | `network.connection_state` | state-machine; resolve | `kind = nat/conntrack/load_balancer/tunnel/dns`, table bound, packet-key artifact, exhaustive state machine/event, overflow policy | one machine per extracted flow; bounded table policy | domain capability; key digest, entry before/after, eviction/overflow and state timer |
-| `network.shared_medium` | persistent state; admit/queue/resolve | channel resources, arbitration, collision, capture, backoff and duty-cycle parameters | one conflict-free policy per medium; signals combine as inputs | `network.shared-medium.v1`; contenders, allocation, collision/capture, service |
+| `network.shared_medium` | persistent state; admit/queue/resolve | canonical `resources`, one `medium_access` policy, positive transmit power; the policy declares arbitration, conditional packet key, slot width, or complete contention record, and a duty-cycle ratio | one conflict-free policy per binding target; signals combine as inputs | `network.shared-medium.v1`; resource set, policy/transition identity, contenders, keyed attempts, airtime allocation, collision/capture/transform, and service |
 | `network.rf_channel` | persistent/opportunity; resolve | carrier/bandwidth, power, noise, gain, attenuation, fading inputs, and SINR profiles with rate/loss/corruption/retry contracts | power/interference sum in exact linear unit then transfer lookup | `network.rf-channel.v1`; sampled geometry/field/power, per-attempt draws, retries and resulting profile/outcome |
 | `network.association` | state-machine; boundary/resolve | technology, candidates, selection, hysteresis, timers, auth, buffering/address policy | one machine per interface; inputs combine before selection | technology capability; candidates, timers, old/new attachment and traffic policy |
 | `network.control_result_transform` | opportunity; resolve/deliver | technology, operation, kind `drop/stale/bias/replace/error`, typed result fields | ordered-transform or severity for errors | technology capability; request/result schema and before/after evidence |
@@ -327,6 +327,75 @@ validates every undetected-corruption template reference. The selected rate cap,
 total retry delay, final drop, and final payload bytes flow into ordinary
 resolved-frame state and checkpoint evidence; no host radio stack or hidden
 random source participates.
+
+### 8.3.6 Shared-medium arbitration and collisions
+
+`network.shared_medium` owns one checkpointed airtime ledger for the binding,
+concrete `network_medium` resource target, and binding transition sequence. It
+cannot be bound to a segment, interface, queue, path, or other generic network
+target. Every World medium names one admitted `medium_access` artifact, and a
+binding's policy must be that exact artifact. Its nonempty canonical `resources`
+set is the complete set of VM endpoints attached through every World segment
+using that medium; admission derives and requires exact equality. Every frame
+producer is therefore a member before execution. A new transition sequence
+replaces the ledger and fixes one
+`medium_access` artifact; changing the resource set or policy without changing
+that sequence fails closed. Removing the persistent contribution removes the
+ledger but does not revoke a release coordinate already committed to a pending
+frame.
+
+The effect declares a positive transmit power in femtowatts. Airtime is the
+ceiling of
+`frame_bits * 1,000,000,000 * duty_cycle_denominator /
+(effective_rate_bps * duty_cycle_numerator)`, with a one-nanosecond minimum and
+checked integer arithmetic throughout. The effective rate is the already
+resolved frame rate cap, or the World link rate when no cap exists. Absence of
+both rates fails closed. Medium service marks serialization complete so the
+same bytes are not serialized again by the link scheduler.
+
+The closed arbitration modes are:
+
+| Arbitration | Additional policy field | Exact allocation |
+| --- | --- | --- |
+| `fifo` | none | Serializes contenders in scheduler processing order after already-started airtime. |
+| `strict_priority` | `arbitration_key`, a `packet_key` artifact | Concatenates the declared packet ranges and orders all not-yet-started contenders at the same coordinate by ascending key bytes, then opportunity ID. A newly observed higher-priority contender pushes lower-priority pending releases later. |
+| `can_dominant_bit` | `arbitration_key`, a `packet_key` artifact | Uses the same bytewise ascending order, which models the lowest CAN identifier winning dominant-bit arbitration; opportunity ID resolves an identical identifier. |
+| `fixed_slots` | positive `fixed_slot_nanos` | Assigns one slot per resource in canonical resource order and repeats that cycle. A frame whose duty-cycle-adjusted airtime exceeds one slot fails closed; a participant with an occupied slot advances by whole cycles. |
+| `contention` | a `contention` record containing the terminal collision rule, positive backoff slot, maximum exponent, and `maximum_retries` in `0..=256` | Attempt `a` uses an opportunity-keyed slot in the inclusive window `0..2^min(a, maximum_backoff_exponent)-1`. An overlap consumes the arriving contender's next attempt while retries remain. Only the final nonoverlapping or exhausted attempt commits an airtime reservation. |
+
+The packet-key reference is required only for strict-priority and CAN
+arbitration. The fixed-slot width is required only for fixed slots, and the
+complete contention record is required only for contention. All other
+combinations are rejected at World admission. A packet-key range outside the
+actual frame is a malformed opportunity and fails closed rather than being
+shortened.
+
+At contention retry exhaustion, every reservation overlapping the final
+attempt enters exactly one terminal collision rule:
+
+| Collision rule | Exact result |
+| --- | --- |
+| `drop_all` | Drops the arriving frame and every overlapping pending frame. |
+| `capture` | Orders contenders by descending transmit power and then opportunity ID. The first captures only when its power in millionths meets the runner-up power times `capture_threshold_millionths`; otherwise all contenders drop. The winner is delivered and every loser drops. A ratio of `1,000,000` therefore gives a canonical winner for equal powers. |
+| `undetected_transform` | Delivers every contender after XOR with the repeated nonempty `byte_template` artifact. A reservation records that the terminal transform was applied, so a later overlapping contender cannot toggle the same prior bytes back. |
+
+Inside the contention record, the undetected-transform reference is required
+only for `undetected_transform`, must name a nonempty byte template, and is
+forbidden for the other collision rules. The capture threshold is required
+only for `capture`. The backoff bounds, retry count, duty-cycle ratio, and every
+conditional reference are validated before execution.
+
+Every frame is deferred through a real pending scheduler output until its
+airtime finish. This lets a later same-coordinate contender atomically
+reschedule, drop, or transform an earlier contender before either is released.
+Checkpoint state contains the canonical resources, policy and transition
+identity, service cursor, producer, arbitration key, arrival/start/finish and
+duration, transmit power, terminal-collision marker, and opportunity ID for
+every bounded live reservation. Checkpoint capture removes expired ledger
+entries by joining them to the bounded pending-frame set. Restore requires every
+remaining reservation to have a matching pending frame and authenticates all
+of those fields in the network continuation digest. The global number of live
+medium reservations cannot exceed the scheduler's pending-frame bound.
 
 ## 8.4 Storage and 9p effect registry
 

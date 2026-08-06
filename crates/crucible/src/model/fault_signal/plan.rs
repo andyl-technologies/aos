@@ -683,21 +683,60 @@ fn validate_network_effect_policy_references(
             }
         }
         NetworkEffectSpecification::SharedMedium {
-            arbitration,
-            collision_capture,
-            backoff_duty_cycle,
-            ..
+            resources, policy, ..
         } => {
-            for (reference, field) in [
-                (arbitration, "arbitration"),
-                (collision_capture, "collision_capture"),
-                (backoff_duty_cycle, "backoff_duty_cycle"),
-            ] {
-                require(
-                    reference,
-                    &[NetworkPolicyArtifactClass::MediumAccess],
-                    field,
-                )?;
+            require(
+                policy,
+                &[NetworkPolicyArtifactClass::MediumAccess],
+                "policy",
+            )?;
+            let invalid_medium = |field| FaultSignalAuthoringError::InvalidNetworkMediumContract {
+                binding: binding.id().as_str().to_owned(),
+                field,
+            };
+            let actual_participants = resources
+                .as_slice()
+                .iter()
+                .map(FaultObjectId::as_str)
+                .collect::<BTreeSet<_>>();
+            for target in binding.selector().resolved().targets() {
+                let ResolvedFaultTarget::NetworkMedium { medium, resource } = target else {
+                    return Err(invalid_medium("target"));
+                };
+                let declaration = topology
+                    .network_media
+                    .iter()
+                    .find(|candidate| candidate.id.as_str() == medium.as_str())
+                    .ok_or_else(|| invalid_medium("medium"))?;
+                if declaration.access_policy.as_str() != policy.as_str()
+                    || !declaration
+                        .resources
+                        .iter()
+                        .any(|candidate| candidate.as_str() == resource.as_str())
+                {
+                    return Err(invalid_medium("policy_or_channel"));
+                }
+                let attached_interfaces = topology
+                    .network_segments
+                    .iter()
+                    .filter(|segment| {
+                        segment
+                            .medium
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.as_str() == declaration.id.as_str())
+                    })
+                    .flat_map(|segment| [&segment.interface_a, &segment.interface_b])
+                    .collect::<BTreeSet<_>>();
+                let expected_participants = topology
+                    .network_interfaces
+                    .iter()
+                    .filter(|interface| attached_interfaces.contains(&interface.id))
+                    .map(|interface| interface.endpoint.as_str())
+                    .collect::<BTreeSet<_>>();
+                if expected_participants.is_empty() || actual_participants != expected_participants
+                {
+                    return Err(invalid_medium("participants"));
+                }
             }
         }
         NetworkEffectSpecification::RfChannel {

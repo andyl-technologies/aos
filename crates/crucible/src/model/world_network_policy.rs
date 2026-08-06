@@ -159,10 +159,28 @@ pub enum NetworkPolicyArbitration {
 pub enum NetworkPolicyCollision {
     /// Every overlapping transmission is lost.
     DropAll,
-    /// A transmission wins when its received power exceeds the runner-up by the threshold.
+    /// The strongest canonical transmission wins when it meets the capture ratio.
     Capture,
     /// A collision is delivered only through the declared undetected transform.
     UndetectedTransform,
+}
+
+/// Complete contention, collision, retry, and capture parameters.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicyContention {
+    /// Terminal receiver behavior when the retry budget is exhausted.
+    pub collision: NetworkPolicyCollision,
+    /// Positive capture ratio in millionths, present only for capture.
+    pub capture_threshold_millionths: Option<PositiveU64>,
+    /// Nonempty XOR template used only for undetected collision delivery.
+    pub undetected_transform: Option<FaultObjectId>,
+    /// Positive base backoff slot duration.
+    pub backoff_slot_nanos: PositiveU64,
+    /// Maximum binary-backoff exponent.
+    pub maximum_backoff_exponent: u8,
+    /// Maximum retry count.
+    pub maximum_retries: u16,
 }
 
 /// Complete shared-medium access parameters.
@@ -171,16 +189,12 @@ pub enum NetworkPolicyCollision {
 pub struct NetworkPolicyMediumAccess {
     /// Arbitration rule.
     pub arbitration: NetworkPolicyArbitration,
-    /// Collision/capture behavior.
-    pub collision: NetworkPolicyCollision,
-    /// Capture threshold in the declared integer power-ratio unit.
-    pub capture_threshold: i64,
-    /// Positive base backoff slot duration.
-    pub backoff_slot_nanos: PositiveU64,
-    /// Maximum binary-backoff exponent.
-    pub maximum_backoff_exponent: u8,
-    /// Maximum retry count.
-    pub maximum_retries: u16,
+    /// Packet-key artifact used by strict-priority or CAN arbitration.
+    pub arbitration_key: Option<FaultObjectId>,
+    /// Positive slot width used only by fixed-slot arbitration.
+    pub fixed_slot_nanos: Option<PositiveU64>,
+    /// Contention parameters, present only for contention arbitration.
+    pub contention: Option<NetworkPolicyContention>,
     /// Duty-cycle numerator.
     pub duty_cycle_numerator: PositiveU64,
     /// Duty-cycle denominator.
@@ -769,7 +783,27 @@ impl WorldNetworkPolicyArtifact {
                 hard_policy_count(segments.as_slice().len(), "network service curve")
             }
             NetworkPolicyArtifactKind::MediumAccess(policy) => require(
-                policy.maximum_backoff_exponent <= 63
+                policy.arbitration_key.is_some()
+                    == matches!(
+                        policy.arbitration,
+                        NetworkPolicyArbitration::StrictPriority
+                            | NetworkPolicyArbitration::CanDominantBit
+                    )
+                    && policy.fixed_slot_nanos.is_some()
+                        == matches!(policy.arbitration, NetworkPolicyArbitration::FixedSlots)
+                    && policy.contention.is_some()
+                        == matches!(policy.arbitration, NetworkPolicyArbitration::Contention)
+                    && policy.contention.as_ref().is_none_or(|contention| {
+                        contention.maximum_backoff_exponent <= 63
+                            && contention.maximum_retries <= 256
+                            && contention.capture_threshold_millionths.is_some()
+                                == matches!(contention.collision, NetworkPolicyCollision::Capture)
+                            && contention.undetected_transform.is_some()
+                                == matches!(
+                                    contention.collision,
+                                    NetworkPolicyCollision::UndetectedTransform
+                                )
+                    })
                     && policy.duty_cycle_numerator.get() <= policy.duty_cycle_denominator.get(),
                 "network medium access policy",
             ),
@@ -1017,22 +1051,55 @@ mod tests {
     }
 
     #[test]
-    fn medium_policy_requires_a_real_duty_cycle() {
-        let declaration = WorldNetworkPolicyArtifact {
-            id: id("radio-access"),
-            semantic_version: 1,
-            artifact: NetworkPolicyArtifactKind::MediumAccess(NetworkPolicyMediumAccess {
-                arbitration: NetworkPolicyArbitration::Contention,
+    fn medium_policy_requires_exact_conditional_fields_and_bounds() {
+        let base = NetworkPolicyMediumAccess {
+            arbitration: NetworkPolicyArbitration::Contention,
+            arbitration_key: None,
+            fixed_slot_nanos: None,
+            contention: Some(NetworkPolicyContention {
                 collision: NetworkPolicyCollision::Capture,
-                capture_threshold: 6,
+                capture_threshold_millionths: Some(positive(1_000_000)),
+                undetected_transform: None,
                 backoff_slot_nanos: positive(1_000),
                 maximum_backoff_exponent: 10,
                 maximum_retries: 8,
-                duty_cycle_numerator: positive(2),
-                duty_cycle_denominator: positive(1),
             }),
+            duty_cycle_numerator: positive(1),
+            duty_cycle_denominator: positive(1),
         };
-        assert!(declaration.validate().is_err());
+        let declaration = |policy| WorldNetworkPolicyArtifact {
+            id: id("radio-access"),
+            semantic_version: 1,
+            artifact: NetworkPolicyArtifactKind::MediumAccess(policy),
+        };
+        declaration(base.clone())
+            .validate()
+            .unwrap_or_else(|error| panic!("complete medium policy: {error}"));
+
+        let mut invalid = base.clone();
+        invalid.duty_cycle_numerator = positive(2);
+        assert!(declaration(invalid).validate().is_err());
+        let mut invalid = base.clone();
+        invalid
+            .contention
+            .as_mut()
+            .unwrap_or_else(|| panic!("test contention must exist"))
+            .maximum_retries = 257;
+        assert!(declaration(invalid).validate().is_err());
+        let mut invalid = base.clone();
+        invalid.arbitration = NetworkPolicyArbitration::StrictPriority;
+        assert!(declaration(invalid).validate().is_err());
+        let mut invalid = base.clone();
+        invalid.fixed_slot_nanos = Some(positive(10));
+        assert!(declaration(invalid).validate().is_err());
+        let mut invalid = base;
+        let contention = invalid
+            .contention
+            .as_mut()
+            .unwrap_or_else(|| panic!("test contention must exist"));
+        contention.collision = NetworkPolicyCollision::UndetectedTransform;
+        contention.capture_threshold_millionths = None;
+        assert!(declaration(invalid).validate().is_err());
     }
 
     #[test]
