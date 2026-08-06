@@ -558,6 +558,10 @@ impl WorldFaultTopology {
                 attachment.semantic_version == 1,
                 "network attachment semantic version",
             )?;
+            require(
+                !attachment.technology.as_str().is_empty(),
+                "network attachment technology",
+            )?;
         }
         for plan in &self.network_contact_plans {
             require(
@@ -1597,6 +1601,8 @@ pub struct WorldNetworkAttachment {
     pub interface: SignalId,
     /// Candidate segment IDs.
     pub candidates: Vec<SignalId>,
+    /// Closed technology contract shared by control-operation effects.
+    pub technology: SignalId,
     /// Exact attachment-machine semantic version.
     pub semantic_version: u16,
     /// Registered authentication policy.

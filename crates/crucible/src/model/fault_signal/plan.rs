@@ -841,47 +841,58 @@ fn validate_network_effect_policy_references(
                 }
             }
         }
-        NetworkEffectSpecification::Association {
-            candidates,
-            selection_policy,
-            timer_policy,
-            authentication_policy,
-            traffic_policy,
-            ..
-        } => {
-            for (reference, field) in [
-                (selection_policy, "selection_policy"),
-                (timer_policy, "timer_policy"),
-                (authentication_policy, "authentication_policy"),
-                (traffic_policy, "traffic_policy"),
-            ] {
-                require(reference, &[NetworkPolicyArtifactClass::Association], field)?;
-            }
-            let declaration = topology
-                .network_policy_artifact(selection_policy)
-                .ok_or_else(
-                    || FaultSignalAuthoringError::InvalidNetworkPolicyReference {
-                        binding: binding.id().as_str().to_owned(),
-                        reference: selection_policy.as_str().to_owned(),
-                        field: "selection_policy",
-                        expected: String::from("association"),
-                        actual: None,
-                    },
-                )?;
-            if let NetworkPolicyArtifactKind::Association(policy) = &declaration.artifact {
-                let mut declared = policy
+        NetworkEffectSpecification::Association { policy } => {
+            require(policy, &[NetworkPolicyArtifactClass::Association], "policy")?;
+            let declaration = topology.network_policy_artifact(policy).ok_or_else(|| {
+                FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+                    binding: binding.id().as_str().to_owned(),
+                    reference: policy.as_str().to_owned(),
+                    field: "policy",
+                    expected: String::from("association"),
+                    actual: None,
+                }
+            })?;
+            if let NetworkPolicyArtifactKind::Association(association_policy) =
+                &declaration.artifact
+            {
+                let mut declared = association_policy
                     .candidates
                     .iter()
                     .map(|candidate| candidate.candidate.clone())
                     .collect::<Vec<_>>();
                 declared.sort();
                 declared.dedup();
-                if declared.as_slice() != candidates.as_slice() {
+                let mismatched_target =
+                    binding
+                        .selector()
+                        .resolved()
+                        .targets()
+                        .iter()
+                        .any(|target| {
+                            let ResolvedFaultTarget::NetworkAttachment { attachment, .. } = target
+                            else {
+                                return true;
+                            };
+                            let Some(attachment) = topology
+                                .network_attachments
+                                .iter()
+                                .find(|candidate| candidate.id.as_str() == attachment.as_str())
+                            else {
+                                return true;
+                            };
+                            attachment.candidates.len() != declared.len()
+                                || attachment
+                                    .candidates
+                                    .iter()
+                                    .map(SignalId::as_str)
+                                    .ne(declared.iter().map(FaultObjectId::as_str))
+                        });
+                if mismatched_target {
                     return Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
                         binding: binding.id().as_str().to_owned(),
-                        reference: selection_policy.as_str().to_owned(),
-                        field: "selection_policy.candidates",
-                        expected: String::from("exact effect candidate set"),
+                        reference: policy.as_str().to_owned(),
+                        field: "policy.candidates",
+                        expected: String::from("exact World attachment candidate set"),
                         actual: Some("different candidate set"),
                     });
                 }

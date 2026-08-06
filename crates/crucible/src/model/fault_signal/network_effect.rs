@@ -693,18 +693,8 @@ pub enum NetworkEffectSpecification {
     },
     /// Authentication, association, and handoff machine.
     Association {
-        /// Technology contract identity.
-        technology: FaultObjectId,
-        /// Candidate attachment set.
-        candidates: ObjectIdSet,
-        /// Registered selection and hysteresis policy.
-        selection_policy: FaultObjectId,
-        /// Registered timer policy.
-        timer_policy: FaultObjectId,
-        /// Registered authentication policy.
-        authentication_policy: FaultObjectId,
-        /// Buffering and address-continuity policy.
-        traffic_policy: FaultObjectId,
+        /// Complete selection, hysteresis, timer, authentication, and traffic policy.
+        policy: FaultObjectId,
     },
     /// Typed network-control result transform.
     ControlResultTransform {

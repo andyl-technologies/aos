@@ -639,6 +639,11 @@ impl ProductionFaultNetworkInterceptor {
         pending_outputs: &mut Vec<crucible::BackendNetworkOutput>,
     ) -> Result<Self, SchedulerError> {
         let staged = stage_network_restore(&checkpoint, scheduler)?;
+        staged
+            .adapter
+            .effect_state
+            .boundary
+            .validate_topology(&topology)?;
         let mut runtime =
             ProductionFaultRuntime::restore(plan, artifacts, scenario_seed, checkpoint, nodes)
                 .map_err(|error| SchedulerError::BoundaryViolation {
@@ -780,6 +785,53 @@ impl ProductionFaultNetworkInterceptor {
                             .cursor()
                             .queue_opportunity()
                             .is_none_or(|opportunity| !removed.contains(&opportunity))
+                    });
+                }
+            }
+            let mut removed_attachment_opportunities = BTreeSet::new();
+            for target in &boundary_application.address_discontinuities {
+                let crucible::model::ResolvedFaultTarget::NetworkAttachment { endpoint, .. } =
+                    target
+                else {
+                    return Err(SchedulerError::BoundaryViolation {
+                        message: String::from(
+                            "association address discontinuity did not target an attachment",
+                        ),
+                    });
+                };
+                staged_pending.retain(|output| {
+                    let affected = output.source.name == endpoint.as_str()
+                        || output.destination.name == endpoint.as_str()
+                        || output
+                            .fault_continuation
+                            .cursor()
+                            .completed_phases()
+                            .iter()
+                            .any(|completed| &completed.target == target);
+                    if affected {
+                        if let Some(opportunity) =
+                            output.fault_continuation.cursor().queue_opportunity()
+                        {
+                            removed_attachment_opportunities.insert(opportunity);
+                        }
+                    }
+                    !affected
+                });
+                for link in &self.links {
+                    let (endpoint_a, endpoint_b) = link.endpoints();
+                    if endpoint_a.name == endpoint.as_str() || endpoint_b.name == endpoint.as_str()
+                    {
+                        let _a_to_b = staged_scheduler
+                            .drop_network_inflight_for_route(endpoint_a, endpoint_b)?;
+                        let _b_to_a = staged_scheduler
+                            .drop_network_inflight_for_route(endpoint_b, endpoint_a)?;
+                    }
+                }
+            }
+            if !removed_attachment_opportunities.is_empty() {
+                for queue in staged_effect_state.queues.values_mut() {
+                    queue.reservations.retain(|reservation| {
+                        !removed_attachment_opportunities.contains(&reservation.opportunity)
                     });
                 }
             }

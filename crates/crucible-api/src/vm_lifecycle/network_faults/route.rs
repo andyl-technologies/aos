@@ -208,6 +208,8 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                             let mut frame_actions = Vec::new();
                             staged_effect_state.boundary.apply_frame(
                                 opportunity.target(),
+                                output.fault_continuation.cursor().route_path_version(),
+                                &self.topology,
                                 frontier.ticks,
                                 &mut resolved_effects,
                             )?;
@@ -1342,9 +1344,8 @@ fn apply_network_shared_medium(
             })?;
             let mut attempt = 0_u16;
             let (start, overlaps) = loop {
-                let exponent = u32::from(
-                    attempt.min(u16::from(contention.maximum_backoff_exponent)),
-                );
+                let exponent =
+                    u32::from(attempt.min(u16::from(contention.maximum_backoff_exponent)));
                 let maximum_slot = (1_u64 << exponent).saturating_sub(1);
                 let slot = uniform_inclusive(
                     network_effect_draw(
@@ -3942,7 +3943,9 @@ fn divide_ties_to_even(numerator: u128, denominator: u128) -> u128 {
     }
 }
 
-fn mapped_network_integers(action: &ResolvedBindingAction) -> Result<Vec<i64>, SchedulerError> {
+pub(super) fn mapped_network_integers(
+    action: &ResolvedBindingAction,
+) -> Result<Vec<i64>, SchedulerError> {
     let values = match action.mapping_output.as_ref() {
         crucible::model::ResolvedMappingOutput::Parameter { value, .. } => {
             std::slice::from_ref(value)
@@ -4018,7 +4021,7 @@ fn network_policy_lookup(
     lookup_network_integer_table(table, input, reference.as_str())
 }
 
-fn lookup_network_integer_table(
+pub(super) fn lookup_network_integer_table(
     table: &crucible::model::NetworkPolicyIntegerTable,
     input: i64,
     context: &str,
@@ -5185,13 +5188,25 @@ mod tests {
         let mut during_reset = crucible::ResolvedNetworkFrameEffects::default();
         state
             .boundary
-            .apply_frame(&reset.target, 49, &mut during_reset)
+            .apply_frame(
+                &reset.target,
+                None,
+                &crucible::model::WorldFaultTopology::default(),
+                49,
+                &mut during_reset,
+            )
             .unwrap_or_else(|error| panic!("apply reset outage: {error}"));
         assert!(during_reset.is_dropped());
         let mut recovered = crucible::ResolvedNetworkFrameEffects::default();
         state
             .boundary
-            .apply_frame(&reset.target, 50, &mut recovered)
+            .apply_frame(
+                &reset.target,
+                None,
+                &crucible::model::WorldFaultTopology::default(),
+                50,
+                &mut recovered,
+            )
             .unwrap_or_else(|error| panic!("apply recovered link: {error}"));
         assert!(!recovered.is_dropped());
     }

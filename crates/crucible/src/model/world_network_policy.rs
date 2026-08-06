@@ -852,12 +852,12 @@ impl WorldNetworkPolicyArtifact {
                     !policy.candidates.is_empty(),
                     "network association candidates",
                 )?;
-                require_unique(
+                require(
                     policy
                         .candidates
-                        .iter()
-                        .map(|candidate| &candidate.candidate),
-                    "network association candidate",
+                        .windows(2)
+                        .all(|pair| pair[0].candidate < pair[1].candidate),
+                    "network association candidate order",
                 )?;
                 for candidate in &policy.candidates {
                     validate_integer_table(&candidate.score)?;
