@@ -60,7 +60,7 @@
     ++ failuresFor "crates/crucible-harness/src/reproduction.rs" reproduction [
       {
         label = "v2 schema";
-        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v2\";";
+        needle = "pub const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v3\";";
       }
       {
         label = "QEMU patch-series identity field";
@@ -238,7 +238,7 @@
     ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
       {
         label = "CLI v2 schema";
-        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v2\";";
+        needle = "const REPRODUCTION_ARTIFACT_SCHEMA: &str = \"crucible.reproduction-artifact.v3\";";
       }
       {
         # Needle evolution: the CLI now reads the shared guest-host protocol
@@ -336,7 +336,7 @@
     ++ failuresFor "tests/crucible/phase7-reproduction-artifact-format.nix" artifactFormatGate [
       {
         label = "format gate reports v2 schema";
-        needle = "schema=crucible.reproduction-artifact.v2";
+        needle = "schema=crucible.reproduction-artifact.v3";
       }
       {
         label = "format gate reports expanded pinned identities";
@@ -398,7 +398,7 @@ in
             PASS
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
-            schema=crucible.reproduction-artifact.v2
+            schema=crucible.reproduction-artifact.v3
             provenance=crucible-version,qemu-build-id,qemu-patch-series-hash,shmem-abi-version,guest-host-protocol-version,rpc-abi-version,rpc-abi-build,plugin-abi
             replay_refusal=identity-mismatch
             remote_verify_artifacts=skipped-without-producer-provenance

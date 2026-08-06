@@ -15,4 +15,4 @@ Developer Certificate of Origin `Signed-off-by` line.
 The Apache-licensed Crucible host must interact with this code only through the
 versioned socket and shared-memory protocols. A release that distributes the
 patched QEMU binary must also publish matching complete corresponding source as
-described in [`LICENSING.md`](../../../LICENSING.md).
+described in the [repository license map](../../../docs/legal/licensing.md).
