@@ -410,6 +410,8 @@ their canonical logs and fingerprint streams pairwise, and — if any pair diffe
 decision/instruction and node, with a both-sides state dump. `--adversarial`
 runs them under randomized host scheduling, wall-clock jitter, and varied core
 counts (24 §7) so the comparison actively *tries* to break determinism.
+`--compare` consumes the identities recorded by its two artifacts and MUST NOT
+draw or report a fresh run seed.
 
 **Exit codes.** `0` = all runs byte-identical (deterministic); `1` = divergence
 detected (the bisection report is printed and an artifact for each side is

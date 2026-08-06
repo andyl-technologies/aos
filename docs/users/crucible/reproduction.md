@@ -38,6 +38,10 @@ To compare two existing artifacts without running the scenario again:
 ./result/bin/crucible verify --compare run-a.crucible run-b.crucible
 ```
 
+Artifact comparison uses the identities embedded in those artifacts. It does
+not generate a new seed, so repeated comparisons of unchanged inputs produce
+stable evidence.
+
 ## Failure artifacts
 
 A non-passing `run`, `search`, or `fuzz` result normally writes a self-contained
