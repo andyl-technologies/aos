@@ -15,20 +15,32 @@
   jq,
   mtools,
   qemu,
+  sbsigntools,
+  secure-boot-test-keys,
   systemd,
 }: let
   ukiImage = mkDerivation {
     pname = "aos-hub-e2e-uki";
     version = "2026.3.0";
     src = null;
-    buildDeps = [coreutils systemd];
+    buildDeps = [coreutils sbsigntools secure-boot-test-keys systemd systemd.tools];
     phases = [
       {
         name = "build";
         script = ''
           mkdir -p "$out"
-          cp '${systemd}/lib/systemd/boot/efi/systemd-bootx64.efi' \
-            "$out/systemd-bootx64.efi"
+          printf 'NAME=AOS Hub fixture\nID=aos-hub-fixture\n' > os-release
+          printf 'quiet' > cmdline
+          ${systemd.tools}/bin/ukify build \
+            --stub='${systemd}/lib/systemd/boot/efi/linuxx64.efi.stub' \
+            --linux='${systemd}/lib/systemd/boot/efi/systemd-bootx64.efi' \
+            --uname=2026.3.0 \
+            --cmdline=@cmdline \
+            --os-release=@os-release \
+            --signtool=sbsign \
+            --secureboot-private-key='${secure-boot-test-keys}/db.key' \
+            --secureboot-certificate='${secure-boot-test-keys}/db.crt' \
+            --output="$out/systemd-bootx64.efi"
         '';
       }
     ];
@@ -96,7 +108,7 @@
               uki: {filename: "systemd-bootx64.efi",
                 espPath: "EFI/Linux/systemd-bootx64.efi",
                 byteSize: $ukiSize, sha256: $ukiSha256,
-                signed: false, measured: false}}' > "$out/image-info.json"
+                signed: true, measured: true}}' > "$out/image-info.json"
         '';
       }
     ];
@@ -143,7 +155,7 @@
                 sdBoot: "EFI/systemd/systemd-bootx64.efi"},
               uki: {filename: "systemd-bootx64.efi",
                 espPath: "EFI/Linux/systemd-bootx64.efi", byteSize: $ukiSize,
-                sha256: $ukiSha256, signed: false, measured: false}}' > "$out/image-info.json"
+                sha256: $ukiSha256, signed: true, measured: true}}' > "$out/image-info.json"
         '';
       }
     ];
@@ -203,6 +215,7 @@ in
           ${aos}/bin/apr release 2026.3.0 \
             --registry image-e2e \
             --store-path '${sysroot}' \
+            --source-drv '${sysroot}' \
             --name aos-system \
             --platform x86_64-linux \
             --description 'AOS Hub producer-driven system-image fixture' \
