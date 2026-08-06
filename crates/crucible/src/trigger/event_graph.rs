@@ -14,18 +14,6 @@ pub enum FirePolicy {
 /// What an event does when it fires.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
-    /// Activate a membership fault under a stable tag.
-    InjectFault {
-        /// Tag used by later heal actions.
-        tag: FaultTag,
-        /// Membership fault to activate.
-        fault: MembershipFault,
-    },
-    /// Heal a previously activated fault tag.
-    HealFault {
-        /// Tag to heal.
-        tag: FaultTag,
-    },
     /// Arm a named virtual-time timer.
     ArmTimer {
         /// Timer to arm.
@@ -77,18 +65,6 @@ pub enum Action {
 }
 
 impl Action {
-    /// Builds an [`Action::InjectFault`] action.
-    #[must_use]
-    pub fn inject_fault(tag: FaultTag, fault: MembershipFault) -> Self {
-        Self::InjectFault { tag, fault }
-    }
-
-    /// Builds an [`Action::HealFault`] action.
-    #[must_use]
-    pub fn heal_fault(tag: FaultTag) -> Self {
-        Self::HealFault { tag }
-    }
-
     /// Builds an [`Action::ArmTimer`] action.
     #[must_use]
     pub fn arm_timer(name: TimerId, after: SimDuration) -> Self {
@@ -331,39 +307,6 @@ impl EventGraphEventBuilder {
     }
 }
 
-pub(super) fn lower_plan_entry_to_event((index, entry): (usize, &PlanEntry)) -> Event {
-    match entry {
-        PlanEntry::Activate { at, tag, fault } => Event::once(
-            lowered_plan_event_id(index, "activate", tag),
-            Some(Condition::At { at: *at }),
-            Action::InjectFault {
-                tag: tag.clone(),
-                fault: fault.clone(),
-            },
-        ),
-        PlanEntry::Heal { at, tag } => Event::once(
-            lowered_plan_event_id(index, "heal", tag),
-            Some(Condition::At { at: *at }),
-            Action::HealFault { tag: tag.clone() },
-        ),
-    }
-}
-
-pub(super) fn lowered_plan_event_id(index: usize, kind: &str, tag: &FaultTag) -> EventId {
-    EventId::from_name(format!("plan:{index:016}:{kind}:{}", tag.name))
-}
-
-pub(super) fn plan_evaluation_times(entries: &[PlanEntry]) -> Vec<VirtualTime> {
-    entries
-        .iter()
-        .map(|entry| match entry {
-            PlanEntry::Activate { at, .. } | PlanEntry::Heal { at, .. } => *at,
-        })
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
 /// Scenario control flow expressed as declared events.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventGraph {
@@ -402,8 +345,6 @@ impl EventGraph {
     /// or [`EventGraphError::LinkReferenceRequiresWorld`] for topology-bearing
     /// references, and [`EventGraphError::NodeScheduleTargetRequiresWorld`] for
     /// `StartNode` or `StopNode`. It returns
-    /// [`EventGraphError::UnknownFaultTagReference`] when a `HealFault` action
-    /// or `FaultActive` predicate references a tag that no graph action injects,
     /// [`EventGraphError::NonRepeatableCycle`] for a hard dependency cycle among
     /// non-repeatable events, or
     /// [`EventGraphError::UnreachableEvent`] when an event cannot be reached
@@ -500,7 +441,6 @@ impl EventGraph {
             }
         }
         let timer_names = armed_timer_names(&events);
-        let injected_tags = injected_fault_tags(&events);
         for event in &events {
             if let Some(condition) = &event.trigger {
                 validate_condition_references(
@@ -510,17 +450,10 @@ impl EventGraph {
                     &timer_names,
                     &assertion_ids,
                     &white_box_nodes,
-                    &injected_tags,
                     topology.as_ref(),
                 )?;
             }
-            validate_action_references(
-                event,
-                &event.action,
-                static_topology.as_ref(),
-                topology.as_ref(),
-                &injected_tags,
-            )?;
+            validate_action_references(event, &event.action, static_topology.as_ref())?;
         }
         validate_event_graph_dependencies(&events, &timer_names)?;
         Ok(Self { events })
@@ -1013,13 +946,6 @@ pub enum EventGraphError {
         /// Referenced node id.
         node: NodeId,
     },
-    /// A `HealFault` action or `FaultActive` predicate references no injected tag.
-    UnknownFaultTagReference {
-        /// Event containing the invalid fault tag reference.
-        event: EventId,
-        /// Referenced fault tag.
-        tag: FaultTag,
-    },
     /// Non-repeatable events contain a dependency cycle.
     NonRepeatableCycle {
         /// Participating event ids in deterministic DFS order.
@@ -1164,13 +1090,6 @@ impl fmt::Display for EventGraphError {
                     event.name, node.name
                 )
             }
-            Self::UnknownFaultTagReference { event, tag } => {
-                write!(
-                    formatter,
-                    "event `{}` references unknown fault tag `{}`",
-                    event.name, tag.name
-                )
-            }
             Self::NonRepeatableCycle { events } => {
                 let names = events
                     .iter()
@@ -1202,7 +1121,6 @@ impl Error for EventGraphError {}
 pub(super) struct EventGraphTopology {
     nodes: BTreeSet<NodeId>,
     links: BTreeSet<LinkId>,
-    devices: BTreeMap<DeviceId, WorldDeviceKind>,
 }
 
 impl EventGraphTopology {
@@ -1214,10 +1132,6 @@ impl EventGraphTopology {
                 .into_iter()
                 .collect::<BTreeSet<_>>(),
             links: event_graph_link_ids(world.links()),
-            devices: world
-                .io_nodes()
-                .map(|node| (node.device_id(), node.kind.family()))
-                .collect(),
         }
     }
 }
@@ -1262,21 +1176,6 @@ pub(super) fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
     LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
 }
 
-pub(super) fn link_id_for_endpoint_pair(left: &NodeId, right: &NodeId) -> LinkId {
-    let (endpoint_a, endpoint_b) = if left <= right {
-        (left, right)
-    } else {
-        (right, left)
-    };
-    LinkId::from_name(format!(
-        "link_endpoint_a_len={}\nlink_endpoint_a={}\nlink_endpoint_b_len={}\nlink_endpoint_b={}",
-        endpoint_a.name.len(),
-        endpoint_a.name,
-        endpoint_b.name.len(),
-        endpoint_b.name
-    ))
-}
-
 pub(super) fn armed_timer_names(events: &[Event]) -> BTreeSet<TimerId> {
     let mut timers = BTreeSet::new();
     for event in events {
@@ -1295,40 +1194,7 @@ pub(super) fn collect_timer_names(action: &Action, timers: &mut BTreeSet<TimerId
                 collect_timer_names(action, timers);
             }
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::CancelTimer { .. }
-        | Action::StartNode { .. }
-        | Action::StopNode { .. }
-        | Action::CreateSavepoint { .. }
-        | Action::Fork { .. }
-        | Action::Pass
-        | Action::Fail { .. }
-        | Action::Log { .. } => {}
-    }
-}
-
-pub(super) fn injected_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
-    let mut tags = BTreeSet::new();
-    for event in events {
-        collect_injected_fault_tags(&event.action, &mut tags);
-    }
-    tags
-}
-
-pub(super) fn collect_injected_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
-    match action {
-        Action::InjectFault { tag, .. } => {
-            tags.insert(tag.clone());
-        }
-        Action::Group(actions) => {
-            for action in actions {
-                collect_injected_fault_tags(action, tags);
-            }
-        }
-        Action::HealFault { .. }
-        | Action::ArmTimer { .. }
-        | Action::CancelTimer { .. }
+        Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }
         | Action::CreateSavepoint { .. }
@@ -1343,23 +1209,8 @@ pub(super) fn validate_action_references(
     event: &Event,
     action: &Action,
     static_topology: Option<&WorldStaticTopology>,
-    topology: Option<&EventGraphTopology>,
-    injected_tags: &BTreeSet<FaultTag>,
 ) -> Result<(), EventGraphError> {
     match action {
-        Action::InjectFault { fault, .. } => {
-            validate_membership_fault_reference(event, fault, topology)
-        }
-        Action::HealFault { tag } => {
-            if injected_tags.contains(tag) {
-                Ok(())
-            } else {
-                Err(EventGraphError::UnknownFaultTagReference {
-                    event: event.id.clone(),
-                    tag: tag.clone(),
-                })
-            }
-        }
         Action::StartNode { node } | Action::StopNode { node } => {
             let Some(static_topology) = static_topology else {
                 return Err(EventGraphError::NodeScheduleTargetRequiresWorld {
@@ -1383,13 +1234,7 @@ pub(super) fn validate_action_references(
         }
         Action::Group(actions) => {
             for action in actions {
-                validate_action_references(
-                    event,
-                    action,
-                    static_topology,
-                    topology,
-                    injected_tags,
-                )?;
+                validate_action_references(event, action, static_topology)?;
             }
             Ok(())
         }
@@ -1403,144 +1248,6 @@ pub(super) fn validate_action_references(
     }
 }
 
-pub(super) fn validate_membership_fault_reference(
-    event: &Event,
-    fault: &MembershipFault,
-    topology: Option<&EventGraphTopology>,
-) -> Result<(), EventGraphError> {
-    match fault {
-        MembershipFault::Crash { node, .. }
-        | MembershipFault::Isolate { node }
-        | MembershipFault::NotYetJoined { node } => validate_node_reference(event, node, topology),
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            ..
-        } => {
-            validate_node_reference(event, endpoint_a, topology)?;
-            validate_node_reference(event, endpoint_b, topology)?;
-            validate_link_reference(
-                event,
-                &link_id_for_endpoint_pair(endpoint_a, endpoint_b),
-                topology,
-            )
-        }
-        MembershipFault::Taxonomy { fault } => {
-            validate_taxonomy_fault_reference(event, fault, topology)
-        }
-    }
-}
-
-pub(super) fn validate_taxonomy_fault_reference(
-    event: &Event,
-    fault: &Fault,
-    topology: Option<&EventGraphTopology>,
-) -> Result<(), EventGraphError> {
-    match fault {
-        Fault::Network(fault) => validate_network_fault_reference(event, fault, topology),
-        Fault::Node(fault) => validate_node_fault_reference(event, fault, topology),
-        Fault::Block(fault) => validate_device_reference(
-            event,
-            block_fault_device(fault),
-            WorldDeviceKind::Block,
-            topology,
-        ),
-        Fault::NineP(fault) => validate_device_reference(
-            event,
-            ninep_fault_device(fault),
-            WorldDeviceKind::NineP,
-            topology,
-        ),
-    }
-}
-
-pub(super) fn validate_device_reference(
-    event: &Event,
-    device: &DeviceId,
-    expected: WorldDeviceKind,
-    topology: Option<&EventGraphTopology>,
-) -> Result<(), EventGraphError> {
-    let Some(topology) = topology else {
-        return Err(EventGraphError::UnknownDeviceReference {
-            event: event.id.clone(),
-            device: device.clone(),
-        });
-    };
-    let Some(actual) = topology.devices.get(device).copied() else {
-        return Err(EventGraphError::UnknownDeviceReference {
-            event: event.id.clone(),
-            device: device.clone(),
-        });
-    };
-    if actual != expected {
-        return Err(EventGraphError::DeviceKindMismatch {
-            event: event.id.clone(),
-            device: device.clone(),
-            expected,
-            actual,
-        });
-    }
-    Ok(())
-}
-
-pub(super) fn validate_network_fault_reference(
-    event: &Event,
-    fault: &NetworkFault,
-    topology: Option<&EventGraphTopology>,
-) -> Result<(), EventGraphError> {
-    validate_link_reference(event, network_fault_link(fault), topology)
-}
-
-pub(super) fn validate_node_fault_reference(
-    event: &Event,
-    fault: &NodeFault,
-    topology: Option<&EventGraphTopology>,
-) -> Result<(), EventGraphError> {
-    validate_node_reference(event, node_fault_node(fault), topology)
-}
-
-pub(super) fn network_fault_link(fault: &NetworkFault) -> &LinkId {
-    match fault {
-        NetworkFault::Partition { link, .. }
-        | NetworkFault::Loss { link, .. }
-        | NetworkFault::Reorder { link, .. }
-        | NetworkFault::Duplicate { link, .. }
-        | NetworkFault::Corruption { link, .. }
-        | NetworkFault::Bandwidth { link, .. }
-        | NetworkFault::LatencyBump { link, .. } => link,
-    }
-}
-
-pub(super) fn node_fault_node(fault: &NodeFault) -> &NodeId {
-    match fault {
-        NodeFault::Crash { node, .. }
-        | NodeFault::Slow { node, .. }
-        | NodeFault::ClockSkew { node, .. } => node,
-    }
-}
-
-pub(super) fn block_fault_device(fault: &BlockFault) -> &DeviceId {
-    match fault {
-        BlockFault::Latency { device, .. }
-        | BlockFault::Failure { device, .. }
-        | BlockFault::Reorder { device, .. }
-        | BlockFault::Duplicate { device, .. }
-        | BlockFault::Corruption { device, .. }
-        | BlockFault::Bandwidth { device, .. } => device,
-    }
-}
-
-pub(super) fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
-    match fault {
-        NinePFault::Latency { device, .. }
-        | NinePFault::Failure { device, .. }
-        | NinePFault::Reorder { device, .. }
-        | NinePFault::Duplicate { device, .. }
-        | NinePFault::Corruption { device, .. }
-        | NinePFault::Bandwidth { device, .. } => device,
-    }
-}
-
 pub(super) fn enabled_white_box_nodes(world: &World) -> BTreeSet<NodeId> {
     world
         .vm_nodes()
@@ -1550,8 +1257,6 @@ pub(super) fn enabled_white_box_nodes(world: &World) -> BTreeSet<NodeId> {
         .collect()
 }
 
-// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn validate_condition_references(
     event: &Event,
     condition: &Condition,
@@ -1559,7 +1264,6 @@ pub(super) fn validate_condition_references(
     timer_names: &BTreeSet<TimerId>,
     assertion_ids: &BTreeSet<AssertionId>,
     white_box_nodes: &BTreeSet<NodeId>,
-    injected_tags: &BTreeSet<FaultTag>,
     topology: Option<&EventGraphTopology>,
 ) -> Result<(), EventGraphError> {
     match condition {
@@ -1611,16 +1315,6 @@ pub(super) fn validate_condition_references(
                 })
             }
         }
-        Condition::FaultActive { tag } => {
-            if injected_tags.contains(tag) {
-                Ok(())
-            } else {
-                Err(EventGraphError::UnknownFaultTagReference {
-                    event: event.id.clone(),
-                    tag: tag.clone(),
-                })
-            }
-        }
         Condition::GuestMarker { marker } => {
             if white_box_nodes.is_empty() {
                 Err(EventGraphError::GuestMarkerWithoutWhiteBoxOptIn {
@@ -1639,7 +1333,6 @@ pub(super) fn validate_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
-            injected_tags,
             topology,
         ),
         Condition::AnyOf { predicates } => validate_compound_condition_references(
@@ -1650,7 +1343,6 @@ pub(super) fn validate_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
-            injected_tags,
             topology,
         ),
         Condition::Once { predicate } | Condition::Not { predicate } => {
@@ -1661,7 +1353,6 @@ pub(super) fn validate_condition_references(
                 timer_names,
                 assertion_ids,
                 white_box_nodes,
-                injected_tags,
                 topology,
             )
         }
@@ -1669,8 +1360,6 @@ pub(super) fn validate_condition_references(
     }
 }
 
-// crucible-lint: allow rust-allow -- local exception is documented at the allow site.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn validate_compound_condition_references(
     event: &Event,
     kind: &'static str,
@@ -1679,7 +1368,6 @@ pub(super) fn validate_compound_condition_references(
     timer_names: &BTreeSet<TimerId>,
     assertion_ids: &BTreeSet<AssertionId>,
     white_box_nodes: &BTreeSet<NodeId>,
-    injected_tags: &BTreeSet<FaultTag>,
     topology: Option<&EventGraphTopology>,
 ) -> Result<(), EventGraphError> {
     if predicates.is_empty() {
@@ -1697,7 +1385,6 @@ pub(super) fn validate_compound_condition_references(
             timer_names,
             assertion_ids,
             white_box_nodes,
-            injected_tags,
             topology,
         )?;
     }
@@ -1794,9 +1481,7 @@ pub(super) fn collect_timer_armers(
                 collect_timer_armers(action, event, armers);
             }
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::CancelTimer { .. }
+        Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }
         | Action::CreateSavepoint { .. }
@@ -1917,7 +1602,6 @@ pub(super) fn hard_event_dependencies(
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
         | Condition::AssertionState { .. }
-        | Condition::FaultActive { .. }
         | Condition::Quiescent
         | Condition::Named { .. }
         | Condition::GuestMarker { .. } => BTreeSet::new(),
@@ -2016,7 +1700,6 @@ pub(super) fn possible_dependency_alternatives(
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
         | Condition::AssertionState { .. }
-        | Condition::FaultActive { .. }
         | Condition::Quiescent
         | Condition::Named { .. }
         | Condition::GuestMarker { .. } => vec![BTreeSet::new()],

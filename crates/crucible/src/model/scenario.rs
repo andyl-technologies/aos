@@ -539,16 +539,8 @@ impl World {
         properties: &Properties,
     ) -> Result<ScenarioDef, EngineError> {
         let properties = resolve_properties_dsl_for_context(self, plan, properties)?;
-        match plan.event_graph() {
-            Some(_) => {
-                properties.validate_for_world(self)?;
-                plan.validate_for_world_with_properties(self, &properties)?;
-            }
-            None => {
-                plan.validate_for_world(self)?;
-                properties.validate_for_world(self)?;
-            }
-        }
+        properties.validate_for_world(self)?;
+        plan.validate_for_world_with_properties(self, &properties)?;
         Ok(self.scenario_def_from_components(plan, &properties, Seed::default()))
     }
 
@@ -591,16 +583,8 @@ impl World {
         seed: Seed,
     ) -> Result<ScenarioDef, EngineError> {
         let properties = resolve_properties_dsl_for_context(self, plan, properties)?;
-        match plan.event_graph() {
-            Some(_) => {
-                properties.validate_for_world(self)?;
-                plan.validate_for_world_with_properties(self, &properties)?;
-            }
-            None => {
-                plan.validate_for_world(self)?;
-                properties.validate_for_world(self)?;
-            }
-        }
+        properties.validate_for_world(self)?;
+        plan.validate_for_world_with_properties(self, &properties)?;
         Ok(self.scenario_def_from_components(plan, &properties, seed))
     }
 

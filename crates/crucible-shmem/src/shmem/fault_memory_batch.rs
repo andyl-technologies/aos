@@ -728,8 +728,8 @@ mod tests {
 
     #[test]
     fn transport_envelopes_include_worst_case_batch_overhead() {
-        let per_action_overhead = MEMORY_MUTATION_BATCH_RECORD_V1_BYTES
-            + crate::MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES;
+        let per_action_overhead =
+            MEMORY_MUTATION_BATCH_RECORD_V1_BYTES + crate::MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES;
         let hard = MEMORY_MUTATION_BATCH_HEADER_V1_BYTES
             + MEMORY_MUTATION_BATCH_MAX_ACTIONS as usize * per_action_overhead
             + 2 * HARD_MEMORY_MUTATION_BYTES as usize;

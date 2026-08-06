@@ -96,7 +96,6 @@ pub(super) fn search_schedule_decision_event_time(
     match decision {
         Decision::DeliveryOrder(order) => order.at,
         Decision::FaultFires(fault) => fault.at,
-        Decision::ControlFault(control) => control.at,
         Decision::Preemption(preemption) => VirtualTime {
             ticks: preemption.at.retired,
         },
@@ -467,21 +466,6 @@ pub(super) fn decision_event_payload(decision: &Decision) -> EventPayload {
                 EventAttributeValue::U64(random.value),
             );
             EventPayload::new("app_random", attributes)
-        }
-        Decision::ControlFault(control) => {
-            attributes.insert(
-                String::from("at"),
-                EventAttributeValue::VirtualTime(control.at),
-            );
-            attributes.insert(
-                String::from("command_id"),
-                EventAttributeValue::U64(control.sequence),
-            );
-            attributes.insert(
-                String::from("action"),
-                EventAttributeValue::String(control_fault_action_label(&control.action).to_owned()),
-            );
-            EventPayload::new("control_fault", attributes)
         }
     }
 }
@@ -870,8 +854,7 @@ pub(super) fn decision_icount(at: VirtualTime, decision: &Decision) -> EventLogI
         Decision::DeliveryOrder(_)
         | Decision::FaultFires(_)
         | Decision::RngDraw(_)
-        | Decision::Override(_)
-        | Decision::ControlFault(_) => boundary_icount(at),
+        | Decision::Override(_) => boundary_icount(at),
     }
 }
 
@@ -993,9 +976,6 @@ pub(super) fn decision_source(decision: &Decision) -> EventSource {
         Decision::AppRandom(random) => EventSource::Guest {
             node: random.node.clone(),
         },
-        Decision::ControlFault(control) => EventSource::Command {
-            command_id: control.sequence,
-        },
         Decision::DeliveryOrder(_)
         | Decision::FaultFires(_)
         | Decision::RngDraw(_)
@@ -1062,9 +1042,7 @@ pub(super) fn trigger_action_application_level(
     match &application.action {
         Action::Log { level, .. } => event_level_from_trigger_log(*level),
         Action::Fail { .. } => EventLevel::Error,
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }
@@ -1233,17 +1211,8 @@ pub(super) fn preemption_kind_label(kind: &PreemptionKind) -> &'static str {
     }
 }
 
-pub(super) fn control_fault_action_label(action: &ControlFaultAction) -> &'static str {
-    match action {
-        ControlFaultAction::Inject { .. } => "inject",
-        ControlFaultAction::Heal { .. } => "heal",
-    }
-}
-
 pub(super) fn trigger_action_kind_label(action: &Action) -> &'static str {
     match action {
-        Action::InjectFault { .. } => "inject-fault",
-        Action::HealFault { .. } => "heal-fault",
         Action::ArmTimer { .. } => "arm-timer",
         Action::CancelTimer { .. } => "cancel-timer",
         Action::StartNode { .. } => "start-node",
@@ -1303,18 +1272,6 @@ pub(super) fn trigger_firing_material(firing: &EventFiring) -> String {
 pub(super) fn trigger_action_material(prefix: &str, action: &Action) -> String {
     let mut lines = Vec::new();
     match action {
-        Action::InjectFault { tag, fault } => {
-            lines.push(format!("{prefix}.kind=inject-fault"));
-            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
-            lines.push(trigger_membership_fault_material(
-                &format!("{prefix}.fault"),
-                fault,
-            ));
-        }
-        Action::HealFault { tag } => {
-            lines.push(format!("{prefix}.kind=heal-fault"));
-            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
-        }
         Action::ArmTimer { name, after } => {
             lines.push(format!("{prefix}.kind=arm-timer"));
             lines.push(trigger_timer_material(&format!("{prefix}.timer"), name));
@@ -1377,56 +1334,6 @@ pub(super) fn trigger_action_material(prefix: &str, action: &Action) -> String {
     lines.join("\n")
 }
 
-pub(super) fn trigger_membership_fault_material(prefix: &str, fault: &MembershipFault) -> String {
-    let mut lines = Vec::new();
-    match fault {
-        MembershipFault::Crash { node, restart } => {
-            lines.push(format!("{prefix}.kind=crash"));
-            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
-            lines.push(format!(
-                "{prefix}.restart={}",
-                trigger_restart_policy_label(*restart)
-            ));
-        }
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => {
-            lines.push(format!("{prefix}.kind=partition"));
-            lines.push(trigger_node_material(
-                &format!("{prefix}.endpoint_a"),
-                endpoint_a,
-            ));
-            lines.push(trigger_node_material(
-                &format!("{prefix}.endpoint_b"),
-                endpoint_b,
-            ));
-            lines.push(format!(
-                "{prefix}.direction={}",
-                trigger_partition_direction_label(*direction)
-            ));
-        }
-        MembershipFault::Isolate { node } => {
-            lines.push(format!("{prefix}.kind=isolate"));
-            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
-        }
-        MembershipFault::NotYetJoined { node } => {
-            lines.push(format!("{prefix}.kind=not-yet-joined"));
-            lines.push(trigger_node_material(&format!("{prefix}.node"), node));
-        }
-        MembershipFault::Taxonomy { fault } => {
-            lines.push(format!("{prefix}.kind=taxonomy"));
-            lines.push(fault.canonical_material());
-        }
-    }
-    lines.join("\n")
-}
-
-pub(super) fn trigger_fault_tag_material(prefix: &str, tag: &crate::FaultTag) -> String {
-    format!("{prefix}.len={}\n{prefix}={}", tag.name.len(), tag.name)
-}
-
 pub(super) fn trigger_node_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}.len={}\n{prefix}={}", node.name.len(), node.name)
 }
@@ -1442,22 +1349,6 @@ pub(super) fn trigger_optional_label_material(prefix: &str, label: &Option<Strin
             label.len()
         ),
         None => format!("{prefix}.present=false"),
-    }
-}
-
-pub(super) fn trigger_restart_policy_label(policy: RestartPolicy) -> &'static str {
-    match policy {
-        RestartPolicy::FromReadyPoint => "from-ready-point",
-        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
-        RestartPolicy::StayDown => "stay-down",
-    }
-}
-
-pub(super) fn trigger_partition_direction_label(direction: PartitionDirection) -> &'static str {
-    match direction {
-        PartitionDirection::Bidirectional => "bidirectional",
-        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
-        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
     }
 }
 
@@ -1734,9 +1625,7 @@ pub(super) fn apply_trigger_action(
             }
             Ok(())
         }
-        Action::InjectFault { .. }
-        | Action::HealFault { .. }
-        | Action::ArmTimer { .. }
+        Action::ArmTimer { .. }
         | Action::CancelTimer { .. }
         | Action::StartNode { .. }
         | Action::StopNode { .. }
@@ -1771,12 +1660,6 @@ pub(super) fn apply_trigger_effect(
     application: &TriggerActionApplication,
 ) -> Result<(), SchedulerError> {
     match &application.action {
-        Action::InjectFault { tag, fault } => {
-            activate_fault_tag(state, tag, fault);
-        }
-        Action::HealFault { tag } => {
-            heal_fault_tag(state, tag);
-        }
         Action::ArmTimer { name, after } => {
             let ticks = application
                 .at
@@ -1882,73 +1765,6 @@ pub(super) fn apply_trigger_verdict_effect(
         }
         _ => {}
     }
-}
-
-pub(super) fn activate_fault_tag(
-    state: &mut TriggerActionState,
-    tag: &FaultTag,
-    fault: &MembershipFault,
-) {
-    state.active_taxonomy_faults.remove(tag);
-    if let Some(fault) = fault.as_taxonomy_fault() {
-        state
-            .active_taxonomy_faults
-            .insert(tag.clone(), fault.clone());
-    }
-    state.active_faults.insert(tag.clone(), fault.clone());
-}
-
-pub(super) fn heal_fault_tag(state: &mut TriggerActionState, tag: &FaultTag) {
-    state.active_taxonomy_faults.remove(tag);
-    state.active_faults.remove(tag);
-}
-
-pub(super) fn control_fault_action_for_operation(
-    operation: &ControlOperation,
-) -> Option<ControlFaultAction> {
-    match &operation.kind {
-        ControlOperationKind::InjectFault { tag, fault } => Some(ControlFaultAction::Inject {
-            tag: tag.clone(),
-            fault: fault.clone(),
-        }),
-        ControlOperationKind::HealFault { tag } => {
-            Some(ControlFaultAction::Heal { tag: tag.clone() })
-        }
-        ControlOperationKind::Pause
-        | ControlOperationKind::Resume
-        | ControlOperationKind::Step
-        | ControlOperationKind::Snapshot
-        | ControlOperationKind::Fork
-        | ControlOperationKind::Inject
-        | ControlOperationKind::Query => None,
-    }
-}
-
-pub(super) fn apply_control_fault_action(
-    state: &mut TriggerActionState,
-    action: &ControlFaultAction,
-) {
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            activate_fault_tag(state, tag, &MembershipFault::taxonomy(fault.clone()));
-        }
-        ControlFaultAction::Heal { tag } => heal_fault_tag(state, tag),
-    }
-}
-
-pub(super) fn trigger_action_state_from_control_fault_decisions(
-    decisions: &[Decision],
-) -> (TriggerActionState, Option<u64>) {
-    let mut state = TriggerActionState::default();
-    let mut sequence = None;
-    for decision in decisions {
-        let Decision::ControlFault(control) = decision else {
-            continue;
-        };
-        apply_control_fault_action(&mut state, &control.action);
-        sequence = Some(control.sequence);
-    }
-    (state, sequence)
 }
 
 pub(super) fn validate_trigger_node_schedule_target(
@@ -2365,7 +2181,6 @@ pub(super) fn scheduler_decision_event_log_time(
     match decision {
         Decision::DeliveryOrder(order) => Ok(order.at),
         Decision::FaultFires(fault) => Ok(fault.at),
-        Decision::ControlFault(control) => Ok(control.at),
         Decision::Preemption(preemption) => {
             if let Some((_, virtual_time)) = preemption_times
                 .iter()
@@ -2460,28 +2275,6 @@ pub(super) fn scheduler_decision_material(decision: &Decision) -> String {
             lines.push(format!("request_id={}", random.request_id));
             lines.push(format!("width={}", random.width));
             lines.push(format!("value={}", random.value));
-        }
-        Decision::ControlFault(control) => {
-            lines.push(String::from("decision=control-fault"));
-            lines.push(format!("decision_at={}", control.at.ticks));
-            lines.push(format!("control_sequence={}", control.sequence));
-            lines.push(control_fault_action_material("control", &control.action));
-        }
-    }
-    lines.join("\n")
-}
-
-pub(super) fn control_fault_action_material(prefix: &str, action: &ControlFaultAction) -> String {
-    let mut lines = Vec::new();
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            lines.push(format!("{prefix}.kind=inject-fault"));
-            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
-            lines.push(fault.canonical_material());
-        }
-        ControlFaultAction::Heal { tag } => {
-            lines.push(format!("{prefix}.kind=heal-fault"));
-            lines.push(trigger_fault_tag_material(&format!("{prefix}.tag"), tag));
         }
     }
     lines.join("\n")

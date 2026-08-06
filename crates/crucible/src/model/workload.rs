@@ -867,32 +867,16 @@ impl GuestWorkloadLoadPatternFixture {
         let burst_node = NodeId {
             name: String::from("client-burst"),
         };
-        let hold_tag = FaultTag::from_name("burst-not-yet-joined");
         let world = World::from_nodes(vec![
             workload_pattern_node("client-steady", steady_cmdline),
             workload_pattern_node("client-burst", burst_cmdline),
         ])?;
         let graph = EventGraph::new_for_world(
-            vec![
-                Event::once(
-                    EventId::from_name("hold-burst-at-genesis"),
-                    None,
-                    Action::inject_fault(
-                        hold_tag.clone(),
-                        MembershipFault::NotYetJoined {
-                            node: burst_node.clone(),
-                        },
-                    ),
-                ),
-                Event::once(
-                    EventId::from_name("start-burst-at-vt"),
-                    Some(Predicate::at(VirtualTime { ticks: 50 })),
-                    Action::group(vec![
-                        Action::heal_fault(hold_tag),
-                        Action::start_node(burst_node),
-                    ]),
-                ),
-            ],
+            vec![Event::once(
+                EventId::from_name("start-burst-at-vt"),
+                Some(Predicate::at(VirtualTime { ticks: 50 })),
+                Action::start_node(burst_node),
+            )],
             &world,
         )
         .map_err(event_graph_plan_error)?;
@@ -958,75 +942,13 @@ impl GuestWorkloadLoadPatternFixture {
             ),
         );
         let link = LinkDef::new(left.id.clone(), right.id.clone())?;
-        let link_id = workload_pattern_link_id(&link);
-        let crash_node = right.id.clone();
         let world = World::from_nodes_and_links(vec![left, right], vec![link])?;
-        let partition_tag = FaultTag::from_name("correlated-partition");
-        let loss_tag = FaultTag::from_name("correlated-loss");
-        let crash_tag = FaultTag::from_name("correlated-crash");
-        let events = vec![
-            Event::once(
-                EventId::from_name("correlated-partition-start"),
-                Some(Condition::At {
-                    at: VirtualTime { ticks: 20 },
-                }),
-                Action::inject_fault(
-                    partition_tag.clone(),
-                    MembershipFault::taxonomy(Fault::Network(NetworkFault::Partition {
-                        link: link_id.clone(),
-                        direction: PartitionDirection::Bidirectional,
-                    })),
-                ),
-            ),
-            Event::once(
-                EventId::from_name("correlated-loss-start"),
-                Some(Condition::At {
-                    at: VirtualTime { ticks: 20 },
-                }),
-                Action::inject_fault(
-                    loss_tag.clone(),
-                    MembershipFault::taxonomy(Fault::Network(NetworkFault::Loss {
-                        link: link_id,
-                        rate: FaultRateBasisPoints::from_basis_points(2_500)?,
-                    })),
-                ),
-            ),
-            Event::once(
-                EventId::from_name("correlated-crash-start"),
-                Some(Condition::At {
-                    at: VirtualTime { ticks: 20 },
-                }),
-                Action::inject_fault(
-                    crash_tag,
-                    MembershipFault::taxonomy(Fault::Node(NodeFault::Crash {
-                        node: crash_node,
-                        restart: RestartPolicy::StayDown,
-                    })),
-                ),
-            ),
-            Event::once(
-                EventId::from_name("correlated-partition-end"),
-                Some(Condition::At {
-                    at: VirtualTime { ticks: 30 },
-                }),
-                Action::heal_fault(partition_tag),
-            ),
-            Event::once(
-                EventId::from_name("correlated-loss-end"),
-                Some(Condition::At {
-                    at: VirtualTime { ticks: 30 },
-                }),
-                Action::heal_fault(loss_tag),
-            ),
-        ];
-        let graph = EventGraph::from_unchecked_events_for_model(events);
-        let plan = Plan::from_event_graph_for_world(&world, graph)?;
         Ok(Self {
             pattern: GuestWorkloadPattern::CorrelatedFailure,
             spike_mode: None,
             time_source: None,
             world,
-            plan,
+            plan: Plan::empty(),
         })
     }
 

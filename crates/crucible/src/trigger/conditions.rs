@@ -1250,30 +1250,6 @@ pub enum ObservedFaultFact {
         /// Whether the probabilistic fault fired.
         fired: bool,
     },
-    /// A control-plane full-taxonomy fault was injected.
-    ControlInjected {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Monotone control operation sequence.
-        control_sequence: u64,
-        /// Stable fault tag.
-        tag: FaultTag,
-        /// Fault taxonomy value activated under `tag`.
-        fault: Fault,
-    },
-    /// A control-plane full-taxonomy fault was healed.
-    ControlHealed {
-        /// Dense event-log sequence where the fact was recorded.
-        sequence: u64,
-        /// Virtual time of the event-log entry.
-        at: VirtualTime,
-        /// Monotone control operation sequence.
-        control_sequence: u64,
-        /// Stable fault tag.
-        tag: FaultTag,
-    },
     /// A trigger-owned membership fault was injected.
     TriggerInjected {
         /// Dense event-log sequence where the fact was recorded.
@@ -1546,12 +1522,10 @@ pub(super) fn active_search_fault_tags(facts: &[ObservedFaultFact]) -> Vec<Fault
     let mut active = BTreeSet::new();
     for fact in facts {
         match fact {
-            ObservedFaultFact::ControlInjected { tag, .. }
-            | ObservedFaultFact::TriggerInjected { tag, .. } => {
+            ObservedFaultFact::TriggerInjected { tag, .. } => {
                 active.insert(tag.clone());
             }
-            ObservedFaultFact::ControlHealed { tag, .. }
-            | ObservedFaultFact::TriggerHealed { tag, .. } => {
+            ObservedFaultFact::TriggerHealed { tag, .. } => {
                 active.remove(tag);
             }
             ObservedFaultFact::ScheduledActivation { .. }

@@ -263,8 +263,7 @@ impl SingleScheduler {
         )?;
 
         let frontier = frontier_for(&nodes, scenario.shift)?;
-        let (trigger_actions, replay_fault_sequence) =
-            trigger_action_state_from_control_fault_decisions(configuration.schedule.decisions());
+        let trigger_actions = TriggerActionState::default();
 
         let world_scheduling_nodes = scenario
             .trigger_static_topology
@@ -272,7 +271,7 @@ impl SingleScheduler {
             .map(|topology| topology.scheduling_nodes.iter().cloned().collect())
             .unwrap_or_default();
         let decision_seed = configuration.def.seed();
-        let mut scheduler = Self {
+        let scheduler = Self {
             configuration,
             timeline,
             quantum_budget: scenario.quantum_budget,
@@ -320,7 +319,6 @@ impl SingleScheduler {
             last_advance: None,
             last_topology_recompute: false,
         };
-        scheduler.hydrate_control_fault_schedule_prefix(replay_fault_sequence)?;
         Ok(scheduler)
     }
 
@@ -1223,72 +1221,6 @@ impl SingleScheduler {
         self.apply_trigger_node_faults(sequence, previous, next)?;
         self.apply_trigger_network_topology_faults(sequence, previous, next)?;
         self.apply_trigger_device_faults(next)?;
-        Ok(())
-    }
-
-    pub(super) fn hydrate_control_fault_schedule_prefix(
-        &mut self,
-        sequence: Option<u64>,
-    ) -> Result<(), SchedulerError> {
-        let Some(sequence) = sequence else {
-            return Ok(());
-        };
-        let previous = CombinedFaults::default();
-        let next = self.trigger_actions.combined_faults();
-        if previous == next {
-            return Ok(());
-        }
-
-        self.apply_trigger_node_faults(sequence, &previous, &next)?;
-        self.hydrate_network_partition_faults(sequence, &next)?;
-        self.apply_trigger_device_faults(&next)
-    }
-
-    pub(super) fn hydrate_network_partition_faults(
-        &mut self,
-        sequence: u64,
-        next: &CombinedFaults,
-    ) -> Result<(), SchedulerError> {
-        if network_topology_faults(&next.network).is_empty() {
-            return Ok(());
-        }
-        let Some(static_topology) = &self.trigger_static_topology else {
-            return Ok(());
-        };
-        let legacy_counts =
-            legacy_link_id_counts_from_world_edges(&static_topology.lookahead_graph);
-        let effective_edges = static_topology
-            .lookahead_graph
-            .iter()
-            .filter_map(|edge| world_edge_with_network_faults(edge, &next.network, &legacy_counts))
-            .collect::<Vec<_>>();
-        let graph = SchedulerLookaheadGraph::from_edges(effective_edges);
-        let graph = self.suppress_down_edges(graph);
-        let mut updates = Vec::with_capacity(self.nodes.len());
-        for node in &mut self.nodes {
-            let previous_lookahead = node.network_lookahead;
-            let recomputed_lookahead = graph.lookahead(&node.id);
-            node.network_lookahead = recomputed_lookahead;
-            updates.push(SchedulerTopologyLookaheadUpdate {
-                node: node.id.clone(),
-                previous_lookahead,
-                recomputed_lookahead,
-            });
-        }
-        self.effective_topology = graph;
-        self.topology_epoch = self.topology_epoch.checked_add(1).ok_or_else(|| {
-            SchedulerError::BoundaryViolation {
-                message: String::from("scheduler topology epoch overflow"),
-            }
-        })?;
-        self.topology_change_applications
-            .push(SchedulerTopologyChangeApplication {
-                topology_epoch: self.topology_epoch,
-                sequence,
-                trigger: SchedulerTopologyChangeTrigger::FaultActivation,
-                activation_time: None,
-                updates,
-            });
         Ok(())
     }
 

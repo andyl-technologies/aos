@@ -297,18 +297,6 @@ impl SingleScheduler {
             }
             decisions.extend(probabilistic.decisions);
         }
-        for event in ordered_scheduled_events(resolved_events) {
-            let ScheduledEventPayload::Control(operation) = &event.payload else {
-                continue;
-            };
-            if let Some(action) = control_fault_action_for_operation(operation) {
-                decisions.push(Decision::ControlFault(ControlFaultDecision {
-                    at: event.key.virtual_time(),
-                    sequence: operation.sequence,
-                    action,
-                }));
-            }
-        }
         let network_decisions = std::mem::take(&mut self.world_network_decisions);
         for decision in &network_decisions {
             if let Decision::RngDraw(draw) = decision {

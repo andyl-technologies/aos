@@ -268,7 +268,6 @@ where
         | Condition::NodeState { .. }
         | Condition::AssertionState { .. }
         | Condition::Quiescent
-        | Condition::FaultActive { .. }
         | Condition::Named { .. }
         | Condition::GuestMarker { .. }
         | Condition::Not { .. } => boolean_condition_distance(evaluator, condition),
@@ -408,18 +407,7 @@ pub(super) fn push_observed_state_facts(
                 fired: fault.fired,
             });
         }
-        SchedulerEventLogPayload::Decision(Decision::ControlFault(control)) => {
-            push_control_fault_fact(
-                entry.sequence(),
-                entry.at(),
-                control.sequence,
-                &control.action,
-                fault_facts,
-            );
-        }
-        SchedulerEventLogPayload::TriggerActionApplied(application) => {
-            push_trigger_fault_fact(entry.sequence(), entry.at(), application, fault_facts);
-        }
+        SchedulerEventLogPayload::TriggerActionApplied(_) => {}
         SchedulerEventLogPayload::Decision(
             Decision::RngDraw(_)
             | Decision::Override(_)
@@ -451,9 +439,7 @@ pub(super) fn push_condition_runtime_facts(
             Action::CancelTimer { name } => {
                 timer_fires.remove(name);
             }
-            Action::InjectFault { .. }
-            | Action::HealFault { .. }
-            | Action::StartNode { .. }
+            Action::StartNode { .. }
             | Action::StopNode { .. }
             | Action::CreateSavepoint { .. }
             | Action::Fork { .. }
@@ -603,73 +589,6 @@ pub(super) fn push_resolved_happening_observed_facts(
     }
 }
 
-pub(super) fn push_control_fault_fact(
-    sequence: u64,
-    at: VirtualTime,
-    control_sequence: u64,
-    action: &ControlFaultAction,
-    fault_facts: &mut Vec<ObservedFaultFact>,
-) {
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            fault_facts.push(ObservedFaultFact::ControlInjected {
-                sequence,
-                at,
-                control_sequence,
-                tag: tag.clone(),
-                fault: fault.clone(),
-            });
-        }
-        ControlFaultAction::Heal { tag } => {
-            fault_facts.push(ObservedFaultFact::ControlHealed {
-                sequence,
-                at,
-                control_sequence,
-                tag: tag.clone(),
-            });
-        }
-    }
-}
-
-pub(super) fn push_trigger_fault_fact(
-    sequence: u64,
-    at: VirtualTime,
-    application: &crate::scheduler::TriggerActionApplication,
-    fault_facts: &mut Vec<ObservedFaultFact>,
-) {
-    match &application.action {
-        Action::InjectFault { tag, fault } => {
-            fault_facts.push(ObservedFaultFact::TriggerInjected {
-                sequence,
-                at,
-                trigger_sequence: application.sequence,
-                event: application.event.clone(),
-                tag: tag.clone(),
-                fault: fault.clone(),
-            });
-        }
-        Action::HealFault { tag } => {
-            fault_facts.push(ObservedFaultFact::TriggerHealed {
-                sequence,
-                at,
-                trigger_sequence: application.sequence,
-                event: application.event.clone(),
-                tag: tag.clone(),
-            });
-        }
-        Action::ArmTimer { .. }
-        | Action::CancelTimer { .. }
-        | Action::StartNode { .. }
-        | Action::StopNode { .. }
-        | Action::CreateSavepoint { .. }
-        | Action::Fork { .. }
-        | Action::Pass
-        | Action::Fail { .. }
-        | Action::Log { .. }
-        | Action::Group(_) => {}
-    }
-}
-
 /// Evaluates a condition through the shared assertion/trigger evaluator.
 ///
 /// The recursive structure lives in this non-overridable function. Implementors
@@ -726,7 +645,6 @@ where
         Condition::Quiescent => evaluator
             .scheduler_quiescence()
             .is_some_and(SchedulerQuiescence::is_quiescent),
-        Condition::FaultActive { tag } => fault_tag_is_active(evaluator.fault_facts(), tag),
         Condition::Named { name, nodes } => evaluator.leaf_is_true(ConditionLeaf::Named {
             name: name.as_str(),
             nodes,
@@ -758,34 +676,6 @@ where
         }
         Condition::Not { predicate } => !evaluate_condition(evaluator, predicate),
     }
-}
-
-pub(super) fn fault_tag_is_active(facts: &[ObservedFaultFact], expected_tag: &FaultTag) -> bool {
-    let mut active = false;
-    for fact in facts {
-        match fact {
-            ObservedFaultFact::ControlInjected { tag, .. }
-            | ObservedFaultFact::TriggerInjected { tag, .. }
-                if tag == expected_tag =>
-            {
-                active = true;
-            }
-            ObservedFaultFact::ControlHealed { tag, .. }
-            | ObservedFaultFact::TriggerHealed { tag, .. }
-                if tag == expected_tag =>
-            {
-                active = false;
-            }
-            ObservedFaultFact::ScheduledActivation { .. }
-            | ObservedFaultFact::ScheduledProbabilisticChoice { .. }
-            | ObservedFaultFact::ProbabilisticOutcome { .. }
-            | ObservedFaultFact::ControlInjected { .. }
-            | ObservedFaultFact::ControlHealed { .. }
-            | ObservedFaultFact::TriggerInjected { .. }
-            | ObservedFaultFact::TriggerHealed { .. } => {}
-        }
-    }
-    active
 }
 
 pub(super) fn observable_event_matches(

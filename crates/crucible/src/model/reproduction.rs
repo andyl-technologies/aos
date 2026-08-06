@@ -266,31 +266,3 @@ impl ReproductionEventLogReplay {
             && self.expected_coverage_fingerprint == self.reproduced_coverage_fingerprint
     }
 }
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) enum FamilyFaultCandidate {
-    Crash(NodeId),
-    Partition {
-        endpoint_a: NodeId,
-        endpoint_b: NodeId,
-    },
-}
-
-impl FamilyFaultCandidate {
-    pub(super) fn into_fault(self) -> MembershipFault {
-        match self {
-            Self::Crash(node) => MembershipFault::Crash {
-                node,
-                restart: RestartPolicy::FromReadyPoint,
-            },
-            Self::Partition {
-                endpoint_a,
-                endpoint_b,
-            } => MembershipFault::Partition {
-                endpoint_a,
-                endpoint_b,
-                direction: PartitionDirection::Bidirectional,
-            },
-        }
-    }
-}

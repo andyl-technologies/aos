@@ -1993,7 +1993,6 @@ impl SingleScheduler {
                 payload: ScheduledEventPayload::Control(operation),
             });
         }
-        self.apply_control_faults_at_boundary(&applications)?;
         if applications
             .iter()
             .any(|application| matches!(application.operation.kind, ControlOperationKind::Snapshot))
@@ -2012,29 +2011,6 @@ impl SingleScheduler {
             events,
             applications,
         })
-    }
-
-    pub(super) fn apply_control_faults_at_boundary(
-        &mut self,
-        applications: &[SchedulerControlApplication],
-    ) -> Result<(), SchedulerError> {
-        let previous_faults = self.trigger_actions.combined_faults();
-        let mut trigger_actions = self.trigger_actions.clone();
-        let mut fault_sequence = None;
-        for application in applications {
-            let Some(action) = control_fault_action_for_operation(&application.operation) else {
-                continue;
-            };
-            apply_control_fault_action(&mut trigger_actions, &action);
-            fault_sequence = Some(application.sequence);
-        }
-        let Some(fault_sequence) = fault_sequence else {
-            return Ok(());
-        };
-        let next_faults = trigger_actions.combined_faults();
-        self.apply_trigger_taxonomy_faults(fault_sequence, &previous_faults, &next_faults)?;
-        self.trigger_actions = trigger_actions;
-        Ok(())
     }
 
     pub(super) fn advance_decision_rng_cursor_for(&mut self, stream: RngStreamId) {

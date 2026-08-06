@@ -59,16 +59,8 @@ impl ScenarioDefForm {
     ) -> Result<Self, EngineError> {
         validate_world_serialized_identity(world)?;
         let properties = resolve_properties_dsl_for_context(world, plan, properties)?;
-        match plan.event_graph() {
-            Some(_) => {
-                properties.validate_for_world(world)?;
-                plan.validate_for_world_with_properties(world, &properties)?;
-            }
-            None => {
-                plan.validate_for_world(world)?;
-                properties.validate_for_world(world)?;
-            }
-        }
+        properties.validate_for_world(world)?;
+        plan.validate_for_world_with_properties(world, &properties)?;
         Ok(Self {
             world: world.clone(),
             plan: plan.clone(),
@@ -254,8 +246,6 @@ pub enum Decision {
     Preemption(PreemptionDecision),
     /// A served application-requested random value.
     AppRandom(AppRandomDecision),
-    /// A boundary-applied imperative fault-control action.
-    ControlFault(ControlFaultDecision),
 }
 
 impl Decision {
@@ -348,7 +338,6 @@ impl Schedule {
             let at = match decision {
                 Decision::DeliveryOrder(decision) => Some(decision.at),
                 Decision::FaultFires(decision) => Some(decision.at),
-                Decision::ControlFault(decision) => Some(decision.at),
                 Decision::RngDraw(_)
                 | Decision::Override(_)
                 | Decision::Preemption(_)

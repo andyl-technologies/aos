@@ -33,18 +33,6 @@ pub enum ControlOperationKind {
     Fork,
     /// Inject a control-plane fault or input at the boundary.
     Inject,
-    /// Inject or replace a full-taxonomy fault at the boundary.
-    InjectFault {
-        /// Stable handle used for later healing.
-        tag: FaultTag,
-        /// Full fault taxonomy value to activate.
-        fault: Fault,
-    },
-    /// Heal a full-taxonomy fault at the boundary.
-    HealFault {
-        /// Stable handle naming the active fault.
-        tag: FaultTag,
-    },
     /// Query boundary state without mutating the engine.
     Query,
 }

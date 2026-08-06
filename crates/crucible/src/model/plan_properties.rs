@@ -2,40 +2,13 @@
 
 use super::*;
 
-/// One entry in the declarative membership-fault plan.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum PlanEntry {
-    /// Activate a membership fault at an exact virtual time.
-    Activate {
-        /// Virtual time when the fault activates.
-        at: VirtualTime,
-        /// Stable tag used by a later heal.
-        tag: FaultTag,
-        /// Membership fault to layer over the static world.
-        fault: MembershipFault,
-    },
-    /// Heal, restart, or rejoin a previously activated fault tag at an exact virtual time.
-    Heal {
-        /// Virtual time when the fault heals.
-        at: VirtualTime,
-        /// Stable tag naming the fault to heal.
-        tag: FaultTag,
-    },
-}
-
-/// A declarative fault plan layered over a static [`World`].
+/// A declarative event and signal-driven fault plan layered over a [`World`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Plan {
     /// The independently content-addressed plan identity.
     pub(super) id: ContentHash,
-    pub(super) kind: PlanKind,
+    pub(super) graph: EventGraph,
     pub(super) fault_signals: FaultSignalPlan,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) enum PlanKind {
-    ScheduledEntries { entries: Vec<PlanEntry> },
-    EventGraph { graph: EventGraph },
 }
 
 impl Default for Plan {
@@ -48,51 +21,13 @@ impl Plan {
     /// Builds an empty plan.
     #[must_use]
     pub fn empty() -> Self {
-        let entries = Vec::new();
-        Self::from_canonical_entries(entries)
+        Self::from_canonical_event_graph(EventGraph::from_unchecked_events_for_model(Vec::new()))
     }
 
-    /// Builds a plan after validating every entry against `world`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::PlanFaultUnknownNode`] when a membership fault
-    /// names a node that is not declared by `world`,
-    /// [`EngineError::PlanFaultUnknownLink`] when a partition names no declared
-    /// link, [`EngineError::PlanHealUnknownTag`] when a heal names no activated
-    /// fault tag in the plan, [`EngineError::PlanHealBeforeActivate`] when a
-    /// heal is not after its activation, or
-    /// [`EngineError::PlanNotYetJoinedAfterStart`] when an initial join hold is
-    /// scheduled after `t = 0`.
-    pub fn from_entries_for_world(
-        world: &World,
-        entries: Vec<PlanEntry>,
-    ) -> Result<Self, EngineError> {
-        validate_plan_entries_for_world(world, &entries)?;
-        Ok(Self::from_canonical_entries(canonical_plan_entries(
-            &entries,
-        )))
-    }
-
-    /// Returns plan entries in their canonical order.
-    ///
-    /// Event-graph plans return an empty slice; use [`Self::event_graph`] to
-    /// inspect graph-native plans.
+    /// Returns the plan's non-fault event graph.
     #[must_use]
-    pub fn entries(&self) -> &[PlanEntry] {
-        match &self.kind {
-            PlanKind::ScheduledEntries { entries } => entries,
-            PlanKind::EventGraph { .. } => &[],
-        }
-    }
-
-    /// Returns the graph carried by this plan when it is graph-native.
-    #[must_use]
-    pub fn event_graph(&self) -> Option<&EventGraph> {
-        match &self.kind {
-            PlanKind::ScheduledEntries { .. } => None,
-            PlanKind::EventGraph { graph } => Some(graph),
-        }
+    pub const fn event_graph(&self) -> &EventGraph {
+        &self.graph
     }
 
     /// Returns the scenario's signal-driven fault programs and bindings.
@@ -104,7 +39,7 @@ impl Plan {
     /// Replaces the signal-driven fault layer and recomputes plan identity.
     #[must_use]
     pub fn with_fault_signals(self, fault_signals: FaultSignalPlan) -> Self {
-        Self::from_canonical_parts(self.kind, fault_signals)
+        Self::from_canonical_parts(self.graph, fault_signals)
     }
 
     /// Builds a graph-native plan after validating it against `world`.
@@ -277,41 +212,27 @@ impl Plan {
         world: &World,
         assertions: impl IntoIterator<Item = AssertionId>,
     ) -> Result<(), EngineError> {
-        self.fault_signals.validate_for_world(world).map_err(|error| {
-            scenario_serialization_error(format!(
-                "fault signal plan validation failed: {error}"
-            ))
-        })?;
-        match &self.kind {
-            PlanKind::ScheduledEntries { entries } => {
-                validate_plan_entries_for_world(world, entries)
-            }
-            PlanKind::EventGraph { graph } => {
-                validate_event_graph_plan(world, assertions, graph.clone())
-                    .map(|_| ())
-                    .map_err(event_graph_plan_error)
-            }
-        }
-    }
-
-    fn from_canonical_entries(entries: Vec<PlanEntry>) -> Self {
-        let kind = PlanKind::ScheduledEntries { entries };
-        Self::from_canonical_kind(kind)
+        self.fault_signals
+            .validate_for_world(world)
+            .map_err(|error| {
+                scenario_serialization_error(format!(
+                    "fault signal plan validation failed: {error}"
+                ))
+            })?;
+        validate_event_graph_plan(world, assertions, self.graph.clone())
+            .map(|_| ())
+            .map_err(event_graph_plan_error)
     }
 
     fn from_canonical_event_graph(graph: EventGraph) -> Self {
-        Self::from_canonical_kind(PlanKind::EventGraph { graph })
+        Self::from_canonical_parts(graph, FaultSignalPlan::empty())
     }
 
-    fn from_canonical_kind(kind: PlanKind) -> Self {
-        Self::from_canonical_parts(kind, FaultSignalPlan::empty())
-    }
-
-    fn from_canonical_parts(kind: PlanKind, fault_signals: FaultSignalPlan) -> Self {
-        let material = plan_parts_material(&kind, &fault_signals);
+    fn from_canonical_parts(graph: EventGraph, fault_signals: FaultSignalPlan) -> Self {
+        let material = plan_parts_material(&graph, &fault_signals);
         Self {
-            id: ContentHash::from_canonical_material("crucible.model.plan.v3", &material),
-            kind,
+            id: ContentHash::from_canonical_material("crucible.model.plan.v4", &material),
+            graph,
             fault_signals,
         }
     }
@@ -809,11 +730,6 @@ pub enum Predicate {
     },
     /// True when scheduler-owned quiescence evidence has no blockers.
     Quiescent,
-    /// True when a declared fault tag is active at the evaluation point.
-    FaultActive {
-        /// Stable fault tag whose active state is matched.
-        tag: FaultTag,
-    },
     /// A named host-side predicate resolved by the harness and event log.
     Named {
         /// Stable predicate name.
@@ -963,12 +879,6 @@ impl Predicate {
     #[must_use]
     pub const fn quiescent() -> Self {
         Self::Quiescent
-    }
-
-    /// Builds an active-fault-tag predicate.
-    #[must_use]
-    pub fn fault_active(tag: FaultTag) -> Self {
-        Self::FaultActive { tag }
     }
 
     /// Builds a guest-marker predicate.

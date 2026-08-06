@@ -380,24 +380,6 @@ pub(super) fn push_decision_lines(index: usize, decision: &Decision, lines: &mut
             lines.push(format!("{prefix}.width={}", random.width));
             lines.push(format!("{prefix}.value={}", random.value));
         }
-        Decision::ControlFault(control) => {
-            lines.push(format!("{prefix}.kind=control-fault"));
-            lines.push(format!("{prefix}.at_ticks={}", control.at.ticks));
-            lines.push(format!("{prefix}.sequence={}", control.sequence));
-            match &control.action {
-                ControlFaultAction::Inject { tag, fault } => {
-                    lines.push(format!("{prefix}.action=inject-fault"));
-                    lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
-                    lines.push(format!("{prefix}.tag={}", tag.name));
-                    lines.push(fault.canonical_material());
-                }
-                ControlFaultAction::Heal { tag } => {
-                    lines.push(format!("{prefix}.action=heal-fault"));
-                    lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
-                    lines.push(format!("{prefix}.tag={}", tag.name));
-                }
-            }
-        }
     }
 }
 

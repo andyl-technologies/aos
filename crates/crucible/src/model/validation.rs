@@ -401,53 +401,6 @@ pub(super) fn validate_world_node_defs(nodes: &[WorldNodeDef]) -> Result<(), Eng
     Ok(())
 }
 
-pub(super) fn validate_plan_entries_for_world(
-    world: &World,
-    entries: &[PlanEntry],
-) -> Result<(), EngineError> {
-    let node_ids = world
-        .nodes
-        .iter()
-        .map(|node| &node.id)
-        .collect::<BTreeSet<_>>();
-    let link_ids = world
-        .links
-        .iter()
-        .map(|link| {
-            let (left, right) = link.endpoints();
-            (left.clone(), right.clone())
-        })
-        .collect::<BTreeSet<_>>();
-    let taxonomy_link_ids = world_link_id_set(world);
-    let device_kinds = world_device_kind_map(world);
-    let mut activated_tags = BTreeMap::<FaultTag, Vec<VirtualTime>>::new();
-    for entry in entries {
-        if let PlanEntry::Activate { at, tag, .. } = entry {
-            activated_tags.entry(tag.clone()).or_default().push(*at);
-        }
-    }
-
-    for entry in entries {
-        match entry {
-            PlanEntry::Activate { at, fault, .. } => {
-                validate_membership_fault_for_world(
-                    *at,
-                    fault,
-                    &node_ids,
-                    &link_ids,
-                    &taxonomy_link_ids,
-                    &device_kinds,
-                )?;
-            }
-            PlanEntry::Heal { tag, .. } => {
-                validate_plan_heal(tag, entry, &activated_tags)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 pub(super) fn validate_event_graph_plan(
     world: &World,
     assertions: impl IntoIterator<Item = AssertionId>,
@@ -458,177 +411,6 @@ pub(super) fn validate_event_graph_plan(
 
 pub(super) fn event_graph_plan_error(error: EventGraphError) -> EngineError {
     scenario_serialization_error(format!("event graph plan validation failed: {error}"))
-}
-
-pub(super) fn validate_membership_fault_for_world(
-    at: VirtualTime,
-    fault: &MembershipFault,
-    node_ids: &BTreeSet<&NodeId>,
-    link_ids: &BTreeSet<(NodeId, NodeId)>,
-    taxonomy_link_ids: &BTreeSet<LinkId>,
-    device_kinds: &BTreeMap<DeviceId, WorldDeviceKind>,
-) -> Result<(), EngineError> {
-    match fault {
-        MembershipFault::Crash { node, .. } | MembershipFault::Isolate { node } => {
-            validate_plan_node(node, node_ids)
-        }
-        MembershipFault::NotYetJoined { node } => {
-            validate_plan_node(node, node_ids)?;
-            if at != VirtualTime::default() {
-                return Err(EngineError::PlanNotYetJoinedAfterStart {
-                    node: node.clone(),
-                    at,
-                });
-            }
-            Ok(())
-        }
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            ..
-        } => {
-            validate_plan_node(endpoint_a, node_ids)?;
-            validate_plan_node(endpoint_b, node_ids)?;
-            let link = canonical_link_endpoint_pair(endpoint_a, endpoint_b);
-            if !link_ids.contains(&link) {
-                return Err(EngineError::PlanFaultUnknownLink {
-                    endpoint_a: endpoint_a.clone(),
-                    endpoint_b: endpoint_b.clone(),
-                });
-            }
-            Ok(())
-        }
-        MembershipFault::Taxonomy { fault } => {
-            validate_fault_for_world(fault, node_ids, taxonomy_link_ids, device_kinds)
-        }
-    }
-}
-
-pub(super) fn validate_fault_for_world(
-    fault: &Fault,
-    node_ids: &BTreeSet<&NodeId>,
-    link_ids: &BTreeSet<LinkId>,
-    device_kinds: &BTreeMap<DeviceId, WorldDeviceKind>,
-) -> Result<(), EngineError> {
-    match fault {
-        Fault::Network(fault) => validate_network_fault_for_world(fault, link_ids),
-        Fault::Node(fault) => validate_node_fault_for_world(fault, node_ids),
-        Fault::Block(fault) => validate_fault_device_for_world(
-            block_fault_device(fault),
-            WorldDeviceKind::Block,
-            device_kinds,
-        ),
-        Fault::NineP(fault) => validate_fault_device_for_world(
-            ninep_fault_device(fault),
-            WorldDeviceKind::NineP,
-            device_kinds,
-        ),
-    }
-}
-
-pub(super) fn validate_fault_device_for_world(
-    device: &DeviceId,
-    expected: WorldDeviceKind,
-    device_kinds: &BTreeMap<DeviceId, WorldDeviceKind>,
-) -> Result<(), EngineError> {
-    let Some(actual) = device_kinds.get(device).copied() else {
-        return Err(EngineError::PlanFaultUnknownDevice {
-            device: device.clone(),
-        });
-    };
-    if actual != expected {
-        return Err(EngineError::PlanFaultDeviceKindMismatch {
-            device: device.clone(),
-            expected,
-            actual,
-        });
-    }
-    Ok(())
-}
-
-pub(super) fn validate_network_fault_for_world(
-    fault: &NetworkFault,
-    link_ids: &BTreeSet<LinkId>,
-) -> Result<(), EngineError> {
-    let link = network_fault_link(fault);
-    if link_ids.contains(link) {
-        Ok(())
-    } else {
-        Err(EngineError::PlanFaultUnknownLinkId { link: link.clone() })
-    }
-}
-
-pub(super) fn validate_node_fault_for_world(
-    fault: &NodeFault,
-    node_ids: &BTreeSet<&NodeId>,
-) -> Result<(), EngineError> {
-    validate_plan_node(node_fault_node(fault), node_ids)
-}
-
-pub(super) fn network_fault_link(fault: &NetworkFault) -> &LinkId {
-    match fault {
-        NetworkFault::Partition { link, .. }
-        | NetworkFault::Loss { link, .. }
-        | NetworkFault::Reorder { link, .. }
-        | NetworkFault::Duplicate { link, .. }
-        | NetworkFault::Corruption { link, .. }
-        | NetworkFault::Bandwidth { link, .. }
-        | NetworkFault::LatencyBump { link, .. } => link,
-    }
-}
-
-pub(super) fn node_fault_node(fault: &NodeFault) -> &NodeId {
-    match fault {
-        NodeFault::Crash { node, .. }
-        | NodeFault::Slow { node, .. }
-        | NodeFault::ClockSkew { node, .. } => node,
-    }
-}
-
-pub(super) fn block_fault_device(fault: &BlockFault) -> &DeviceId {
-    match fault {
-        BlockFault::Latency { device, .. }
-        | BlockFault::Failure { device, .. }
-        | BlockFault::Reorder { device, .. }
-        | BlockFault::Duplicate { device, .. }
-        | BlockFault::Corruption { device, .. }
-        | BlockFault::Bandwidth { device, .. } => device,
-    }
-}
-
-pub(super) fn ninep_fault_device(fault: &NinePFault) -> &DeviceId {
-    match fault {
-        NinePFault::Latency { device, .. }
-        | NinePFault::Failure { device, .. }
-        | NinePFault::Reorder { device, .. }
-        | NinePFault::Duplicate { device, .. }
-        | NinePFault::Corruption { device, .. }
-        | NinePFault::Bandwidth { device, .. } => device,
-    }
-}
-
-pub(super) fn world_link_id_set(world: &World) -> BTreeSet<LinkId> {
-    let mut links = BTreeSet::new();
-    let mut legacy_counts = BTreeMap::new();
-    for link in &world.links {
-        links.insert(random_fault_link_id(link));
-        let legacy = legacy_link_id_for_world_link(link);
-        let count = legacy_counts.entry(legacy).or_insert(0_usize);
-        *count = count.saturating_add(1);
-    }
-    for (legacy, count) in legacy_counts {
-        if count == 1 {
-            links.insert(legacy);
-        }
-    }
-    links
-}
-
-pub(super) fn world_device_kind_map(world: &World) -> BTreeMap<DeviceId, WorldDeviceKind> {
-    world
-        .io_nodes()
-        .map(|node| (node.device_id(), node.kind.family()))
-        .collect()
 }
 
 pub(super) fn link_id_for_canonical_endpoint_pair(
@@ -642,55 +424,6 @@ pub(super) fn link_id_for_canonical_endpoint_pair(
         endpoint_b.name.len(),
         endpoint_b.name
     ))
-}
-
-pub(super) fn legacy_link_id_for_world_link(link: &LinkDef) -> LinkId {
-    let (endpoint_a, endpoint_b) = link.endpoints();
-    LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name))
-}
-
-pub(super) fn random_fault_link_id(link: &LinkDef) -> LinkId {
-    LinkId::from_name(world_link_stream_name(link))
-}
-
-pub(super) fn validate_plan_heal(
-    tag: &FaultTag,
-    entry: &PlanEntry,
-    activated_tags: &BTreeMap<FaultTag, Vec<VirtualTime>>,
-) -> Result<(), EngineError> {
-    let PlanEntry::Heal { at: heal_at, .. } = entry else {
-        return Ok(());
-    };
-    let Some(activation_times) = activated_tags.get(tag) else {
-        return Err(EngineError::PlanHealUnknownTag { tag: tag.clone() });
-    };
-    if activation_times
-        .iter()
-        .copied()
-        .any(|activate_at| activate_at < *heal_at)
-    {
-        return Ok(());
-    }
-
-    if let Some(activate_at) = activation_times.iter().copied().min() {
-        return Err(EngineError::PlanHealBeforeActivate {
-            tag: tag.clone(),
-            activate_at,
-            heal_at: *heal_at,
-        });
-    }
-    Err(EngineError::PlanHealUnknownTag { tag: tag.clone() })
-}
-
-pub(super) fn validate_plan_node(
-    node: &NodeId,
-    node_ids: &BTreeSet<&NodeId>,
-) -> Result<(), EngineError> {
-    if node_ids.contains(node) {
-        Ok(())
-    } else {
-        Err(EngineError::PlanFaultUnknownNode { node: node.clone() })
-    }
 }
 
 pub(super) fn validate_properties_for_world(
@@ -728,16 +461,15 @@ pub(super) fn validate_properties_for_world(
 
 pub(super) fn resolve_assertions_dsl_for_context(
     world: &World,
-    plan: &Plan,
+    _plan: &Plan,
     assertions: &[AssertionDef],
 ) -> Vec<AssertionDef> {
-    let fault_tags = plan_declared_fault_tags(plan);
     assertions
         .iter()
         .map(|assertion| AssertionDef {
             id: assertion.id.clone(),
             message: assertion.message.clone(),
-            property: resolve_property_dsl_for_context(&assertion.property, world, &fault_tags),
+            property: resolve_property_dsl_for_context(&assertion.property, world),
         })
         .collect()
 }
@@ -750,42 +482,37 @@ pub(super) fn resolve_properties_dsl_for_context(
     Properties::from_assertions_for_world_and_plan(world, plan, properties.assertions().to_vec())
 }
 
-pub(super) fn resolve_property_dsl_for_context(
-    property: &Property,
-    world: &World,
-    fault_tags: &BTreeSet<FaultTag>,
-) -> Property {
+pub(super) fn resolve_property_dsl_for_context(property: &Property, world: &World) -> Property {
     match property {
         Property::Always { predicate } => Property::Always {
-            predicate: resolve_predicate_dsl_for_context(predicate, world, fault_tags),
+            predicate: resolve_predicate_dsl_for_context(predicate, world),
         },
         Property::Sometimes { predicate } => Property::Sometimes {
-            predicate: resolve_predicate_dsl_for_context(predicate, world, fault_tags),
+            predicate: resolve_predicate_dsl_for_context(predicate, world),
         },
         Property::Eventually {
             trigger,
             property,
             deadline,
         } => Property::Eventually {
-            trigger: resolve_predicate_dsl_for_context(trigger, world, fault_tags),
-            property: resolve_predicate_dsl_for_context(property, world, fault_tags),
+            trigger: resolve_predicate_dsl_for_context(trigger, world),
+            property: resolve_predicate_dsl_for_context(property, world),
             deadline: *deadline,
         },
         Property::AfterQuiescence { predicate } => Property::AfterQuiescence {
-            predicate: resolve_predicate_dsl_for_context(predicate, world, fault_tags),
+            predicate: resolve_predicate_dsl_for_context(predicate, world),
         },
         Property::Reachable {
             predicate,
             expectation,
         } => Property::Reachable {
-            predicate: resolve_predicate_dsl_for_context(predicate, world, fault_tags),
+            predicate: resolve_predicate_dsl_for_context(predicate, world),
             expectation: *expectation,
         },
     }
 }
 
 pub(super) fn resolve_event_graph_dsl_for_world(world: &World, graph: &EventGraph) -> EventGraph {
-    let fault_tags = event_graph_declared_fault_tags(graph.events());
     EventGraph::from_unchecked_events_for_model(
         graph
             .events()
@@ -795,7 +522,7 @@ pub(super) fn resolve_event_graph_dsl_for_world(world: &World, graph: &EventGrap
                 trigger: event
                     .trigger
                     .as_ref()
-                    .map(|trigger| resolve_predicate_dsl_for_context(trigger, world, &fault_tags)),
+                    .map(|trigger| resolve_predicate_dsl_for_context(trigger, world)),
                 action: event.action.clone(),
                 policy: event.policy,
             })
@@ -803,34 +530,30 @@ pub(super) fn resolve_event_graph_dsl_for_world(world: &World, graph: &EventGrap
     )
 }
 
-pub(super) fn resolve_predicate_dsl_for_context(
-    predicate: &Predicate,
-    world: &World,
-    fault_tags: &BTreeSet<FaultTag>,
-) -> Predicate {
+pub(super) fn resolve_predicate_dsl_for_context(predicate: &Predicate, world: &World) -> Predicate {
     match predicate {
         Predicate::Named { name, nodes } if nodes.is_empty() => {
-            resolve_named_predicate_dsl_for_context(name, world, fault_tags)
+            resolve_named_predicate_dsl_for_context(name, world)
                 .unwrap_or_else(|| predicate.clone())
         }
         Predicate::AllOf { predicates } => Predicate::all_of(
             predicates
                 .iter()
-                .map(|predicate| resolve_predicate_dsl_for_context(predicate, world, fault_tags))
+                .map(|predicate| resolve_predicate_dsl_for_context(predicate, world))
                 .collect(),
         ),
         Predicate::AnyOf { predicates } => Predicate::any_of(
             predicates
                 .iter()
-                .map(|predicate| resolve_predicate_dsl_for_context(predicate, world, fault_tags))
+                .map(|predicate| resolve_predicate_dsl_for_context(predicate, world))
                 .collect(),
         ),
-        Predicate::Once { predicate } => Predicate::once(resolve_predicate_dsl_for_context(
-            predicate, world, fault_tags,
-        )),
-        Predicate::Not { predicate } => Predicate::not(resolve_predicate_dsl_for_context(
-            predicate, world, fault_tags,
-        )),
+        Predicate::Once { predicate } => {
+            Predicate::once(resolve_predicate_dsl_for_context(predicate, world))
+        }
+        Predicate::Not { predicate } => {
+            Predicate::not(resolve_predicate_dsl_for_context(predicate, world))
+        }
         Predicate::At { .. }
         | Predicate::After { .. }
         | Predicate::Timer { .. }
@@ -842,7 +565,6 @@ pub(super) fn resolve_predicate_dsl_for_context(
         | Predicate::NodeState { .. }
         | Predicate::AssertionState { .. }
         | Predicate::Quiescent
-        | Predicate::FaultActive { .. }
         | Predicate::Named { .. }
         | Predicate::GuestMarker { .. } => predicate.clone(),
     }
@@ -851,7 +573,6 @@ pub(super) fn resolve_predicate_dsl_for_context(
 pub(super) fn resolve_named_predicate_dsl_for_context(
     name: &str,
     world: &World,
-    fault_tags: &BTreeSet<FaultTag>,
 ) -> Option<Predicate> {
     match name {
         "no_crashed_nodes" => {
@@ -860,9 +581,6 @@ pub(super) fn resolve_named_predicate_dsl_for_context(
             })))
         }
         "quiescent" => Some(Predicate::quiescent()),
-        "no_active_faults" => Some(not_any_or_true(
-            fault_tags.iter().cloned().map(Predicate::fault_active),
-        )),
         _ => name
             .strip_prefix("node_alive:")
             .map(|node| Predicate::not(node_crashed_predicate(node)))
@@ -896,50 +614,6 @@ pub(super) fn dsl_true_predicate() -> Predicate {
         Predicate::quiescent(),
         Predicate::not(Predicate::quiescent()),
     ])
-}
-
-pub(super) fn plan_declared_fault_tags(plan: &Plan) -> BTreeSet<FaultTag> {
-    match &plan.kind {
-        PlanKind::ScheduledEntries { entries } => entries
-            .iter()
-            .filter_map(|entry| match entry {
-                PlanEntry::Activate { tag, .. } => Some(tag.clone()),
-                PlanEntry::Heal { .. } => None,
-            })
-            .collect(),
-        PlanKind::EventGraph { graph } => event_graph_declared_fault_tags(graph.events()),
-    }
-}
-
-pub(super) fn event_graph_declared_fault_tags(events: &[Event]) -> BTreeSet<FaultTag> {
-    let mut tags = BTreeSet::new();
-    for event in events {
-        collect_action_declared_fault_tags(&event.action, &mut tags);
-    }
-    tags
-}
-
-pub(super) fn collect_action_declared_fault_tags(action: &Action, tags: &mut BTreeSet<FaultTag>) {
-    match action {
-        Action::InjectFault { tag, .. } => {
-            tags.insert(tag.clone());
-        }
-        Action::Group(actions) => {
-            for action in actions {
-                collect_action_declared_fault_tags(action, tags);
-            }
-        }
-        Action::HealFault { .. }
-        | Action::ArmTimer { .. }
-        | Action::CancelTimer { .. }
-        | Action::StartNode { .. }
-        | Action::StopNode { .. }
-        | Action::CreateSavepoint { .. }
-        | Action::Fork { .. }
-        | Action::Pass
-        | Action::Fail { .. }
-        | Action::Log { .. } => {}
-    }
 }
 
 pub(super) fn validate_property_for_world(
@@ -984,10 +658,7 @@ pub(super) fn validate_property_predicate_for_world(
     white_box_node_ids: &BTreeSet<&NodeId>,
 ) -> Result<(), EngineError> {
     match predicate {
-        Predicate::At { .. }
-        | Predicate::NetworkMatch { .. }
-        | Predicate::Quiescent
-        | Predicate::FaultActive { .. } => Ok(()),
+        Predicate::At { .. } | Predicate::NetworkMatch { .. } | Predicate::Quiescent => Ok(()),
         Predicate::After { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "after" }),
         Predicate::Timer { .. } => Err(EngineError::PropertyPredicateTriggerOnly { kind: "timer" }),
         Predicate::ConsoleMatch { node, regex } => {
@@ -1092,87 +763,11 @@ pub(super) fn validate_property_regex(regex: &RegexProgram) -> Result<(), Engine
         })
 }
 
-pub(super) fn canonical_link_endpoint_pair(left: &NodeId, right: &NodeId) -> (NodeId, NodeId) {
-    if left <= right {
-        (left.clone(), right.clone())
-    } else {
-        (right.clone(), left.clone())
-    }
-}
-
-pub(super) fn canonical_plan_entries(entries: &[PlanEntry]) -> Vec<PlanEntry> {
-    let mut entries = entries.iter().map(canonical_plan_entry).collect::<Vec<_>>();
-    entries.sort_by(plan_entry_cmp);
-    entries
-}
-
-pub(super) fn canonical_plan_entry(entry: &PlanEntry) -> PlanEntry {
-    match entry {
-        PlanEntry::Activate { at, tag, fault } => PlanEntry::Activate {
-            at: *at,
-            tag: tag.clone(),
-            fault: canonical_membership_fault(fault),
-        },
-        PlanEntry::Heal { at, tag } => PlanEntry::Heal {
-            at: *at,
-            tag: tag.clone(),
-        },
-    }
-}
-
-pub(super) fn canonical_membership_fault(fault: &MembershipFault) -> MembershipFault {
-    match fault {
-        MembershipFault::Crash { node, restart } => MembershipFault::Crash {
-            node: node.clone(),
-            restart: *restart,
-        },
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => {
-            let canonical = canonical_partition_fault(endpoint_a, endpoint_b, *direction);
-            MembershipFault::Partition {
-                endpoint_a: canonical.endpoint_a,
-                endpoint_b: canonical.endpoint_b,
-                direction: canonical.direction,
-            }
-        }
-        MembershipFault::Isolate { node } => MembershipFault::Isolate { node: node.clone() },
-        MembershipFault::NotYetJoined { node } => {
-            MembershipFault::NotYetJoined { node: node.clone() }
-        }
-        MembershipFault::Taxonomy { fault } => MembershipFault::Taxonomy {
-            fault: fault.clone(),
-        },
-    }
-}
-
 pub(super) fn inverted_partition_direction(direction: PartitionDirection) -> PartitionDirection {
     match direction {
         PartitionDirection::Bidirectional => PartitionDirection::Bidirectional,
         PartitionDirection::EndpointAToEndpointB => PartitionDirection::EndpointBToEndpointA,
         PartitionDirection::EndpointBToEndpointA => PartitionDirection::EndpointAToEndpointB,
-    }
-}
-
-pub(super) fn plan_entry_cmp(left: &PlanEntry, right: &PlanEntry) -> std::cmp::Ordering {
-    plan_entry_time(left)
-        .cmp(&plan_entry_time(right))
-        .then_with(|| plan_entry_kind_order(left).cmp(&plan_entry_kind_order(right)))
-        .then_with(|| plan_entry_material(left).cmp(&plan_entry_material(right)))
-}
-
-pub(super) fn plan_entry_time(entry: &PlanEntry) -> VirtualTime {
-    match entry {
-        PlanEntry::Activate { at, .. } | PlanEntry::Heal { at, .. } => *at,
-    }
-}
-
-pub(super) fn plan_entry_kind_order(entry: &PlanEntry) -> u8 {
-    match entry {
-        PlanEntry::Activate { .. } => 0,
-        PlanEntry::Heal { .. } => 1,
     }
 }
 
@@ -1271,7 +866,6 @@ pub(super) fn canonical_predicate(predicate: &Predicate) -> Predicate {
             state: *state,
         },
         Predicate::Quiescent => Predicate::Quiescent,
-        Predicate::FaultActive { tag } => Predicate::FaultActive { tag: tag.clone() },
         Predicate::Named { name, nodes } => Predicate::Named {
             name: name.clone(),
             nodes: nodes.clone(),

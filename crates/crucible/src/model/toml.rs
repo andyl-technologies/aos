@@ -254,10 +254,6 @@ pub(super) struct PlanToml {
     pub(super) fault_binding: Vec<toml::Value>,
     #[serde(default)]
     pub(super) resource_limits: SignalResourceLimits,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) kind: Option<PlanKindToml>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(super) entry: Vec<PlanEntryToml>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) event: Vec<EventToml>,
 }
@@ -266,29 +262,6 @@ pub(super) struct PlanToml {
 #[serde(rename_all = "snake_case")]
 pub(super) enum FaultModelToml {
     SignalBindingsV1,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum PlanKindToml {
-    Entries,
-    EventGraph,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum PlanEntryToml {
-    Activate {
-        at_ticks: u64,
-        tag: String,
-        fault: MembershipFaultToml,
-    },
-    Heal {
-        at_ticks: u64,
-        tag: String,
-    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -314,13 +287,6 @@ pub(super) enum FirePolicyToml {
 #[serde(deny_unknown_fields)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(super) enum ActionToml {
-    InjectFault {
-        tag: String,
-        fault: MembershipFaultToml,
-    },
-    HealFault {
-        tag: String,
-    },
     ArmTimer {
         name: String,
         after_nanos: u64,
@@ -363,169 +329,6 @@ pub(super) enum LogLevelToml {
     Info,
     Warn,
     Error,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum MembershipFaultToml {
-    Crash {
-        node: String,
-        restart: RestartToml,
-    },
-    Partition {
-        endpoint_a: String,
-        endpoint_b: String,
-        direction: PartitionDirectionToml,
-    },
-    Isolate {
-        node: String,
-    },
-    NotYetJoined {
-        node: String,
-    },
-    Taxonomy {
-        fault: FaultToml,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum FaultToml {
-    NetworkPartition {
-        link: String,
-        direction: PartitionDirectionToml,
-    },
-    NetworkLoss {
-        link: String,
-        rate_basis_points: u32,
-    },
-    NetworkReorder {
-        link: String,
-        window_nanos: u64,
-    },
-    NetworkDuplicate {
-        link: String,
-        rate_basis_points: u32,
-        gap_nanos: u64,
-    },
-    NetworkCorruptionBitFlip {
-        link: String,
-        rate_basis_points: u32,
-        max_bits: u32,
-    },
-    NetworkCorruptionFieldMutation {
-        link: String,
-        rate_basis_points: u32,
-    },
-    NetworkCorruptionTruncation {
-        link: String,
-        rate_basis_points: u32,
-        max_bytes: u64,
-    },
-    NetworkBandwidth {
-        link: String,
-        bits_per_second: u64,
-    },
-    NetworkLatencyBump {
-        link: String,
-        extra_nanos: u64,
-    },
-    NodeCrash {
-        node: String,
-        restart: RestartToml,
-    },
-    NodeSlow {
-        node: String,
-        factor_basis_points: u32,
-    },
-    NodeClockSkew {
-        node: String,
-        offset_nanos: i64,
-    },
-    BlockLatency {
-        device: String,
-        extra_nanos: u64,
-        jitter_nanos: u64,
-    },
-    BlockFailure {
-        device: String,
-        rate_basis_points: u32,
-        mode: IoFailureModeToml,
-    },
-    BlockReorder {
-        device: String,
-        window_nanos: u64,
-    },
-    BlockDuplicate {
-        device: String,
-        rate_basis_points: u32,
-        gap_nanos: u64,
-    },
-    BlockCorruption {
-        device: String,
-        rate_basis_points: u32,
-        bit_flips: u32,
-    },
-    BlockBandwidth {
-        device: String,
-        bits_per_second: u64,
-    },
-    NinePLatency {
-        device: String,
-        extra_nanos: u64,
-        jitter_nanos: u64,
-    },
-    NinePFailure {
-        device: String,
-        rate_basis_points: u32,
-        errno_code: i32,
-    },
-    NinePReorder {
-        device: String,
-        window_nanos: u64,
-    },
-    NinePDuplicate {
-        device: String,
-        rate_basis_points: u32,
-        gap_nanos: u64,
-    },
-    NinePCorruption {
-        device: String,
-        rate_basis_points: u32,
-        bit_flips: u32,
-    },
-    NinePBandwidth {
-        device: String,
-        bits_per_second: u64,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum IoFailureModeToml {
-    Drop,
-    ErrorStatus,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum RestartToml {
-    FromReadyPoint,
-    FromLastCheckpoint,
-    StayDown,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum PartitionDirectionToml {
-    Bidirectional,
-    EndpointAToEndpointB,
-    EndpointBToEndpointA,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -613,9 +416,6 @@ pub(super) enum PredicateTomlKind {
         state: AssertionPhaseToml,
     },
     Quiescent,
-    FaultActive {
-        tag: String,
-    },
     Named {
         name: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1163,29 +963,14 @@ pub(super) fn link_from_toml(toml: LinkToml) -> Result<LinkDef, EngineError> {
 pub(super) fn plan_to_toml(plan: &Plan) -> Result<PlanToml, EngineError> {
     let fault_signals = FaultSignalAuthoringRows::from_plan(plan.fault_signals())
         .map_err(|error| scenario_serialization_error(error.to_string()))?;
-    Ok(match &plan.kind {
-        PlanKind::ScheduledEntries { entries } => PlanToml {
-            id: format_content_hash_ref(plan.content_hash()),
-            fault_model: FaultModelToml::SignalBindingsV1,
-            fault_signal_semantic_version: fault_signals.semantic_version,
-            signal: fault_signals.signals,
-            fault_binding: fault_signals.bindings,
-            resource_limits: fault_signals.resource_limits,
-            kind: None,
-            entry: entries.iter().map(plan_entry_to_toml).collect(),
-            event: Vec::new(),
-        },
-        PlanKind::EventGraph { graph } => PlanToml {
-            id: format_content_hash_ref(plan.content_hash()),
-            fault_model: FaultModelToml::SignalBindingsV1,
-            fault_signal_semantic_version: fault_signals.semantic_version,
-            signal: fault_signals.signals,
-            fault_binding: fault_signals.bindings,
-            resource_limits: fault_signals.resource_limits,
-            kind: Some(PlanKindToml::EventGraph),
-            entry: Vec::new(),
-            event: graph.events().iter().map(event_to_toml).collect(),
-        },
+    Ok(PlanToml {
+        id: format_content_hash_ref(plan.content_hash()),
+        fault_model: FaultModelToml::SignalBindingsV1,
+        fault_signal_semantic_version: fault_signals.semantic_version,
+        signal: fault_signals.signals,
+        fault_binding: fault_signals.bindings,
+        resource_limits: fault_signals.resource_limits,
+        event: plan.graph.events().iter().map(event_to_toml).collect(),
     })
 }
 
@@ -1199,7 +984,6 @@ pub(super) fn plan_from_toml_with_assertions(
     toml: PlanToml,
 ) -> Result<Plan, EngineError> {
     let id = parse_content_hash_ref(&toml.id)?;
-    let serialized_kind = serialized_plan_kind(&toml)?;
     let fault_signals = FaultSignalAuthoringRows {
         semantic_version: toml.fault_signal_semantic_version,
         resource_limits: toml.resource_limits,
@@ -1208,96 +992,16 @@ pub(super) fn plan_from_toml_with_assertions(
     }
     .admit(world)
     .map_err(|error| scenario_serialization_error(error.to_string()))?;
-    let plan = match serialized_kind {
-        SerializedPlanKind::ScheduledEntries => {
-            let entries = toml
-                .entry
-                .into_iter()
-                .map(plan_entry_from_toml)
-                .collect::<Result<Vec<_>, _>>()?;
-            Plan::from_entries_for_world(world, entries)?
-        }
-        SerializedPlanKind::EventGraph => {
-            let events = toml
-                .event
-                .into_iter()
-                .map(event_from_toml)
-                .collect::<Result<Vec<_>, _>>()?;
-            let graph = EventGraph::from_unchecked_events_for_model(events);
-            Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
-        }
-    }
-    .with_fault_signals(fault_signals);
+    let events = toml
+        .event
+        .into_iter()
+        .map(event_from_toml)
+        .collect::<Result<Vec<_>, _>>()?;
+    let graph = EventGraph::from_unchecked_events_for_model(events);
+    let plan = Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
+        .with_fault_signals(fault_signals);
     validate_serialized_id("plan", id, plan.content_hash())?;
     Ok(plan)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SerializedPlanKind {
-    ScheduledEntries,
-    EventGraph,
-}
-
-pub(super) fn serialized_plan_kind(toml: &PlanToml) -> Result<SerializedPlanKind, EngineError> {
-    match toml.kind {
-        Some(PlanKindToml::Entries) => {
-            if !toml.event.is_empty() {
-                return Err(scenario_serialization_error(
-                    "entries plan must not carry event graph rows",
-                ));
-            }
-            Ok(SerializedPlanKind::ScheduledEntries)
-        }
-        Some(PlanKindToml::EventGraph) => {
-            if !toml.entry.is_empty() {
-                return Err(scenario_serialization_error(
-                    "event graph plan must not carry scheduled entries",
-                ));
-            }
-            Ok(SerializedPlanKind::EventGraph)
-        }
-        None if toml.event.is_empty() => Ok(SerializedPlanKind::ScheduledEntries),
-        None => {
-            if !toml.entry.is_empty() {
-                return Err(scenario_serialization_error(
-                    "plan must not mix scheduled entries and event graph rows",
-                ));
-            }
-            Ok(SerializedPlanKind::EventGraph)
-        }
-    }
-}
-
-pub(super) fn plan_entry_to_toml(entry: &PlanEntry) -> PlanEntryToml {
-    match entry {
-        PlanEntry::Activate { at, tag, fault } => PlanEntryToml::Activate {
-            at_ticks: at.ticks,
-            tag: tag.name.clone(),
-            fault: membership_fault_to_toml(fault),
-        },
-        PlanEntry::Heal { at, tag } => PlanEntryToml::Heal {
-            at_ticks: at.ticks,
-            tag: tag.name.clone(),
-        },
-    }
-}
-
-pub(super) fn plan_entry_from_toml(toml: PlanEntryToml) -> Result<PlanEntry, EngineError> {
-    Ok(match toml {
-        PlanEntryToml::Activate {
-            at_ticks,
-            tag,
-            fault,
-        } => PlanEntry::Activate {
-            at: VirtualTime { ticks: at_ticks },
-            tag: FaultTag { name: tag },
-            fault: membership_fault_from_toml(fault)?,
-        },
-        PlanEntryToml::Heal { at_ticks, tag } => PlanEntry::Heal {
-            at: VirtualTime { ticks: at_ticks },
-            tag: FaultTag { name: tag },
-        },
-    })
 }
 
 pub(super) fn event_to_toml(event: &Event) -> EventToml {
@@ -1338,13 +1042,6 @@ pub(super) fn fire_policy_from_toml(toml: FirePolicyToml) -> FirePolicy {
 
 pub(super) fn action_to_toml(action: &Action) -> ActionToml {
     match action {
-        Action::InjectFault { tag, fault } => ActionToml::InjectFault {
-            tag: tag.name.clone(),
-            fault: membership_fault_to_toml(fault),
-        },
-        Action::HealFault { tag } => ActionToml::HealFault {
-            tag: tag.name.clone(),
-        },
         Action::ArmTimer { name, after } => ActionToml::ArmTimer {
             name: name.name.clone(),
             after_nanos: after.nanos,
@@ -1380,13 +1077,6 @@ pub(super) fn action_to_toml(action: &Action) -> ActionToml {
 
 pub(super) fn action_from_toml(toml: ActionToml) -> Result<Action, EngineError> {
     Ok(match toml {
-        ActionToml::InjectFault { tag, fault } => Action::InjectFault {
-            tag: FaultTag { name: tag },
-            fault: membership_fault_from_toml(fault)?,
-        },
-        ActionToml::HealFault { tag } => Action::HealFault {
-            tag: FaultTag { name: tag },
-        },
         ActionToml::ArmTimer { name, after_nanos } => Action::ArmTimer {
             name: TimerId { name },
             after: SimDuration { nanos: after_nanos },
@@ -1432,469 +1122,6 @@ pub(super) fn log_level_from_toml(toml: LogLevelToml) -> LogLevel {
         LogLevelToml::Info => LogLevel::Info,
         LogLevelToml::Warn => LogLevel::Warn,
         LogLevelToml::Error => LogLevel::Error,
-    }
-}
-
-pub(super) fn membership_fault_to_toml(fault: &MembershipFault) -> MembershipFaultToml {
-    match fault {
-        MembershipFault::Crash { node, restart } => MembershipFaultToml::Crash {
-            node: node.name.clone(),
-            restart: restart_to_toml(*restart),
-        },
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => MembershipFaultToml::Partition {
-            endpoint_a: endpoint_a.name.clone(),
-            endpoint_b: endpoint_b.name.clone(),
-            direction: partition_direction_to_toml(*direction),
-        },
-        MembershipFault::Isolate { node } => MembershipFaultToml::Isolate {
-            node: node.name.clone(),
-        },
-        MembershipFault::NotYetJoined { node } => MembershipFaultToml::NotYetJoined {
-            node: node.name.clone(),
-        },
-        MembershipFault::Taxonomy { fault } => MembershipFaultToml::Taxonomy {
-            fault: fault_to_toml(fault),
-        },
-    }
-}
-
-pub(super) fn membership_fault_from_toml(
-    toml: MembershipFaultToml,
-) -> Result<MembershipFault, EngineError> {
-    Ok(match toml {
-        MembershipFaultToml::Crash { node, restart } => MembershipFault::Crash {
-            node: NodeId { name: node },
-            restart: restart_from_toml(restart),
-        },
-        MembershipFaultToml::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => MembershipFault::Partition {
-            endpoint_a: NodeId { name: endpoint_a },
-            endpoint_b: NodeId { name: endpoint_b },
-            direction: partition_direction_from_toml(direction),
-        },
-        MembershipFaultToml::Isolate { node } => MembershipFault::Isolate {
-            node: NodeId { name: node },
-        },
-        MembershipFaultToml::NotYetJoined { node } => MembershipFault::NotYetJoined {
-            node: NodeId { name: node },
-        },
-        MembershipFaultToml::Taxonomy { fault } => MembershipFault::Taxonomy {
-            fault: fault_from_toml(fault)?,
-        },
-    })
-}
-
-pub(super) fn fault_to_toml(fault: &Fault) -> FaultToml {
-    match fault {
-        Fault::Network(fault) => network_fault_to_toml(fault),
-        Fault::Node(fault) => node_fault_to_toml(fault),
-        Fault::Block(fault) => block_fault_to_toml(fault),
-        Fault::NineP(fault) => ninep_fault_to_toml(fault),
-    }
-}
-
-pub(super) fn fault_from_toml(toml: FaultToml) -> Result<Fault, EngineError> {
-    Ok(match toml {
-        FaultToml::NetworkPartition { link, direction } => {
-            Fault::Network(NetworkFault::Partition {
-                link: LinkId { name: link },
-                direction: partition_direction_from_toml(direction),
-            })
-        }
-        FaultToml::NetworkLoss {
-            link,
-            rate_basis_points,
-        } => Fault::Network(NetworkFault::Loss {
-            link: LinkId { name: link },
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-        }),
-        FaultToml::NetworkReorder { link, window_nanos } => Fault::Network(NetworkFault::Reorder {
-            link: LinkId { name: link },
-            window: FaultDuration::from_nanos(window_nanos),
-        }),
-        FaultToml::NetworkDuplicate {
-            link,
-            rate_basis_points,
-            gap_nanos,
-        } => Fault::Network(NetworkFault::Duplicate {
-            link: LinkId { name: link },
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-            gap: FaultDuration::from_nanos(gap_nanos),
-        }),
-        FaultToml::NetworkCorruptionBitFlip {
-            link,
-            rate_basis_points,
-            max_bits,
-        } => Fault::Network(NetworkFault::Corruption {
-            link: LinkId { name: link },
-            kind: NetworkCorruptionFault::BitFlip {
-                rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-                max_bits,
-            },
-        }),
-        FaultToml::NetworkCorruptionFieldMutation {
-            link,
-            rate_basis_points,
-        } => Fault::Network(NetworkFault::Corruption {
-            link: LinkId { name: link },
-            kind: NetworkCorruptionFault::FieldMutation {
-                rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-            },
-        }),
-        FaultToml::NetworkCorruptionTruncation {
-            link,
-            rate_basis_points,
-            max_bytes,
-        } => Fault::Network(NetworkFault::Corruption {
-            link: LinkId { name: link },
-            kind: NetworkCorruptionFault::Truncation {
-                rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-                max_bytes,
-            },
-        }),
-        FaultToml::NetworkBandwidth {
-            link,
-            bits_per_second,
-        } => Fault::Network(NetworkFault::Bandwidth {
-            link: LinkId { name: link },
-            limit: FaultBandwidthBitsPerSecond::new(bits_per_second)?,
-        }),
-        FaultToml::NetworkLatencyBump { link, extra_nanos } => {
-            Fault::Network(NetworkFault::LatencyBump {
-                link: LinkId { name: link },
-                extra: FaultDuration::from_nanos(extra_nanos),
-            })
-        }
-        FaultToml::NodeCrash { node, restart } => Fault::Node(NodeFault::Crash {
-            node: NodeId { name: node },
-            restart: restart_from_toml(restart),
-        }),
-        FaultToml::NodeSlow {
-            node,
-            factor_basis_points,
-        } => Fault::Node(NodeFault::Slow {
-            node: NodeId { name: node },
-            factor: FaultSlowdownFactorBasisPoints::from_basis_points(factor_basis_points)?,
-        }),
-        FaultToml::NodeClockSkew { node, offset_nanos } => Fault::Node(NodeFault::ClockSkew {
-            node: NodeId { name: node },
-            offset: SimOffset {
-                nanos: offset_nanos,
-            },
-        }),
-        FaultToml::BlockLatency {
-            device,
-            extra_nanos,
-            jitter_nanos,
-        } => Fault::Block(BlockFault::Latency {
-            device: DeviceId { name: device },
-            extra: FaultDuration::from_nanos(extra_nanos),
-            jitter: FaultDuration::from_nanos(jitter_nanos),
-        }),
-        FaultToml::BlockFailure {
-            device,
-            rate_basis_points,
-            mode,
-        } => Fault::Block(BlockFault::Failure {
-            device: DeviceId { name: device },
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-            mode: io_failure_mode_from_toml(mode),
-        }),
-        FaultToml::BlockReorder {
-            device,
-            window_nanos,
-        } => Fault::Block(BlockFault::Reorder {
-            device: DeviceId { name: device },
-            window: FaultDuration::from_nanos(window_nanos),
-        }),
-        FaultToml::BlockDuplicate {
-            device,
-            rate_basis_points,
-            gap_nanos,
-        } => Fault::Block(BlockFault::Duplicate {
-            device: DeviceId { name: device },
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-            gap: FaultDuration::from_nanos(gap_nanos),
-        }),
-        FaultToml::BlockCorruption {
-            device,
-            rate_basis_points,
-            bit_flips,
-        } => Fault::Block(BlockFault::Corruption {
-            device: DeviceId { name: device },
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-            bit_flips,
-        }),
-        FaultToml::BlockBandwidth {
-            device,
-            bits_per_second,
-        } => Fault::Block(BlockFault::Bandwidth {
-            device: DeviceId { name: device },
-            limit: FaultBandwidthBitsPerSecond::new(bits_per_second)?,
-        }),
-        FaultToml::NinePLatency {
-            device,
-            extra_nanos,
-            jitter_nanos,
-        } => Fault::NineP(NinePFault::Latency {
-            device: DeviceId { name: device },
-            extra: FaultDuration::from_nanos(extra_nanos),
-            jitter: FaultDuration::from_nanos(jitter_nanos),
-        }),
-        FaultToml::NinePFailure {
-            device,
-            rate_basis_points,
-            errno_code,
-        } => Fault::NineP(NinePFault::Failure {
-            device: DeviceId { name: device },
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-            errno: NinePErrno::from_code(errno_code)?,
-        }),
-        FaultToml::NinePReorder {
-            device,
-            window_nanos,
-        } => Fault::NineP(NinePFault::Reorder {
-            device: DeviceId { name: device },
-            window: FaultDuration::from_nanos(window_nanos),
-        }),
-        FaultToml::NinePDuplicate {
-            device,
-            rate_basis_points,
-            gap_nanos,
-        } => Fault::NineP(NinePFault::Duplicate {
-            device: DeviceId { name: device },
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-            gap: FaultDuration::from_nanos(gap_nanos),
-        }),
-        FaultToml::NinePCorruption {
-            device,
-            rate_basis_points,
-            bit_flips,
-        } => Fault::NineP(NinePFault::Corruption {
-            device: DeviceId { name: device },
-            rate: FaultRateBasisPoints::from_basis_points(rate_basis_points)?,
-            bit_flips,
-        }),
-        FaultToml::NinePBandwidth {
-            device,
-            bits_per_second,
-        } => Fault::NineP(NinePFault::Bandwidth {
-            device: DeviceId { name: device },
-            limit: FaultBandwidthBitsPerSecond::new(bits_per_second)?,
-        }),
-    })
-}
-
-pub(super) fn network_fault_to_toml(fault: &NetworkFault) -> FaultToml {
-    match fault {
-        NetworkFault::Partition { link, direction } => FaultToml::NetworkPartition {
-            link: link.name.clone(),
-            direction: partition_direction_to_toml(*direction),
-        },
-        NetworkFault::Loss { link, rate } => FaultToml::NetworkLoss {
-            link: link.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-        },
-        NetworkFault::Reorder { link, window } => FaultToml::NetworkReorder {
-            link: link.name.clone(),
-            window_nanos: window.nanos(),
-        },
-        NetworkFault::Duplicate { link, rate, gap } => FaultToml::NetworkDuplicate {
-            link: link.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-            gap_nanos: gap.nanos(),
-        },
-        NetworkFault::Corruption { link, kind } => network_corruption_fault_to_toml(link, kind),
-        NetworkFault::Bandwidth { link, limit } => FaultToml::NetworkBandwidth {
-            link: link.name.clone(),
-            bits_per_second: limit.bits_per_second(),
-        },
-        NetworkFault::LatencyBump { link, extra } => FaultToml::NetworkLatencyBump {
-            link: link.name.clone(),
-            extra_nanos: extra.nanos(),
-        },
-    }
-}
-
-pub(super) fn network_corruption_fault_to_toml(
-    link: &LinkId,
-    fault: &NetworkCorruptionFault,
-) -> FaultToml {
-    match fault {
-        NetworkCorruptionFault::BitFlip { rate, max_bits } => FaultToml::NetworkCorruptionBitFlip {
-            link: link.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-            max_bits: *max_bits,
-        },
-        NetworkCorruptionFault::FieldMutation { rate } => {
-            FaultToml::NetworkCorruptionFieldMutation {
-                link: link.name.clone(),
-                rate_basis_points: u32::from(rate.basis_points()),
-            }
-        }
-        NetworkCorruptionFault::Truncation { rate, max_bytes } => {
-            FaultToml::NetworkCorruptionTruncation {
-                link: link.name.clone(),
-                rate_basis_points: u32::from(rate.basis_points()),
-                max_bytes: *max_bytes,
-            }
-        }
-    }
-}
-
-pub(super) fn node_fault_to_toml(fault: &NodeFault) -> FaultToml {
-    match fault {
-        NodeFault::Crash { node, restart } => FaultToml::NodeCrash {
-            node: node.name.clone(),
-            restart: restart_to_toml(*restart),
-        },
-        NodeFault::Slow { node, factor } => FaultToml::NodeSlow {
-            node: node.name.clone(),
-            factor_basis_points: factor.basis_points(),
-        },
-        NodeFault::ClockSkew { node, offset } => FaultToml::NodeClockSkew {
-            node: node.name.clone(),
-            offset_nanos: offset.nanos,
-        },
-    }
-}
-
-pub(super) fn block_fault_to_toml(fault: &BlockFault) -> FaultToml {
-    match fault {
-        BlockFault::Latency {
-            device,
-            extra,
-            jitter,
-        } => FaultToml::BlockLatency {
-            device: device.name.clone(),
-            extra_nanos: extra.nanos(),
-            jitter_nanos: jitter.nanos(),
-        },
-        BlockFault::Failure { device, rate, mode } => FaultToml::BlockFailure {
-            device: device.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-            mode: io_failure_mode_to_toml(*mode),
-        },
-        BlockFault::Reorder { device, window } => FaultToml::BlockReorder {
-            device: device.name.clone(),
-            window_nanos: window.nanos(),
-        },
-        BlockFault::Duplicate { device, rate, gap } => FaultToml::BlockDuplicate {
-            device: device.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-            gap_nanos: gap.nanos(),
-        },
-        BlockFault::Corruption {
-            device,
-            rate,
-            bit_flips,
-        } => FaultToml::BlockCorruption {
-            device: device.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-            bit_flips: *bit_flips,
-        },
-        BlockFault::Bandwidth { device, limit } => FaultToml::BlockBandwidth {
-            device: device.name.clone(),
-            bits_per_second: limit.bits_per_second(),
-        },
-    }
-}
-
-pub(super) fn ninep_fault_to_toml(fault: &NinePFault) -> FaultToml {
-    match fault {
-        NinePFault::Latency {
-            device,
-            extra,
-            jitter,
-        } => FaultToml::NinePLatency {
-            device: device.name.clone(),
-            extra_nanos: extra.nanos(),
-            jitter_nanos: jitter.nanos(),
-        },
-        NinePFault::Failure {
-            device,
-            rate,
-            errno,
-        } => FaultToml::NinePFailure {
-            device: device.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-            errno_code: errno.code(),
-        },
-        NinePFault::Reorder { device, window } => FaultToml::NinePReorder {
-            device: device.name.clone(),
-            window_nanos: window.nanos(),
-        },
-        NinePFault::Duplicate { device, rate, gap } => FaultToml::NinePDuplicate {
-            device: device.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-            gap_nanos: gap.nanos(),
-        },
-        NinePFault::Corruption {
-            device,
-            rate,
-            bit_flips,
-        } => FaultToml::NinePCorruption {
-            device: device.name.clone(),
-            rate_basis_points: u32::from(rate.basis_points()),
-            bit_flips: *bit_flips,
-        },
-        NinePFault::Bandwidth { device, limit } => FaultToml::NinePBandwidth {
-            device: device.name.clone(),
-            bits_per_second: limit.bits_per_second(),
-        },
-    }
-}
-
-pub(super) fn io_failure_mode_to_toml(mode: IoFailureMode) -> IoFailureModeToml {
-    match mode {
-        IoFailureMode::Drop => IoFailureModeToml::Drop,
-        IoFailureMode::ErrorStatus => IoFailureModeToml::ErrorStatus,
-    }
-}
-
-pub(super) fn io_failure_mode_from_toml(toml: IoFailureModeToml) -> IoFailureMode {
-    match toml {
-        IoFailureModeToml::Drop => IoFailureMode::Drop,
-        IoFailureModeToml::ErrorStatus => IoFailureMode::ErrorStatus,
-    }
-}
-
-pub(super) fn restart_to_toml(policy: RestartPolicy) -> RestartToml {
-    match policy {
-        RestartPolicy::FromReadyPoint => RestartToml::FromReadyPoint,
-        RestartPolicy::FromLastCheckpoint => RestartToml::FromLastCheckpoint,
-        RestartPolicy::StayDown => RestartToml::StayDown,
-    }
-}
-
-pub(super) fn restart_from_toml(toml: RestartToml) -> RestartPolicy {
-    match toml {
-        RestartToml::FromReadyPoint => RestartPolicy::FromReadyPoint,
-        RestartToml::FromLastCheckpoint => RestartPolicy::FromLastCheckpoint,
-        RestartToml::StayDown => RestartPolicy::StayDown,
-    }
-}
-
-pub(super) fn partition_direction_to_toml(direction: PartitionDirection) -> PartitionDirectionToml {
-    match direction {
-        PartitionDirection::Bidirectional => PartitionDirectionToml::Bidirectional,
-        PartitionDirection::EndpointAToEndpointB => PartitionDirectionToml::EndpointAToEndpointB,
-        PartitionDirection::EndpointBToEndpointA => PartitionDirectionToml::EndpointBToEndpointA,
-    }
-}
-
-pub(super) fn partition_direction_from_toml(toml: PartitionDirectionToml) -> PartitionDirection {
-    match toml {
-        PartitionDirectionToml::Bidirectional => PartitionDirection::Bidirectional,
-        PartitionDirectionToml::EndpointAToEndpointB => PartitionDirection::EndpointAToEndpointB,
-        PartitionDirectionToml::EndpointBToEndpointA => PartitionDirection::EndpointBToEndpointA,
     }
 }
 
@@ -2170,9 +1397,6 @@ pub(super) fn predicate_to_toml(predicate: &Predicate) -> PredicateToml {
             state: assertion_phase_to_toml(*state),
         },
         Predicate::Quiescent => PredicateTomlKind::Quiescent,
-        Predicate::FaultActive { tag } => PredicateTomlKind::FaultActive {
-            tag: tag.name.clone(),
-        },
         Predicate::Named { name, nodes } => PredicateTomlKind::Named {
             name: name.clone(),
             nodes: nodes.iter().map(|node| node.name.clone()).collect(),
@@ -2254,9 +1478,6 @@ pub(super) fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, Engi
             state: assertion_phase_from_toml(state),
         },
         PredicateTomlKind::Quiescent => Predicate::Quiescent,
-        PredicateTomlKind::FaultActive { tag } => Predicate::FaultActive {
-            tag: FaultTag { name: tag },
-        },
         PredicateTomlKind::Named { name, nodes } => Predicate::Named {
             name,
             nodes: nodes.into_iter().map(|name| NodeId { name }).collect(),
