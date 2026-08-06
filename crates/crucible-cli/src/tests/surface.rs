@@ -380,17 +380,13 @@ quiescent = true
 }
 
 pub(super) fn valid_fuzz_family_toml() -> &'static str {
-    r#"schema = "crucible.scenario-family.v1"
+    r#"schema = "crucible.scenario-family.v2"
 topology_shapes = ["ring"]
 
 [seed_space]
 kind = "generated"
 meta_seed = "0x55"
 count = 2
-
-[fault_density]
-min_millionths = 0
-max_millionths = 1
 
 [topology_size]
 min = 1

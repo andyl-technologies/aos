@@ -218,9 +218,8 @@ mod tests {
     use std::rc::Rc;
 
     use crucible::{
-        BackendInput, CheckpointKind, ControlFaultAction, ControlFaultDecision, Decision,
-        ExecutionFingerprint, Fault, FaultTag, MaterializedState, NodeBlobRef, NodeFault, NodeId,
-        RestartPolicy, RngDecision, RngStreamId, ScenarioDef, Schedule, World,
+        BackendInput, CheckpointKind, Decision, ExecutionFingerprint, MaterializedState,
+        NodeBlobRef, NodeId, RngDecision, RngStreamId, ScenarioDef, Schedule, World,
     };
 
     use super::*;
@@ -417,7 +416,10 @@ mod tests {
         let ancestor = config_with_decisions(def.clone(), 1);
         let target = Configuration {
             def: def.clone(),
-            schedule: ancestor.schedule.clone().appended(control_fault_decision()),
+            schedule: ancestor
+                .schedule
+                .clone()
+                .appended(additional_rng_decision()),
         };
         let ancestor_checkpoint = checkpoint_with_qemu_icount(
             checkpoint_for_config("backend-ancestor-replay", &ancestor),
@@ -587,17 +589,10 @@ mod tests {
         }
     }
 
-    fn control_fault_decision() -> Decision {
-        Decision::ControlFault(ControlFaultDecision {
-            at: Default::default(),
-            sequence: 1,
-            action: ControlFaultAction::Inject {
-                tag: FaultTag::from_name("backend-ancestor-fault"),
-                fault: Fault::Node(NodeFault::Crash {
-                    node: qemu_node_id(),
-                    restart: RestartPolicy::StayDown,
-                }),
-            },
+    fn additional_rng_decision() -> Decision {
+        Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("backend-ancestor-extra"),
+            value: 1,
         })
     }
 

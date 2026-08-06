@@ -7,12 +7,12 @@
 use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, AssertionRunVerdict,
     AssertionVerdictFailure, CodePoint, ComposedRunVerdict, ComposedRunVerdictFailure,
-    ConditionLeaf, ConditionLeafOracle, EventGraph, EventGraphState, FaultTag, FramePredicate,
-    Icount, LinkDef, LinkId, MarkerId, MembershipFault, NodeId, NodeLifecycle, NodeTemplate,
-    ObservableEvent, PartitionDirection, Plan, Predicate, Properties, Property, ReadyPoint,
-    RegexProgram, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, Seed, Shift, SimDuration, SimInstant, SingleScheduler, TimerId,
-    TriggerActionState, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    ConditionLeaf, ConditionLeafOracle, EventGraph, EventGraphState, FramePredicate, Icount,
+    LinkDef, LinkId, LogLevel, MarkerId, NodeId, NodeLifecycle, NodeTemplate, ObservableEvent,
+    Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerLivenessScenario, Seed,
+    Shift, SimDuration, SimInstant, SingleScheduler, TimerId, TriggerActionState, VirtualTime,
+    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn assertion(name: &str) -> AssertionId {
@@ -31,10 +31,6 @@ fn node(name: &str) -> NodeId {
     NodeId {
         name: name.to_string(),
     }
-}
-
-fn tag(name: &str) -> FaultTag {
-    FaultTag::from_name(name)
 }
 
 fn timer(name: &str) -> TimerId {
@@ -107,14 +103,6 @@ fn scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
     .with_trigger_world(world)
 }
 
-fn split_fault() -> MembershipFault {
-    MembershipFault::Partition {
-        endpoint_a: node("db-0"),
-        endpoint_b: node("db-1"),
-        direction: PartitionDirection::Bidirectional,
-    }
-}
-
 fn black_box_readiness() -> Predicate {
     Predicate::all_of(vec![
         Predicate::console_match(
@@ -160,12 +148,12 @@ fn graph(world: &World, include_guest_marker: bool) -> EventGraph {
         .event(event("wait-ready"))
         .when(readiness_condition(include_guest_marker))
         .action(Action::group(vec![
-            Action::inject_fault(tag("split"), split_fault()),
-            Action::arm_timer(timer("heal-after"), duration(30)),
+            Action::log(LogLevel::Info, "recovery timer armed"),
+            Action::arm_timer(timer("recovery-after"), duration(30)),
         ]))
-        .event(event("heal"))
-        .when(Predicate::timer(timer("heal-after")))
-        .action(Action::heal_fault(tag("split")))
+        .event(event("timer-observed"))
+        .when(Predicate::timer(timer("recovery-after")))
+        .action(Action::log(LogLevel::Info, "recovery timer observed"))
         .event(event("fail-on-property-violation"))
         .when(Predicate::assertion_state(
             assertion("cluster-safe"),
@@ -291,20 +279,14 @@ fn run_complete_black_box_scenario(name: &str, world: &World, graph: &EventGraph
         .expect("readiness action should apply");
     segment_bytes.push(ready_append.segment_bytes);
     trigger_log.extend(ready_append.entries);
-    assert_eq!(
-        scheduler.trigger_actions().active_faults.get(&tag("split")),
-        Some(&split_fault())
-    );
-
     segment_bytes.push(append_boundary(&mut scheduler, 40));
-    let heal = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
-    assert_eq!(fired_names(&heal), vec!["heal"]);
-    let heal_append = scheduler
-        .apply_trigger_firings(&heal)
-        .expect("heal action should apply");
-    segment_bytes.push(heal_append.segment_bytes);
-    trigger_log.extend(heal_append.entries);
-    assert!(scheduler.trigger_actions().active_faults.is_empty());
+    let timer = scheduler.evaluate_event_graph(graph, &mut graph_state, NoGuestSideLeaves);
+    assert_eq!(fired_names(&timer), vec!["timer-observed"]);
+    let timer_append = scheduler
+        .apply_trigger_firings(&timer)
+        .expect("timer action should apply");
+    segment_bytes.push(timer_append.segment_bytes);
+    trigger_log.extend(timer_append.entries);
 
     let convergence = scheduler
         .append_observable_events(convergence_observations())
@@ -425,7 +407,6 @@ fn predicate_has_guest_marker(predicate: &Predicate) -> bool {
         | Predicate::NodeState { .. }
         | Predicate::AssertionState { .. }
         | Predicate::Quiescent
-        | Predicate::FaultActive { .. }
         | Predicate::Named { .. } => false,
     }
 }
@@ -458,9 +439,7 @@ fn complete_black_box_scenario_runs_deterministically_without_guest_marker() {
     let world = black_box_world();
     let properties = properties(&world);
     let plan = plan(&world, false);
-    let graph = plan
-        .event_graph()
-        .expect("plan should carry an event graph");
+    let graph = plan.event_graph();
 
     assert!(!graph_has_guest_marker(graph));
     assert!(!properties_have_guest_marker(&properties));
@@ -483,9 +462,7 @@ fn complete_black_box_scenario_runs_deterministically_without_guest_marker() {
 fn black_box_property_violation_fails_deterministically_without_guest_marker() {
     let world = black_box_world();
     let plan = plan(&world, false);
-    let graph = plan
-        .event_graph()
-        .expect("plan should carry an event graph");
+    let graph = plan.event_graph();
 
     assert!(!graph_has_guest_marker(graph));
     let left = run_black_box_violation_path("black-box-first-violation", &world, graph);

@@ -6,12 +6,7 @@
 //!
 //! 1. Two guests exchange frames over a deterministic, lossy virtual link.
 //! 2. The search API exposes a branch where a particular frame is lost.
-//! 3. A direct control operation crashes a guest and healing the fault restarts
-//!    it from its ready point.
-//! 4. An event graph demonstrates that `StayDown` suppresses automatic restart
-//!    until an explicit `StartNode` action runs.
-//! 5. A snapshot supplies the checkpoint used by a `FromLastCheckpoint`
-//!    restart, and a selected network branch is replayed in a fresh lifecycle.
+//! 3. The selected network branch is replayed in a fresh lifecycle.
 //!
 //! The executable expects paths to QEMU, the Crucible QEMU plugin, a kernel, a
 //! raw root image, and an initrd, in that order. The repository's Nix checks
@@ -22,10 +17,9 @@ use std::error::Error;
 use std::time::Duration;
 
 use crucible::{
-    Action, Condition, ControlOperation, ControlOperationKind, Event, EventGraph, EventId, Fault,
-    FaultTag, Icount, LinkDef, LinkLossProbability, MembershipFault, NodeFault, NodeId,
-    NodeTemplate, Plan, Properties, QuantumLoop, QuantumRequest, ReadyPoint, RestartPolicy,
-    ScenarioDefForm, Seed, SimDuration, WhiteBoxPolicy, World, WorldNode,
+    Icount, LinkDef, LinkLossProbability, NodeId, NodeTemplate, Plan, Properties, QuantumLoop,
+    QuantumRequest, ReadyPoint, ScenarioDefForm, Seed, SimDuration, WhiteBoxPolicy, World,
+    WorldNode,
 };
 use crucible_api::{
     ProductionRootImageFormat, ProductionVmLifecycleConfig, build_production_vm_lifecycle_loop,
@@ -57,7 +51,7 @@ fn node(name: &str) -> WorldNode {
     }
 }
 
-/// Runs the network, restart-policy, checkpoint, and replay certifications.
+/// Runs the network and replay certifications.
 ///
 /// # Errors
 ///
@@ -181,190 +175,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     lifecycle.shutdown()?;
 
     // ---------------------------------------------------------------------
-    // Stage 2: crash a process and restart it from the ready point.
-    // ---------------------------------------------------------------------
-    let checkpoint_node = NodeId {
-        name: String::from("checkpoint-node"),
-    };
-    let checkpoint_world =
-        World::from_nodes_and_links(vec![node(&checkpoint_node.name)], Vec::new())?;
-    let checkpoint_source = ScenarioDefForm::from_components(
-        &checkpoint_world,
-        &Plan::empty(),
-        &Properties::empty(),
-        Seed::from_u64(0xc0ffee),
-    )?;
-    let checkpoint_scenario = checkpoint_source.scenario_def();
-    let mut ready_lifecycle =
-        build_production_vm_lifecycle_loop(&checkpoint_scenario, &checkpoint_source, &config)?;
-    let ready_crash_tag = FaultTag::from_name("live-qemu-process-crash");
-    // Control-operation sequence numbers impose a stable order on commands
-    // submitted from outside the scenario's event graph.
-    let ready_crash = ready_lifecycle.drive_quantum(QuantumRequest {
-        configuration: crucible::Configuration::genesis(checkpoint_scenario.clone()),
-        control: vec![ControlOperation {
-            sequence: 1,
-            kind: ControlOperationKind::InjectFault {
-                tag: ready_crash_tag.clone(),
-                fault: Fault::Node(NodeFault::Crash {
-                    node: checkpoint_node.clone(),
-                    restart: RestartPolicy::FromReadyPoint,
-                }),
-            },
-        }],
-    })?;
-    if ready_lifecycle.live_node_count() != 0 || ready_lifecycle.reconciled_crash_count() != 1 {
-        return Err("intended crash did not stop the single QEMU process".into());
-    }
-    // Healing removes the active crash fault. `FromReadyPoint` then tells the
-    // reconciler to launch a replacement QEMU process from the node's declared
-    // ready point instead of leaving the node down.
-    let _ready_restart = ready_lifecycle.drive_quantum(QuantumRequest {
-        configuration: ready_crash.configuration,
-        control: vec![ControlOperation {
-            sequence: 2,
-            kind: ControlOperationKind::HealFault {
-                tag: ready_crash_tag,
-            },
-        }],
-    })?;
-    if ready_lifecycle.live_node_count() != 1 || ready_lifecycle.reconciled_restart_count() != 1 {
-        return Err("ready-point restart did not relaunch the single QEMU process".into());
-    }
-    ready_lifecycle.shutdown()?;
-
-    // ---------------------------------------------------------------------
-    // Stage 3: prove that StayDown requires an explicit StartNode action.
-    // ---------------------------------------------------------------------
-    let stay_down_tag = FaultTag::from_name("live-qemu-stay-down");
-    let stay_down_heal_event = EventId::from_name("heal-stay-down-node");
-    let stay_down_plan = Plan::from_event_graph_for_world(
-        &checkpoint_world,
-        EventGraph::new_for_world(
-            vec![
-                Event::once(
-                    EventId::from_name("crash-stay-down-node"),
-                    None,
-                    Action::InjectFault {
-                        tag: stay_down_tag.clone(),
-                        fault: MembershipFault::Crash {
-                            node: checkpoint_node.clone(),
-                            restart: RestartPolicy::StayDown,
-                        },
-                    },
-                ),
-                // Healing clears the membership fault but, because the policy
-                // is `StayDown`, does not itself relaunch the process.
-                Event::once(
-                    stay_down_heal_event.clone(),
-                    Some(Condition::fault_active(stay_down_tag.clone())),
-                    Action::HealFault {
-                        tag: stay_down_tag.clone(),
-                    },
-                ),
-                // The final event waits until healing has happened and the tag
-                // is inactive, then makes the desired running state explicit.
-                Event::once(
-                    EventId::from_name("start-stay-down-node"),
-                    Some(Condition::all_of(vec![
-                        Condition::after(SimDuration { nanos: 0 }, stay_down_heal_event),
-                        Condition::not(Condition::fault_active(stay_down_tag)),
-                    ])),
-                    Action::StartNode {
-                        node: checkpoint_node.clone(),
-                    },
-                ),
-            ],
-            &checkpoint_world,
-        )?,
-    )?;
-    let stay_down_source = ScenarioDefForm::from_components(
-        &checkpoint_world,
-        &stay_down_plan,
-        &Properties::empty(),
-        Seed::from_u64(0x5a7d0),
-    )?;
-    let stay_down_scenario = stay_down_source.scenario_def();
-    let mut stay_down_lifecycle =
-        build_production_vm_lifecycle_loop(&stay_down_scenario, &stay_down_source, &config)?;
-    let _stay_down_outcome = stay_down_lifecycle.drive_quantum(QuantumRequest {
-        configuration: crucible::Configuration::genesis(stay_down_scenario),
-        control: Vec::new(),
-    })?;
-    if stay_down_lifecycle.live_node_count() != 1
-        || stay_down_lifecycle.reconciled_restart_count() != 2
-        || stay_down_lifecycle.reconciled_crash_count() != 1
-    {
-        return Err(format!(
-            "event-graph StartNode did not relaunch the StayDown QEMU process: live={} crashes={} restarts={}",
-            stay_down_lifecycle.live_node_count(),
-            stay_down_lifecycle.reconciled_crash_count(),
-            stay_down_lifecycle.reconciled_restart_count()
-        )
-        .into());
-    }
-    stay_down_lifecycle.shutdown()?;
-
-    // ---------------------------------------------------------------------
-    // Stage 4: snapshot, crash, and restart from the last checkpoint.
-    // ---------------------------------------------------------------------
-    let mut checkpoint_lifecycle =
-        build_production_vm_lifecycle_loop(&checkpoint_scenario, &checkpoint_source, &config)?;
-    let checkpoint_advance = checkpoint_lifecycle.drive_quantum(QuantumRequest {
-        configuration: crucible::Configuration::genesis(checkpoint_scenario),
-        control: Vec::new(),
-    })?;
-    let checkpoint = checkpoint_lifecycle.drive_quantum(QuantumRequest {
-        configuration: checkpoint_advance.configuration,
-        control: vec![ControlOperation {
-            sequence: 1,
-            kind: ControlOperationKind::Snapshot,
-        }],
-    })?;
-    // `Snapshot` records the replay material needed by
-    // `FromLastCheckpoint`; advancing once beforehand gives it a meaningful
-    // non-genesis state to capture.
-    let checkpoint_crash_tag = FaultTag::from_name("live-qemu-checkpoint-crash");
-    let checkpoint_crash = checkpoint_lifecycle.drive_quantum(QuantumRequest {
-        configuration: checkpoint.configuration,
-        control: vec![ControlOperation {
-            sequence: 2,
-            kind: ControlOperationKind::InjectFault {
-                tag: checkpoint_crash_tag.clone(),
-                fault: Fault::Node(NodeFault::Crash {
-                    node: checkpoint_node,
-                    restart: RestartPolicy::FromLastCheckpoint,
-                }),
-            },
-        }],
-    })?;
-    if checkpoint_lifecycle.live_node_count() != 0
-        || checkpoint_lifecycle.reconciled_crash_count() != 1
-    {
-        return Err("checkpoint crash did not stop the single QEMU process".into());
-    }
-    let checkpoint_restart = checkpoint_lifecycle.drive_quantum(QuantumRequest {
-        configuration: checkpoint_crash.configuration,
-        control: vec![ControlOperation {
-            sequence: 3,
-            kind: ControlOperationKind::HealFault {
-                tag: checkpoint_crash_tag,
-            },
-        }],
-    })?;
-    // Retaining the returned configuration makes explicit that restart also
-    // advances Crucible's immutable model state, even though this certification
-    // only needs to inspect the reconciled live-process counters below.
-    let _checkpoint_restart_configuration = checkpoint_restart.configuration;
-    if checkpoint_lifecycle.live_node_count() != 1
-        || checkpoint_lifecycle.reconciled_restart_count() != 1
-    {
-        return Err("checkpoint thin replay did not install the replacement QEMU process".into());
-    }
-    checkpoint_lifecycle.shutdown()?;
-
-    // ---------------------------------------------------------------------
-    // Stage 5: replay the exact lossy-network branch found in Stage 1.
+    // Stage 2: replay the exact lossy-network branch found in Stage 1.
     // ---------------------------------------------------------------------
     let override_decision = match selected_branch.decisions().first() {
         Some(crucible::Decision::Override(override_decision)) => override_decision.clone(),
@@ -408,9 +219,5 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("delivered_frames={delivered_frames}");
     println!("search_branch=loss-fire");
     println!("branch_decisions_match=true");
-    println!("process_crash_stopped=true");
-    println!("ready_point_process_relaunched=true");
-    println!("stay_down_start_node_process_relaunched=true");
-    println!("last_checkpoint_thin_replay_relaunched=true");
     Ok(())
 }

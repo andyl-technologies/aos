@@ -398,7 +398,6 @@ pub(crate) fn engine_decision_kind(decision: &crucible::Decision) -> &'static st
         crucible::Decision::Override(_) => "override",
         crucible::Decision::Preemption(_) => "preemption",
         crucible::Decision::AppRandom(_) => "app-random",
-        crucible::Decision::ControlFault(_) => "control-fault",
     }
 }
 

@@ -373,8 +373,6 @@ pub(crate) fn run_interactive_session_command_set() -> Vec<SessionCommandKind> {
         SessionCommandKind::StepTimer,
         SessionCommandKind::StepDuration,
         SessionCommandKind::Inject,
-        SessionCommandKind::InjectFault,
-        SessionCommandKind::HealFault,
         SessionCommandKind::CreateSavepoint,
         SessionCommandKind::Fork,
         SessionCommandKind::Query,

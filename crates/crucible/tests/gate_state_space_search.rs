@@ -8,13 +8,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 
 use crucible::{
-    Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, ControlFaultAction,
-    ControlFaultDecision, Decision, DeliveryOrderDecision, EngineError, EventKey, FaultDecision,
-    FaultId, FaultState, FaultTag, FrontierReductionPolicy, GenesisCheckpoint, Icount,
-    MaterializationPolicy, MaterializationTrigger, MaterializedState, NodeId, NodeTemplate,
-    OverrideDecision, PendingFrame, ReadyPoint, RngDecision, RngStreamId, SchedulerNodeId,
-    SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices, TemporalGraph,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode, bake, instantiate, try_step,
+    Checkpoint, CheckpointKind, ChoiceTag, Configuration, ContentHash, Decision,
+    DeliveryOrderDecision, EngineError, EventKey, FaultDecision, FaultId, FaultState,
+    FrontierReductionPolicy, GenesisCheckpoint, Icount, MaterializationPolicy,
+    MaterializationTrigger, MaterializedState, NodeId, NodeTemplate, OverrideDecision,
+    PendingFrame, ReadyPoint, RngDecision, RngStreamId, SchedulerNodeId, SchedulerState,
+    SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices, TemporalGraph, VirtualTime,
+    WhiteBoxPolicy, World, WorldNode, bake, instantiate, try_step,
 };
 
 #[test]
@@ -386,7 +386,7 @@ fn pending_frame(source: &str, sequence: u64, delivery_icount: u64, label: &str)
 fn captured_frontier_decisions(label: &str) -> Vec<Decision> {
     let mut decisions = genuine_frontier_decisions(label);
     decisions.push(non_genuine_delivery_decision(label, 13, 0));
-    decisions.push(control_fault_decision(label));
+    decisions.push(non_genuine_delivery_decision(label, 14, 1));
     decisions
 }
 
@@ -402,18 +402,6 @@ fn non_genuine_delivery_decision(label: &str, ticks: u64, sequence: u64) -> Deci
     Decision::DeliveryOrder(DeliveryOrderDecision {
         at: time(ticks),
         order: vec![event_key(label, ticks, sequence)],
-    })
-}
-
-fn control_fault_decision(label: &str) -> Decision {
-    Decision::ControlFault(ControlFaultDecision {
-        at: time(14),
-        sequence: 0,
-        action: ControlFaultAction::Heal {
-            tag: FaultTag {
-                name: format!("{label}/control-fault"),
-            },
-        },
     })
 }
 

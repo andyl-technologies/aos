@@ -7,14 +7,13 @@
 use crucible::{
     Action, AssertionDef, AssertionId, AssertionPhase, AssertionRunVerdict, ChoiceTag, CodePoint,
     ConditionLeaf, ConditionLeafOracle, ContentHash, Decision, EventGraph, EventGraphState,
-    EventId, FaultTag, FramePredicate, Icount, LinkDef, LinkId, MembershipFault, NodeId,
-    NodeLifecycle, NodeTemplate, ObservableEvent, ObservableEventPayload, OverrideDecision,
-    PartitionDirection, Plan, Predicate, Properties, Property, ReadyPoint, RegexProgram,
-    ReproductionArtifact, ReproductionReplay, ScenarioDefForm, Schedule,
-    SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry, SchedulerEventLogPayload,
-    SchedulerLivenessScenario, SchedulingPoint, Seed, Shift, SimDuration, SimInstant,
-    SingleScheduler, TimerId, TriggerActionApplication, TriggerActionState, VirtualTime,
-    VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    EventId, FramePredicate, Icount, LinkDef, LinkId, LogLevel, NodeId, NodeLifecycle,
+    NodeTemplate, ObservableEvent, ObservableEventPayload, OverrideDecision, Plan, Predicate,
+    Properties, Property, ReadyPoint, RegexProgram, ReproductionArtifact, ReproductionReplay,
+    ScenarioDefForm, Schedule, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulingPoint, Seed, Shift, SimDuration,
+    SimInstant, SingleScheduler, TimerId, TriggerActionApplication, TriggerActionState,
+    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 fn assertion(name: &str) -> AssertionId {
@@ -33,10 +32,6 @@ fn node(name: &str) -> NodeId {
     NodeId {
         name: name.to_string(),
     }
-}
-
-fn tag(name: &str) -> FaultTag {
-    FaultTag::from_name(name)
 }
 
 fn timer(name: &str) -> TimerId {
@@ -101,14 +96,6 @@ fn scenario(name: &str, world: &World) -> SchedulerLivenessScenario {
     .with_trigger_world(world)
 }
 
-fn split_fault() -> MembershipFault {
-    MembershipFault::Partition {
-        endpoint_a: node("db-0"),
-        endpoint_b: node("db-1"),
-        direction: PartitionDirection::Bidirectional,
-    }
-}
-
 fn readiness_condition() -> Predicate {
     Predicate::all_of(vec![
         Predicate::console_match(
@@ -145,12 +132,12 @@ fn graph(world: &World) -> EventGraph {
         .event(event("wait-ready"))
         .when(readiness_condition())
         .action(Action::group(vec![
-            Action::inject_fault(tag("split"), split_fault()),
-            Action::arm_timer(timer("heal-after"), duration(30)),
+            Action::log(LogLevel::Info, "recovery timer armed"),
+            Action::arm_timer(timer("recovery-after"), duration(30)),
         ]))
-        .event(event("heal"))
-        .when(Predicate::timer(timer("heal-after")))
-        .action(Action::heal_fault(tag("split")))
+        .event(event("timer-observed"))
+        .when(Predicate::timer(timer("recovery-after")))
+        .action(Action::log(LogLevel::Info, "recovery timer observed"))
         .event(event("fail-on-property-violation"))
         .when(Predicate::assertion_state(
             assertion("cluster-safe"),
@@ -606,11 +593,7 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
         artifact.reproduction.schedule().content_hash()
     );
 
-    let graph = scenario_form
-        .plan()
-        .event_graph()
-        .expect("plan should carry the event graph under replay")
-        .clone();
+    let graph = scenario_form.plan().event_graph().clone();
     let mut scheduler =
         SingleScheduler::new(scenario("event-graph-replay-oracle", scenario_form.world()))
             .expect("scheduler builds");
@@ -645,7 +628,11 @@ fn replay_event_graph_artifact(artifact: &EventGraphReplayArtifact) -> EventGrap
     let trigger_firings = trigger_firing_records(&trigger_log);
     assert_eq!(
         fired_event_names_from_records(&trigger_firings),
-        vec!["wait-ready", "heal", "pass-on-black-box-convergence"]
+        vec![
+            "wait-ready",
+            "timer-observed",
+            "pass-on-black-box-convergence",
+        ]
     );
 
     let assertion_verdict = AssertionRunVerdict::passed();

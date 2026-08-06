@@ -330,7 +330,6 @@ impl FuzzFamilyRef {
 pub(crate) struct CliScenarioFamilyToml {
     pub(crate) schema: String,
     pub(crate) seed_space: CliSeedSpaceToml,
-    pub(crate) fault_density: CliFaultDensityToml,
     pub(crate) topology_size: CliTopologySizeToml,
     pub(crate) topology_shapes: Vec<String>,
     pub(crate) node_template: CliNodeTemplateToml,
@@ -385,13 +384,6 @@ pub(crate) struct CliSearchRetainedEvidenceEntryToml {
 pub(crate) enum CliSeedSpaceToml {
     Generated { meta_seed: String, count: u32 },
     Explicit { seeds: Vec<String> },
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct CliFaultDensityToml {
-    pub(crate) min_millionths: u32,
-    pub(crate) max_millionths: u32,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -1988,7 +1980,7 @@ pub(crate) fn scenario_family_from_toml(
     label: &str,
     authored: CliScenarioFamilyToml,
 ) -> Result<crucible::ScenarioFamily, CliError> {
-    const SCHEMA: &str = "crucible.scenario-family.v1";
+    const SCHEMA: &str = "crucible.scenario-family.v2";
 
     if authored.schema != SCHEMA {
         return Err(family_file_error(
@@ -2001,16 +1993,6 @@ pub(crate) fn scenario_family_from_toml(
     }
 
     let seeds = seed_space_from_toml(label, authored.seed_space)?;
-    let min_density = crucible::FaultDensity::from_millionths(
-        authored.fault_density.min_millionths,
-    )
-    .map_err(|error| family_file_error(label, format!("has invalid minimum density: {error}")))?;
-    let max_density = crucible::FaultDensity::from_millionths(
-        authored.fault_density.max_millionths,
-    )
-    .map_err(|error| family_file_error(label, format!("has invalid maximum density: {error}")))?;
-    let fault_density = crucible::FaultDensityRange::new(min_density, max_density)
-        .map_err(|error| family_file_error(label, format!("has invalid density range: {error}")))?;
     let topology_size =
         crucible::TopologySizeRange::new(authored.topology_size.min, authored.topology_size.max)
             .map_err(|error| {
@@ -2021,7 +2003,7 @@ pub(crate) fn scenario_family_from_toml(
         .iter()
         .map(|shape| topology_shape_from_toml(label, shape))
         .collect::<Result<Vec<_>, _>>()?;
-    let space = crucible::FamilySpace::new(seeds, fault_density, topology_size, topology_shapes)
+    let space = crucible::FamilySpace::new(seeds, topology_size, topology_shapes)
         .map_err(|error| family_file_error(label, format!("has invalid family space: {error}")))?;
     let node_template = node_template_from_toml(label, authored.node_template)?;
 
