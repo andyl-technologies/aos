@@ -21,6 +21,7 @@
   perl,
   pkg-config,
   protobuf,
+  zlib,
 }: let
   version = "0.1.0";
   repoRoot = ../../..;
@@ -32,10 +33,12 @@
       pathString = toString path;
       base = baseNameOf path;
     in
-      base != "target"
+      base
+      != "target"
       && base != ".git"
       && (
-        pathString == repoRootString
+        pathString
+        == repoRootString
         || lib.hasPrefix "${repoRootString}/crates" pathString
         || pathString == "${repoRootString}/docs"
         || pathString == "${repoRootString}/docs/rfcs"
@@ -64,9 +67,9 @@ in
     };
 
     buildDeps = [perl pkg-config openssl protobuf];
-    # rusqlite is built with the `bundled` feature (its own sqlite amalgamation),
-    # so the only runtime native library is openssl.
-    runtimeDeps = [openssl];
+    # rusqlite is built with the `bundled` feature (its own sqlite amalgamation).
+    # libgit2 still links zlib for compressed Git objects.
+    runtimeDeps = [openssl zlib];
 
     preBuild = ''
       cd crates

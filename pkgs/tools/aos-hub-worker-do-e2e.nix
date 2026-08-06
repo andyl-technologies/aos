@@ -162,7 +162,7 @@
         || !publicList.text.includes("qcow2")
         || !publicList.text.includes(bootstrapState.raw_key)
         || !publicList.text.includes('"releaseVerification":"verified"')
-        || !publicList.text.includes('"bootVerification":"unsigned"')
+        || !publicList.text.includes('"bootVerification":"signed-unverified"')
         || !publicList.text.includes(rawSha256)) {
       throw new Error(`public image list: ''${publicList.response.status} ''${publicList.text}`);
     }

@@ -43,7 +43,7 @@ async fn seed_creates_browsable_registry_and_login() {
     assert_eq!(binding.kind, "local_fs");
     assert_eq!(
         binding.local_root_path.as_deref(),
-        Some(root.path().join("seed-bucket").to_string_lossy().as_ref())
+        Some(root.path().join("storage").to_string_lossy().as_ref())
     );
 
     // The demo user can log in with the seeded password.
