@@ -1,15 +1,16 @@
 //! Node-address preservation tests for live backend scheduling.
 
 use crucible::{
-    BackendEffect, BackendError, BackendInput, BackendNetworkOutput, BackendQuantumLoop,
-    BackendSnapshot, Configuration, Decision, EventLogOffset, ExactLocalEvent, FingerprintSample,
-    Icount, LinkDef, LinkId, LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection,
-    NetworkLookahead, NodeCounter, NodeId, NodeTemplate, OverrideDecision, Plan, Properties,
-    QuantumLoop, QuantumOutcome, QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm,
-    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, Seed,
-    Shift, SimDuration, SimInstant, SimulationBackend, SingleScheduler, StepObservation,
-    VirtualTime, WhiteBoxPolicy, World, WorldNode,
+    BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
+    BackendNetworkOutputInterceptor, BackendQuantumLoop, BackendSnapshot, Configuration, Decision,
+    EventLogOffset, ExactLocalEvent, FingerprintSample, Icount, LinkDef, LinkId,
+    LinkLossProbability, MIN_LINK_LATENCY, NetworkLinkDirection, NetworkLookahead, NodeCounter,
+    NodeId, NodeTemplate, OverrideDecision, Plan, Properties, QuantumLoop, QuantumOutcome,
+    QuantumRequest, ReadyPoint, ScenarioDef, ScenarioDefForm, ScheduledEvent, ScheduledEventKey,
+    ScheduledEventPayload, SchedulerError, SchedulerLivenessScenario, SchedulerNodeActivity,
+    SchedulerNodeId, SchedulerScenarioNode, Seed, Shift, SimDuration, SimInstant,
+    SimulationBackend, SingleScheduler, StepObservation, VirtualTime, WhiteBoxPolicy, World,
+    WorldNode,
 };
 
 struct SelectedNodeLoop {
@@ -104,6 +105,38 @@ impl SimulationBackend for NodeRecordingBackend {
 
     fn shutdown(&mut self) -> Result<(), BackendError> {
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingNetworkInterceptor {
+    batches: Vec<(VirtualTime, usize, u8)>,
+}
+
+impl BackendNetworkOutputInterceptor<SingleScheduler, NodeRecordingBackend>
+    for RecordingNetworkInterceptor
+{
+    fn intercept_network_outputs(
+        &mut self,
+        _loop_impl: &mut SingleScheduler,
+        _backend: &mut NodeRecordingBackend,
+        frontier: VirtualTime,
+        outputs: &mut Vec<BackendNetworkOutput>,
+    ) -> Result<Vec<crucible::SchedulerEventLogAppend>, SchedulerError> {
+        let output_count = outputs.len();
+        let Some(output) = outputs.first_mut() else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network interceptor received an empty committed batch"),
+            });
+        };
+        let Some(last) = output.payload.last_mut() else {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("network interceptor received an empty frame"),
+            });
+        };
+        *last = 0x5a;
+        self.batches.push((frontier, output_count, *last));
+        Ok(Vec::new())
     }
 }
 
@@ -326,12 +359,13 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
         sequence: 0,
         payload,
     };
-    let mut adapter = BackendQuantumLoop::new(
+    let mut adapter = BackendQuantumLoop::with_network_output_interceptor(
         scheduler,
         NodeRecordingBackend {
             network_outputs: vec![output],
             ..NodeRecordingBackend::default()
         },
+        RecordingNetworkInterceptor::default(),
     );
 
     let first = adapter
@@ -353,6 +387,10 @@ fn backend_quantum_loop_routes_guest_output_through_the_world_link() {
 
     assert_eq!(adapter.backend().stepped.len(), 2);
     assert_eq!(adapter.backend().stepped[0], source);
+    assert_eq!(
+        adapter.network_output_interceptor().batches,
+        vec![(outcome.frontier, 1, 0x5a)]
+    );
     assert!(!outcome.decisions.is_empty());
     let link = adapter
         .loop_impl()

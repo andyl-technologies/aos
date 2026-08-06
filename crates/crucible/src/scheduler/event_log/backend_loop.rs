@@ -3,23 +3,84 @@
 use super::*;
 use crate::BackendEffect;
 
+/// Intercepts committed live-backend network outputs before link resolution.
+///
+/// The interceptor runs after every output has been translated to scheduler
+/// time and admitted by the current frontier, but before the authoritative
+/// scheduler routes or mutates any frame. Production signal adapters use this
+/// seam to evaluate exact network opportunities and install their resolved
+/// state on scheduler-owned links. Implementations must preserve canonical
+/// output ordering; any payload or recipient mutation is itself modeled state.
+pub trait BackendNetworkOutputInterceptor<L, B> {
+    /// Applies exact pre-routing work to one canonically ordered output batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when an opportunity, adapter transaction, or
+    /// modeled output mutation cannot be completed atomically.
+    fn intercept_network_outputs(
+        &mut self,
+        loop_impl: &mut L,
+        backend: &mut B,
+        frontier: VirtualTime,
+        outputs: &mut Vec<BackendNetworkOutput>,
+    ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError>;
+}
+
+/// Inert interceptor used by backends without signal-driven network effects.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopBackendNetworkOutputInterceptor;
+
+impl<L, B> BackendNetworkOutputInterceptor<L, B> for NoopBackendNetworkOutputInterceptor {
+    fn intercept_network_outputs(
+        &mut self,
+        _loop_impl: &mut L,
+        _backend: &mut B,
+        _frontier: VirtualTime,
+        _outputs: &mut Vec<BackendNetworkOutput>,
+    ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
+        Ok(Vec::new())
+    }
+}
+
 /// Advances one live backend and drains it at completed scheduler boundaries.
 #[derive(Clone, Debug)]
-pub struct BackendQuantumLoop<L, B> {
+pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     pub(super) loop_impl: L,
     pub(super) backend: B,
+    network_output_interceptor: I,
     pending_network_outputs: Vec<BackendNetworkOutput>,
     pending_observations: Vec<ObservableEvent>,
     committed_frontier: VirtualTime,
 }
 
-impl<L, B> BackendQuantumLoop<L, B> {
+impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
     /// Builds an adapter from an authoritative quantum loop and backend.
     #[must_use]
     pub const fn new(loop_impl: L, backend: B) -> Self {
         Self {
             loop_impl,
             backend,
+            network_output_interceptor: NoopBackendNetworkOutputInterceptor,
+            pending_network_outputs: Vec::new(),
+            pending_observations: Vec::new(),
+            committed_frontier: VirtualTime { ticks: 0 },
+        }
+    }
+}
+
+impl<L, B, I> BackendQuantumLoop<L, B, I> {
+    /// Builds an adapter with an exact pre-routing network-output interceptor.
+    #[must_use]
+    pub const fn with_network_output_interceptor(
+        loop_impl: L,
+        backend: B,
+        network_output_interceptor: I,
+    ) -> Self {
+        Self {
+            loop_impl,
+            backend,
+            network_output_interceptor,
             pending_network_outputs: Vec::new(),
             pending_observations: Vec::new(),
             committed_frontier: VirtualTime { ticks: 0 },
@@ -50,6 +111,18 @@ impl<L, B> BackendQuantumLoop<L, B> {
         &mut self.backend
     }
 
+    /// Returns the exact pre-routing network-output interceptor.
+    #[must_use]
+    pub const fn network_output_interceptor(&self) -> &I {
+        &self.network_output_interceptor
+    }
+
+    /// Returns mutable access to the exact pre-routing interceptor.
+    #[must_use]
+    pub fn network_output_interceptor_mut(&mut self) -> &mut I {
+        &mut self.network_output_interceptor
+    }
+
     /// Returns mutable access to the authoritative loop and live backend together.
     ///
     /// This is the transaction seam for boundary operations that must update
@@ -61,6 +134,20 @@ impl<L, B> BackendQuantumLoop<L, B> {
         (&mut self.loop_impl, &mut self.backend)
     }
 
+    /// Returns mutable access to the loop, backend, and interceptor together.
+    ///
+    /// This is the production transaction seam for operations whose checkpoint
+    /// or boundary evaluation must bind scheduler state, backend state, and the
+    /// signal-network continuation without aliasing any component.
+    #[must_use]
+    pub fn parts_with_network_interceptor_mut(&mut self) -> (&mut L, &mut B, &mut I) {
+        (
+            &mut self.loop_impl,
+            &mut self.backend,
+            &mut self.network_output_interceptor,
+        )
+    }
+
     /// Consumes the adapter and returns its parts.
     #[must_use]
     pub fn into_parts(self) -> (L, B) {
@@ -68,10 +155,11 @@ impl<L, B> BackendQuantumLoop<L, B> {
     }
 }
 
-impl<L, B> QuantumLoop for BackendQuantumLoop<L, B>
+impl<L, B, I> QuantumLoop for BackendQuantumLoop<L, B, I>
 where
     L: QuantumLoop,
     B: SimulationBackend,
+    I: BackendNetworkOutputInterceptor<L, B>,
 {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         let mut outcome = self.loop_impl.drive_quantum(request)?;
@@ -147,10 +235,25 @@ where
             .drain(committed..)
             .map(|(_at, output)| output)
             .collect();
-        let network_outputs = timed_network_outputs
+        let mut network_outputs = timed_network_outputs
             .into_iter()
             .map(|(_at, output)| output)
             .collect::<Vec<_>>();
+        if !network_outputs.is_empty() {
+            let appends = self.network_output_interceptor.intercept_network_outputs(
+                &mut self.loop_impl,
+                &mut self.backend,
+                outcome.frontier,
+                &mut network_outputs,
+            )?;
+            for append in appends {
+                outcome.event_log_entries.extend(append.entries);
+                outcome.event_log_segment_bytes = append.segment_bytes;
+                outcome.event_log_segment_text = append.segment_text;
+                outcome.event_log_segment_hash = append.segment_hash;
+                outcome.event_log_offset = append.offset;
+            }
+        }
         if !network_outputs.is_empty() {
             let (recorded, configuration, append) = self
                 .loop_impl

@@ -309,10 +309,8 @@ impl ProductionVmLifecycleConfig {
 
 /// Lifecycle loop backed by an authoritative scheduler and live QEMU node set.
 pub struct ProductionVmLifecycleLoop {
-    inner: BackendQuantumLoop<SingleScheduler, ProductionNodeSet>,
-    fault_runtime: ProductionFaultRuntime,
-    fault_coordinate: Option<u64>,
-    fault_coordinate_sequence: u64,
+    inner:
+        BackendQuantumLoop<SingleScheduler, ProductionNodeSet, ProductionFaultNetworkInterceptor>,
     trigger_graph: EventGraph,
     trigger_state: EventGraphState,
     trigger_world: World,
@@ -338,10 +336,12 @@ pub struct ProductionVmLifecycleLoop {
 }
 
 mod helpers;
+mod network_faults;
 mod quantum_loop;
 mod runtime;
 
 use helpers::*;
+use network_faults::ProductionFaultNetworkInterceptor;
 
 /// Derives the production scheduler's initial state-space search frontier.
 ///
@@ -627,10 +627,11 @@ pub fn build_production_vm_lifecycle_loop(
     .map_err(|error| loop_factory_error(format!("admit signal fault runtime: {error}")))?;
 
     Ok(ProductionVmLifecycleLoop {
-        inner: BackendQuantumLoop::new(scheduler, backends),
-        fault_runtime,
-        fault_coordinate: None,
-        fault_coordinate_sequence: 0,
+        inner: BackendQuantumLoop::with_network_output_interceptor(
+            scheduler,
+            backends,
+            ProductionFaultNetworkInterceptor::new(fault_runtime),
+        ),
         trigger_graph,
         trigger_state: EventGraphState::default(),
         trigger_world: source.world().clone(),
