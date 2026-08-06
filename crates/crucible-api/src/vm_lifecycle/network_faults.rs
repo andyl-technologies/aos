@@ -11,6 +11,7 @@ use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 /// Owns the production signal continuation at the pre-routing network seam.
 pub(super) struct ProductionFaultNetworkInterceptor {
     runtime: ProductionFaultRuntime,
+    topology: crucible::model::WorldFaultTopology,
     coordinate: Option<u64>,
     coordinate_sequence: u64,
 }
@@ -18,9 +19,13 @@ pub(super) struct ProductionFaultNetworkInterceptor {
 impl ProductionFaultNetworkInterceptor {
     /// Creates an interceptor around the admitted production continuation.
     #[must_use]
-    pub(super) const fn new(runtime: ProductionFaultRuntime) -> Self {
+    pub(super) const fn new(
+        runtime: ProductionFaultRuntime,
+        topology: crucible::model::WorldFaultTopology,
+    ) -> Self {
         Self {
             runtime,
+            topology,
             coordinate: None,
             coordinate_sequence: 0,
         }
@@ -76,12 +81,24 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         &mut self,
         loop_impl: &mut SingleScheduler,
         _backend: &mut ProductionNodeSet,
-        _frontier: VirtualTime,
+        frontier: VirtualTime,
         outputs: &mut Vec<crucible::BackendNetworkOutput>,
     ) -> Result<Vec<SchedulerEventLogAppend>, SchedulerError> {
         let mut routed = Vec::new();
         for output in outputs.drain(..) {
             for route in loop_impl.resolve_backend_network_routes(&output)? {
+                self.topology
+                    .network_route_fault_targets(
+                        &output.source.name,
+                        &route.destination.name,
+                        frontier.ticks,
+                    )
+                    .map_err(|error| SchedulerError::BoundaryViolation {
+                        message: format!(
+                            "network fault route `{}` {:?} is not represented by the admitted World fault topology: {error}",
+                            route.link.name, route.direction
+                        ),
+                    })?;
                 let mut output = output.clone();
                 output.route = Some(route);
                 routed.push(output);
