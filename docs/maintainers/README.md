@@ -10,6 +10,10 @@ Andyl employee contributions covered by the company CIAA from external
 contributions that require the project agreement, and defines the fail-closed
 records and identity checks maintainers must preserve.
 
+Apply the [code style guide](../code-style.md) to new and modified Rust and Nix
+code. It covers Rust APIs and implementation, Dendritic Nix modules, package
+expressions, comments, tests, and embedded shell.
+
 ## Build the source tree
 
 AOS builds hermetically from its bootstrap tools and AOS packages. It does not
