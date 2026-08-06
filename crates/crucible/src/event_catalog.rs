@@ -168,12 +168,6 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         ],
     },
     EventKindCatalogEntry {
-        kind: "control_fault",
-        class: SchedulerEventLogClass::Causal,
-        sources: &["command", "engine"],
-        attributes: &["action", "at", "command_id"],
-    },
-    EventKindCatalogEntry {
         kind: "coverage",
         class: SchedulerEventLogClass::Observational,
         sources: &["engine", "guest"],
@@ -443,7 +437,6 @@ static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
             "assertion_state_changed",
             "backend_input",
             "control",
-            "control_fault",
             "delivery_order",
             "evaluation_boundary",
             "event_activated",

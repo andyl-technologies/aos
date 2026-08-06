@@ -1203,12 +1203,6 @@ pub(super) fn write_decision_binary(decision: &Decision, writer: &mut ScenarioBi
             writer.write_u8(random.width);
             writer.write_u64(random.value);
         }
-        Decision::ControlFault(control) => {
-            writer.write_u8(6);
-            writer.write_u64(control.at.ticks);
-            writer.write_u64(control.sequence);
-            write_control_fault_action_binary(&control.action, writer);
-        }
     }
 }
 
@@ -1273,52 +1267,7 @@ pub(super) fn read_decision_binary(
             width: reader.read_u8()?,
             value: reader.read_u64()?,
         })),
-        6 => Ok(Decision::ControlFault(ControlFaultDecision {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            sequence: reader.read_u64()?,
-            action: read_control_fault_action_binary(reader)?,
-        })),
         _ => Err(scenario_serialization_error("invalid decision tag")),
-    }
-}
-
-pub(super) fn write_control_fault_action_binary(
-    action: &ControlFaultAction,
-    writer: &mut ScenarioBinaryWriter,
-) {
-    match action {
-        ControlFaultAction::Inject { tag, fault } => {
-            writer.write_u8(0);
-            writer.write_string(&tag.name);
-            write_fault_binary(fault, writer);
-        }
-        ControlFaultAction::Heal { tag } => {
-            writer.write_u8(1);
-            writer.write_string(&tag.name);
-        }
-    }
-}
-
-pub(super) fn read_control_fault_action_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<ControlFaultAction, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(ControlFaultAction::Inject {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_fault_binary(reader)?,
-        }),
-        1 => Ok(ControlFaultAction::Heal {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        _ => Err(scenario_serialization_error(
-            "invalid control-fault action tag",
-        )),
     }
 }
 
@@ -1732,20 +1681,9 @@ pub(super) fn read_link_binary(
 
 pub(super) fn write_plan_binary(plan: &Plan, writer: &mut ScenarioBinaryWriter) {
     writer.write_hash(plan.content_hash());
-    match &plan.kind {
-        PlanKind::ScheduledEntries { entries } => {
-            writer.write_count(entries.len());
-            for entry in entries {
-                write_plan_entry_binary(entry, writer);
-            }
-        }
-        PlanKind::EventGraph { graph } => {
-            writer.write_u64(EVENT_GRAPH_PLAN_BINARY_SENTINEL);
-            writer.write_count(graph.events().len());
-            for event in graph.events() {
-                write_event_binary(event, writer);
-            }
-        }
+    writer.write_count(plan.graph.events().len());
+    for event in plan.graph.events() {
+        write_event_binary(event, writer);
     }
     writer.write_binary_blob(plan.fault_signals().wire_bytes());
 }
@@ -1775,24 +1713,14 @@ pub(super) fn read_plan_binary_inner(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Plan, EngineError> {
     let id = reader.read_hash()?;
-    let count_or_sentinel = reader.read_u64()?;
-    let plan = if count_or_sentinel == EVENT_GRAPH_PLAN_BINARY_SENTINEL {
-        let count = reader.read_collection_count("plan.event")?;
-        let mut events = Vec::with_capacity(count);
-        for _ in 0..count {
-            events.push(read_event_binary(reader)?);
-        }
-        let assertions = assertions.unwrap_or_else(|| event_graph_assertion_references(&events));
-        let graph = EventGraph::from_unchecked_events_for_model(events);
-        Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?
-    } else {
-        let count = collection_count_from_raw("plan.entry", count_or_sentinel)?;
-        let mut entries = Vec::with_capacity(count);
-        for _ in 0..count {
-            entries.push(read_plan_entry_binary(reader)?);
-        }
-        Plan::from_entries_for_world(world, entries)?
-    };
+    let count = reader.read_collection_count("plan.event")?;
+    let mut events = Vec::with_capacity(count);
+    for _ in 0..count {
+        events.push(read_event_binary(reader)?);
+    }
+    let assertions = assertions.unwrap_or_else(|| event_graph_assertion_references(&events));
+    let graph = EventGraph::from_unchecked_events_for_model(events);
+    let plan = Plan::from_event_graph_with_assertions_for_world(world, assertions, graph)?;
     let fault_signals =
         FaultSignalPlan::from_wire_bytes(reader.read_binary_blob("plan.fault_signals")?)
             .map_err(|error| scenario_serialization_error(error.to_string()))?;

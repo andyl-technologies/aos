@@ -706,13 +706,6 @@ pub(super) fn control_operation_material(operation: &ControlOperation) -> String
         control_operation_kind_label(&operation.kind)
     ));
     match &operation.kind {
-        ControlOperationKind::InjectFault { tag, fault } => {
-            lines.push(trigger_fault_tag_material("control_tag", tag));
-            lines.push(fault.canonical_material());
-        }
-        ControlOperationKind::HealFault { tag } => {
-            lines.push(trigger_fault_tag_material("control_tag", tag));
-        }
         ControlOperationKind::Pause
         | ControlOperationKind::Resume
         | ControlOperationKind::Step
@@ -732,8 +725,6 @@ pub(super) fn control_operation_kind_label(kind: &ControlOperationKind) -> &'sta
         ControlOperationKind::Snapshot => "snapshot",
         ControlOperationKind::Fork => "fork",
         ControlOperationKind::Inject => "inject",
-        ControlOperationKind::InjectFault { .. } => "inject-fault",
-        ControlOperationKind::HealFault { .. } => "heal-fault",
         ControlOperationKind::Query => "query",
     }
 }

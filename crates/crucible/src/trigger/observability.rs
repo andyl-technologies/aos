@@ -1,15 +1,7 @@
-//! Plan lowering, coverage collection, black-box contracts, and readiness.
+//! Plan validation, coverage collection, black-box contracts, and readiness.
 
 use super::*;
-/// Identity-preserving event-graph lowering of a time-scheduled [`Plan`].
-///
-/// This is the RFC-0010 §17a.7 bridge between the legacy declarative fault plan
-/// and trigger events: every lowered event has a pure [`Condition::At`] trigger
-/// and an [`Action::InjectFault`] or [`Action::HealFault`] action. The lowering
-/// deliberately carries the source plan's canonical bytes and content hash so a
-/// pure-`At` plan and the equivalent event graph remain one content-addressed
-/// value. Graph-native plans return their already-authored event graph with the
-/// same identity-preserving wrapper.
+/// Identity-preserving validated event-graph view of a [`Plan`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoweredPlanEventGraph {
     graph: EventGraph,
@@ -51,13 +43,7 @@ impl LoweredPlanEventGraph {
 }
 
 impl Plan {
-    /// Lowers this plan into the event graph executed by the trigger layer.
-    ///
-    /// Each [`PlanEntry::Activate`] becomes one once-only event with an
-    /// [`Condition::At`] trigger and [`Action::InjectFault`] action. Each
-    /// [`PlanEntry::Heal`] becomes one once-only event with an [`Action::HealFault`]
-    /// action. The returned lowering preserves this plan's canonical bytes and
-    /// content hash as the graph identity.
+    /// Validates and returns the event graph executed by the trigger layer.
     ///
     /// # Errors
     ///
@@ -67,28 +53,13 @@ impl Plan {
         &self,
         world: &World,
     ) -> Result<LoweredPlanEventGraph, EventGraphError> {
-        if let Some(graph) = self.event_graph() {
-            let graph = EventGraph::new_with_assertions_for_world(
-                graph.events().to_vec(),
-                event_graph_assertion_references(graph.events()),
-                world,
-            )?;
-            let evaluation_times = graph_static_evaluation_times(graph.events());
-            return Ok(LoweredPlanEventGraph {
-                graph,
-                content_hash: self.content_hash(),
-                canonical_bytes: self.canonical_bytes(),
-                evaluation_times,
-            });
-        }
-        let events = self
-            .entries()
-            .iter()
-            .enumerate()
-            .map(lower_plan_entry_to_event)
-            .collect::<Vec<_>>();
-        let evaluation_times = plan_evaluation_times(self.entries());
-        let graph = EventGraph::new_for_world(events, world)?;
+        let graph = self.event_graph();
+        let graph = EventGraph::new_with_assertions_for_world(
+            graph.events().to_vec(),
+            event_graph_assertion_references(graph.events()),
+            world,
+        )?;
+        let evaluation_times = graph_static_evaluation_times(graph.events());
         Ok(LoweredPlanEventGraph {
             graph,
             content_hash: self.content_hash(),
@@ -146,7 +117,6 @@ pub(super) fn collect_condition_assertion_references(
         | Condition::MemoryPredicate { .. }
         | Condition::IoPattern { .. }
         | Condition::NodeState { .. }
-        | Condition::FaultActive { .. }
         | Condition::Quiescent
         | Condition::Named { .. }
         | Condition::GuestMarker { .. } => {}

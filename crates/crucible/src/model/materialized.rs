@@ -149,34 +149,6 @@ pub struct AppRandomDecision {
     pub value: u64,
 }
 
-/// A boundary-applied imperative fault-control decision.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ControlFaultDecision {
-    /// The virtual time at which the control action applied.
-    pub at: VirtualTime,
-    /// The session-local control operation sequence.
-    pub sequence: u64,
-    /// The fault action applied at the boundary.
-    pub action: ControlFaultAction,
-}
-
-/// A fault action admitted through the control plane.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ControlFaultAction {
-    /// Inject or replace a full-taxonomy fault under `tag`.
-    Inject {
-        /// Stable handle used for later healing.
-        tag: FaultTag,
-        /// Full fault taxonomy value to activate.
-        fault: Fault,
-    },
-    /// Heal an active fault by tag.
-    Heal {
-        /// Stable handle naming the active fault.
-        tag: FaultTag,
-    },
-}
-
 /// A per-VM snapshot reference captured by a fat checkpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct VmSnapshotRef {
@@ -628,20 +600,7 @@ impl SchedulerState {
 
     /// Applies one causal decision that mutates materialized scheduler state.
     pub fn apply_decision(&mut self, decision: &Decision) {
-        let Decision::ControlFault(control) = decision else {
-            return;
-        };
-        match &control.action {
-            ControlFaultAction::Inject { tag, fault } => {
-                self.active_fault_tags
-                    .insert(tag.clone(), MembershipFault::taxonomy(fault.clone()));
-                self.recompute_active_fault_table();
-            }
-            ControlFaultAction::Heal { tag } => {
-                self.active_fault_tags.remove(tag);
-                self.recompute_active_fault_table();
-            }
-        }
+        let _ = decision;
     }
 
     /// Recomputes the deterministic active-fault table from active tags.

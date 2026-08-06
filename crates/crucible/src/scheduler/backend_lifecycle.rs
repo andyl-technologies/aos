@@ -51,62 +51,6 @@ impl SingleScheduler {
             .append_observations_at_boundary(events, at, kind)
     }
 
-    /// Previews ready-point process relaunches implied by boundary heal controls.
-    ///
-    /// A live backend uses this preview to create a replacement process before
-    /// the same boundary can select the scheduler node that the heal resumes.
-    /// The authoritative state change still occurs only when the control is
-    /// applied by [`QuantumLoop::drive_quantum`].
-    #[must_use]
-    pub fn preview_ready_point_control_restarts(
-        &self,
-        control: &[ControlOperation],
-    ) -> Vec<(NodeId, NodeCounter)> {
-        control
-            .iter()
-            .filter_map(|operation| {
-                let ControlOperationKind::HealFault { tag } = &operation.kind else {
-                    return None;
-                };
-                let Fault::Node(crate::NodeFault::Crash { node, restart }) =
-                    self.trigger_actions.active_taxonomy_faults.get(tag)?
-                else {
-                    return None;
-                };
-                matches!(restart, RestartPolicy::FromReadyPoint)
-                    .then(|| {
-                        self.nodes
-                            .iter()
-                            .find(|runtime| {
-                                runtime.id.kind == SchedulingNodeKind::Vm
-                                    && runtime.id.node == *node
-                            })
-                            .map(|runtime| (node.clone(), runtime.ready_counter))
-                    })
-                    .flatten()
-            })
-            .collect()
-    }
-
-    /// Previews checkpoint-based process relaunches implied by heal controls.
-    #[must_use]
-    pub fn preview_checkpoint_control_restarts(&self, control: &[ControlOperation]) -> Vec<NodeId> {
-        control
-            .iter()
-            .filter_map(|operation| {
-                let ControlOperationKind::HealFault { tag } = &operation.kind else {
-                    return None;
-                };
-                let Fault::Node(crate::NodeFault::Crash { node, restart }) =
-                    self.trigger_actions.active_taxonomy_faults.get(tag)?
-                else {
-                    return None;
-                };
-                (*restart == RestartPolicy::FromLastCheckpoint).then(|| node.clone())
-            })
-            .collect()
-    }
-
     /// Applies a crash fault to a VM scheduler node.
     ///
     /// The crash stops the runtime, removes all incident effective topology

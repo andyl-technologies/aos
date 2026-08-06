@@ -565,15 +565,6 @@ pub(super) fn push_debug_control_operation_lines(
         debug_control_operation_kind_label(&operation.kind)
     ));
     match &operation.kind {
-        ControlOperationKind::InjectFault { tag, fault } => {
-            lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
-            lines.push(format!("{prefix}.tag={}", tag.name));
-            lines.push(fault.canonical_material());
-        }
-        ControlOperationKind::HealFault { tag } => {
-            lines.push(format!("{prefix}.tag_len={}", tag.name.len()));
-            lines.push(format!("{prefix}.tag={}", tag.name));
-        }
         ControlOperationKind::Pause
         | ControlOperationKind::Resume
         | ControlOperationKind::Step
@@ -592,8 +583,6 @@ pub(super) fn debug_control_operation_kind_label(kind: &ControlOperationKind) ->
         ControlOperationKind::Snapshot => "snapshot",
         ControlOperationKind::Fork => "fork",
         ControlOperationKind::Inject => "inject",
-        ControlOperationKind::InjectFault { .. } => "inject-fault",
-        ControlOperationKind::HealFault { .. } => "heal-fault",
         ControlOperationKind::Query => "query",
     }
 }

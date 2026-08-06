@@ -548,8 +548,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("encode maximum mutation: {error}"));
         assert_eq!(
             encoded.len(),
-            MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES
-                + 2 * HARD_MEMORY_MUTATION_BYTES as usize
+            MEMORY_MUTATION_PAYLOAD_HEADER_V1_BYTES + 2 * HARD_MEMORY_MUTATION_BYTES as usize
         );
         assert!(encoded.len() <= HARD_FAULT_PAYLOAD_BYTES as usize);
 

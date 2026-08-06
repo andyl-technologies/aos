@@ -1,21 +1,6 @@
 //! Canonical binary plan, action, fault, and predicate codec.
 
 use super::*;
-pub(super) fn collection_count_from_raw(
-    label: &'static str,
-    count: u64,
-) -> Result<usize, EngineError> {
-    let count = usize::try_from(count)
-        .map_err(|_| scenario_serialization_error("binary count does not fit usize"))?;
-    if count > MAX_SCENARIO_BINARY_COLLECTION_ITEMS {
-        Err(scenario_serialization_error(format!(
-            "{label} count exceeds serialized collection limit"
-        )))
-    } else {
-        Ok(count)
-    }
-}
-
 pub(super) fn event_graph_assertion_references(events: &[Event]) -> Vec<AssertionId> {
     let mut assertions = BTreeSet::new();
     for event in events {
@@ -52,50 +37,8 @@ pub(super) fn collect_predicate_assertion_references(
         | Predicate::IoPattern { .. }
         | Predicate::NodeState { .. }
         | Predicate::Quiescent
-        | Predicate::FaultActive { .. }
         | Predicate::Named { .. }
         | Predicate::GuestMarker { .. } => {}
-    }
-}
-
-pub(super) fn write_plan_entry_binary(entry: &PlanEntry, writer: &mut ScenarioBinaryWriter) {
-    match entry {
-        PlanEntry::Activate { at, tag, fault } => {
-            writer.write_u8(0);
-            writer.write_u64(at.ticks);
-            writer.write_string(&tag.name);
-            write_membership_fault_binary(fault, writer);
-        }
-        PlanEntry::Heal { at, tag } => {
-            writer.write_u8(1);
-            writer.write_u64(at.ticks);
-            writer.write_string(&tag.name);
-        }
-    }
-}
-
-pub(super) fn read_plan_entry_binary(
-    reader: &mut ScenarioBinaryReader<'_>,
-) -> Result<PlanEntry, EngineError> {
-    match reader.read_u8()? {
-        0 => Ok(PlanEntry::Activate {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_membership_fault_binary(reader)?,
-        }),
-        1 => Ok(PlanEntry::Heal {
-            at: VirtualTime {
-                ticks: reader.read_u64()?,
-            },
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        _ => Err(scenario_serialization_error("invalid plan-entry tag")),
     }
 }
 
@@ -142,52 +85,43 @@ pub(super) fn read_event_binary(
 
 pub(super) fn write_action_binary(action: &Action, writer: &mut ScenarioBinaryWriter) {
     match action {
-        Action::InjectFault { tag, fault } => {
-            writer.write_u8(0);
-            writer.write_string(&tag.name);
-            write_membership_fault_binary(fault, writer);
-        }
-        Action::HealFault { tag } => {
-            writer.write_u8(1);
-            writer.write_string(&tag.name);
-        }
         Action::ArmTimer { name, after } => {
-            writer.write_u8(2);
+            writer.write_u8(0);
             writer.write_string(&name.name);
             writer.write_u64(after.nanos);
         }
         Action::CancelTimer { name } => {
-            writer.write_u8(3);
+            writer.write_u8(1);
             writer.write_string(&name.name);
         }
         Action::StartNode { node } => {
-            writer.write_u8(4);
+            writer.write_u8(2);
             writer.write_string(&node.name);
         }
         Action::StopNode { node } => {
-            writer.write_u8(5);
+            writer.write_u8(3);
             writer.write_string(&node.name);
         }
         Action::CreateSavepoint { label } => {
-            writer.write_u8(6);
+            writer.write_u8(4);
             write_optional_string_binary(label.as_deref(), writer);
         }
         Action::Fork { label } => {
-            writer.write_u8(7);
+            writer.write_u8(5);
             write_optional_string_binary(label.as_deref(), writer);
         }
-        Action::Pass => writer.write_u8(8),
+        Action::Pass => writer.write_u8(6),
         Action::Fail { reason } => {
-            writer.write_u8(9);
+            writer.write_u8(7);
             writer.write_string(reason);
         }
         Action::Log { level, message } => {
-            writer.write_u8(10);
+            writer.write_u8(8);
             write_log_level_binary(*level, writer);
             writer.write_string(message);
         }
         Action::Group(actions) => {
-            writer.write_u8(11);
+            writer.write_u8(9);
             writer.write_count(actions.len());
             for action in actions {
                 write_action_binary(action, writer);
@@ -200,18 +134,7 @@ pub(super) fn read_action_binary(
     reader: &mut ScenarioBinaryReader<'_>,
 ) -> Result<Action, EngineError> {
     match reader.read_u8()? {
-        0 => Ok(Action::InjectFault {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_membership_fault_binary(reader)?,
-        }),
-        1 => Ok(Action::HealFault {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        2 => Ok(Action::ArmTimer {
+        0 => Ok(Action::ArmTimer {
             name: TimerId {
                 name: reader.read_string()?,
             },
@@ -219,36 +142,36 @@ pub(super) fn read_action_binary(
                 nanos: reader.read_u64()?,
             },
         }),
-        3 => Ok(Action::CancelTimer {
+        1 => Ok(Action::CancelTimer {
             name: TimerId {
                 name: reader.read_string()?,
             },
         }),
-        4 => Ok(Action::StartNode {
+        2 => Ok(Action::StartNode {
             node: NodeId {
                 name: reader.read_string()?,
             },
         }),
-        5 => Ok(Action::StopNode {
+        3 => Ok(Action::StopNode {
             node: NodeId {
                 name: reader.read_string()?,
             },
         }),
-        6 => Ok(Action::CreateSavepoint {
+        4 => Ok(Action::CreateSavepoint {
             label: read_optional_string_binary(reader)?,
         }),
-        7 => Ok(Action::Fork {
+        5 => Ok(Action::Fork {
             label: read_optional_string_binary(reader)?,
         }),
-        8 => Ok(Action::Pass),
-        9 => Ok(Action::Fail {
+        6 => Ok(Action::Pass),
+        7 => Ok(Action::Fail {
             reason: reader.read_string()?,
         }),
-        10 => Ok(Action::Log {
+        8 => Ok(Action::Log {
             level: read_log_level_binary(reader)?,
             message: reader.read_string()?,
         }),
-        11 => {
+        9 => {
             let count = reader.read_collection_count("action.group")?;
             let mut actions = Vec::with_capacity(count);
             for _ in 0..count {
@@ -271,16 +194,7 @@ pub(super) fn write_control_operation_kind_binary(
         ControlOperationKind::Snapshot => writer.write_u8(3),
         ControlOperationKind::Fork => writer.write_u8(4),
         ControlOperationKind::Inject => writer.write_u8(5),
-        ControlOperationKind::InjectFault { tag, fault } => {
-            writer.write_u8(6);
-            writer.write_string(&tag.name);
-            write_fault_binary(fault, writer);
-        }
-        ControlOperationKind::HealFault { tag } => {
-            writer.write_u8(7);
-            writer.write_string(&tag.name);
-        }
-        ControlOperationKind::Query => writer.write_u8(8),
+        ControlOperationKind::Query => writer.write_u8(6),
     }
 }
 
@@ -294,18 +208,7 @@ pub(super) fn read_control_operation_kind_binary(
         3 => Ok(ControlOperationKind::Snapshot),
         4 => Ok(ControlOperationKind::Fork),
         5 => Ok(ControlOperationKind::Inject),
-        6 => Ok(ControlOperationKind::InjectFault {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-            fault: read_fault_binary(reader)?,
-        }),
-        7 => Ok(ControlOperationKind::HealFault {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
-        8 => Ok(ControlOperationKind::Query),
+        6 => Ok(ControlOperationKind::Query),
         _ => Err(scenario_serialization_error(
             "invalid control-operation-kind tag",
         )),
@@ -1083,10 +986,6 @@ pub(super) fn write_predicate_binary(predicate: &Predicate, writer: &mut Scenari
         Predicate::Quiescent => {
             writer.write_u8(16);
         }
-        Predicate::FaultActive { tag } => {
-            writer.write_u8(17);
-            writer.write_string(&tag.name);
-        }
         Predicate::Named { name, nodes } => {
             writer.write_u8(0);
             writer.write_string(name);
@@ -1242,11 +1141,6 @@ pub(super) fn read_predicate_binary(
             state: read_assertion_phase_binary(reader)?,
         }),
         16 => Ok(Predicate::Quiescent),
-        17 => Ok(Predicate::FaultActive {
-            tag: FaultTag {
-                name: reader.read_string()?,
-            },
-        }),
         _ => Err(scenario_serialization_error("invalid predicate tag")),
     }
 }

@@ -547,11 +547,6 @@ pub(super) fn workload_pattern_node(name: &str, cmdline: String) -> WorldNode {
     }
 }
 
-pub(super) fn workload_pattern_link_id(link: &LinkDef) -> LinkId {
-    let (left, right) = link.endpoints();
-    LinkId::from_name(format!("{}--{}", left.name, right.name))
-}
-
 pub(super) fn push_cmdline_token(cmdline: &mut String, token: &str) {
     if !cmdline.is_empty() {
         cmdline.push(' ');
@@ -777,22 +772,6 @@ pub(super) fn add_family_link_pair(pairs: &mut BTreeSet<(u32, u32)>, left: u32, 
     pairs.insert(pair);
 }
 
-pub(super) fn family_fault_candidates(world: &World) -> Vec<FamilyFaultCandidate> {
-    let mut candidates =
-        Vec::with_capacity(world.links().len().saturating_add(world.vm_nodes().len()));
-    for link in world.links() {
-        let (endpoint_a, endpoint_b) = link.endpoints();
-        candidates.push(FamilyFaultCandidate::Partition {
-            endpoint_a: endpoint_a.clone(),
-            endpoint_b: endpoint_b.clone(),
-        });
-    }
-    for node in world.vm_nodes() {
-        candidates.push(FamilyFaultCandidate::Crash(node.id.clone()));
-    }
-    candidates
-}
-
 pub(super) fn baked_node_blobs(world: &World) -> BTreeMap<NodeId, NodeBlobRef> {
     let world_identity = canonical_world_identity(world);
     canonical_world_nodes(&world.nodes)
@@ -1003,31 +982,15 @@ pub(super) fn world_link_material(link: &LinkDef) -> String {
 }
 
 pub(super) fn plan_material(plan: &Plan) -> String {
-    plan_parts_material(&plan.kind, &plan.fault_signals)
+    plan_parts_material(&plan.graph, &plan.fault_signals)
 }
 
-pub(super) fn plan_parts_material(kind: &PlanKind, fault_signals: &FaultSignalPlan) -> String {
+pub(super) fn plan_parts_material(graph: &EventGraph, fault_signals: &FaultSignalPlan) -> String {
     format!(
         "{}\nfault-signal-plan={}",
-        plan_kind_material(kind),
+        event_graph_plan_material(graph),
         fault_signals.id().to_hex()
     )
-}
-
-pub(super) fn plan_kind_material(kind: &PlanKind) -> String {
-    match kind {
-        PlanKind::ScheduledEntries { entries } => scheduled_plan_material(entries),
-        PlanKind::EventGraph { graph } => event_graph_plan_material(graph),
-    }
-}
-
-pub(super) fn scheduled_plan_material(entries: &[PlanEntry]) -> String {
-    let mut lines = Vec::with_capacity(entries.len().saturating_mul(12) + 1);
-    lines.push(format!("entries={}", entries.len()));
-    for entry in entries {
-        lines.push(plan_entry_material(entry));
-    }
-    lines.join("\n")
 }
 
 pub(super) fn event_graph_plan_material(graph: &EventGraph) -> String {
@@ -1058,38 +1021,8 @@ pub(super) fn event_material(event: &Event) -> String {
     )
 }
 
-pub(super) fn plan_entry_material(entry: &PlanEntry) -> String {
-    match entry {
-        PlanEntry::Activate { at, tag, fault } => {
-            format!(
-                "plan_entry=activate\nplan_at_ticks={}\n{}\n{}",
-                at.ticks,
-                fault_tag_material(tag),
-                membership_fault_material(fault)
-            )
-        }
-        PlanEntry::Heal { at, tag } => {
-            format!(
-                "plan_entry=heal\nplan_at_ticks={}\n{}",
-                at.ticks,
-                fault_tag_material(tag)
-            )
-        }
-    }
-}
-
 pub(super) fn action_material(action: &Action) -> String {
     match action {
-        Action::InjectFault { tag, fault } => {
-            format!(
-                "action=inject-fault\n{}\n{}",
-                fault_tag_material(tag),
-                membership_fault_material(fault)
-            )
-        }
-        Action::HealFault { tag } => {
-            format!("action=heal-fault\n{}", fault_tag_material(tag))
-        }
         Action::ArmTimer { name, after } => {
             format!(
                 "action=arm-timer\n{}\nafter_nanos={}",
@@ -1173,10 +1106,6 @@ pub(super) fn membership_fault_material(fault: &MembershipFault) -> String {
             format!("fault=taxonomy\n{}", fault.canonical_material())
         }
     }
-}
-
-pub(super) fn fault_tag_material(tag: &FaultTag) -> String {
-    format!("tag_len={}\ntag={}", tag.name.len(), tag.name)
 }
 
 pub(super) fn properties_material(assertions: &[AssertionDef]) -> String {
@@ -1332,9 +1261,6 @@ pub(super) fn predicate_material(predicate: &Predicate) -> String {
             )
         }
         Predicate::Quiescent => String::from("predicate=quiescent"),
-        Predicate::FaultActive { tag } => {
-            format!("predicate=fault-active\n{}", fault_tag_material(tag))
-        }
         Predicate::Named { name, nodes } => {
             format!(
                 "predicate=named\npredicate_name_len={}\npredicate_name={}\n{}",

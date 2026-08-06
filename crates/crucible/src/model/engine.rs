@@ -139,13 +139,6 @@ pub enum EngineError {
         /// The maximum legal probability in millionths.
         maximum: u32,
     },
-    /// A fixed-point family fault density is outside `[0.0, 1.0]`.
-    FaultDensityOutOfRange {
-        /// The invalid density in millionths.
-        millionths: u32,
-        /// The maximum legal density in millionths.
-        maximum: u32,
-    },
     /// A fixed-point fault rate is outside `[0.0, 1.0]`.
     FaultRateBasisPointsOutOfRange {
         /// The invalid rate in basis points.
@@ -744,9 +737,6 @@ impl fmt::Display for EngineError {
             }
             Self::LinkLossProbabilityOutOfRange { .. } => {
                 f.write_str("world link loss probability is outside the legal range")
-            }
-            Self::FaultDensityOutOfRange { .. } => {
-                f.write_str("scenario family fault density is outside the legal range")
             }
             Self::FaultRateBasisPointsOutOfRange { .. } => {
                 f.write_str("fault rate basis points are outside the legal range")
@@ -1564,8 +1554,7 @@ pub(super) fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<Nod
         Decision::DeliveryOrder(_)
         | Decision::FaultFires(_)
         | Decision::RngDraw(_)
-        | Decision::Override(_)
-        | Decision::ControlFault(_) => None,
+        | Decision::Override(_) => None,
     }
 }
 

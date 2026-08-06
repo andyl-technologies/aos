@@ -280,7 +280,6 @@ pub struct ScenarioBuilder {
     pub(super) nodes: Vec<PendingScenarioNode>,
     pub(super) links: Vec<PendingScenarioLink>,
     pub(super) plan: Option<Plan>,
-    pub(super) plan_entries: Vec<PlanEntry>,
     pub(super) properties: Option<Properties>,
     pub(super) assertions: Vec<AssertionDef>,
     pub(super) seed: Seed,
@@ -400,15 +399,6 @@ impl ScenarioBuilder {
     #[must_use]
     pub fn plan(mut self, plan: Plan) -> Self {
         self.plan = Some(plan);
-        self.plan_entries.clear();
-        self
-    }
-
-    /// Adds one plan entry to the plan layer.
-    #[must_use]
-    pub fn plan_entry(mut self, entry: PlanEntry) -> Self {
-        self.plan = None;
-        self.plan_entries.push(entry);
         self
     }
 
@@ -505,16 +495,12 @@ impl ScenarioBuilder {
             .collect()
     }
 
-    fn build_plan(&self, world: &World) -> Result<Plan, EngineError> {
+    fn build_plan(&self, _world: &World) -> Result<Plan, EngineError> {
         if let Some(plan) = &self.plan {
             return Ok(plan.clone());
         }
 
-        if self.plan_entries.is_empty() {
-            Ok(Plan::empty())
-        } else {
-            Plan::from_entries_for_world(world, self.plan_entries.clone())
-        }
+        Ok(Plan::empty())
     }
 
     fn build_properties(&self, world: &World) -> Result<Properties, EngineError> {
@@ -528,114 +514,6 @@ impl ScenarioBuilder {
         } else {
             Properties::from_assertions_for_world(world, self.assertions.clone())
         }
-    }
-}
-
-/// A deterministic fixed-point fault density for [`ScenarioFamily`] generation.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct FaultDensity {
-    pub(super) millionths: u32,
-}
-
-impl FaultDensity {
-    /// The density that generates no family faults.
-    pub const ZERO: Self = Self { millionths: 0 };
-
-    /// The density that selects every deterministic fault candidate.
-    pub const ONE: Self = Self {
-        millionths: MAX_FAMILY_FAULT_DENSITY_MILLIONTHS,
-    };
-
-    /// Builds a density from millionths in the closed range `[0, 1_000_000]`.
-    ///
-    /// `0` means no generated faults, and `1_000_000` means every candidate fault
-    /// for the generated topology. The fixed-point representation avoids
-    /// floating-point ambiguity in family parameter points.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::FaultDensityOutOfRange`] when `millionths` is greater
-    /// than `1_000_000`.
-    pub fn from_millionths(millionths: u32) -> Result<Self, EngineError> {
-        if millionths > MAX_FAMILY_FAULT_DENSITY_MILLIONTHS {
-            return Err(EngineError::FaultDensityOutOfRange {
-                millionths,
-                maximum: MAX_FAMILY_FAULT_DENSITY_MILLIONTHS,
-            });
-        }
-
-        Ok(Self { millionths })
-    }
-
-    /// Returns this density as millionths in the closed range `[0, 1_000_000]`.
-    #[must_use]
-    pub fn millionths(self) -> u32 {
-        self.millionths
-    }
-
-    fn scaled_count(self, candidates: usize) -> usize {
-        if self.millionths == 0 || candidates == 0 {
-            return 0;
-        }
-
-        let numerator = (candidates as u128) * u128::from(self.millionths);
-        let denominator = u128::from(MAX_FAMILY_FAULT_DENSITY_MILLIONTHS);
-        numerator.div_ceil(denominator) as usize
-    }
-}
-
-/// Inclusive finite range of family fault-density values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct FaultDensityRange {
-    pub(super) min: FaultDensity,
-    pub(super) max: FaultDensity,
-}
-
-impl FaultDensityRange {
-    /// Builds an inclusive fault-density range.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EngineError::ScenarioFamilyInvalidSpace`] when `min > max`.
-    pub fn new(min: FaultDensity, max: FaultDensity) -> Result<Self, EngineError> {
-        if min > max {
-            return Err(EngineError::ScenarioFamilyInvalidSpace {
-                reason: "fault density range minimum exceeds maximum",
-            });
-        }
-
-        Ok(Self { min, max })
-    }
-
-    /// Returns the minimum density in the range.
-    #[must_use]
-    pub fn min(self) -> FaultDensity {
-        self.min
-    }
-
-    /// Returns the maximum density in the range.
-    #[must_use]
-    pub fn max(self) -> FaultDensity {
-        self.max
-    }
-
-    /// Returns whether `density` is in this range.
-    #[must_use]
-    pub fn contains(self, density: FaultDensity) -> bool {
-        self.min <= density && density <= self.max
-    }
-
-    fn len(self) -> u64 {
-        u64::from(self.max.millionths - self.min.millionths) + 1
-    }
-
-    fn at(self, index: u64) -> Result<FaultDensity, EngineError> {
-        if index >= self.len() {
-            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
-                parameter: "fault_density",
-            });
-        }
-        FaultDensity::from_millionths(self.min.millionths + index as u32)
     }
 }
 
@@ -833,7 +711,6 @@ impl SeedSpace {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FamilySpace {
     pub(super) seeds: SeedSpace,
-    pub(super) fault_density: FaultDensityRange,
     pub(super) topology_size: TopologySizeRange,
     pub(super) topology_shapes: Vec<TopologyShape>,
 }
@@ -850,7 +727,6 @@ impl FamilySpace {
     /// is empty.
     pub fn new(
         seeds: SeedSpace,
-        fault_density: FaultDensityRange,
         topology_size: TopologySizeRange,
         topology_shapes: Vec<TopologyShape>,
     ) -> Result<Self, EngineError> {
@@ -866,7 +742,6 @@ impl FamilySpace {
 
         Ok(Self {
             seeds,
-            fault_density,
             topology_size,
             topology_shapes,
         })
@@ -876,12 +751,6 @@ impl FamilySpace {
     #[must_use]
     pub fn seeds(&self) -> &SeedSpace {
         &self.seeds
-    }
-
-    /// Returns this space's fault-density axis.
-    #[must_use]
-    pub fn fault_density(&self) -> FaultDensityRange {
-        self.fault_density
     }
 
     /// Returns this space's topology-size axis.
@@ -900,7 +769,6 @@ impl FamilySpace {
     #[must_use]
     pub fn contains(&self, params: FamilyParams) -> bool {
         self.seeds.contains(params.seed)
-            && self.fault_density.contains(params.fault_density)
             && self.topology_size.contains(params.topology_size)
             && self
                 .topology_shapes
@@ -918,11 +786,9 @@ impl FamilySpace {
         let seed_count = self.seeds.len();
         let shape_count = self.topology_shapes.len() as u64;
         let size_count = self.topology_size.len();
-        let density_count = self.fault_density.len();
         let total = seed_count
             .checked_mul(shape_count)
             .and_then(|count| count.checked_mul(size_count))
-            .and_then(|count| count.checked_mul(density_count))
             .ok_or(EngineError::ScenarioFamilyInvalidSpace {
                 reason: "family space cardinality overflows u64",
             })?;
@@ -937,7 +803,7 @@ impl FamilySpace {
 
     /// Deterministically samples one parameter point by cartesian index.
     ///
-    /// The finite axes are traversed in seed, shape, size, then density order.
+    /// The finite axes are traversed in seed, shape, then size order.
     /// Callers that want an unbounded fuzz counter should explicitly wrap by
     /// [`Self::cardinality`] so exhaustive enumeration can still reject an
     /// out-of-space index.
@@ -957,19 +823,15 @@ impl FamilySpace {
         let seed_count = self.seeds.len();
         let shape_count = self.topology_shapes.len() as u64;
         let size_count = self.topology_size.len();
-        let density_count = self.fault_density.len();
         let mut index = index;
         let seed = self.seeds.seed_at(index % seed_count)?;
         index /= seed_count;
         let topology_shape = self.topology_shapes[(index % shape_count) as usize];
         index /= shape_count;
         let topology_size = self.topology_size.at(index % size_count)?;
-        index /= size_count;
-        let fault_density = self.fault_density.at(index % density_count)?;
 
         Ok(FamilyParams {
             seed,
-            fault_density,
             topology_size,
             topology_shape,
         })
@@ -978,11 +840,6 @@ impl FamilySpace {
     fn validate_params(&self, params: FamilyParams) -> Result<(), EngineError> {
         if !self.seeds.contains(params.seed) {
             return Err(EngineError::ScenarioFamilyParameterOutOfSpace { parameter: "seed" });
-        }
-        if !self.fault_density.contains(params.fault_density) {
-            return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
-                parameter: "fault_density",
-            });
         }
         if !self.topology_size.contains(params.topology_size) {
             return Err(EngineError::ScenarioFamilyParameterOutOfSpace {
@@ -1008,8 +865,6 @@ impl FamilySpace {
 pub struct FamilyParams {
     /// Concrete root seed for the pinned scenario.
     pub seed: Seed,
-    /// Concrete exact fault density used to generate the plan.
-    pub fault_density: FaultDensity,
     /// Concrete generated node count.
     pub topology_size: u32,
     /// Concrete generated topology shape.
@@ -1135,36 +990,8 @@ impl ScenarioFamily {
         World::from_nodes_and_links(nodes, links)
     }
 
-    fn build_plan(&self, world: &World, params: FamilyParams) -> Result<Plan, EngineError> {
-        let candidates = family_fault_candidates(world);
-        let fault_count = params.fault_density.scaled_count(candidates.len());
-        let mut entries = Vec::with_capacity(fault_count.saturating_mul(2));
-        for (index, candidate) in candidates.into_iter().take(fault_count).enumerate() {
-            let activate_at = VirtualTime {
-                ticks: FAMILY_FAULT_STEP_TICKS
-                    .checked_mul(index as u64 + 1)
-                    .ok_or(EngineError::ScenarioFamilyInvalidSpace {
-                        reason: "generated family fault time overflows u64",
-                    })?,
-            };
-            let heal_at = VirtualTime {
-                ticks: activate_at
-                    .ticks
-                    .checked_add(FAMILY_FAULT_HEAL_DELAY_TICKS)
-                    .ok_or(EngineError::ScenarioFamilyInvalidSpace {
-                        reason: "generated family heal time overflows u64",
-                    })?,
-            };
-            let tag = FaultTag::from_name(format!("family-fault-{index}"));
-            entries.push(PlanEntry::Activate {
-                at: activate_at,
-                tag: tag.clone(),
-                fault: candidate.into_fault(),
-            });
-            entries.push(PlanEntry::Heal { at: heal_at, tag });
-        }
-
-        Plan::from_entries_for_world(world, entries)
+    fn build_plan(&self, _world: &World, _params: FamilyParams) -> Result<Plan, EngineError> {
+        Ok(Plan::empty())
     }
 }
 

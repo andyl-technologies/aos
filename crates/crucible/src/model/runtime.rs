@@ -826,10 +826,9 @@ pub(super) fn coverage_guided_fuzz_override_decision(
     params: FamilyParams,
 ) -> Decision {
     let material = format!(
-        "meta_seed={}\nsequence={sequence}\nsample_index={sample_index}\nseed={}\nfault_density={}\ntopology_size={}\ntopology_shape={:?}",
+        "meta_seed={}\nsequence={sequence}\nsample_index={sample_index}\nseed={}\ntopology_size={}\ntopology_shape={:?}",
         config.meta_seed.to_hex(),
         params.seed.to_hex(),
-        params.fault_density.millionths(),
         params.topology_size,
         params.topology_shape
     );
@@ -1685,7 +1684,6 @@ pub(super) fn predicate_uses_only_search_schedule_predicates(
     allow_terminal_quiescence_predicates: bool,
 ) -> bool {
     match predicate {
-        Predicate::FaultActive { .. } => true,
         Predicate::Named { .. } => {
             predicate_scope == SearchAssertionPredicateScope::ScheduleAndNamedTruths
         }
@@ -1808,7 +1806,7 @@ pub(super) fn is_genuine_search_frontier_decision(decision: &Decision) -> bool {
     match decision {
         Decision::DeliveryOrder(_) => false,
         Decision::FaultFires(_) | Decision::RngDraw(_) | Decision::Override(_) => true,
-        Decision::Preemption(_) | Decision::AppRandom(_) | Decision::ControlFault(_) => false,
+        Decision::Preemption(_) | Decision::AppRandom(_) => false,
     }
 }
 
