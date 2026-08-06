@@ -117,6 +117,7 @@ Let `R = /{registry}/-/settings`.
 
 | Current method and path | Final disposition |
 | --- | --- |
+| no direct system-image page | add `GET /{registry}/-/images` as the signed end-user disk-image catalog and download entry point |
 | `GET R` | retain with new Overview semantics |
 | `POST R/visibility` | move to `POST R/access/visibility` |
 | `POST R/crawl` | move to `POST R/access/crawl-policy` |

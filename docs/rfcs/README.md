@@ -27,6 +27,6 @@ topic files.
 | [0009](0009-toolchain-ladder-stdenv.md) | 2026-06-15 | Coherent toolchain-ladder stdenv — per-tier mini-stdenv, manifest-driven packages, stock `make bootstrap` | Proposed |
 | [0010](0010-crucible/README.md) | 2026-06-18 | Crucible — a hermetically deterministic multi-VM simulation harness | Proposed (design-only) |
 | [0011](0011-on-host-config-eval/README.md) | 2026-06-25 | On-host, eval-only configuration — generations from downloaded Nix modules | Accepted; phased implementation plan and locked decisions |
-| [0012](0012-hub-surface-topology/README.md) | 2026-08-03 | AOS Hub surface topology — multiple placements, simultaneous delivery routes, and principled registry/cache relationships | Proposed |
+| [0012](0012-hub-surface-topology/README.md) | 2026-08-03 | AOS Hub surface topology — multiple placements, simultaneous delivery routes, and principled registry/cache relationships | Proposed; signed system-image distribution implemented and native/Worker E2E-tested |
 
 Numbering is chronological by the date the design entered the tree.

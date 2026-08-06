@@ -440,6 +440,12 @@ adjacent but not combined.
 The registry owns its signed catalog, placements, delivery routes, consumer
 cache stack, trust/access policy, and publishing workflow.
 
+The public registry browse navbar is separate from settings navigation and is
+ordered Overview, Packages, Releases, Channels, Images, Keys, then Settings
+when authorized. **Images** is always discoverable for a readable registry and
+opens `/{registry}/-/images`; private-registry authorization follows the same
+visibility rules as other browse inventory.
+
 ### Navbar
 
 ```text

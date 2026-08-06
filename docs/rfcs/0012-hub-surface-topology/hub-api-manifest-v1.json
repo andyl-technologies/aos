@@ -2259,6 +2259,7 @@
       "RegistryConfigurationService",
       "PackageService",
       "ChannelService",
+      "ImageService",
       "PublishService",
       "GitService",
       "WebhookService",

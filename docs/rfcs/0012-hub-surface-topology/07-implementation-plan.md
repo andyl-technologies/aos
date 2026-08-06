@@ -178,6 +178,48 @@ registry's closure; concurrent root/population/inventory change stales the old
 plan; and partial placement deletion never loses presence evidence or reports
 unconfirmed bytes as reclaimed.
 
+## Phase 5a: first-class AOS system-image distribution
+
+- [x] Extend each signed sysroot catalog entry with a direct-delivery contract:
+      platform and architecture, encoding format, logical image identity,
+      deterministic object key and useful filename, media type, compression,
+      encoded byte size, SHA-256, compatible targets, release/channel identity,
+      and a complete integrity-bound `image-info.json` reference.
+- [x] Model raw, QCOW2, VMDK, and VHD as encodings of one logical release and
+      expose target selection for bare metal, QEMU/KVM, OpenStack, VMware, and
+      Hyper-V without exposing Nix store paths or NARs.
+- [x] Emit or attach canonical image metadata for every published encoding;
+      converted outputs no longer depend on an implicit sibling
+      `image-info.json` during publication.
+- [x] Add the registry **Images** navbar entry and browse page with release,
+      channel, architecture, format, target, size, checksum, release and boot
+      verification state, filters, and direct download actions.
+- [x] Ship `ImageService.ListImages`, `GetImage`, and `ResolveImage` in
+      `aos.hub.v1`, returning immutable byte URLs and complete integrity and
+      image-info metadata.
+- [x] Ship `aos image list`, `show`, and `download` with release/channel,
+      architecture, format, target, package, output, JSON, authenticated
+      private-registry access, resumable range downloads, useful filenames,
+      exact-size enforcement, and mandatory SHA-256 verification.
+- [x] Preserve package-oriented `apm install ... --image` behavior while
+      making `aos image` the direct end-user image-discovery workflow.
+- [x] Serve the exact disk file in native and Worker deployments with public
+      and private authorization, `HEAD`, ranges, `Content-Disposition`,
+      integrity headers, and immutable caching.
+- [x] Publish disk bytes and signed catalog metadata before advancing release
+      and channel discovery. Treat disk files and image-info documents as
+      publication and GC roots, and fail closed on partial publication.
+- [x] Add a hermetic producer fixture with fake raw and QCOW2 images and run it
+      end to end through native and live Worker Durable Object deployments,
+      covering API, Web UI, CLI, exact bytes, checksum verification, range
+      requests, and public and authenticated access.
+
+**Done when:** one signed release is discoverable as raw and QCOW2 through the
+Web UI and API; the CLI downloads and verifies exact disk bytes; native and
+Worker pass the same public/private, `HEAD`, and range matrix; incomplete
+publication is invisible; and the image and metadata objects remain release
+roots. This phase is complete.
+
 ## Phase 6: replication, shards, and population
 
 - [ ] Implement immutable-first replication and pointer-last registry

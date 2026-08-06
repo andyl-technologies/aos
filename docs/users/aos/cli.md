@@ -70,6 +70,42 @@ not use `aos system build`, `aos system image`, or `aos system eval` with the
 current tree; those commands still target an older attribute layout and are
 not covered by the current system tests.
 
+## Discover and download system images
+
+`aos image` consumes the signed system-image catalog of a Hub registry and
+downloads disk bytes directly. It does not require a source checkout:
+
+```sh
+aos image list --registry andyl/main --channel stable
+aos image show --registry andyl/main --channel stable \
+  --architecture x86_64 --target qemu-kvm
+aos image download --registry andyl/main --channel stable \
+  --architecture x86_64 --target qemu-kvm --output aos.qcow2
+```
+
+Use `--release` instead of `--channel` for an immutable release, or add
+`--format raw|qcow2|vmdk|vhd` when the target permits several encodings.
+`--package` disambiguates registries that publish more than one sysroot
+package. `--hub` defaults to the public AOS Hub. `--token` or `AOS_TOKEN`
+authorizes a private registry and is rejected over cleartext HTTP.
+
+Downloads resume an existing hidden partial file with an HTTP range request.
+The command enforces the signed size and SHA-256 before atomically installing
+the final file; verification cannot be disabled. `--no-resume` restarts the
+partial download. With no `--output`, the signed useful filename is used.
+
+All three subcommands support the global JSON output mode:
+
+```sh
+aos --json image list --registry andyl/main --channel stable
+aos --json image show --registry andyl/main --release 2026.3.0 \
+  --architecture x86_64 --format raw
+```
+
+`apm install PACKAGE --system --image FORMAT --output FILE` remains available
+for package-oriented installation flows. Prefer `aos image` when choosing by
+end-user target, release channel, or direct disk encoding.
+
 ## Run checks and maintenance commands
 
 ```sh
