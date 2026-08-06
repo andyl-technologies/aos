@@ -26,6 +26,17 @@ pub(crate) fn write_replay_report_human(
             reduction.reconstructed_decisions
         )?;
     }
+    if let Some(live) = &report.live_qemu {
+        writeln!(
+            output,
+            "crucible: replay live-qemu status=validated producer={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+            live.producer,
+            live.terminal_configuration,
+            live.event_stream_digest,
+            live.fingerprint_stream_digest,
+            live.controls
+        )?;
+    }
     if let Some(check) = &report.check {
         match &check.mismatch {
             Some(mismatch) => {
@@ -165,8 +176,8 @@ pub(crate) fn verify_selftest_corpus(
 }
 
 #[cfg(any(test, feature = "test-double"))]
-pub(crate) fn verify_selftest_builtin_corpus()
--> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
+pub(crate) fn verify_selftest_builtin_corpus(
+) -> Result<Vec<crucible::ExampleScenarioVerifyReport>, CliError> {
     let corpus = crucible::built_in_example_corpus().map_err(CliError::Selftest)?;
     let mut verified = Vec::with_capacity(corpus.len());
     for fixture in corpus {

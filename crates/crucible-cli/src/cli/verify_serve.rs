@@ -173,12 +173,55 @@ pub(super) fn verify_witness_from_run_report(
     let state_dump = verify_state_dump(run_plan, report);
     let artifact = backend
         .map(|backend| {
-            verify_reproduction_artifact_bytes(
+            if !matches!(backend, ResolvedLocalBackend::Qemu { .. }) {
+                return verify_reproduction_artifact_bytes(
+                    seed,
+                    Some(backend),
+                    run_plan.scenario.scenario_def(),
+                    &canonical_log,
+                    &fingerprint_samples,
+                );
+            }
+            let scenario = run_plan.scenario.scenario_form();
+            let terminal = report.terminal_configuration.as_ref().ok_or_else(|| {
+                artifact_error("verify artifact capture requires a terminal configuration")
+            })?;
+            let model = crucible::ReproductionArtifact::capture(scenario, &terminal.schedule)
+                .map_err(|error| {
+                    artifact_error(format!("verify model reproduction capture failed: {error}"))
+                })?;
+            let replay = model.replay().map_err(|error| {
+                artifact_error(format!("verify model reproduction replay failed: {error}"))
+            })?;
+            let live = live_qemu_artifact_evidence_from_run(
+                LiveQemuArtifactRecipe {
+                    producer: "verify",
+                    terminal_condition: run_plan.terminal_condition,
+                    max_virtual_time_ticks: run_plan.max_virtual_time_ticks,
+                    max_quanta: run_plan.max_quanta,
+                    coverage: false,
+                    execution_mode: run_plan.execution_mode,
+                    startup_commands: &run_plan.startup_commands,
+                    initial_control_commands: &run_plan.initial_control_commands,
+                    branch: LiveQemuReplayBranch::None,
+                },
+                scenario,
+                report,
+            )?;
+            let mut payloads = model_reproduction_artifact_payloads(&model, replay.state);
+            payloads.extend(live_qemu_artifact_payloads(&live));
+            let scenario_bytes = scenario.to_compact_binary();
+            reproduction_artifact_bytes_with_scenario_payload(
                 seed,
                 Some(backend),
-                run_plan.scenario.scenario_def(),
+                ReproductionScenarioPayload {
+                    name: "verify-scenario.crucible-scenario",
+                    media_type: "application/vnd.crucible.scenario.compact-binary",
+                    bytes: &scenario_bytes,
+                },
                 &canonical_log,
                 &fingerprint_samples,
+                &payloads,
             )
         })
         .transpose()?;
@@ -505,8 +548,8 @@ pub(super) fn artifact_fingerprint_samples(
         .iter()
         .map(|fingerprint| VerifyFingerprintSample {
             index: fingerprint.index,
-            instruction: fingerprint.index,
-            node: String::from("artifact"),
+            instruction: fingerprint.instruction,
+            node: fingerprint.node.clone(),
             digest: fingerprint.digest.clone(),
         })
         .collect()
@@ -667,7 +710,13 @@ pub(super) fn prefixes_match(left: &[u8], right: &[u8], len: usize) -> bool {
     left.get(..len) == right.get(..len)
 }
 
-fn reproduction_artifact_bytes_with_scenario_payload(
+/// Encodes a self-contained reproduction artifact around an explicit scenario payload.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when component identity, decision payload, or canonical
+/// artifact encoding validation fails.
+pub(crate) fn reproduction_artifact_bytes_with_scenario_payload(
     seed: u64,
     backend: Option<&ResolvedLocalBackend>,
     scenario: ReproductionScenarioPayload<'_>,
@@ -798,7 +847,13 @@ fn reproduction_artifact_bytes_with_scenario_payload(
     for sample in fingerprint_samples {
         artifact_line(
             &mut text,
-            &["fingerprint", &sample.index.to_string(), &sample.digest],
+            &[
+                "fingerprint",
+                &sample.index.to_string(),
+                &sample.instruction.to_string(),
+                &sample.node,
+                &sample.digest,
+            ],
         );
     }
     artifact_line(
