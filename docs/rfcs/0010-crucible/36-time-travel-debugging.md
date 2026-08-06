@@ -1293,8 +1293,15 @@ complete from model-double evidence.
   extensions. The CLI loads matching server-CA/client-certificate/client-key PEM
   material for authenticated HTTP/2 clients. Cleartext `serve` requires the
   explicit `--trusted-unauthenticated-bind` policy and cannot be combined with TLS.
-  Completion remains open for Unix peer credentials, per-principal role policy,
-  session-owned lease RPCs, and the client-side loopback GDB byte relay.
+  Per-certificate deny-by-default role mappings now enforce the five closed
+  capabilities; duplicate principals fail configuration. Controller ownership is
+  session-local, generation-guarded, and checked against the transport-derived
+  principal on every operation. Authenticated attach allocates a daemon-loopback
+  stable gateway, and the CLI exposes it through a bounded client-side loopback
+  relay over HTTP/2 while retaining and finally releasing the controller lease.
+  Read-only service cannot acquire, attach, open, or write a debugger relay.
+  Completion remains open for Unix peer credentials, multiple-observer RPC
+  plumbing, and live mTLS/relay conformance evidence.
 - [ ] **T-DBG-12** Version the public shared-memory ABI for the debug guest agent and
   implement whole-world-forked argv exec, PTY, resize, exit/close, and SSH-compatible
   byte bridging; close all streams on reposition and keep recording opt-in. —

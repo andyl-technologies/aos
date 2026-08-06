@@ -890,6 +890,244 @@ pub(super) fn plan_debug_invocation(
     Ok(plan)
 }
 
+pub(super) fn run_remote_debug_relay(
+    cli: &Cli,
+    plan: &DebugInvocationPlan,
+) -> Result<(), CliError> {
+    let daemon = cli
+        .daemon
+        .as_deref()
+        .ok_or_else(|| backend_error("remote debugger relay requires --daemon"))?;
+    let DebugPlanTarget::Session(session_text) = &plan.target else {
+        return Err(usage_error(
+            "remote debugger relay requires --session id:epoch:seed",
+        ));
+    };
+    if !matches!(plan.verb, DebugInteractiveVerbPlan::AttachGdb) {
+        return Err(usage_error(
+            "remote debugger relay currently accepts only attach-gdb",
+        ));
+    }
+    let backend_plan = plan_backend_selection(cli)?
+        .ok_or_else(|| backend_error("remote debugger relay has no backend route"))?;
+    if backend_plan.daemon_security.is_none() && !cli.trusted_unauthenticated_daemon {
+        return Err(usage_error(
+            "remote debugging requires daemon mutual TLS or explicit --trusted-unauthenticated-daemon",
+        ));
+    }
+    let session = parse_debug_session_ref(session_text)?;
+    let gdb_listen: std::net::SocketAddr = plan.gdb_listen.parse().map_err(|error| {
+        usage_error(format!(
+            "remote --gdb-listen must be a TCP socket address: {error}"
+        ))
+    })?;
+    if !gdb_listen.ip().is_loopback() {
+        return Err(usage_error(
+            "remote --gdb-listen must use a loopback address",
+        ));
+    }
+    let node = plan
+        .node
+        .as_deref()
+        .ok_or_else(|| usage_error("remote debugger attachment requires --node NODE"))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(run_remote_debug_relay_async(
+        daemon,
+        &backend_plan,
+        session,
+        crucible::NodeId {
+            name: node.to_owned(),
+        },
+        gdb_listen,
+    ))
+}
+
+async fn run_remote_debug_relay_async(
+    daemon: &str,
+    backend_plan: &BackendSelectionPlan,
+    session: SessionRef,
+    node: crucible::NodeId,
+    gdb_listen: std::net::SocketAddr,
+) -> Result<(), CliError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let client = remote_rpc_client(daemon, backend_plan)?;
+    let lease = client
+        .acquire_debug_controller(session)
+        .await
+        .map_err(control_client_error)?;
+    if let Err(error) = client.attach_debugger(session, &lease, &node).await {
+        let _ = client.release_debug_controller(session, &lease).await;
+        return Err(control_client_error(error));
+    }
+    let relay = match client.open_debug_relay(session, &lease).await {
+        Ok(relay) => relay,
+        Err(error) => {
+            let _ = client.release_debug_controller(session, &lease).await;
+            return Err(control_client_error(error));
+        }
+    };
+    let listener = match tokio::net::TcpListener::bind(gdb_listen).await {
+        Ok(listener) => listener,
+        Err(error) => {
+            let _ = client.close_debug_relay(session, &lease, relay).await;
+            let _ = client.release_debug_controller(session, &lease).await;
+            return Err(backend_error(format!(
+                "cannot bind local GDB relay {gdb_listen}: {error}"
+            )));
+        }
+    };
+    let address = match listener.local_addr() {
+        Ok(address) => address,
+        Err(error) => {
+            let _ = client.close_debug_relay(session, &lease, relay).await;
+            let _ = client.release_debug_controller(session, &lease).await;
+            return Err(backend_error(format!(
+                "cannot read local GDB relay address: {error}"
+            )));
+        }
+    };
+    println!("crucible: remote GDB relay listening at {address}");
+    let accepted = tokio::select! {
+        accepted = listener.accept() => Some(accepted),
+        signal = tokio::signal::ctrl_c() => {
+            match signal {
+                Ok(()) => None,
+                Err(error) => {
+                    let _ = client.close_debug_relay(session, &lease, relay).await;
+                    let _ = client.release_debug_controller(session, &lease).await;
+                    return Err(backend_error(format!("debug relay signal error: {error}")));
+                }
+            }
+        }
+    };
+    let Some(accepted) = accepted else {
+        let _ = client.close_debug_relay(session, &lease, relay).await;
+        let _ = client.release_debug_controller(session, &lease).await;
+        return Ok(());
+    };
+    let (mut local, _) = match accepted {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            let _ = client.close_debug_relay(session, &lease, relay).await;
+            let _ = client.release_debug_controller(session, &lease).await;
+            return Err(backend_error(format!(
+                "cannot accept local GDB connection: {error}"
+            )));
+        }
+    };
+    let mut local_buffer = vec![0_u8; crucible_api::DEBUG_RELAY_CHUNK_MAX_BYTES];
+    let mut poll = tokio::time::interval(Duration::from_millis(5));
+    let relay_result: Result<(), CliError> = async {
+        loop {
+            tokio::select! {
+            read = local.read(&mut local_buffer) => {
+                let length = read.map_err(|error| backend_error(format!("local GDB read failed: {error}")))?;
+                if length == 0 {
+                    break Ok(());
+                }
+                let written = client
+                    .write_debug_relay(session, &lease, relay, &local_buffer[..length])
+                    .await
+                    .map_err(control_client_error)?;
+                if written != length {
+                    break Err(backend_error("remote GDB relay accepted a partial chunk"));
+                }
+            }
+            _ = poll.tick() => {
+                let chunk = client
+                    .read_debug_relay(
+                        session,
+                        &lease,
+                        relay,
+                        crucible_api::DEBUG_RELAY_CHUNK_MAX_BYTES,
+                    )
+                    .await
+                    .map_err(control_client_error)?;
+                if !chunk.bytes.is_empty() {
+                    local
+                        .write_all(&chunk.bytes)
+                        .await
+                        .map_err(|error| backend_error(format!("local GDB write failed: {error}")))?;
+                }
+                if chunk.eof {
+                    break Ok(());
+                }
+            }
+            signal = tokio::signal::ctrl_c() => {
+                signal.map_err(|error| backend_error(format!("debug relay signal error: {error}")))?;
+                break Ok(());
+            }
+            }
+        }
+    }
+    .await;
+    let close_result = client.close_debug_relay(session, &lease, relay).await;
+    let release_result = client.release_debug_controller(session, &lease).await;
+    relay_result?;
+    close_result.map_err(control_client_error)?;
+    release_result.map_err(control_client_error)?;
+    Ok(())
+}
+
+fn parse_debug_session_ref(value: &str) -> Result<SessionRef, CliError> {
+    let mut fields = value.split(':');
+    let id = parse_u64_value("--session id", fields.next().unwrap_or_default())?;
+    let epoch = parse_u64_value("--session epoch", fields.next().unwrap_or_default())?;
+    let seed_text = fields.next().unwrap_or_default();
+    if fields.next().is_some() || seed_text.len() != 64 {
+        return Err(usage_error(
+            "--session must use id:epoch:64-lowercase-hex-seed",
+        ));
+    }
+    let mut seed = [0_u8; 32];
+    for (index, chunk) in seed_text.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(chunk)
+            .map_err(|_| usage_error("--session seed must be lowercase hexadecimal"))?;
+        if pair.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return Err(usage_error("--session seed must be lowercase hexadecimal"));
+        }
+        seed[index] = u8::from_str_radix(pair, 16)
+            .map_err(|_| usage_error("--session seed must be lowercase hexadecimal"))?;
+    }
+    Ok(SessionRef::new(
+        crucible_api::SessionId::new(id),
+        epoch,
+        crucible::Seed::from_bytes(seed),
+    ))
+}
+
+#[cfg(test)]
+mod remote_debug_tests {
+    use super::*;
+
+    #[test]
+    fn remote_session_reference_requires_canonical_complete_identity() {
+        let parsed = parse_debug_session_ref(
+            "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap_or_else(|error| panic!("canonical session reference should parse: {error}"));
+        assert_eq!(parsed.id.value, 7);
+        assert_eq!(parsed.epoch, 12);
+
+        assert!(parse_debug_session_ref("7:12:abcd").is_err());
+        assert!(
+            parse_debug_session_ref(
+                "7:12:0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"
+            )
+            .is_err()
+        );
+        assert!(
+            parse_debug_session_ref(
+                "7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef:extra"
+            )
+            .is_err()
+        );
+    }
+}
+
 pub(super) fn debug_target(args: &DebugArgs) -> Result<DebugPlanTarget, CliError> {
     match (&args.target, &args.session) {
         (Some(_), Some(_)) => Err(usage_error(

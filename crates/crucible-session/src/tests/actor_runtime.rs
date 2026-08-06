@@ -615,6 +615,7 @@ pub(super) async fn session_actor_terminalizes_mismatched_debug_runtime_evidence
         SessionCommand::AttachGdb {
             node: node_id("guest-a"),
             listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
             reply: CommandReply::discard(),
         },
         SessionCommand::DebugGoto {

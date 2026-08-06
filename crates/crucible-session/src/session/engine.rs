@@ -1487,6 +1487,14 @@ impl<L: QuantumLoop> Engine<L> {
                     QueryKind::ExecutionFingerprint { node } => QueryResult::ExecutionFingerprint(
                         self.quantum_loop.sample_fingerprint(node.clone())?,
                     ),
+                    QueryKind::DebugOperatorEndpoint => QueryResult::DebugOperatorEndpoint(
+                        self.debug_attach.as_ref().map(|attach| {
+                            (
+                                attach.gdbstub.node.clone(),
+                                attach.gdbstub.operator_listen.clone(),
+                            )
+                        }),
+                    ),
                 };
                 reply.complete(Ok(result));
                 Ok(snapshot)
@@ -1494,13 +1502,27 @@ impl<L: QuantumLoop> Engine<L> {
             SessionCommand::AttachGdb {
                 node,
                 listen,
+                debug_genesis,
                 reply,
             } => match self.state {
                 EngineState::Running | EngineState::Paused { .. } => {
                     let runtime = self.runtime.as_ref().ok_or_else(|| {
                         self.invalid_engine_state("bind debugger runtime evidence")
                     })?;
-                    self.quantum_loop.bind_debug_runtime_evidence(runtime)?;
+                    let mut candidate_graph = self.graph.clone();
+                    let needs_debug_genesis = !runtime.node_blobs.contains_key(node)
+                        || !runtime.node_icounts.contains_key(node);
+                    let debug_runtime = if needs_debug_genesis
+                        && let Some(genesis) = debug_genesis.as_deref().cloned()
+                    {
+                        candidate_graph = TemporalGraph::empty()
+                            .with_baked_genesis(&self.configuration.def, genesis)?;
+                        candidate_graph.resume(&self.configuration)?.runtime
+                    } else {
+                        runtime.clone()
+                    };
+                    self.quantum_loop
+                        .bind_debug_runtime_evidence(&debug_runtime)?;
                     let info = self
                         .quantum_loop
                         .open_gdbstub(node.clone(), listen.clone())?;
@@ -1512,7 +1534,9 @@ impl<L: QuantumLoop> Engine<L> {
                         qemu_endpoint,
                         operator_listen,
                     )?;
-                    let attach = self.graph.debug_attach(&request)?;
+                    let attach = candidate_graph.debug_attach(&request)?;
+                    self.graph = candidate_graph;
+                    self.runtime = Some(debug_runtime);
                     self.debug_attach = Some(attach.clone());
                     self.debug_coordinator
                         .attached_canonical(self.configuration.id());

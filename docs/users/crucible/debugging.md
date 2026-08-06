@@ -124,15 +124,45 @@ For example:
 
 - The production debug path requires the packaged QEMU backend even for
   admission and identity checks.
-- The CLI currently emits planned debug operations and live probe evidence; it
-  is not yet a persistent interactive debugger shell.
+- Local artifact debugging currently emits planned operations and live probe
+  evidence; the persistent GDB listener is available for an attached daemon
+  session.
 - `fork-debug` creates a non-canonical branch. Do not use its output as a normal
   replay-oracle artifact.
-- `attach-gdb` currently records the planned mediated-gdbstub operation; it does
-  not keep a GDB proxy or debugger session open after the bounded probe exits.
-- `--session` is a debugger target shape, but the packaged `serve` backend is
-  not currently the production QEMU lifecycle. Do not treat daemon debug as
-  equivalent to local live-VM debug.
+- Artifact-targeted `attach-gdb` does not keep a GDB session open after the
+  bounded local probe exits.
+- Guest exec, PTY, and SSH-compatible introspection are not implemented yet.
 
 Until these seams converge, use `verify --bisect`, `replay --check`, and explicit
 savepoints as the primary failure-analysis tools.
+
+## Remote GDB attachment
+
+Start `serve --production-qemu` with mutual TLS and grant the operator
+certificate at least `observe,control`; see [Daemon operation](daemon.md). After
+creating a paused inline-scenario session, use its full reference in
+`id:epoch:64-lowercase-hex-seed` form:
+
+```sh
+./result/bin/crucible \
+  --daemon https://daemon.example:9000 \
+  --daemon-ca server-ca.crt \
+  --daemon-cert operator.crt \
+  --daemon-key operator.key \
+  debug \
+  --session 7:12:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+  --node node-a \
+  --gdb-listen 127.0.0.1:0 \
+  attach-gdb
+```
+
+The CLI acquires the session's exclusive controller lease, asks the daemon to
+attach its private standalone gateway, binds the requested client-side loopback
+listener, and prints the actual address. Connect ordinary GDB to that address in
+a second terminal. Closing GDB or pressing Ctrl-C closes the relay and releases
+the lease. Retrying attachment for the same live session is idempotent.
+
+The daemon-local address is never exposed directly to the remote operator. All
+GDB bytes cross either mutual-TLS HTTP/2 or the explicitly trusted cleartext
+transport, and the daemon rechecks the transport-derived principal and lease
+generation on every chunk.

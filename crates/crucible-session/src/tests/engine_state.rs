@@ -525,6 +525,7 @@ async fn debug_time_travel_commands_reposition_without_scheduler_control_log() {
     if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
         node: node_id("guest-a"),
         listen: gdb_listen("127.0.0.1:9000"),
+        debug_genesis: None,
         reply: attach_reply,
     }) {
         panic!("attach-gdb should use the loop gdbstub capability: {error}");
@@ -704,6 +705,7 @@ async fn rejected_debug_runtime_reposition_preserves_session_transaction() {
     if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
         node: node_id("guest-a"),
         listen: gdb_listen("127.0.0.1:9000"),
+        debug_genesis: None,
         reply: attach_reply,
     }) {
         panic!("attach-gdb should use the loop gdbstub capability: {error}");
@@ -744,6 +746,7 @@ async fn mismatched_debug_runtime_evidence_fails_closed_without_committing_model
     if let Err(error) = engine.apply_command(SessionCommand::AttachGdb {
         node: node_id("guest-a"),
         listen: gdb_listen("127.0.0.1:9000"),
+        debug_genesis: None,
         reply: attach_reply,
     }) {
         panic!("attach-gdb should use the loop gdbstub capability: {error}");
@@ -793,6 +796,7 @@ async fn actor_debug_noncanonical_branch_appends_visible_event_log_marker() {
         .apply_command_without_spawning_forks(SessionCommand::AttachGdb {
             node: node_id("guest-a"),
             listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
             reply: attach_reply,
         })
         .await

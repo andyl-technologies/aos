@@ -28,6 +28,7 @@ crucible-api = { path = "../crucible-api" }
 crucible-session = { path = "../crucible-session" }
 serde = { workspace = true }
 tokio = { workspace = true }
+tokio-rustls = { workspace = true }
 toml = { workspace = true }
 tempfile = { workspace = true }
 

@@ -1,6 +1,7 @@
 //! Session command payloads, replies, and breakpoint specifications.
 
 use super::*;
+use crucible::GenesisCheckpoint;
 
 /// Actor-local breakpoint identifier.
 pub type BreakpointId = u64;
@@ -282,6 +283,8 @@ pub enum QueryKind {
         /// Node whose backend fingerprint should be sampled.
         node: NodeId,
     },
+    /// Return the active stable operator-facing GDB endpoint, when attached.
+    DebugOperatorEndpoint,
 }
 
 /// Result returned by a read-only query command.
@@ -304,6 +307,8 @@ pub enum QueryResult {
     },
     /// Deterministic execution-fingerprint sample for one node.
     ExecutionFingerprint(FingerprintSample),
+    /// Attached node and stable operator-facing GDB endpoint, or none before attach.
+    DebugOperatorEndpoint(Option<(NodeId, DebugGdbEndpoint)>),
 }
 
 /// Read-only query kind served directly from the lock-free live snapshot.
@@ -405,6 +410,9 @@ pub enum SessionCommand {
         node: NodeId,
         /// Operator-facing gdb-protocol listener.
         listen: GdbListen,
+        /// Optional source-world genesis used only when the ordinary lifecycle
+        /// graph carries identity-only checkpoint material.
+        debug_genesis: Option<Box<GenesisCheckpoint>>,
         /// Completion route returning the debug attach report.
         reply: CommandReply<DebugAttachReport>,
     },

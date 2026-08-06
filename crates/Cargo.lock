@@ -2029,10 +2029,16 @@ dependencies = [
  "crucible-qemu",
  "crucible-session",
  "futures-util",
+ "hyper-util",
  "reqwest",
+ "rustls 0.23.40",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls 0.26.4",
 ]
 
 [[package]]
@@ -2067,6 +2073,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-rustls 0.26.4",
  "toml 0.8.23",
 ]
 

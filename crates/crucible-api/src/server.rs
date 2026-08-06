@@ -17,13 +17,13 @@ use axum::response::Response;
 use axum::routing::post;
 use bytes::Bytes;
 use crucible::{
-    Checkpoint, ContentHash, EventLevel, NodeId, QuantumLoop, ScenarioDef, ScenarioDefForm,
-    Schedule, Seed,
+    Checkpoint, ContentHash, EventLevel, GdbListen, NodeId, QuantumLoop, ScenarioDef,
+    ScenarioDefForm, Schedule, Seed,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointPolicy, BreakpointSpec, EngineState, LifecycleStateKind,
-    LiveStateKind, Outcome, OutcomeKind, PauseReason, QueryKind, QueryResult, SessionCommand,
-    SessionCommandKind, StepMode,
+    BreakpointDisposition, BreakpointPolicy, BreakpointSpec, DebugCapability, DebugClientId,
+    DebugControllerLease, DebugRole, EngineState, LifecycleStateKind, LiveStateKind, Outcome,
+    OutcomeKind, PauseReason, QueryKind, QueryResult, SessionCommand, SessionCommandKind, StepMode,
 };
 use futures_util::stream;
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -34,6 +34,7 @@ use tokio::sync::{Mutex, watch};
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 
+use crate::debug_relay::{DEBUG_RELAY_CHUNK_MAX_BYTES, DebugRelayId, DebugRelayRegistry};
 use crate::event_log_stream::EventLogCursor;
 use crate::lifecycle::{
     CreateSessionRequest, CreateSessionResponse, DestroySessionRequest, DestroySessionResponse,
@@ -56,7 +57,7 @@ use crate::streaming::{
     WatchStream,
 };
 use crate::transport_security::DebugTransportIdentity;
-use crate::{ControlClientError, HelloRequest};
+use crate::{ControlClientError, DebugAuthorizationPolicy, HelloRequest};
 
 type SharedLifecycleControlPlane<L, F> = Arc<Mutex<LifecycleControlPlane<L, F>>>;
 
@@ -90,6 +91,8 @@ struct Http2LifecycleState<L, F> {
     control_plane: SharedLifecycleControlPlane<L, F>,
     mode: LifecycleServerMode,
     shutdown: watch::Receiver<bool>,
+    debug_authorization: DebugAuthorizationPolicy,
+    debug_relays: Arc<Mutex<DebugRelayRegistry>>,
 }
 
 impl<L, F> Clone for Http2LifecycleState<L, F> {
@@ -98,6 +101,8 @@ impl<L, F> Clone for Http2LifecycleState<L, F> {
             control_plane: Arc::clone(&self.control_plane),
             mode: self.mode,
             shutdown: self.shutdown.clone(),
+            debug_authorization: self.debug_authorization.clone(),
+            debug_relays: Arc::clone(&self.debug_relays),
         }
     }
 }
@@ -181,11 +186,48 @@ where
         + 'static,
     S: Future<Output = ()> + Send + 'static,
 {
+    serve_lifecycle_http2_with_debug_policy_until_shutdown(
+        listener,
+        control_plane,
+        mode,
+        DebugAuthorizationPolicy::deny_all(),
+        shutdown,
+    )
+    .await
+}
+
+/// Serves cleartext HTTP/2 with an explicit debugger authorization policy.
+///
+/// This function does not authenticate its transport. It is intended only for
+/// an explicitly trusted listener whose role is represented by
+/// `debug_authorization`.
+///
+/// # Errors
+///
+/// Returns the underlying server I/O error if the listener fails while serving
+/// requests.
+pub async fn serve_lifecycle_http2_with_debug_policy_until_shutdown<L, F, S>(
+    listener: TcpListener,
+    control_plane: LifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    debug_authorization: DebugAuthorizationPolicy,
+    shutdown: S,
+) -> Result<(), std::io::Error>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = ()> + Send + 'static,
+{
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let app = lifecycle_router(Http2LifecycleState {
         control_plane: Arc::new(Mutex::new(control_plane)),
         mode,
         shutdown: shutdown_receiver.clone(),
+        debug_authorization,
+        debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
     });
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -210,6 +252,7 @@ pub async fn serve_lifecycle_http2_mtls_with_mode_until_shutdown<L, F, S>(
     control_plane: LifecycleControlPlane<L, F>,
     mode: LifecycleServerMode,
     tls_acceptor: TlsAcceptor,
+    debug_authorization: DebugAuthorizationPolicy,
     shutdown: S,
 ) -> Result<(), std::io::Error>
 where
@@ -225,6 +268,8 @@ where
         control_plane: Arc::new(Mutex::new(control_plane)),
         mode,
         shutdown: shutdown_receiver.clone(),
+        debug_authorization,
+        debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
     });
     tokio::pin!(shutdown);
     let mut connections = JoinSet::new();
@@ -330,7 +375,469 @@ where
         )
         .route("/crucible.rpc/watch", post(handle_watch_attach::<L, F>))
         .route("/crucible.rpc/send", post(handle_send_command::<L, F>))
+        .route(
+            "/crucible.rpc/debug/controller/acquire",
+            post(handle_debug_controller_acquire::<L, F>),
+        )
+        .route(
+            "/crucible.rpc/debug/controller/release",
+            post(handle_debug_controller_release::<L, F>),
+        )
+        .route(
+            "/crucible.rpc/debug/attach",
+            post(handle_debug_attach::<L, F>),
+        )
+        .route(
+            "/crucible.rpc/debug/relay/open",
+            post(handle_debug_relay_open::<L, F>),
+        )
+        .route(
+            "/crucible.rpc/debug/relay/write",
+            post(handle_debug_relay_write::<L, F>),
+        )
+        .route(
+            "/crucible.rpc/debug/relay/read",
+            post(handle_debug_relay_read::<L, F>),
+        )
+        .route(
+            "/crucible.rpc/debug/relay/close",
+            post(handle_debug_relay_close::<L, F>),
+        )
         .with_state(state)
+}
+
+async fn handle_debug_controller_acquire<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("debug-controller-acquire");
+    }
+    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let session =
+        match parse_debug_session_request(&body, "crucible.rpc/debug-controller-acquire-request") {
+            Ok(session) => session,
+            Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+        };
+    let lease = match state
+        .control_plane
+        .lock()
+        .await
+        .acquire_debug_controller(session, client, &role)
+    {
+        Ok(lease) => lease,
+        Err(error) => return lifecycle_error_response(error),
+    };
+    let mut output = String::from("crucible.rpc/debug-controller-acquire-response\n");
+    push_wire_line(
+        &mut output,
+        "client",
+        &hex_encode(lease.client.as_str().as_bytes()),
+    );
+    push_wire_line(&mut output, "generation", &lease.generation.to_string());
+    http2_response(StatusCode::OK, output)
+}
+
+async fn handle_debug_attach<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("debug-attach");
+    }
+    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let (session, generation, node) = match parse_debug_attach_request(&body) {
+        Ok(request) => request,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
+    let lease = DebugControllerLease { client, generation };
+    {
+        let control_plane = state.control_plane.lock().await;
+        if let Err(error) = control_plane.authorize_debug_controller_operation(
+            session,
+            &lease,
+            &role,
+            DebugCapability::Control,
+        ) {
+            return lifecycle_error_response(error);
+        }
+        if let Err(error) = control_plane.authorize_debug_controller_operation(
+            session,
+            &lease,
+            &role,
+            DebugCapability::Observe,
+        ) {
+            return lifecycle_error_response(error);
+        }
+        match control_plane.debug_operator_target(session).await {
+            Ok((active_node, _endpoint)) if active_node == node => {}
+            Ok((active_node, _endpoint)) => {
+                return typed_rpc_status_response(
+                    StatusCode::BAD_REQUEST,
+                    RpcStatusCode::InvalidArgument,
+                    "debug-node-conflict",
+                    &format!(
+                        "debugger is already attached to node `{}`; requested `{}`",
+                        active_node.name, node.name
+                    ),
+                );
+            }
+            Err(LifecycleApiError::DebugEndpointUnavailable) => {
+                let listen = match GdbListen::new("127.0.0.1:0") {
+                    Ok(listen) => listen,
+                    Err(error) => {
+                        return typed_rpc_status_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            RpcStatusCode::Internal,
+                            "internal",
+                            &error.to_string(),
+                        );
+                    }
+                };
+                match control_plane.attach_debugger(session, node, listen).await {
+                    Ok(_report) => {}
+                    Err(error) => return lifecycle_error_response(error),
+                }
+            }
+            Err(error) => return lifecycle_error_response(error),
+        }
+    }
+    http2_response(StatusCode::OK, "crucible.rpc/debug-attach-response\n")
+}
+
+async fn handle_debug_controller_release<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("debug-controller-release");
+    }
+    let (client, _role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let (session, generation) = match parse_debug_controller_release_request(&body) {
+        Ok(request) => request,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
+    let lease = DebugControllerLease { client, generation };
+    if let Err(error) = state
+        .control_plane
+        .lock()
+        .await
+        .release_debug_controller(session, &lease)
+    {
+        return lifecycle_error_response(error);
+    }
+    state
+        .debug_relays
+        .lock()
+        .await
+        .close_for_lease(session, &lease);
+    http2_response(
+        StatusCode::OK,
+        "crucible.rpc/debug-controller-release-response\n",
+    )
+}
+
+async fn handle_debug_relay_open<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("debug-relay-open");
+    }
+    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let (session, generation) = match parse_debug_relay_open_request(&body) {
+        Ok(request) => request,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
+    let lease = DebugControllerLease { client, generation };
+    let endpoint = {
+        let control_plane = state.control_plane.lock().await;
+        if let Err(error) = control_plane.authorize_debug_controller_operation(
+            session,
+            &lease,
+            &role,
+            DebugCapability::Control,
+        ) {
+            return lifecycle_error_response(error);
+        }
+        if let Err(error) = control_plane.authorize_debug_controller_operation(
+            session,
+            &lease,
+            &role,
+            DebugCapability::Observe,
+        ) {
+            return lifecycle_error_response(error);
+        }
+        match control_plane.debug_operator_target(session).await {
+            Ok((_node, endpoint)) => endpoint,
+            Err(error) => return lifecycle_error_response(error),
+        }
+    };
+    let existing = state.debug_relays.lock().await.existing(session, &lease);
+    let id = if let Some(id) = existing {
+        id
+    } else {
+        let stream = match DebugRelayRegistry::connect(endpoint.as_str()).await {
+            Ok(stream) => stream,
+            Err(error) => return debug_relay_error_response(error),
+        };
+        match state
+            .debug_relays
+            .lock()
+            .await
+            .register(stream, session, lease)
+        {
+            Ok(id) => id,
+            Err(error) => return debug_relay_error_response(error),
+        }
+    };
+    let mut output = String::from("crucible.rpc/debug-relay-open-response\n");
+    push_wire_line(&mut output, "relay-id", &id.0.to_string());
+    http2_response(StatusCode::OK, output)
+}
+
+async fn handle_debug_relay_write<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    if state.mode.is_read_only() {
+        return read_only_rejection_response("debug-relay-write");
+    }
+    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let (session, generation, id, bytes) = match parse_debug_relay_write_request(&body) {
+        Ok(request) => request,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
+    if let Err(response) =
+        authorize_relay_request(&state, session, &client, generation, &role).await
+    {
+        return response;
+    }
+    let stream = match state
+        .debug_relays
+        .lock()
+        .await
+        .stream(id, session, &client, generation)
+    {
+        Ok(stream) => stream,
+        Err(error) => return debug_relay_error_response(error),
+    };
+    let written = match DebugRelayRegistry::write_stream(stream, &bytes).await {
+        Ok(written) => written,
+        Err(error) => return debug_relay_error_response(error),
+    };
+    let mut output = String::from("crucible.rpc/debug-relay-write-response\n");
+    push_wire_line(&mut output, "written", &written.to_string());
+    http2_response(StatusCode::OK, output)
+}
+
+async fn handle_debug_relay_read<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let (session, generation, id, maximum) = match parse_debug_relay_read_request(&body) {
+        Ok(request) => request,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
+    if let Err(response) =
+        authorize_relay_request(&state, session, &client, generation, &role).await
+    {
+        return response;
+    }
+    let chunk = match state
+        .debug_relays
+        .lock()
+        .await
+        .read(id, session, &client, generation, maximum)
+    {
+        Ok(chunk) => chunk,
+        Err(error) => return debug_relay_error_response(error),
+    };
+    let mut output = String::from("crucible.rpc/debug-relay-read-response\n");
+    push_wire_line(&mut output, "eof", if chunk.eof { "true" } else { "false" });
+    push_wire_line(&mut output, "data", &hex_encode(&chunk.bytes));
+    http2_response(StatusCode::OK, output)
+}
+
+async fn handle_debug_relay_close<L, F>(
+    State(state): State<Http2LifecycleState<L, F>>,
+    identity: Option<Extension<DebugTransportIdentity>>,
+    request: Request<Body>,
+) -> Response
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    let (client, role) = match debug_principal(&state.debug_authorization, identity.as_ref()) {
+        Ok(principal) => principal,
+        Err(response) => return *response,
+    };
+    let body = match read_debug_rpc_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let (session, generation, id) = match parse_debug_relay_close_request(&body) {
+        Ok(request) => request,
+        Err(error) => return http2_response(StatusCode::BAD_REQUEST, error),
+    };
+    if let Err(response) =
+        authorize_relay_request(&state, session, &client, generation, &role).await
+    {
+        return response;
+    }
+    if let Err(error) = state
+        .debug_relays
+        .lock()
+        .await
+        .close(id, session, &client, generation)
+    {
+        return debug_relay_error_response(error);
+    }
+    http2_response(StatusCode::OK, "crucible.rpc/debug-relay-close-response\n")
+}
+
+async fn authorize_relay_request<L, F>(
+    state: &Http2LifecycleState<L, F>,
+    session: SessionRef,
+    client: &DebugClientId,
+    generation: u64,
+    role: &DebugRole,
+) -> Result<(), Response>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+{
+    let lease = DebugControllerLease {
+        client: client.clone(),
+        generation,
+    };
+    let control_plane = state.control_plane.lock().await;
+    control_plane
+        .authorize_debug_controller_operation(session, &lease, role, DebugCapability::Control)
+        .and_then(|()| {
+            control_plane.authorize_debug_controller_operation(
+                session,
+                &lease,
+                role,
+                DebugCapability::Observe,
+            )
+        })
+        .map_err(lifecycle_error_response)
+}
+
+fn debug_principal(
+    authorization: &DebugAuthorizationPolicy,
+    identity: Option<&Extension<DebugTransportIdentity>>,
+) -> Result<(DebugClientId, DebugRole), Box<Response>> {
+    let transport_identity = identity.map(|Extension(identity)| identity);
+    let role = authorization
+        .role_for(transport_identity)
+        .map_err(|error| Box::new(http2_response(StatusCode::FORBIDDEN, error.to_string())))?
+        .clone();
+    let name = transport_identity.map_or_else(
+        || String::from("trusted-unauthenticated"),
+        |identity| format!("x509-sha256:{}", identity.certificate_sha256()),
+    );
+    let client = DebugClientId::new(name)
+        .map_err(|error| Box::new(http2_response(StatusCode::FORBIDDEN, error.to_string())))?;
+    Ok((client, role))
 }
 
 async fn handle_rpc_hello<L, F>(
@@ -512,6 +1019,11 @@ where
         Ok(response) => response,
         Err(error) => return lifecycle_error_response(error),
     };
+    state
+        .debug_relays
+        .lock()
+        .await
+        .close_for_session(response.session);
     http2_response(StatusCode::OK, encode_destroy_session_response(&response))
 }
 
@@ -704,6 +1216,28 @@ async fn read_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Response> {
         .map_err(|error| http2_response(StatusCode::BAD_REQUEST, error.to_string()))
 }
 
+async fn read_debug_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Response> {
+    const DEBUG_RPC_BODY_MAX_BYTES: usize = DEBUG_RELAY_CHUNK_MAX_BYTES * 2 + 1024;
+
+    if request.version() != Version::HTTP_2 {
+        return Err(http2_response(
+            StatusCode::BAD_REQUEST,
+            "Crucible RPC requires HTTP/2",
+        ));
+    }
+    axum::body::to_bytes(request.into_body(), DEBUG_RPC_BODY_MAX_BYTES)
+        .await
+        .map(|body| body.to_vec())
+        .map_err(|error| {
+            typed_rpc_status_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                RpcStatusCode::InvalidArgument,
+                "debug-request-too-large",
+                &error.to_string(),
+            )
+        })
+}
+
 fn parse_hello_request(body: &[u8]) -> Result<HelloRequest, String> {
     let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
     let mut lines = text.lines();
@@ -833,6 +1367,96 @@ fn parse_destroy_session_request(body: &[u8]) -> Result<DestroySessionRequest, S
         request = request.with_expected_epoch(expected_epoch);
     }
     Ok(request)
+}
+
+fn parse_debug_session_request(body: &[u8], header: &'static str) -> Result<SessionRef, String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), header)?;
+    let session = parse_session_ref(&mut lines)?;
+    reject_extra_line(lines.next())?;
+    Ok(session)
+}
+
+fn parse_debug_controller_release_request(body: &[u8]) -> Result<(SessionRef, u64), String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(
+        lines.next(),
+        "crucible.rpc/debug-controller-release-request",
+    )?;
+    let session = parse_session_ref(&mut lines)?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    reject_extra_line(lines.next())?;
+    Ok((session, generation))
+}
+
+fn parse_debug_attach_request(body: &[u8]) -> Result<(SessionRef, u64, NodeId), String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/debug-attach-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    let node = parse_hex_string_field(
+        Some(parse_wire_line(lines.next(), "node=")?),
+        "debug attach node",
+    )?;
+    if node.is_empty() {
+        return Err(String::from("debug attach node must not be empty"));
+    }
+    reject_extra_line(lines.next())?;
+    Ok((session, generation, NodeId { name: node }))
+}
+
+fn parse_debug_relay_open_request(body: &[u8]) -> Result<(SessionRef, u64), String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/debug-relay-open-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    reject_extra_line(lines.next())?;
+    Ok((session, generation))
+}
+
+fn parse_debug_relay_write_request(
+    body: &[u8],
+) -> Result<(SessionRef, u64, DebugRelayId, Vec<u8>), String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/debug-relay-write-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    let id = DebugRelayId(parse_u64_line(lines.next(), "relay-id=")?);
+    let bytes = parse_hex_bytes(parse_wire_line(lines.next(), "data=")?)?;
+    reject_extra_line(lines.next())?;
+    Ok((session, generation, id, bytes))
+}
+
+fn parse_debug_relay_read_request(
+    body: &[u8],
+) -> Result<(SessionRef, u64, DebugRelayId, usize), String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/debug-relay-read-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    let id = DebugRelayId(parse_u64_line(lines.next(), "relay-id=")?);
+    let maximum_u64 = parse_u64_line(lines.next(), "maximum=")?;
+    let maximum = usize::try_from(maximum_u64)
+        .map_err(|_| format!("debug relay maximum {maximum_u64} does not fit usize"))?;
+    reject_extra_line(lines.next())?;
+    Ok((session, generation, id, maximum))
+}
+
+fn parse_debug_relay_close_request(body: &[u8]) -> Result<(SessionRef, u64, DebugRelayId), String> {
+    let text = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let mut lines = text.lines();
+    expect_wire_header(lines.next(), "crucible.rpc/debug-relay-close-request")?;
+    let session = parse_session_ref(&mut lines)?;
+    let generation = parse_u64_line(lines.next(), "generation=")?;
+    let id = DebugRelayId(parse_u64_line(lines.next(), "relay-id=")?);
+    reject_extra_line(lines.next())?;
+    Ok((session, generation, id))
 }
 
 fn parse_get_reproduction_request(body: &[u8]) -> Result<GetReproductionRequest, String> {
@@ -1752,6 +2376,14 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             "invalid-argument",
             &error.to_string(),
         ),
+        LifecycleApiError::DebugAccess { .. } | LifecycleApiError::DebugEndpointUnavailable => {
+            typed_rpc_status_response(
+                StatusCode::FORBIDDEN,
+                RpcStatusCode::InvalidState,
+                "debug-access-denied",
+                &error.to_string(),
+            )
+        }
         LifecycleApiError::RpcAbi { .. }
         | LifecycleApiError::GenesisGraph { .. }
         | LifecycleApiError::LoopFactory { .. }
@@ -1765,6 +2397,25 @@ fn lifecycle_error_response(error: LifecycleApiError) -> Response {
             &error.to_string(),
         ),
     }
+}
+
+fn debug_relay_error_response(error: crate::DebugRelayError) -> Response {
+    let status = match &error {
+        crate::DebugRelayError::NotFound => StatusCode::NOT_FOUND,
+        crate::DebugRelayError::StaleOrForeignLease => StatusCode::FORBIDDEN,
+        crate::DebugRelayError::InvalidGatewayEndpoint
+        | crate::DebugRelayError::GatewayEndpointNotLoopback
+        | crate::DebugRelayError::ChunkTooLarge { .. }
+        | crate::DebugRelayError::InvalidReadMaximum { .. } => StatusCode::BAD_REQUEST,
+        crate::DebugRelayError::CapacityExhausted => StatusCode::TOO_MANY_REQUESTS,
+        crate::DebugRelayError::Busy => StatusCode::CONFLICT,
+        crate::DebugRelayError::Connect { .. }
+        | crate::DebugRelayError::ConnectTimeout
+        | crate::DebugRelayError::IdentifierExhausted
+        | crate::DebugRelayError::Io { .. }
+        | crate::DebugRelayError::IoTimeout => StatusCode::BAD_GATEWAY,
+    };
+    http2_response(status, error.to_string())
 }
 
 fn streaming_error_response(error: StreamingApiError) -> Response {
@@ -2114,6 +2765,8 @@ mod tests {
             ))),
             mode,
             shutdown: open_shutdown_receiver(),
+            debug_authorization: DebugAuthorizationPolicy::deny_all(),
+            debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
         }
     }
 
@@ -2129,6 +2782,8 @@ mod tests {
             )),
             mode,
             shutdown: open_shutdown_receiver(),
+            debug_authorization: DebugAuthorizationPolicy::deny_all(),
+            debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
         }
     }
 
@@ -2185,6 +2840,25 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let body = response_text(response).await?;
         assert!(body.contains("status=unsupported"));
+        assert!(body.contains("reason=read-only"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn server_read_only_mode_rejects_debug_controller_before_authorization()
+    -> Result<(), Box<dyn Error>> {
+        let response = handle_debug_controller_acquire(
+            State(test_state(LifecycleServerMode::read_only())),
+            None,
+            rpc_request(format!(
+                "crucible.rpc/debug-controller-acquire-request\nsession-id=42\nepoch=7\nseed={TEST_SEED}\n"
+            )),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response_text(response).await?;
         assert!(body.contains("reason=read-only"));
 
         Ok(())

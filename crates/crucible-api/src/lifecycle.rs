@@ -11,18 +11,21 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 use crucible::{
-    Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind, Decision,
-    DeliveryOrderDecision, EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel,
-    EventLogOffset, ExecutionFingerprint, FingerprintSample, GenesisCheckpoint, LogLevel,
-    MembershipFault, NodeId, PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest,
-    RestartPolicy, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry,
-    SchedulerQuiescence, Seed, TemporalGraph, VirtualTime, WhiteBoxPolicy,
+    Action, Checkpoint, CheckpointKind, Configuration, ContentHash, ControlOperationKind,
+    DebugAttachReport, DebugGdbEndpoint, Decision, DeliveryOrderDecision, EngineError,
+    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogOffset, ExecutionFingerprint,
+    FingerprintSample, GdbListen, GenesisCheckpoint, LogLevel, MembershipFault, NodeId,
+    PartitionDirection, QuantumLoop, QuantumOutcome, QuantumRequest, RestartPolicy, ScenarioDef,
+    ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogEntry, SchedulerQuiescence, Seed,
+    TemporalGraph, VirtualTime, WhiteBoxPolicy, bake,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointPolicy, CheckpointRef, CommandReply, Engine, LiveSnapshot,
-    LiveStateKind, OutcomeKind, SessionActor, SessionCommand, SessionCommandKind,
-    SessionControlLogEntry, SessionControlPayload, SessionControlResult, SessionError,
-    SessionReproductionLog, SessionRunReport, SessionStateTransitionBus, StepMode,
+    BreakpointDisposition, BreakpointPolicy, CheckpointRef, CommandReply, DebugCapability,
+    DebugClientId, DebugControllerLease, DebugCoordinator, DebugCoordinatorError, DebugRole,
+    Engine, LiveSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionActor,
+    SessionCommand, SessionCommandKind, SessionControlLogEntry, SessionControlPayload,
+    SessionControlResult, SessionError, SessionReproductionLog, SessionRunReport,
+    SessionStateTransitionBus, StepMode,
 };
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -916,6 +919,16 @@ pub enum LifecycleApiError {
         /// Session error text.
         message: String,
     },
+    /// A debugger identity, capability, or controller lease was rejected.
+    #[error("debug access rejected: {source}")]
+    DebugAccess {
+        /// Session-owned debugger authorization failure.
+        #[from]
+        source: DebugCoordinatorError,
+    },
+    /// The session has no active stable GDB endpoint to relay.
+    #[error("session debugger is not attached")]
+    DebugEndpointUnavailable,
     /// The delegated execution backend could not be constructed.
     #[error("session execution backend construction failed: {message}")]
     LoopFactory {
@@ -1064,6 +1077,9 @@ where
         let scenario_form = inline_scenario_form(&request);
         let configuration = Configuration::genesis(scenario.clone());
         let graph = graph_with_baked_genesis(&scenario)?;
+        let debug_genesis = scenario_form
+            .map(|source| debug_genesis_checkpoint(&configuration, source))
+            .transpose()?;
         let loop_instance = (self.loop_factory)(&scenario, scenario_form, request.seed)?;
         let white_box_policies = self.white_box_policies_for_source(scenario_form, &scenario);
         let engine = Engine::new(configuration, graph, loop_instance)
@@ -1084,6 +1100,8 @@ where
             event_log,
             reproduction_log,
             state_transitions,
+            debug_access: DebugCoordinator::new(),
+            debug_genesis,
             actor_task,
         };
 
@@ -1154,7 +1172,7 @@ where
         let resumed_loop = (self.loop_factory)(&scenario, Some(&request.scenario), request.seed)?;
         let white_box_policies =
             self.white_box_policies_for_source(Some(&request.scenario), &scenario);
-        let genesis = Configuration::genesis(scenario);
+        let genesis = Configuration::genesis(scenario.clone());
         let mut parent =
             Engine::new(genesis, graph, parent_loop).with_white_box_policies(white_box_policies);
         let resumed = parent
@@ -1170,6 +1188,10 @@ where
         let event_log = ControlPlaneEventLog::new(actor.event_log());
         let reproduction_log = actor.reproduction_log();
         let state_transitions = actor.state_transition_bus();
+        let debug_genesis = Some(debug_genesis_checkpoint(
+            &Configuration::genesis(scenario.clone()),
+            &request.scenario,
+        )?);
         let (sender, actor_task) = {
             let sender = resumed.session_sender.clone();
             let actor_task = tokio::spawn(async move { actor.run().await });
@@ -1184,6 +1206,8 @@ where
             event_log,
             reproduction_log,
             state_transitions,
+            debug_access: DebugCoordinator::new(),
+            debug_genesis,
             actor_task,
         };
         let state = runtime.live.read().state_kind;
@@ -1371,6 +1395,191 @@ where
             });
         }
         Ok(runtime)
+    }
+
+    fn checked_runtime_mut(
+        &mut self,
+        requested: SessionRef,
+    ) -> Result<&mut SessionRuntime, LifecycleApiError> {
+        let runtime = self
+            .sessions
+            .get_mut(&requested.id)
+            .ok_or(LifecycleApiError::SessionNotFound { session: requested })?;
+        if runtime.session.epoch != requested.epoch {
+            return Err(LifecycleApiError::EpochMismatch {
+                session_id: requested.id,
+                expected: runtime.session.epoch,
+                actual: requested.epoch,
+            });
+        }
+        if runtime.session != requested {
+            return Err(LifecycleApiError::SessionNotFound { session: requested });
+        }
+        Ok(runtime)
+    }
+
+    /// Registers an authenticated read-only debugger observer for a session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale or the
+    /// supplied role lacks [`DebugCapability::Observe`].
+    pub fn add_debug_observer(
+        &mut self,
+        session: SessionRef,
+        client: DebugClientId,
+        role: &DebugRole,
+    ) -> Result<(), LifecycleApiError> {
+        self.checked_runtime_mut(session)?
+            .debug_access
+            .add_observer(client, role)?;
+        Ok(())
+    }
+
+    /// Removes a debugger observer connection from a session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale.
+    pub fn remove_debug_observer(
+        &mut self,
+        session: SessionRef,
+        client: &DebugClientId,
+    ) -> Result<(), LifecycleApiError> {
+        self.checked_runtime_mut(session)?
+            .debug_access
+            .remove_observer(client);
+        Ok(())
+    }
+
+    /// Acquires the session's exclusive debugger controller lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale, the
+    /// role lacks control capability, or another client owns the lease.
+    pub fn acquire_debug_controller(
+        &mut self,
+        session: SessionRef,
+        client: DebugClientId,
+        role: &DebugRole,
+    ) -> Result<DebugControllerLease, LifecycleApiError> {
+        Ok(self
+            .checked_runtime_mut(session)?
+            .debug_access
+            .acquire_controller(client, role)?)
+    }
+
+    /// Releases the session's debugger controller lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference or lease is
+    /// stale.
+    pub fn release_debug_controller(
+        &mut self,
+        session: SessionRef,
+        lease: &DebugControllerLease,
+    ) -> Result<(), LifecycleApiError> {
+        self.checked_runtime_mut(session)?
+            .debug_access
+            .release_controller(lease)?;
+        Ok(())
+    }
+
+    /// Authorizes an operation against the current controller lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference or lease is
+    /// stale or the supplied role lacks the requested capability.
+    pub fn authorize_debug_controller_operation(
+        &self,
+        session: SessionRef,
+        lease: &DebugControllerLease,
+        role: &DebugRole,
+        capability: DebugCapability,
+    ) -> Result<(), LifecycleApiError> {
+        self.checked_runtime(session, None)?
+            .debug_access
+            .authorize_controller_operation(lease, role, capability)?;
+        Ok(())
+    }
+
+    /// Returns the attached node and stable operator-facing GDB endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale, its
+    /// actor is unavailable, the query fails, or no debugger is attached.
+    pub async fn debug_operator_target(
+        &self,
+        session: SessionRef,
+    ) -> Result<(NodeId, DebugGdbEndpoint), LifecycleApiError> {
+        let runtime = self.checked_runtime(session, None)?;
+        let sender = runtime.sender.clone();
+        let session_id = runtime.session.id;
+        let (reply, receiver) = CommandReply::channel();
+        sender
+            .send(SessionCommand::Query {
+                kind: QueryKind::DebugOperatorEndpoint,
+                reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed { session_id })?;
+        let result = receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug endpoint query reply closed: {error}"),
+            })?
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: error.to_string(),
+            })?;
+        match result {
+            QueryResult::DebugOperatorEndpoint(Some(endpoint)) => Ok(endpoint),
+            QueryResult::DebugOperatorEndpoint(None) => {
+                Err(LifecycleApiError::DebugEndpointUnavailable)
+            }
+            _ => Err(LifecycleApiError::ActorFailed {
+                message: String::from("debug endpoint query returned an unexpected result"),
+            }),
+        }
+    }
+
+    /// Attaches the session debugger to one node through a daemon-local gateway.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when the session reference is stale, its
+    /// actor mailbox closes, or the backend rejects debugger attachment.
+    pub async fn attach_debugger(
+        &self,
+        session: SessionRef,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<DebugAttachReport, LifecycleApiError> {
+        let runtime = self.checked_runtime(session, None)?;
+        let sender = runtime.sender.clone();
+        let session_id = runtime.session.id;
+        let debug_genesis = runtime.debug_genesis.clone();
+        let (reply, receiver) = CommandReply::channel();
+        sender
+            .send(SessionCommand::AttachGdb {
+                node,
+                listen,
+                debug_genesis: debug_genesis.map(Box::new),
+                reply,
+            })
+            .await
+            .map_err(|_| LifecycleApiError::CommandChannelClosed { session_id })?;
+        receiver
+            .await
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: format!("debug attach reply closed: {error}"),
+            })?
+            .map_err(|error| LifecycleApiError::ActorFailed {
+                message: error.to_string(),
+            })
     }
 
     /// Builds an in-process streaming handle for a live session.
@@ -1645,6 +1854,8 @@ struct SessionRuntime {
     event_log: ControlPlaneEventLog,
     reproduction_log: SessionReproductionLog,
     state_transitions: SessionStateTransitionBus,
+    debug_access: DebugCoordinator,
+    debug_genesis: Option<GenesisCheckpoint>,
     actor_task: JoinHandle<Result<SessionRunReport, SessionError>>,
 }
 
@@ -1853,6 +2064,23 @@ fn genesis_checkpoint(
         BTreeMap::new(),
         CheckpointKind::Fat,
         BTreeMap::new(),
+    )
+    .map_err(engine_error)?;
+    Ok(GenesisCheckpoint { checkpoint })
+}
+
+fn debug_genesis_checkpoint(
+    configuration: &Configuration,
+    source: &ScenarioDefForm,
+) -> Result<GenesisCheckpoint, LifecycleApiError> {
+    let baked = bake(source.world()).map_err(engine_error)?;
+    let checkpoint = Checkpoint::from_recorded_configuration(
+        configuration,
+        None,
+        VirtualTime::default(),
+        baked.checkpoint.node_icounts,
+        CheckpointKind::Fat,
+        baked.checkpoint.node_blobs,
     )
     .map_err(engine_error)?;
     Ok(GenesisCheckpoint { checkpoint })

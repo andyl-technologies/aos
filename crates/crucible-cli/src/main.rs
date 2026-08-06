@@ -28,12 +28,12 @@ use clap::{ArgAction, ArgGroup, Args, CommandFactory, Parser, Subcommand, ValueE
 use clap_complete::Shell;
 use crucible_api::{
     AttachRequest, CONTROL_PROTOCOL_VERSION, CommandResultStatus, ControlClient,
-    CreateSessionRequest, DestroySessionRequest, InProcessLifecycleClient, LifecycleControlPlane,
-    LifecycleServerMode, QuiescentLifecycleLoop, RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR,
-    RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH, ResumeSessionRequest, RpcControlClient, RpcEndpoint,
-    RpcMutualTlsConfig, SendRequest, SessionRef, mutual_tls_acceptor_from_pem,
-    serve_lifecycle_http2_mtls_with_mode_until_shutdown,
-    serve_lifecycle_http2_with_mode_until_shutdown,
+    CreateSessionRequest, DebugAuthorizationPolicy, DestroySessionRequest,
+    InProcessLifecycleClient, LifecycleControlPlane, LifecycleServerMode, QuiescentLifecycleLoop,
+    RPC_PROTOCOL_BUILD, RPC_PROTOCOL_MAJOR, RPC_PROTOCOL_MINOR, RPC_PROTOCOL_PATCH,
+    ResumeSessionRequest, RpcControlClient, RpcEndpoint, RpcMutualTlsConfig, SendRequest,
+    SessionRef, mutual_tls_acceptor_from_pem, serve_lifecycle_http2_mtls_with_mode_until_shutdown,
+    serve_lifecycle_http2_with_debug_policy_until_shutdown,
 };
 use crucible_session::engine as crucible_model;
 #[cfg(test)]
@@ -43,9 +43,9 @@ use crucible_session::validation::{
     validation_dag_with_baked_genesis,
 };
 use crucible_session::{
-    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, EngineSnapshot,
-    LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand, SessionCommandKind,
-    StepMode,
+    BreakpointDisposition, BreakpointId, BreakpointSpec, CommandReply, DebugCapability, DebugRole,
+    EngineSnapshot, LiveStateKind, OutcomeKind, QueryKind, QueryResult, SessionCommand,
+    SessionCommandKind, StepMode,
     engine::{
         self as crucible, Checkpoint, CheckpointKind, ChoiceTag, DagStore, FindingDiscoveryPath,
         FindingReproductionArtifact, MaterializationPolicy, MaterializationTrigger, MemoryDagStore,
@@ -797,6 +797,9 @@ struct ServeArgs {
     /// Concurrency cap on live sessions.
     #[arg(long, value_name = "n")]
     max_sessions: Option<usize>,
+    /// Host sessions with the packaged production QEMU lifecycle.
+    #[arg(long, action = ArgAction::SetTrue)]
+    production_qemu: bool,
     /// Accept only read-only API calls (query/watch); no mutate.
     #[arg(long, action = ArgAction::SetTrue)]
     read_only: bool,
@@ -812,6 +815,9 @@ struct ServeArgs {
     /// Permit cleartext access on this explicitly trusted bind address.
     #[arg(long, action = ArgAction::SetTrue)]
     trusted_unauthenticated_bind: bool,
+    /// Map a client certificate fingerprint to debugger capabilities.
+    #[arg(long, value_name = "sha256=capability,...")]
+    debug_role: Vec<String>,
 }
 
 #[derive(Args, Debug, PartialEq, Eq)]

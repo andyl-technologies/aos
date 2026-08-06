@@ -31,6 +31,14 @@ impl QuantumLoop for NoopLoop {
     ) -> Result<QuantumOutcome, SchedulerError> {
         panic!("lifecycle unary gate keeps sessions paused before any quantum")
     }
+
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        GdbAttachInfo::new(node, "127.0.0.1:39001", listen).map_err(SchedulerError::from)
+    }
 }
 
 pub(super) struct FailingLoop;
