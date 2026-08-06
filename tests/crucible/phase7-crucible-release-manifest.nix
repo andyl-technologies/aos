@@ -210,7 +210,7 @@
     ++ lib.optionals (manifest.components.correspondingSource.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
       "release manifest corresponding-source license inventory is incomplete"
     ]
-    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later"]) [
+    ++ lib.optionals (manifest.licensing.licenses != ["Apache-2.0" "MIT" "GPL-2.0-only" "GPL-2.0-or-later" "GPL-3.0-or-later"]) [
       "release manifest aggregate project license inventory is incomplete"
     ]
     ++ lib.optionals (manifest.licensing.licenseSetScope != "primary-project-components") [
