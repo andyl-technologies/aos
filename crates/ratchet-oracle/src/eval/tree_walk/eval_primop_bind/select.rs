@@ -255,6 +255,9 @@ impl TreeWalk {
             .get(self.current_module.index())?
             .source
             .as_ref()?;
+        if !observer.observes_source(&source.name) {
+            return None;
+        }
         let mut paths = observer.provenance(receiver);
         if paths.is_empty() && self.span_is_direct_config(span, &source.bytes) {
             paths.push(Vec::new());
@@ -314,6 +317,9 @@ impl TreeWalk {
         else {
             return;
         };
+        if !observer.observes_source(&source.name) {
+            return;
+        }
         let segment = self.symbols.resolve(key).unwrap_or_default().to_vec();
         let mut paths = observer.provenance(receiver);
         for path in &mut paths {

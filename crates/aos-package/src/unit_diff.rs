@@ -328,8 +328,8 @@ pub struct UnitDiff {
 enum UnitType {
     /// Full restart/reload/stop/start lifecycle.
     Active,
-    /// `.target` — never restarted directly; stopped only as a barrier when
-    /// `X-StopOnReconfiguration=true`.
+    /// `.target` — never restarted directly; stopped for an explicit
+    /// reconfiguration barrier or when its final install edge is removed.
     Target,
     /// `.slice` / `.path` — config picked up by daemon-reload; not restarted.
     ReloadOnly,
@@ -679,7 +679,15 @@ fn classify_removed(name: &str, live: &LogicalUnit, diff: &mut UnitDiff) {
     if live.primary.is_none() {
         return;
     }
-    if unit_type(name) != UnitType::Active || is_denylisted_mount(name) {
+    match unit_type(name) {
+        UnitType::Target if install_link_count(live) > 0 => {
+            diff.to_stop.push(name.to_string());
+            return;
+        }
+        UnitType::Active => {}
+        _ => return,
+    }
+    if is_denylisted_mount(name) {
         return;
     }
     let knobs = Knobs::from_merged(&live.merged());
@@ -723,6 +731,7 @@ fn classify_both(
     let c_file = file_fp(candidate);
     let l_eff = effective_fp(live, live_root);
     let c_eff = effective_fp(candidate, candidate_root);
+    let install_changed = install_changed(live, candidate);
 
     if l_eff != c_eff {
         // Changed. Route via per-type policy on the candidate's knobs.
@@ -744,14 +753,30 @@ fn classify_both(
             Action::None => {}
         }
     } else {
-        // Unchanged unit file + triggers: pick up new install wiring.
-        if unit_type(name) == UnitType::Active
-            && install_changed(live, candidate)
+        // Unchanged active unit: pick up new install wiring.
+        if install_changed
+            && unit_type(name) == UnitType::Active
             && !Knobs::from_merged(&candidate.merged()).only_manual_start
         {
             diff.install_only.push(name.to_string());
         }
     }
+
+    // Target enablement is policy, independent of whether the target body also
+    // changed (for example when deselection restores an image-bundled unit).
+    if install_changed && unit_type(name) == UnitType::Target {
+        if install_link_count(candidate) > 0 {
+            if !diff.install_only.iter().any(|unit| unit == name) {
+                diff.install_only.push(name.to_string());
+            }
+        } else if install_link_count(live) > 0 && !diff.to_stop.iter().any(|unit| unit == name) {
+            diff.to_stop.push(name.to_string());
+        }
+    }
+}
+
+fn install_link_count(unit: &LogicalUnit) -> usize {
+    unit.install_wants.len() + unit.install_requires.len() + unit.install_upholds.len()
 }
 
 /// The classification of a *changed* (present-on-both) unit. Additions and
@@ -1211,6 +1236,45 @@ mod tests {
         let diff = compute_diff(live.path(), cand.path());
         assert_eq!(diff.install_only, vec!["svc.service"]);
         assert!(diff.to_restart.is_empty());
+    }
+
+    #[test]
+    fn target_enablement_is_started_and_last_disablement_is_stopped() {
+        let disabled = TempDir::new().unwrap();
+        let enabled = TempDir::new().unwrap();
+        let disabled_units = units_dir(disabled.path());
+        let enabled_units = units_dir(enabled.path());
+        let body = "[Unit]\nDescription=Package target\n";
+        write(&disabled_units, "aos-pkg-web.target", body);
+        write(&enabled_units, "aos-pkg-web.target", body);
+        std::fs::create_dir_all(enabled_units.join("multi-user.target.wants")).unwrap();
+        symlink(
+            "../aos-pkg-web.target",
+            enabled_units.join("multi-user.target.wants/aos-pkg-web.target"),
+        )
+        .unwrap();
+
+        let enable = compute_diff(disabled.path(), enabled.path());
+        assert_eq!(enable.install_only, vec!["aos-pkg-web.target"]);
+        assert!(enable.to_stop.is_empty());
+
+        let disable = compute_diff(enabled.path(), disabled.path());
+        assert_eq!(disable.to_stop, vec!["aos-pkg-web.target"]);
+        assert!(disable.install_only.is_empty());
+
+        write(
+            &disabled_units,
+            "aos-pkg-web.target",
+            "[Unit]\nDescription=Image package target\n",
+        );
+        let restore_image_unit = compute_diff(enabled.path(), disabled.path());
+        assert_eq!(restore_image_unit.to_stop, vec!["aos-pkg-web.target"]);
+        assert!(restore_image_unit.install_only.is_empty());
+
+        let removed = TempDir::new().unwrap();
+        std::fs::create_dir_all(units_dir(removed.path())).unwrap();
+        let remove = compute_diff(enabled.path(), removed.path());
+        assert_eq!(remove.to_stop, vec!["aos-pkg-web.target"]);
     }
 
     // --- masking --------------------------------------------------------

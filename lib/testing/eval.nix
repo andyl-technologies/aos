@@ -288,6 +288,11 @@
     then throw "initrd-root-fs.target must require repartitioning"
     else if
       !(builtins.elem
+        "initrd-fs.target"
+        system.config.boot.initrd.systemd.services."mount-var".requiredBy)
+    then throw "initrd-fs.target must require the persistent /var substrate"
+    else if
+      !(builtins.elem
         "aos-provisioning-eval.service"
         system.config.boot.initrd.systemd.services.aos-repart.requires)
     then throw "aos-repart.service must require restricted provisioning evaluation"

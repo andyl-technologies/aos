@@ -429,6 +429,13 @@ The change becomes live only after `aos-config.target` completes. The evaluator
 manifest alone is intermediate evidence; confirm the active generation and
 activation record as shown above.
 
+Desired packages are part of that same transaction. AOS pins each selected
+payload and rendered unit artifact to authenticated registry NAR identities,
+places the unit links and package-target preset in the candidate `/etc`, and
+enables the package target only after the atomic swap. Removing a package from
+`aos.apm.desiredPackages` removes that enablement edge and stops its target;
+image-bundled package units remain present but inert when they are not selected.
+
 For an interactive change, preview and apply the same file with:
 
 ```sh

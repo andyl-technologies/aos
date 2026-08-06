@@ -118,4 +118,57 @@ mod tests {
             provider: None,
         }));
     }
+
+    #[test]
+    fn graph_observes_only_authenticated_module_sources() {
+        let root = tempfile::tempdir().unwrap();
+        let owned = root.path().join("owned");
+        let unowned = root.path().join("unowned");
+        std::fs::create_dir_all(&owned).unwrap();
+        std::fs::create_dir_all(&unowned).unwrap();
+        std::fs::write(owned.join("module.nix"), "{ config }: config.firewall.port").unwrap();
+        std::fs::write(
+            unowned.join("module.nix"),
+            "{ config }: config.firewall.port",
+        )
+        .unwrap();
+        let entry = root.path().join("entry.nix");
+        std::fs::write(
+            &entry,
+            format!(
+                r#"let
+                  config = {{ firewall.port = 8080; }};
+                in {{
+                  manifest = {{
+                    owned = import {} {{ inherit config; }};
+                    unowned = import {} {{ inherit config; }};
+                  }};
+                  optionWrites = [];
+                }}"#,
+                owned.join("module.nix").display(),
+                unowned.join("module.nix").display(),
+            ),
+        )
+        .unwrap();
+
+        let evaluator = NixNative::new(0).unwrap();
+        let output = evaluator
+            .eval_expr_with_option_graph(
+                &format!("import {}", entry.display()),
+                [(owned, "web".to_string())],
+                [("firewall".to_string(), "firewall".to_string())],
+            )
+            .unwrap();
+
+        assert_eq!(output.json, r#"{"owned":8080,"unowned":8080}"#);
+        assert_eq!(
+            output
+                .option_graph
+                .accesses
+                .iter()
+                .filter(|access| access.kind == OptionAccessKind::Read)
+                .count(),
+            1
+        );
+    }
 }

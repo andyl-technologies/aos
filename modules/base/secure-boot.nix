@@ -325,7 +325,7 @@ in {
       # mount-var (which mounts /dev/mapper/var).
       boot.initrd.systemd.services."aos-var-crypt" = {
         description = "Encrypt and TPM2-seal /var (measured boot)";
-        wantedBy = ["initrd-fs.target"];
+        requiredBy = ["initrd-fs.target"];
         before = ["mount-var.service" "initrd-fs.target"];
         # Only ORDER after the disk carver (aos-repart), don't Require it: on a
         # reboot (var already provisioned) repart is a no-op. No

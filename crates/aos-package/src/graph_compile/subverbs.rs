@@ -964,6 +964,8 @@ mod subverb_tests {
                     nar_size: 42,
                 }],
             }],
+            expose: None,
+            expose_artifact: None,
             config_projection: None,
             legacy_config: None,
         }

@@ -393,6 +393,8 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
                         nar_size: 1,
                     }],
                 }],
+                expose: None,
+                expose_artifact: None,
                 config_projection: None,
                 legacy_config: None,
             },
@@ -401,8 +403,9 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
     };
     let mut missing_owner = serde_json::json!({
         "etc": {},
+        "presets": [],
         "storePaths": ["/nix/store/0000000000000000000000000000000b-base"],
-        "ownership": {"etc": {}, "storePaths": {}}
+        "ownership": {"etc": {}, "presets": {}, "storePaths": {}}
     });
     let error = enrich_runtime_projection(missing_owner.as_object_mut().unwrap(), &runtime)
         .expect_err("unknown pre-existing roots must not be synthesized as @base");
@@ -415,8 +418,9 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
 
     let mut bundled_output = serde_json::json!({
         "etc": {},
+        "presets": [],
         "storePaths": [output],
-        "ownership": {"etc": {}, "storePaths": {(output): "@base"}}
+        "ownership": {"etc": {}, "presets": {}, "storePaths": {(output): "@base"}}
     });
     let error = enrich_runtime_projection(bundled_output.as_object_mut().unwrap(), &runtime)
         .expect_err("an image-owned path must not be reclassified as a package output");
@@ -431,9 +435,11 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
         "etc": {
             "web/data": {"kind": "store-symlink", "target": format!("{referenced}/data")}
         },
+        "presets": [],
         "storePaths": ["/nix/store/0000000000000000000000000000000b-base"],
         "ownership": {
             "etc": {"web/data": "web"},
+            "presets": {},
             "storePaths": {
                 "/nix/store/0000000000000000000000000000000b-base": "@host"
             }
@@ -450,6 +456,109 @@ fn runtime_enrichment_pins_outputs_graph_and_package_ownership() {
     assert_eq!(
         manifest["ownership"]["storePaths"]["/nix/store/0000000000000000000000000000000b-base"],
         "@host"
+    );
+}
+
+#[test]
+fn runtime_enrichment_projects_authenticated_units_and_enablement() {
+    use super::runtime::{
+        RuntimeClosurePin, RuntimePackagePin, RuntimeRealisationPin, RuntimeResolution,
+    };
+    use crate::types::{ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
+
+    let output = "/nix/store/0000000000000000000000000000000a-web-1.0.0";
+    let artifact = "/nix/store/0000000000000000000000000000000b-expose-web";
+    let nar_hash = format!("sha256:{}", "0".repeat(52));
+    let runtime = RuntimeResolution {
+        packages: BTreeMap::from([(
+            "web".to_string(),
+            RuntimePackagePin {
+                version: "1.0.0".to_string(),
+                platform: "x86_64-linux".to_string(),
+                registry: "aos-core".to_string(),
+                store_path: output.to_string(),
+                closure: vec![
+                    RuntimeClosurePin {
+                        store_path_hash: "0000000000000000000000000000000a".to_string(),
+                        store_path: Some(output.to_string()),
+                        realisations: vec![RuntimeRealisationPin {
+                            nar_hash: nar_hash.clone(),
+                            nar_size: 1,
+                        }],
+                    },
+                    RuntimeClosurePin {
+                        store_path_hash: "0000000000000000000000000000000b".to_string(),
+                        store_path: Some(artifact.to_string()),
+                        realisations: vec![RuntimeRealisationPin {
+                            nar_hash: nar_hash.clone(),
+                            nar_size: 1,
+                        }],
+                    },
+                ],
+                expose: Some(ExposeMeta {
+                    target: "aos-pkg-web.target".to_string(),
+                    units: vec!["aos-pkg-web.target".to_string(), "web.service".to_string()],
+                    images: Vec::new(),
+                    requires: Vec::new(),
+                    config: ExposeConfigMeta::default(),
+                    provides: Vec::new(),
+                    uses: Vec::new(),
+                }),
+                expose_artifact: Some(ExposeArtifactMeta {
+                    store_path: artifact.to_string(),
+                    nar_hash,
+                    nar_size: 1,
+                }),
+                config_projection: None,
+                legacy_config: Some(ExposeConfigMeta::default()),
+            },
+        )]),
+        edges: BTreeMap::from([("web".to_string(), Vec::new())]),
+    };
+    let mut manifest = serde_json::json!({
+        "etc": {
+            "systemd/system/web.service": {
+                "kind": "store-symlink",
+                "target": format!("{artifact}/units/web.service")
+            }
+        },
+        "presets": [],
+        "storePaths": [artifact],
+        "ownership": {
+            "etc": {"systemd/system/web.service": "@base"},
+            "presets": {},
+            "storePaths": {(artifact): "@base"}
+        }
+    });
+
+    enrich_runtime_projection(manifest.as_object_mut().unwrap(), &runtime).unwrap();
+
+    assert_eq!(
+        manifest["etc"]["systemd/system/aos-pkg-web.target"]["target"],
+        format!("{artifact}/units/aos-pkg-web.target")
+    );
+    assert_eq!(
+        manifest["etc"]["systemd/system/multi-user.target.wants/aos-pkg-web.target"],
+        serde_json::json!({"kind": "symlink", "target": "../aos-pkg-web.target"})
+    );
+    assert_eq!(
+        manifest["ownership"]["etc"]["systemd/system/multi-user.target.wants/aos-pkg-web.target"],
+        "web"
+    );
+    assert_eq!(manifest["ownership"]["storePaths"][artifact], "@base");
+    assert_eq!(
+        manifest["presets"],
+        serde_json::json!([{
+            "unit": "aos-pkg-web.target",
+            "policy": "enable",
+            "source": "web"
+        }])
+    );
+    assert!(
+        manifest["storePaths"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!(artifact))
     );
 }
 

@@ -411,9 +411,15 @@ impl SystemdControl for aos_systemd::SystemdClient {
     }
 
     async fn reset_failed_unit(&self, name: &str) -> Result<()> {
-        aos_systemd::SystemdClient::reset_failed_unit(self, name)
-            .await
-            .map_err(|e| anyhow::anyhow!("reset-failed {name} failed: {e}"))
+        match aos_systemd::SystemdClient::reset_failed_unit(self, name).await {
+            Ok(()) => Ok(()),
+            // Reconciliation covers the union of the old and new graph. A
+            // newly added instance may not be loaded before daemon-reload,
+            // while a removed instance may already have been unloaded. In
+            // both cases there is no failed state left to clear.
+            Err(error) if error.is_no_such_unit() => Ok(()),
+            Err(error) => Err(anyhow::anyhow!("reset-failed {name} failed: {error}")),
+        }
     }
 }
 

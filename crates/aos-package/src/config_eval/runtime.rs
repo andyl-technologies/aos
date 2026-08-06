@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::registry::{RegistrySet, store_path_hash};
 use crate::resolve::resolve_multiple;
-use crate::types::ExposeConfigMeta;
+use crate::types::{ExposeArtifactMeta, ExposeConfigMeta, ExposeMeta};
 
 /// Exact runtime outputs and their dependency graph for one evaluation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,12 @@ pub struct RuntimePackagePin {
     pub store_path: String,
     /// Complete authenticated closure, keyed by input-addressed store hash.
     pub closure: Vec<RuntimeClosurePin>,
+    /// Signed service exposure contract for this package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose: Option<ExposeMeta>,
+    /// Exact rendered unit artifact authenticated by the selected registry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expose_artifact: Option<ExposeArtifactMeta>,
     /// Authenticated expose schema projected by this package's generated
     /// config companion. Absent for legacy flat-render packages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,10 +135,21 @@ pub fn resolve_runtime(registries: &RegistrySet, selected: &[String]) -> Result<
                 closure.root.name
             );
         }
+        if closure.root.expose.is_some() != closure.root.expose_artifact.is_some() {
+            bail!(
+                "package '{}@{}' must publish signed expose metadata and its rendered artifact together",
+                closure.root.name,
+                closure.root.version
+            );
+        }
 
         let root_hash = store_path_hash(&closure.root.store_path);
         let mut member_hashes = store.reachable(root_hash);
+        if let Some(artifact) = &closure.root.expose_artifact {
+            member_hashes.extend(store.reachable(store_path_hash(&artifact.store_path)));
+        }
         member_hashes.sort();
+        member_hashes.dedup();
         let mut members = Vec::with_capacity(member_hashes.len());
         for member_hash in member_hashes {
             let mut realisations: Vec<RuntimeRealisationPin> = store
@@ -154,9 +171,14 @@ pub fn resolve_runtime(registries: &RegistrySet, selected: &[String]) -> Result<
                     closure.root.name
                 );
             }
-            let store_path = registries
+            let mut store_path = registries
                 .resolve_hash_in(&closure.registry_name, &member_hash)
                 .map(|meta| meta.store_path.clone());
+            if let Some(artifact) = &closure.root.expose_artifact
+                && member_hash == store_path_hash(&artifact.store_path)
+            {
+                store_path = Some(artifact.store_path.clone());
+            }
             members.push(RuntimeClosurePin {
                 store_path_hash: member_hash,
                 store_path,
@@ -181,6 +203,24 @@ pub fn resolve_runtime(registries: &RegistrySet, selected: &[String]) -> Result<
                 closure.root.version,
                 closure.registry_name
             );
+        }
+        if let Some(artifact) = &closure.root.expose_artifact {
+            let artifact_hash = store_path_hash(&artifact.store_path);
+            let artifact_pin = members
+                .iter()
+                .find(|member| member.store_path_hash == artifact_hash)
+                .context("authenticated closure omitted its expose artifact root")?;
+            if !artifact_pin.realisations.iter().any(|pin| {
+                crate::registry::store::NarBytes::from_hash(&artifact.nar_hash, artifact.nar_size)
+                    .is_ok_and(|nar| pin.nar_hash == nar.nar_hash() && pin.nar_size == nar.size)
+            }) {
+                bail!(
+                    "package '{}@{}' expose artifact NAR disagrees with registry '{}' store graph",
+                    closure.root.name,
+                    closure.root.version,
+                    closure.registry_name
+                );
+            }
         }
 
         let mut dependencies = BTreeSet::new();
@@ -217,9 +257,14 @@ pub fn resolve_runtime(registries: &RegistrySet, selected: &[String]) -> Result<
                         closure.root.name
                     )
                 })?;
+                let config_nar_hash = crate::registry::store::NarBytes::from_hash(
+                    &module.config_output.nar_hash,
+                    module.config_output.nar_size,
+                )?
+                .nar_hash();
                 Some(RuntimeExposeConfigPin {
                     config_output: module.config_output.store_path.clone(),
-                    config_nar_hash: module.config_output.nar_hash.clone(),
+                    config_nar_hash,
                     config: expose.config.clone(),
                 })
             }
@@ -242,6 +287,8 @@ pub fn resolve_runtime(registries: &RegistrySet, selected: &[String]) -> Result<
                 registry: closure.registry_name.clone(),
                 store_path: closure.root.store_path.clone(),
                 closure: members,
+                expose: closure.root.expose.clone(),
+                expose_artifact: closure.root.expose_artifact.clone(),
                 config_projection,
                 legacy_config,
             },
