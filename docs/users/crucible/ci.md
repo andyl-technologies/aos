@@ -108,9 +108,11 @@ canonical log:
 ```
 
 Use the actual artifact filename emitted by the failed run. A replay exit of
-`0` confirms the recorded failure. Exit `1` means the replay did not match the
-recording; exit `5` means an artifact, store object, or local input was invalid
-or unavailable.
+`0` confirms that a fresh packaged-QEMU run reached the recorded terminal
+configuration with identical event and fingerprint streams, and that the
+retained canonical log matched. Exit `1` means live replay or the explicit log
+check diverged; exit `5` means an artifact, store object, or local input was
+invalid or unavailable.
 
 ## Parallel jobs
 

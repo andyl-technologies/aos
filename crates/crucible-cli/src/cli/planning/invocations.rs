@@ -211,6 +211,9 @@ pub(crate) struct SearchDriverPlan {
     pub(crate) budget: crucible::SearchBudget,
     pub(crate) on_violation: SearchOnViolationArg,
     pub(crate) explicit_on_violation: bool,
+    pub(crate) store_root: PathBuf,
+    pub(crate) artifact_dir: PathBuf,
+    pub(crate) findings_out: Option<PathBuf>,
     pub(crate) schedule_named_truths: Option<SearchScheduleNamedTruthsPlan>,
     pub(crate) retained_evidence: Option<SearchRetainedEvidencePlan>,
     pub(crate) delegates_policy_to_advanced_engine: bool,
@@ -240,6 +243,8 @@ pub(crate) struct LocalDoubleSearchReport {
     pub(crate) expansions: usize,
     pub(crate) explored: usize,
     pub(crate) failures: usize,
+    pub(crate) property_findings: usize,
+    pub(crate) timeout_findings: usize,
     pub(crate) exhausted: bool,
     pub(crate) failure_oracle: String,
     pub(crate) schedule_named_truths: String,
@@ -266,6 +271,9 @@ pub(crate) struct FuzzDriverPlan {
     pub(crate) coverage: FuzzCoverageArg,
     pub(crate) corpus: Option<PathBuf>,
     pub(crate) store_root: PathBuf,
+    pub(crate) artifact_dir: PathBuf,
+    pub(crate) findings_out: Option<PathBuf>,
+    pub(crate) on_violation: SearchOnViolationArg,
     pub(crate) config: crucible::CoverageGuidedFuzzConfig,
     pub(crate) delegates_policy_to_advanced_engine: bool,
     pub(crate) pins_one_scenario_def_per_iteration: bool,
@@ -292,6 +300,8 @@ pub(crate) struct LocalDoubleFuzzReport {
     pub(crate) replay_oracle_validations: u64,
     pub(crate) generated_mutants: u64,
     pub(crate) store_puts: u64,
+    pub(crate) property_findings: usize,
+    pub(crate) timeout_findings: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1274,9 +1284,24 @@ pub(crate) fn parse_fork_decision_override(raw: &str) -> Result<ForkDecisionOver
 ///
 /// Returns [`CliError`] when the scenario or budget is invalid, incompatible
 /// evidence inputs are selected, or an evidence file cannot be loaded.
+#[cfg(test)]
 pub(crate) fn plan_search_invocation(
     args: &SearchArgs,
     store_root: &Path,
+) -> Result<SearchDriverPlan, CliError> {
+    let artifact_dir = store_root.parent().unwrap_or(store_root);
+    plan_search_invocation_with_artifact_dir(args, store_root, artifact_dir)
+}
+
+/// Validates search arguments with the explicit user-facing artifact directory.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the scenario, budget, evidence, or output path is invalid.
+pub(crate) fn plan_search_invocation_with_artifact_dir(
+    args: &SearchArgs,
+    store_root: &Path,
+    artifact_dir: &Path,
 ) -> Result<SearchDriverPlan, CliError> {
     let scenario = resolve_search_scenario(args.scenario.as_deref(), store_root)?;
     validate_positive_optional_budget("--max-depth", args.max_depth)?;
@@ -1285,6 +1310,9 @@ pub(crate) fn plan_search_invocation(
     let budget = crucible::SearchBudget::new(args.max_states);
     let explicit_on_violation = args.on_violation.is_some();
     let on_violation = args.on_violation.unwrap_or(SearchOnViolationArg::Stop);
+    if let Some(path) = &args.findings_out {
+        validate_exploration_path_arg("--findings-out", path)?;
+    }
     if args.schedule_named_truths.is_some() && args.retained_evidence.is_some() {
         return Err(backend_error(
             "search --retained-evidence cannot be combined with --schedule-named-truths yet",
@@ -1310,6 +1338,9 @@ pub(crate) fn plan_search_invocation(
         budget,
         on_violation,
         explicit_on_violation,
+        store_root: store_root.to_path_buf(),
+        artifact_dir: artifact_dir.to_path_buf(),
+        findings_out: args.findings_out.clone(),
         schedule_named_truths,
         retained_evidence,
         delegates_policy_to_advanced_engine: true,
@@ -1735,10 +1766,26 @@ pub(crate) fn parse_search_retained_evidence_configuration(
 ///
 /// Returns [`CliError`] when budgets, corpus paths, or the scenario-family
 /// reference are invalid.
+#[cfg(test)]
 pub(crate) fn plan_fuzz_invocation(
     args: &FuzzArgs,
     seed: &DeterminismErgonomicsPlan,
     store_root: &Path,
+) -> Result<FuzzDriverPlan, CliError> {
+    let artifact_dir = store_root.parent().unwrap_or(store_root);
+    plan_fuzz_invocation_with_artifact_dir(args, seed, store_root, artifact_dir)
+}
+
+/// Validates fuzz arguments with the explicit user-facing artifact directory.
+///
+/// # Errors
+///
+/// Returns [`CliError`] when the family, budget, corpus, or output path is invalid.
+pub(crate) fn plan_fuzz_invocation_with_artifact_dir(
+    args: &FuzzArgs,
+    seed: &DeterminismErgonomicsPlan,
+    store_root: &Path,
+    artifact_dir: &Path,
 ) -> Result<FuzzDriverPlan, CliError> {
     let family = resolve_fuzz_family_ref(args.family.as_deref(), args.family_flag.as_deref())?;
     validate_positive_budget("--runs", args.runs)?;
@@ -1751,6 +1798,9 @@ pub(crate) fn plan_fuzz_invocation(
             )));
         }
     }
+    if let Some(path) = &args.findings_out {
+        validate_exploration_path_arg("--findings-out", path)?;
+    }
     let config = crucible::CoverageGuidedFuzzConfig::new(
         crucible::Seed::from_u64(seed.seed.value),
         args.runs,
@@ -1762,6 +1812,9 @@ pub(crate) fn plan_fuzz_invocation(
         coverage: args.coverage,
         corpus: args.corpus.clone(),
         store_root: store_root.to_path_buf(),
+        artifact_dir: artifact_dir.to_path_buf(),
+        findings_out: args.findings_out.clone(),
+        on_violation: args.on_violation.unwrap_or(SearchOnViolationArg::Stop),
         config,
         delegates_policy_to_advanced_engine: true,
         pins_one_scenario_def_per_iteration: true,

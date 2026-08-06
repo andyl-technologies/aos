@@ -63,11 +63,17 @@ use test_double_imports::*;
 #[cfg(any(test, feature = "test-double"))]
 use tokio::sync::{mpsc, oneshot};
 
-const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v2";
+const REPRODUCTION_ARTIFACT_SCHEMA: &str = "crucible.reproduction-artifact.v3";
 const REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str = "application/vnd.crucible.reproduction+text";
 const MODEL_REPRODUCTION_ARTIFACT_MEDIA_TYPE: &str =
     "application/vnd.crucible.model-reproduction+binary";
 const MODEL_REPLAY_STATE_MEDIA_TYPE: &str = "application/vnd.crucible.model-replay-state+text";
+const LIVE_QEMU_REPLAY_CONTRACT_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-replay-contract.v2+text";
+const LIVE_QEMU_EVENT_STREAM_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-event-stream.v1+bytes";
+const LIVE_QEMU_FINGERPRINT_STREAM_MEDIA_TYPE: &str =
+    "application/vnd.crucible.live-qemu-fingerprint-stream.v1+bytes";
 const REPLAY_SCHEDULE_PREFIX_PROOF_SCHEMA: &str = "crucible.replay.schedule-prefix-proof.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_SCHEMA: &str = "crucible.search-schedule-named-truths.v1";
 const SEARCH_SCHEDULE_NAMED_TRUTHS_MEDIA_TYPE: &str =
@@ -78,6 +84,7 @@ const SEARCH_RETAINED_EVIDENCE_MEDIA_TYPE: &str =
 const SAVEPOINT_HANDLE_SCHEMA: &str = "crucible.savepoint-handle.v2";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V1: &str = "crucible.failure-triage.findings-ledger.v1";
 const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2: &str = "crucible.failure-triage.findings-ledger.v2";
+const FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V3: &str = "crucible.failure-triage.findings-ledger.v3";
 const RECORDED_DECISION_PAYLOAD_MEDIA_TYPE: &str =
     "application/vnd.crucible.recorded-decision-payload+text";
 const CONTENT_ADDRESS_PREFIX: &str = "crucible-hash:";
@@ -520,9 +527,12 @@ struct SearchArgs {
     /// Budget on materialized states.
     #[arg(long, value_name = "n", default_value_t = 1)]
     max_states: u64,
-    /// Stop at the first counterexample, or collect all.
+    /// Stop at the first finding, or collect findings within the search bound.
     #[arg(long, value_enum, value_name = "stop|collect")]
     on_violation: Option<SearchOnViolationArg>,
+    /// Write the signed findings ledger to this path.
+    #[arg(long, value_name = "path")]
+    findings_out: Option<PathBuf>,
     /// Load schedule-named assertion truth data.
     #[arg(long, value_name = "path")]
     schedule_named_truths: Option<PathBuf>,
@@ -559,6 +569,12 @@ struct FuzzArgs {
     /// Seed/regression corpus directory.
     #[arg(long, value_name = "path")]
     corpus: Option<PathBuf>,
+    /// Stop at the first finding, or collect findings within the run bound.
+    #[arg(long, value_enum, value_name = "stop|collect")]
+    on_violation: Option<SearchOnViolationArg>,
+    /// Write the signed findings ledger to this path.
+    #[arg(long, value_name = "path")]
+    findings_out: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]

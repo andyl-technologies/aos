@@ -851,7 +851,7 @@ fn replay_to_savepoint_artifact_text(
     let store_uri = format!("cas:{scenario_digest}");
     let decisions = replay_to_savepoint_decision_fixtures(schedule);
     let mut text = String::new();
-    artifact_line(&mut text, &["schema", "crucible.reproduction-artifact.v2"]);
+    artifact_line(&mut text, &["schema", "crucible.reproduction-artifact.v3"]);
     artifact_line(&mut text, &["seed", "111"]);
     artifact_line(
         &mut text,
@@ -859,7 +859,7 @@ fn replay_to_savepoint_artifact_text(
             "identity",
             env!("CARGO_PKG_VERSION"),
             "crucible-harness-e2e-v1",
-            "crucible.reproduction-artifact.v2",
+            "crucible.reproduction-artifact.v3",
             &content_address_bytes(b"mock-backend-source-v1"),
             &content_address_bytes(b"mock-qemu-patch-series-v1"),
             &crucible::SHMEM_ABI_VERSION.to_string(),
@@ -952,6 +952,8 @@ fn replay_to_savepoint_artifact_text(
         &[
             "fingerprint",
             "0",
+            "0",
+            "process-replay-to",
             &content_address_bytes(b"process-replay-to"),
         ],
     );

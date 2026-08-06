@@ -46,6 +46,7 @@ pub(super) struct TriageFindingEvidence {
     pub(super) recorded_event_log: crucible_model::FailureRecordedEventLog,
     pub(super) failure: crucible_model::FailureClusterReportFailure,
     pub(super) discovery_signature: crucible_model::FailureSignature,
+    pub(super) recorded_event_frames: Vec<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

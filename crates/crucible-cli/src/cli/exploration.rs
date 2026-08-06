@@ -133,6 +133,8 @@ pub(super) fn local_double_fuzz_report_from_run(
         replay_oracle_validations: 0,
         generated_mutants: run.iterations.len() as u64,
         store_puts: 0,
+        property_findings: 0,
+        timeout_findings: 0,
     }
 }
 
@@ -157,6 +159,8 @@ pub(super) fn local_double_fuzz_report_from_corpus_run(
         replay_oracle_validations: run.throughput.replay_oracle_validations,
         generated_mutants: run.throughput.generated_mutants,
         store_puts: run.throughput.store_puts,
+        property_findings: 0,
+        timeout_findings: 0,
     }
 }
 
@@ -165,7 +169,13 @@ pub(super) fn apply_local_double_fuzz_report(
     plan: &FuzzDriverPlan,
     report: &LocalDoubleFuzzReport,
 ) {
-    let status = BackendCommandStatus::Passed;
+    let status = if report.property_findings > 0 {
+        BackendCommandStatus::Failed
+    } else if report.timeout_findings > 0 {
+        BackendCommandStatus::Timeout
+    } else {
+        BackendCommandStatus::Passed
+    };
     outcome.status = status;
     outcome.exit_code = status.exit_code();
     let corpus = report
@@ -174,11 +184,12 @@ pub(super) fn apply_local_double_fuzz_report(
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| String::from("none"));
     outcome.stdout.push(format!(
-        "fuzz-run\tfamily={}\truns={}\tcoverage={}\tcorpus={}\titerations={}\tcoverage_order={}\tnew_coverage={}\tadmissions={}\tretained_entries={}\treplay_oracle_validations={}\tgenerated_mutants={}\tstore_puts={}\tstatus={}",
+        "fuzz-run\tfamily={}\truns={}\tcoverage={}\tcorpus={}\ton_violation={}\titerations={}\tcoverage_order={}\tnew_coverage={}\tadmissions={}\tretained_entries={}\treplay_oracle_validations={}\tgenerated_mutants={}\tstore_puts={}\tproperty_findings={}\ttimeout_findings={}\tstatus={}",
         report.family,
         plan.runs,
         plan.coverage.label(),
         corpus,
+        plan.on_violation.label(),
         report.iterations,
         report.coverage_biased_order,
         report.new_coverage,
@@ -187,6 +198,8 @@ pub(super) fn apply_local_double_fuzz_report(
         report.replay_oracle_validations,
         report.generated_mutants,
         report.store_puts,
+        report.property_findings,
+        report.timeout_findings,
         status.label()
     ));
     outcome.canonical_log.push(CanonicalLogEntry {
@@ -195,11 +208,12 @@ pub(super) fn apply_local_double_fuzz_report(
         node: String::from("fuzz"),
         kind: String::from("coverage_guided_fuzz_run"),
         summary: format!(
-            "family={} runs={} coverage={} corpus={} iterations={} coverage_order={} new_coverage={} admissions={} retained_entries={} replay_oracle_validations={} generated_mutants={} store_puts={} status={}",
+            "family={} runs={} coverage={} corpus={} on_violation={} iterations={} coverage_order={} new_coverage={} admissions={} retained_entries={} replay_oracle_validations={} generated_mutants={} store_puts={} property_findings={} timeout_findings={} status={}",
             report.family,
             plan.runs,
             plan.coverage.label(),
             corpus,
+            plan.on_violation.label(),
             report.iterations,
             report.coverage_biased_order,
             report.new_coverage,
@@ -208,6 +222,8 @@ pub(super) fn apply_local_double_fuzz_report(
             report.replay_oracle_validations,
             report.generated_mutants,
             report.store_puts,
+            report.property_findings,
+            report.timeout_findings,
             status.label()
         ),
     });
@@ -408,6 +424,20 @@ pub(super) fn replay_machine_readable_trace_entries(
                 format_content_hash_ref(reduction.schedule),
                 format_content_hash_ref(reduction.state),
                 reduction.reconstructed_decisions
+            ),
+        );
+    }
+    if let Some(live) = &report.live_qemu {
+        push_replay_trace_entry(
+            &mut entries,
+            "replay_live_qemu",
+            format!(
+                "status=validated producer={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+                live.producer,
+                live.terminal_configuration,
+                live.event_stream_digest,
+                live.fingerprint_stream_digest,
+                live.controls
             ),
         );
     }
