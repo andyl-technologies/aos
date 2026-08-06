@@ -557,21 +557,26 @@ fn production_manifests(
     nodes: &QemuNodeSet,
 ) -> Result<FaultAdapterManifests, ProductionFaultRuntimeError> {
     Ok(FaultAdapterManifests {
-        network: host_production_manifest("network-host", &[EffectKind::NetworkAvailability])?,
-        storage: host_production_manifest("storage-host", &[])?,
+        network: host_production_manifest(
+            "network-host",
+            EffectKind::all().iter().copied().filter(|effect| {
+                effect.descriptor().adapter == crucible::model::FaultAdapter::Network
+            }),
+        )?,
+        storage: host_production_manifest("storage-host", std::iter::empty())?,
         node: nodes.fault_capability_manifest()?,
     })
 }
 
 fn host_production_manifest(
     backend: &str,
-    effects: &[EffectKind],
+    effects: impl IntoIterator<Item = EffectKind>,
 ) -> Result<FaultCapabilityManifest, ProductionFaultRuntimeError> {
     let backend = FaultObjectId::parse(backend)
         .map_err(crucible::model::FaultRuntimeError::Contract)
         .map_err(FaultExecutionError::from)?;
     let capabilities = effects
-        .iter()
+        .into_iter()
         .map(|effect| FaultCapabilityId::parse(effect.descriptor().capability))
         .collect::<Result<_, _>>()
         .map_err(crucible::model::FaultRuntimeError::Contract)
@@ -698,19 +703,28 @@ mod tests {
     }
 
     #[test]
-    fn production_host_manifest_does_not_advertise_unimplemented_effects() {
-        let network = host_production_manifest("network-host", &[EffectKind::NetworkAvailability])
-            .unwrap_or_else(|error| panic!("network manifest should build: {error}"));
+    fn production_host_manifest_advertises_every_implemented_network_effect() {
+        let network = host_production_manifest(
+            "network-host",
+            EffectKind::all().iter().copied().filter(|effect| {
+                effect.descriptor().adapter == crucible::model::FaultAdapter::Network
+            }),
+        )
+        .unwrap_or_else(|error| panic!("network manifest should build: {error}"));
         let availability =
             FaultCapabilityId::parse(EffectKind::NetworkAvailability.descriptor().capability)
                 .unwrap_or_else(|error| panic!("availability capability should parse: {error}"));
         let mtu = FaultCapabilityId::parse(EffectKind::NetworkMtu.descriptor().capability)
             .unwrap_or_else(|error| panic!("MTU capability should parse: {error}"));
-        assert_eq!(network.capabilities.len(), 1);
+        let expected_network_capabilities = EffectKind::all()
+            .iter()
+            .filter(|effect| effect.descriptor().adapter == crucible::model::FaultAdapter::Network)
+            .count();
+        assert_eq!(network.capabilities.len(), expected_network_capabilities);
         assert!(network.capabilities.contains(&availability));
-        assert!(!network.capabilities.contains(&mtu));
+        assert!(network.capabilities.contains(&mtu));
 
-        let storage = host_production_manifest("storage-host", &[])
+        let storage = host_production_manifest("storage-host", std::iter::empty())
             .unwrap_or_else(|error| panic!("empty storage manifest should build: {error}"));
         assert!(storage.capabilities.is_empty());
     }
