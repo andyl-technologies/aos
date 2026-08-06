@@ -2241,7 +2241,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 307,
+   "rpc_count" : 313,
    "services" : [
       "RegistryService",
       "OrganizationService",

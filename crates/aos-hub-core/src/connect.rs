@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
+use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 #[cfg(not(target_arch = "wasm32"))]
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -1106,9 +1106,6 @@ async fn serve_resolved_delivery(
         )
         .await;
     }
-    let range = headers
-        .get(header::RANGE)
-        .and_then(|value| value.to_str().ok());
     match resolved.route.surface {
         crate::db::SurfaceTarget::Registry(registry_id) => {
             let registry = match svc.db.registry_by_id(registry_id).await {
@@ -1116,17 +1113,38 @@ async fn serve_resolved_delivery(
                 Ok(None) => return StatusCode::NOT_FOUND.into_response(),
                 Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
             };
+            let now = match crate::delivery_http::HttpTimestamp::from_unix_seconds(
+                crate::clock::now_unix_secs(),
+            ) {
+                Ok(now) => now,
+                Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+            let image_request = crate::image_http::ImageHttpRequest {
+                method: if method == axum::http::Method::HEAD {
+                    crate::delivery_http::DeliveryMethod::Head
+                } else {
+                    crate::delivery_http::DeliveryMethod::Get
+                },
+                range: headers.get(header::RANGE).map(HeaderValue::as_bytes),
+                if_match: headers.get(header::IF_MATCH).map(HeaderValue::as_bytes),
+                if_unmodified_since: headers
+                    .get(header::IF_UNMODIFIED_SINCE)
+                    .map(HeaderValue::as_bytes),
+                if_none_match: headers
+                    .get(header::IF_NONE_MATCH)
+                    .map(HeaderValue::as_bytes),
+                if_modified_since: headers
+                    .get(header::IF_MODIFIED_SINCE)
+                    .map(HeaderValue::as_bytes),
+                if_range: headers.get(header::IF_RANGE).map(HeaderValue::as_bytes),
+                now,
+            };
             match svc
                 .registry_serve(
                     authorization,
                     &registry,
                     &resolved.surface_path,
-                    range,
-                    if method == axum::http::Method::HEAD {
-                        crate::image_http::ImageMethod::Head
-                    } else {
-                        crate::image_http::ImageMethod::Get
-                    },
+                    image_request,
                 )
                 .await
             {
@@ -1142,7 +1160,14 @@ async fn serve_resolved_delivery(
                 Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
             };
             match svc
-                .cache_serve(authorization, &cache, &resolved.surface_path, range)
+                .cache_serve(
+                    authorization,
+                    &cache,
+                    &resolved.surface_path,
+                    headers
+                        .get(header::RANGE)
+                        .and_then(|value| value.to_str().ok()),
+                )
                 .await
             {
                 Ok(Some(response)) => response,

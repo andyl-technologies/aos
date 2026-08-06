@@ -9,7 +9,7 @@ use std::os::fd::AsRawFd as _;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_vendor = "apple"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result, bail};
@@ -445,6 +445,22 @@ impl SecureDestination {
             }
 
             after_descriptor_link();
+            let named = open_regular_at_allow_links(&self.directory, &self.partial_name)?
+                .context("resumable image output name changed during finalization")?;
+            let named_identity = destination_identity_allow_links(&named.metadata()?);
+            if named_identity.device_inode() != retained.device_inode() || named_identity.links != 2
+            {
+                bail!("resumable image output name changed during finalization");
+            }
+            rustix::fs::unlinkat(
+                &self.directory,
+                &self.partial_name,
+                rustix::fs::AtFlags::empty(),
+            )
+            .context("removing the verified resumable image name")?;
+            if destination_identity_allow_links(&file.metadata()?).links != 1 {
+                bail!("verified image acquired an unexpected hard link");
+            }
             if open_regular_at(&self.directory, &self.final_name, false)?.is_some() {
                 bail!("final image destination appeared during download");
             }
@@ -459,22 +475,18 @@ impl SecureDestination {
 
             let installed = open_regular_at_allow_links(&self.directory, &self.final_name)?
                 .context("final image destination disappeared after finalization")?;
-            if destination_identity_allow_links(&installed.metadata()?).device_inode()
-                != retained.device_inode()
-            {
+            let installed_identity = destination_identity_allow_links(&installed.metadata()?);
+            if installed_identity.device_inode() != retained.device_inode() {
                 bail!("final image destination does not identify the verified descriptor");
             }
-
-            if let Some(named) = open_regular_at_allow_links(&self.directory, &self.partial_name)?
-                && destination_identity_allow_links(&named.metadata()?).device_inode()
-                    == retained.device_inode()
-            {
+            if installed_identity.links != 1 {
                 rustix::fs::unlinkat(
                     &self.directory,
-                    &self.partial_name,
+                    &self.final_name,
                     rustix::fs::AtFlags::empty(),
                 )
-                .context("removing finalized resumable image name")?;
+                .context("removing a hard-linked finalized image")?;
+                bail!("final image acquired an unexpected hard link");
             }
             Ok(())
         })();
@@ -488,10 +500,95 @@ impl SecureDestination {
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[cfg(target_vendor = "apple")]
+    fn commit_with_hook(mut self, after_verified_link: impl FnOnce()) -> Result<()> {
+        let file = self
+            .file
+            .take()
+            .context("image destination descriptor is unavailable")?;
+        file.sync_all()?;
+        let retained = destination_identity(&file.metadata()?)?;
+        if retained.device_inode() != self.partial_identity.device_inode()
+            || !retained.single_link()
+        {
+            bail!("resumable image output identity changed before finalization");
+        }
+
+        // Darwin has atomic RENAME_EXCL but no Linux-style AT_EMPTY_PATH link.
+        // Pin the partial name with a hard link, then prove that link identifies
+        // the already-verified open descriptor before it can become final.
+        let staging_name = verified_named_link_at(&self.directory, &self.partial_name)?;
+        let result = (|| {
+            let linked = open_regular_at_allow_links(&self.directory, &staging_name)?
+                .context("verified image link disappeared before finalization")?;
+            let linked_identity = destination_identity_allow_links(&linked.metadata()?);
+            let retained_identity = destination_identity_allow_links(&file.metadata()?);
+            if linked_identity.device_inode() != retained.device_inode()
+                || retained_identity.device_inode() != retained.device_inode()
+                || linked_identity.links != 2
+                || retained_identity.links != 2
+            {
+                bail!("verified image link does not identify the retained descriptor");
+            }
+
+            after_verified_link();
+            let named = open_regular_at_allow_links(&self.directory, &self.partial_name)?
+                .context("resumable image output name changed during finalization")?;
+            let named_identity = destination_identity_allow_links(&named.metadata()?);
+            if named_identity.device_inode() != retained.device_inode() || named_identity.links != 2
+            {
+                bail!("resumable image output name changed during finalization");
+            }
+            rustix::fs::unlinkat(
+                &self.directory,
+                &self.partial_name,
+                rustix::fs::AtFlags::empty(),
+            )
+            .context("removing the verified resumable image name")?;
+            if destination_identity_allow_links(&file.metadata()?).links != 1 {
+                bail!("verified image acquired an unexpected hard link");
+            }
+            if open_regular_at(&self.directory, &self.final_name, false)?.is_some() {
+                bail!("final image destination appeared during download");
+            }
+            rustix::fs::renameat_with(
+                &self.directory,
+                &staging_name,
+                &self.directory,
+                &self.final_name,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .context("atomically finalizing verified image download")?;
+
+            let installed = open_regular_at_allow_links(&self.directory, &self.final_name)?
+                .context("final image destination disappeared after finalization")?;
+            let installed_identity = destination_identity_allow_links(&installed.metadata()?);
+            if installed_identity.device_inode() != retained.device_inode() {
+                bail!("final image destination does not identify the verified descriptor");
+            }
+            if installed_identity.links != 1 {
+                rustix::fs::unlinkat(
+                    &self.directory,
+                    &self.final_name,
+                    rustix::fs::AtFlags::empty(),
+                )
+                .context("removing a hard-linked finalized image")?;
+                bail!("final image acquired an unexpected hard link");
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ =
+                rustix::fs::unlinkat(&self.directory, &staging_name, rustix::fs::AtFlags::empty());
+        }
+        result?;
+        rustix::fs::fsync(&self.directory).context("syncing image output directory")?;
+        Ok(())
+    }
+
+    #[cfg(all(not(target_os = "linux"), not(target_vendor = "apple")))]
     fn commit_with_hook(self, _after_descriptor_link: impl FnOnce()) -> Result<()> {
-        bail!(
-            "secure image finalization requires Linux; run `aos image download` on an AOS/Linux host"
-        )
+        bail!("secure image finalization is unsupported on this operating system")
     }
 }
 
@@ -518,6 +615,33 @@ fn descriptor_link_at(directory: &fs::File, file: &fs::File) -> Result<OsString>
             Err(error) => {
                 return Err(error)
                     .context("linking the verified image descriptor for finalization");
+            }
+        }
+    }
+    bail!("could not allocate a unique verified image finalization name")
+}
+
+#[cfg(target_vendor = "apple")]
+fn verified_named_link_at(directory: &fs::File, partial_name: &OsStr) -> Result<OsString> {
+    static NEXT_LINK: AtomicU64 = AtomicU64::new(0);
+
+    for _ in 0..32 {
+        let sequence = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
+        let staging_name = OsString::from(format!(
+            ".aos-image-commit-{}-{sequence}",
+            std::process::id()
+        ));
+        match rustix::fs::linkat(
+            directory,
+            partial_name,
+            directory,
+            &staging_name,
+            rustix::fs::AtFlags::empty(),
+        ) {
+            Ok(()) => return Ok(staging_name),
+            Err(rustix::io::Errno::EXIST) => continue,
+            Err(error) => {
+                return Err(error).context("pinning the verified image name for finalization");
             }
         }
     }
@@ -765,9 +889,29 @@ mod tests {
         assert!(validate_download_url("https://images.example/object#fragment").is_err());
     }
 
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[test]
+    fn atomic_finalize_installs_one_verified_inode_without_overwrite() {
+        use std::io::Write as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let output = temp.path().join("disk.img");
+        let mut destination = SecureDestination::open(&output, true).unwrap();
+        destination
+            .file
+            .as_mut()
+            .unwrap()
+            .write_all(b"disk")
+            .unwrap();
+        destination.commit().unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"disk");
+        assert!(!temp.path().join(".disk.img.aos-part").exists());
+        assert_eq!(std::fs::metadata(&output).unwrap().nlink(), 1);
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
-    fn atomic_finalize_installs_retained_descriptor_after_early_name_replacement() {
+    fn atomic_finalize_rejects_early_name_replacement() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("disk.img");
         let destination = SecureDestination::open(&output, true).unwrap();
@@ -775,26 +919,28 @@ mod tests {
         let displaced = temp.path().join("displaced");
         std::fs::rename(&partial, &displaced).unwrap();
         std::fs::write(&partial, b"replacement").unwrap();
-        destination.commit().unwrap();
-        assert_eq!(std::fs::read(&output).unwrap(), b"");
+        assert!(destination.commit().is_err());
+        assert!(!output.exists());
         assert_eq!(std::fs::read(&partial).unwrap(), b"replacement");
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     #[test]
-    fn atomic_finalize_survives_replacement_after_descriptor_link() {
+    fn atomic_finalize_rejects_replacement_after_verified_link() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("disk.img");
         let destination = SecureDestination::open(&output, true).unwrap();
         let partial = temp.path().join(".disk.img.aos-part");
         let displaced = temp.path().join("displaced");
-        destination
-            .commit_with_hook(|| {
-                std::fs::rename(&partial, &displaced).unwrap();
-                std::fs::write(&partial, b"replacement").unwrap();
-            })
-            .unwrap();
-        assert_eq!(std::fs::read(&output).unwrap(), b"");
+        assert!(
+            destination
+                .commit_with_hook(|| {
+                    std::fs::rename(&partial, &displaced).unwrap();
+                    std::fs::write(&partial, b"replacement").unwrap();
+                })
+                .is_err()
+        );
+        assert!(!output.exists());
         assert_eq!(std::fs::read(&partial).unwrap(), b"replacement");
     }
 

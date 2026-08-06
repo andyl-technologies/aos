@@ -34,7 +34,9 @@
   nix,
   curl,
   coreutils,
+  diffutils,
   grep,
+  jq,
   bash,
 }:
 mkDerivation {
@@ -43,7 +45,7 @@ mkDerivation {
 
   # The launcher `exec`s these store paths at runtime, so they must survive the
   # scrub phase (which nukes any store ref not reachable from a runtime dep).
-  runtimeDeps = [aos aos-hub aos-system-image-e2e-fixture nix curl coreutils grep bash];
+  runtimeDeps = [aos aos-hub aos-system-image-e2e-fixture nix curl coreutils diffutils grep jq bash];
 
   phases = [
     {
@@ -55,7 +57,7 @@ mkDerivation {
         # Drive the native aos-hub server with a real Nix client. Must run OUTSIDE
         # the Nix sandbox: it needs a nix daemon and a bindable TCP port.
         set -euo pipefail
-        export PATH="${coreutils}/bin:${grep}/bin:${curl}/bin:${nix}/bin:${aos}/bin:${aos-hub}/bin:$PATH"
+        export PATH="${coreutils}/bin:${diffutils}/bin:${grep}/bin:${jq}/bin:${curl}/bin:${nix}/bin:${aos}/bin:${aos-hub}/bin:$PATH"
         PORT="18420"
         HUB="http://127.0.0.1:$PORT"
         BASE="http://127.0.0.1:$PORT/e2e-cache"
@@ -120,6 +122,43 @@ mkDerivation {
           pass "aos image list discovers signed raw + QCOW2 encodings"
         else die "aos image list omitted a signed image encoding"; fi
 
+        # Signed image delivery uses the shared conditional/range kernel in the
+        # native adapter. HEAD ignores Range, ordinary preconditions retain RFC
+        # precedence, and If-Range either serves the interval or the full file.
+        cp "$(cat "$fixture/raw-path")" "$work/expected.raw"
+        raw_url="$(printf '%s' "$image_list" | jq -er \
+          'map(select(.format == "raw" and .channel == "stable")) | .[0].downloadUrl')"
+        raw_sha="$(printf '%s' "$image_list" | jq -er \
+          'map(select(.format == "raw" and .channel == "stable")) | .[0].sha256')"
+        raw_etag="\"sha256:$raw_sha\""
+        head_status="$(curl -sS -I -D "$work/head.headers" -o /dev/null \
+          -H 'Range: bytes=4-11' -w '%{http_code}' "$raw_url")"
+        if [ "$head_status" = 200 ] \
+           && ! grep -qi '^content-range:' "$work/head.headers"; then
+          pass "native image HEAD ignores Range"
+        else die "native image HEAD-with-Range semantics differ"; fi
+        not_modified="$(curl -sS -o /dev/null -w '%{http_code}' \
+          -H "If-None-Match: $raw_etag" "$raw_url")"
+        failed_precondition="$(curl -sS -o /dev/null -w '%{http_code}' \
+          -H 'If-Match: "different"' "$raw_url")"
+        if [ "$not_modified" = 304 ] && [ "$failed_precondition" = 412 ]; then
+          pass "native image entity-tag preconditions follow the shared kernel"
+        else die "native image conditional status mismatch"; fi
+        range_status="$(curl -sS -D "$work/range.headers" -o "$work/range.bytes" \
+          -H 'Range: bytes=4-11' -H "If-Range: $raw_etag" \
+          -w '%{http_code}' "$raw_url")"
+        dd if="$work/expected.raw" of="$work/expected.range" bs=1 skip=4 count=8 status=none
+        stale_status="$(curl -sS -o "$work/stale-range.bytes" \
+          -H 'Range: bytes=4-11' -H 'If-Range: "different"' \
+          -w '%{http_code}' "$raw_url")"
+        if [ "$range_status" = 206 ] \
+           && grep -qi '^content-range: bytes 4-11/' "$work/range.headers" \
+           && cmp -s "$work/expected.range" "$work/range.bytes" \
+           && [ "$stale_status" = 200 ] \
+           && cmp -s "$work/expected.raw" "$work/stale-range.bytes"; then
+          pass "native image If-Range selects exact partial or full bytes"
+        else die "native image If-Range semantics differ"; fi
+
         image_show="$(aos --json image show --hub "$HUB" --registry demo/cdn \
           --channel stable --architecture x86_64 --target qemu-kvm)"
         if printf '%s' "$image_show" | grep -q '"format":"qcow2"' \
@@ -128,7 +167,6 @@ mkDerivation {
           pass "aos image show resolves target to complete integrity metadata"
         else die "aos image show did not resolve qemu-kvm to QCOW2"; fi
 
-        cp "$(cat "$fixture/raw-path")" "$work/expected.raw"
         raw_out="$work/downloaded.img"
         aos image download --hub "$HUB" --registry demo/cdn --channel stable \
           --format raw --output "$raw_out" >/dev/null
