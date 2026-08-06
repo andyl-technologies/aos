@@ -840,6 +840,7 @@ mod topology_faults;
 mod validation;
 mod workload;
 mod world_faults;
+mod world_network_policy;
 
 use binary_plan::*;
 use binary_state::*;
@@ -866,6 +867,7 @@ pub use topology_faults::*;
 use validation::*;
 pub use workload::*;
 pub use world_faults::*;
+pub use world_network_policy::*;
 
 mod store_error;
 #[cfg(test)]

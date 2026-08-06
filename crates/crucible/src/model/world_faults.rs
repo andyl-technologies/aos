@@ -82,6 +82,8 @@ pub struct WorldFaultTopology {
     pub network_attachments: Vec<WorldNetworkAttachment>,
     /// Scheduled contact plans for delay/disruption-tolerant links.
     pub network_contact_plans: Vec<WorldNetworkContactPlan>,
+    /// Closed policy and lookup declarations referenced by network effects.
+    pub network_policy_artifacts: Vec<WorldNetworkPolicyArtifact>,
     /// Mobile endpoints whose truth trajectory is supplied by a signal.
     pub mobile_endpoints: Vec<WorldMobileEndpoint>,
     /// Durability and media contracts for deterministic block/9p nodes.
@@ -95,6 +97,18 @@ pub struct WorldFaultTopology {
 }
 
 impl WorldFaultTopology {
+    /// Returns one scenario-owned network policy declaration by stable ID.
+    #[must_use]
+    pub fn network_policy_artifact(
+        &self,
+        id: &FaultObjectId,
+    ) -> Option<&WorldNetworkPolicyArtifact> {
+        self.network_policy_artifacts
+            .binary_search_by(|candidate| candidate.id.cmp(id))
+            .ok()
+            .map(|index| &self.network_policy_artifacts[index])
+    }
+
     /// Returns whether the registry contains no fault-addressable declarations.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -140,6 +154,11 @@ impl WorldFaultTopology {
         hard_count(&self.network_paths, "network paths", 262_144)?;
         hard_count(&self.network_attachments, "network attachments", 65_536)?;
         hard_count(&self.network_contact_plans, "network contact plans", 65_536)?;
+        hard_count(
+            &self.network_policy_artifacts,
+            "network policy artifacts",
+            HARD_NETWORK_POLICY_ARTIFACTS,
+        )?;
         hard_count(&self.mobile_endpoints, "mobile endpoints", 65_536)?;
         hard_count(&self.storage_devices, "storage devices", 16_384)?;
         hard_count(&self.storage_controllers, "storage controllers", 16_384)?;
@@ -154,6 +173,18 @@ impl WorldFaultTopology {
         canonicalize_by_id(&mut self.network_paths, WorldNetworkPath::id)?;
         canonicalize_by_id(&mut self.network_attachments, WorldNetworkAttachment::id)?;
         canonicalize_by_id(&mut self.network_contact_plans, WorldNetworkContactPlan::id)?;
+        self.network_policy_artifacts
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        require(
+            !self
+                .network_policy_artifacts
+                .windows(2)
+                .any(|pair| pair[0].id == pair[1].id),
+            "network policy artifact identity",
+        )?;
+        for artifact in &self.network_policy_artifacts {
+            artifact.validate()?;
+        }
         canonicalize_by_id(&mut self.mobile_endpoints, WorldMobileEndpoint::id)?;
         canonicalize_by_id(&mut self.storage_devices, WorldStorageFaultDevice::id)?;
         canonicalize_by_id(&mut self.storage_controllers, WorldStorageController::id)?;
@@ -2195,7 +2226,7 @@ impl_id!(
     WorldStorageController,
     WorldStorageArray
 );
-fn require(condition: bool, field: &'static str) -> Result<(), WorldFaultTopologyError> {
+pub(super) fn require(condition: bool, field: &'static str) -> Result<(), WorldFaultTopologyError> {
     if condition {
         Ok(())
     } else {
@@ -2253,7 +2284,7 @@ fn push_network_segment_route_stages(
     }
     Ok(())
 }
-fn invalid(field: &'static str) -> WorldFaultTopologyError {
+pub(super) fn invalid(field: &'static str) -> WorldFaultTopologyError {
     WorldFaultTopologyError::Invalid(field)
 }
 fn fault_object_id_from_signal(id: &SignalId) -> Result<FaultObjectId, WorldFaultTopologyError> {

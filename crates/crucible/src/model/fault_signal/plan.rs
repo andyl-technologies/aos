@@ -11,7 +11,7 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io;
 
-use crate::model::World;
+use crate::model::{NetworkPolicyArtifactClass, World};
 
 use super::*;
 
@@ -189,6 +189,7 @@ impl FaultSignalPlan {
         let scale = 1_u64.checked_shl(u32::from(icount_shift)).unwrap_or(0);
         for binding in &self.bindings {
             validate_selector_for_world(binding.selector(), world)?;
+            validate_network_effect_policy_references(binding, world)?;
             let intervals = [
                 match binding.sampling() {
                     BindingSampling::CadenceNanos(cadence) => Some(cadence.get()),
@@ -263,6 +264,238 @@ impl FaultSignalPlan {
             })
             .collect()
     }
+}
+
+fn validate_network_effect_policy_references(
+    binding: &FaultBinding,
+    world: &World,
+) -> Result<(), FaultSignalAuthoringError> {
+    let EffectSpecification::Network(specification) = binding.effect().specification() else {
+        return Ok(());
+    };
+    let topology = world.fault_topology();
+    let require = |reference: &FaultObjectId,
+                   accepted: &[NetworkPolicyArtifactClass],
+                   field: &'static str|
+     -> Result<(), FaultSignalAuthoringError> {
+        let actual = topology
+            .network_policy_artifact(reference)
+            .map(|declaration| declaration.artifact.class());
+        if actual.is_some_and(|actual| accepted.contains(&actual)) {
+            return Ok(());
+        }
+        Err(FaultSignalAuthoringError::InvalidNetworkPolicyReference {
+            binding: binding.id().as_str().to_owned(),
+            reference: reference.as_str().to_owned(),
+            field,
+            expected: accepted
+                .iter()
+                .map(|class| class.as_str())
+                .collect::<Vec<_>>()
+                .join(" or "),
+            actual: actual.map(NetworkPolicyArtifactClass::as_str),
+        })
+    };
+    let integer = &[NetworkPolicyArtifactClass::IntegerLookup];
+    let state_machine = &[NetworkPolicyArtifactClass::StateMachine];
+    match specification {
+        NetworkEffectSpecification::ProfileDelta {
+            loss_hazard,
+            corruption_hazard,
+            technology_metrics,
+            ..
+        } => {
+            for (reference, field) in [
+                (loss_hazard.as_ref(), "loss_hazard"),
+                (corruption_hazard.as_ref(), "corruption_hazard"),
+                (technology_metrics.as_ref(), "technology_metrics"),
+            ] {
+                if let Some(reference) = reference {
+                    require(reference, integer, field)?;
+                }
+            }
+        }
+        NetworkEffectSpecification::PropagationDelay {
+            distance_velocity_lookup: Some(reference),
+            ..
+        } => require(reference, integer, "distance_velocity_lookup")?,
+        NetworkEffectSpecification::Jitter {
+            distribution_lookup: Some(reference),
+            ..
+        } => require(reference, integer, "distribution_lookup")?,
+        NetworkEffectSpecification::QueuePolicy {
+            discipline_parameters: Some(reference),
+            ..
+        } => require(
+            reference,
+            &[NetworkPolicyArtifactClass::QueueDiscipline],
+            "discipline_parameters",
+        )?,
+        NetworkEffectSpecification::BurstErrorState {
+            state_parameters, ..
+        } => require(
+            state_parameters,
+            &[NetworkPolicyArtifactClass::ErrorStateTable],
+            "state_parameters",
+        )?,
+        NetworkEffectSpecification::PayloadTransform { mutation } => match mutation {
+            NetworkPayloadMutation::FieldMutation { field, replacement } => {
+                require(
+                    field,
+                    &[NetworkPolicyArtifactClass::PacketSelector],
+                    "field",
+                )?;
+                require(
+                    replacement,
+                    &[NetworkPolicyArtifactClass::ByteTemplate],
+                    "replacement",
+                )?;
+            }
+            NetworkPayloadMutation::UndetectedCorruption { transform } => require(
+                transform,
+                &[NetworkPolicyArtifactClass::ByteTemplate],
+                "transform",
+            )?,
+            NetworkPayloadMutation::BitFlip { .. } | NetworkPayloadMutation::Truncate { .. } => {}
+        },
+        NetworkEffectSpecification::PauseBackpressure {
+            resume_event: Some(reference),
+            ..
+        } => require(reference, state_machine, "resume_event")?,
+        NetworkEffectSpecification::ForwardingMutation { selector, .. } => require(
+            selector,
+            &[NetworkPolicyArtifactClass::PacketSelector],
+            "selector",
+        )?,
+        NetworkEffectSpecification::RouteTransition {
+            convergence_events, ..
+        } => require(convergence_events, state_machine, "convergence_events")?,
+        NetworkEffectSpecification::ControlPlaneService {
+            service_curve,
+            overflow_policy,
+            ..
+        } => {
+            require(
+                service_curve,
+                &[NetworkPolicyArtifactClass::ServiceCurve],
+                "service_curve",
+            )?;
+            require(
+                overflow_policy,
+                &[NetworkPolicyArtifactClass::Overflow],
+                "overflow_policy",
+            )?;
+        }
+        NetworkEffectSpecification::FirewallDisposition {
+            typed_reject,
+            rule,
+            state,
+            ..
+        } => {
+            require(rule, &[NetworkPolicyArtifactClass::PacketSelector], "rule")?;
+            require(state, state_machine, "state")?;
+            if let Some(reference) = typed_reject {
+                require(
+                    reference,
+                    &[NetworkPolicyArtifactClass::ControlResult],
+                    "typed_reject",
+                )?;
+            }
+        }
+        NetworkEffectSpecification::ConnectionState { transition, .. } => {
+            require(transition, state_machine, "transition")?;
+        }
+        NetworkEffectSpecification::SharedMedium {
+            arbitration,
+            collision_capture,
+            backoff_duty_cycle,
+            ..
+        } => {
+            for (reference, field) in [
+                (arbitration, "arbitration"),
+                (collision_capture, "collision_capture"),
+                (backoff_duty_cycle, "backoff_duty_cycle"),
+            ] {
+                require(
+                    reference,
+                    &[NetworkPolicyArtifactClass::MediumAccess],
+                    field,
+                )?;
+            }
+        }
+        NetworkEffectSpecification::RfChannel {
+            propagation_fields,
+            sinr_transfer,
+            fading_field,
+            ..
+        } => {
+            require(
+                propagation_fields,
+                &[NetworkPolicyArtifactClass::RfChannel],
+                "propagation_fields",
+            )?;
+            require(
+                sinr_transfer,
+                &[NetworkPolicyArtifactClass::RfChannel],
+                "sinr_transfer",
+            )?;
+            if let Some(reference) = fading_field {
+                require(reference, integer, "fading_field")?;
+            }
+        }
+        NetworkEffectSpecification::Association {
+            selection_policy,
+            timer_policy,
+            authentication_policy,
+            traffic_policy,
+            ..
+        } => {
+            for (reference, field) in [
+                (selection_policy, "selection_policy"),
+                (timer_policy, "timer_policy"),
+                (authentication_policy, "authentication_policy"),
+                (traffic_policy, "traffic_policy"),
+            ] {
+                require(reference, &[NetworkPolicyArtifactClass::Association], field)?;
+            }
+        }
+        NetworkEffectSpecification::ControlResultTransform { result, .. } => require(
+            result,
+            &[NetworkPolicyArtifactClass::ControlResult],
+            "result",
+        )?,
+        NetworkEffectSpecification::Contact {
+            transition_policy,
+            range_delay_lookup,
+            ..
+        } => {
+            require(transition_policy, state_machine, "transition_policy")?;
+            require(range_delay_lookup, integer, "range_delay_lookup")?;
+        }
+        NetworkEffectSpecification::CustodyQueue { custody_policy, .. } => require(
+            custody_policy,
+            &[NetworkPolicyArtifactClass::Overflow],
+            "custody_policy",
+        )?,
+        NetworkEffectSpecification::Availability { .. }
+        | NetworkEffectSpecification::Flap { .. }
+        | NetworkEffectSpecification::NegotiatedMode { .. }
+        | NetworkEffectSpecification::PropagationDelay { .. }
+        | NetworkEffectSpecification::AccessDelay { .. }
+        | NetworkEffectSpecification::Jitter { .. }
+        | NetworkEffectSpecification::ServiceCurve { .. }
+        | NetworkEffectSpecification::TokenBucket { .. }
+        | NetworkEffectSpecification::QueuePolicy { .. }
+        | NetworkEffectSpecification::FrameLoss { .. }
+        | NetworkEffectSpecification::Duplicate { .. }
+        | NetworkEffectSpecification::Reorder { .. }
+        | NetworkEffectSpecification::DetectedFrameError { .. }
+        | NetworkEffectSpecification::Mtu { .. }
+        | NetworkEffectSpecification::PauseBackpressure { .. }
+        | NetworkEffectSpecification::RecipientSubset { .. }
+        | NetworkEffectSpecification::ForwarderLifecycle { .. } => {}
+    }
+    Ok(())
 }
 
 impl Hash for FaultSignalPlan {
