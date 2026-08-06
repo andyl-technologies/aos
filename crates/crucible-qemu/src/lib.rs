@@ -77,6 +77,7 @@ mod shutdown;
 mod single_vm_fingerprint;
 #[cfg(target_os = "linux")]
 mod spawn;
+mod storage_fault_resolver;
 #[cfg(target_os = "linux")]
 mod supervision;
 
@@ -280,6 +281,7 @@ pub use spawn::{
     QemuSpawnError, QemuSpawnHostResources, QemuSpawnSetupResources, QemuSpawnedChild,
     spawn_qemu_child_with_fds, spawn_qemu_child_with_fds_in_directory,
 };
+pub use storage_fault_resolver::{StorageFaultResolutionError, resolve_block_fault_directive};
 #[cfg(target_os = "linux")]
 pub use supervision::{
     BlockIoAdvanceOutcome, BlockIoDiagnostics, BlockIoDiagnosticsSnapshot, BlockNodeOutcome,
