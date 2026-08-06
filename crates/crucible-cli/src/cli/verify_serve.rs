@@ -890,6 +890,13 @@ pub(super) async fn run_serve_invocation_until_shutdown<S>(
 where
     S: Future<Output = Result<(), CliError>> + Send + 'static,
 {
+    let tls_acceptor = match (&args.tls_cert, &args.tls_key, &args.client_ca) {
+        (Some(certificate), Some(private_key), Some(client_ca)) => Some(
+            mutual_tls_acceptor_from_pem(certificate, private_key, client_ca)
+                .map_err(|error| serve_error(format!("serve mutual-TLS error: {error}")))?,
+        ),
+        _ => None,
+    };
     let listener = tokio::net::TcpListener::bind(&args.listen)
         .await
         .map_err(|error| serve_error(format!("serve bind error: {error}")))?;
@@ -902,7 +909,12 @@ where
         } else {
             "read-write"
         };
-        println!("crucible: serving API daemon at http://{address} mode={mode}");
+        let scheme = if tls_acceptor.is_some() {
+            "https"
+        } else {
+            "http"
+        };
+        println!("crucible: serving API daemon at {scheme}://{address} mode={mode}");
     }
     let mut control_plane = LifecycleControlPlane::new(
         "crucible-cli-daemon",
@@ -918,10 +930,27 @@ where
         LifecycleServerMode::read_write()
     };
     let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
-    let server =
-        serve_lifecycle_http2_with_mode_until_shutdown(listener, control_plane, mode, async move {
-            let _ = shutdown_receiver.await;
-        });
+    let server: Pin<Box<dyn Future<Output = Result<(), std::io::Error>> + Send>> =
+        if let Some(tls_acceptor) = tls_acceptor {
+            Box::pin(serve_lifecycle_http2_mtls_with_mode_until_shutdown(
+                listener,
+                control_plane,
+                mode,
+                tls_acceptor,
+                async move {
+                    let _ = shutdown_receiver.await;
+                },
+            ))
+        } else {
+            Box::pin(serve_lifecycle_http2_with_mode_until_shutdown(
+                listener,
+                control_plane,
+                mode,
+                async move {
+                    let _ = shutdown_receiver.await;
+                },
+            ))
+        };
     tokio::pin!(server);
     tokio::pin!(shutdown);
     // crucible-lint: allow unordered-select -- serve shutdown races only with host daemon drainage.
@@ -966,6 +995,29 @@ pub(super) async fn serve_shutdown_signal() -> Result<(), CliError> {
 pub(super) fn validate_serve_invocation(args: &ServeArgs) -> Result<(), CliError> {
     if args.max_sessions == Some(0) {
         return Err(usage_error("--max-sessions must be greater than zero"));
+    }
+    let tls_file_count = [
+        args.tls_cert.is_some(),
+        args.tls_key.is_some(),
+        args.client_ca.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if tls_file_count != 0 && tls_file_count != 3 {
+        return Err(usage_error(
+            "--tls-cert, --tls-key, and --client-ca must be supplied together",
+        ));
+    }
+    if tls_file_count == 3 && args.trusted_unauthenticated_bind {
+        return Err(usage_error(
+            "--trusted-unauthenticated-bind cannot be combined with mutual TLS",
+        ));
+    }
+    if tls_file_count == 0 && !args.trusted_unauthenticated_bind {
+        return Err(usage_error(
+            "serve requires mutual TLS or explicit --trusted-unauthenticated-bind",
+        ));
     }
     Ok(())
 }

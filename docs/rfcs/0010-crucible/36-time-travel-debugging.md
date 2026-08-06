@@ -1287,6 +1287,14 @@ complete from model-double evidence.
   leases, Unix peer authentication, remote HTTP/2+mTLS relay, and explicit trusted
   unauthenticated bind policy in the daemon and CLI. — satisfies [DBG-43], [DBG-44];
   spec §36.9.2.
+  In progress: the HTTP/2 daemon now has a mandatory-client-certificate TLS
+  serving path. It derives a stable authenticated principal from the leaf
+  certificate fingerprint and places that identity in each connection's request
+  extensions. The CLI loads matching server-CA/client-certificate/client-key PEM
+  material for authenticated HTTP/2 clients. Cleartext `serve` requires the
+  explicit `--trusted-unauthenticated-bind` policy and cannot be combined with TLS.
+  Completion remains open for Unix peer credentials, per-principal role policy,
+  session-owned lease RPCs, and the client-side loopback GDB byte relay.
 - [ ] **T-DBG-12** Version the public shared-memory ABI for the debug guest agent and
   implement whole-world-forked argv exec, PTY, resize, exit/close, and SSH-compatible
   byte bridging; close all streams on reposition and keep recording opt-in. —

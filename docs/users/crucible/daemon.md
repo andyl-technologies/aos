@@ -1,7 +1,9 @@
 # Daemon operation
 
-`crucible serve` exposes the lifecycle control API over cleartext HTTP/2. It is
-useful for control-plane development and local/remote conformance testing.
+`crucible serve` exposes the lifecycle control API over HTTP/2. Remote service
+uses mutual TLS: the server authenticates every client certificate against an
+explicit client CA, and clients authenticate the server against an explicit CA.
+Cleartext service is available only through an explicit trusted-network option.
 
 It is not currently a production remote-QEMU service. The packaged server
 constructs a quiescent lifecycle loop rather than the production QEMU lifecycle
@@ -11,22 +13,40 @@ backend fidelity.
 
 ## Start a daemon
 
-Bind a loopback listener:
+Start an authenticated listener:
+
+```sh
+./result/bin/crucible serve \
+  --listen 0.0.0.0:9000 \
+  --tls-cert server.crt \
+  --tls-key server.key \
+  --client-ca clients-ca.crt \
+  --max-sessions 32
+```
+
+All three TLS paths are required together. The server advertises HTTP/2 only,
+requires a client certificate during the TLS handshake, and derives the
+authenticated transport identity from the leaf-certificate SHA-256 fingerprint.
+The server prints the resolved `https://` endpoint. `--max-sessions` must be
+greater than zero.
+
+For an isolated development network, cleartext must be opted into explicitly:
 
 ```sh
 ./result/bin/crucible serve \
   --listen 127.0.0.1:9000 \
-  --max-sessions 32
+  --trusted-unauthenticated-bind
 ```
 
-The server prints the resolved `http://` endpoint. `--max-sessions` must be
-greater than zero.
+Do not use this option on an untrusted interface. It cannot be combined with
+the mutual-TLS flags.
 
 Use `--read-only` to reject mutating API calls:
 
 ```sh
 ./result/bin/crucible serve \
   --listen 127.0.0.1:9000 \
+  --trusted-unauthenticated-bind \
   --read-only
 ```
 
@@ -42,16 +62,25 @@ Pass either a host and port or a complete endpoint:
 
 ```sh
 ./result/bin/crucible \
-  --daemon 127.0.0.1:9000 \
+  --daemon https://daemon.example:9000 \
+  --daemon-ca server-ca.crt \
+  --daemon-cert operator.crt \
+  --daemon-key operator.key \
   run scenario.toml
 ```
 
-If the value has no URI scheme, the client prepends `http://`. The equivalent
-explicit spelling is:
+The three client TLS paths are required together. The certificate and key are
+combined only in memory before constructing the HTTP/2 client.
+
+For an explicitly trusted cleartext endpoint, use:
 
 ```text
---daemon http://127.0.0.1:9000
+--daemon http://127.0.0.1:9000 --trusted-unauthenticated-daemon
 ```
+
+For compatibility, an address without a URI scheme is interpreted as
+`http://`; new scripts should use the explicit trusted spelling so their
+security assumption is visible.
 
 ## Current remote command coverage
 
@@ -73,10 +102,11 @@ Current restrictions include:
 
 ## Security boundary
 
-The server currently binds an unauthenticated cleartext HTTP/2 endpoint. Bind it
-to loopback or a trusted development network. Do not expose it directly to an
-untrusted network and do not infer authentication, authorization, or TLS from
-the higher-level registry services elsewhere in AOS.
+Mutual TLS authenticates the transport. Debugger capabilities and controller
+leases are a separate authorization layer: possessing a valid client
+certificate does not itself grant `observe`, `control`, `mutate`, `shell`, or
+`admin`. Until the debugger relay routes are enabled, the server exposes only
+the existing lifecycle API over this authenticated transport.
 
 ## Intended evolution
 

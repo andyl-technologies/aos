@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::{Request, StatusCode, Version};
 use axum::response::Response;
 use axum::routing::post;
@@ -26,8 +26,13 @@ use crucible_session::{
     SessionCommandKind, StepMode,
 };
 use futures_util::stream;
+use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::server::conn::auto;
+use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, watch};
+use tokio::task::JoinSet;
+use tokio_rustls::TlsAcceptor;
 
 use crate::event_log_stream::EventLogCursor;
 use crate::lifecycle::{
@@ -50,6 +55,7 @@ use crate::streaming::{
     StateUpdate, StreamingApiError, StreamingEventFrame, StreamingFrame, StreamingStateUpdateFrame,
     WatchStream,
 };
+use crate::transport_security::DebugTransportIdentity;
 use crate::{ControlClientError, HelloRequest};
 
 type SharedLifecycleControlPlane<L, F> = Arc<Mutex<LifecycleControlPlane<L, F>>>;
@@ -187,6 +193,97 @@ where
             let _ = shutdown_sender.send(true);
         })
         .await
+}
+
+/// Serves the lifecycle API over HTTP/2 with mandatory mutual TLS.
+///
+/// The caller supplies an acceptor configured to validate client certificates.
+/// Each connection receives a [`DebugTransportIdentity`] request extension
+/// derived from its authenticated leaf certificate for debugger authorization.
+/// TLS handshake failures affect only the rejected connection.
+///
+/// # Errors
+///
+/// Returns an I/O error when the listening socket cannot accept connections.
+pub async fn serve_lifecycle_http2_mtls_with_mode_until_shutdown<L, F, S>(
+    listener: TcpListener,
+    control_plane: LifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    tls_acceptor: TlsAcceptor,
+    shutdown: S,
+) -> Result<(), std::io::Error>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = ()> + Send + 'static,
+{
+    let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+    let app = lifecycle_router(Http2LifecycleState {
+        control_plane: Arc::new(Mutex::new(control_plane)),
+        mode,
+        shutdown: shutdown_receiver.clone(),
+    });
+    tokio::pin!(shutdown);
+    let mut connections = JoinSet::new();
+
+    loop {
+        tokio::select! {
+            result = listener.accept() => {
+                let (stream, _peer) = result?;
+                let acceptor = tls_acceptor.clone();
+                let app = app.clone();
+                let connection_shutdown = shutdown_receiver.clone();
+                connections.spawn(async move {
+                    serve_authenticated_connection(stream, acceptor, app, connection_shutdown).await;
+                });
+            }
+            () = &mut shutdown => {
+                let _ = shutdown_sender.send(true);
+                break;
+            }
+        }
+    }
+
+    while connections.join_next().await.is_some() {}
+    Ok(())
+}
+
+async fn serve_authenticated_connection(
+    stream: tokio::net::TcpStream,
+    acceptor: TlsAcceptor,
+    app: Router,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let Ok(tls_stream) = acceptor.accept(stream).await else {
+        return;
+    };
+    let Some(certificate) = tls_stream
+        .get_ref()
+        .1
+        .peer_certificates()
+        .and_then(|certificates| certificates.first())
+    else {
+        return;
+    };
+    let identity = DebugTransportIdentity::from_leaf_certificate(certificate.as_ref());
+    let authenticated_app = app.layer(Extension(identity));
+    let service = TowerToHyperService::new(authenticated_app);
+    let io = TokioIo::new(tls_stream);
+    let builder = auto::Builder::new(TokioExecutor::new());
+    let connection = builder.serve_connection(io, service);
+    tokio::pin!(connection);
+    tokio::select! {
+        _result = &mut connection => {}
+        changed = shutdown.changed() => {
+            if changed.is_ok() && *shutdown.borrow() {
+                connection.as_mut().graceful_shutdown();
+                let _ = connection.await;
+            }
+        }
+    }
 }
 
 fn lifecycle_router<L, F>(state: Http2LifecycleState<L, F>) -> Router
