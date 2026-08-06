@@ -86,7 +86,7 @@ impl WorldFaultTopology {
     ///
     /// Returns [`WorldFaultTopologyError`] for duplicate IDs, excessive
     /// collections, dangling references, self-references, invalid geometry, or
-    /// a sensor-backed field which is specification-only in schema v2.
+    /// a sensor-backed field which is specification-only in schema v3.
     pub fn admit(mut self, world: &World) -> Result<Self, WorldFaultTopologyError> {
         hard_count(&self.fault_domains, "fault domains", 65_536)?;
         hard_count(&self.network_interfaces, "network interfaces", 65_536)?;
