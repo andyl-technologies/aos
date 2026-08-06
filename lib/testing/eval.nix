@@ -763,6 +763,16 @@
     then throw "aos.packages must emit image preset enablement for preset=true packages"
     else if builtins.elem "enable aos-pkg-expose-smoke.target" packagePolicySystem.config.systemd.systemPresetRules
     then throw "aos.packages must not emit image preset enablement for preset=false packages"
+    else if
+      !(builtins.elem
+        "aos-seed-baked-packages.service"
+        packagePolicySystem.config.systemd.services.aos-eval.requires)
+    then throw "host evaluation must wait for the bundled package profile seed"
+    else if
+      !(builtins.elem
+        "aos-seed-baked-packages.service"
+        packagePolicySystem.config.systemd.services.aos-eval.after)
+    then throw "host evaluation must order after the bundled package profile seed"
     else builtins.seq packagePolicySystem.config.system.build.aosPackageProfileSeed.name "ok";
 
   packagePolicyBadPresetSystem = mkSystem [
