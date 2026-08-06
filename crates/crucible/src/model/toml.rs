@@ -67,10 +67,36 @@ pub(super) struct ScenarioDefToml {
     pub(super) properties: PropertiesToml,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 pub(super) enum ScenarioSchemaToml {
-    #[serde(rename = "crucible.scenario.v2")]
-    V2,
+    V3,
+}
+
+impl Serialize for ScenarioSchemaToml {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str("crucible.scenario.v3")
+    }
+}
+
+impl<'de> Deserialize<'de> for ScenarioSchemaToml {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let schema = String::deserialize(deserializer)?;
+        match schema.as_str() {
+            "crucible.scenario.v3" => Ok(Self::V3),
+            "crucible.scenario.v1" | "crucible.scenario.v2" => Err(de::Error::custom(
+                "legacy Crucible scenarios are not supported; rewrite the scenario using the signal-driven fault schema `crucible.scenario.v3`",
+            )),
+            _ => Err(de::Error::custom(format!(
+                "unsupported Crucible scenario schema `{schema}`; expected `crucible.scenario.v3`"
+            ))),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -810,7 +836,7 @@ pub(super) fn scenario_form_to_toml(
     form: &ScenarioDefForm,
 ) -> Result<ScenarioDefToml, EngineError> {
     Ok(ScenarioDefToml {
-        schema: ScenarioSchemaToml::V2,
+        schema: ScenarioSchemaToml::V3,
         scenario: ScenarioHeaderToml {
             id: format_content_hash_ref(form.id()),
             seed: format_seed_ref(form.seed),

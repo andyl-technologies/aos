@@ -1082,6 +1082,10 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
     let binary = form.to_compact_binary();
     let parsed_toml = ScenarioDefForm::from_canonical_toml(&toml)
         .unwrap_or_else(|error| panic!("scenario form TOML should parse: {error}"));
+    let legacy_toml = toml.replace("crucible.scenario.v3", "crucible.scenario.v2");
+    let legacy_error = ScenarioDefForm::from_canonical_toml(&legacy_toml)
+        .expect_err("legacy scenario schema must fail admission")
+        .to_string();
     let parsed_binary = ScenarioDefForm::from_compact_binary(&binary)
         .unwrap_or_else(|error| panic!("scenario form binary should parse: {error}"));
     let world_toml = world
@@ -1121,6 +1125,10 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths() {
 
     assert_eq!(form.scenario_def(), scenario);
     assert_eq!(parsed_toml, form);
+    assert!(toml.contains("schema = \"crucible.scenario.v3\""));
+    assert!(legacy_error.contains(
+        "legacy Crucible scenarios are not supported; rewrite the scenario using the signal-driven fault schema `crucible.scenario.v3`"
+    ));
     assert_eq!(parsed_binary, form);
     assert_eq!(parsed_toml.canonical_bytes(), form.canonical_bytes());
     assert_eq!(parsed_binary.canonical_bytes(), form.canonical_bytes());
