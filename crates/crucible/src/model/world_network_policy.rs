@@ -71,6 +71,8 @@ pub struct NetworkPolicyErrorState {
     pub loss: ProbabilityMillionths,
     /// Undetected-corruption probability while in this state.
     pub corruption: ProbabilityMillionths,
+    /// Registered XOR template used when undetected corruption fires.
+    pub corruption_transform: Option<FaultObjectId>,
 }
 
 /// One traffic class used by queue scheduling.
@@ -79,6 +81,8 @@ pub struct NetworkPolicyErrorState {
 pub struct NetworkPolicyQueueClass {
     /// Stable class identity.
     pub class: FaultObjectId,
+    /// Packet selector assigning a matching frame to this class.
+    pub selector: FaultObjectId,
     /// Lower values run first under strict priority.
     pub priority: u16,
     /// Positive round-robin weight.
@@ -233,6 +237,32 @@ pub struct NetworkPolicyAssociation {
     pub preserve_queued: bool,
     /// Whether addressing survives a successful handoff.
     pub preserve_address: bool,
+    /// Candidate-specific deterministic score functions.
+    pub candidates: Vec<NetworkPolicyAssociationCandidate>,
+}
+
+/// One association candidate and its signal-to-score transfer function.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicyAssociationCandidate {
+    /// Attachment identity present in the effect's candidate set.
+    pub candidate: FaultObjectId,
+    /// Integer transfer function from the binding input to candidate score.
+    pub score: NetworkPolicyIntegerTable,
+}
+
+/// One half-open period during which a contact can carry traffic.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkPolicyContactInterval {
+    /// Inclusive contact start in virtual nanoseconds.
+    pub start_nanos: u64,
+    /// Exclusive contact end in virtual nanoseconds.
+    pub end_nanos: u64,
+    /// Beam used during this interval.
+    pub beam: FaultObjectId,
+    /// Gateway used during this interval.
+    pub gateway: FaultObjectId,
 }
 
 /// Disposition when a bounded control or custody queue overflows.
@@ -276,6 +306,8 @@ pub enum NetworkPolicyArtifactClass {
     ControlResult,
     /// Overflow/expiry configuration.
     Overflow,
+    /// Ordered intermittent-contact plan.
+    ContactPlan,
 }
 
 impl NetworkPolicyArtifactClass {
@@ -295,6 +327,7 @@ impl NetworkPolicyArtifactClass {
             Self::Association => "association",
             Self::ControlResult => "control_result",
             Self::Overflow => "overflow",
+            Self::ContactPlan => "contact_plan",
         }
     }
 }
@@ -307,6 +340,10 @@ pub enum NetworkPolicyArtifactKind {
     IntegerLookup(NetworkPolicyIntegerTable),
     /// Good/bad correlated error-state outputs.
     ErrorStateTable {
+        /// State interpreted as the good condition.
+        good: FaultObjectId,
+        /// State interpreted as the bad condition.
+        bad: FaultObjectId,
         /// Initial state.
         initial: FaultObjectId,
         /// Canonical state definitions.
@@ -358,6 +395,11 @@ pub enum NetworkPolicyArtifactKind {
         /// Optional modeled timeout.
         timeout_nanos: Option<PositiveU64>,
     },
+    /// Ordered intermittent-contact intervals.
+    ContactPlan {
+        /// Strictly ordered, non-overlapping contact intervals.
+        intervals: Vec<NetworkPolicyContactInterval>,
+    },
 }
 
 impl NetworkPolicyArtifactKind {
@@ -377,6 +419,7 @@ impl NetworkPolicyArtifactKind {
             Self::Association(_) => NetworkPolicyArtifactClass::Association,
             Self::ControlResult { .. } => NetworkPolicyArtifactClass::ControlResult,
             Self::Overflow { .. } => NetworkPolicyArtifactClass::Overflow,
+            Self::ContactPlan { .. } => NetworkPolicyArtifactClass::ContactPlan,
         }
     }
 }
@@ -400,16 +443,33 @@ impl WorldNetworkPolicyArtifact {
         }
         match &self.artifact {
             NetworkPolicyArtifactKind::IntegerLookup(table) => validate_integer_table(table),
-            NetworkPolicyArtifactKind::ErrorStateTable { initial, states } => {
+            NetworkPolicyArtifactKind::ErrorStateTable {
+                good,
+                bad,
+                initial,
+                states,
+            } => {
                 hard_policy_count(states.len(), "network error states")?;
-                require(!states.is_empty(), "network error states")?;
+                require(states.len() == 2, "network error states")?;
+                require(good != bad, "network error good/bad states")?;
                 require(
                     states.iter().any(|state| &state.state == initial),
                     "network error initial state",
                 )?;
+                require(
+                    states.iter().any(|state| &state.state == good)
+                        && states.iter().any(|state| &state.state == bad),
+                    "network error good/bad states",
+                )?;
                 require_unique(
                     states.iter().map(|state| &state.state),
                     "network error state",
+                )?;
+                require(
+                    states.iter().all(|state| {
+                        (state.corruption.get() == 0) == state.corruption_transform.is_none()
+                    }),
+                    "network error-state corruption transform",
                 )
             }
             NetworkPolicyArtifactKind::QueueDiscipline(parameters) => {
@@ -433,6 +493,15 @@ impl WorldNetworkPolicyArtifact {
                     (parameters.red_minimum_bytes, parameters.red_maximum_bytes)
                 {
                     require(minimum < maximum, "network RED thresholds")?;
+                }
+                if let (Some(numerator), Some(denominator)) = (
+                    parameters.red_weight_numerator,
+                    parameters.red_weight_denominator,
+                ) {
+                    require(
+                        numerator.get() <= denominator.get(),
+                        "network RED EWMA weight",
+                    )?;
                 }
                 Ok(())
             }
@@ -501,7 +570,24 @@ impl WorldNetworkPolicyArtifact {
                     "network RF profile order",
                 )
             }
-            NetworkPolicyArtifactKind::Association(_policy) => Ok(()),
+            NetworkPolicyArtifactKind::Association(policy) => {
+                hard_policy_count(policy.candidates.len(), "network association candidates")?;
+                require(
+                    !policy.candidates.is_empty(),
+                    "network association candidates",
+                )?;
+                require_unique(
+                    policy
+                        .candidates
+                        .iter()
+                        .map(|candidate| &candidate.candidate),
+                    "network association candidate",
+                )?;
+                for candidate in &policy.candidates {
+                    validate_integer_table(&candidate.score)?;
+                }
+                Ok(())
+            }
             NetworkPolicyArtifactKind::Overflow {
                 disposition,
                 timeout_nanos,
@@ -509,6 +595,19 @@ impl WorldNetworkPolicyArtifact {
                 matches!(disposition, NetworkPolicyOverflow::Timeout) == timeout_nanos.is_some(),
                 "network overflow timeout",
             ),
+            NetworkPolicyArtifactKind::ContactPlan { intervals } => {
+                hard_policy_count(intervals.len(), "network contact intervals")?;
+                require(!intervals.is_empty(), "network contact intervals")?;
+                require(
+                    intervals
+                        .iter()
+                        .all(|interval| interval.start_nanos < interval.end_nanos)
+                        && intervals
+                            .windows(2)
+                            .all(|pair| pair[0].end_nanos <= pair[1].start_nanos),
+                    "network contact interval order",
+                )
+            }
         }
     }
 }

@@ -21,6 +21,35 @@ use crucible::model::{
 };
 use crucible::{BackendNetworkOutputInterceptor, SchedulerEventLogAppend};
 
+const HARD_PENDING_NETWORK_FRAMES: usize = 65_536;
+const HARD_PENDING_NETWORK_BYTES: usize = 1_073_741_824;
+
+fn stage_pending_network_output(
+    pending: &mut Vec<crucible::BackendNetworkOutput>,
+    output: crucible::BackendNetworkOutput,
+) -> Result<(), SchedulerError> {
+    if pending.len() == HARD_PENDING_NETWORK_FRAMES {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "signal-driven pending network frame count exceeds hard bound {HARD_PENDING_NETWORK_FRAMES}"
+            ),
+        });
+    }
+    let occupied = pending.iter().try_fold(0_usize, |total, queued| {
+        total.checked_add(queued.payload.len())
+    });
+    let required = occupied.and_then(|total| total.checked_add(output.payload.len()));
+    if required.is_none_or(|bytes| bytes > HARD_PENDING_NETWORK_BYTES) {
+        return Err(SchedulerError::BoundaryViolation {
+            message: format!(
+                "signal-driven pending network bytes exceed hard bound {HARD_PENDING_NETWORK_BYTES}"
+            ),
+        });
+    }
+    pending.push(output);
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 struct NetworkAvailabilityTransitionRecord {
     action: ContentHash,
@@ -58,8 +87,7 @@ impl NetworkEffectStateKey {
 
 #[derive(Clone, Debug, Default)]
 struct NetworkTokenBucketState {
-    tokens_bits: u64,
-    refill_remainder: u64,
+    tokens_nano_bits: u128,
     last_refill_nanos: u64,
     transition_sequence: u64,
 }
@@ -67,22 +95,36 @@ struct NetworkTokenBucketState {
 #[derive(Clone, Debug)]
 struct NetworkQueueReservation {
     enqueue_nanos: u64,
+    ready_nanos: u64,
     finish_nanos: u64,
     bytes: u64,
+    payload_bits: u64,
+    base_rate_bps: Option<u64>,
+    service_curves: Vec<NetworkServiceCurveState>,
+    class: Option<FaultObjectId>,
     opportunity: ContentHash,
+}
+
+#[derive(Clone, Debug)]
+struct NetworkServiceCurveState {
+    activation_nanos: u64,
+    segments: Vec<crucible::model::NetworkServiceSegment>,
 }
 
 #[derive(Clone, Debug, Default)]
 struct NetworkQueueState {
     service_cursor_nanos: u64,
     reservations: Vec<NetworkQueueReservation>,
+    served_frames_by_class: BTreeMap<FaultObjectId, u64>,
+    served_bytes_by_class: BTreeMap<FaultObjectId, u64>,
+    red_average_bytes_q32: u128,
 }
 
 #[derive(Clone, Debug, Default)]
 struct NetworkEffectRuntimeState {
     token_buckets: BTreeMap<NetworkEffectStateKey, NetworkTokenBucketState>,
     queues: BTreeMap<crucible::model::ResolvedFaultTarget, NetworkQueueState>,
-    burst_bad: BTreeMap<NetworkEffectStateKey, bool>,
+    burst_states: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
     state_machines: BTreeMap<NetworkEffectStateKey, FaultObjectId>,
     boundary: boundary::BoundaryNetworkState,
 }
@@ -94,7 +136,7 @@ pub(super) struct ProductionFaultNetworkInterceptor {
     links: Vec<crucible::LinkDef>,
     coordinate: Option<u64>,
     coordinate_sequence: u64,
-    transition_ledger: Vec<NetworkAvailabilityTransitionRecord>,
+    transition_ledger: BTreeMap<ContentHash, NetworkAvailabilityTransitionRecord>,
     effect_state: NetworkEffectRuntimeState,
 }
 
@@ -112,7 +154,7 @@ impl ProductionFaultNetworkInterceptor {
             links,
             coordinate: None,
             coordinate_sequence: 0,
-            transition_ledger: Vec::new(),
+            transition_ledger: BTreeMap::new(),
             effect_state: NetworkEffectRuntimeState::default(),
         }
     }
@@ -161,7 +203,7 @@ impl ProductionFaultNetworkInterceptor {
             }
         })?;
         material.extend_from_slice(&transition_count.to_be_bytes());
-        for transition in &self.transition_ledger {
+        for transition in self.transition_ledger.values() {
             material.extend_from_slice(&transition.action.bytes);
             append_evidence_bytes(&mut material, transition.binding.as_str().as_bytes())?;
             append_evidence_bytes(&mut material, transition.target.kind().as_str().as_bytes())?;
@@ -341,7 +383,9 @@ impl ProductionFaultNetworkInterceptor {
         *scheduler = staged_scheduler;
         *pending_outputs = staged_pending;
         self.effect_state = staged_effect_state;
-        self.transition_ledger.extend(records);
+        for record in records {
+            self.transition_ledger.insert(record.action, record);
+        }
         Ok(append)
     }
 
@@ -708,6 +752,7 @@ fn append_backend_output_evidence(
     material.extend_from_slice(&effects.latency_delta_nanos().to_be_bytes());
     material.extend_from_slice(&effects.additional_delay_nanos().to_be_bytes());
     material.push(u8::from(effects.is_dropped()));
+    material.push(u8::from(effects.serialization_is_accounted()));
     match effects.serialization_rate_cap_bps() {
         Some(rate) => {
             material.push(1);
@@ -735,8 +780,7 @@ fn append_network_effect_state(
     append_evidence_count(material, state.token_buckets.len())?;
     for (key, bucket) in &state.token_buckets {
         append_network_effect_state_key(material, key)?;
-        material.extend_from_slice(&bucket.tokens_bits.to_be_bytes());
-        material.extend_from_slice(&bucket.refill_remainder.to_be_bytes());
+        material.extend_from_slice(&bucket.tokens_nano_bits.to_be_bytes());
         material.extend_from_slice(&bucket.last_refill_nanos.to_be_bytes());
         material.extend_from_slice(&bucket.transition_sequence.to_be_bytes());
     }
@@ -747,15 +791,51 @@ fn append_network_effect_state(
         append_evidence_count(material, queue.reservations.len())?;
         for reservation in &queue.reservations {
             material.extend_from_slice(&reservation.enqueue_nanos.to_be_bytes());
+            material.extend_from_slice(&reservation.ready_nanos.to_be_bytes());
             material.extend_from_slice(&reservation.finish_nanos.to_be_bytes());
             material.extend_from_slice(&reservation.bytes.to_be_bytes());
+            material.extend_from_slice(&reservation.payload_bits.to_be_bytes());
+            match reservation.base_rate_bps {
+                Some(rate) => {
+                    material.push(1);
+                    material.extend_from_slice(&rate.to_be_bytes());
+                }
+                None => material.push(0),
+            }
+            append_evidence_count(material, reservation.service_curves.len())?;
+            for curve in &reservation.service_curves {
+                material.extend_from_slice(&curve.activation_nanos.to_be_bytes());
+                append_evidence_count(material, curve.segments.len())?;
+                for segment in &curve.segments {
+                    material.extend_from_slice(&segment.at_nanos.to_be_bytes());
+                    material.extend_from_slice(&segment.rate_bps.get().to_be_bytes());
+                }
+            }
+            match &reservation.class {
+                Some(class) => {
+                    material.push(1);
+                    append_evidence_bytes(material, class.as_str().as_bytes())?;
+                }
+                None => material.push(0),
+            }
             material.extend_from_slice(&reservation.opportunity.bytes);
         }
+        append_evidence_count(material, queue.served_frames_by_class.len())?;
+        for (class, count) in &queue.served_frames_by_class {
+            append_evidence_bytes(material, class.as_str().as_bytes())?;
+            material.extend_from_slice(&count.to_be_bytes());
+        }
+        append_evidence_count(material, queue.served_bytes_by_class.len())?;
+        for (class, count) in &queue.served_bytes_by_class {
+            append_evidence_bytes(material, class.as_str().as_bytes())?;
+            material.extend_from_slice(&count.to_be_bytes());
+        }
+        material.extend_from_slice(&queue.red_average_bytes_q32.to_be_bytes());
     }
-    append_evidence_count(material, state.burst_bad.len())?;
-    for (key, bad) in &state.burst_bad {
+    append_evidence_count(material, state.burst_states.len())?;
+    for (key, current) in &state.burst_states {
         append_network_effect_state_key(material, key)?;
-        material.push(u8::from(*bad));
+        append_evidence_bytes(material, current.as_str().as_bytes())?;
     }
     append_evidence_count(material, state.state_machines.len())?;
     for (key, current) in &state.state_machines {
@@ -1139,12 +1219,14 @@ mod tests {
 
         assert!(!append.entries.is_empty());
         assert_eq!(interceptor.transition_ledger.len(), 1);
-        assert_eq!(interceptor.transition_ledger[0].in_flight.frame_count, 1);
-        assert_eq!(interceptor.transition_ledger[0].queued.len(), 1);
-        assert_eq!(
-            interceptor.transition_ledger[0].old_state,
-            NetworkAvailabilityState::Up
-        );
+        let transition = interceptor
+            .transition_ledger
+            .values()
+            .next()
+            .unwrap_or_else(|| panic!("transition ledger should contain the applied action"));
+        assert_eq!(transition.in_flight.frame_count, 1);
+        assert_eq!(transition.queued.len(), 1);
+        assert_eq!(transition.old_state, NetworkAvailabilityState::Up);
         assert_eq!(pending_outputs.len(), 1);
         assert_eq!(pending_outputs[0].source, destination);
         assert_eq!(pending_outputs[0].destination, source);

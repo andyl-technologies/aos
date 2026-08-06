@@ -133,6 +133,13 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                 })?;
                             let payload = OpportunityPayload::NetworkFrame {
                                 producer: producer.clone(),
+                                destination: FaultObjectId::parse(&route.destination.name)
+                                    .map_err(|error| SchedulerError::BoundaryViolation {
+                                        message: format!(
+                                            "network frame recipient `{}` is not a canonical fault object: {error}",
+                                            route.destination.name
+                                        ),
+                                    })?,
                                 producer_sequence: output.sequence,
                                 length_bytes,
                                 payload_digest: ContentHash::from_bytes(&output.payload),
@@ -283,7 +290,7 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
                                     .set_resolved_frame_effects(resolved_effects);
                                 next_wakeup_nanos =
                                     earliest_wakeup(next_wakeup_nanos, Some(not_before_nanos));
-                                staged_pending.push(output);
+                                stage_pending_network_output(&mut staged_pending, output)?;
                                 continue 'route;
                             }
                         }
@@ -321,7 +328,9 @@ impl BackendNetworkOutputInterceptor<SingleScheduler, ProductionNodeSet>
         *pending_outputs = staged_pending;
         *outputs = routed;
         self.effect_state = staged_effect_state;
-        self.transition_ledger.extend(transition_records);
+        for record in transition_records {
+            self.transition_ledger.insert(record.action, record);
+        }
         Ok(appends)
     }
 }
@@ -363,6 +372,7 @@ fn apply_network_frame_actions(
 ) -> Result<Option<u64>, SchedulerError> {
     let mut deferred_until = None;
     let mut queue_policy = None;
+    let mut service_curves = Vec::new();
     for action in actions {
         let EffectSpecification::Network(specification) = action.effect.specification() else {
             return Err(network_effect_application_error(
@@ -372,32 +382,10 @@ fn apply_network_frame_actions(
         };
         match specification {
             NetworkEffectSpecification::ServiceCurve { segments } => {
-                let elapsed = opportunity
-                    .coordinate()
-                    .virtual_nanos
-                    .checked_sub(action.coordinate.virtual_nanos)
-                    .ok_or_else(|| {
-                        network_effect_application_error(
-                            action,
-                            "service-curve activation follows its opportunity",
-                        )
-                    })?;
-                let segment = segments
-                    .as_slice()
-                    .iter()
-                    .rev()
-                    .find(|segment| segment.at_nanos <= elapsed)
-                    .ok_or_else(|| {
-                        network_effect_application_error(
-                            action,
-                            "service curve has no segment at its activation coordinate",
-                        )
-                    })?;
-                effects
-                    .constrain_rate(segment.rate_bps.get())
-                    .map_err(|error| {
-                        network_effect_application_error(action, &error.to_string())
-                    })?;
+                service_curves.push(NetworkServiceCurveState {
+                    activation_nanos: action.coordinate.virtual_nanos,
+                    segments: segments.as_slice().to_vec(),
+                });
             }
             NetworkEffectSpecification::TokenBucket {
                 rate_bps,
@@ -434,7 +422,9 @@ fn apply_network_frame_actions(
                 *bad_to_good,
                 state_parameters,
             )?,
-            NetworkEffectSpecification::QueuePolicy { .. } => {
+            NetworkEffectSpecification::QueuePolicy { .. }
+                if opportunity.phase() == FaultPhase::Queue =>
+            {
                 if queue_policy.replace((action, specification)).is_some() {
                     return Err(network_effect_application_error(
                         action,
@@ -442,6 +432,7 @@ fn apply_network_frame_actions(
                     ));
                 }
             }
+            NetworkEffectSpecification::QueuePolicy { .. } => {}
             _ => apply_network_frame_action(
                 payload,
                 effects,
@@ -464,10 +455,6 @@ fn apply_network_frame_actions(
     )) = queue_policy
     {
         let service_rate = effects.serialization_rate_cap_bps().or(base_rate_bps);
-        let service_nanos = service_rate
-            .map(|rate| network_serialization_nanos(payload.len(), rate, action))
-            .transpose()?
-            .unwrap_or(0);
         let release = apply_network_queue_policy(
             state,
             pending_outputs,
@@ -476,37 +463,54 @@ fn apply_network_frame_actions(
             opportunity,
             scenario_seed,
             topology,
-            payload.len(),
+            payload,
             capacity_bytes.get(),
             u64::from(capacity_frames.get()),
             *discipline,
             discipline_parameters.as_ref(),
             *overflow,
-            service_nanos,
+            service_rate,
+            &service_curves,
+            deferred_until,
+        )?;
+        deferred_until = latest_wakeup(deferred_until, release);
+    } else if !service_curves.is_empty() {
+        let action = actions
+            .iter()
+            .find(|action| {
+                matches!(
+                    action.effect.specification(),
+                    EffectSpecification::Network(NetworkEffectSpecification::ServiceCurve { .. })
+                )
+            })
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("network service curve lost its owning action"),
+            })?;
+        let release = apply_network_queue_policy(
+            state,
+            pending_outputs,
+            effects,
+            action,
+            opportunity,
+            scenario_seed,
+            topology,
+            payload,
+            u64::try_from(HARD_PENDING_NETWORK_BYTES).map_err(|_error| {
+                network_effect_application_error(action, "pending byte bound exceeds u64")
+            })?,
+            u64::try_from(HARD_PENDING_NETWORK_FRAMES).map_err(|_error| {
+                network_effect_application_error(action, "pending frame bound exceeds u64")
+            })?,
+            crucible::model::NetworkQueueDiscipline::Fifo,
+            None,
+            crucible::model::NetworkQueueOverflow::TypedError,
+            effects.serialization_rate_cap_bps().or(base_rate_bps),
+            &service_curves,
             deferred_until,
         )?;
         deferred_until = latest_wakeup(deferred_until, release);
     }
     Ok(deferred_until.filter(|coordinate| *coordinate > opportunity.coordinate().virtual_nanos))
-}
-
-fn network_serialization_nanos(
-    payload_bytes: usize,
-    rate_bps: u64,
-    action: &ResolvedBindingAction,
-) -> Result<u64, SchedulerError> {
-    let bits = u128::try_from(payload_bytes)
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(8))
-        .ok_or_else(|| network_effect_application_error(action, "frame bit length overflowed"))?;
-    ceil_ratio_u128(
-        bits.checked_mul(1_000_000_000).ok_or_else(|| {
-            network_effect_application_error(action, "serialization interval overflowed")
-        })?,
-        u128::from(rate_bps),
-    )
-    .and_then(|value| u64::try_from(value).ok())
-    .ok_or_else(|| network_effect_application_error(action, "serialization interval exceeds u64"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -518,23 +522,49 @@ fn apply_network_queue_policy(
     opportunity: &FaultOpportunity,
     scenario_seed: ContentHash,
     topology: &crucible::model::WorldFaultTopology,
-    payload_bytes: usize,
+    payload: &[u8],
     capacity_bytes: u64,
     capacity_frames: u64,
     discipline: crucible::model::NetworkQueueDiscipline,
     discipline_parameters: Option<&FaultObjectId>,
     overflow: crucible::model::NetworkQueueOverflow,
-    service_nanos: u64,
+    base_rate_bps: Option<u64>,
+    service_curves: &[NetworkServiceCurveState],
     prerequisite_release: Option<u64>,
 ) -> Result<Option<u64>, SchedulerError> {
     let now = opportunity.coordinate().virtual_nanos;
-    let payload_bytes = u64::try_from(payload_bytes).map_err(|_error| {
+    let payload_bytes = u64::try_from(payload.len()).map_err(|_error| {
         network_effect_application_error(action, "frame byte length exceeds queue width")
     })?;
+    let parameters = discipline_parameters
+        .map(|_reference| network_queue_discipline(topology, discipline_parameters, action))
+        .transpose()?;
+    let class = network_queue_class(payload, discipline, parameters, topology, action)?;
     let queue = state.queues.entry(action.target.clone()).or_default();
-    queue
-        .reservations
-        .retain(|reservation| reservation.finish_nanos > now);
+    let mut completed = Vec::new();
+    queue.reservations.retain(|reservation| {
+        if reservation.finish_nanos <= now {
+            completed.push((reservation.class.clone(), reservation.bytes));
+            false
+        } else {
+            true
+        }
+    });
+    for (class, bytes) in completed {
+        if let Some(class) = class {
+            let frames = queue
+                .served_frames_by_class
+                .entry(class.clone())
+                .or_default();
+            *frames = frames.checked_add(1).ok_or_else(|| {
+                network_effect_application_error(action, "queue served-frame count overflowed")
+            })?;
+            let served = queue.served_bytes_by_class.entry(class).or_default();
+            *served = served.checked_add(bytes).ok_or_else(|| {
+                network_effect_application_error(action, "queue served-byte count overflowed")
+            })?;
+        }
+    }
     queue.service_cursor_nanos = queue.service_cursor_nanos.max(now);
     let occupied_bytes = queue
         .reservations
@@ -546,15 +576,18 @@ fn apply_network_queue_policy(
     let occupied_frames = u64::try_from(queue.reservations.len()).map_err(|_error| {
         network_effect_application_error(action, "queue frame occupancy exceeds u64")
     })?;
-    let mut overflowed = occupied_bytes
+    let mut hard_overflow = occupied_bytes
         .checked_add(payload_bytes)
         .is_none_or(|bytes| bytes > capacity_bytes)
         || occupied_frames
             .checked_add(1)
             .is_none_or(|frames| frames > capacity_frames);
+    let mut early_drop = false;
 
     if discipline == crucible::model::NetworkQueueDiscipline::Red {
-        let parameters = network_queue_discipline(topology, discipline_parameters, action)?;
+        let parameters = parameters.ok_or_else(|| {
+            network_effect_application_error(action, "RED policy omitted discipline parameters")
+        })?;
         let minimum = parameters.red_minimum_bytes.ok_or_else(|| {
             network_effect_application_error(action, "RED policy omitted its minimum threshold")
         })?;
@@ -564,13 +597,40 @@ fn apply_network_queue_policy(
         let maximum_probability = parameters.red_maximum_probability.ok_or_else(|| {
             network_effect_application_error(action, "RED policy omitted its maximum probability")
         })?;
-        let probability = if occupied_bytes <= minimum {
+        let numerator = parameters.red_weight_numerator.ok_or_else(|| {
+            network_effect_application_error(action, "RED policy omitted its EWMA numerator")
+        })?;
+        let denominator = parameters.red_weight_denominator.ok_or_else(|| {
+            network_effect_application_error(action, "RED policy omitted its EWMA denominator")
+        })?;
+        let old_weight = denominator
+            .get()
+            .checked_sub(numerator.get())
+            .ok_or_else(|| {
+                network_effect_application_error(action, "RED EWMA numerator exceeds denominator")
+            })?;
+        let weighted_old = queue
+            .red_average_bytes_q32
+            .checked_mul(u128::from(old_weight))
+            .ok_or_else(|| network_effect_application_error(action, "RED EWMA overflowed"))?;
+        let weighted_sample = u128::from(occupied_bytes)
+            .checked_shl(32)
+            .and_then(|value| value.checked_mul(u128::from(numerator.get())))
+            .ok_or_else(|| network_effect_application_error(action, "RED sample overflowed"))?;
+        queue.red_average_bytes_q32 = weighted_old
+            .checked_add(weighted_sample)
+            .map(|value| value / u128::from(denominator.get()))
+            .ok_or_else(|| network_effect_application_error(action, "RED EWMA overflowed"))?;
+        let average_bytes = u64::try_from(queue.red_average_bytes_q32 >> 32).map_err(|_error| {
+            network_effect_application_error(action, "RED average exceeds u64")
+        })?;
+        let probability = if average_bytes <= minimum {
             0
-        } else if occupied_bytes >= maximum {
+        } else if average_bytes >= maximum {
             maximum_probability.get()
         } else {
             let width = maximum - minimum;
-            let offset = occupied_bytes - minimum;
+            let offset = average_bytes - minimum;
             u32::try_from(
                 u128::from(maximum_probability.get()) * u128::from(offset) / u128::from(width),
             )
@@ -582,15 +642,13 @@ fn apply_network_queue_policy(
             crucible::model::ProbabilityMillionths::new(probability).map_err(|_error| {
                 network_effect_application_error(action, "RED probability is invalid")
             })?;
-        overflowed |= probability_fires(
+        early_drop = probability_fires(
             probability,
             network_effect_draw(scenario_seed, opportunity, action, "queue-red", 0),
         );
-    } else if discipline_parameters.is_some() {
-        let _parameters = network_queue_discipline(topology, discipline_parameters, action)?;
     }
 
-    if overflowed {
+    if hard_overflow || early_drop {
         match overflow {
             crucible::model::NetworkQueueOverflow::TailDrop => effects.mark_drop(),
             crucible::model::NetworkQueueOverflow::TypedError => {
@@ -601,9 +659,12 @@ fn apply_network_queue_policy(
             }
             crucible::model::NetworkQueueOverflow::HeadDrop
             | crucible::model::NetworkQueueOverflow::KeyedDrop => {
-                if queue.reservations.is_empty() {
-                    effects.mark_drop();
-                } else {
+                let mut ordinal = 0_u64;
+                while hard_overflow || (early_drop && ordinal == 0) {
+                    if queue.reservations.is_empty() {
+                        effects.mark_drop();
+                        break;
+                    }
                     let victim = if overflow == crucible::model::NetworkQueueOverflow::HeadDrop {
                         0
                     } else {
@@ -613,7 +674,7 @@ fn apply_network_queue_policy(
                                 opportunity,
                                 action,
                                 "queue-victim",
-                                0,
+                                ordinal,
                             ) % u64::try_from(queue.reservations.len()).map_err(|_error| {
                                 network_effect_application_error(
                                     action,
@@ -633,29 +694,61 @@ fn apply_network_queue_policy(
                         output.fault_continuation.cursor().queue_opportunity()
                             != Some(removed.opportunity)
                     });
+                    ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                        network_effect_application_error(
+                            action,
+                            "queue eviction ordinal overflowed",
+                        )
+                    })?;
+                    let remaining_bytes = queue
+                        .reservations
+                        .iter()
+                        .try_fold(0_u64, |total, reservation| {
+                            total.checked_add(reservation.bytes)
+                        });
+                    hard_overflow = remaining_bytes
+                        .and_then(|bytes| bytes.checked_add(payload_bytes))
+                        .is_none_or(|bytes| bytes > capacity_bytes)
+                        || queue
+                            .reservations
+                            .len()
+                            .checked_add(1)
+                            .is_none_or(|frames| {
+                                u64::try_from(frames)
+                                    .ok()
+                                    .is_none_or(|frames| frames > capacity_frames)
+                            });
                 }
             }
         }
     }
-    if effects.is_dropped() || service_nanos == 0 {
+    if effects.is_dropped() || base_rate_bps.is_none() && service_curves.is_empty() {
         return Ok(None);
     }
-    let start = queue
-        .service_cursor_nanos
-        .max(prerequisite_release.unwrap_or(now));
-    let finish = start.checked_add(service_nanos).ok_or_else(|| {
-        network_effect_application_error(action, "queue service coordinate overflowed")
+    let payload_bits = payload_bytes.checked_mul(8).ok_or_else(|| {
+        network_effect_application_error(action, "queue frame bit length overflowed")
     })?;
-    queue.service_cursor_nanos = finish;
     queue.reservations.push(NetworkQueueReservation {
         enqueue_nanos: now,
-        finish_nanos: finish,
+        ready_nanos: prerequisite_release.unwrap_or(now).max(now),
+        finish_nanos: 0,
         bytes: payload_bytes,
+        payload_bits,
+        base_rate_bps,
+        service_curves: service_curves.to_vec(),
+        class,
         opportunity: opportunity.id(),
     });
-    queue
-        .reservations
-        .sort_by_key(|reservation| (reservation.enqueue_nanos, reservation.opportunity));
+    let finish = reschedule_network_queue(
+        queue,
+        pending_outputs,
+        action,
+        discipline,
+        parameters,
+        now,
+        opportunity.id(),
+    )?;
+    effects.mark_serialization_accounted();
     Ok(Some(finish))
 }
 
@@ -679,6 +772,304 @@ fn network_queue_discipline<'a>(
         ));
     };
     Ok(parameters)
+}
+
+fn network_queue_class(
+    payload: &[u8],
+    discipline: crucible::model::NetworkQueueDiscipline,
+    parameters: Option<&crucible::model::NetworkPolicyQueueDiscipline>,
+    topology: &crucible::model::WorldFaultTopology,
+    action: &ResolvedBindingAction,
+) -> Result<Option<FaultObjectId>, SchedulerError> {
+    if matches!(
+        discipline,
+        crucible::model::NetworkQueueDiscipline::Fifo
+            | crucible::model::NetworkQueueDiscipline::Red
+    ) {
+        return Ok(None);
+    }
+    let parameters = parameters.ok_or_else(|| {
+        network_effect_application_error(action, "class queue omitted discipline parameters")
+    })?;
+    let mut selected = None;
+    for class in &parameters.classes {
+        if network_packet_selector_matches(payload, topology, &class.selector, action)? {
+            if selected.is_some() {
+                return Err(network_effect_application_error(
+                    action,
+                    "frame matches multiple queue-class selectors",
+                ));
+            }
+            selected = Some(class.class.clone());
+        }
+    }
+    selected.map(Some).ok_or_else(|| {
+        network_effect_application_error(action, "frame matches no queue-class selector")
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reschedule_network_queue(
+    queue: &mut NetworkQueueState,
+    pending_outputs: &mut [crucible::BackendNetworkOutput],
+    action: &ResolvedBindingAction,
+    discipline: crucible::model::NetworkQueueDiscipline,
+    parameters: Option<&crucible::model::NetworkPolicyQueueDiscipline>,
+    now: u64,
+    arriving: ContentHash,
+) -> Result<u64, SchedulerError> {
+    let mut reservations = std::mem::take(&mut queue.reservations);
+    let active_index = reservations
+        .iter()
+        .enumerate()
+        .filter(|(_index, reservation)| reservation.finish_nanos > now)
+        .min_by_key(|(_index, reservation)| reservation.finish_nanos)
+        .map(|(index, _reservation)| index);
+    let active = active_index.map(|index| reservations.remove(index));
+    let mut projected_frames = queue.served_frames_by_class.clone();
+    let mut projected_bytes = queue.served_bytes_by_class.clone();
+    let mut cursor = now;
+    let mut ordered = Vec::with_capacity(reservations.len() + usize::from(active.is_some()));
+    if let Some(active) = active {
+        cursor = active.finish_nanos;
+        add_projected_queue_service(&mut projected_frames, &mut projected_bytes, &active, action)?;
+        ordered.push(active);
+    }
+    while !reservations.is_empty() {
+        let selected = (0..reservations.len())
+            .min_by(|left, right| {
+                compare_queue_candidates(
+                    &reservations[*left],
+                    &reservations[*right],
+                    discipline,
+                    parameters,
+                    &projected_frames,
+                    &projected_bytes,
+                )
+            })
+            .ok_or_else(|| {
+                network_effect_application_error(action, "queue candidate selection failed")
+            })?;
+        let mut reservation = reservations.remove(selected);
+        let start = cursor.max(reservation.ready_nanos);
+        reservation.finish_nanos = network_service_finish(
+            start,
+            reservation.payload_bits,
+            reservation.base_rate_bps,
+            &reservation.service_curves,
+            action,
+        )?;
+        cursor = reservation.finish_nanos;
+        add_projected_queue_service(
+            &mut projected_frames,
+            &mut projected_bytes,
+            &reservation,
+            action,
+        )?;
+        ordered.push(reservation);
+    }
+    let finish = ordered
+        .iter()
+        .find(|reservation| reservation.opportunity == arriving)
+        .map(|reservation| reservation.finish_nanos)
+        .ok_or_else(|| {
+            network_effect_application_error(action, "arriving queue reservation disappeared")
+        })?;
+    for reservation in &ordered {
+        for output in pending_outputs.iter_mut().filter(|output| {
+            output.fault_continuation.cursor().queue_opportunity() == Some(reservation.opportunity)
+        }) {
+            output
+                .fault_continuation
+                .cursor_mut()
+                .reschedule_queue_until(reservation.opportunity, reservation.finish_nanos)
+                .map_err(|error| network_effect_application_error(action, &error.to_string()))?;
+        }
+    }
+    queue.service_cursor_nanos = cursor;
+    queue.reservations = ordered;
+    Ok(finish)
+}
+
+fn network_service_finish(
+    start_nanos: u64,
+    payload_bits: u64,
+    base_rate_bps: Option<u64>,
+    curves: &[NetworkServiceCurveState],
+    action: &ResolvedBindingAction,
+) -> Result<u64, SchedulerError> {
+    let mut remaining = u128::from(payload_bits)
+        .checked_mul(1_000_000_000)
+        .ok_or_else(|| network_effect_application_error(action, "service demand overflowed"))?;
+    let mut cursor = start_nanos;
+    loop {
+        let mut rate = base_rate_bps;
+        let mut next_breakpoint: Option<u64> = None;
+        for curve in curves {
+            let elapsed = cursor.checked_sub(curve.activation_nanos).ok_or_else(|| {
+                network_effect_application_error(
+                    action,
+                    "service-curve activation follows queued service",
+                )
+            })?;
+            let index = curve
+                .segments
+                .partition_point(|segment| segment.at_nanos <= elapsed)
+                .checked_sub(1)
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "service curve has no initial segment")
+                })?;
+            let curve_rate = curve.segments[index].rate_bps.get();
+            rate = Some(rate.map_or(curve_rate, |current| current.min(curve_rate)));
+            if let Some(segment) = curve.segments.get(index + 1) {
+                let breakpoint = curve
+                    .activation_nanos
+                    .checked_add(segment.at_nanos)
+                    .ok_or_else(|| {
+                        network_effect_application_error(
+                            action,
+                            "service-curve breakpoint overflowed",
+                        )
+                    })?;
+                next_breakpoint = match next_breakpoint {
+                    Some(current) => Some(current.min(breakpoint)),
+                    None => Some(breakpoint),
+                };
+            }
+        }
+        let rate = rate.ok_or_else(|| {
+            network_effect_application_error(action, "queued service has no finite rate")
+        })?;
+        if let Some(breakpoint) = next_breakpoint {
+            let interval = breakpoint.checked_sub(cursor).ok_or_else(|| {
+                network_effect_application_error(action, "service breakpoint regressed")
+            })?;
+            let capacity = u128::from(interval)
+                .checked_mul(u128::from(rate))
+                .ok_or_else(|| {
+                    network_effect_application_error(action, "service interval overflowed")
+                })?;
+            if remaining > capacity {
+                remaining -= capacity;
+                cursor = breakpoint;
+                continue;
+            }
+        }
+        let duration = ceil_ratio_u128(remaining, u128::from(rate))
+            .and_then(|duration| u64::try_from(duration).ok())
+            .ok_or_else(|| {
+                network_effect_application_error(action, "service duration exceeds u64")
+            })?;
+        return cursor.checked_add(duration).ok_or_else(|| {
+            network_effect_application_error(action, "service completion coordinate overflowed")
+        });
+    }
+}
+
+fn add_projected_queue_service(
+    frames: &mut BTreeMap<FaultObjectId, u64>,
+    bytes: &mut BTreeMap<FaultObjectId, u64>,
+    reservation: &NetworkQueueReservation,
+    action: &ResolvedBindingAction,
+) -> Result<(), SchedulerError> {
+    let Some(class) = &reservation.class else {
+        return Ok(());
+    };
+    let frame_count = frames.entry(class.clone()).or_default();
+    *frame_count = frame_count.checked_add(1).ok_or_else(|| {
+        network_effect_application_error(action, "projected queue frame count overflowed")
+    })?;
+    let byte_count = bytes.entry(class.clone()).or_default();
+    *byte_count = byte_count.checked_add(reservation.bytes).ok_or_else(|| {
+        network_effect_application_error(action, "projected queue byte count overflowed")
+    })?;
+    Ok(())
+}
+
+fn compare_queue_candidates(
+    left: &NetworkQueueReservation,
+    right: &NetworkQueueReservation,
+    discipline: crucible::model::NetworkQueueDiscipline,
+    parameters: Option<&crucible::model::NetworkPolicyQueueDiscipline>,
+    projected_frames: &BTreeMap<FaultObjectId, u64>,
+    projected_bytes: &BTreeMap<FaultObjectId, u64>,
+) -> std::cmp::Ordering {
+    let fallback = || {
+        (left.ready_nanos, left.enqueue_nanos, left.opportunity).cmp(&(
+            right.ready_nanos,
+            right.enqueue_nanos,
+            right.opportunity,
+        ))
+    };
+    if matches!(
+        discipline,
+        crucible::model::NetworkQueueDiscipline::Fifo
+            | crucible::model::NetworkQueueDiscipline::Red
+    ) {
+        return fallback();
+    }
+    let (Some(parameters), Some(left_class), Some(right_class)) =
+        (parameters, left.class.as_ref(), right.class.as_ref())
+    else {
+        return fallback();
+    };
+    let left_policy = parameters
+        .classes
+        .iter()
+        .find(|class| &class.class == left_class);
+    let right_policy = parameters
+        .classes
+        .iter()
+        .find(|class| &class.class == right_class);
+    let (Some(left_policy), Some(right_policy)) = (left_policy, right_policy) else {
+        return fallback();
+    };
+    let order = match discipline {
+        crucible::model::NetworkQueueDiscipline::StrictPriority => {
+            left_policy.priority.cmp(&right_policy.priority)
+        }
+        crucible::model::NetworkQueueDiscipline::WeightedRoundRobin => {
+            let left_load = u128::from(
+                projected_frames
+                    .get(left_class)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(1),
+            );
+            let right_load = u128::from(
+                projected_frames
+                    .get(right_class)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(1),
+            );
+            (left_load * u128::from(right_policy.weight.get()))
+                .cmp(&(right_load * u128::from(left_policy.weight.get())))
+        }
+        crucible::model::NetworkQueueDiscipline::DeficitRoundRobin => {
+            let left_load = u128::from(
+                projected_bytes
+                    .get(left_class)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(left.bytes),
+            );
+            let right_load = u128::from(
+                projected_bytes
+                    .get(right_class)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(right.bytes),
+            );
+            (left_load * u128::from(right_policy.quantum_bytes.get()))
+                .cmp(&(right_load * u128::from(left_policy.quantum_bytes.get())))
+        }
+        crucible::model::NetworkQueueDiscipline::Fifo
+        | crucible::model::NetworkQueueDiscipline::Red => std::cmp::Ordering::Equal,
+    };
+    order
+        .then_with(|| left_class.cmp(right_class))
+        .then_with(fallback)
 }
 
 fn latest_wakeup(current: Option<u64>, candidate: Option<u64>) -> Option<u64> {
@@ -710,79 +1101,57 @@ fn apply_network_token_bucket(
         ));
     }
     let now = opportunity.coordinate().virtual_nanos;
+    let token_scale = 1_000_000_000_u128;
+    let capacity = u128::from(burst_bits)
+        .checked_mul(token_scale)
+        .ok_or_else(|| network_effect_application_error(action, "token capacity overflowed"))?;
+    let cost = u128::from(payload_bits)
+        .checked_mul(token_scale)
+        .ok_or_else(|| network_effect_application_error(action, "token cost overflowed"))?;
     let key = NetworkEffectStateKey::from_action(action);
     let bucket = state
         .token_buckets
         .entry(key)
         .or_insert_with(|| NetworkTokenBucketState {
-            tokens_bits: initial_bits,
-            refill_remainder: 0,
+            tokens_nano_bits: u128::from(initial_bits) * token_scale,
             last_refill_nanos: action.coordinate.virtual_nanos,
             transition_sequence: action.transition_sequence,
         });
     if bucket.transition_sequence != action.transition_sequence {
         *bucket = NetworkTokenBucketState {
-            tokens_bits: initial_bits,
-            refill_remainder: 0,
+            tokens_nano_bits: u128::from(initial_bits) * token_scale,
             last_refill_nanos: action.coordinate.virtual_nanos,
             transition_sequence: action.transition_sequence,
         };
     }
-    if now < bucket.last_refill_nanos {
-        let queued_delay = bucket.last_refill_nanos - now;
-        let service_delay = ceil_ratio_u128(
-            u128::from(payload_bits)
-                .checked_mul(1_000_000_000)
-                .ok_or_else(|| network_effect_application_error(action, "token wait overflowed"))?,
-            u128::from(rate_bps),
-        )
+    let service_base = bucket.last_refill_nanos.max(now);
+    if now >= bucket.last_refill_nanos {
+        let added = u128::from(now - bucket.last_refill_nanos)
+            .checked_mul(u128::from(rate_bps))
+            .ok_or_else(|| network_effect_application_error(action, "token refill overflowed"))?;
+        bucket.tokens_nano_bits = bucket.tokens_nano_bits.saturating_add(added).min(capacity);
+        bucket.last_refill_nanos = now;
+    }
+    if bucket.tokens_nano_bits >= cost {
+        bucket.tokens_nano_bits -= cost;
+        return u64::try_from(service_base - now)
+            .map_err(|_error| network_effect_application_error(action, "token delay exceeds u64"));
+    }
+    let deficit = cost - bucket.tokens_nano_bits;
+    let delay = ceil_ratio_u128(deficit, u128::from(rate_bps))
         .and_then(|value| u64::try_from(value).ok())
         .ok_or_else(|| network_effect_application_error(action, "token wait exceeds u64"))?;
-        bucket.last_refill_nanos = bucket
-            .last_refill_nanos
-            .checked_add(service_delay)
-            .ok_or_else(|| network_effect_application_error(action, "token release overflowed"))?;
-        bucket.tokens_bits = 0;
-        bucket.refill_remainder = 0;
-        return queued_delay
-            .checked_add(service_delay)
-            .ok_or_else(|| network_effect_application_error(action, "token delay overflowed"));
-    }
-    let elapsed = now - bucket.last_refill_nanos;
-    let numerator = u128::from(elapsed)
+    let produced = u128::from(delay)
         .checked_mul(u128::from(rate_bps))
-        .and_then(|value| value.checked_add(u128::from(bucket.refill_remainder)))
-        .ok_or_else(|| network_effect_application_error(action, "token refill overflowed"))?;
-    let added = numerator / 1_000_000_000;
-    bucket.refill_remainder = u64::try_from(numerator % 1_000_000_000).map_err(|_error| {
-        network_effect_application_error(action, "token refill remainder overflowed")
-    })?;
-    bucket.tokens_bits = u64::try_from(
-        u128::from(bucket.tokens_bits)
-            .saturating_add(added)
-            .min(u128::from(burst_bits)),
-    )
-    .map_err(|_error| network_effect_application_error(action, "token balance overflowed"))?;
-    bucket.last_refill_nanos = now;
-    if bucket.tokens_bits >= payload_bits {
-        bucket.tokens_bits -= payload_bits;
-        return Ok(0);
-    }
-    let deficit = payload_bits - bucket.tokens_bits;
-    let delay = ceil_ratio_u128(
-        u128::from(deficit)
-            .checked_mul(1_000_000_000)
-            .ok_or_else(|| network_effect_application_error(action, "token wait overflowed"))?,
-        u128::from(rate_bps),
-    )
-    .and_then(|value| u64::try_from(value).ok())
-    .ok_or_else(|| network_effect_application_error(action, "token wait exceeds u64"))?;
-    bucket.tokens_bits = 0;
-    bucket.refill_remainder = 0;
-    bucket.last_refill_nanos = now
+        .ok_or_else(|| network_effect_application_error(action, "token service overflowed"))?;
+    bucket.tokens_nano_bits = produced - deficit;
+    bucket.last_refill_nanos = service_base
         .checked_add(delay)
         .ok_or_else(|| network_effect_application_error(action, "token release overflowed"))?;
-    Ok(delay)
+    bucket
+        .last_refill_nanos
+        .checked_sub(now)
+        .ok_or_else(|| network_effect_application_error(action, "token delay underflowed"))
 }
 
 fn ceil_ratio_u128(numerator: u128, denominator: u128) -> Option<u128> {
@@ -809,8 +1178,12 @@ fn apply_network_burst_error(
         .ok_or_else(|| {
             network_effect_application_error(action, "burst-error policy disappeared")
         })?;
-    let crucible::model::NetworkPolicyArtifactKind::ErrorStateTable { states, .. } =
-        &declaration.artifact
+    let crucible::model::NetworkPolicyArtifactKind::ErrorStateTable {
+        good,
+        bad,
+        initial,
+        states,
+    } = &declaration.artifact
     else {
         return Err(network_effect_application_error(
             action,
@@ -824,15 +1197,34 @@ fn apply_network_burst_error(
         ));
     }
     let key = NetworkEffectStateKey::from_action(action);
-    let bad = state.burst_bad.entry(key).or_default();
-    let transition = if *bad { bad_to_good } else { good_to_bad };
+    let current = state
+        .burst_states
+        .entry(key)
+        .or_insert_with(|| initial.clone());
+    let transition = if current == bad {
+        bad_to_good
+    } else if current == good {
+        good_to_bad
+    } else {
+        return Err(network_effect_application_error(
+            action,
+            "burst-error current state is neither good nor bad",
+        ));
+    };
     if probability_fires(
         transition,
         network_effect_draw(scenario_seed, opportunity, action, "burst-transition", 0),
     ) {
-        *bad = !*bad;
+        *current = if current == bad {
+            good.clone()
+        } else {
+            bad.clone()
+        };
     }
-    let selected = &states[usize::from(*bad)];
+    let selected = states
+        .iter()
+        .find(|candidate| candidate.state == *current)
+        .ok_or_else(|| network_effect_application_error(action, "burst-error state disappeared"))?;
     if probability_fires(
         selected.loss,
         network_effect_draw(scenario_seed, opportunity, action, "burst-loss", 0),
@@ -845,25 +1237,19 @@ fn apply_network_burst_error(
             network_effect_draw(scenario_seed, opportunity, action, "burst-corruption", 0),
         )
     {
-        let draw = network_effect_draw(
-            scenario_seed,
-            opportunity,
-            action,
-            "burst-corruption-bit",
-            0,
-        );
-        let bit_count = payload.len().checked_mul(8).ok_or_else(|| {
-            network_effect_application_error(action, "corruption bit count overflowed")
+        let transform = selected.corruption_transform.as_ref().ok_or_else(|| {
+            network_effect_application_error(action, "burst corruption omitted its transform")
         })?;
-        let bit = usize::try_from(
-            draw % u64::try_from(bit_count).map_err(|_error| {
-                network_effect_application_error(action, "corruption bit count exceeds u64")
-            })?,
-        )
-        .map_err(|_error| {
-            network_effect_application_error(action, "corruption bit exceeds host")
-        })?;
-        payload[bit / 8] ^= 1_u8 << (bit % 8);
+        let bytes = network_byte_template(topology, transform, action)?;
+        if bytes.is_empty() {
+            return Err(network_effect_application_error(
+                action,
+                "burst corruption transform is empty",
+            ));
+        }
+        for (index, byte) in payload.iter_mut().enumerate() {
+            *byte ^= bytes[index % bytes.len()];
+        }
     }
     Ok(())
 }
@@ -1100,6 +1486,7 @@ fn apply_network_frame_action(
         NetworkEffectSpecification::Mtu {
             mtu_bytes,
             oversize: crucible::model::NetworkOversizeDisposition::Drop,
+            ..
         } if payload.len() > usize::try_from(mtu_bytes.get()).unwrap_or(usize::MAX) => {
             effects.mark_drop();
         }
@@ -1378,4 +1765,242 @@ fn apply_network_field_mutation(
         cursor += length;
     }
     Ok(())
+}
+
+fn network_packet_selector_matches(
+    payload: &[u8],
+    topology: &crucible::model::WorldFaultTopology,
+    selector: &FaultObjectId,
+    action: &ResolvedBindingAction,
+) -> Result<bool, SchedulerError> {
+    let declaration = topology.network_policy_artifact(selector).ok_or_else(|| {
+        network_effect_application_error(action, "network packet selector disappeared")
+    })?;
+    let crucible::model::NetworkPolicyArtifactKind::PacketSelector { matches } =
+        &declaration.artifact
+    else {
+        return Err(network_effect_application_error(
+            action,
+            "network packet selector changed type after admission",
+        ));
+    };
+    for predicate in matches {
+        let start = usize::try_from(predicate.offset_bytes).map_err(|_error| {
+            network_effect_application_error(action, "packet selector offset exceeds host width")
+        })?;
+        let Some(end) = start.checked_add(predicate.value.len()) else {
+            return Err(network_effect_application_error(
+                action,
+                "packet selector range overflowed",
+            ));
+        };
+        let Some(bytes) = payload.get(start..end) else {
+            return Ok(false);
+        };
+        if !bytes
+            .iter()
+            .zip(&predicate.value)
+            .zip(&predicate.mask)
+            .all(|((actual, expected), mask)| actual & mask == expected & mask)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crucible::model::{
+        BindingActionCause, BindingActionKind, EFFECT_SEMANTIC_VERSION, EffectLifetime,
+        EffectRequest, NetworkInFlightPolicy, PositiveU64, ResolvedFaultTarget,
+        ResolvedMappingOutput,
+    };
+
+    fn id(value: &str) -> FaultObjectId {
+        FaultObjectId::parse(value)
+            .unwrap_or_else(|error| panic!("test object ID should be valid: {error}"))
+    }
+
+    fn positive(value: u64) -> PositiveU64 {
+        PositiveU64::new("test", value)
+            .unwrap_or_else(|error| panic!("test positive value should be valid: {error}"))
+    }
+
+    fn action() -> ResolvedBindingAction {
+        let effect = EffectRequest::new(
+            EFFECT_SEMANTIC_VERSION,
+            EffectLifetime::Persistent,
+            EffectSpecification::Network(NetworkEffectSpecification::Availability {
+                state: NetworkAvailabilityState::Up,
+                queued_policy: NetworkInFlightPolicy::Preserve,
+                in_flight_policy: NetworkInFlightPolicy::Preserve,
+            }),
+        )
+        .unwrap_or_else(|error| panic!("test effect should be valid: {error}"));
+        ResolvedBindingAction {
+            kind: BindingActionKind::UpsertPersistent,
+            binding: id("network-test-binding"),
+            target: ResolvedFaultTarget::NetworkSegment {
+                segment: id("network-test-segment"),
+                direction: crucible::model::FaultDirection::AToB,
+            },
+            phase: FaultPhase::Queue,
+            effect: Arc::new(effect),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash::from_bytes(b"mapped"),
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            cause: BindingActionCause::Signal,
+        }
+    }
+
+    fn opportunity(sequence: u64) -> FaultOpportunity {
+        FaultOpportunity::new(
+            ResolvedFaultTarget::NetworkSegment {
+                segment: id("network-test-segment"),
+                direction: crucible::model::FaultDirection::AToB,
+            },
+            crucible::model::FaultOperation::NetworkTraverse,
+            FaultPhase::Queue,
+            FaultCoordinate {
+                virtual_nanos: 0,
+                retired_instructions: None,
+            },
+            sequence,
+            Some(crucible::model::FaultDirection::AToB),
+            OpportunityPayload::NetworkFrame {
+                producer: id("sender"),
+                destination: id("receiver"),
+                producer_sequence: sequence,
+                length_bytes: 1,
+                payload_digest: ContentHash::from_bytes(&sequence.to_be_bytes()),
+            },
+        )
+        .unwrap_or_else(|error| panic!("test opportunity should be valid: {error}"))
+    }
+
+    fn reservation(class: &str, sequence: u64, bytes: u64) -> NetworkQueueReservation {
+        NetworkQueueReservation {
+            enqueue_nanos: 0,
+            ready_nanos: 0,
+            finish_nanos: 0,
+            bytes,
+            payload_bits: bytes * 8,
+            base_rate_bps: Some(1_000_000),
+            service_curves: Vec::new(),
+            class: Some(id(class)),
+            opportunity: ContentHash::from_bytes(&sequence.to_be_bytes()),
+        }
+    }
+
+    fn queue_parameters() -> crucible::model::NetworkPolicyQueueDiscipline {
+        crucible::model::NetworkPolicyQueueDiscipline {
+            classes: vec![
+                crucible::model::NetworkPolicyQueueClass {
+                    class: id("high"),
+                    selector: id("high-selector"),
+                    priority: 0,
+                    weight: positive(3),
+                    quantum_bytes: positive(1_500),
+                },
+                crucible::model::NetworkPolicyQueueClass {
+                    class: id("low"),
+                    selector: id("low-selector"),
+                    priority: 10,
+                    weight: positive(1),
+                    quantum_bytes: positive(500),
+                },
+            ],
+            red_minimum_bytes: None,
+            red_maximum_bytes: None,
+            red_maximum_probability: None,
+            red_weight_numerator: None,
+            red_weight_denominator: None,
+        }
+    }
+
+    #[test]
+    fn service_curve_integrates_across_rate_changes() {
+        let curves = vec![NetworkServiceCurveState {
+            activation_nanos: 0,
+            segments: vec![
+                crucible::model::NetworkServiceSegment {
+                    at_nanos: 0,
+                    rate_bps: positive(8),
+                },
+                crucible::model::NetworkServiceSegment {
+                    at_nanos: 500_000_000,
+                    rate_bps: positive(16),
+                },
+            ],
+        }];
+        let finish = network_service_finish(0, 8, None, &curves, &action())
+            .unwrap_or_else(|error| panic!("service integration should succeed: {error}"));
+        assert_eq!(finish, 750_000_000);
+    }
+
+    #[test]
+    fn token_bucket_preserves_ceil_surplus_without_rate_bias() {
+        let action = action();
+        let mut state = NetworkEffectRuntimeState::default();
+        let mut release = 0;
+        for sequence in 0..3 {
+            release =
+                apply_network_token_bucket(&mut state, &action, &opportunity(sequence), 1, 3, 8, 0)
+                    .unwrap_or_else(|error| panic!("token service should succeed: {error}"));
+        }
+        assert_eq!(release, 8_000_000_000);
+    }
+
+    #[test]
+    fn class_queue_comparators_use_priority_weight_and_quantum() {
+        let parameters = queue_parameters();
+        let high = reservation("high", 1, 1_500);
+        let low = reservation("low", 2, 500);
+        assert_eq!(
+            compare_queue_candidates(
+                &high,
+                &low,
+                crucible::model::NetworkQueueDiscipline::StrictPriority,
+                Some(&parameters),
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            ),
+            std::cmp::Ordering::Less
+        );
+
+        let projected_frames = BTreeMap::from([(id("high"), 3), (id("low"), 0)]);
+        assert_eq!(
+            compare_queue_candidates(
+                &low,
+                &high,
+                crucible::model::NetworkQueueDiscipline::WeightedRoundRobin,
+                Some(&parameters),
+                &projected_frames,
+                &BTreeMap::new(),
+            ),
+            std::cmp::Ordering::Less
+        );
+
+        let projected_bytes = BTreeMap::from([(id("high"), 4_500), (id("low"), 0)]);
+        assert_eq!(
+            compare_queue_candidates(
+                &low,
+                &high,
+                crucible::model::NetworkQueueDiscipline::DeficitRoundRobin,
+                Some(&parameters),
+                &BTreeMap::new(),
+                &projected_bytes,
+            ),
+            std::cmp::Ordering::Less
+        );
+    }
 }

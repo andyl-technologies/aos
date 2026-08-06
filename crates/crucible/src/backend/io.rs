@@ -35,8 +35,8 @@ pub struct BackendNetworkFaultCursor {
     completed_phases: Vec<BackendNetworkCompletedFaultPhase>,
     /// Earliest virtual coordinate at which evaluation may resume.
     not_before_nanos: u64,
-    /// Latest adapter release coordinate already committed for delivery timing.
-    release_nanos: u64,
+    /// Latest release from an adapter phase that has already resumed.
+    completed_release_nanos: u64,
     /// Queue opportunity that owns the current reservation, when deferred.
     queue_opportunity: Option<ContentHash>,
     /// Path version locked for preserve semantics across deferred phases.
@@ -58,6 +58,9 @@ pub enum BackendNetworkFaultCursorError {
     /// The frame crossed more target/phase pairs than the hard continuation bound.
     #[error("network fault completed-phase count exceeds 65,536")]
     CompletedPhaseLimit,
+    /// A queue attempted to reschedule a frame owned by another reservation.
+    #[error("network fault queue reservation does not own the continuation")]
+    QueueReservationMismatch,
 }
 
 impl BackendNetworkFaultCursor {
@@ -87,7 +90,11 @@ impl BackendNetworkFaultCursor {
     /// Returns the latest committed adapter release coordinate.
     #[must_use]
     pub const fn release_nanos(&self) -> u64 {
-        self.release_nanos
+        if self.not_before_nanos > self.completed_release_nanos {
+            self.not_before_nanos
+        } else {
+            self.completed_release_nanos
+        }
     }
 
     /// Returns the active queue-reservation opportunity, when present.
@@ -133,6 +140,11 @@ impl BackendNetworkFaultCursor {
                 self.completed_phases.insert(index, completed);
             }
         }
+        self.completed_release_nanos = if self.not_before_nanos > self.completed_release_nanos {
+            self.not_before_nanos
+        } else {
+            self.completed_release_nanos
+        };
         self.not_before_nanos = 0;
         self.queue_opportunity = None;
         Ok(())
@@ -141,8 +153,25 @@ impl BackendNetworkFaultCursor {
     /// Defers the already-resolved phase until an exact future coordinate.
     pub fn defer_until(&mut self, not_before_nanos: u64, opportunity: ContentHash) {
         self.not_before_nanos = not_before_nanos;
-        self.release_nanos = self.release_nanos.max(not_before_nanos);
         self.queue_opportunity = Some(opportunity);
+    }
+
+    /// Replaces the current queue reservation's release coordinate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendNetworkFaultCursorError::QueueReservationMismatch`]
+    /// when another opportunity owns the active reservation.
+    pub fn reschedule_queue_until(
+        &mut self,
+        opportunity: ContentHash,
+        not_before_nanos: u64,
+    ) -> Result<(), BackendNetworkFaultCursorError> {
+        if self.queue_opportunity != Some(opportunity) {
+            return Err(BackendNetworkFaultCursorError::QueueReservationMismatch);
+        }
+        self.not_before_nanos = not_before_nanos;
+        Ok(())
     }
 }
 

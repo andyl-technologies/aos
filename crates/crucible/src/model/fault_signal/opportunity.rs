@@ -803,6 +803,8 @@ pub enum OpportunityPayload {
     NetworkFrame {
         /// Stable producer identity.
         producer: FaultObjectId,
+        /// Stable selected recipient or multicast-group identity.
+        destination: FaultObjectId,
         /// Producer-owned monotonically recorded frame sequence.
         producer_sequence: u64,
         /// Frame length in bytes.
@@ -881,12 +883,14 @@ impl OpportunityPayload {
             Self::None => material.push_str("none;"),
             Self::NetworkFrame {
                 producer,
+                destination,
                 producer_sequence,
                 length_bytes,
                 payload_digest,
             } => {
                 material.push_str("network_frame;");
                 push_text(material, producer.as_str());
+                push_text(material, destination.as_str());
                 push_u64(material, *producer_sequence);
                 push_u64(material, *length_bytes);
                 push_text(material, &payload_digest.to_hex());
@@ -1347,6 +1351,7 @@ mod tests {
                 Some(FaultDirection::AToB),
                 OpportunityPayload::NetworkFrame {
                     producer: id("sender"),
+                    destination: id("receiver"),
                     producer_sequence: 7,
                     length_bytes: 1_500,
                     payload_digest: ContentHash::from_bytes(b"frame"),
