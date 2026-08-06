@@ -24,10 +24,6 @@ impl ScenarioBinaryWriter {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
 
-    pub(super) fn write_i64(&mut self, value: i64) {
-        self.bytes.extend_from_slice(&value.to_le_bytes());
-    }
-
     pub(super) fn write_count(&mut self, count: usize) {
         self.write_u64(count as u64);
     }
@@ -119,13 +115,6 @@ impl<'a> ScenarioBinaryReader<'a> {
         let mut fixed = [0; 8];
         fixed.copy_from_slice(bytes);
         Ok(u64::from_le_bytes(fixed))
-    }
-
-    pub(super) fn read_i64(&mut self) -> Result<i64, EngineError> {
-        let bytes = self.read_exact(8)?;
-        let mut fixed = [0; 8];
-        fixed.copy_from_slice(bytes);
-        Ok(i64::from_le_bytes(fixed))
     }
 
     pub(super) fn read_count(&mut self) -> Result<usize, EngineError> {

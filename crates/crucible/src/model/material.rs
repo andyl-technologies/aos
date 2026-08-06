@@ -1075,39 +1075,6 @@ pub(super) fn action_material(action: &Action) -> String {
     }
 }
 
-pub(super) fn membership_fault_material(fault: &MembershipFault) -> String {
-    match fault {
-        MembershipFault::Crash { node, restart } => {
-            format!(
-                "fault=crash\n{}\nrestart={}",
-                node_ref_material("node", node),
-                restart_policy_label(*restart)
-            )
-        }
-        MembershipFault::Partition {
-            endpoint_a,
-            endpoint_b,
-            direction,
-        } => {
-            format!(
-                "fault=partition\n{}\n{}\ndirection={}",
-                node_ref_material("endpoint_a", endpoint_a),
-                node_ref_material("endpoint_b", endpoint_b),
-                partition_direction_label(*direction)
-            )
-        }
-        MembershipFault::Isolate { node } => {
-            format!("fault=isolate\n{}", node_ref_material("node", node))
-        }
-        MembershipFault::NotYetJoined { node } => {
-            format!("fault=not-yet-joined\n{}", node_ref_material("node", node))
-        }
-        MembershipFault::Taxonomy { fault } => {
-            format!("fault=taxonomy\n{}", fault.canonical_material())
-        }
-    }
-}
-
 pub(super) fn properties_material(assertions: &[AssertionDef]) -> String {
     let mut lines = Vec::with_capacity(assertions.len().saturating_mul(16) + 1);
     lines.push(format!("assertions={}", assertions.len()));
@@ -1465,22 +1432,6 @@ pub(super) fn optional_blob_ref_material(reference: Option<ContentAddressedBlobR
 
 pub(super) fn node_ref_material(prefix: &str, node: &NodeId) -> String {
     format!("{prefix}_len={}\n{prefix}={}", node.name.len(), node.name)
-}
-
-pub(super) fn restart_policy_label(policy: RestartPolicy) -> &'static str {
-    match policy {
-        RestartPolicy::FromReadyPoint => "from-ready-point",
-        RestartPolicy::FromLastCheckpoint => "from-last-checkpoint",
-        RestartPolicy::StayDown => "stay-down",
-    }
-}
-
-pub(super) fn partition_direction_label(direction: PartitionDirection) -> &'static str {
-    match direction {
-        PartitionDirection::Bidirectional => "bidirectional",
-        PartitionDirection::EndpointAToEndpointB => "endpoint-a-to-endpoint-b",
-        PartitionDirection::EndpointBToEndpointA => "endpoint-b-to-endpoint-a",
-    }
 }
 
 pub(super) fn reachable_disposition_label(disposition: ReachableDisposition) -> &'static str {
