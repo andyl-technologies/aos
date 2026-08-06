@@ -153,7 +153,7 @@ const MIGRATION_CEILINGS: &[(&str, usize)] = &[
     ),
     ("ratchet-value/src/heap/flat.rs", 1232),
     ("ratchet-value/src/heap/flat/tests/part_1.rs", 1267),
-    ("ratchet-value/src/heap/reservation/mod.rs", 1534),
+    ("ratchet-value/src/heap/reservation/mod.rs", 1531),
     ("ratchet-value/src/value/compressed.rs", 1048),
 ];
 
