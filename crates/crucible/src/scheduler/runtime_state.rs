@@ -248,7 +248,6 @@ pub struct WorldNetworkLinkRuntime {
     pub(super) endpoint_b: NodeId,
     pub(super) direction: NetworkLinkDirection,
     pub(super) scheduler_node: SchedulerNodeId,
-    pub(super) base_faults: crucible_device::LinkFaults,
     pub(super) rng_stream: RngStreamId,
     pub(super) fault_id: crate::DeviceId,
     pub(super) link: crucible_device::NetLink,

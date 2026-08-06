@@ -15,11 +15,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-use crate::device::{
-    NetworkFaultApplication, NetworkLinkDirection, apply_combined_network_faults_to_scheduler,
-    block_faults_from_combined_block, heal_combined_network_faults_to_scheduler,
-    link_faults_from_combined_network, ninep_faults_from_combined_ninep,
-};
+use crate::device::NetworkLinkDirection;
 use crate::model::{DagStore, FaultObservation, FaultObservationKind, MemoryDagStore, Schedule};
 use crate::node_fault::{
     NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
@@ -31,11 +27,10 @@ use crate::trigger::{
 };
 use crate::{
     AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
-    BackendNetworkOutput, ChoiceTag, CombinedFaults, CombinedNetworkFaults, CombinedNodeFaults,
-    CombinedPartitionFault, Configuration, ContentHash, Decision, DecisionRecorder,
-    DecisionRngState, DeliveryOrderDecision, EffectOutcomeDecision, EventId, EventKey,
-    EventLogOffset, EventSequenceState, Fault, FaultId, FaultRateBasisPoints, FingerprintSample,
-    GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY, MarkerId, MembershipFault,
+    BackendNetworkOutput, ChoiceTag, CombinedNodeFaults, Configuration, ContentHash, Decision,
+    DecisionRecorder, DecisionRngState, DeliveryOrderDecision, EffectOutcomeDecision, EventId,
+    EventKey, EventLogOffset, EventSequenceState, FaultId, FaultRateBasisPoints, FingerprintSample,
+    GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY, MarkerId,
     NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle, OverrideDecision, PendingFrame,
     PreemptionDecision, PreemptionKind, RestartPolicy, RngDecision, RngStreamId, RngStreamPosition,
     ScenarioDef, SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint,

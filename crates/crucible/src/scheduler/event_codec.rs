@@ -1444,16 +1444,6 @@ pub(super) fn trigger_log_level_label(level: LogLevel) -> &'static str {
     }
 }
 
-pub(super) fn network_direction_is_partitioned(
-    direction: NetworkLinkDirection,
-    partition: &CombinedPartitionFault,
-) -> bool {
-    match direction {
-        NetworkLinkDirection::EndpointAToEndpointB => partition.endpoint_a_to_endpoint_b,
-        NetworkLinkDirection::EndpointBToEndpointA => partition.endpoint_b_to_endpoint_a,
-    }
-}
-
 pub(super) fn scheduler_link_ids_for_nodes(left: &NodeId, right: &NodeId) -> [LinkId; 2] {
     let (endpoint_a, endpoint_b) = if left <= right {
         (left, right)
@@ -1470,30 +1460,6 @@ pub(super) fn scheduler_link_ids_for_nodes(left: &NodeId, right: &NodeId) -> [Li
         )),
         LinkId::from_name(format!("{}--{}", endpoint_a.name, endpoint_b.name)),
     ]
-}
-
-pub(super) fn combined_network_faults_for_link(
-    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
-    link_id: &LinkId,
-    endpoint_a: &NodeId,
-    endpoint_b: &NodeId,
-) -> CombinedNetworkFaults {
-    std::iter::once(link_id.clone())
-        .chain(scheduler_link_ids_for_nodes(endpoint_a, endpoint_b))
-        .find_map(|candidate| network.get(&candidate).cloned())
-        .unwrap_or_default()
-}
-
-pub(super) fn combined_network_faults_for_world_link(
-    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
-    canonical_id: &LinkId,
-    legacy_id: Option<&LinkId>,
-) -> CombinedNetworkFaults {
-    network
-        .get(canonical_id)
-        .or_else(|| legacy_id.and_then(|legacy| network.get(legacy)))
-        .cloned()
-        .unwrap_or_default()
 }
 
 pub(super) fn instantiate_world_network_links(
@@ -1558,7 +1524,6 @@ pub(super) fn instantiate_world_network_links(
                     endpoint_b: definition.endpoints().1.clone(),
                     direction,
                     scheduler_node: definition.scheduler_node_id(),
-                    base_faults,
                     rng_stream: RngStreamId::for_link(canonical_id.name.clone()),
                     fault_id: crate::DeviceId::from_name(format!(
                         "{}\nnetwork_direction={direction:?}",
@@ -1583,108 +1548,6 @@ pub(super) fn world_link_base_faults(link: &LinkDef) -> crucible_device::LinkFau
         faults.bandwidth_bits_per_sec.push(bits_per_second);
     }
     faults
-}
-
-pub(super) fn merge_world_network_faults(
-    base: &crucible_device::LinkFaults,
-    active: &CombinedNetworkFaults,
-    direction: NetworkLinkDirection,
-) -> crucible_device::LinkFaults {
-    let mut faults = link_faults_from_combined_network(active, direction);
-    faults.jitter_window_ns = faults
-        .jitter_window_ns
-        .saturating_add(base.jitter_window_ns);
-    if base.loss != crucible_device::Probability::NEVER {
-        if faults.loss == crucible_device::Probability::NEVER {
-            faults.loss = base.loss;
-        } else {
-            faults.additional_loss.push(base.loss);
-        }
-    }
-    faults
-        .bandwidth_bits_per_sec
-        .extend(base.bandwidth_bits_per_sec.iter().copied());
-    faults
-}
-
-pub(super) fn network_topology_faults(
-    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
-) -> BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)> {
-    network
-        .iter()
-        .filter_map(|(link, faults)| {
-            let latency = faults.latency.nanos();
-            (faults.partition.is_some() || latency != 0)
-                .then(|| (link.clone(), (faults.partition, latency)))
-        })
-        .collect()
-}
-
-pub(super) fn network_topology_faults_were_relaxed(
-    previous: &BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)>,
-    next: &BTreeMap<LinkId, (Option<CombinedPartitionFault>, u64)>,
-) -> bool {
-    previous.iter().any(|(link, (partition, latency))| {
-        let (next_partition, next_latency) = next.get(link).copied().unwrap_or((None, 0));
-        let partition_relaxed = partition.is_some_and(|partition| {
-            partition.endpoint_a_to_endpoint_b
-                && !next_partition.is_some_and(|next| next.endpoint_a_to_endpoint_b)
-                || partition.endpoint_b_to_endpoint_a
-                    && !next_partition.is_some_and(|next| next.endpoint_b_to_endpoint_a)
-        });
-        partition_relaxed || *latency > next_latency
-    })
-}
-
-pub(super) fn world_edge_with_network_faults(
-    edge: &WorldLookaheadEdge,
-    network: &BTreeMap<LinkId, CombinedNetworkFaults>,
-    legacy_counts: &BTreeMap<LinkId, usize>,
-) -> Option<SchedulerLookaheadEdge> {
-    let [canonical, legacy] = scheduler_link_ids_for_nodes(&edge.from, &edge.to);
-    let faults = network.get(&canonical).or_else(|| {
-        (legacy_counts.get(&legacy) == Some(&1))
-            .then(|| network.get(&legacy))
-            .flatten()
-    });
-    if faults
-        .and_then(|faults| faults.partition.as_ref())
-        .is_some_and(|partition| {
-            if edge.from <= edge.to {
-                partition.endpoint_a_to_endpoint_b
-            } else {
-                partition.endpoint_b_to_endpoint_a
-            }
-        })
-    {
-        return None;
-    }
-    let added_latency = faults.map_or(0, |faults| faults.latency.nanos());
-    Some(SchedulerLookaheadEdge::new(
-        SchedulerNodeId {
-            node: edge.from.clone(),
-            kind: SchedulingNodeKind::Vm,
-        },
-        SchedulerNodeId {
-            node: edge.to.clone(),
-            kind: SchedulingNodeKind::Vm,
-        },
-        SimDuration {
-            nanos: edge.minimum_latency.nanos.saturating_add(added_latency),
-        },
-    ))
-}
-
-pub(super) fn legacy_link_id_counts_from_world_edges(
-    edges: &[WorldLookaheadEdge],
-) -> BTreeMap<LinkId, usize> {
-    let mut counts = BTreeMap::new();
-    for edge in edges.iter().filter(|edge| edge.from < edge.to) {
-        let legacy = scheduler_link_ids_for_nodes(&edge.from, &edge.to)[1].clone();
-        let count = counts.entry(legacy).or_insert(0_usize);
-        *count = count.saturating_add(1);
-    }
-    counts
 }
 
 pub(super) fn apply_trigger_action(

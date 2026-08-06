@@ -741,11 +741,6 @@ pub(super) fn write_scheduler_state_binary(
         writer.write_u64(state.active_since.ticks);
         write_optional_virtual_time_binary(state.heal_at, writer);
     }
-    writer.write_count(state.active_fault_tags.len());
-    for (tag, fault) in &state.active_fault_tags {
-        writer.write_string(&tag.name);
-        write_membership_fault_binary(fault, writer);
-    }
     writer.write_count(state.pending_device_decisions.len());
     for decision in &state.pending_device_decisions {
         write_decision_binary(decision, writer);
@@ -889,18 +884,6 @@ pub(super) fn read_scheduler_state_binary(
         );
     }
 
-    let active_fault_tag_count =
-        reader.read_collection_count("scheduler-state.active-fault-tag")?;
-    let mut active_fault_tags = BTreeMap::new();
-    for _ in 0..active_fault_tag_count {
-        active_fault_tags.insert(
-            FaultTag {
-                name: reader.read_string()?,
-            },
-            read_membership_fault_binary(reader)?,
-        );
-    }
-    let active_fault_table = ActiveFaultTable::from_active_faults(&active_fault_tags);
     let pending_device_decision_count =
         reader.read_collection_count("scheduler-state.pending-device-decision")?;
     let mut pending_device_decisions = Vec::with_capacity(pending_device_decision_count);
@@ -919,8 +902,6 @@ pub(super) fn read_scheduler_state_binary(
         pending_topology_changes,
         timers,
         active_faults,
-        active_fault_tags,
-        active_fault_table,
         pending_device_decisions,
         search_frontier,
     })

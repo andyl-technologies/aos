@@ -2142,19 +2142,6 @@ pub(super) fn push_symmetry_scheduler_lines(
     lines.push(format!("scheduler.active_faults={}", fault_lines.len()));
     lines.extend(fault_lines);
 
-    let mut tag_lines = Vec::new();
-    for (tag, fault) in &scheduler.active_fault_tags {
-        tag_lines.push(format!(
-            "scheduler.fault_tag.name_len={}\nscheduler.fault_tag.name={}\nscheduler.fault_tag.fault={}",
-            tag.name.len(),
-            tag.name,
-            membership_fault_material(fault)
-        ));
-    }
-    tag_lines.sort();
-    lines.push(format!("scheduler.active_fault_tags={}", tag_lines.len()));
-    lines.extend(tag_lines);
-
     let mut search_frontier_lines = Vec::new();
     for (index, choice) in scheduler.search_frontier.choices().iter().enumerate() {
         let mut entry = Vec::new();
