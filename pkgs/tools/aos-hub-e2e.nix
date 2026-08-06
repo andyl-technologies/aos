@@ -75,6 +75,12 @@ mkDerivation {
 
         root="$work/hub"
         fixture="$work/producer"
+        route_keys="$work/route-reservation-keys.json"
+        printf '%s\n' \
+          '{"activeVersion":1,"keys":[{"version":1,"keyBase64":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}]}' \
+          > "$route_keys"
+        chmod 600 "$route_keys"
+        export HUB_ROUTE_RESERVATION_KEYS_FILE="$route_keys"
         ${aos-system-image-e2e-fixture}/bin/aos-system-image-e2e-fixture "$fixture"
         export AOS_HUB_E2E_IMAGE_FIXTURE="$fixture"
         pass "apr release produced the signed raw + QCOW2 static origin"
@@ -114,7 +120,7 @@ mkDerivation {
           --channel stable --architecture x86_64 --target qemu-kvm)"
         if printf '%s' "$image_show" | grep -q '"format":"qcow2"' \
            && printf '%s' "$image_show" | grep -q '"releaseVerification":"verified"' \
-           && printf '%s' "$image_show" | grep -q '"bootVerification":"unsigned"'; then
+           && printf '%s' "$image_show" | grep -q '"bootVerification":"signed-unverified"'; then
           pass "aos image show resolves target to complete integrity metadata"
         else die "aos image show did not resolve qemu-kvm to QCOW2"; fi
 
