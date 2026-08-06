@@ -20,7 +20,7 @@ use crate::device::{
     block_faults_from_combined_block, heal_combined_network_faults_to_scheduler,
     link_faults_from_combined_network, ninep_faults_from_combined_ninep,
 };
-use crate::model::{DagStore, MemoryDagStore, Schedule};
+use crate::model::{DagStore, FaultObservation, FaultObservationKind, MemoryDagStore, Schedule};
 use crate::node_fault::{
     NodeTimingFaults, NodeTimingProjection, node_timing_faults_from_combined_node,
 };

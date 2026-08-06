@@ -9,7 +9,7 @@
 use crate::scheduler::SchedulerEventLogClass;
 
 /// Current event-kind catalog schema version.
-pub const EVENT_KIND_CATALOG_VERSION: u32 = 1;
+pub const EVENT_KIND_CATALOG_VERSION: u32 = 2;
 
 /// One open-set event kind known by this engine version.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -95,6 +95,17 @@ impl EventKindCatalogDependency {
     }
 }
 
+const FAULT_OBSERVATION_ATTRIBUTES: &[&str] = &[
+    "binding",
+    "coordinate",
+    "evidence",
+    "opportunity",
+    "retired_instructions",
+    "semantic_version",
+    "target",
+    "target_kind",
+];
+
 static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
     EventKindCatalogEntry {
         kind: "app_random",
@@ -136,6 +147,12 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["id", "new_state"],
     },
     EventKindCatalogEntry {
+        kind: "association_transition",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
         kind: "backend_input",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine", "node"],
@@ -147,6 +164,18 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
             "sequence",
             "virtual_time",
         ],
+    },
+    EventKindCatalogEntry {
+        kind: "binding_activation",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
+        kind: "binding_deactivation",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
     },
     EventKindCatalogEntry {
         kind: "console_output",
@@ -195,6 +224,24 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["details", "name"],
     },
     EventKindCatalogEntry {
+        kind: "effect_applied",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
+        kind: "effect_combined",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
+        kind: "effect_rejected",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
         kind: "evaluation_boundary",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine"],
@@ -219,6 +266,12 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["consumer", "fault", "producer", "sequence", "virtual_time"],
     },
     EventKindCatalogEntry {
+        kind: "fault_choice",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
         kind: "fault_fires",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine"],
@@ -229,6 +282,12 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         class: SchedulerEventLogClass::Causal,
         sources: &["engine", "scenario"],
         attributes: &["tag"],
+    },
+    EventKindCatalogEntry {
+        kind: "fault_opportunity",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
     },
     EventKindCatalogEntry {
         kind: "fork",
@@ -293,6 +352,12 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         class: SchedulerEventLogClass::Observational,
         sources: &["engine", "node"],
         attributes: &["link", "payload"],
+    },
+    EventKindCatalogEntry {
+        kind: "network_profile",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
     },
     EventKindCatalogEntry {
         kind: "node_completed",
@@ -364,6 +429,24 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["checkpoint_id", "event_log_offset"],
     },
     EventKindCatalogEntry {
+        kind: "signal_sample",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
+        kind: "signal_state_transition",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
+        kind: "signal_transition",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
         kind: "state_transition",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine", "node"],
@@ -394,6 +477,12 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["node", "timer"],
     },
     EventKindCatalogEntry {
+        kind: "trace_alignment",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: FAULT_OBSERVATION_ATTRIBUTES,
+    },
+    EventKindCatalogEntry {
         kind: "trigger_action_applied",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine", "scenario"],
@@ -408,6 +497,24 @@ static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
 ];
 
 static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
+    EventKindCatalogDependency {
+        consumer: "0012-05-recording-replay-observability",
+        kinds: &[
+            "association_transition",
+            "binding_activation",
+            "binding_deactivation",
+            "effect_applied",
+            "effect_combined",
+            "effect_rejected",
+            "fault_choice",
+            "fault_opportunity",
+            "network_profile",
+            "signal_sample",
+            "signal_state_transition",
+            "signal_transition",
+            "trace_alignment",
+        ],
+    },
     EventKindCatalogDependency {
         consumer: "18-assertions-properties",
         kinds: &[
@@ -435,19 +542,28 @@ static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
             "app_random",
             "assertion_evaluated",
             "assertion_state_changed",
+            "association_transition",
             "backend_input",
+            "binding_activation",
+            "binding_deactivation",
             "control",
             "delivery_order",
+            "effect_applied",
+            "effect_combined",
+            "effect_rejected",
             "evaluation_boundary",
             "event_activated",
             "fault_activated",
             "fault_activation",
+            "fault_choice",
             "fault_fires",
             "fault_healed",
+            "fault_opportunity",
             "fork",
             "io_completion",
             "message_delivered",
             "message_dropped",
+            "network_profile",
             "node_completed",
             "node_crashed",
             "node_started",
@@ -456,11 +572,15 @@ static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
             "probabilistic_fault",
             "rng_draw",
             "savepoint",
+            "signal_sample",
+            "signal_state_transition",
+            "signal_transition",
             "state_transition",
             "tick",
             "timer_armed",
             "timer_cancelled",
             "timer_fired",
+            "trace_alignment",
             "trigger_action_applied",
             "trigger_fired",
         ],

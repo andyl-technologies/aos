@@ -282,6 +282,14 @@ pub enum ResolvedFaultTarget {
 }
 
 impl ResolvedFaultTarget {
+    /// Returns the exact stable target material used by content identities.
+    #[must_use]
+    pub fn canonical_material(&self) -> String {
+        let mut material = String::new();
+        self.append_canonical(&mut material);
+        material
+    }
+
     /// Returns the registered target kind.
     #[must_use]
     pub const fn kind(&self) -> FaultTargetKind {

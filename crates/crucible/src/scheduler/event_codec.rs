@@ -234,6 +234,10 @@ pub(super) fn scheduler_event_log_entry_material(
             lines.push(String::from("payload=trigger_action_applied"));
             lines.push(trigger_action_application_material(application));
         }
+        SchedulerEventLogPayload::FaultObservation(observation) => {
+            lines.push(String::from("payload=fault_observation"));
+            lines.push(fault_observation_material(observation));
+        }
         SchedulerEventLogPayload::Diagnostic(diagnostic) => {
             lines.push(String::from("payload=diagnostic"));
             lines.push(diagnostic_payload_material(diagnostic));
@@ -281,6 +285,9 @@ pub(super) fn event_payload_from_scheduler_payload(
         }
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
             trigger_action_application_event_payload(application)
+        }
+        SchedulerEventLogPayload::FaultObservation(observation) => {
+            fault_observation_event_payload(observation)
         }
         SchedulerEventLogPayload::Diagnostic(diagnostic) => diagnostic.event_payload(),
     }
@@ -824,6 +831,7 @@ pub(super) fn scheduler_event_log_payload_icount(
         SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
         | SchedulerEventLogPayload::TriggerActionApplied(_)
+        | SchedulerEventLogPayload::FaultObservation(_)
         | SchedulerEventLogPayload::Diagnostic(_) => boundary_icount(at),
     }
 }
@@ -935,6 +943,7 @@ pub(super) fn scheduler_event_log_payload_source(
         SchedulerEventLogPayload::TriggerActionApplied(application) => EventSource::Scenario {
             event: application.event.clone(),
         },
+        SchedulerEventLogPayload::FaultObservation(_) => EventSource::Engine,
         SchedulerEventLogPayload::Diagnostic(_) => EventSource::Engine,
     }
 }
@@ -1014,6 +1023,9 @@ pub(super) fn scheduler_event_log_payload_level(payload: &SchedulerEventLogPaylo
         SchedulerEventLogPayload::TriggerFired(_) => EventLevel::Debug,
         SchedulerEventLogPayload::TriggerActionApplied(application) => {
             trigger_action_application_level(application)
+        }
+        SchedulerEventLogPayload::FaultObservation(observation) => {
+            fault_observation_level(observation.kind)
         }
         SchedulerEventLogPayload::Diagnostic(diagnostic) => diagnostic.level,
     }
@@ -1193,6 +1205,77 @@ pub(super) fn diagnostic_payload_material(diagnostic: &EventDiagnosticPayload) -
         &diagnostic.event_payload(),
     ));
     lines.join("\n")
+}
+
+pub(super) fn fault_observation_material(observation: &FaultObservation) -> String {
+    observation.canonical_material()
+}
+
+pub(super) fn fault_observation_event_payload(observation: &FaultObservation) -> EventPayload {
+    let mut attributes = BTreeMap::new();
+    attributes.insert(
+        String::from("semantic_version"),
+        EventAttributeValue::U64(u64::from(observation.semantic_version)),
+    );
+    attributes.insert(
+        String::from("coordinate"),
+        EventAttributeValue::VirtualTime(VirtualTime {
+            ticks: observation.coordinate.virtual_nanos,
+        }),
+    );
+    if let Some(retired) = observation.coordinate.retired_instructions {
+        attributes.insert(
+            String::from("retired_instructions"),
+            EventAttributeValue::U64(retired),
+        );
+    }
+    if let Some(binding) = &observation.binding {
+        attributes.insert(
+            String::from("binding"),
+            EventAttributeValue::String(binding.as_str().to_owned()),
+        );
+    }
+    if let Some(target) = &observation.target {
+        attributes.insert(
+            String::from("target_kind"),
+            EventAttributeValue::String(target.kind().as_str().to_owned()),
+        );
+        attributes.insert(
+            String::from("target"),
+            EventAttributeValue::String(target.canonical_material()),
+        );
+    }
+    if let Some(opportunity) = observation.opportunity {
+        attributes.insert(
+            String::from("opportunity"),
+            EventAttributeValue::String(opportunity.to_hex()),
+        );
+    }
+    attributes.insert(
+        String::from("evidence"),
+        EventAttributeValue::String(observation.evidence.to_hex()),
+    );
+    EventPayload::new(observation.kind.as_str(), attributes)
+}
+
+pub(super) const fn fault_observation_level(kind: FaultObservationKind) -> EventLevel {
+    match kind {
+        FaultObservationKind::SignalSample | FaultObservationKind::FaultOpportunity => {
+            EventLevel::Trace
+        }
+        FaultObservationKind::FaultChoice | FaultObservationKind::EffectCombined => {
+            EventLevel::Debug
+        }
+        FaultObservationKind::EffectRejected => EventLevel::Error,
+        FaultObservationKind::SignalTransition
+        | FaultObservationKind::SignalStateTransition
+        | FaultObservationKind::BindingActivation
+        | FaultObservationKind::BindingDeactivation
+        | FaultObservationKind::EffectApplied
+        | FaultObservationKind::NetworkProfile
+        | FaultObservationKind::AssociationTransition
+        | FaultObservationKind::TraceAlignment => EventLevel::Info,
+    }
 }
 
 pub(super) fn evaluation_boundary_kind_label(

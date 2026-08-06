@@ -1826,6 +1826,7 @@ pub(super) fn event_log_coverage_entry(
         | SchedulerEventLogPayload::EvaluationBoundary(_)
         | SchedulerEventLogPayload::TriggerFired(_)
         | SchedulerEventLogPayload::TriggerActionApplied(_)
+        | SchedulerEventLogPayload::FaultObservation(_)
         | SchedulerEventLogPayload::Diagnostic(_) => return None,
     };
     Some(EventLogCoverageProjectionEntry {
