@@ -20,7 +20,7 @@
   rawImage =
     mkDerivation {
       pname = "aos-hub-e2e-image-raw";
-      version = "2026.03";
+      version = "2026.3.0";
       src = null;
       buildDeps = [coreutils dosfstools gptfdisk jq mtools];
       phases = [
@@ -62,7 +62,7 @@
               --argjson byteSize "$image_size" \
               --argjson ukiSize "$uki_size" \
               --argjson targets '["bare-metal"]' \
-              '{schemaVersion: 1, name: "aos-system", version: "2026.03",
+              '{schemaVersion: 1, name: "aos-system", version: "2026.3.0",
                 architecture: "x86_64", platform: "x86_64-linux",
                 format: $format, filename: $filename, objectKey: $objectKey,
                 mediaType: $mediaType, compression: "none", byteSize: $byteSize,
@@ -88,7 +88,7 @@
     };
   qcow2Image = mkDerivation {
     pname = "aos-hub-e2e-image-qcow2";
-    version = "2026.03";
+    version = "2026.3.0";
     src = null;
     buildDeps = [coreutils jq qemu rawImage];
     phases = [
@@ -112,7 +112,7 @@
             --arg rootfsSha256 "$rootfs_sha256" \
             --arg ukiSha256 "$uki_sha256" --argjson byteSize "$image_size" \
             --argjson ukiSize "$uki_size" \
-            '{schemaVersion: 1, name: "aos-system", version: "2026.03",
+            '{schemaVersion: 1, name: "aos-system", version: "2026.3.0",
               architecture: "x86_64", platform: "x86_64-linux", format: "qcow2",
               filename: $filename, objectKey: $objectKey,
               mediaType: "application/vnd.aos.disk-image.qcow2", compression: "none",
@@ -135,7 +135,7 @@
   };
   sysroot = mkDerivation {
     pname = "aos-hub-e2e-sysroot";
-    version = "2026.03";
+    version = "2026.3.0";
     src = null;
     buildDeps = [coreutils];
     phases = [
@@ -143,7 +143,7 @@
         name = "build";
         script = ''
           mkdir -p "$out/etc"
-          printf 'NAME=AOS Hub producer fixture\nVERSION=2026.03\n' > "$out/etc/aos-release"
+          printf 'NAME=AOS Hub producer fixture\nVERSION=2026.3.0\n' > "$out/etc/aos-release"
         '';
       }
     ];
@@ -185,7 +185,7 @@ in
           test -n "$public_key"
           key="$HOME/.config/apm/keys/image-e2e-release.key"
           ${aos}/bin/apr create image-e2e --trust-key "$public_key" --key "$key"
-          ${aos}/bin/apr release 2026.03 \
+          ${aos}/bin/apr release 2026.3.0 \
             --registry image-e2e \
             --store-path '${sysroot}' \
             --name aos-system \
@@ -213,7 +213,7 @@ in
           release_commit=""
           while IFS=$'\t' read -r oid ref; do
             case "$ref" in
-              refs/tags/2026.03^\{\}) release_commit="$oid"; break ;;
+              refs/tags/2026.3.0^\{\}) release_commit="$oid"; break ;;
             esac
           done < "$destination/surface/info/refs"
           test -n "$release_commit"
